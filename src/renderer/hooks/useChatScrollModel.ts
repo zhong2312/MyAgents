@@ -6,6 +6,7 @@ import {
   estimateMessageRowHeight,
   type RowLayoutContract,
 } from '@/utils/chatRowLayout';
+import { projectVisibleChatTimelineRows } from '@/utils/chatTimelineRows';
 
 export interface ChatScrollModel {
   data: readonly MessageType[];
@@ -52,7 +53,7 @@ export function useChatScrollModel({
   }, []);
 
   const data = useMemo(
-    () => (streamingMessage ? [...historyMessages, streamingMessage] : historyMessages),
+    () => projectVisibleChatTimelineRows(historyMessages, streamingMessage),
     [historyMessages, streamingMessage],
   );
 

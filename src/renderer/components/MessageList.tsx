@@ -16,7 +16,6 @@ import { ChatRowLayoutProvider, type RowLayoutChangeReason } from '@/context/Cha
 import type { RowLayoutContract } from '@/utils/chatRowLayout';
 import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
-import { parseBackgroundTaskNotificationMessage } from '@/utils/backgroundTaskStatus';
 
 function formatElapsedTime(totalSeconds: number, t: TFunction<'chat'>): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -28,7 +27,7 @@ function formatElapsedTime(totalSeconds: number, t: TFunction<'chat'>): string {
 }
 
 interface MessageListProps {
-  historyMessages: MessageType[];
+  messages: readonly MessageType[];
   streamingMessage: MessageType | null;
   isLoading: boolean;
   isSessionLoading?: boolean;
@@ -221,7 +220,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
 // causing phantom repeated content. Styling is applied inside itemContent instead.
 
 const MessageList = memo(function MessageList({
-  historyMessages,
+  messages,
   streamingMessage,
   isLoading,
   isSessionLoading,
@@ -256,27 +255,23 @@ const MessageList = memo(function MessageList({
   bottomSpacerPx,
 }: MessageListProps) {
   const { t } = useTranslation('chat');
-  const allMessages = useMemo(() =>
-    streamingMessage ? [...historyMessages, streamingMessage] : historyMessages,
-    [historyMessages, streamingMessage]
-  );
-  const liveHeightEstimateSeed = heightEstimateSeed?.length === allMessages.length ? heightEstimateSeed : undefined;
+  const liveHeightEstimateSeed = heightEstimateSeed?.length === messages.length ? heightEstimateSeed : undefined;
 
   const streamingStatusMessage = useMemo(
     () => getRandomStreamingMessage(t),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [historyMessages.length, t]
+    [messages.length, t]
   );
 
   // ExitPlanMode
   const exitPlanModeAnchorId = useMemo(() => {
     if (!pendingExitPlanMode) return null;
     if (streamingMessage && hasExitPlanModeTool(streamingMessage)) return streamingMessage.id;
-    for (let i = historyMessages.length - 1; i >= 0; i--) {
-      if (hasExitPlanModeTool(historyMessages[i])) return historyMessages[i].id;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (hasExitPlanModeTool(messages[i])) return messages[i].id;
     }
     return null;
-  }, [pendingExitPlanMode, streamingMessage, historyMessages]);
+  }, [pendingExitPlanMode, streamingMessage, messages]);
   const exitPlanModeSlot = useMemo(() => {
     if (!pendingExitPlanMode || !onExitPlanModeApprove || !onExitPlanModeReject) return undefined;
     return (
@@ -322,10 +317,10 @@ const MessageList = memo(function MessageList({
     // effect re-fires and pins once isActive flips true.
     if (!isActive) return;
     if (!sessionId || sessionId === lastScrolledSessionRef.current) return;
-    if (allMessages.length === 0) return;
+    if (messages.length === 0) return;
     lastScrolledSessionRef.current = sessionId;
     scrollToBottom('auto');
-  }, [isActive, sessionId, allMessages.length, scrollToBottom]);
+  }, [isActive, sessionId, messages.length, scrollToBottom]);
 
   // Tab inactive ↔ active follow-state preservation.
   //
@@ -381,10 +376,10 @@ const MessageList = memo(function MessageList({
     if (snap === false) return;
     // User was at bottom before switching away. Re-pin to actual scroll bottom.
     // scrollToBottom() flips the ref to 'force' + arms grace/auto-degrade timer.
-    if (allMessages.length > 0) {
+    if (messages.length > 0) {
       scrollToBottom('auto');
     }
-  }, [isActive, allMessages.length, scrollToBottom, sessionId, followEnabledRef]);
+  }, [isActive, messages.length, scrollToBottom, sessionId, followEnabledRef]);
 
   // Gate Virtuoso's atBottomStateChange while the tab is hidden.
   // content-visibility: hidden lets WebKit deliver ResizeObserver callbacks
@@ -493,9 +488,6 @@ const MessageList = memo(function MessageList({
   // ── Stable itemContent — reads ALL dynamic values from refs, never recreated ──
   // eslint-disable-next-line react/display-name
   const renderItem = useMemo(() => (index: number, message: MessageType) => {
-    if (parseBackgroundTaskNotificationMessage(message)) {
-      return null;
-    }
     const sm = streamingMessageRef.current;
     const isStreamingMsg = !!sm && message === sm;
     // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown
@@ -580,17 +572,17 @@ const MessageList = memo(function MessageList({
   // snapshot under React 19 concurrency, which a later hidden render could then hand
   // to Virtuoso — exactly the post-hide measurement we're preventing. A committed
   // layout effect guarantees the snapshot is always a real, measured-while-visible state.
-  const frozenDataRef = useRef<{ data: MessageType[]; firstItemIndex: number | undefined; heightEstimateSeed?: number[] }>({
-    data: allMessages,
+  const frozenDataRef = useRef<{ data: readonly MessageType[]; firstItemIndex: number | undefined; heightEstimateSeed?: number[] }>({
+    data: messages,
     firstItemIndex,
     heightEstimateSeed: liveHeightEstimateSeed,
   });
   useLayoutEffect(() => {
     if (isActive) {
-      frozenDataRef.current = { data: allMessages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed };
+      frozenDataRef.current = { data: messages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed };
     }
-  }, [isActive, allMessages, firstItemIndex, liveHeightEstimateSeed]);
-  const virtuosoData = isActive ? allMessages : frozenDataRef.current.data;
+  }, [isActive, messages, firstItemIndex, liveHeightEstimateSeed]);
+  const virtuosoData = isActive ? messages : frozenDataRef.current.data;
   const virtuosoFirstItemIndex = isActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
   const virtuosoHeightEstimateSeed = isActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
   const debugProbe = useChatScrollDebugProbe({
@@ -607,7 +599,7 @@ const MessageList = memo(function MessageList({
       style={fadeIn ? { animation: 'message-list-fade-in 600ms ease-out both' } : undefined}
       onAnimationEnd={() => setFadeIn(false)}
     >
-      {isSessionLoading && allMessages.length === 0 && (
+      {isSessionLoading && messages.length === 0 && (
         <div className="absolute inset-0 z-10 flex items-center justify-center" style={{ paddingBottom: 140 }}>
           <div className="flex items-center gap-2 text-sm text-[var(--ink-muted)]">
             <Loader2 className="h-4 w-4 animate-spin" />

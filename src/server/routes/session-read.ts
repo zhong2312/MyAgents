@@ -5,6 +5,7 @@ import {
   shrinkSessionMessageForClient,
   shrinkSessionMessagesForClient,
 } from '../utils/session-message-preview';
+import { toClientSessionMetadata } from '../utils/session-metadata-wire';
 import type { SessionMessage, SessionMetadata } from '../types/session';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -14,19 +15,18 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function redactSessionMetadata<T extends { providerEnvJson?: string }>(meta: T): T {
-  if (meta.providerEnvJson === undefined) return meta;
-  return { ...meta, providerEnvJson: '[redacted]' };
-}
-
 function mergeActiveOverlayMessages(
   diskMessages: SessionMessage[],
   inMemoryMessages: SessionMessage[] | undefined,
 ): SessionMessage[] {
   if (!inMemoryMessages?.length) return diskMessages;
+  const memoryById = new Map(inMemoryMessages.map(message => [message.id, message]));
   const diskIds = new Set(diskMessages.map(message => message.id));
-  const newMessages = inMemoryMessages.filter(message => !diskIds.has(message.id));
-  return newMessages.length > 0 ? [...diskMessages, ...newMessages] : diskMessages;
+  const merged = diskMessages.map(message => memoryById.get(message.id) ?? message);
+  for (const message of inMemoryMessages) {
+    if (!diskIds.has(message.id)) merged.push(message);
+  }
+  return merged;
 }
 
 function paginateMessages(
@@ -129,16 +129,24 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
 
   if (!session) {
     if (overlay.isActive) {
+      const { messages, totalCount, hasMoreBefore } = paginateMessages(
+        overlay.inMemoryMessages ?? [],
+        url,
+      );
       return jsonResponse({
         success: true,
         session: {
           id: sessionId,
           runtime: overlay.runtime ?? engine.getRuntimeIdentity().runtime,
-          messages: [],
-          liveStreamingMessage: null,
+          messages: shrinkSessionMessagesForClient(messages),
+          snapshotRevision: overlay.snapshotRevision ?? 0,
+          liveStreamingMessage: overlay.liveStreamingMessage
+            ? shrinkSessionMessageForClient(overlay.liveStreamingMessage)
+            : null,
           liveSessionState: overlay.liveSessionState,
-          totalCount: 0,
-          hasMoreBefore: false,
+          pendingInteractiveRequests: overlay.pendingInteractiveRequests ?? [],
+          totalCount,
+          hasMoreBefore,
         },
       });
     }
@@ -157,9 +165,11 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
     : null;
 
   const sessionWithPreview = {
-    ...redactSessionMetadata(session as SessionMetadata),
+    ...toClientSessionMetadata(session as SessionMetadata),
     liveStreamingMessage,
+    snapshotRevision: overlay.snapshotRevision ?? 0,
     liveSessionState: overlay.liveSessionState,
+    pendingInteractiveRequests: overlay.pendingInteractiveRequests ?? [],
     messages: shrinkSessionMessagesForClient(messages),
     totalCount,
     hasMoreBefore,
@@ -174,7 +184,11 @@ export async function handleSessionReadRoute(
   url: URL,
 ): Promise<Response | null> {
   if (pathname === '/api/session-state' && request.method === 'GET') {
-    return jsonResponse({ sessionState: getSessionEngine().getLiveSessionState().sessionState });
+    const engine = getSessionEngine();
+    return jsonResponse({
+      sessionState: engine.getLiveSessionState().sessionState,
+      completionTerminal: engine.getSessionCompletionTerminal(),
+    });
   }
 
   if (pathname === '/api/session-latest-result' && request.method === 'GET') {

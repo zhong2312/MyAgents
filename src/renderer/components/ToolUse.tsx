@@ -65,10 +65,13 @@ interface ToolUseProps {
 
 export default function ToolUse({ tool: rawTool }: ToolUseProps) {
   const { t } = useTranslation('chat');
-  // Clamp large results for display — but only for general text rendering.
-  // Specialized components (cron card, WebSearch, TaskTool, etc.) parse structured
-  // JSON from result — clamping would corrupt the JSON and break rich UI.
-  const tool = clampResult(rawTool, t);
+  // Bash and file-patch tools own specialized, bounded projections. Generic
+  // pre-clamping would corrupt their structured completion wrappers before the
+  // authoritative parser can separate streams or applied file changes.
+  const ownsBoundedProjection = rawTool.name === 'Bash'
+    || rawTool.name === 'Edit'
+    || rawTool.name === 'Write';
+  const tool = ownsBoundedProjection ? rawTool : clampResult(rawTool, t);
   // NOTE: tool.attachments are NOT rendered here. ToolUse lives inside
   // ProcessRow's collapsible body (BlockGroup), so rendering rich-media here
   // buried the player inside the folded tool window (PRD 0.2.30 bug). The

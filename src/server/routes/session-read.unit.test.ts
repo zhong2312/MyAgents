@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   engine: {
     getRuntimeIdentity: vi.fn(() => ({ kind: 'builtin', runtime: 'builtin', sessionId: 'sid' })),
     getLiveSessionState: vi.fn(() => ({ sessionState: 'idle', isBusy: false })),
+    getSessionCompletionTerminal: vi.fn<() => Record<string, unknown> | null>(() => null),
     getLatestAssistantResult: vi.fn(() => ({ sessionId: 'sid', latestResult: 'latest answer' })),
     getLiveSessionOverlay: vi.fn<() => Record<string, unknown>>(() => ({ isActive: false })),
   },
@@ -43,6 +44,7 @@ describe('handleSessionReadRoute', () => {
     vi.clearAllMocks();
     mocks.engine.getRuntimeIdentity.mockReturnValue({ kind: 'builtin', runtime: 'builtin', sessionId: 'sid' });
     mocks.engine.getLiveSessionState.mockReturnValue({ sessionState: 'idle', isBusy: false });
+    mocks.engine.getSessionCompletionTerminal.mockReturnValue(null);
     mocks.engine.getLatestAssistantResult.mockReturnValue({ sessionId: 'sid', latestResult: 'latest answer' });
     mocks.engine.getLiveSessionOverlay.mockReturnValue({ isActive: false });
     mocks.getSessionData.mockReturnValue(null);
@@ -51,6 +53,13 @@ describe('handleSessionReadRoute', () => {
   });
 
   it('reads live session state and latest result from the active engine', async () => {
+    mocks.engine.getSessionCompletionTerminal.mockReturnValue({
+      sessionId: 'sid',
+      workspacePath: '/tmp/workspace',
+      turnId: 'turn-1',
+      origin: { kind: 'desktop', surface: 'launcher_input' },
+      status: 'complete',
+    });
     const stateResponse = await handleSessionReadRoute(
       '/api/session-state',
       new Request('http://local/api/session-state'),
@@ -62,7 +71,16 @@ describe('handleSessionReadRoute', () => {
       new URL('http://local/api/session-latest-result'),
     );
 
-    expect(await readJson(stateResponse as Response)).toEqual({ sessionState: 'idle' });
+    expect(await readJson(stateResponse as Response)).toEqual({
+      sessionState: 'idle',
+      completionTerminal: {
+        sessionId: 'sid',
+        workspacePath: '/tmp/workspace',
+        turnId: 'turn-1',
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        status: 'complete',
+      },
+    });
     expect(await readJson(latestResponse as Response)).toEqual({
       sessionId: 'sid',
       latestResult: 'latest answer',
@@ -135,10 +153,12 @@ describe('handleSessionReadRoute', () => {
     mocks.engine.getLiveSessionOverlay.mockReturnValue({
       isActive: true,
       runtime: 'builtin',
+      snapshotRevision: 12,
       liveSessionState: 'running',
+      pendingInteractiveRequests: [{ type: 'permission:request', data: { requestId: 'p1' } }],
       liveStreamingMessage: { id: 'live', role: 'assistant', content: 'typing', timestamp: '2026-01-01T00:00:01.000Z' },
       inMemoryMessages: [
-        { id: 'm1', role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00.000Z' },
+        { id: 'm1', role: 'user', content: 'hello from newer memory', timestamp: '2026-01-01T00:00:00.000Z' },
         { id: 'm2', role: 'assistant', content: 'in memory', timestamp: '2026-01-01T00:00:02.000Z' },
       ],
     });
@@ -154,11 +174,15 @@ describe('handleSessionReadRoute', () => {
     expect(body.success).toBe(true);
     expect(body.session).toMatchObject({
       providerEnvJson: '[redacted]',
+      snapshotRevision: 12,
       liveSessionState: 'running',
+      pendingInteractiveRequests: [{ type: 'permission:request', data: { requestId: 'p1' } }],
       totalCount: 2,
       hasMoreBefore: false,
     });
     expect((body.session as { messages: Array<{ id: string }> }).messages.map(message => message.id)).toEqual(['m1', 'm2']);
+    expect((body.session as { messages: Array<{ id: string; content: string }> }).messages[0]?.content)
+      .toBe('hello from newer memory');
     expect(body.session).toMatchObject({
       liveStreamingMessage: { id: 'live', content: 'typing' },
     });
@@ -182,6 +206,38 @@ describe('handleSessionReadRoute', () => {
     expect(await readJson(response as Response)).toEqual({
       success: false,
       error: 'Session not found.',
+    });
+  });
+
+  it('returns an active memory-only session without dropping its finalized tail', async () => {
+    mocks.engine.getLiveSessionOverlay.mockReturnValue({
+      isActive: true,
+      runtime: 'builtin',
+      snapshotRevision: 4,
+      liveSessionState: 'starting',
+      inMemoryMessages: [
+        { id: 'u1', role: 'user', content: 'accepted', timestamp: '2026-01-01T00:00:00.000Z' },
+      ],
+      liveStreamingMessage: null,
+      pendingInteractiveRequests: [],
+    });
+
+    const response = await handleSessionReadRoute(
+      '/sessions/sid',
+      new Request('http://local/sessions/sid?limit=80'),
+      new URL('http://local/sessions/sid?limit=80'),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await readJson(response as Response)).toMatchObject({
+      success: true,
+      session: {
+        id: 'sid',
+        snapshotRevision: 4,
+        liveSessionState: 'starting',
+        totalCount: 1,
+        messages: [{ id: 'u1', content: 'accepted' }],
+      },
     });
   });
 

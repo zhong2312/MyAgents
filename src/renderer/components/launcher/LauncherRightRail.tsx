@@ -37,7 +37,7 @@ import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
 import { isAutomationHistoryOrigin } from '@/../shared/session-origin';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { isSupportedLocale } from '../../../shared/i18n';
-import { formatMessageCount, formatTime, getFolderName, getSessionDisplayText } from '@/utils/taskCenterUtils';
+import { formatTime, formatTurnCount, getFolderName, getSessionDisplayText } from '@/utils/taskCenterUtils';
 import AddWorkspaceMenu, { type WorkbenchCreateAction } from './AddWorkspaceMenu';
 import WorkspaceCard from './WorkspaceCard';
 import WorkspaceIcon from './WorkspaceIcon';
@@ -744,7 +744,7 @@ const LauncherHistoryRow = memo(function LauncherHistoryRow({
         placement: 'bottom-start' | 'bottom-end';
     } | null>(null);
     const displayText = getSessionDisplayText(session);
-    const msgCount = formatMessageCount(session, locale);
+    const turnCount = formatTurnCount(session, locale);
 
     const closeMenu = useCallback(() => {
         setMenuAnchor(null);
@@ -807,9 +807,9 @@ const LauncherHistoryRow = memo(function LauncherHistoryRow({
             />
             <span className="launcher-history-row-title-fade min-w-0 flex-1 truncate text-sm text-[var(--ink-secondary)] transition-colors group-hover:text-[var(--ink)]">
                 {displayText}
-                {msgCount && (
+                {turnCount && (
                     <span className="ml-1.5 text-xs text-[var(--ink-muted)]/40">
-                        {msgCount}
+                        {turnCount}
                     </span>
                 )}
             </span>

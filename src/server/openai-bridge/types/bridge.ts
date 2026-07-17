@@ -7,8 +7,11 @@ export interface BridgeConfig {
   /** Model name mapping: SDK sends claude-xxx, may need mapping to actual model */
   modelMapping?: Record<string, string> | ((model: string) => string | undefined);
 
-  /** Upstream request timeout in ms. Default 300000 (5 min) */
-  upstreamTimeout?: number;
+  /**
+   * Time limit for receiving upstream response headers. Does not bound a
+   * streaming response body. Default 300000 (5 min).
+   */
+  upstreamHeadersTimeoutMs?: number;
 
   /** Logger function. null to disable. Default console.log */
   logger?: ((msg: string) => void) | null;

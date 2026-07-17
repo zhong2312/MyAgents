@@ -1126,82 +1126,20 @@ pub async fn cmd_restart_channels_using_plugin(
             }
         };
 
-        // Remove channel and clone its config for restart
-        let (channel_instance, im_config) = {
-            let mut agents = agentState.lock().await;
-            let agent = match agents.get_mut(&agent_id) {
-                Some(a) => a,
-                None => continue,
-            };
-            let ch = match agent.channels.remove(bot_id) {
-                Some(c) => c,
-                None => continue,
-            };
-            let config = ch.bot_instance.config.clone();
-            (ch, config)
-        };
-
-        // Shutdown the old instance (consumes bot_instance — cannot be re-inserted on failure)
-        if let Err(e) =
-            shutdown_bot_instance(channel_instance.bot_instance, &sidecarManager, bot_id).await
-        {
-            ulog_warn!("[agent] Failed to shutdown channel {}: {}", bot_id, e);
-            failed += 1;
-            // Instance is consumed and partially cleaned up; attempt restart anyway
-        }
-
-        // Restart with the same config
-        match create_bot_instance(
+        match restart_agent_channel_instance(
             &app_handle,
+            &agentState,
             &sidecarManager,
-            bot_id.clone(),
-            im_config,
-            Some(agent_id.clone()),
+            &agent_id,
+            bot_id,
         )
         .await
         {
-            Ok((new_instance, _status)) => {
-                // Set agent_link before acquiring the agents lock
-                let link = AgentChannelLink {
-                    channel_id: bot_id.clone(),
-                    agent_id: agent_id.clone(),
-                    last_active_channel: {
-                        let agents = agentState.lock().await;
-                        agents
-                            .get(&agent_id)
-                            .map(|a| Arc::clone(&a.last_active_channel))
-                            .unwrap_or_else(|| Arc::new(RwLock::new(None)))
-                    },
-                    last_active_private_target: {
-                        let agents = agentState.lock().await;
-                        agents
-                            .get(&agent_id)
-                            .map(|a| Arc::clone(&a.last_active_private_target))
-                            .unwrap_or_else(|| Arc::new(RwLock::new(None)))
-                    },
-                    runtime_config: {
-                        let agents = agentState.lock().await;
-                        agents
-                            .get(&agent_id)
-                            .map(|a| Arc::clone(&a.runtime_config))
-                            .unwrap_or_else(|| Arc::new(RwLock::new(None)))
-                    },
-                };
-                *new_instance.agent_link.write().await = Some(link);
-
-                let mut agents = agentState.lock().await;
-                if let Some(agent) = agents.get_mut(&agent_id) {
-                    agent.channels.insert(
-                        bot_id.clone(),
-                        ChannelInstance {
-                            channel_id: bot_id.clone(),
-                            bot_instance: new_instance,
-                        },
-                    );
-                    restarted += 1;
-                    ulog_info!("[agent] Channel {} restarted successfully", bot_id);
-                }
+            Ok(true) => {
+                restarted += 1;
+                ulog_info!("[agent] Channel {} restarted successfully", bot_id);
             }
+            Ok(false) => {}
             Err(e) => {
                 ulog_warn!("[agent] Failed to restart channel {}: {}", bot_id, e);
                 failed += 1;
@@ -1230,12 +1168,20 @@ pub async fn cmd_start_agent_channel(
     agentConfig: AgentConfigRust,
     channelConfig: ChannelConfigRust,
 ) -> Result<ChannelStatus, String> {
-    if is_agent_workspace_archived(&agentConfig) {
+    let lifecycle_lock = agent_channel_lifecycle_lock(&agentId, &channelId);
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+
+    // These objects remain in the command payload for wire compatibility, but
+    // disk-first config is authoritative after the lifecycle wait.
+    let _ = (&agentConfig, &channelConfig);
+    let Some((agentConfig, channelConfig, mut im_config)) =
+        config_store::current_agent_channel_start_config(&agentId, &channelId)
+    else {
         return Err(format!(
-            "Agent workspace '{}' is archived. Unarchive it before starting channels.",
-            agentConfig.name
+            "Agent channel '{}' is no longer enabled or startable",
+            channelId
         ));
-    }
+    };
 
     // Dedup: check if channel is already running in agent state.
     // If channel exists but is in Error/Stopped state, remove it to allow restart.
@@ -1292,7 +1238,6 @@ pub async fn cmd_start_agent_channel(
         }
     } // agents_guard dropped
 
-    let mut im_config = channelConfig.to_im_config(&agentConfig);
     let agent_channel_permission_mode = im_config.permission_mode.clone();
     // Suppress per-channel heartbeat interval — agent-level heartbeat controls timing
     im_config.heartbeat_config = Some(types::HeartbeatConfig {
@@ -1480,6 +1425,9 @@ pub async fn cmd_stop_agent_channel(
     agentId: String,
     channelId: String,
 ) -> Result<(), String> {
+    let lifecycle_lock = agent_channel_lifecycle_lock(&agentId, &channelId);
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+
     let bot_instance = {
         let mut agents_guard = agentState.lock().await;
         if let Some(agent) = agents_guard.get_mut(&agentId) {
@@ -1826,6 +1774,46 @@ pub async fn cmd_update_agent_config(
     agentId: String,
     patch: AgentConfigPatch,
 ) -> Result<(), String> {
+    let updates_channel_runtime = patch.runtime.is_some()
+        || patch.runtime_config.is_some()
+        || patch.provider_id.is_some()
+        || patch.model.is_some()
+        || patch.provider_env_json.is_some()
+        || patch.permission_mode.is_some()
+        || patch.mcp_servers_json.is_some()
+        || patch.channels.is_some();
+    let mut channel_ids = if updates_channel_runtime {
+        read_agent_configs_from_disk()
+            .into_iter()
+            .find(|agent| agent.id == agentId)
+            .map(|agent| {
+                agent
+                    .channels
+                    .into_iter()
+                    .map(|channel| channel.id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if updates_channel_runtime {
+        let agents = agentState.lock().await;
+        if let Some(agent) = agents.get(&agentId) {
+            channel_ids.extend(agent.channels.keys().cloned());
+        }
+    }
+    channel_ids.sort();
+    channel_ids.dedup();
+    let lifecycle_locks = channel_ids
+        .iter()
+        .map(|channel_id| agent_channel_lifecycle_lock(&agentId, channel_id))
+        .collect::<Vec<_>>();
+    let mut _lifecycle_guards = Vec::with_capacity(lifecycle_locks.len());
+    for lock in &lifecycle_locks {
+        _lifecycle_guards.push(lock.lock().await);
+    }
+
     // Hot-reload running instance if present (runtime only — disk persistence
     // is handled by the TypeScript patchAgentConfig service)
     let mut agents_guard = agentState.lock().await;
@@ -2041,12 +2029,12 @@ pub async fn cmd_update_agent_config(
             }
         }
 
-        // Hot-reload per-channel group settings when channels array is patched.
-        // Frontend patchChannel() writes the full channels array to disk, then sends
-        // the patch here for runtime sync. Match by channel ID to update the running instance.
-        if let Some(ref channels) = patch.channels {
-            agent.config.channels = channels.clone();
-            for ch_config in channels {
+        // Hot-reload per-channel group settings when a channel patch is signaled.
+        // Disk is authoritative: renderer invokes can arrive out of order, so
+        // never project the invoke payload into live state.
+        if patch.channels.is_some() {
+            agent.config.channels = updated_agent.channels.clone();
+            for ch_config in &updated_agent.channels {
                 if let Some(ch_inst) = agent.channels.get(&ch_config.id) {
                     // groupActivation
                     if let Some(ref act) = ch_config.group_activation {
@@ -2265,6 +2253,32 @@ pub async fn cmd_delete_agent(
     sidecarManager: tauri::State<'_, ManagedSidecarManager>,
     agentId: String,
 ) -> Result<(), String> {
+    let mut channel_ids = {
+        let agents_guard = agentState.lock().await;
+        agents_guard
+            .get(&agentId)
+            .map(|agent| {
+                agent
+                    .config
+                    .channels
+                    .iter()
+                    .map(|channel| channel.id.clone())
+                    .chain(agent.channels.keys().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    channel_ids.sort();
+    channel_ids.dedup();
+    let lifecycle_locks = channel_ids
+        .iter()
+        .map(|channel_id| agent_channel_lifecycle_lock(&agentId, channel_id))
+        .collect::<Vec<_>>();
+    let mut _lifecycle_guards = Vec::with_capacity(lifecycle_locks.len());
+    for lock in &lifecycle_locks {
+        _lifecycle_guards.push(lock.lock().await);
+    }
+
     // Stop all running channels directly via shutdown_bot_instance
     let channels = {
         let mut agents_guard = agentState.lock().await;

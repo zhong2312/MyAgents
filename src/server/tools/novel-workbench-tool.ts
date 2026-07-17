@@ -6,7 +6,7 @@ import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
   NOVEL_WORKBENCH_MCP_ID,
-} from "./novel-workbench-context";
+} from "../novel-workbench-context";
 
 type CallToolResult = {
   content: Array<{ type: "text"; text: string }>;

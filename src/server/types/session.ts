@@ -11,7 +11,8 @@ import type { SystemMaintenanceSessionKind } from '../../shared/managedScheduled
  * Session statistics for tracking usage
  */
 export interface SessionStats {
-    messageCount: number;        // Number of user messages (queries)
+    /** Legacy on-disk key. Counts persisted user-role turns; wire/UI expose turnCount. */
+    messageCount: number;
     totalInputTokens: number;
     totalOutputTokens: number;
     totalCacheReadTokens?: number;

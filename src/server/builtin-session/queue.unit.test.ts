@@ -4,12 +4,18 @@ import {
   beginPromotedItem,
   cancelTurnAdmissionTicket,
   cancelPromotedItem,
+  clearInFlightSlotIfMatches,
   clearPromotedItem,
+  getInFlightQueueId,
+  getPromotedItemCancellation,
   hasQueuedTurnByOwner,
   isPromotedItemCanceled,
   isPromotedItemInFlight,
   getTurnAdmissionIdentity,
   resetQueueForTest,
+  requeuePromotedItemBeforeSdkDispatch,
+  setInFlightQueueItem,
+  snapshotQueue,
   setTurnAdmissionTicket,
 } from './queue';
 import type { MessageQueueItem } from './types';
@@ -51,7 +57,11 @@ describe('builtin promoted queue item', () => {
   });
 
   it('publishes and cancels the owner identity during turn admission', () => {
+    const cancelPersistence = vi.fn();
     const cancelDispatch = vi.fn();
+    const beforeUserPersistence = Object.assign(async () => ({ accepted: true }), {
+      cancel: cancelPersistence,
+    });
     const beforeDispatch = Object.assign(async () => ({ accepted: true }), {
       cancel: cancelDispatch,
     });
@@ -60,6 +70,7 @@ describe('builtin promoted queue item', () => {
       createdAt: 1,
       messageText: 'continue Goal',
       turnOwner: { kind: 'goal', id: 'goal-1' },
+      beforeUserPersistence,
       beforeDispatch,
       canceled: false,
     });
@@ -71,8 +82,43 @@ describe('builtin promoted queue item', () => {
     expect(hasQueuedTurnByOwner({ kind: 'goal', id: 'goal-1' })).toBe(true);
 
     const canceled = cancelTurnAdmissionTicket('goal-admission');
-    expect(canceled?.canceled).toBe(true);
+    expect(canceled?.ticket.canceled).toBe(true);
+    expect(cancelPersistence).toHaveBeenCalledOnce();
     expect(cancelDispatch).toHaveBeenCalledOnce();
     expect(getTurnAdmissionIdentity()).toBeNull();
+  });
+
+  it('settles the promoted-item cancellation fence immediately', async () => {
+    const item = queueItem('promotion-cancel');
+    beginPromotedItem(item);
+    const cancellation = getPromotedItemCancellation(item.id);
+
+    expect(cancellation).not.toBeNull();
+    expect(cancelPromotedItem(item.id)).toBe(item);
+    await expect(cancellation).resolves.toBeUndefined();
+  });
+
+  it('releases only the exact provisional SDK in-flight owner', () => {
+    setInFlightQueueItem('realtime-before-yield', {
+      messageText: 'queued',
+    });
+
+    expect(clearInFlightSlotIfMatches('other')).toBe(false);
+    expect(getInFlightQueueId()).toBe('realtime-before-yield');
+    expect(clearInFlightSlotIfMatches('realtime-before-yield')).toBe(true);
+    expect(getInFlightQueueId()).toBeNull();
+  });
+
+  it('atomically requeues a promoted realtime item and releases its provisional slot', () => {
+    const item = queueItem('mutation-requeue');
+    item.wasQueued = true;
+    beginPromotedItem(item);
+    setInFlightQueueItem(item.id, { messageText: item.messageText });
+
+    requeuePromotedItemBeforeSdkDispatch(item);
+
+    expect(isPromotedItemInFlight()).toBe(false);
+    expect(getInFlightQueueId()).toBeNull();
+    expect(snapshotQueue().messageQueue.map(queued => queued.id)).toEqual([item.id]);
   });
 });

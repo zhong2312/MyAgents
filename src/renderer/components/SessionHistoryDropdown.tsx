@@ -495,7 +495,7 @@ export default function SessionHistoryDropdown({
                             const tags = sessionTagsMap.get(session.id) ?? [];
                             const stats = session.stats;
                             const displayText = getSessionDisplayText(session);
-                            const hasStats = stats && (stats.messageCount > 0 || stats.totalInputTokens > 0);
+                            const hasStats = stats && (stats.turnCount > 0 || stats.totalInputTokens > 0);
                             const totalTokens = (stats?.totalInputTokens ?? 0) + (stats?.totalOutputTokens ?? 0);
                             const unreadNotificationCount = sessionNotificationBadgeCounts.get(session.id) ?? 0;
 
@@ -549,7 +549,7 @@ export default function SessionHistoryDropdown({
                                                 {hasStats && (
                                                     <>
                                                         <span>·</span>
-                                                        <span>{t('shell.history.messageCount', { count: stats.messageCount })}</span>
+                                                        <span>{t('shell.history.turnCount', { count: stats.turnCount })}</span>
                                                         <span>·</span>
                                                         <span>{formatTokens(totalTokens)} tokens</span>
                                                     </>

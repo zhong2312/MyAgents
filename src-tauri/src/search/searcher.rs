@@ -31,7 +31,7 @@ pub struct SessionSearchHit {
     pub matched_role: Option<String>,
     pub last_active_at: String,
     pub source: Option<String>,
-    pub message_count: Option<u32>,
+    pub turn_count: Option<u32>,
 }
 
 /// File search response.

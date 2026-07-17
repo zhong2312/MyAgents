@@ -161,6 +161,20 @@ OpenAI-protocol providers use the bridge as the only request-shape owner for bot
 - 默认不发送 `store:true`、`previous_response_id`、`conversation`、`prompt_cache_retention`。这些属于 provider capability / 数据保留语义，不是缓存命中率修复的默认路径。
 - 错误日志和 SDK/UI 透出的 upstream error body 必须先脱敏：不得输出 `myagents:responses:<hash>` / `myagents:chat_completions:<hash>`、apiKey、raw session id 或被上游回显的 request body / prompt。
 
+### OpenAI Bridge timeout ownership
+
+Bridge 只拥有“等待 upstream response headers”的连接建立上限，配置字段为
+`BridgeConfig.upstreamHeadersTimeoutMs`（默认 5 分钟）。headers 到达后立即清除该 timer；它不限制
+Chat Completions / Responses 的流式 response body 生命周期。
+
+流式 body 不能用“最近有没有字节”代理 turn 活性。推理模型在服务端合法长思考时可能超过 60 秒不输出
+任何字节；Bridge 没有 suspension、交互和 SDK turn 状态，不能据此 abort。真正永久无 SDK event 的 turn
+由 builtin Session 的 suspension-aware 10 分钟 `InactivityWatchdog` 收口。
+
+Bridge 在流式阶段只保留三种终止权：下游明确取消、真实 transport EOF/error、协议终态。Chat 以
+`[DONE]`，Responses 以 `response.completed` / `response.failed` 结束下游并释放仍 linger 的 upstream
+socket，不等待 TCP EOF。禁止重新增加 stream byte-idle timer、用户可配置 body timeout 或伪 heartbeat。
+
 ### Runtime-backed Provider（Managed Codex）
 
 `codex-sub` 是 Provider 列表中的订阅型入口，但它不 materialize 为 Claude Agent SDK 的 `ProviderEnv`。它的 `Provider.execution.kind === 'runtime-backed'`，选择后会生成 `RuntimeBackedProviderIdentity { providerId:'codex-sub', runtime:'codex', runtimeSource:'managed-provider', model }`，由 Sidecar 以 Codex Runtime 执行。

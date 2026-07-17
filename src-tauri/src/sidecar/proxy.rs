@@ -4,7 +4,16 @@ use super::*;
 
 /// Build the proxy payload from disk config for broadcasting to Sidecars.
 fn build_proxy_payload() -> serde_json::Value {
-    match proxy_config::read_raw_proxy_settings() {
+    proxy_payload_from_settings(proxy_config::read_raw_proxy_settings())
+}
+
+fn proxy_propagation_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn proxy_payload_from_settings(settings: Option<proxy_config::ProxySettings>) -> serde_json::Value {
+    match settings {
         Some(s) => {
             let scope = proxy_config::normalized_proxy_scope(&s);
             let enabled = s.enabled && proxy_config::get_proxy_url(&s).is_ok();
@@ -20,6 +29,46 @@ fn build_proxy_payload() -> serde_json::Value {
             "enabled": false,
             "scope": { "mode": "all" },
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_payload_materializes_legacy_general_scope() {
+        let payload = proxy_payload_from_settings(Some(proxy_config::ProxySettings {
+            enabled: true,
+            protocol: Some("http".into()),
+            host: Some("127.0.0.1".into()),
+            port: Some(7897),
+            scope: Some(proxy_config::ProxyScopeSettings::Custom {
+                general_requests: None,
+                provider_ids: vec!["anthropic-sub".into()],
+            }),
+        }));
+
+        assert_eq!(payload["scope"]["generalRequests"], true);
+        assert_eq!(payload["scope"]["providerIds"][0], "anthropic-sub");
+    }
+
+    #[test]
+    fn proxy_payload_preserves_explicit_zero_scope() {
+        let payload = proxy_payload_from_settings(Some(proxy_config::ProxySettings {
+            enabled: true,
+            protocol: Some("socks5".into()),
+            host: Some("127.0.0.1".into()),
+            port: Some(1080),
+            scope: Some(proxy_config::ProxyScopeSettings::Custom {
+                general_requests: Some(false),
+                provider_ids: vec![],
+            }),
+        }));
+
+        assert_eq!(payload["scope"]["mode"], "custom");
+        assert_eq!(payload["scope"]["generalRequests"], false);
+        assert_eq!(payload["scope"]["providerIds"], serde_json::json!([]));
     }
 }
 
@@ -46,9 +95,16 @@ async fn post_proxy(client: &reqwest::Client, port: u16, payload: &serde_json::V
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn cmd_propagate_proxy(
+    app_handle: tauri::AppHandle,
     sidecarManager: tauri::State<'_, ManagedSidecarManager>,
     imState: tauri::State<'_, crate::im::ManagedImBots>,
+    agentState: tauri::State<'_, crate::im::ManagedAgents>,
+    restartGeneralOwners: bool,
 ) -> Result<serde_json::Value, String> {
+    // Settings effects are fire-and-forget and may overlap (A→B→A). Serialize
+    // at the disk authority, then read only after acquiring the lock: a slow
+    // older broadcast can therefore never commit after a newer config.
+    let _propagation_guard = proxy_propagation_lock().lock().await;
     let payload = build_proxy_payload();
 
     let client = crate::local_http::builder()
@@ -97,6 +153,22 @@ pub async fn cmd_propagate_proxy(
         }
     }
 
+    let scheduled_general_owners = if restartGeneralOwners {
+        crate::im::restart_channels_for_general_proxy_change(
+            &app_handle,
+            &agentState,
+            &imState,
+            &sidecarManager,
+        )
+        .await
+    } else {
+        0
+    };
+
     ulog_info!("[proxy-propagate] Done: {} updated, {} failed", ok, fail);
-    Ok(serde_json::json!({ "updated": ok, "failed": fail }))
+    Ok(serde_json::json!({
+        "updated": ok,
+        "failed": fail,
+        "scheduledGeneralOwners": scheduled_general_owners,
+    }))
 }

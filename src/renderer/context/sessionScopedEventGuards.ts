@@ -1,3 +1,18 @@
+import type { SessionState } from './TabContext';
+
+export type SessionActivityDecision = 'active' | 'terminal' | 'none';
+
+/**
+ * Turn activity is authoritative only when it comes from a backend session
+ * state snapshot (`chat:status` or REST liveSessionState). Runtime/system init
+ * metadata must never infer activity.
+ */
+export function classifySessionActivity(sessionState: SessionState): SessionActivityDecision {
+    if (sessionState === 'starting' || sessionState === 'running') return 'active';
+    if (sessionState === 'idle' || sessionState === 'error') return 'terminal';
+    return 'none';
+}
+
 /**
  * Pure guard for session-scoped SSE snapshots.
  *

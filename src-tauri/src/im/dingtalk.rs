@@ -1141,6 +1141,7 @@ impl DingtalkAdapter {
             text: text_content,
             sender_id: sender_staff_id.to_string(),
             sender_name: sender_nick.map(String::from),
+            account_id: None,
             source_type,
             platform: ImPlatform::Dingtalk,
             timestamp: chrono::Utc::now(),
@@ -1152,6 +1153,7 @@ impl DingtalkAdapter {
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
+            delivery_protocol: None,
         };
 
         let text_preview: String = msg.text.chars().take(100).collect();

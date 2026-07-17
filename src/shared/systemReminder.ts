@@ -4,6 +4,8 @@ export const FLOATING_BALL_CONTEXT_TAG = 'FLOATING_BALL_CONTEXT';
 export const SPACE_ISSUE_CONTEXT_TAG = 'myagents-space-issue';
 export const GOAL_CONTINUATION_TAG = 'GOAL_CONTINUATION';
 export const GOAL_CONTEXT_TAG = 'GOAL_CONTEXT';
+export const LOCAL_COMMAND_OUTPUT_TAG = 'LOCAL_COMMAND_OUTPUT';
+export const SESSION_EVENT_TAG = 'myagents-session-event';
 
 export interface ParsedLeadingSystemReminder {
   hasReminder: boolean;

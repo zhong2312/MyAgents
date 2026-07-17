@@ -36,8 +36,8 @@ export default memo(function SessionSearchItem({
     // If we don't have project info, fallback to showing just the agentDir
     const projectName = project ? getFolderName(project.path) : getFolderName(hit.agentDir);
     const displayLastActiveAt = session?.lastActiveAt ?? hit.lastActiveAt;
-    const msgCountStr = hit.messageCount !== null && hit.messageCount > 0
-        ? t('historyOverlay.messageCount', { count: hit.messageCount })
+    const turnCountStr = hit.turnCount !== null && hit.turnCount > 0
+        ? t('historyOverlay.turnCount', { count: hit.turnCount })
         : '';
 
     return (
@@ -61,9 +61,9 @@ export default memo(function SessionSearchItem({
                         highlights={hit.titleHighlights}
                         className="truncate flex-1 min-w-0"
                     />
-                    {msgCountStr && (
+                    {turnCountStr && (
                         <span className="ml-1.5 shrink-0 text-xs text-[var(--ink-muted)]/40">
-                            {msgCountStr}
+                            {turnCountStr}
                         </span>
                     )}
                 </div>

@@ -56,7 +56,7 @@ import { IssueDetailDrawer } from "@/pages/space/issues/IssueDetailDrawer";
 import { RegisterAgentDialog } from "@/pages/space/agents/AgentsWorkspace";
 import { SpaceSettingsWorkspace } from "@/pages/space/settings/SpaceSettingsWorkspace";
 import { GoalsWorkspace } from "@/pages/space/goals/GoalsWorkspace";
-import { GoalPathSelectLabel } from "@/pages/space/GoalPathSelectLabel";
+import { GoalPathLabel } from "@/pages/space/GoalPathLabel";
 import { SkillsWorkspace } from "@/pages/space/skills/SkillsWorkspace";
 import {
   SpaceLogin,
@@ -662,14 +662,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
       {
         value: "",
         label: t("space.filters.allGoals"),
-        content: <GoalPathSelectLabel label={t("space.filters.allGoals")} />,
+        content: (
+          <GoalPathLabel
+            label={t("space.filters.allGoals")}
+            leafLabel={t("space.filters.allGoals")}
+          />
+        ),
       },
       ...goals.map((goal) => {
         const label = goal.goalPathLabel || goal.title;
         return {
           value: goal.id,
           label,
-          content: <GoalPathSelectLabel label={label} />,
+          content: <GoalPathLabel label={label} leafLabel={goal.title} />,
         };
       }),
     ],
@@ -1050,6 +1055,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       setIssueDetailId(null);
       setSelectedSkillId(null);
       setSelectedGoalId("");
+      setSelectedStatus(ACTIVE_ISSUE_STATE_FILTER);
       setMode(nextMode);
       await switching;
     },
@@ -1185,9 +1191,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, []);
 
   const logout = useCallback(async () => {
+    setIssueDetailId(null);
+    setSelectedStatus(ACTIVE_ISSUE_STATE_FILTER);
     try {
       await actions.logout();
-      setIssueDetailId(null);
       toast.success(t("space.toasts.logoutSuccess"));
     } catch (error) {
       toast.error(spaceErrorMessage(error));

@@ -17,6 +17,7 @@
 import { createHash, randomBytes } from 'crypto';
 import http from 'http';
 import type { AuthorizationConfig, OAuthTokenData, PKCEPair } from './types';
+import { fetchWithGeneralProxy } from '../utils/cancellation';
 
 // ===== Pending Flows =====
 
@@ -29,9 +30,14 @@ interface PendingFlow {
   state: string;
   resolve: (token: OAuthTokenData | null) => void;
   timeoutHandle: ReturnType<typeof setTimeout>;
+  phase: 'waiting' | 'exchanging' | 'committing' | 'settled';
+  settled: Promise<void>;
+  resolveSettled: () => void;
+  startOwner: symbol;
 }
 
 const pendingFlows = new Map<string, PendingFlow>();
+const flowStartOwners = new Map<string, symbol>();
 
 /** Check if a flow is pending for a server */
 export function isFlowPending(serverId: string): boolean {
@@ -95,7 +101,7 @@ async function exchangeCodeForToken(
     body.set('client_secret', clientSecret);
   }
 
-  const response = await fetch(tokenUrl, {
+  const response = await fetchWithGeneralProxy(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: body.toString(),
@@ -103,8 +109,7 @@ async function exchangeCodeForToken(
   });
 
   if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Token exchange failed (HTTP ${response.status}): ${text.slice(0, 200)}`);
+    throw new Error(`Token exchange failed (HTTP ${response.status})`);
   }
 
   const data = await response.json() as {
@@ -119,11 +124,16 @@ async function exchangeCodeForToken(
     throw new Error('Token exchange response missing access_token');
   }
 
+  const lifetimeMs = data.expires_in && data.expires_in > 0
+    ? data.expires_in * 1000
+    : undefined;
+
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
     tokenType: data.token_type || 'Bearer',
-    expiresAt: data.expires_in ? Date.now() + data.expires_in * 1000 : undefined,
+    expiresAt: lifetimeMs ? Date.now() + lifetimeMs : undefined,
+    lifetimeMs,
     scope: data.scope,
   };
 }
@@ -156,22 +166,40 @@ export function bindCallbackServer(
 
 // ===== Cleanup =====
 
-function cleanupFlow(serverId: string): void {
-  const flow = pendingFlows.get(serverId);
-  if (flow) {
-    clearTimeout(flow.timeoutHandle);
-    try { flow.callbackServer.close(); } catch { /* noop */ }
-    pendingFlows.delete(serverId);
+function cleanupFlow(flow: PendingFlow): void {
+  if (flow.phase === 'settled') return;
+  flow.phase = 'settled';
+  clearTimeout(flow.timeoutHandle);
+  try { flow.callbackServer.close(); } catch { /* noop */ }
+  if (pendingFlows.get(flow.serverId) === flow) {
+    pendingFlows.delete(flow.serverId);
   }
+  if (flowStartOwners.get(flow.serverId) === flow.startOwner) {
+    flowStartOwners.delete(flow.serverId);
+  }
+  flow.resolveSettled();
 }
 
-/** Cancel a pending OAuth flow */
-export function cancelFlow(serverId: string): void {
+async function settlePendingFlow(serverId: string): Promise<void> {
   const flow = pendingFlows.get(serverId);
-  if (flow) {
-    flow.resolve(null);
-    cleanupFlow(serverId);
+  if (!flow) return;
+
+  // Once durable commit begins it is the current flow's linearization point.
+  // Let it settle before a replacement flow becomes current; before that
+  // point, cancellation can safely make an in-flight exchange stale.
+  if (flow.phase === 'committing') {
+    await flow.settled;
+    return;
   }
+
+  flow.resolve(null);
+  cleanupFlow(flow);
+}
+
+/** Cancel both a materialized flow and any callback-server start still in flight. */
+export async function cancelFlow(serverId: string): Promise<void> {
+  flowStartOwners.delete(serverId);
+  await settlePendingFlow(serverId);
 }
 
 // ===== Main Authorization Flow =====
@@ -181,29 +209,54 @@ export function cancelFlow(serverId: string): void {
  *
  * If existingServer is provided, reuses it (bound by caller via bindCallbackServer).
  * Otherwise creates a new callback server on the configured port.
+ * The browser is told the flow succeeded only after `commitToken` durably
+ * persists the credential.
  *
  * @returns authUrl to open in browser + waitForToken promise
  */
 export async function startAuthorizationFlow(
   serverId: string,
   config: AuthorizationConfig,
+  commitToken: (token: OAuthTokenData) => Promise<void>,
   existingServer?: { server: http.Server; port: number },
 ): Promise<{ authUrl: string; waitForToken: Promise<OAuthTokenData | null> }> {
+  const startOwner = Symbol(serverId);
+  flowStartOwners.set(serverId, startOwner);
+
   // Cancel any existing flow
-  cancelFlow(serverId);
+  await settlePendingFlow(serverId);
+  if (flowStartOwners.get(serverId) !== startOwner) {
+    try { existingServer?.server.close(); } catch { /* noop */ }
+    throw new Error(`Authorization start superseded for ${serverId}`);
+  }
 
   const pkce = generatePKCE();
   const state = randomBytes(16).toString('hex');
 
   // Use existing server or bind a new one
-  const { server: srv, port: srvPort } = existingServer
-    ?? await bindCallbackServer(config.callbackPort || 0);
+  let boundServer: { server: http.Server; port: number };
+  try {
+    boundServer = existingServer ?? await bindCallbackServer(config.callbackPort || 0);
+  } catch (error) {
+    if (flowStartOwners.get(serverId) === startOwner) {
+      flowStartOwners.delete(serverId);
+    }
+    throw error;
+  }
+  const { server: srv, port: srvPort } = boundServer;
+  if (flowStartOwners.get(serverId) !== startOwner) {
+    try { srv.close(); } catch { /* noop */ }
+    throw new Error(`Authorization start superseded for ${serverId}`);
+  }
 
   console.log(`[mcp-oauth] Callback server for ${serverId} on port ${srvPort}`);
 
   const redirectUri = `http://127.0.0.1:${srvPort}/callback`;
 
   // Create token promise — resolved when callback is received
+  let flow!: PendingFlow;
+  let resolveSettled!: () => void;
+  const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
   const tokenPromise = new Promise<OAuthTokenData | null>((resolveToken) => {
     // Install the request handler on the server
     srv.removeAllListeners('request');
@@ -211,6 +264,12 @@ export async function startAuthorizationFlow(
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 
       if (url.pathname === '/callback') {
+        if (flow.phase !== 'waiting') {
+          res.writeHead(409, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(buildCallbackHtml(false, 'Authorization callback is already being processed.'));
+          return;
+        }
+
         const code = url.searchParams.get('code');
         const reqState = url.searchParams.get('state');
         const error = url.searchParams.get('error');
@@ -219,7 +278,7 @@ export async function startAuthorizationFlow(
           const desc = url.searchParams.get('error_description') || error;
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
           res.end(buildCallbackHtml(false, `Authorization failed: ${escapeHtml(desc)}`));
-          cleanupFlow(serverId);
+          cleanupFlow(flow);
           resolveToken(null);
           return;
         }
@@ -228,30 +287,47 @@ export async function startAuthorizationFlow(
           if (reqState !== state) {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(buildCallbackHtml(false, 'Authorization failed: state parameter mismatch'));
-            cleanupFlow(serverId);
+            cleanupFlow(flow);
             resolveToken(null);
             return;
           }
 
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(buildCallbackHtml(true, 'Authorization successful! You can close this tab.'));
+          flow.phase = 'exchanging';
+          void (async () => {
+            try {
+              const token = await exchangeCodeForToken(
+                code,
+                config.tokenEndpoint,
+                config.clientId,
+                config.clientSecret,
+                pkce.codeVerifier,
+                redirectUri,
+              );
+              if (pendingFlows.get(serverId) !== flow) {
+                res.writeHead(409, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.end(buildCallbackHtml(false, 'Authorization was superseded by a newer attempt.'));
+                resolveToken(null);
+                return;
+              }
 
-          exchangeCodeForToken(
-            code,
-            config.tokenEndpoint,
-            config.clientId,
-            config.clientSecret,
-            pkce.codeVerifier,
-            redirectUri,
-          ).then((token) => {
-            console.log(`[mcp-oauth] Token obtained for ${serverId}`);
-            cleanupFlow(serverId);
-            resolveToken(token);
-          }).catch((err) => {
-            console.error(`[mcp-oauth] Token exchange failed for ${serverId}:`, err);
-            cleanupFlow(serverId);
-            resolveToken(null);
-          });
+              // No await is allowed between the exact-owner check and this
+              // phase transition. A replacement flow will now await `settled`
+              // instead of cancelling a credential commit already in progress.
+              flow.phase = 'committing';
+              await commitToken(token);
+              console.log(`[mcp-oauth] Token obtained and persisted for ${serverId}`);
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end(buildCallbackHtml(true, 'Authorization successful! You can close this tab.'));
+              resolveToken(token);
+            } catch (err) {
+              console.error(`[mcp-oauth] Authorization finalization failed for ${serverId}:`, err);
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end(buildCallbackHtml(false, 'Authorization failed while saving credentials. Return to MyAgents and try again.'));
+              resolveToken(null);
+            } finally {
+              cleanupFlow(flow);
+            }
+          })();
           return;
         }
 
@@ -270,12 +346,14 @@ export async function startAuthorizationFlow(
       if (pendingFlows.has(serverId)) {
         console.warn(`[mcp-oauth] Authorization flow timed out for ${serverId}`);
         const timedOutFlow = pendingFlows.get(serverId);
-        timedOutFlow?.resolve(null);
-        cleanupFlow(serverId);
+        if (timedOutFlow === flow) {
+          flow.resolve(null);
+          cleanupFlow(flow);
+        }
       }
     }, 5 * 60 * 1000);
 
-    pendingFlows.set(serverId, {
+    flow = {
       serverId,
       config,
       pkce,
@@ -284,7 +362,12 @@ export async function startAuthorizationFlow(
       state,
       resolve: resolveToken,
       timeoutHandle,
-    });
+      phase: 'waiting',
+      settled,
+      resolveSettled,
+      startOwner,
+    };
+    pendingFlows.set(serverId, flow);
   });
 
   // Build authorization URL

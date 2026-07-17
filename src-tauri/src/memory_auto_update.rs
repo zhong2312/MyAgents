@@ -1317,27 +1317,25 @@ fn message_text(value: &Value) -> String {
 }
 
 fn is_memory_update_marker(text: &str) -> bool {
+    let trimmed = text.trim_start();
     leading_system_reminder_kind(text) == Some("MEMORY_UPDATE")
-        || text.trim_start().starts_with("<MEMORY_UPDATE>")
-        || text.trim_start().starts_with("/UPDATE_MEMORY")
+        || trimmed.starts_with("<MEMORY_UPDATE>")
+        || trimmed.starts_with("/UPDATE_MEMORY")
 }
 
 fn is_automatic_user_text(text: &str) -> bool {
     let leading_kind = leading_system_reminder_kind(text);
-    let trimmed = text.trim_start();
     is_memory_update_marker(text)
         || matches!(
             leading_kind,
-            Some("HEARTBEAT" | "CRON_TASK" | "myagents-space-issue")
+            Some(
+                "HEARTBEAT"
+                    | "CRON_TASK"
+                    | "LOCAL_COMMAND_OUTPUT"
+                    | "myagents-session-event"
+                    | "myagents-space-issue"
+            )
         )
-        || trimmed.starts_with("<HEARTBEAT>")
-        || trimmed.starts_with("<CRON_TASK>")
-        || trimmed.starts_with("<local-command-stdout>")
-        || trimmed.starts_with("<inbox-message")
-        || trimmed.starts_with("<inbox-reply")
-        || trimmed.starts_with("<cron-task-context")
-        || trimmed.starts_with("<myagents-session-event")
-        || trimmed.starts_with("<task-notification>")
 }
 
 fn human_user_text(text: &str) -> Option<String> {
@@ -1417,10 +1415,10 @@ mod tests {
     #[test]
     fn jsonl_analysis_resets_queries_when_memory_update_is_dispatched() {
         let content = r#"{"role":"user","content":"before","timestamp":"2026-01-01T00:00:00.000Z"}
-{"role":"user","content":"<MEMORY_UPDATE> update","timestamp":"2026-01-01T01:00:00.000Z"}
+{"role":"user","content":"<system-reminder><MEMORY_UPDATE>update</MEMORY_UPDATE></system-reminder>","timestamp":"2026-01-01T01:00:00.000Z"}
 {"role":"assistant","content":"provider failed","timestamp":"2026-01-01T01:01:00.000Z"}
 {"role":"user","content":"q1","timestamp":"2026-01-01T02:00:00.000Z"}
-{"role":"user","content":"<HEARTBEAT> hidden","timestamp":"2026-01-01T02:05:00.000Z"}
+{"role":"user","content":"<system-reminder><HEARTBEAT>hidden</HEARTBEAT></system-reminder>","timestamp":"2026-01-01T02:05:00.000Z"}
 {"role":"user","content":[{"type":"text","text":"q2"}],"timestamp":"2026-01-01T03:00:00.000Z"}"#;
 
         let analysis = analyze_session_jsonl_content(content);
@@ -1441,10 +1439,10 @@ mod tests {
 
     #[test]
     fn latest_memory_dispatch_throttles_even_when_the_turn_fails() {
-        let content = r#"{"role":"user","content":"<MEMORY_UPDATE> first","timestamp":"2026-01-01T01:00:00.000Z"}
+        let content = r#"{"role":"user","content":"<system-reminder><MEMORY_UPDATE>first</MEMORY_UPDATE></system-reminder>","timestamp":"2026-01-01T01:00:00.000Z"}
 {"role":"assistant","content":"MEMORY_UPDATE_OK","timestamp":"2026-01-01T01:01:00.000Z"}
 {"role":"user","content":"q1","timestamp":"2026-01-01T02:00:00.000Z"}
-{"role":"user","content":"<MEMORY_UPDATE> retry","timestamp":"2026-01-01T03:00:00.000Z"}
+{"role":"user","content":"<system-reminder><MEMORY_UPDATE>retry</MEMORY_UPDATE></system-reminder>","timestamp":"2026-01-01T03:00:00.000Z"}
 {"role":"assistant","content":"provider failed","timestamp":"2026-01-01T03:01:00.000Z"}
 {"role":"user","content":"q2","timestamp":"2026-01-01T04:00:00.000Z"}"#;
 
@@ -1463,7 +1461,7 @@ mod tests {
     #[test]
     fn dispatched_memory_marker_creates_cooldown_without_an_assistant_reply() {
         let content = r#"{"role":"user","content":"q1","timestamp":"2026-01-01T01:00:00.000Z"}
-{"role":"user","content":"<MEMORY_UPDATE> orphan","timestamp":"2026-01-01T02:00:00.000Z"}
+{"role":"user","content":"<system-reminder><MEMORY_UPDATE>orphan</MEMORY_UPDATE></system-reminder>","timestamp":"2026-01-01T02:00:00.000Z"}
 {"role":"user","content":"q2","timestamp":"2026-01-01T03:00:00.000Z"}"#;
 
         let analysis = analyze_session_jsonl_content(content);
@@ -1516,7 +1514,7 @@ mod tests {
     }
 
     #[test]
-    fn marker_detection_is_protocol_anchored_but_keeps_legacy_prefixes() {
+    fn marker_detection_uses_the_standard_leading_reminder_protocol() {
         assert!(is_memory_update_marker(
             "<system-reminder><MEMORY_UPDATE>maintain</MEMORY_UPDATE></system-reminder>"
         ));
@@ -1529,10 +1527,10 @@ mod tests {
         ));
         assert!(human_user_text("请解释 <CRON_TASK> 标签").is_some());
         assert!(is_automatic_user_text(
-            "<local-command-stdout>cost output</local-command-stdout>"
+            "<system-reminder><LOCAL_COMMAND_OUTPUT>local</LOCAL_COMMAND_OUTPUT></system-reminder><local-command-stdout>cost output</local-command-stdout>"
         ));
         assert!(is_automatic_user_text(
-            "<myagents-session-event type=\"watch.completed\">result</myagents-session-event>"
+            "<system-reminder><myagents-session-event type=\"watch.completed\">result</myagents-session-event></system-reminder>"
         ));
         assert!(is_automatic_user_text(
             "<system-reminder><myagents-space-issue>issue</myagents-space-issue></system-reminder>"

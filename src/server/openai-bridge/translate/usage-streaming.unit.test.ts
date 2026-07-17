@@ -14,7 +14,7 @@
 // This test reproduces the SDK's usage accumulation to assert the end-to-end
 // modelUsage the SDK would compute from the bridge's SSE stream.
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { StreamTranslator } from './stream';
 import { ResponsesStreamTranslator } from './stream-responses';
 import { handleStreamResponse, handleResponsesStreamResponse } from '../handler';
@@ -186,6 +186,201 @@ async function readAnthropicEvents(
   return { events, reachedDone };
 }
 
+async function readAllAnthropicEvents(body: ReadableStream<Uint8Array>): Promise<AnthropicStreamEvent[]> {
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  const events: AnthropicStreamEvent[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split('\n\n');
+    buf = parts.pop() ?? '';
+    for (const part of parts) {
+      const dataLine = part.split('\n').find((line) => line.startsWith('data:'));
+      if (!dataLine) continue;
+      try {
+        events.push(JSON.parse(dataLine.slice('data:'.length).trim()) as AnthropicStreamEvent);
+      } catch { /* skip malformed test output */ }
+    }
+  }
+  return events;
+}
+
+describe('stream body liveness ownership (issue #458)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps a Chat Completions stream alive across more than 60 seconds without bytes', async () => {
+    vi.useFakeTimers();
+    const enc = new TextEncoder();
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) { source = controller; },
+    });
+    const upstreamAbort = new AbortController();
+    const out = handleStreamResponse(
+      new Response(upstreamBody, { headers: { 'content-type': 'text/event-stream' } }),
+      MODEL,
+      true,
+      () => {},
+      undefined,
+      upstreamAbort,
+      undefined,
+      () => {},
+    );
+    const reading = readAllAnthropicEvents(out.body!);
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(upstreamAbort.signal.aborted).toBe(false);
+
+    source.enqueue(enc.encode(
+      sseFrame(chunk({ choices: [{ index: 0, delta: { content: 'continued after silence' }, finish_reason: null }] }))
+      + sseFrame(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: null }))
+      + sseFrame(chunk({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } }))
+      + 'data: [DONE]\n\n',
+    ));
+    const events = await reading;
+    const text = events.flatMap((event) => event.type === 'content_block_delta'
+      && event.delta.type === 'text_delta' ? [event.delta.text] : []).join('');
+    expect(text).toContain('continued after silence');
+    expect(events.some((event) => event.type === 'message_stop')).toBe(true);
+  });
+
+  it('keeps a Responses stream alive across more than 60 seconds without bytes', async () => {
+    vi.useFakeTimers();
+    const enc = new TextEncoder();
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) { source = controller; },
+    });
+    const upstreamAbort = new AbortController();
+    const out = handleResponsesStreamResponse(
+      new Response(upstreamBody, { headers: { 'content-type': 'text/event-stream' } }),
+      MODEL,
+      () => {},
+      upstreamAbort,
+      undefined,
+      () => {},
+    );
+    const reading = readAllAnthropicEvents(out.body!);
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(upstreamAbort.signal.aborted).toBe(false);
+
+    source.enqueue(enc.encode(
+      sseFrame({ type: 'response.output_text.delta', delta: 'continued after silence' })
+      + sseFrame({
+        type: 'response.completed',
+        response: {
+          status: 'completed',
+          usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+        },
+      }),
+    ));
+    const events = await reading;
+    const text = events.flatMap((event) => event.type === 'content_block_delta'
+      && event.delta.type === 'text_delta' ? [event.delta.text] : []).join('');
+    expect(text).toContain('continued after silence');
+    expect(events.some((event) => event.type === 'message_stop')).toBe(true);
+  });
+
+  it('still aborts the upstream transport when the downstream cancels', async () => {
+    const upstreamAbort = new AbortController();
+    const out = handleStreamResponse(
+      new Response(new ReadableStream<Uint8Array>({ start() { /* remain open */ } })),
+      MODEL,
+      true,
+      () => {},
+      undefined,
+      upstreamAbort,
+      undefined,
+      () => {},
+    );
+
+    await out.body!.cancel('user cancelled');
+    expect(upstreamAbort.signal.aborted).toBe(true);
+  });
+
+  it('still aborts a Responses upstream transport when the downstream cancels', async () => {
+    const upstreamAbort = new AbortController();
+    const out = handleResponsesStreamResponse(
+      new Response(new ReadableStream<Uint8Array>({ start() { /* remain open */ } })),
+      MODEL,
+      () => {},
+      upstreamAbort,
+      undefined,
+      () => {},
+    );
+
+    await out.body!.cancel('user cancelled');
+    expect(upstreamAbort.signal.aborted).toBe(true);
+  });
+
+  it('propagates a real Chat upstream stream error without rewriting it as timeout', async () => {
+    const upstreamError = new Error('provider socket failed');
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) { controller.error(upstreamError); },
+    });
+    const out = handleStreamResponse(
+      new Response(upstreamBody),
+      MODEL,
+      true,
+      () => {},
+      undefined,
+      new AbortController(),
+      undefined,
+      () => {},
+    );
+
+    await expect(readAllAnthropicEvents(out.body!)).rejects.toThrow('provider socket failed');
+  });
+
+  it('propagates a real Responses upstream stream error without rewriting it as timeout', async () => {
+    const upstreamError = new Error('responses provider socket failed');
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) { controller.error(upstreamError); },
+    });
+    const out = handleResponsesStreamResponse(
+      new Response(upstreamBody),
+      MODEL,
+      () => {},
+      new AbortController(),
+      undefined,
+      () => {},
+    );
+
+    await expect(readAllAnthropicEvents(out.body!)).rejects.toThrow('responses provider socket failed');
+  });
+
+  it('does not treat a Responses-only [DONE] marker as a protocol terminal', async () => {
+    const enc = new TextEncoder();
+    const upstreamAbort = new AbortController();
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(enc.encode('data: [DONE]\n\n')); },
+    });
+    const out = handleResponsesStreamResponse(
+      new Response(upstreamBody, { headers: { 'content-type': 'text/event-stream' } }),
+      MODEL,
+      () => {},
+      upstreamAbort,
+      undefined,
+      () => {},
+    );
+    const reader = out.body!.getReader();
+
+    const outcome = await Promise.race([
+      reader.read().then(() => 'read'),
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 25)),
+    ]);
+    expect(outcome).toBe('pending');
+    expect(upstreamAbort.signal.aborted).toBe(false);
+    await reader.cancel('test cleanup');
+  });
+});
+
 describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
   it('emits terminal usage + message_stop on [DONE] WITHOUT waiting for the body to close', async () => {
     const enc = new TextEncoder();
@@ -211,13 +406,14 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
       headers: { 'content-type': 'text/event-stream' },
     });
 
+    const upstreamAbort = new AbortController();
     const out = handleStreamResponse(
       upstreamResp,
       MODEL,
       true,
       () => {},
       undefined,
-      new AbortController(),
+      upstreamAbort,
       undefined,
       () => {},
     );
@@ -231,6 +427,7 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
     // The downstream stream must reach EOF on [DONE] even though the upstream
     // body never closes — otherwise the SDK (reads until EOF) would hang.
     expect(reachedDone).toBe(true);
+    expect(upstreamAbort.signal.aborted).toBe(true);
   });
 
   it('Responses API: closes downstream on response.completed WITHOUT waiting for body close', async () => {
@@ -263,11 +460,12 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
       headers: { 'content-type': 'text/event-stream' },
     });
 
+    const upstreamAbort = new AbortController();
     const out = handleResponsesStreamResponse(
       upstreamResp,
       MODEL,
       () => {},
-      new AbortController(),
+      upstreamAbort,
       undefined,
       () => {},
     );
@@ -280,6 +478,44 @@ describe('handleStreamResponse [DONE]-driven finalization (issue #277)', () => {
     expect(delta && delta.type === 'message_delta' && delta.usage.cache_read_input_tokens).toBe(128);
     expect(events.some((e) => e.type === 'message_stop')).toBe(true);
     expect(reachedDone).toBe(true);
+    expect(upstreamAbort.signal.aborted).toBe(true);
+  });
+
+  it('Responses API: closes downstream on response.failed WITHOUT waiting for body close', async () => {
+    const enc = new TextEncoder();
+    let emitted = false;
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (emitted) return;
+        emitted = true;
+        controller.enqueue(enc.encode(sseFrame({
+          type: 'response.failed',
+          response: {
+            id: 'resp_failed',
+            object: 'response',
+            status: 'failed',
+            model: MODEL,
+            output: [],
+            error: { code: 'upstream_failed', message: 'provider rejected the turn' },
+            usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          },
+        })));
+      },
+    });
+    const upstreamAbort = new AbortController();
+    const out = handleResponsesStreamResponse(
+      new Response(upstreamBody, { headers: { 'content-type': 'text/event-stream' } }),
+      MODEL,
+      () => {},
+      upstreamAbort,
+      undefined,
+      () => {},
+    );
+
+    const { events, reachedDone } = await readAnthropicEvents(out.body!, 2_000);
+    expect(events.some((event) => event.type === 'message_stop')).toBe(true);
+    expect(reachedDone).toBe(true);
+    expect(upstreamAbort.signal.aborted).toBe(true);
   });
 });
 

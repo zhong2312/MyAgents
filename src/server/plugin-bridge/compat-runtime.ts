@@ -1,10 +1,10 @@
 /**
  * OpenClaw Channel Runtime Compatibility Shim
  *
- * Mocks the `pluginRuntime.channel` APIs that channel plugins use.
- * The key interception point is `reply.dispatchReplyWithBufferedBlockDispatcher`:
- * instead of calling the plugin's deliver callback, we POST the inbound message
- * to Rust's management API for AI processing.
+ * Adapts the `pluginRuntime.channel` APIs that channel plugins use. The reply
+ * dispatcher keeps the plugin's normal renderer lifecycle intact while
+ * `dispatchReplyFromConfig` hands AI production to Rust using a request-scoped
+ * transport. Legacy buffered dispatch remains only as an older-plugin fallback.
  *
  * This shim covers the FULL PluginRuntime.channel surface so that any OpenClaw
  * channel plugin can load without TypeError crashes, not just QQ Bot.
@@ -13,11 +13,17 @@
 import { tmpdir } from 'os';
 import { join, basename, extname } from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'node:crypto';
 import { writeFile, readFile } from 'fs/promises';
 import { ensureDir } from '../utils/fs-utils';
 import { registerPendingDispatch, rejectPendingDispatch, type PendingDispatchCallbacks } from './pending-dispatch';
 import { cancellableFetch } from '../utils/cancellation';
 import { getOpenClawConfigSnapshot, setOpenClawConfigSnapshot } from './openclaw-config';
+import {
+  createReplyDispatcherWithTyping as createShimReplyDispatcherWithTyping,
+  observeReplyDispatcherIdle,
+  withReplyDispatcher as withShimReplyDispatcher,
+} from './sdk-shim/plugin-sdk/reply-runtime.js';
 
 // ===== Media extraction utilities =====
 
@@ -44,29 +50,6 @@ type BridgeAttachment = {
   data: string; // base64
   attachmentType: 'image' | 'file';
 };
-
-type OpenClawDeliverPayload = {
-  text?: string;
-  mediaUrls?: string[];
-  mediaUrl?: string;
-  isReasoning?: boolean;
-  isCompactionNotice?: boolean;
-};
-
-type OpenClawDeliverInfo = { kind: 'block' | 'tool' | 'final' | 'reasoning' };
-type OpenClawDeliver = (
-  payload: OpenClawDeliverPayload,
-  info: OpenClawDeliverInfo,
-) => unknown | Promise<unknown>;
-
-function getOpenClawDeliver(dispatcherOptions: Record<string, unknown> | undefined): OpenClawDeliver | undefined {
-  const deliver = dispatcherOptions?.deliver;
-  return typeof deliver === 'function' ? deliver as OpenClawDeliver : undefined;
-}
-
-async function deliverTextBlock(deliver: OpenClawDeliver, text: string): Promise<void> {
-  await deliver({ text }, { kind: 'block' });
-}
 
 /**
  * Extract media from OpenClaw inbound context and convert to bridge attachments.
@@ -234,7 +217,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
   // Shim compat version — must match the version in sdk-shim/package.json.
   // Plugins check api.runtime.version (e.g. weixin's assertHostCompatibility)
   // to verify the host supports the required SDK surface.
-  const SHIM_COMPAT_VERSION = '2026.6.28';
+  const SHIM_COMPAT_VERSION = '2026.6.29';
 
   const runtime = {
     /** Update the plugin ID after registration */
@@ -414,12 +397,8 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           return { enabled: false, minMs: 0, maxMs: 0 };
         },
 
-        createReplyDispatcherWithTyping(_params: Record<string, unknown>) {
-          return {
-            dispatcher: { _isStub: true, sendFinalReply: async () => {}, markComplete: () => {}, waitForIdle: async () => {}, sendBlockReply: async () => {} },
-            replyOptions: {},
-            markDispatchIdle: () => {},
-          };
+        createReplyDispatcherWithTyping(params: Record<string, unknown>) {
+          return createShimReplyDispatcherWithTyping(params);
         },
 
         /**
@@ -427,8 +406,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
          * from the plugin. If the plugin provides protocol callbacks (onPartialReply,
          * sendFinalReply, etc.), we register a pending dispatch and BLOCK until AI
          * completes. The Bridge HTTP endpoints will route streaming events through
-         * these callbacks, letting the plugin handle its own rendering (e.g., Feishu
-         * StreamingCardController, QQ Bot's delivery, etc.).
+         * these callbacks, letting the plugin handle its own rendering.
          *
          * If no protocol callbacks are provided, falls back to the old bypass path.
          */
@@ -436,18 +414,22 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           const t0 = Date.now();
           console.log(`[compat-timing] dispatchReplyFromConfig ENTER`);
           const ctx = (params.ctx || params) as Record<string, unknown>;
+          const accountId = String(ctx.AccountId || ctx.accountId || params.accountId || '') || undefined;
 
           // Check if plugin provides standard OpenClaw protocol callbacks
           const dispatcher = params.dispatcher as Record<string, (...args: unknown[]) => unknown> | undefined;
           const replyOptions = params.replyOptions as Record<string, (...args: unknown[]) => unknown> | undefined;
           const hasProtocolCallbacks = dispatcher
             && typeof dispatcher.sendFinalReply === 'function'
-            && typeof dispatcher.markComplete === 'function'
-            && !(dispatcher as Record<string, unknown>)._isStub;
+            && typeof dispatcher.markComplete === 'function';
 
           if (!hasProtocolCallbacks) {
             // Fallback: no protocol callbacks, use old bypass path
-            const result = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ ctx, cfg: params.cfg as Record<string, unknown> });
+            const result = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+              ctx,
+              cfg: params.cfg as Record<string, unknown>,
+              accountId,
+            });
             console.log(`[compat-timing] dispatchReplyFromConfig EXIT (fallback) (+${Date.now() - t0}ms)`);
             return result;
           }
@@ -459,9 +441,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           if (chatId.includes(':')) chatId = chatId.split(':').slice(1).join(':');
 
           if (!chatId) {
-            console.warn('[compat-runtime] dispatchReplyFromConfig: no chatId, falling back');
-            const result = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ ctx, cfg: params.cfg as Record<string, unknown> });
-            return result;
+            throw new Error('dispatchReplyFromConfig requires a reply destination');
           }
 
           // Extract fields BEFORE registering pending dispatch (to avoid leak on empty content)
@@ -486,37 +466,52 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
 
           // Build protocol callbacks from the plugin's dispatcher and replyOptions
           const callbacks: PendingDispatchCallbacks = {
+            onReplyStart: typeof replyOptions?.onReplyStart === 'function'
+              ? replyOptions.onReplyStart.bind(replyOptions) as PendingDispatchCallbacks['onReplyStart']
+              : undefined,
             onPartialReply: typeof replyOptions?.onPartialReply === 'function'
               ? replyOptions.onPartialReply.bind(replyOptions) as PendingDispatchCallbacks['onPartialReply']
               : undefined,
             onReasoningStream: typeof replyOptions?.onReasoningStream === 'function'
               ? replyOptions.onReasoningStream.bind(replyOptions) as PendingDispatchCallbacks['onReasoningStream']
               : undefined,
-            sendBlockReply: typeof dispatcher.sendBlockReply === 'function'
-              ? dispatcher.sendBlockReply.bind(dispatcher) as PendingDispatchCallbacks['sendBlockReply']
-              : undefined,
             sendFinalReply: dispatcher.sendFinalReply.bind(dispatcher) as PendingDispatchCallbacks['sendFinalReply'],
+            getQueuedCounts: typeof dispatcher.getQueuedCounts === 'function'
+              ? dispatcher.getQueuedCounts.bind(dispatcher) as PendingDispatchCallbacks['getQueuedCounts']
+              : undefined,
           };
 
           console.log(`[compat-timing] dispatchReplyFromConfig PROTOCOL path: chatId=${chatId} len=${text.length} attachments=${mediaAttachments.length}`);
 
-          // Codex H12 fix: register the pending dispatch BEFORE POSTing to
-          // Rust. The previous order (POST → register) had a race window —
-          // if Rust accepted the message and the bridge started emitting
-          // /start-stream / /stream-chunk faster than this Node task could
-          // re-enter the event loop, those callbacks hit `getPendingDispatch`
-          // before our register completed → fell into the fallback CardKit
-          // path → orphaned stream / mismatched output. Tradeoff: a POST
-          // failure now leaves a transient pending dispatch, which we
-          // explicitly reject below.
-          // In group mention-gated channels, explicit non-mention messages are
-          // accepted by Rust then buffered into group history without producing
-          // a reply. Do not create a pending protocol dispatch for those, or the
-          // plugin bridge waits until the 10-minute safety timeout.
-          const expectsReply = !(chatType === 'group' && isMention === false);
-          const completionPromise = expectsReply
-            ? registerPendingDispatch(chatId, callbacks)
-            : undefined;
+          // Register before POSTing to Rust. Rust owns admission policy (group
+          // activation, allowlists, commands, and runtime readiness), so the
+          // Bridge never guesses from mention state whether a reply is expected.
+          const requestId = randomUUID();
+          let producerResolvedAt: number | undefined;
+          observeReplyDispatcherIdle(dispatcher, ({ outcome, error }: {
+            outcome: 'completed' | 'failed';
+            error?: unknown;
+          }) => {
+            const settledAt = Date.now();
+            console.log(
+              `[pending-dispatch] plugin_delivery_settled pluginId=${currentPluginId} requestId=${requestId} `
+                + `outcome=${outcome} producerResolveToPluginSettleMs=${producerResolvedAt === undefined
+                  ? 'n/a'
+                  : settledAt - producerResolvedAt} totalMs=${settledAt - t0}`,
+            );
+            if (error !== undefined) {
+              console.warn(
+                `[pending-dispatch] plugin_delivery_settle_failed pluginId=${currentPluginId} requestId=${requestId}:`,
+                error,
+              );
+            }
+          });
+          const completionPromise = registerPendingDispatch(
+            requestId,
+            chatId,
+            callbacks,
+            currentPluginId,
+          );
           try {
             const resp = await cancellableFetch(`${rustBaseUrl}/api/im-bridge/message`, {
               method: 'POST',
@@ -524,8 +519,11 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
               body: JSON.stringify({
                 botId,
                 pluginId: currentPluginId,
+                requestId,
+                deliveryProtocol: 'openclaw-reply',
                 senderId,
                 senderName: senderName || undefined,
+                accountId,
                 text,
                 chatType: chatType === 'group' ? 'group' : 'direct',
                 chatId,
@@ -547,18 +545,41 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
             (globalThis as { __pluginBridgeLastForwardAt?: number }).__pluginBridgeLastForwardAt = Date.now();
           } catch (err) {
             console.error(`[compat-timing] Rust POST FAILED in protocol path (+${Date.now() - t0}ms):`, err);
-            // POST failed — explicitly reject the dispatch we just registered
-            // so it doesn't sit in the map until its 10-minute timeout.
-            rejectPendingDispatch(chatId, err instanceof Error ? err : new Error(String(err)));
-            throw err;
+            const setupError = err instanceof Error ? err : new Error(String(err));
+            rejectPendingDispatch(requestId, setupError);
+            // Observe the one registered completion channel. Throwing a
+            // second error here would leave completionPromise rejected but
+            // unobserved, which is fatal under Node's strict rejection mode.
+            return await completionPromise;
           }
 
-          // Block until AI response completes (resolved by /finalize-stream or /abort-stream)
-          if (!completionPromise) {
-            return { queuedFinal: 0, counts: {}, dispatcher: { waitForIdle: async () => {} } };
-          }
+          // Block until Rust seals this request through the reply transport.
           try {
             const result = await completionPromise;
+            producerResolvedAt = Date.now();
+            if (typeof dispatcher.waitForIdle === 'function') {
+              await dispatcher.waitForIdle();
+            }
+            let deliveryDiagnostics = 'queued={} failed={} cancelled={}';
+            try {
+              const deliveryCounts = (method: string) => (
+                typeof dispatcher[method] === 'function' ? dispatcher[method]() : {}
+              );
+              deliveryDiagnostics = `queued=${JSON.stringify(deliveryCounts('getQueuedCounts'))} `
+                + `failed=${JSON.stringify(deliveryCounts('getFailedCounts'))} `
+                + `cancelled=${JSON.stringify(deliveryCounts('getCancelledCounts'))}`;
+            } catch (error) {
+              console.warn(
+                `[pending-dispatch] delivery_diagnostics_failed pluginId=${currentPluginId} requestId=${requestId}:`,
+                error,
+              );
+              deliveryDiagnostics = 'deliveryCounts=unavailable';
+            }
+            console.log(
+              `[pending-dispatch] dispatcher_delivery_idle pluginId=${currentPluginId} requestId=${requestId} `
+                + `producerResolveToIdleMs=${Date.now() - producerResolvedAt} totalMs=${Date.now() - t0} `
+                + deliveryDiagnostics,
+            );
             console.log(`[compat-timing] dispatchReplyFromConfig EXIT (protocol) (+${Date.now() - t0}ms)`);
             return result;
           } catch (err) {
@@ -581,40 +602,31 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           const run = params.run as (() => Promise<unknown>) | undefined;
           const onSettled = params.onSettled as (() => void | Promise<void>) | undefined;
 
-          let result: unknown;
-          try {
-            if (typeof run === 'function') {
-              result = await run();
-              console.log(`[compat-timing] withReplyDispatcher run() OK (+${Date.now() - t0}ms)`);
-            }
-          } finally {
-            // Protocol lifecycle: signal completion, wait for delivery queue drain, cleanup
-            try {
-              dispatcher?.markComplete?.();
-              await dispatcher?.waitForIdle?.();
-            } catch (err) {
-              console.error(`[compat-timing] withReplyDispatcher lifecycle error:`, err);
-            } finally {
-              try { await onSettled?.(); } catch { /* best-effort */ }
-            }
+          if (typeof run !== 'function' || !dispatcher?.markComplete || !dispatcher.waitForIdle) {
+            throw new Error('withReplyDispatcher requires run and a conforming dispatcher');
           }
+          const result = await withShimReplyDispatcher({ dispatcher, run, onSettled });
+          console.log(`[compat-timing] withReplyDispatcher run() settled (+${Date.now() - t0}ms)`);
           return result ?? { queuedFinal: 0, counts: {}, dispatcher: { waitForIdle: async () => {} } };
         },
 
         /**
-         * Core interception point: instead of calling `deliver()`, we POST
-         * the user's message to Rust's management API.
+         * Legacy interception point for plugins that do not enter the standard
+         * dispatcher protocol. AI replies return through the plugin's outbound
+         * send/edit surface; this path has no synthetic pending dispatcher.
          */
         async dispatchReplyWithBufferedBlockDispatcher(params: {
           ctx: Record<string, unknown>;
           cfg?: Record<string, unknown>;
           dispatcherOptions?: Record<string, unknown>;
+          accountId?: string;
         }) {
-          const { ctx, dispatcherOptions } = params;
+          const { ctx } = params;
 
           const text = String(ctx.BodyForAgent || ctx.Body || ctx.body || ctx.RawBody || '');
           const senderId = String(ctx.SenderId || ctx.senderId || '');
           const senderName = String(ctx.SenderName || ctx.senderName || '');
+          const accountId = String(ctx.AccountId || ctx.accountId || params.accountId || '') || undefined;
           const chatType = String(ctx.ChatType || ctx.chatType || 'direct');
           // Chat ID extraction: ctx.To is the REPLY DESTINATION in OpenClaw protocol.
           // ctx.From is the SENDER identity — wrong for group routing.
@@ -650,21 +662,6 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
 
           const t0 = Date.now();
           console.log(`[compat-timing] dispatchReplyWithBufferedBlockDispatcher ENTER: sender=${senderId} chat=${chatId} len=${text.length} attachments=${mediaAttachments.length}`);
-          const deliver = getOpenClawDeliver(dispatcherOptions);
-          const expectsReply = !(chatType === 'group' && isMention === false);
-          const completionPromise = deliver && chatId && expectsReply
-            ? registerPendingDispatch(chatId, {
-                sendBlockReply: async (payload) => {
-                  await deliverTextBlock(deliver, payload.text || '');
-                  return true;
-                },
-                sendFinalReply: async (payload) => {
-                  await deliverTextBlock(deliver, payload.text || '');
-                  return true;
-                },
-              }, { resolveViaSendText: true })
-            : undefined;
-
           try {
             // Pattern 1: 5s cap on the local management API call. Plugin
             // dispatch is on the inbound-message hot path — a wedged Rust
@@ -681,6 +678,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
                   pluginId: currentPluginId,
                   senderId,
                   senderName: senderName || undefined,
+                  accountId,
                   text,
                   chatType: chatType === 'group' ? 'group' : 'direct',
                   chatId,
@@ -709,33 +707,10 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
             const isTimeout = err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
             const reason = isTimeout ? 'timeout' : 'error';
             console.warn(`[compat-runtime] Rust POST FAILED (reason=${reason}, +${Date.now() - t0}ms): ${err instanceof Error ? err.message : String(err)}`);
-            if (completionPromise) {
-              rejectPendingDispatch(chatId, err instanceof Error ? err : new Error(String(err)));
-              try {
-                await completionPromise;
-              } catch {
-                /* consume the rejection we just triggered */
-              }
-              const onError = dispatcherOptions?.onError;
-              if (typeof onError === 'function') {
-                try {
-                  await onError(err, { kind: 'final' });
-                } catch {
-                  /* plugin error callback is best-effort */
-                }
-              }
-              throw err;
-            }
+            throw err;
           }
 
-          if (completionPromise) {
-            const result = await completionPromise;
-            console.log(`[compat-timing] dispatchReplyWithBufferedBlockDispatcher EXIT (synthetic deliver) (+${Date.now() - t0}ms)`);
-            return result;
-          }
-
-          // No OpenClaw deliver callback was supplied. Preserve the legacy
-          // bypass path: AI reply comes back through Bridge /send-text.
+          console.log(`[compat-timing] dispatchReplyWithBufferedBlockDispatcher EXIT (+${Date.now() - t0}ms)`);
           return { queuedFinal: 0, counts: {}, dispatcher: { waitForIdle: async () => {} } };
         },
       },

@@ -91,7 +91,7 @@ AppImage 和 deb 内部都包含：
 
 | 组件 | 路径（app 内） |
 |------|--------------|
-| Sidecar / Bridge / CLI | `resources/server-dist.js` / `plugin-bridge-dist.js` / `cli/myagents.js` |
+| Sidecar / Bridge / CLI | `resources/server-dist.js` / `resources/plugin-bridge-dist.mjs` / `resources/cli/myagents.js` |
 | Node.js v24（含 npm/npx） | `resources/nodejs/bin/node`（+ `lib/node_modules/npm`） |
 | Claude Agent SDK native binary | `resources/claude-agent-sdk/claude`（~210 MB，SDK team 静态链接） |
 | mino 默认工作区 | `resources/mino/` |

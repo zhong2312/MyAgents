@@ -63,7 +63,7 @@ describe('external transcript persistence owner', () => {
     expect(getExternalSessionMessagesSnapshot()).toEqual([]);
   });
 
-  it('refreshes recency when persisting a human user message', async () => {
+  it('updates preview without owning recency when persisting a human user message', async () => {
     setExternalSessionMessages('session-a', [
       { id: 'old', role: 'assistant', content: 'old answer', timestamp: '2026-01-01T00:00:00.000Z' },
     ]);
@@ -73,12 +73,44 @@ describe('external transcript persistence owner', () => {
     await persistExternalUserMessageAppend('session-a', 'human-query', 'persist human query');
 
     expect(updateSessionMetadata).toHaveBeenCalledWith('session-a', {
-      lastActiveAt: expect.any(String),
       lastMessagePreview: 'human-query',
     });
   });
 
-  it('refreshes recency for an attachment-only human user message', async () => {
+  it('merges admission activity into the existing user preview metadata commit', async () => {
+    setExternalSessionMessages('session-a', [message('accepted-turn')]);
+    const admittedAt = '2026-07-14T10:00:00.000Z';
+
+    await persistExternalUserMessageAppend(
+      'session-a',
+      'accepted-turn',
+      'persist accepted turn',
+      admittedAt,
+    );
+
+    expect(updateSessionMetadata).toHaveBeenCalledWith('session-a', {
+      lastMessagePreview: 'accepted-turn',
+      lastActiveAt: admittedAt,
+    });
+  });
+
+  it('returns the preview without a second metadata commit for prepared sessions', async () => {
+    setExternalSessionMessages('session-a', [message('first-prepared-turn')]);
+
+    const result = await persistExternalUserMessageAppend(
+      'session-a',
+      'first-prepared-turn',
+      'persist prepared turn',
+      '2026-07-14T10:00:00.000Z',
+      'skip',
+    );
+
+    expect(result).toEqual({ lastMessagePreview: 'first-prepared-turn' });
+    expect(saveSessionMessages).toHaveBeenCalledOnce();
+    expect(updateSessionMetadata).not.toHaveBeenCalled();
+  });
+
+  it('updates preview without owning recency for attachment-only human input', async () => {
     const attachmentOnly: SessionMessage = {
       id: 'image-query',
       role: 'user',
@@ -96,7 +128,6 @@ describe('external transcript persistence owner', () => {
     await persistExternalUserMessageAppend('session-a', 'image-query', 'persist image query');
 
     expect(updateSessionMetadata).toHaveBeenCalledWith('session-a', {
-      lastActiveAt: expect.any(String),
       lastMessagePreview: undefined,
     });
   });
@@ -147,6 +178,27 @@ describe('external transcript persistence owner', () => {
       lastMessagePreview: 'old-human',
       runtimeUsageTotals,
       lastContextUsage: contextUsage,
+    });
+  });
+
+  it('merges terminal activity into the assistant result metadata commit', async () => {
+    setExternalSessionMessages('session-a', [message('accepted-turn')]);
+    const terminalAt = '2026-07-14T10:01:00.000Z';
+    vi.mocked(saveSessionMessages).mockResolvedValueOnce(okSave(2));
+
+    await appendAndPersistExternalAssistantTurn({
+      sessionId: 'session-a',
+      content: JSON.stringify([{ type: 'text', text: 'done' }]),
+      usage: null,
+      toolCount: 0,
+      contextUsage: null,
+      lastActiveAt: terminalAt,
+    });
+
+    expect(updateSessionMetadata).toHaveBeenCalledWith('session-a', {
+      lastMessagePreview: 'accepted-turn',
+      runtimeUsageTotals: undefined,
+      lastActiveAt: terminalAt,
     });
   });
 });

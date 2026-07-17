@@ -12,10 +12,10 @@ interface BlockGroupProps {
   isStreaming?: boolean;
 }
 
-/** 2 head + N folded + 2 tail — fold kicks in at 6+ blocks */
-const FOLD_THRESHOLD = 6;
-const VISIBLE_HEAD = 2;
-const VISIBLE_TAIL = 2;
+/** 1 head + N folded + 1 tail — collapsed view is capped at 3 rows. */
+const FOLD_THRESHOLD = 4;
+const VISIBLE_HEAD = 1;
+const VISIBLE_TAIL = 1;
 
 const BlockGroup = memo(function BlockGroup({
   blocks,
@@ -46,7 +46,7 @@ const BlockGroup = memo(function BlockGroup({
     return (
       <div className="my-3 overflow-hidden rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-inset)]/30 transition-all select-none">
         <div className="flex flex-col">
-          {/* Head: first 2 blocks — always visible */}
+          {/* Head: first block — always visible */}
           {blocks.slice(0, VISIBLE_HEAD).map((block, i) => (
             <ProcessRow
               key={i}
@@ -87,6 +87,8 @@ const BlockGroup = memo(function BlockGroup({
           <div
             className="grid transition-[grid-template-rows] duration-200 ease-out"
             style={{ gridTemplateRows: shouldFold ? '1fr' : '0fr' }}
+            aria-hidden={!shouldFold}
+            inert={!shouldFold}
           >
             <div className="overflow-hidden">
               <button
@@ -113,7 +115,7 @@ const BlockGroup = memo(function BlockGroup({
             </div>
           </div>
 
-          {/* Tail: last 2 blocks — always visible */}
+          {/* Tail: last block — always visible */}
           {blocks.slice(-VISIBLE_TAIL).map((block, i) => {
             const index = blocks.length - VISIBLE_TAIL + i;
             return (
@@ -132,7 +134,7 @@ const BlockGroup = memo(function BlockGroup({
     );
   }
 
-  // Flat layout for small block groups (≤4 blocks)
+  // Flat layout for small block groups (≤2 blocks)
   return (
     <div className="my-3 overflow-hidden rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-inset)]/30 transition-all select-none">
       <div className="flex flex-col">

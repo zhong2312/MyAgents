@@ -3,10 +3,11 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Message as MessageType } from '@/types/chat';
+import { projectVisibleChatTimelineRows } from '@/utils/chatTimelineRows';
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: (props: { data: MessageType[]; itemContent: (index: number, message: MessageType) => React.ReactNode }) => (
-    <div data-testid="virtuoso">
+    <div data-testid="virtuoso" data-message-ids={props.data.map(message => message.id).join(',')}>
       {props.data.map((message, index) => (
         <React.Fragment key={message.id}>
           {props.itemContent(index, message)}
@@ -32,7 +33,7 @@ function msg(id: string, content: string, role: 'user' | 'assistant' = 'assistan
 function renderList(messages: MessageType[]) {
   return render(
     <MessageList
-      historyMessages={messages}
+      messages={projectVisibleChatTimelineRows(messages)}
       streamingMessage={null}
       isLoading={false}
       sessionId="s1"
@@ -59,7 +60,7 @@ describe('MessageList — task notification records', () => {
     vi.unstubAllGlobals();
   });
 
-  it('does not render a chat row wrapper for hidden task notification records', () => {
+  it('never receives hidden task notification records in Virtuoso data', () => {
     const { container } = renderList([
       msg('u1', 'hello', 'user'),
       msg(
@@ -71,6 +72,7 @@ describe('MessageList — task notification records', () => {
     ]);
 
     expect(screen.getAllByTestId('message').map(node => node.textContent)).toEqual(['u1', 'a1']);
+    expect(screen.getByTestId('virtuoso')).toHaveAttribute('data-message-ids', 'u1,a1');
     expect(container.querySelector('[data-message-id="task-notification-bg-1"]')).toBeNull();
     expect(container).not.toHaveTextContent('Long summary');
     expect(container).not.toHaveTextContent('Audit repo');

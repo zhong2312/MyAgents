@@ -1,17 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   awaitSessionTermination,
+  claimQueryMcpMutation,
   clearAbortFlag,
+  completeQueryBackgroundTask,
+  getQueryBackgroundTask,
   getPreWarmFailCount,
+  hasQueryBackgroundTask,
+  hasQueryBackgroundTasks,
   hasMessageResolver,
   incrementPreWarmFailCount,
   isAbortRequested,
+  getQueryMcpMutation,
+  getQueryMcpPrewarmOwner,
   requestAbort,
   resetLifecycleForTest,
   setQuerySession,
+  setQueryMcpPrewarmOwner,
+  settleQueryMcpPrewarmOwner,
+  readQueryMcpStatuses,
+  recordQueryBackgroundTask,
+  registerSessionAbortCleanup,
   setSessionProcessing,
   setSessionTerminationPromise,
   snapshotLifecycle,
+  takeQueryBackgroundTasks,
+  waitForQueryExit,
   waitForMessage,
   wakeGenerator,
 } from './lifecycle';
@@ -34,15 +48,16 @@ import {
 } from './queue';
 import {
   beginTurn,
-  clearPendingRequests,
+  clearPendingOutputOwners,
   getCurrentTurnIdentity,
+  getCurrentTurnQueueId,
   getCurrentTurnText,
-  getPendingRequestIds,
+  getPendingImRequestIds,
   notifyCurrentTurnTerminal,
   notifyQueuedTurnStopped,
-  pushPendingRequest,
+  pushPendingOutputOwner,
   replaceCurrentTurnUsage,
-  removePendingRequest,
+  removePendingOutputOwnerByQueueId,
   resetTurnForTest,
   setCurrentTurnSourceItem,
   snapshotTurn,
@@ -130,6 +145,63 @@ describe('builtin-session owners', () => {
     expect(isAbortRequested()).toBe(false);
   });
 
+  it('keeps Query-rebuild waiters isolated from messages and releases on owner exit', async () => {
+    const query = { close: vi.fn() } as never;
+    setQuerySession(query);
+    let released = false;
+    const queryExitBarrier = waitForQueryExit(query).then(() => { released = true; });
+
+    wakeGenerator(queueItem('unrelated-message'));
+    await Promise.resolve();
+    expect(released).toBe(false);
+
+    setQuerySession(null);
+    await queryExitBarrier;
+    expect(released).toBe(true);
+    await expect(waitForQueryExit(query)).resolves.toBeUndefined();
+  });
+
+  it('owns background tasks by exact Query and releases quiescence only on the last terminal', () => {
+    const firstQuery = { close: vi.fn() } as never;
+    const replacementQuery = { close: vi.fn() } as never;
+    setQuerySession(firstQuery);
+    expect(recordQueryBackgroundTask(firstQuery, 'same-task', {
+      toolUseId: 'tool-first',
+      description: 'first',
+    })).toBe(true);
+    expect(recordQueryBackgroundTask(firstQuery, 'second-task', {
+      toolUseId: 'tool-second',
+    })).toBe(true);
+    expect(hasQueryBackgroundTasks(firstQuery)).toBe(true);
+
+    setQuerySession(replacementQuery);
+    expect(recordQueryBackgroundTask(replacementQuery, 'same-task', {
+      toolUseId: 'tool-replacement',
+      description: 'replacement',
+    })).toBe(true);
+    expect(recordQueryBackgroundTask(firstQuery, 'late-task', {})).toBe(false);
+
+    expect(completeQueryBackgroundTask(firstQuery, 'same-task')).toMatchObject({
+      removed: true,
+      becameQuiescent: false,
+      info: { toolUseId: 'tool-first' },
+    });
+    expect(hasQueryBackgroundTask(replacementQuery, 'same-task')).toBe(true);
+    expect(getQueryBackgroundTask(replacementQuery, 'same-task')?.toolUseId).toBe('tool-replacement');
+
+    expect(completeQueryBackgroundTask(firstQuery, 'second-task')).toMatchObject({
+      removed: true,
+      becameQuiescent: true,
+    });
+    expect(hasQueryBackgroundTasks(firstQuery)).toBe(false);
+    expect(hasQueryBackgroundTasks(replacementQuery)).toBe(true);
+
+    expect(takeQueryBackgroundTasks(replacementQuery)).toEqual([
+      ['same-task', { toolUseId: 'tool-replacement', description: 'replacement' }],
+    ]);
+    expect(hasQueryBackgroundTasks(replacementQuery)).toBe(false);
+  });
+
   it('lifecycle awaitSessionTermination force-cleans process state on timeout', async () => {
     vi.useFakeTimers();
     const close = vi.fn();
@@ -153,6 +225,162 @@ describe('builtin-session owners', () => {
     expect(close).toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalled();
     vi.useRealTimers();
+  });
+
+  it('keeps Session termination behind the durable pre-dispatch rollback barrier', async () => {
+    let releaseCleanup!: () => void;
+    registerSessionAbortCleanup(new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    }));
+    setSessionTerminationPromise(Promise.resolve());
+
+    let settled = false;
+    const termination = awaitSessionTermination({ label: 'durable-rollback' }).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(snapshotLifecycle().abortCleanupInFlight).toBe(true);
+
+    releaseCleanup();
+    await termination;
+    expect(settled).toBe(true);
+    expect(snapshotLifecycle().abortCleanupInFlight).toBe(false);
+  });
+
+  it('binds the installed MCP map to one Query generation and invalidates it on replacement', () => {
+    const first = { close: vi.fn() } as never;
+    const second = { close: vi.fn() } as never;
+    setQuerySession(first);
+    expect(setQueryMcpPrewarmOwner({
+      query: first,
+      fingerprint: 'fs,search',
+      requiredServerIds: ['search', 'fs'],
+    })).toBe(true);
+    expect(getQueryMcpPrewarmOwner()).toMatchObject({
+      query: first,
+      generation: 1,
+      revision: 1,
+      fingerprint: 'fs,search',
+      requiredServerIds: ['fs', 'search'],
+    });
+
+    setQuerySession(second);
+    expect(getQueryMcpPrewarmOwner()).toBeNull();
+    expect(setQueryMcpPrewarmOwner({
+      query: first,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+    })).toBe(false);
+    expect(snapshotLifecycle().queryGeneration).toBe(2);
+  });
+
+  it('advances the installed MCP revision for same-id replacement on one Query', () => {
+    const query = { close: vi.fn() } as never;
+    setQuerySession(query);
+    setQueryMcpPrewarmOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
+    const first = getQueryMcpPrewarmOwner();
+    setQueryMcpPrewarmOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
+    const second = getQueryMcpPrewarmOwner();
+
+    expect(second?.revision).toBe((first?.revision ?? 0) + 1);
+    expect(second?.generation).toBe(first?.generation);
+    expect(second?.fingerprint).toBe(first?.fingerprint);
+  });
+
+  it('owns one absolute pre-warm window and one terminal outcome per map revision', () => {
+    const query = { close: vi.fn() } as never;
+    setQuerySession(query);
+    setQueryMcpPrewarmOwner({
+      query,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+      startedAt: 1_000,
+      deadlineAt: 11_000,
+    });
+    const owner = getQueryMcpPrewarmOwner();
+    expect(owner).toMatchObject({ startedAt: 1_000, deadlineAt: 11_000 });
+    expect(owner?.outcome).toBeUndefined();
+
+    const settlement = {
+      query,
+      generation: owner?.generation ?? 0,
+      revision: owner?.revision ?? 0,
+      outcome: { state: 'ready' as const, elapsedMs: 2_000 },
+    };
+    expect(settleQueryMcpPrewarmOwner(settlement)).toBe(true);
+    expect(settleQueryMcpPrewarmOwner(settlement)).toBe(false);
+    expect(getQueryMcpPrewarmOwner()?.outcome).toEqual(settlement.outcome);
+
+    setQueryMcpPrewarmOwner({
+      query,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+      startedAt: 12_000,
+      deadlineAt: 22_000,
+    });
+    expect(getQueryMcpPrewarmOwner()).toMatchObject({
+      revision: (owner?.revision ?? 0) + 1,
+      startedAt: 12_000,
+      deadlineAt: 22_000,
+    });
+    expect(getQueryMcpPrewarmOwner()?.outcome).toBeUndefined();
+  });
+
+  it('single-flights MCP status control reads for one Query owner', async () => {
+    let release!: (value: Array<{ name: string; status: 'connected' }>) => void;
+    const mcpServerStatus = vi.fn(() => new Promise<Array<{ name: string; status: 'connected' }>>(
+      resolve => { release = resolve; },
+    ));
+    const query = { close: vi.fn(), mcpServerStatus } as never;
+    setQuerySession(query);
+    setQueryMcpPrewarmOwner({
+      query,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+    });
+
+    const first = readQueryMcpStatuses(query);
+    const second = readQueryMcpStatuses(query);
+    expect(second).toBe(first);
+    expect(mcpServerStatus).toHaveBeenCalledTimes(1);
+
+    release([{ name: 'fs', status: 'connected' }]);
+    await expect(first).resolves.toEqual([{ name: 'fs', status: 'connected' }]);
+    await Promise.resolve();
+
+    void readQueryMcpStatuses(query);
+    expect(mcpServerStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('owns one MCP transport mutation per Query generation and settles it on replacement', async () => {
+    let release!: () => void;
+    const run = vi.fn(() => new Promise<void>((resolve) => {
+      release = resolve;
+    }).then(() => ({ ok: true as const })));
+    const firstQuery = { close: vi.fn() } as never;
+    const secondQuery = { close: vi.fn() } as never;
+    setQuerySession(firstQuery);
+
+    const first = claimQueryMcpMutation(firstQuery, run);
+    const shared = claimQueryMcpMutation(firstQuery, run);
+
+    expect(first.claimed).toBe(true);
+    expect(shared.claimed).toBe(false);
+    expect(shared.promise).toBe(first.promise);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(getQueryMcpMutation()?.promise).toBe(first.promise);
+
+    setQuerySession(secondQuery);
+    await expect(first.promise).resolves.toMatchObject({
+      ok: false,
+      reason: 'query_replaced',
+    });
+    expect(getQueryMcpMutation()).toBeNull();
+
+    release();
+    await Promise.resolve();
+    expect(getQueryMcpMutation()).toBeNull();
   });
 
   it('queue owner covers queued pending turn-boundary and in-flight locations', () => {
@@ -203,12 +431,12 @@ describe('builtin-session owners', () => {
     expect(snapshotQueue().messageQueue.map(item => item.id)).toEqual(['q2', 'q1']);
   });
 
-  it('turn owner keeps pending request FIFO and notifies the current queue item once', () => {
-    pushPendingRequest('r1');
-    pushPendingRequest('r2');
-    expect(getPendingRequestIds()).toEqual(['r1', 'r2']);
-    expect(removePendingRequest('r2')).toBe(true);
-    expect(clearPendingRequests()).toEqual(['r1']);
+  it('turn owner keeps the output-owner FIFO and notifies the current queue item once', async () => {
+    pushPendingOutputOwner('q1', 'r1');
+    pushPendingOutputOwner('q2', 'r2');
+    expect(getPendingImRequestIds()).toEqual(['r1', 'r2']);
+    expect(removePendingOutputOwnerByQueueId('q2')).toBe(true);
+    expect(clearPendingOutputOwners()).toEqual(['r1']);
 
     const onTerminal = vi.fn();
     const item = queueItem('turn-a');
@@ -228,7 +456,9 @@ describe('builtin-session owners', () => {
       queueId: 'turn-a',
       owner: { kind: 'goal', id: 'goal-1' },
     });
+    expect(getCurrentTurnQueueId()).toBe('turn-a');
     notifyCurrentTurnTerminal('complete', { durationMs: 3_500 });
+    await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
       status: 'complete',
       text: 'hello',
@@ -237,7 +467,17 @@ describe('builtin-session owners', () => {
       usage: { inputTokens: 120, outputTokens: 30 },
     }));
     notifyCurrentTurnTerminal('complete');
+    await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an exact accepted queue id for ownerless maintenance turns', () => {
+    const item = queueItem('ownerless-heartbeat');
+    item.turnOwner = undefined;
+    setCurrentTurnSourceItem(item);
+
+    expect(getCurrentTurnIdentity()).toBeNull();
+    expect(getCurrentTurnQueueId()).toBe('ownerless-heartbeat');
   });
 
   it('keeps the terminal boundary closed until an async observer settles', async () => {
@@ -249,6 +489,7 @@ describe('builtin-session owners', () => {
     setCurrentTurnSourceItem(item);
 
     notifyCurrentTurnTerminal('complete');
+    notifyCurrentTurnTerminal('complete');
     let settled = false;
     void waitForCurrentTurnTerminalObserver().then(() => {
       settled = true;
@@ -256,6 +497,7 @@ describe('builtin-session owners', () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
     release();
     await waitForCurrentTurnTerminalObserver();
     expect(settled).toBe(true);

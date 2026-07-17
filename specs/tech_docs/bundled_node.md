@@ -102,14 +102,16 @@ skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_P
 
 ### 外部 stdio MCP（用户装 `@notionhq/notion-mcp-server` 等）
 
-`buildSdkMcpServers` → Pattern 3 外部 MCP 分支：
-- `command: 'npx'` → 解析为 **系统 npx** → bundled npx（fallback）
+`utils/mcp-command.ts::resolveNpxMcpInvocation()` 是 npx MCP 启动命令的唯一解释器，由 builtin Claude、managed Codex 和 MCP enable warmup 共用：
+- `command: 'npx'` → 解析为 **系统 npx** → bundled npx → runtime sibling npx（fallback），始终输出绝对路径并补 `-y`
+- MyAgents-owned preset 使用 `shared/mcpPackages.ts` 的精确 package spec；旧配置里的已知 `@latest` 在 runtime boundary 归一化，避免每次进程启动重新查询 registry
+- `mcpServerArgs[id]` 只存用户附加参数，必须追加到 preset/package 基础参数之后，不能替换整段 argv
 - 通过 `process_cmd::new()` spawn（Windows 自动 `CREATE_NO_WINDOW`）
 - 环境变量通过 `proxy_config::apply_to_subprocess` 注入 `NO_PROXY` 保护 localhost
 
 ### 内置 in-process MCP（懒加载）
 
-5 个内置 MCP（cron-tools / im-cron / im-media / gemini-image / edge-tts）通过 `src/server/tools/builtin-mcp-meta.ts` 的 META 登记 + `createXxxServer()` 工厂懒加载，**不在** Sidecar 冷启动时创建。见 `ARCHITECTURE.md §Builtin MCP 懒加载架构`。
+当前 user-toggleable `gemini-image` / `edge-tts` 通过 `src/server/tools/builtin-mcp-meta.ts` 的 META 登记 + `createXxxServer()` 工厂懒加载，**不在** Sidecar 冷启动时创建；历史 `cron-tools` / `im-cron` / `im-media` 已迁移到 `myagents` CLI。runtime-dynamic `im-bridge-tools` 由独立的 context-injected surface owner 懒初始化，不进入 META registry。见 `pit_of_success.md §Builtin MCP 懒加载架构`。
 
 ## 生产构建流程
 

@@ -1,5 +1,5 @@
 /** Version shared with Rust's SYSTEM_SKILLS_VERSION contract. */
-export const SYSTEM_SKILLS_VERSION = '33';
+export const SYSTEM_SKILLS_VERSION = '35';
 
 /**
  * Product-owned skills required by managed memory workflows.

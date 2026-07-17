@@ -72,9 +72,9 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 │  │  │             │               │ -RPC2.0) │  JSON-RPC)   │     │        │
 │  │  └─────────────┴───────────────┴──────────┴──────────────┘     │        │
 │  │                                                                 │        │
-│  │  Builtin MCP (META/INSTANCE 懒加载):                            │        │
-│  │   cron-tools / im-cron / im-media /                             │        │
-│  │   gemini-image / edge-tts                                       │        │
+│  │  In-process MCP:                                                │        │
+│  │   META/INSTANCE registry: gemini-image / edge-tts               │        │
+│  │   context-injected surface: im-bridge-tools                     │        │
 │  │                                                                 │        │
 │  │  External MCP via npx + 预置原生二进制 (cuse)                   │        │
 │  │                                                                 │        │
@@ -210,6 +210,10 @@ Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广
 新增 SSE 事件 MUST 在 `SseConnection.ts::JSON_EVENTS` 注册白名单，否则前端静默丢弃。
 会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按当前 SSE connection/session 过滤；否则历史切换或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
 
+恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；gap 或 SSE connection generation 变化就重新取快照。revision 只属于当前 Sidecar/session generation 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
+
+普通 Session 的 complete/stopped/error 通知也不归 Tab：builtin/external terminal 产出同一份 turn identity/owner/origin descriptor，Rust SSE proxy 与 `BackgroundCompletion` 只是两个提交入口，`notification.rs` 以 `(sessionId, turnId)` 瞬时 claim 并统一决定 domain 抑制、focus、系统通知、badge 与 deep-link。Renderer 的 terminal handler 只维护消息/UI/unread，不再发送通用完成通知。
+
 ### HTTP API 调用
 
 ```
@@ -286,6 +290,22 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_stop_all_sidecars`                           | 应用退出清理                                                                                                                |
 
 冷启动性能详见 `tech_docs/sidecar_cold_start.md`。
+
+#### Sidecar process role 与 MCP OAuth credential owner
+
+Rust 启动 Node Sidecar 时必须显式传 `--sidecar-role global|session`；`--no-pre-warm` 只控制启动行为，不能再被用来推断进程职责。两条 Session spawn path（Tab/global path 的非 global 分支与 `session_lifecycle.rs`）都传 `session`，应用级 Global Sidecar 传 `global`。Global 身份只由 canonical `GLOBAL_SIDECAR_ID` 定义：Global ID 必须没有 `agent_dir`，其它 ID 必须带 `agent_dir`；spawn 边界在产生任何副作用前拒绝两种错配，防止绕过 manager singleton 创建第二个 Global owner。
+
+自定义 MCP 的 OAuth state 是应用级共享事实，持久化在 `~/.myagents/mcp_oauth_state.json`：
+
+- Global Sidecar 是唯一 proactive refresh scheduler owner；使用现有 per-server refresh lock 与 state-store write lock，不能让每个 Session 各自启动 scheduler。
+- credential 写入必须经 `setServerToken()` / `clearServerToken()`；refresh response 必须经同一 owner 的 `setServerTokenIfRevision()` 做锁内 CAS，防止网络请求期间发生的 revoke / reauthorize 被旧响应覆盖。token 与非敏感单调 `tokenRevision` 同一原子写入；写盘失败必须向上传播，不能报告 refresh 成功或继续使用未持久化的 rotating token。
+- Session Sidecar 在 `initializeAgent()` 前 baseline 全 store，并用单个 unref observer 监听 `{tokenRevision, presence/status, expiresAt}`；config push 不拥有/推进这条 baseline。事件进入 `agent-session.ts` 后才按本 Session 启用的 MCP 过滤，并复用既有 deferred OAuth restart。
+- Global scheduler 只有一个 deadline timer，并保留有界 store rescan，以发现其它 Session inline refresh/authorization 后写入的更早短 TTL credential；不为此新增 IPC、renderer 中转、第二 scheduler 或文件 watcher。
+- Refresh outcome 必须区分 `refreshed_by_self`、`observed_after_lock` 与 `discarded_after_conflict`：分别表示本进程 POST 成功且提交、未发 POST 而复用其它进程结果、POST 成功但因并发 revoke/reauthorize 被 CAS 丢弃。日志必须同时记录非敏感 `http` / `commit` 维度，不得包含 access token、refresh token 或 Authorization header。
+
+这套 owner 只适用于**自定义 MCP OAuth**。Anthropic/Grok subscription Provider 的 credential owner 规则仍分别由 `tech_docs/third_party_providers.md` 定义，不能混用。
+
+当前边界不宣称 `authorizeServer()` 的 discovery / dynamic registration / manual config preparation 已成为完整事务：callback flow 的 exact identity 与 token durable commit 已闭环，但 pending authorization metadata 与 active credential context 的 mode/URL authority 仍缺少原子提交模型。并发 auto↔manual 或不同 URL preparation 属 PRD H6 HOLD；在定义 winner context 前禁止用零散 `clear manualConfig/registration` 补丁处理。
 
 ### 2. Multi-Tab 前端 (`src/renderer/context/`)
 
@@ -367,9 +387,9 @@ type InteractionScenario =
 
 `Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`run-now` 可执行 Stopped Task但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
 
-**Node.js 层**（`src/server/tools/im-cron-tool.ts`）：
-
-- `im-cron` MCP server —— **所有 Session 可用**（不仅 IM Bot）
+**Node.js 层**：
+- AI 统一通过 `myagents cron ...` CLI 使用定时任务能力；历史 `im-cron` MCP 已退役
+- `src/server/tools/im-cron-tool.ts` 只保留 IM / Session cron context registry，不再创建 MCP server
 - 用户可见命令名保持 Cron 兼容，但 CRUD/start/stop/run-now 全部落 TaskStore
 - `/cron/execute-sync` 只是历史 wire name，domain owner 是 Task，并统一经过 SessionEngine selector
 
@@ -463,15 +483,15 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `types.ts`            | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
 | `route-contracts.ts`  | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping                                            |
 
-`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策。
+`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策，以及 MyAgents-owned MCP 的统一 soft pre-warm budget / status 分类。
 
 `src/server/agent-session.ts` 仍是 builtin SDK 的 public facade，供 `session-engine/builtin-adapter.ts` 委托。Phase6 后，主要 mutable state 不再由 facade 顶层变量直接拥有；Phase7 后，最重的 turn terminal 与 transcript persistence 行为也有独立 owner。真实维护入口在 `src/server/builtin-session/`：
 
 | Owner module                | 职责                                                                                                                              |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `lifecycle.ts`              | SDK `Query` 进程、abort flag、termination promise、generator wakeup、pre-warm readiness                                           |
+| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry |
 | `queue.ts`                  | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket                                            |
-| `turn.ts`                   | current turn usage/output/error state、IM pending request FIFO、injected turn outcome                                             |
+| `turn.ts` | current turn usage/output/error state、SDK output-owner FIFO（每次 user-message yield 一槽，非 IM 为 `null` requestId）、injected turn outcome |
 | `turn-lifecycle.ts`         | SDK `result` / stopped / error terminal 解释、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序                      |
 | `config.ts`                 | MCP/agents/plugins/model/permission/provider state、deferred restart latch                                                        |
 | `transcript.ts`             | live messages、message sequence、persist cursor/cache、SDK UUID freshness sets                                                    |
@@ -479,6 +499,12 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `types.ts`                  | builtin owner 间共享的结构类型                                                                                                    |
 
 约束：route modules 与 `session-engine/*` 不直接 import `builtin-session/*`；它们只看 `agent-session.ts` facade。`builtin-session/*` 也不 import route 或 SessionEngine。`session-core/*` 继续保持 pure policy，不引入 SDK/SSE/文件系统副作用。`runtime-boundary.unit.test.ts` 会目录级扫描这些边界，并拦截 `agent-session.ts` 对 owner state 的 direct write 回退，以及 turn terminal / transcript persistence 行为回流到 facade；新增写入或 terminal/persist 规则应先在对应 owner 中加命名 API。
+
+**Builtin MCP soft pre-warm：** `Query.initializationResult()` 与 streamed `system_init` 都不代表 MCP 已连接。初始 Query 或成功安装新 MCP map 时，`lifecycle.ts` 以 Query identity + generation + 单调 installed-map revision + runtime fingerprint 建立一次性 owner，并在 owner 上记录 `startedAt + deadlineAt`；默认预算只由 `session-core/mcp-prewarm-policy.ts::MCP_PREWARM_GRACE_MS` 定义（当前 10 秒）。Desktop、IM 与 Cron / Goal / Heartbeat / Memory Update 等 injected turn 全部在 `messageGenerator()` promotion 后、live mutation fence 之后消费该 owner 的**剩余**预算。只有 `pending` 会继续等待；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 到期都把当前 generation 标为 degraded 并继续 AI turn。ready / degraded 都是 terminal one-shot，后续 turn 不再读 status、不开新 timer。用户取消仍立即取消 promotion；Query/map owner replacement 则 requeue 给 replacement generator，不能让旧 control response放行旧 Query。
+
+`runInjectedTurn()` 不再拥有 MCP precheck、第二道 fence 或 408/503 MCP 映射，只保留 Goal/Task 等 domain `beforeDispatch` 与真实 turn timeout。Live MCP 更新仍由同一个 Query-generation mutation owner 串行化：mutation claim 与 promotion 通过同一事件循环内的同步 owner 顺序互斥；先 promotion 就推迟重建，先 claim 就由 promotion 等待同一 promise。真实 `setMcpServers()` 失败/30 秒 mutation timeout 仍表示 transport map 不确定，必须 requeue + replacement Query；这是配置切换正确性 fence，不属于 soft startup readiness。`mcpServerStatus()` 控制请求在一次 pre-warm observation 内单飞；status timeout 只结算当前 generation degraded，不再触发按 turn 重启循环。
+
+SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Query；foreground result 不代表整个 Query 已空闲。`lifecycle.ts` 按 Query object identity 保存 active task，现有 `applyDeferredRestartIfNeeded()` 与 pre-warm timer 在 registry 非空时保留 deferred reasons、不得 close Query；最后一个既有 terminal 事件再次触发 drain。显式 Stop/Reset/Switch 与真实 teardown 仍可立即终止，finalizer 从 exact registry `take` 残留项并合成 `stopped`。该契约不引入独立 Sidecar、等待 scheduler 或后台任务的第二份产品状态。
 
 `src/server/runtimes/` 只表示外部 runtime adapter：
 
@@ -766,7 +792,7 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 - Registered Agent 是执行实体，归属于 `(ownerUserId, deviceId)`，并关联该设备上的本地 Agent 工作区。只有 `ownerUserId === current session user` 且 `deviceId === current local device_id` 的 Agent 才是当前设备可编辑/可执行的 local Agent。
 - Registered Agent 执行端点使用 token-only capability：本地轮询时只带 registered-agent token，服务端由 token 映射到 user / space / device / agent 权限边界；MyAgents Desktop 只从“当前 Space user + 当前 device”的本地 token 集合中选择 token。
 - Registered Agent delivery 处理由 Rust 长驻 connector 拥有：每个 agent 维护内存级 due time / empty streak，云端返回 `poll` 提示，本地负责 clamp、jitter、错误退避与 delivery 注入。Renderer 只能唤醒 connector，不自己 poll/process delivery，也不持有 registered-agent token。
-- Space CLI 是三层薄壳：Node CLI 解析显式 slug/参数，Sidecar Admin API 补当前 project stable workspace id，Rust `SpaceCliContext` 单点拥有 membership 刷新、User/Registered Agent token 选择与 delivery binding fail-closed。现代登记不得退回 path 选身份；path 只兼容没有 workspace id 的 legacy row。
+- Space CLI 是三层薄壳：Node CLI 解析显式 slug/参数，Sidecar Admin API 补当前 project stable workspace id，Rust `SpaceCliContext` 单点拥有 membership 刷新、User/Registered Agent token 选择与 delivery binding fail-closed。现代登记不得退回 path 选身份；path 只兼容没有 workspace id 的 legacy row。`space goal list` 与 `space issue update` 也复用这条 owner 路径；Goal 清除在 CLI/Rust 内用 tagged `action:'clear'` 表达，仅在 Rust 构造 Cloud PATCH body 时翻译为 `goalId:null`。Space mutation 不实现伪 preview，出现 `--dry-run` 时由 CLI 在 HTTP 和文件 IO 前 fail closed。
 - Issue 正文附件与评论附件共用 Cloud `issue_attachments`，以 nullable `comment_id` 决定归属。Renderer 文件选择只形成 Rust inspect 后的本地 metadata draft；创建/评论/完成在一次 JSON 或 multipart mutation 内提交。已发布 Issue 顶部“上传”仍是独立即时 mutation，并产生正常 update/delivery。
 - Space 附件字节 IO 由 Rust owner：上传最多 5 个/单个 25MB、workspace CLI no-follow containment；Windows child/leaf/temp 全部相对已验证目录 handle 打开，最终覆盖也用 `RootDirectory` handle-relative rename，阻断目录替换与原地 reparse。下载流式累计 25MB且只在完整成功后提交。二进制不进入 Renderer state、Delivery 或 Session prompt。
 - Cloud Worker 侧的容量与一致性策略属于 `MyAgents_space` 服务端：D1 访问走 bookmark-aware facade，delivery poll 是读路径，poll 数字由服务端策略 owner 返回，prune/rate limit/placement 由 Worker 配置与服务端代码承担。
@@ -944,8 +970,8 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 应用启动和每个 Sidecar 创建时输出 `[boot]` 单行自检信息：
 
 ```
-[boot] v=0.3.0 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
-[boot] pid=12345 port=31415 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright,im-cron
+[boot] v=0.3.1 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
+[boot] pid=12345 port=31415 node=24.14.0 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright builtin-mcp-meta=gemini-image,edge-tts
 ```
 
 排查第一步：`grep '\[boot\]' ~/.myagents/logs/unified-*.log` 获取完整环境。

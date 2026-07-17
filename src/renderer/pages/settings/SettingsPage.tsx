@@ -101,7 +101,8 @@ import {
 } from '../../../shared/official-tools';
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
-import { normalizeProxyScope } from '../../../shared/proxyScope';
+import { effectiveGeneralProxyScopeKey, normalizeProxyScope } from '../../../shared/proxyScope';
+import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
@@ -427,17 +428,19 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     }, []);
 
     // Propagate proxy config changes to all running Sidecars
-    const prevProxyRef = useRef<string | undefined>(undefined);
+    const prevProxyRef = useRef<{ serialized: string; generalKey: string } | undefined>(undefined);
     useEffect(() => {
-        const key = JSON.stringify(config.proxySettings ?? null);
+        const serialized = JSON.stringify(config.proxySettings ?? null);
+        const generalKey = effectiveGeneralProxyScopeKey(config.proxySettings);
         if (prevProxyRef.current === undefined) {
-            prevProxyRef.current = key; // First mount — don't trigger
+            prevProxyRef.current = { serialized, generalKey }; // First mount — don't trigger
             return;
         }
-        if (prevProxyRef.current === key) return;
-        prevProxyRef.current = key;
+        if (prevProxyRef.current.serialized === serialized) return;
+        const restartGeneralOwners = prevProxyRef.current.generalKey !== generalKey;
+        prevProxyRef.current = { serialized, generalKey };
 
-        invoke('cmd_propagate_proxy').catch(err =>
+        invoke('cmd_propagate_proxy', { restartGeneralOwners }).catch(err =>
             console.error('[Settings] Proxy propagation failed:', err)
         );
     }, [config.proxySettings]);
@@ -2596,32 +2599,48 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         [allProviders, proxyScope],
     );
     const proxyScopeSummary = useMemo(() => {
-        if (!config.proxySettings?.enabled) return tSettings('general.proxyScopeDisabledHint');
-        if (proxyScope.mode === 'all') return tSettings('general.proxyScopeAllSummary');
-        const names = proxyScopeSelectedProviders.slice(0, 3).map(provider => provider.name).join(', ');
-        return tSettings('general.proxyScopeCustomSummary', {
-            names,
-            count: proxyScopeSelectedProviders.length,
+        const descriptor = describeProxyScopeSummary({
+            enabled: config.proxySettings?.enabled === true,
+            scope: proxyScope,
+            selectedProviderNames: proxyScopeSelectedProviders.map(provider => provider.name),
+        });
+        const providerSummaryKey = descriptor.values?.providerSummaryKey;
+        const providerSummary = typeof providerSummaryKey === 'string'
+            ? tSettings(providerSummaryKey, descriptor.values)
+            : undefined;
+        return tSettings(descriptor.key, {
+            ...descriptor.values,
+            ...(providerSummary ? { providerSummary } : {}),
         });
     }, [
         config.proxySettings?.enabled,
-        proxyScope.mode,
+        proxyScope,
         proxyScopeSelectedProviders,
         tSettings,
     ]);
+    const proxyScopeDialogInitialGeneralRequests = proxyScope.mode === 'all'
+        || proxyScope.generalRequests === true;
     const proxyScopeDialogInitialIds = useMemo(
         () => proxyScope.mode === 'custom'
             ? proxyScope.providerIds ?? []
             : proxyScopeProviderIds,
         [proxyScope, proxyScopeProviderIds],
     );
-    const saveProxyScope = useCallback((providerIds: string[]) => {
+    const saveProxyScope = useCallback((selection: { generalRequests: boolean; providerIds: string[] }) => {
         const allowed = new Set(proxyScopeProviderIds);
-        const cleaned = Array.from(new Set(providerIds.map(id => id.trim()).filter(id => id && allowed.has(id))));
-        if (cleaned.length === 0 || cleaned.length === proxyScopeProviderIds.length) {
+        const cleaned = Array.from(new Set(
+            selection.providerIds.map(id => id.trim()).filter(id => id && allowed.has(id)),
+        ));
+        if (selection.generalRequests && cleaned.length === proxyScopeProviderIds.length) {
             patchProxySettings({ scope: { mode: 'all' } });
         } else {
-            patchProxySettings({ scope: { mode: 'custom', providerIds: cleaned } });
+            patchProxySettings({
+                scope: {
+                    mode: 'custom',
+                    generalRequests: selection.generalRequests,
+                    providerIds: cleaned,
+                },
+            });
         }
         setShowProxyScopeDialog(false);
     }, [patchProxySettings, proxyScopeProviderIds]);
@@ -2635,9 +2654,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             ? rawScope.providerIds.map(id => id.trim()).filter(Boolean)
             : [];
         const normalizedIds = normalized.mode === 'custom' ? normalized.providerIds ?? [] : [];
+        const hasRawGeneralRequests = Object.prototype.hasOwnProperty.call(rawScope, 'generalRequests');
+        const normalizedGeneralRequests = normalized.mode === 'custom'
+            ? normalized.generalRequests === true
+            : true;
         const changed = normalized.mode !== rawScope.mode
             || rawIds.length !== normalizedIds.length
-            || rawIds.some((id, index) => id !== normalizedIds[index]);
+            || rawIds.some((id, index) => id !== normalizedIds[index])
+            || (hasRawGeneralRequests && rawScope.generalRequests !== normalizedGeneralRequests);
 
         if (changed) {
             void patchProxySettings({ scope: normalized });
@@ -4603,7 +4627,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    disabled={!config.proxySettings?.enabled || proxyScopeProviderIds.length === 0}
+                                                    disabled={!config.proxySettings?.enabled}
                                                     onClick={() => setShowProxyScopeDialog(true)}
                                                     className={`border-l border-[var(--line)] px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                         proxyScope.mode === 'custom'
@@ -4616,7 +4640,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             </div>
                                             <button
                                                 type="button"
-                                                disabled={!config.proxySettings?.enabled || proxyScopeProviderIds.length === 0}
+                                                disabled={!config.proxySettings?.enabled}
                                                 onClick={() => setShowProxyScopeDialog(true)}
                                                 className="rounded-lg border border-[var(--line)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
                                                 aria-label={tSettings('general.proxyScopeDialogTitle')}
@@ -7094,6 +7118,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             {showProxyScopeDialog && (
                 <ProxyScopeDialog
                     providers={allProviders}
+                    initialGeneralRequests={proxyScopeDialogInitialGeneralRequests}
                     initialProviderIds={proxyScopeDialogInitialIds}
                     onClose={() => setShowProxyScopeDialog(false)}
                     onSave={saveProxyScope}

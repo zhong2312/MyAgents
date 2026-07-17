@@ -25,6 +25,20 @@ export function getChannelById(agent: AgentConfig, channelId: string): ChannelCo
   return agent.channels?.find(c => c.id === channelId);
 }
 
+export type OpenClawPluginConfigMutation =
+  | { type: 'set'; key: string; value: unknown }
+  | { type: 'delete'; key: string };
+
+export function applyOpenClawPluginConfigMutation(
+  current: Record<string, unknown> | undefined,
+  mutation: OpenClawPluginConfigMutation,
+): Record<string, unknown> {
+  const next = { ...(current ?? {}) };
+  if (mutation.type === 'set') next[mutation.key] = mutation.value;
+  else delete next[mutation.key];
+  return next;
+}
+
 /**
  * Whether a channel has the credentials its runtime needs to start — mirrors the
  * per-type requirements ChannelWizard enforces at creation. Single source of truth
@@ -541,6 +555,80 @@ export async function patchAgentConfig(
   }
 
   return updated;
+}
+
+async function modifyAgentChannelConfig(
+  agentId: string,
+  channelId: string,
+  modify: (channel: ChannelConfig) => ChannelConfig,
+): Promise<ChannelConfig> {
+  let updatedChannel: ChannelConfig | undefined;
+  let authoritativeChannels: ChannelConfig[] | undefined;
+  await atomicModifyConfig(config => {
+    const agents = [...(config.agents ?? [])];
+    const agentIndex = agents.findIndex(agent => agent.id === agentId);
+    if (agentIndex < 0) return config;
+
+    const channels = [...(agents[agentIndex].channels ?? [])];
+    const channelIndex = channels.findIndex(channel => channel.id === channelId);
+    if (channelIndex < 0) return config;
+
+    updatedChannel = modify(channels[channelIndex]);
+    channels[channelIndex] = updatedChannel;
+    authoritativeChannels = channels;
+    agents[agentIndex] = { ...agents[agentIndex], channels };
+    return { ...config, agents };
+  });
+
+  if (!updatedChannel || !authoritativeChannels) {
+    throw new Error(`Agent channel not found: agentId=${agentId} channelId=${channelId}`);
+  }
+  await syncAgentRuntime(agentId, { channels: authoritativeChannels });
+  return updatedChannel;
+}
+
+/** Patch one channel against the disk-latest Agent instead of replacing a renderer snapshot of channels[]. */
+export function patchAgentChannelConfig(
+  agentId: string,
+  channelId: string,
+  patch: Partial<ChannelConfig>,
+): Promise<ChannelConfig> {
+  return modifyAgentChannelConfig(agentId, channelId, channel => ({ ...channel, ...patch }));
+}
+
+export async function removeAgentChannelConfig(agentId: string, channelId: string): Promise<void> {
+  let authoritativeChannels: ChannelConfig[] | undefined;
+  await atomicModifyConfig(config => {
+    const agents = [...(config.agents ?? [])];
+    const agentIndex = agents.findIndex(agent => agent.id === agentId);
+    if (agentIndex < 0) return config;
+    const channels = (agents[agentIndex].channels ?? []).filter(channel => channel.id !== channelId);
+    if (channels.length === (agents[agentIndex].channels ?? []).length) return config;
+    authoritativeChannels = channels;
+    agents[agentIndex] = { ...agents[agentIndex], channels };
+    return { ...config, agents };
+  });
+  if (authoritativeChannels) await syncAgentRuntime(agentId, { channels: authoritativeChannels });
+}
+
+/**
+ * Mutate one OpenClaw plugin config field against the disk-latest channel.
+ * The field operation, rather than a renderer-owned full snapshot, is the
+ * persistence contract so an editor remount cannot overwrite another pending
+ * field save with stale config.
+ */
+export function patchAgentChannelOpenClawConfig(
+  agentId: string,
+  channelId: string,
+  mutation: OpenClawPluginConfigMutation,
+): Promise<ChannelConfig> {
+  return modifyAgentChannelConfig(agentId, channelId, channel => ({
+    ...channel,
+    openclawPluginConfig: applyOpenClawPluginConfigMutation(
+      channel.openclawPluginConfig,
+      mutation,
+    ),
+  }));
 }
 
 export async function disableAgentAndStopChannels(agent: AgentConfig): Promise<number> {

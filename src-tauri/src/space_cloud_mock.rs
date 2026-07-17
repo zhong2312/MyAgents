@@ -202,6 +202,35 @@ pub fn api_data_request_with_token(
     )
 }
 
+pub fn api_data_request_scoped_with_token(
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+    space_id: Option<&str>,
+) -> Result<Value, String> {
+    let method = method.to_ascii_uppercase();
+    let url = parse_mock_url(path)?;
+    let segments = url.path().trim_matches('/').split('/').collect::<Vec<_>>();
+    let requires_space_context = matches!(
+        (method.as_str(), segments.as_slice()),
+        ("GET", ["api", "spaces", "official", "goals"]) | ("PATCH", ["api", "issues", _])
+    );
+    if requires_space_context && space_id != Some(MOCK_SPACE_ID) {
+        return Err(
+            "SPACE_CONTEXT_MISMATCH: Mock scoped request is missing the selected Space context"
+                .to_string(),
+        );
+    }
+    handle_api_data_request(
+        &method,
+        url.path(),
+        url.query_pairs().into_owned().collect(),
+        body,
+        token,
+    )
+}
+
 pub fn list_local_agents() -> Vec<LocalRegisteredAgentPublic> {
     state()
         .lock()
@@ -1088,6 +1117,16 @@ fn handle_api_data_request(
 ) -> Result<Value, String> {
     let mut state = state().lock().expect("mock state poisoned");
     let actor = mock_actor_for_token(&state, token);
+    let supplied_token = token.map(str::trim).filter(|value| !value.is_empty());
+    if supplied_token.is_some()
+        && supplied_token != Some("mock-session-token")
+        && !actor.authenticated
+    {
+        return Err(
+            "REGISTERED_AGENT_TOKEN_IS_INVALID_OR_REVOKED: Mock request token is invalid"
+                .to_string(),
+        );
+    }
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match (method, segments.as_slice()) {
         ("GET", ["api", "spaces"]) => Ok(mock_me(&state)),
@@ -1502,6 +1541,7 @@ fn initial_state() -> MockState {
         let issue_tags = tags_for(&tags, &tag_names);
         let issue_comments = seeded_comments(id, idx);
         let issue_attachments = seeded_attachments(id, idx);
+        let archived_at = (status == "archived").then(|| updated.clone());
         issues.push(json!({
             "id": id,
             "number": idx + 1,
@@ -1528,6 +1568,7 @@ fn initial_state() -> MockState {
             "tags": issue_tags,
             "commentCount": issue_comments.len(),
             "attachmentCount": issue_attachments.len(),
+            "archivedAt": archived_at,
             "createdAt": created,
             "updatedAt": updated
         }));
@@ -1613,6 +1654,7 @@ fn initial_state() -> MockState {
         } else {
             Vec::new()
         };
+        let archived_at = (status == "archived").then(|| updated.clone());
         issues.push(json!({
             "id": id,
             "number": idx + 1,
@@ -1639,6 +1681,7 @@ fn initial_state() -> MockState {
             "tags": issue_tags,
             "commentCount": issue_comments.len(),
             "attachmentCount": issue_attachments.len(),
+            "archivedAt": archived_at,
             "createdAt": created,
             "updatedAt": updated
         }));
@@ -2028,12 +2071,11 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
                     })
                 })
                 .unwrap_or(true);
-            let matches_status = status
-                .as_ref()
-                .map(|status| {
-                    status == "all" || status.split(',').any(|item| item.trim() == issue_status)
-                })
-                .unwrap_or(true);
+            let matches_status = match status.as_deref() {
+                Some("all") => true,
+                Some(status) => status.split(',').any(|item| item.trim() == issue_status),
+                None => matches!(issue_status.as_str(), "open" | "todo" | "doing"),
+            };
             let matches_goal = goal_id
                 .as_ref()
                 .map(|goal_id| {
@@ -2697,6 +2739,39 @@ fn update_issue(
     {
         return Err("body is required".to_string());
     }
+    let goal_update = match body.get("goalId") {
+        None => None,
+        Some(Value::Null) => Some((Value::Null, Value::Null)),
+        Some(Value::String(goal_id)) => {
+            let goal_id = goal_id.trim();
+            let goal = state
+                .goals
+                .iter()
+                .find(|goal| goal.get("id").and_then(Value::as_str) == Some(goal_id))
+                .ok_or_else(|| "GOAL_NOT_FOUND: Goal not found".to_string())?;
+            if is_archived(goal) {
+                return Err("GOAL_IS_ARCHIVED: Goal is archived".to_string());
+            }
+            Some((
+                Value::String(goal_id.to_string()),
+                goal.get("goalPathLabel").cloned().unwrap_or(Value::Null),
+            ))
+        }
+        Some(_) => {
+            return Err("GOAL_ID_INVALID: goalId must be a non-empty string or null".to_string())
+        }
+    };
+    if body.get("humanOnly").and_then(Value::as_bool) == Some(true)
+        && state.issues[index]
+            .pointer("/assignee/type")
+            .and_then(Value::as_str)
+            == Some("registered_agent")
+    {
+        return Err(
+            "An Issue assigned to a Registered Agent cannot become human-only; reassign or cancel first"
+                .to_string(),
+        );
+    }
     cancel_pending_issue_deliveries(state, issue_id);
     if let Some(issue) = state.issues[index].as_object_mut() {
         if let Some(title) = body.get("title").and_then(Value::as_str).map(str::trim) {
@@ -2705,11 +2780,12 @@ fn update_issue(
         if let Some(issue_body) = body.get("body").and_then(Value::as_str).map(str::trim) {
             issue.insert("body".to_string(), json!(issue_body));
         }
-        if body.get("goalId").is_some() {
-            issue.insert(
-                "goalId".to_string(),
-                body.get("goalId").cloned().unwrap_or(Value::Null),
-            );
+        if let Some((goal_id, goal_path_label)) = goal_update {
+            issue.insert("goalId".to_string(), goal_id);
+            issue.insert("goalPathLabel".to_string(), goal_path_label);
+        }
+        if let Some(human_only) = body.get("humanOnly").and_then(Value::as_bool) {
+            issue.insert("humanOnly".to_string(), Value::Bool(human_only));
         }
         issue.insert("updatedAt".to_string(), json!("2026-06-24T09:55:00.000Z"));
     }
@@ -3534,12 +3610,13 @@ fn route_mock_issue_deliveries(
         if excluded_registered_agent_id == Some(agent_id) {
             return Ok(());
         }
-        let agent = state
-            .agents
-            .iter()
-            .find(|agent| agent.id == agent_id && agent.status == "active")
-            .cloned()
-            .ok_or_else(|| format!("Registered Agent not found or inactive: {}", agent_id))?;
+        let Some(agent) = state.agents.iter().find(|agent| agent.id == agent_id) else {
+            return Err(format!("Registered Agent not found: {}", agent_id));
+        };
+        if agent.status != "active" {
+            return Ok(());
+        }
+        let agent = agent.clone();
         let delivery_id = state.next_id("del");
         let mut item = delivery_item(&delivery_id, &agent, issue, "pending");
         let active_claim = state.claims.get(_issue_id).filter(|claim| {
@@ -4941,6 +5018,79 @@ mod tests {
     }
 
     #[test]
+    fn issue_list_missing_state_defaults_to_active_while_all_includes_terminal() {
+        let state = initial_state();
+        let terminal_title = "补齐 Cloud Space 架构文档中的 mock mode 说明";
+        let closed_title = "把 Issue 管理按钮改成只读概览";
+        let archived_title = "历史会话恢复时 Issue 口令要能被 Agent 读取";
+        let active_title = "评论发送失败时不要丢失输入内容";
+
+        let default_terminal = list_issues(
+            &state,
+            &HashMap::from([("q".to_string(), terminal_title.to_string())]),
+        );
+        assert_eq!(
+            default_terminal
+                .pointer("/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let all_terminal = list_issues(
+            &state,
+            &HashMap::from([
+                ("q".to_string(), terminal_title.to_string()),
+                ("state".to_string(), "all".to_string()),
+            ]),
+        );
+        assert_eq!(
+            all_terminal
+                .pointer("/items/0/state")
+                .and_then(Value::as_str),
+            Some("done")
+        );
+
+        let all_closed = list_issues(
+            &state,
+            &HashMap::from([
+                ("q".to_string(), closed_title.to_string()),
+                ("state".to_string(), "all".to_string()),
+            ]),
+        );
+        assert_eq!(
+            all_closed.pointer("/items/0/state").and_then(Value::as_str),
+            Some("closed")
+        );
+
+        let all_archived = list_issues(
+            &state,
+            &HashMap::from([
+                ("q".to_string(), archived_title.to_string()),
+                ("state".to_string(), "all".to_string()),
+            ]),
+        );
+        assert_eq!(
+            all_archived
+                .pointer("/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let default_active = list_issues(
+            &state,
+            &HashMap::from([("q".to_string(), active_title.to_string())]),
+        );
+        assert_eq!(
+            default_active
+                .pointer("/items/0/state")
+                .and_then(Value::as_str),
+            Some("open")
+        );
+    }
+
+    #[test]
     fn mock_delivery_router_respects_human_only_and_agent_self_suppression() {
         let mut state = initial_state();
         state.deliveries.clear();
@@ -4983,6 +5133,22 @@ mod tests {
         );
 
         state.deliveries.clear();
+        state
+            .agents
+            .iter_mut()
+            .find(|candidate| candidate.id == agent.id)
+            .expect("assigned Agent")
+            .status = "disabled".to_string();
+        route_mock_issue_deliveries(&mut state, &issue, "issue.updated", None)
+            .expect("inactive assignees should produce no delivery, not fail the Issue update");
+        assert!(state.deliveries.is_empty());
+        state
+            .agents
+            .iter_mut()
+            .find(|candidate| candidate.id == agent.id)
+            .expect("assigned Agent")
+            .status = "active".to_string();
+
         state.claims.insert(
             "iss_delivery_policy".to_string(),
             json!({
@@ -4999,6 +5165,35 @@ mod tests {
                 .pointer("/delivery/deliveryKind")
                 .and_then(Value::as_str),
             Some("claim_followup")
+        );
+    }
+
+    #[test]
+    fn revoked_agent_token_cannot_fall_back_to_user_for_scoped_issue_update() {
+        let _mock = enable_for_test();
+        let before = api_data_request("GET", "/api/issues/iss_mock_001", None)
+            .expect("Issue before rejected update");
+        api_data_request(
+            "PATCH",
+            "/api/registered-agents/rag_mock_frontend",
+            Some(json!({ "status": "disabled" })),
+        )
+        .expect("disable mock Agent");
+
+        let error = api_data_request_scoped_with_token(
+            "PATCH",
+            "/api/issues/iss_mock_001",
+            Some("mock-token-rag_mock_frontend"),
+            Some(json!({ "title": "Must not be written as User" })),
+            Some(MOCK_SPACE_ID),
+        )
+        .expect_err("revoked Agent token must fail closed");
+        assert!(error.starts_with("REGISTERED_AGENT_TOKEN_IS_INVALID_OR_REVOKED:"));
+        let after = api_data_request("GET", "/api/issues/iss_mock_001", None)
+            .expect("Issue after rejected update");
+        assert_eq!(
+            after.pointer("/issue/title"),
+            before.pointer("/issue/title")
         );
     }
 

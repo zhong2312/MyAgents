@@ -26,6 +26,18 @@
  * correlation IDs (sessionId/tabId/turnId/requestId) into the LogEntry.
  */
 
+import { fetch as undiciFetch } from 'undici';
+
+import { getGeneralRequestDispatcher } from '../proxy-state';
+
+type GeneralFetchTransport = (
+  url: string,
+  init: Parameters<typeof undiciFetch>[1],
+) => Promise<unknown>;
+
+const defaultGeneralFetchTransport: GeneralFetchTransport = (url, init) => undiciFetch(url, init);
+let generalFetchTransport = defaultGeneralFetchTransport;
+
 export type CancelReason = 'user' | 'timeout' | 'upstream' | 'shutdown' | 'error';
 
 /**
@@ -161,6 +173,32 @@ export function anySignal(signals: (AbortSignal | undefined)[]): AbortSignal {
 }
 
 /**
+ * Stop waiting for shared work when one caller aborts without cancelling the
+ * shared owner itself. The listener is always removed when either side wins.
+ */
+export function raceWithAbortSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(makeAbortError(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      reject(makeAbortError(signal));
+    };
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      value => {
+        cleanup();
+        resolve(value);
+      },
+      error => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
  * `setTimeout(ms)` that respects an `AbortSignal`. Resolves after `ms` if no
  * abort; rejects with `AbortError` (DOMException-shaped) if the signal aborts
  * before the timeout. Already-aborted signal rejects synchronously (next tick).
@@ -258,9 +296,29 @@ export async function cancellableFetch(
   const timeoutMs = opts?.timeoutMs ?? 30_000;
   return withAbortSignal(
     opts?.parentSignal,
-    (signal) => fetch(url, { ...(init ?? {}), signal }),
+    (signal) => fetchWithGeneralProxy(url, { ...(init ?? {}), signal }),
     { timeoutMs },
   );
+}
+
+/** Fetch through the current general network baseline without adding a timeout. */
+export async function fetchWithGeneralProxy(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const dispatcher = getGeneralRequestDispatcher();
+  const response = await generalFetchTransport(url, {
+    ...(init ?? {}),
+    dispatcher,
+  } as Parameters<typeof undiciFetch>[1]);
+  return response as unknown as Response;
+}
+
+/** Replace the transport in deterministic tests; production always uses undici. */
+export function _setGeneralFetchTransportForTests(
+  transport?: GeneralFetchTransport,
+): void {
+  generalFetchTransport = transport ?? defaultGeneralFetchTransport;
 }
 
 function makeAbortError(signal?: AbortSignal): Error {

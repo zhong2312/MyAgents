@@ -17,9 +17,17 @@
 import { createCompatApi, type CapturedPlugin, type CapturedTool } from './compat-api';
 import { createCompatRuntime } from './compat-runtime';
 import { getBotIdentity, abortResolver } from './bot-identity';
-import { FeishuStreamingSession } from './streaming-adapter';
 import { createMcpHandler } from './mcp-handler';
-import { getPendingDispatch, resolvePendingDispatch, rejectPendingDispatch, clearAllPendingDispatches } from './pending-dispatch';
+import {
+  abortPendingDispatch,
+  bindPendingStream,
+  clearAllPendingDispatches,
+  completePendingDispatch,
+  enqueueBlockBoundary,
+  enqueuePartial,
+  enqueueRunStart,
+  type OpenClawReplyPayload,
+} from './pending-dispatch';
 import { buildFunctionalHealth, buildReadyHealth, type GatewayRuntimeStatus } from './gateway-health';
 import {
   addOpenClawChannelAliases,
@@ -29,6 +37,14 @@ import {
 } from './openclaw-config';
 import { redactPluginBridgeSecrets } from './secret-redaction';
 import { sanitizeOutboundMediaFilename } from './media-filename';
+import {
+  getGeneralRequestDispatcher,
+  initializeProxyStateFromCurrentSettings,
+} from '../proxy-state';
+import {
+  install as installUndiciGlobals,
+  setGlobalDispatcher,
+} from 'undici';
 import { serve as honoServe } from '@hono/node-server';
 import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -239,8 +255,6 @@ function mergeGatewayStatus(update: GatewayRuntimeStatus): void {
   gatewayStatus = { ...(gatewayStatus ?? {}), ...update };
 }
 
-// Streaming sessions (keyed by streamId)
-const streamingSessions = new Map<string, FeishuStreamingSession>();
 let streamIdCounter = 0;
 
 // MCP handler — initialized after plugin loads and captures tools
@@ -713,7 +727,6 @@ const server = honoServe({
     if (path === '/capabilities') {
       const outbound = capturedPlugin?.raw?.outbound as Record<string, unknown> | undefined;
       const capabilities = capturedPlugin?.raw?.capabilities as Record<string, unknown> | undefined;
-      const hasCardKitStreaming = !!(pluginConfig.appId && pluginConfig.appSecret);
       const toolGroups = mcpHandler ? mcpHandler.getToolGroups() : [];
       const hasTools = getCapturedToolsFn ? getCapturedToolsFn().length > 0 : false;
       const commands = getCapturedCommandsFn
@@ -732,8 +745,7 @@ const server = honoServe({
           threads: capabilities?.threads ?? false,
           edit: !!capturedPlugin?.editMessage || !!(capabilities?.edit),
           blockStreaming: capabilities?.blockStreaming ?? false,
-          streaming: hasCardKitStreaming,
-          streamingCardKit: hasCardKitStreaming,
+          replyProtocolTransport: true,
           hasTools,
           toolGroups,
           commands,
@@ -745,19 +757,6 @@ const server = honoServe({
     if (path === '/send-text' && req.method === 'POST') {
       const body = await req.json() as { chatId: string; text: string };
       const { chatId, text } = body;
-
-      const pending = getPendingDispatch(chatId);
-      if (pending?.resolveViaSendText) {
-        try {
-          await pending.callbacks.sendFinalReply({ text });
-          resolvePendingDispatch(chatId, { queuedFinal: text.trim() ? 1 : 0, counts: text.trim() ? { final: 1 } : {} });
-          return Response.json({ ok: true, pendingDispatch: true });
-        } catch (err) {
-          console.error(`[plugin-bridge] /send-text pending dispatch error for chatId=${chatId}:`, err);
-          rejectPendingDispatch(chatId, err instanceof Error ? err : new Error(String(err)));
-          return Response.json({ ok: false, error: String(err) }, { status: 500 });
-        }
-      }
 
       if (!capturedPlugin?.sendText) {
         return Response.json({ ok: false, error: 'Plugin has no sendText handler' }, { status: 501 });
@@ -849,180 +848,104 @@ const server = honoServe({
       }
     }
 
-    // ===== Streaming endpoints (CardKit streaming cards) =====
+    // ===== Request-scoped OpenClaw reply transport =====
+
+    const protocolError = (requestId: string, err: unknown): Response => {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = message.startsWith('protocol_dispatch_missing')
+        ? 'protocol_dispatch_missing'
+        : 'protocol_dispatch_error';
+      mergeGatewayStatus({
+        lastProtocolError: { code, requestId, at: Date.now() },
+      });
+      console.error(
+        `[plugin-bridge] ${code} pluginId=${capturedPlugin?.id || 'unknown'} requestId=${requestId}:`,
+        err,
+      );
+      return Response.json({ ok: false, error: code }, { status: code === 'protocol_dispatch_missing' ? 404 : 500 });
+    };
+
+    if (path === '/start-dispatch' && req.method === 'POST') {
+      const body = await req.json() as { requestId: string };
+      try {
+        enqueueRunStart(body.requestId);
+        return Response.json({ ok: true });
+      } catch (err) {
+        return protocolError(body.requestId, err);
+      }
+    }
 
     if (path === '/start-stream' && req.method === 'POST') {
       const body = await req.json() as {
+        requestId: string;
         chatId: string;
         initialContent?: string;
-        streamMode?: 'text' | 'cardkit';
-        receiveIdType?: 'open_id' | 'user_id' | 'union_id' | 'email' | 'chat_id';
-        replyToMessageId?: string;
-        replyInThread?: boolean;
-        rootId?: string;
-        header?: { title: string; template?: string };
       };
-
-      // Protocol path: plugin's StreamingCardController will create its own card
-      // via onPartialReply — we just return a synthetic streamId for Rust to track
-      const pending = getPendingDispatch(body.chatId);
-      if (pending) {
-        const streamId = `pending_${++streamIdCounter}_${Date.now()}`;
-        console.log(`[plugin-bridge] /start-stream: using protocol dispatch for chatId=${body.chatId}, streamId=${streamId}`);
-        return Response.json({ ok: true, streamId, pendingDispatch: true });
-      }
-
-      // Fallback: no pending dispatch, use our FeishuStreamingSession
-      if (!pluginConfig.appId || !pluginConfig.appSecret) {
-        return Response.json({ ok: false, error: 'CardKit streaming requires appId and appSecret in plugin config' }, { status: 400 });
-      }
-
-      const creds = {
-        appId: String(pluginConfig.appId),
-        appSecret: String(pluginConfig.appSecret),
-        domain: (pluginConfig.domain as string) || undefined,
-      };
-
-      const session = new FeishuStreamingSession(creds, (msg) => console.log(`[streaming] ${msg}`));
-
+      const streamId = `reply_${++streamIdCounter}_${Date.now()}`;
       try {
-        // Auto-detect receive_id_type from ID prefix: ou_=open_id, oc_=chat_id, on_=union_id
-        const autoIdType = body.chatId.startsWith('ou_') ? 'open_id'
-          : body.chatId.startsWith('on_') ? 'union_id'
-          : 'chat_id';
-        await session.start(body.chatId, body.receiveIdType || autoIdType, {
-          replyToMessageId: body.replyToMessageId,
-          replyInThread: body.replyInThread,
-          rootId: body.rootId,
-          header: body.header,
-        });
-
-        // If initial content provided, send first update
+        bindPendingStream(body.requestId, streamId);
         if (body.initialContent) {
-          await session.update(body.initialContent);
+          enqueuePartial(streamId, { text: body.initialContent }, 'answer');
         }
-
-        const streamId = `stream_${++streamIdCounter}_${Date.now()}`;
-        streamingSessions.set(streamId, session);
-
-        const state = session.getState();
-        return Response.json({
-          ok: true,
-          streamId,
-          cardId: state?.cardId,
-          messageId: state?.messageId,
-        });
+        return Response.json({ ok: true, streamId });
       } catch (err) {
-        return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+        return protocolError(body.requestId, err);
       }
     }
 
     if (path === '/stream-chunk' && req.method === 'POST') {
       const body = await req.json() as {
-        chatId?: string;
         streamId: string;
         content: string;
         sequence?: number;
         isThinking?: boolean;
       };
-
-      // Protocol path: route through plugin's own callbacks
-      const pending = body.chatId ? getPendingDispatch(body.chatId) : undefined;
-      if (pending) {
-        try {
-          if (body.isThinking) {
-            await pending.callbacks.onReasoningStream?.({ text: body.content || '' });
-          } else {
-            await pending.callbacks.onPartialReply?.({ text: body.content });
-          }
-          return Response.json({ ok: true });
-        } catch (err) {
-          console.error(`[plugin-bridge] /stream-chunk protocol callback error for chatId=${body.chatId}:`, err);
-          if (body.chatId) {
-            rejectPendingDispatch(body.chatId, err instanceof Error ? err : new Error(String(err)));
-          }
-          return Response.json({ ok: false, error: String(err) }, { status: 500 });
-        }
-      }
-
-      // Fallback: FeishuStreamingSession
-      const session = streamingSessions.get(body.streamId);
-      if (!session) {
-        return Response.json({ ok: false, error: 'Stream not found' }, { status: 404 });
-      }
-      if (!session.isActive()) {
-        return Response.json({ ok: false, error: 'Stream is no longer active' }, { status: 409 });
-      }
-
       try {
-        if (body.isThinking) {
-          return Response.json({ ok: true });
-        }
-        await session.update(body.content);
+        enqueuePartial(
+          body.streamId,
+          { text: body.content },
+          body.isThinking ? 'reasoning' : 'answer',
+        );
         return Response.json({ ok: true });
       } catch (err) {
-        return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+        return protocolError(body.streamId, err);
       }
     }
 
-    if (path === '/finalize-stream' && req.method === 'POST') {
-      const body = await req.json() as { chatId?: string; streamId: string; finalContent?: string };
-
-      // Protocol path: deliver final text through plugin's dispatcher, then resolve pending dispatch
-      const pending = body.chatId ? getPendingDispatch(body.chatId) : undefined;
-      if (pending) {
-        try {
-          const finalText = body.finalContent || '';
-          // Always call sendFinalReply — it signals the plugin to close the streaming card
-          await pending.callbacks.sendFinalReply({ text: finalText });
-          // Resolve the pending dispatch — dispatchReplyFromConfig will return,
-          // then withReplyDispatcher's finally block calls markComplete + waitForIdle
-          resolvePendingDispatch(body.chatId!, { queuedFinal: 1, counts: { final: 1 } });
-          return Response.json({ ok: true });
-        } catch (err) {
-          console.error(`[plugin-bridge] /finalize-stream protocol error:`, err);
-          rejectPendingDispatch(body.chatId!, err instanceof Error ? err : new Error(String(err)));
-          return Response.json({ ok: false, error: String(err) }, { status: 500 });
-        }
-      }
-
-      // Fallback: FeishuStreamingSession
-      const session = streamingSessions.get(body.streamId);
-      if (!session) {
-        return Response.json({ ok: false, error: 'Stream not found' }, { status: 404 });
-      }
-
+    if (path === '/finish-stream-block' && req.method === 'POST') {
+      const body = await req.json() as { streamId: string };
       try {
-        await session.close(body.finalContent);
-        streamingSessions.delete(body.streamId);
+        enqueueBlockBoundary(body.streamId);
         return Response.json({ ok: true });
       } catch (err) {
-        return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+        return protocolError(body.streamId, err);
       }
     }
 
-    if (path === '/abort-stream' && req.method === 'POST') {
-      const body = await req.json() as { chatId?: string; streamId: string };
-
-      // Protocol path: reject pending dispatch — plugin's error handler shows abort card
-      const pending = body.chatId ? getPendingDispatch(body.chatId) : undefined;
-      if (pending) {
-        rejectPendingDispatch(body.chatId!, new Error('AI generation aborted'));
-        return Response.json({ ok: true });
-      }
-
-      // Fallback: FeishuStreamingSession
-      const session = streamingSessions.get(body.streamId);
-      if (!session) {
-        return Response.json({ ok: false, error: 'Stream not found' }, { status: 404 });
-      }
-
+    if (path === '/complete-dispatch' && req.method === 'POST') {
+      const body = await req.json() as {
+        requestId: string;
+        finalPayloads?: OpenClawReplyPayload[];
+      };
       try {
-        await session.close('[Aborted]');
-        streamingSessions.delete(body.streamId);
+        completePendingDispatch(body.requestId, body.finalPayloads ?? []);
         return Response.json({ ok: true });
       } catch (err) {
-        return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+        return protocolError(body.requestId, err);
+      }
+    }
+
+    if (path === '/abort-dispatch' && req.method === 'POST') {
+      const body = await req.json() as {
+        requestId: string;
+        reason?: string;
+        terminalPayload: OpenClawReplyPayload;
+      };
+      try {
+        abortPendingDispatch(body.requestId, body.terminalPayload);
+        return Response.json({ ok: true });
+      } catch (err) {
+        return protocolError(body.requestId, err);
       }
     }
 
@@ -1276,13 +1199,6 @@ const server = honoServe({
       console.log('[plugin-bridge] Received stop signal');
       // Clean up pending protocol dispatches
       clearAllPendingDispatches();
-      // Close any active streaming sessions before shutdown
-      for (const [id, session] of streamingSessions) {
-        try {
-          if (session.isActive()) await session.close('[Bridge stopping]');
-        } catch { /* best-effort */ }
-        streamingSessions.delete(id);
-      }
       // Abort the gateway via AbortController
       const abortCtrl = (globalThis as Record<string, unknown>).__bridgeAbort as AbortController | undefined;
       if (abortCtrl) abortCtrl.abort();
@@ -1313,8 +1229,22 @@ const serverAddr = server.address();
 const listenPort = typeof serverAddr === 'object' && serverAddr ? serverAddr.port : port;
 console.log(`[plugin-bridge] HTTP server listening on port ${listenPort}`);
 
-// Load the plugin
-loadPlugin().catch((err) => {
-  console.error('[plugin-bridge] Failed to load plugin:', err);
-  process.exit(1);
-});
+// Establish the process-wide general proxy baseline (including a local HTTP
+// bridge for SOCKS5) before plugin code opens any external connection. Plugin
+// Bridge owns no model-provider traffic, so provider-only scope must not start
+// or consume the app proxy in this process.
+initializeProxyStateFromCurrentSettings({ providerOwnedConsumers: false })
+  .then(() => {
+    // Community plugins call global fetch directly. Install the package-pinned
+    // implementation before evaluating plugin code, then bind it to the same
+    // general-request baseline used by first-party callers. The Bridge process
+    // is restarted when this scope changes, so this dispatcher is immutable for
+    // the process lifetime.
+    installUndiciGlobals();
+    setGlobalDispatcher(getGeneralRequestDispatcher());
+    return loadPlugin();
+  })
+  .catch((err) => {
+    console.error('[plugin-bridge] Failed to initialize proxy or load plugin:', err);
+    process.exit(1);
+  });

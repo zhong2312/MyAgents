@@ -19,6 +19,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import { getTabServerUrl, getSessionPort } from './tauriClient';
 import { isTauriEnvironment } from '../utils/browserMock';
+import { isLiveRevisionEnvelope } from '../../shared/liveRevision';
 
 // Event types that should be parsed as JSON
 // IMPORTANT: When adding new SSE events in backend, remember to add them here too!
@@ -102,7 +103,17 @@ const JSON_ANALYTICS_EVENTS = new Set(['chat:message-complete']);
 // All event types
 const ALL_EVENTS = [...JSON_EVENTS, ...JSON_OR_STRING_EVENTS, ...STRING_EVENTS, ...NULL_EVENTS, ...JSON_ANALYTICS_EVENTS];
 
-export type SseEventHandler = (eventName: string, data: unknown) => void;
+export type SseEventMetadata = {
+    connectionGeneration: number;
+    sessionId?: string;
+    liveRevision?: number;
+};
+
+export type SseEventHandler = (
+    eventName: string,
+    data: unknown,
+    metadata: SseEventMetadata,
+) => void;
 export type SseConnectionStatusHandler = (status: 'connected' | 'disconnected' | 'reconnecting' | 'failed') => void;
 
 // Reconnection configuration
@@ -127,6 +138,7 @@ export class SseConnection {
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private isReconnecting = false;
     private shouldReconnect = true; // Set to false when intentionally disconnecting
+    private connectionGeneration = 0;
 
     constructor(connectionId: string, sessionIdRef?: React.MutableRefObject<string | null>) {
         this.connectionId = connectionId;
@@ -187,10 +199,27 @@ export class SseConnection {
             return;
         }
 
+        const metadata: SseEventMetadata = {
+            connectionGeneration: this.connectionGeneration,
+        };
+        try {
+            const parsed = JSON.parse(data) as unknown;
+            if (isLiveRevisionEnvelope(parsed)) {
+                this.eventHandler(eventName, parsed.payload, {
+                    ...metadata,
+                    sessionId: parsed.sessionId,
+                    liveRevision: parsed.liveRevision,
+                });
+                return;
+            }
+        } catch {
+            // Plain-string events continue through their existing parser below.
+        }
+
         // Handle null-payload events (message-stopped)
         if (NULL_EVENTS.has(eventName)) {
             console.debug(`[SSE ${this.connectionId}] Received: ${eventName}`);
-            this.eventHandler(eventName, null);
+            this.eventHandler(eventName, null, metadata);
             return;
         }
 
@@ -198,11 +227,11 @@ export class SseConnection {
         if (JSON_ANALYTICS_EVENTS.has(eventName)) {
             try {
                 const parsed = JSON.parse(data);
-                this.eventHandler(eventName, parsed);
+                this.eventHandler(eventName, parsed, metadata);
             } catch (e) {
                 console.warn(`[SSE ${this.connectionId}] Failed to parse analytics JSON for ${eventName}:`, e);
                 // Still emit event with null so tracking can proceed with defaults
-                this.eventHandler(eventName, null);
+                this.eventHandler(eventName, null, metadata);
             }
             return;
         }
@@ -210,10 +239,10 @@ export class SseConnection {
         if (JSON_EVENTS.has(eventName)) {
             try {
                 const parsed = JSON.parse(data);
-                this.eventHandler(eventName, parsed);
+                this.eventHandler(eventName, parsed, metadata);
             } catch (e) {
                 console.warn(`[SSE ${this.connectionId}] Failed to parse JSON for ${eventName}:`, e);
-                this.eventHandler(eventName, null);
+                this.eventHandler(eventName, null, metadata);
             }
             return;
         }
@@ -222,16 +251,16 @@ export class SseConnection {
         if (JSON_OR_STRING_EVENTS.has(eventName)) {
             try {
                 const parsed = JSON.parse(data);
-                this.eventHandler(eventName, parsed);
+                this.eventHandler(eventName, parsed, metadata);
             } catch {
                 // Not valid JSON, pass as raw string (this is expected for legacy log format)
-                this.eventHandler(eventName, data);
+                this.eventHandler(eventName, data, metadata);
             }
             return;
         }
 
         if (STRING_EVENTS.has(eventName)) {
-            this.eventHandler(eventName, data);
+            this.eventHandler(eventName, data, metadata);
             return;
         }
 
@@ -251,6 +280,7 @@ export class SseConnection {
 
         console.debug(`[SSE ${this.connectionId}] Connecting browser EventSource:`, sseUrl);
 
+        this.connectionGeneration += 1;
         this.eventSource = new EventSource(sseUrl);
 
         this.eventSource.onopen = () => {
@@ -292,6 +322,7 @@ export class SseConnection {
         const sseUrl = `${serverUrl}/chat/stream`;
 
         console.debug(`[SSE ${this.connectionId}] Connecting Tauri SSE proxy:`, sseUrl);
+        this.connectionGeneration += 1;
 
         // Set up listeners for Tab-prefixed SSE event types.
         // The whole listen-loop is wrapped in try/catch so that a rejection
@@ -559,6 +590,10 @@ export class SseConnection {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+    }
+
+    getConnectionGeneration(): number {
+        return this.connectionGeneration;
     }
 
     /**

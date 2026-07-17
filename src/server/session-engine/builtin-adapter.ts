@@ -10,12 +10,15 @@ import {
   getAndClearLastAgentError,
   getAgents,
   getAgentState,
+  getBuiltinLiveSessionSnapshot,
+  getBuiltinSessionCompletionTerminal,
   getLastBuiltinAssistantText,
   getMcpServers,
   getMessages,
   getPendingInteractiveRequests,
   getQueueStatus,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
+  getDispatchedTurnIdentity as getBuiltinDispatchedTurnIdentity,
   hasQueuedTurnByOwner as hasBuiltinQueuedTurnByOwner,
   getSessionId,
   getSessionModel,
@@ -65,11 +68,10 @@ import type {
   SessionEngine,
 } from './types';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
-import type { TurnTerminalOutcome } from '../session-core/turn-queue';
+import type { DispatchGuard, TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getSessionData } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
-import type { SessionMessage } from '../types/session';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -87,6 +89,10 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
     );
   });
 }
+
+// runInjectedTurn requires an explicit promotion acknowledgement even when no
+// domain guard is present. MCP readiness is intentionally not part of it.
+const acceptInjectedTurnDispatch: DispatchGuard = async () => ({ accepted: true });
 
 function providerEnvForRouteRequest(request: {
   providerRoute?: ProviderRoute;
@@ -150,28 +156,6 @@ function getBuiltinWorkspacePath(): string | null {
   return typeof state.agentDir === 'string' && state.agentDir.length > 0
     ? state.agentDir
     : null;
-}
-
-function messageWireToSessionMessage(message: MessageWire): SessionMessage {
-  return {
-    id: message.id,
-    role: message.role,
-    content: typeof message.content === 'string'
-      ? message.content
-      : JSON.stringify(stripPlaywrightResults(message.content)),
-    timestamp: message.timestamp,
-    sdkUuid: message.sdkUuid,
-    attachments: message.attachments?.map(a => ({
-      id: a.id,
-      name: a.name,
-      mimeType: a.mimeType,
-      path: a.savedPath ?? a.relativePath ?? '',
-    })),
-    metadata: message.metadata,
-    usage: message.usage,
-    toolCount: message.toolCount,
-    durationMs: message.durationMs,
-  };
 }
 
 function messageWireToReplayMessage(message: MessageWire): SessionEngineReplayMessage {
@@ -286,18 +270,23 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     getLiveSessionOverlay(sessionId: string) {
-      if (sessionId !== getSessionId()) {
+      const snapshot = getBuiltinLiveSessionSnapshot(sessionId);
+      if (!snapshot) {
         return { isActive: false };
       }
       return {
         isActive: true,
         runtime: 'builtin',
-        inMemoryMessages: getMessages().map(messageWireToSessionMessage),
+        ...snapshot,
       };
     },
 
     getCurrentTurnIdentity() {
       return getBuiltinCurrentTurnIdentity();
+    },
+
+    getSessionCompletionTerminal() {
+      return getBuiltinSessionCompletionTerminal();
     },
 
     hasQueuedTurnOwnedBy(owner) {
@@ -466,7 +455,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
       if (routed.error) {
         return { success: false, enqueued: false, error: routed.error, status: routed.status };
       }
-      const enqueueResult = await enqueueUserMessage(
+      const beforeDispatch = request.beforeDispatch ?? acceptInjectedTurnDispatch;
+      const enqueueAttempt = enqueueUserMessage(
         request.prompt,
         [],
         request.permissionMode as PermissionMode | undefined,
@@ -491,11 +481,54 @@ export function createBuiltinSessionEngine(): SessionEngine {
             }
           },
           queueResponseModeOverride: 'turn',
-          ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
+          beforeDispatch,
         },
       );
+      const enqueueResult = await waitForDeadline(
+        enqueueAttempt,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (!enqueueResult) {
+        await cancelQueueItem(queueId);
+        return {
+          success: false,
+          enqueued: false,
+          error: 'Builtin injected turn timed out before enqueue admission',
+          status: 408,
+        };
+      }
       if (enqueueResult.error) {
+        beforeDispatch.cancel?.();
         return { success: false, enqueued: false, error: enqueueResult.error, status: 503 };
+      }
+      const dispatchAcceptance = enqueueResult.dispatchAcceptance
+        ? await waitForDeadline(enqueueResult.dispatchAcceptance, Math.max(0, deadline - Date.now()))
+        : null;
+      if (!dispatchAcceptance) {
+        // Queue cancellation owns the exact guard rollback and does not return
+        // until the domain owner acknowledges it.
+        const cancelResult = await cancelQueueItem(queueId);
+        const dispatchAccepted = getBuiltinDispatchedTurnIdentity()?.queueId === queueId;
+        const terminationUnconfirmed = dispatchAccepted
+          && cancelResult.status !== 'cancelled'
+          && !await interruptCurrentResponse('timeout');
+        return {
+          success: false,
+          enqueued: dispatchAccepted,
+          ...(terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+          error: dispatchAccepted
+            ? 'Builtin injected turn timed out during dispatch admission'
+            : 'Builtin injected turn timed out before dispatch',
+          status: 408,
+        };
+      }
+      if (!dispatchAcceptance.accepted) {
+        return {
+          success: false,
+          enqueued: false,
+          error: dispatchAcceptance.error ?? 'Injected turn was rejected before dispatch',
+          status: 409,
+        };
       }
       const outcome = await waitForDeadline(terminal, Math.max(0, deadline - Date.now()));
       if (!outcome) {
@@ -509,7 +542,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         }
         let terminationUnconfirmed = false;
         if (cancelResult.status !== 'cancelled') {
-          if (getBuiltinCurrentTurnIdentity()?.queueId === queueId) {
+          if (getBuiltinDispatchedTurnIdentity()?.queueId === queueId) {
             terminationUnconfirmed = !await interruptCurrentResponse('timeout');
           } else if (cancelResult.status !== 'not_found') {
             terminationUnconfirmed = true;

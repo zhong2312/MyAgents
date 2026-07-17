@@ -32,13 +32,13 @@ CLI 通过 `~/.myagents/bin/myagents` 暴露，你的 SDK 子进程 PATH 已注�
 ## 使用模式
 
 1. **探索先行**：不熟的命令组用 `myagents <group> --help`；不知道某个 runtime 支持什么 model/permissionMode 用 `myagents runtime describe <runtime>`，**不要靠猜**
-2. **预览写操作**：所有写命令支持 `--dry-run`，先给用户看会改什么再执行
+2. **按 leaf 契约预览**：只有精确 leaf help 明确声明支持的命令才使用 `--dry-run`；不支持的 mutation 会 fail closed，不能声称已预览
 3. **机器可读**：加 `--json` 解析结构化输出
 4. **失败即恢复**：CLI 失败响应会带 `→ Run: <cmd>` 恢复提示，照着跑就行
 
 ## 安全规范
 
-- **改配置前必先 `--dry-run`**——配置数据是用户的命脉，预览给用户看是保护他们的安全网
+- **改配置前先读精确 leaf help**——该 leaf 明确支持 `--dry-run` 时先预览；未声明支持时不要假装存在 preview
 - **API Key**：用户在对话里明确给了你才写入；没给就引导他去 **设置 → 对应页面** 填，不要追问
 - **删除前确认**：用户说"删了吧"也要回读"我要删的是 X，确认吗"
 
@@ -332,11 +332,15 @@ myagents task delete <taskId>                           # 软删除（30 天保�
 ```bash
 myagents space list --json
 myagents space whoami --space <slug> --json
+myagents space goal list --space <slug> --json
 myagents space assignee list --space <slug> --json
 myagents space issue create --space <slug> --title "..." --body-file issue.md \
-  [--assignee agent:<id>|user:<id>] [--attachment <path> ...]
+  [--goal <goalId>] [--assignee agent:<id>|user:<id>] [--attachment <path> ...]
 myagents space issue list --space <slug> --goal <goalId> --state todo --limit 30
 myagents space issue view <issueId> --space <slug> --comments --json     # current Issue + latest 5 comments
+myagents space issue update <issueId> --space <slug> --goal <goalId> --json
+myagents space issue update <issueId> --space <slug> --clear-goal --json
+myagents space issue update <issueId> --space <slug> --human-only false --json
 myagents space issue comments <issueId> --space <slug> --json [--limit 20] [--cursor <opaque-cursor>]
 myagents space issue comment get <issueId> <commentId> --space <slug> --json
 myagents space issue comment <issueId> --space <slug> \
@@ -353,6 +357,8 @@ myagents space attachment download <attachmentId> --space <slug> [--output myage
 **何时用：**
 - 普通会话先 `myagents space list --json` 选择明确的 slug；所有 Space 业务命令都必须带 `--space <slug>`，不猜“默认社区”或上次使用的 Space。
 - 当前 workspace 在该 Space 有 active registration 时，CLI 自动以 Registered Agent 身份执行；否则自动以当前 User 身份执行，权限与这个 User 在 UI 中一致。delivery-bound Session 的身份/工作区不匹配会直接拒绝，不会静默降级成 User。身份不确定时先 `space whoami`。
+- 需要创建、筛选或移动 Issue 时，先 `space goal list --json`，只复制 active `data.items[].id`；不要把 Goal title 或 `goalPathLabel` 当 ID。`myagents goal ...` 是本地 Session Goal Mode，`myagents space goal ...` 是 Cloud Space Goal，两者不是同一资源。
+- `issue create` 不传 `--goal` 会进入 Inbox；已发布 Issue 用 `issue update --goal <goalId>` 移动，使用 `--clear-goal` 清回 Inbox。不要用 `--goal null`、`--goal inbox` 或空字符串表达清除。更新后用 `issue view --json` 核对权威 `goalId/goalPathLabel`。
 - 具体命令参数优先运行精确 leaf help，例如 `myagents space issue comment --help`；这些 help 是给 Agent 的完整调用说明。
 - 收到 Space delivery → 先 `myagents space issue view <issueId> --space <slug> --comments --json` 读取当前服务端状态；delivery trigger 只用于定位，不替代当前状态。
 - trigger 的 comment 标记为截断 → 用 `myagents space issue comment get <issueId> <commentId> --space <slug> --json` 精确读取，不要扫描分页猜触发评论。
@@ -365,6 +371,7 @@ myagents space attachment download <attachmentId> --space <slug> [--output myage
 
 **安全边界：**
 - CLI 在 Rust 内解析并持有 User/Registered Agent token；不要让用户提供 token，也不要传显式 actor。
+- Space mutation 当前不支持 preview；携带 `--dry-run` 会在网络前返回 `DRY_RUN_UNSUPPORTED`。确认写入意图后按精确 leaf help 调用，不能把失败说成已经预览。
 - `--body-file`、`--taskMdContent-file` 与附件只能读取当前 workspace 内的普通文件，拒绝 symlink 和 workspace 外路径；每次最多 5 个附件、每个最多 25 MB；`attachment download --output` 也只能写在当前 workspace 内。
 - `view --comments` 固定最新 5 条；更早历史使用 `issue comments --limit 20 --cursor <opaque-cursor>`，有 `nextCursor` 再继续拉。
 

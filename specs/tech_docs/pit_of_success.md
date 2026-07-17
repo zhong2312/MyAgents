@@ -103,16 +103,17 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 <a id="proxy_config"></a>
 ## `proxy_config` (`src-tauri/src/proxy_config.rs`)
 
-**Problem.** Node.js 20+ 的 `fetch()`（undici）会读取 `HTTP_PROXY` 环境变量。如果 Tauri 子进程从父进程继承了 `HTTP_PROXY`（用户系统配置），Sidecar 内部的 localhost 通信（admin-api、cron-tool、bridge-tools 等）会被系统代理拦截 → 502。
+**Problem.** Node.js global `fetch()` 默认不会可靠消费运行时变化的 `HTTP_PROXY`；但 SDK、子进程和其它 HTTP 库可能读取继承环境。如果把 app overlay、启动时 inherited baseline 与 Provider owner 混成一份 `process.env`，会同时造成通用请求选项失效、Provider 串线，或 localhost 被代理拦截 → 502。
 
-**Surface.** `crate::proxy_config::apply_to_subprocess(&mut cmd)`
+**Surface.** 通用 owner 使用 `crate::proxy_config::apply_to_subprocess(&mut cmd)` / `build_client_with_proxy()`；Provider-owned 使用 `apply_to_subprocess_for_provider()` / `build_client_with_proxy_for_provider()`。通用 decision 统一由 `read_proxy_settings_for_general_requests()` 提供。
 
 **Invariants enforced.**
-- 用户配置代理时注入 `HTTP_PROXY` + `NO_PROXY`（保护 localhost 列表）
-- 用户未配置时不污染子进程环境，但**始终**注入 `NO_PROXY` 保护 localhost
+- 用户配置代理且对应 general/provider owner 被选择时注入 `HTTP_PROXY` + `NO_PROXY`（保护 localhost 列表）
+- 总开关关闭或 owner 未选择时继承系统网络，但**始终**补齐 `NO_PROXY` 保护 localhost
+- Node generic fetch 走 `fetchWithGeneralProxy()`：由 `proxy-state` 在 app overlay / immutable inherited snapshot 间选择 package-pinned dispatcher；不要靠 global fetch 猜 env
 - 与 `local_http` 形成纵深防御——即使 Rust 层忘记 `.no_proxy()`，Node 子进程内的 localhost 通信仍受 `NO_PROXY` 保护
 
-**Don't.** 手动 `cmd.env("HTTP_PROXY", ...)` 或 `cmd.env_remove("HTTP_PROXY")`。
+**Don't.** 手动 `cmd.env("HTTP_PROXY", ...)` / `cmd.env_remove("HTTP_PROXY")`；不要让 Provider-owned 路径调用 generic helper，也不要把 `read_proxy_settings()` 改成 general-aware（否则 general=false 时选中的 Provider 会丢代理）。
 
 完整代理策略详见 `proxy_config.md`。
 
@@ -444,13 +445,13 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 <a id="builtin-mcp"></a>
 ## Builtin MCP 懒加载架构
 
-**Problem.** 5 个 in-process 内置 MCP（cron-tools / im-cron / im-media / gemini-image / edge-tts）顶层 import `@anthropic-ai/claude-agent-sdk`（~900KB）+ `zod/v4`（~470KB）+ per-tool schema 构造 → Sidecar 冷启动每次付 ~500-1000ms zod schema 构造税，即使用户压根没启用这个 MCP。
+**Problem.** in-process MCP 若在 tool module 顶层 import `@anthropic-ai/claude-agent-sdk`（~900KB）+ `zod/v4`（~470KB）并构造 per-tool schema，Sidecar 冷启动会无条件支付约 500-1000ms 税，即使当前 Session 根本不用该 MCP。当前 META registry 只有 user-toggleable `gemini-image` / `edge-tts`；历史 `cron-tools` / `im-cron` / `im-media` 已迁移到 `myagents` CLI，runtime-dynamic `im-bridge-tools` 由独立 context-injected surface owner 懒初始化。
 
 **Architecture: 两层 META / INSTANCE**
 
 - **META 层** (`src/server/tools/builtin-mcp-meta.ts`)：每个 MCP 登记一个 `{ id, load: async () => ... }` 工厂。**模块加载时只存函数引用**，不 eval 任何 tool 代码。
 - **INSTANCE 层** (`src/server/tools/builtin-mcp-registry.ts::getBuiltinMcpInstance(id)`)：按需触发 factory，SDK + zod + per-tool schema 构造全部在此发生。**首次 call 付 100-400ms，后续缓存命中 0ms。** Promise 失败自动 evict，防止 poisoned cache。
-- **Settings UI 的 MCP 列表**从静态 `PRESET_MCP_SERVERS`（`src/renderer/config/types.ts`）读取，**不依赖** INSTANCE 层。关闭某个 builtin = 不传给 SDK ≠ 不创建。
+- **Settings UI 的 MCP 列表**从静态 `PRESET_MCP_SERVERS` 读取；权威定义在 `src/shared/config-types.ts`，renderer 的 `src/renderer/config/types.ts` 只是兼容 barrel，**不依赖** INSTANCE 层。本次 Sidecar 生命周期内从未启用或测试的 builtin 只登记轻量 META factory，不加载 tool module，也不创建 INSTANCE；已创建的 INSTANCE 则按进程生命周期缓存。
 
 **新增 builtin MCP 流程：**
 1. 新建 `src/server/tools/xxx-tool.ts`，导出 `async function createXxxServer()`。**SDK/zod 的 value import 必须在 factory 内部 `await import(...)`**，顶层只能 light 依赖 + `import type`。

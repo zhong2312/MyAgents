@@ -299,8 +299,6 @@
     "moreActions": "更多操作"
   },
   "notifications": {
-    "messageCompleteTitle": "MyAgents - 任务完成",
-    "messageCompleteBody": "请您查看结果",
     "permissionTitle": "MyAgents - 权限请求",
     "permissionBody": "AI 请求使用工具 - {{toolName}}",
     "askUserTitle": "MyAgents - 需求确认",
@@ -441,6 +439,9 @@
       "remoteUpdatesAvailable": "有更新，点击刷新"
     },
     "filters": {
+      "issueStatus": "Issue 状态",
+      "allIssues": "全部",
+      "incompleteIssues": "未完成",
       "allGoals": "全部目标",
       "inbox": "收件箱",
       "activeStatuses": "未完成",
@@ -845,7 +846,8 @@
       "inputTokens": "输入 Token",
       "outputTokens": "输出 Token",
       "cacheInput": "输入缓存",
-      "messageCount": "对话轮次"
+      "turnCount": "执行轮次",
+      "humanQueryCount": "真人输入"
     },
     "dailyTrend": "每日用量趋势",
     "empty": "暂无数据",
@@ -853,7 +855,8 @@
     "tooltip": {
       "input": "输入: {{tokens}}",
       "output": "输出: {{tokens}}",
-      "messages": "对话: {{count}} 轮"
+      "turns": "执行: {{count}} 轮",
+      "humanQueries": "真人输入: {{count}} 次"
     },
     "legend": {
       "input": "输入",
@@ -911,7 +914,7 @@
     "noResults": "未找到结果",
     "unfavorite": "取消收藏",
     "favorite": "收藏",
-    "messageCount": "{{count}} 条",
+    "turnCount": "{{count}} 轮",
     "viewStats": "查看统计",
     "deleteBlocked": "请先停止定时任务后再删除",
     "deleteBlockedAria": "删除（请先停止定时任务）",

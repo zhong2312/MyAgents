@@ -45,13 +45,22 @@
    的来源。例如 `<HEARTBEAT>` / `<CRON_TASK>` / `<FLOATING_BALL_CONTEXT>`。
 3. `</system-reminder>` 后面的文本是 `visibleText`，会作为用户气泡正文展示。
 4. `system-reminder` 内部 payload 会进入模型上下文；在有 `visibleText` 的标准
-   mixed message 中，用户气泡和 Session 搜索索引都只使用 `visibleText`。
+   mixed message 中，用户气泡、Session 搜索/预览、Query Navigator 与统计详情的
+   turn trigger 都只使用 `visibleText`。
 5. 同一条消息只应有一个 leading `system-reminder` envelope；解析器只消费第一段。
 6. 如果没有 `visibleText` 且没有用户附件，前端应把整条 user bubble 视为纯隐藏
    reminder，不渲染气泡正文。Goal 自动续跑、objective update 等“只给模型看”的
    注入依赖这个语义。
 7. 如果没有 `visibleText` 但带附件，保留附件气泡与 badge，避免误吞真实用户可见
    附件。
+
+这里有三个正交事实，调用方不得混用：
+
+- **visible turn**：由 `resolveVisibleUserTurnText()` / `stripLeadingSystemReminder()` 决定，只回答 UI 可以展示什么；纯 reminder 返回空，hidden payload 不得 raw fallback。
+- **human query**：由 `isHumanUserMessage()` 决定，只服务 Memory 候选与 human-query 统计；附件可构成真人 query，但 Memory/Heartbeat/Cron/Space/Session Event/local command 等系统投送及对应 automation/channel/inbox origin 不因有 visible tail 就变成人类输入。
+- **meaningful activity**：由 runtime 接纳后的 `session-activity-policy` 在 admission/terminal lifecycle 决定；它控制 `lastActiveAt`，不读取 `isHumanUserMessage()`。origin 是权威事实，只有 origin unknown 时才用标准 reminder kind 做兼容 fallback。
+
+因此 `turnCount` 可以统计所有持久 user turn，`humanQueryCount` 只统计真人输入，而 preview/search/detail 只展示 visible 内容；三者不应为了数值一致而复用同一个 classifier。
 
 Cron 结果投送到 IM session 的推荐结构：
 

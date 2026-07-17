@@ -14,6 +14,7 @@ import type { SpaceIssue } from "@/api/spaceCloud";
 import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
 import { SpaceIdentityLine } from "@/pages/space/SpaceAvatar";
 import {
+  ALL_ISSUE_STATE_FILTER,
   ACTIVE_ISSUE_STATE_FILTER,
   claimHandlerLabel,
   ISSUE_STATUSES,
@@ -30,6 +31,10 @@ import {
   formatTime,
   statusPillClass,
 } from "@/pages/space/spaceUi";
+
+// Keep the granular status selector compile-live for a future product revisit.
+// The current Issue information architecture intentionally exposes only All and Incomplete.
+const ENABLE_GRANULAR_ISSUE_STATUS_FILTER = false;
 
 export function IssuesWorkspace({
   admin,
@@ -83,6 +88,10 @@ export function IssuesWorkspace({
   const statusFilterOptions = useMemo<SelectOption[]>(
     () => [
       {
+        value: ALL_ISSUE_STATE_FILTER,
+        label: t("space.filters.allIssues"),
+      },
+      {
         value: ACTIVE_ISSUE_STATE_FILTER,
         label: t("space.filters.activeStatuses"),
       },
@@ -133,7 +142,7 @@ export function IssuesWorkspace({
         <div
           className={
             searchActive
-              ? "flex w-72 min-w-24 shrink items-center"
+              ? "flex w-72 min-w-24 shrink items-center max-xl:w-40 max-xl:min-w-40"
               : "flex shrink-0 items-center"
           }
         >
@@ -180,42 +189,81 @@ export function IssuesWorkspace({
           )}
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <CustomSelect
-            value={selectedStatus}
-            options={statusFilterOptions}
-            onChange={onStatusChange}
-            size="toolbar"
-            className="w-40 min-w-0 shrink"
-          />
+          {ENABLE_GRANULAR_ISSUE_STATUS_FILTER ? (
+            <CustomSelect
+              value={selectedStatus}
+              options={statusFilterOptions}
+              onChange={onStatusChange}
+              size="toolbar"
+              className="w-40 min-w-0 shrink"
+            />
+          ) : (
+            <div
+              role="group"
+              aria-label={t("space.filters.issueStatus")}
+              className="grid h-9 w-44 shrink-0 grid-cols-2 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]/80 p-0.5"
+            >
+              <button
+                type="button"
+                aria-pressed={selectedStatus === ALL_ISSUE_STATE_FILTER}
+                onClick={() => onStatusChange(ALL_ISSUE_STATE_FILTER)}
+                className={`rounded-lg px-2 text-sm font-medium transition-colors active:scale-[0.98] ${
+                  selectedStatus === ALL_ISSUE_STATE_FILTER
+                    ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
+                    : "text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
+                }`}
+              >
+                {t("space.filters.allIssues")}
+              </button>
+              <button
+                type="button"
+                aria-pressed={selectedStatus === ACTIVE_ISSUE_STATE_FILTER}
+                onClick={() => onStatusChange(ACTIVE_ISSUE_STATE_FILTER)}
+                className={`rounded-lg px-2 text-sm font-medium transition-colors active:scale-[0.98] ${
+                  selectedStatus === ACTIVE_ISSUE_STATE_FILTER
+                    ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
+                    : "text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
+                }`}
+              >
+                {t("space.filters.incompleteIssues")}
+              </button>
+            </div>
+          )}
           <CustomSelect
             value={selectedGoalId}
             options={goalOptions}
             onChange={onGoalChange}
             size="toolbar"
-            className="min-w-0 flex-1 max-w-[360px]"
+            className="min-w-0 flex-1 max-w-[360px] max-xl:min-w-20"
           />
           <button
             type="button"
             onClick={() => onRelatedToMeChange(!relatedToMe)}
             aria-pressed={relatedToMe}
-            className={`inline-flex h-9 min-w-fit shrink-0 items-center gap-1.5 rounded-xl border px-3 text-sm font-semibold transition-colors ${
+            className={`inline-flex h-9 min-w-fit shrink-0 items-center gap-1.5 rounded-xl border px-3 text-sm font-semibold transition-colors max-xl:px-2 ${
               relatedToMe
                 ? "border-[var(--accent-warm)]/35 bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]"
                 : "border-[var(--line)] bg-[var(--paper-elevated)]/70 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
             }`}
           >
             <UserRoundCheck className="h-4 w-4" />
-            {t("space.filters.relatedToMe")}
+            <span className="max-xl:sr-only">
+              {t("space.filters.relatedToMe")}
+            </span>
           </button>
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-2.5">
+        <div
+          className={`ml-auto shrink-0 items-center gap-2.5 ${
+            searchActive ? "flex max-xl:hidden" : "flex"
+          }`}
+        >
           <button
             type="button"
             onClick={onCreate}
-            className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
+            className={`${SPACE_PRIMARY_TOOL_BUTTON_CLASS} max-xl:px-3`}
           >
             <Plus className="h-4 w-4" />
-            {t("space.common.create")}
+            <span className="max-xl:sr-only">{t("space.common.create")}</span>
           </button>
           <button
             type="button"

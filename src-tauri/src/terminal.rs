@@ -441,13 +441,20 @@ fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: 
         cmd.env("PATH", new_path);
     }
 
-    // 2. Proxy configuration — reuse proxy_config logic
+    // 2. General proxy baseline — new PTYs follow the current general scope.
     //    We can't call proxy_config::apply_to_subprocess() directly because it takes
     //    &mut std::process::Command, not CommandBuilder. Apply the same logic manually,
     //    matching the error handling of the canonical apply_to_subprocess().
-    if let Some(proxy) = crate::proxy_config::read_proxy_settings() {
+    let using_app_proxy = if let Some(proxy) =
+        crate::proxy_config::read_proxy_settings_for_general_requests()
+    {
         match crate::proxy_config::get_proxy_url(&proxy) {
             Ok(proxy_url) => {
+                // CommandBuilder inherits the parent environment. Remove generic
+                // SOCKS fallbacks so they cannot outrank the selected app HTTP(S)
+                // proxy in child tools that prefer ALL_PROXY.
+                cmd.env_remove("ALL_PROXY");
+                cmd.env_remove("all_proxy");
                 cmd.env("HTTP_PROXY", &proxy_url);
                 cmd.env("HTTPS_PROXY", &proxy_url);
                 cmd.env("http_proxy", &proxy_url);
@@ -457,6 +464,7 @@ fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: 
                     crate::proxy_config::PROXY_INHERITED_ENV_JSON,
                     crate::proxy_config::inherited_proxy_env_json(),
                 );
+                true
             }
             Err(e) => {
                 ulog_error!(
@@ -464,12 +472,21 @@ fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: 
                     e
                 );
                 // Don't inject proxy vars — let terminal inherit system network behavior
+                false
             }
         }
-    }
-    // MUST always inject NO_PROXY to protect localhost (reuse canonical constant)
-    cmd.env("NO_PROXY", crate::proxy_config::LOCALHOST_NO_PROXY);
-    cmd.env("no_proxy", crate::proxy_config::LOCALHOST_NO_PROXY);
+    } else {
+        false
+    };
+    let no_proxy = if using_app_proxy {
+        crate::proxy_config::LOCALHOST_NO_PROXY.to_string()
+    } else {
+        // Preserve corporate/system bypass rules while adding mandatory
+        // localhost protection on the inherited baseline.
+        crate::proxy_config::inherited_no_proxy_with_localhost()
+    };
+    cmd.env("NO_PROXY", &no_proxy);
+    cmd.env("no_proxy", &no_proxy);
 
     // 3. Sidecar port — lets `myagents` CLI talk to the Tab's session sidecar
     if let Some(port) = sidecar_port {

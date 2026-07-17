@@ -53,7 +53,14 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 | Rust         | `src-tauri/src/space_cloud.rs`                                | Space session、HTTP proxy、registered agents、IssueDelivery poll/process、claim wrapper、Skill zip、附件上传下载                                                                                                                                                                                                                   |
 | Renderer API | `src/renderer/api/spaceCloud.ts`                              | Tauri invoke typed wrapper；不直接 `fetch` Space 服务                                                                                                                                                                                                                                                                              |
 | Renderer UI  | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存                                                                                                                                                                                                                        |
-| CLI          | `src/cli/myagents.ts` + Sidecar Admin API + Rust Management API | 每个业务命令显式 `--space <slug>`；Sidecar 从当前 project 补 stable workspace id，Rust 单点解析 User/Registered Agent actor 和 token。支持 list/whoami/assignee、Issue create/read/comment/claim/complete、top attachment add/download；CLI 不接受显式 actor/token |
+| CLI          | `src/cli/myagents.ts` + Sidecar Admin API + Rust Management API | 每个业务命令显式 `--space <slug>`；Sidecar 从当前 project 补 stable workspace id，Rust 单点解析 User/Registered Agent actor 和 token。支持 list/whoami/Goal/assignee discovery、Issue create/read/metadata update/comment/claim/complete、top attachment add/download；CLI 不接受显式 actor/token |
+
+### CLI Goal discovery 与 Issue 元数据更新
+
+- `space goal list` 与 Issue mutation 共用 `SpaceCliContext` 的 resolved actor。Registered Agent token 必须同时通过 route Space 与 `X-MyAgents-Space-Context` 校验；binding 或 scope 失配直接失败，不能改用 User token 重试。默认只返回 active Goal，`--include-archived` 仅用于诊断。
+- `space issue update` 是既有 Cloud `PATCH /api/issues/:id` 的薄适配，只允许 title/body/goal/humanOnly。CLI/Rust 以 `{action:'set',goalId}` / `{action:'clear'}` 保留“不变 / 设置 / 清除”三态，仅在 Rust Cloud adapter 组 PATCH body 时把 clear 翻译为 `goalId:null`。
+- state、assignee、claim、comment、attachment 不进入 generic update。成功响应返回权威 Issue detail；Goal update/clear 沿用 Cloud 的 active same-Space Goal 校验、权限、update event/delivery 与 notificationVersion 语义。
+- Space mutation 当前没有 preview API。CLI 遇到 `--dry-run` 会在端口发现、HTTP 和 workspace 文件 IO 前返回 `DRY_RUN_UNSUPPORTED`，不得把拒绝描述成已预览。
 
 ## Cloud Worker 容量与一致性不变量
 

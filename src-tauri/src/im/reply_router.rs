@@ -10,11 +10,11 @@
                      // (send / edit / finalize / abort).
                      //
                      // Architectural note: ReplyRouter is owned by a single `ImEventConsumer`
-                     // task, so all event handling is naturally serialized — adapter calls
-                     // (Telegram/Feishu/Bridge HTTP) get sequenced anyway by their underlying
-                     // transport, so per-event serialization adds no real latency cost. The
-                     // "concurrent in-flight requests" win comes from the protocol split (peer_lock
-                     // only covers /api/im/enqueue), not from parallelizing reply renders.
+                     // task, so event-to-adapter handoff is naturally ordered. Native adapters
+                     // perform their platform I/O here. OpenClaw adapters only await the Bridge's
+                     // enqueue ACK; the plugin-owned dispatcher performs renderer/platform I/O on
+                     // its own per-request queue. The "concurrent in-flight requests" win comes
+                     // from request-scoped ownership, not from parallelizing this router.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,12 +24,25 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use super::adapter::{self, ImStreamAdapter};
-use super::types::{AskUserQuestionPayload, ImSourceType};
+use super::types::{AskUserQuestionPayload, ImDeliveryProtocol, ImSourceType};
 use super::{
     finalize_block, format_draft_text, has_sentence_boundary, GroupStreamContext, PendingApproval,
     PendingApprovals, PendingQuestion, PendingQuestions, THINKING_PLACEHOLDER,
 };
 use crate::{ulog_error, ulog_info, ulog_warn};
+
+fn terminal_text(data: Option<&Value>) -> Option<&str> {
+    data.and_then(|value| {
+        value.as_str().or_else(|| {
+            value
+                .get("finalPayloads")
+                .and_then(Value::as_array)
+                .and_then(|payloads| payloads.first())
+                .and_then(|payload| payload.get("text"))
+                .and_then(Value::as_str)
+        })
+    })
+}
 
 /// Per-requestId reply state. Mirrors the locals previously declared at the
 /// top of `stream_to_im` / `stream_to_im_streaming`. One slot per in-flight
@@ -41,6 +54,7 @@ pub struct ReplySlot {
     pub message_id: String,
     pub source_type: ImSourceType,
     pub requester_user_id: Option<String>,
+    pub delivery_protocol: Option<ImDeliveryProtocol>,
     /// Whether the request is in group "always" mode (for NO_REPLY detection).
     pub group_activation_always: bool,
 
@@ -56,6 +70,7 @@ pub struct ReplySlot {
     // ── Streaming protocol state (Dingtalk AI Card / supports_streaming) ──
     pub stream_id: Option<String>,
     pub sequence: u32,
+    pub reply_dispatch_started: bool,
 
     // Result session_id (carried out via 'complete' event for the caller)
     pub completed_session_id: Option<String>,
@@ -71,6 +86,7 @@ impl ReplySlot {
         source_type: ImSourceType,
         requester_user_id: Option<String>,
         group_activation_always: bool,
+        delivery_protocol: Option<ImDeliveryProtocol>,
     ) -> Self {
         Self {
             request_id,
@@ -78,6 +94,7 @@ impl ReplySlot {
             message_id,
             source_type,
             requester_user_id,
+            delivery_protocol,
             group_activation_always,
             block_text: String::new(),
             draft_id: None,
@@ -88,6 +105,7 @@ impl ReplySlot {
             last_block_text: String::new(),
             stream_id: None,
             sequence: 0,
+            reply_dispatch_started: false,
             completed_session_id: None,
             is_done: false,
         }
@@ -124,6 +142,7 @@ impl ReplyRouter {
         source_type: ImSourceType,
         requester_user_id: Option<String>,
         group_ctx: Option<&GroupStreamContext>,
+        delivery_protocol: Option<ImDeliveryProtocol>,
     ) {
         if self.slots.contains_key(&request_id) {
             return;
@@ -139,6 +158,7 @@ impl ReplyRouter {
             source_type,
             requester_user_id,
             group_activation_always,
+            delivery_protocol,
         );
         self.slots.insert(request_id, slot);
     }
@@ -186,7 +206,16 @@ impl ReplyRouter {
             return None;
         }
 
-        let outcome = if adapter.supports_streaming() {
+        let uses_openclaw_reply = matches!(
+            self.slots
+                .get(&request_id)
+                .and_then(|slot| slot.delivery_protocol.as_ref()),
+            Some(ImDeliveryProtocol::OpenClawReply)
+        );
+        let outcome = if uses_openclaw_reply {
+            self.dispatch_openclaw_reply(event_type, event, &request_id, adapter, sidecar_port)
+                .await
+        } else if adapter.supports_streaming() {
             self.dispatch_streaming(event_type, event, &request_id, adapter, sidecar_port)
                 .await
         } else {
@@ -201,7 +230,9 @@ impl ReplyRouter {
         // in one place — adapter calls can be retired later without touching
         // every call site.
         if outcome.is_some() {
-            adapter.post_stream_cleanup(&chat_id).await;
+            if !uses_openclaw_reply {
+                adapter.post_stream_cleanup(&chat_id).await;
+            }
             adapter::ImAdapter::ack_clear(adapter, &chat_id, &message_id).await;
         }
 
@@ -548,7 +579,7 @@ impl ReplyRouter {
             }
 
             "error" | "cancelled" => {
-                let msg = data.and_then(|v| v.as_str()).unwrap_or("Unknown error");
+                let msg = terminal_text(data).unwrap_or("Unknown error");
                 if let Some(ref did) = slot.draft_id {
                     let _ = adapter.delete_message(&chat_id, did).await;
                 }
@@ -572,6 +603,174 @@ impl ReplyRouter {
             }
 
             _ => None, // unknown event type — ignore
+        }
+    }
+
+    async fn dispatch_openclaw_reply<A: ImStreamAdapter>(
+        &mut self,
+        event_type: &str,
+        event: &Value,
+        request_id: &str,
+        adapter: &A,
+        sidecar_port: u16,
+    ) -> Option<TerminalOutcome> {
+        // Interactive cards remain ordinary adapter operations. They do not
+        // participate in the reply snapshot/final transport.
+        if matches!(
+            event_type,
+            "ask-user-question-request" | "ask-user-question-expired" | "permission-request"
+        ) {
+            return self
+                .dispatch_edit_based(event_type, event, request_id, adapter, sidecar_port)
+                .await;
+        }
+
+        let slot = self.slots.get_mut(request_id)?;
+        let chat_id = slot.chat_id.clone();
+        let data = event.get("data");
+
+        if !slot.reply_dispatch_started {
+            if let Err(error) = adapter.start_reply_dispatch(request_id).await {
+                ulog_error!(
+                    "[reply-router] OpenClaw run start failed requestId={}: {}",
+                    request_id,
+                    error
+                );
+                // A reply-operation admission failure means the process-scoped
+                // plugin owner is absent (connection failure) or no longer has
+                // this request (protocol_dispatch_missing). Retaining the Rust
+                // slot cannot recreate that owner and would only leak it.
+                slot.is_done = true;
+                return Some(TerminalOutcome {
+                    session_id: None,
+                    silent: false,
+                });
+            }
+            slot.reply_dispatch_started = true;
+        }
+
+        match event_type {
+            "delta" => {
+                let chunk = data.and_then(Value::as_str).unwrap_or("");
+                if chunk.is_empty() {
+                    return None;
+                }
+                slot.block_text.push_str(chunk);
+                if let Some(stream_id) = slot.stream_id.as_deref() {
+                    slot.sequence += 1;
+                    if let Err(error) = adapter
+                        .update_reply_stream(stream_id, &slot.block_text, slot.sequence, false)
+                        .await
+                    {
+                        ulog_error!(
+                            "[reply-router] OpenClaw partial handoff failed requestId={} streamId={}: {}",
+                            request_id,
+                            stream_id,
+                            error
+                        );
+                    }
+                } else {
+                    match adapter
+                        .start_reply_stream(request_id, &chat_id, &slot.block_text)
+                        .await
+                    {
+                        Ok(stream_id) if !stream_id.is_empty() => {
+                            slot.stream_id = Some(stream_id);
+                            slot.sequence = 1;
+                        }
+                        Ok(_) => ulog_error!(
+                            "[reply-router] OpenClaw start stream returned empty ID requestId={}",
+                            request_id
+                        ),
+                        Err(error) => ulog_error!(
+                            "[reply-router] OpenClaw start stream failed requestId={}: {}",
+                            request_id,
+                            error
+                        ),
+                    }
+                }
+                None
+            }
+
+            "block-end" => {
+                if let Some(stream_id) = slot.stream_id.take() {
+                    if let Err(error) = adapter.finish_reply_stream_block(&stream_id).await {
+                        ulog_error!(
+                            "[reply-router] OpenClaw block barrier failed requestId={} streamId={}: {}",
+                            request_id,
+                            stream_id,
+                            error
+                        );
+                    }
+                }
+                slot.last_block_text = std::mem::take(&mut slot.block_text);
+                slot.sequence = 0;
+                None
+            }
+
+            "complete" => {
+                let final_payloads = data
+                    .and_then(|value| value.get("finalPayloads"))
+                    .filter(|value| value.is_array())
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new()));
+                let silent = slot.group_activation_always
+                    && final_payloads.as_array().is_some_and(|payloads| {
+                        payloads.iter().any(|payload| {
+                            matches!(
+                                payload.get("text").and_then(Value::as_str).map(str::trim),
+                                Some("<NO_REPLY>" | "NO_REPLY")
+                            )
+                        })
+                    });
+                if let Err(error) = adapter
+                    .complete_reply_dispatch(request_id, &final_payloads)
+                    .await
+                {
+                    ulog_error!(
+                        "[reply-router] OpenClaw complete handoff failed requestId={}: {}",
+                        request_id,
+                        error
+                    );
+                }
+                // The Bridge endpoint ACKs queue admission synchronously. On
+                // failure there is no reachable pending dispatcher to retry or
+                // settle, so local terminal cleanup remains authoritative.
+                slot.is_done = true;
+                Some(TerminalOutcome {
+                    session_id: None,
+                    silent,
+                })
+            }
+
+            "error" | "cancelled" => {
+                let terminal_payload = data
+                    .and_then(|value| value.get("finalPayloads"))
+                    .and_then(Value::as_array)
+                    .and_then(|payloads| payloads.first())
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                if let Err(error) = adapter
+                    .abort_reply_dispatch(request_id, event_type, &terminal_payload)
+                    .await
+                {
+                    ulog_error!(
+                        "[reply-router] OpenClaw abort handoff failed requestId={}: {}",
+                        request_id,
+                        error
+                    );
+                }
+                // See the complete branch: keeping the local slot cannot
+                // recover a process-scoped plugin dispatch owner.
+                slot.is_done = true;
+                Some(TerminalOutcome {
+                    session_id: None,
+                    silent: false,
+                })
+            }
+
+            "activity" => None,
+            _ => None,
         }
     }
 
@@ -766,7 +965,7 @@ impl ReplyRouter {
             }
 
             "error" | "cancelled" => {
-                let msg = data.and_then(|v| v.as_str()).unwrap_or("Unknown error");
+                let msg = terminal_text(data).unwrap_or("Unknown error");
                 if let Some(ref sid) = slot.stream_id {
                     let _ = adapter.abort_stream(&chat_id, sid).await;
                 }
@@ -916,16 +1115,21 @@ mod tests {
 
     use super::ReplyRouter;
     use crate::im::adapter::{AdapterResult, ImAdapter, ImStreamAdapter};
-    use crate::im::types::{AskUserQuestionPayload, ImSourceType};
+    use crate::im::types::{AskUserQuestionPayload, ImDeliveryProtocol, ImSourceType};
 
     #[derive(Default)]
     struct RecordingAdapter {
         sent_messages: StdMutex<Vec<(String, String)>>,
+        reply_operations: StdMutex<Vec<serde_json::Value>>,
     }
 
     impl RecordingAdapter {
         fn sent_messages(&self) -> Vec<(String, String)> {
             self.sent_messages.lock().unwrap().clone()
+        }
+
+        fn reply_operations(&self) -> Vec<serde_json::Value> {
+            self.reply_operations.lock().unwrap().clone()
         }
     }
 
@@ -1050,6 +1254,84 @@ mod tests {
         ) -> AdapterResult<()> {
             Ok(())
         }
+
+        async fn start_reply_dispatch(&self, request_id: &str) -> AdapterResult<()> {
+            self.reply_operations
+                .lock()
+                .unwrap()
+                .push(json!({ "kind": "start", "requestId": request_id }));
+            Ok(())
+        }
+
+        async fn start_reply_stream(
+            &self,
+            request_id: &str,
+            chat_id: &str,
+            initial_text: &str,
+        ) -> AdapterResult<String> {
+            let stream_id = format!("stream-{}", self.reply_operations.lock().unwrap().len());
+            self.reply_operations.lock().unwrap().push(json!({
+                "kind": "stream-start",
+                "requestId": request_id,
+                "chatId": chat_id,
+                "text": initial_text,
+                "streamId": stream_id,
+            }));
+            Ok(stream_id)
+        }
+
+        async fn update_reply_stream(
+            &self,
+            stream_id: &str,
+            text: &str,
+            sequence: u32,
+            is_thinking: bool,
+        ) -> AdapterResult<()> {
+            self.reply_operations.lock().unwrap().push(json!({
+                "kind": "partial",
+                "streamId": stream_id,
+                "text": text,
+                "sequence": sequence,
+                "isThinking": is_thinking,
+            }));
+            Ok(())
+        }
+
+        async fn finish_reply_stream_block(&self, stream_id: &str) -> AdapterResult<()> {
+            self.reply_operations
+                .lock()
+                .unwrap()
+                .push(json!({ "kind": "block-boundary", "streamId": stream_id }));
+            Ok(())
+        }
+
+        async fn complete_reply_dispatch(
+            &self,
+            request_id: &str,
+            final_payloads: &serde_json::Value,
+        ) -> AdapterResult<()> {
+            self.reply_operations.lock().unwrap().push(json!({
+                "kind": "complete",
+                "requestId": request_id,
+                "finalPayloads": final_payloads,
+            }));
+            Ok(())
+        }
+
+        async fn abort_reply_dispatch(
+            &self,
+            request_id: &str,
+            reason: &str,
+            terminal_payload: &serde_json::Value,
+        ) -> AdapterResult<()> {
+            self.reply_operations.lock().unwrap().push(json!({
+                "kind": "abort",
+                "requestId": request_id,
+                "reason": reason,
+                "terminalPayload": terminal_payload,
+            }));
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -1066,6 +1348,7 @@ mod tests {
             "msg-1".to_string(),
             ImSourceType::Private,
             Some("user-1".to_string()),
+            None,
             None,
         );
         let adapter = RecordingAdapter::default();
@@ -1116,12 +1399,14 @@ mod tests {
             ImSourceType::Private,
             None,
             None,
+            None,
         );
         router.register(
             "other-request".to_string(),
             "chat-other".to_string(),
             "msg-other".to_string(),
             ImSourceType::Private,
+            None,
             None,
             None,
         );
@@ -1150,6 +1435,171 @@ mod tests {
                 "chat-other".to_string(),
                 "⚠️ 部分流式内容丢失（事件队列溢出）".to_string(),
             )],
+        );
+    }
+
+    #[tokio::test]
+    async fn openclaw_reply_uses_request_protocol_and_keeps_block_boundary_non_terminal() {
+        let pending_approvals = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_questions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut router = ReplyRouter::new(pending_approvals, pending_questions);
+        router.register(
+            "request-1".to_string(),
+            "chat-1".to_string(),
+            "msg-1".to_string(),
+            ImSourceType::Private,
+            None,
+            None,
+            Some(ImDeliveryProtocol::OpenClawReply),
+        );
+        let adapter = RecordingAdapter::default();
+
+        assert!(router
+            .dispatch(
+                &json!({ "requestId": "request-1", "type": "delta", "data": "first" }),
+                &adapter,
+                0,
+            )
+            .await
+            .is_none());
+        assert!(router
+            .dispatch(
+                &json!({ "requestId": "request-1", "type": "block-end", "data": "" }),
+                &adapter,
+                0,
+            )
+            .await
+            .is_none());
+        assert_eq!(router.slot_count(), 1);
+        assert!(router
+            .dispatch(
+                &json!({ "requestId": "request-1", "type": "delta", "data": "second" }),
+                &adapter,
+                0,
+            )
+            .await
+            .is_none());
+        let terminal = router
+            .dispatch(
+                &json!({
+                    "requestId": "request-1",
+                    "type": "complete",
+                    "data": { "finalPayloads": [{ "text": "canonical final" }] }
+                }),
+                &adapter,
+                0,
+            )
+            .await;
+
+        assert!(terminal.is_some());
+        assert_eq!(adapter.sent_messages(), Vec::<(String, String)>::new());
+        assert_eq!(
+            adapter.reply_operations(),
+            vec![
+                json!({ "kind": "start", "requestId": "request-1" }),
+                json!({
+                    "kind": "stream-start",
+                    "requestId": "request-1",
+                    "chatId": "chat-1",
+                    "text": "first",
+                    "streamId": "stream-1"
+                }),
+                json!({ "kind": "block-boundary", "streamId": "stream-1" }),
+                json!({
+                    "kind": "stream-start",
+                    "requestId": "request-1",
+                    "chatId": "chat-1",
+                    "text": "second",
+                    "streamId": "stream-3"
+                }),
+                json!({
+                    "kind": "complete",
+                    "requestId": "request-1",
+                    "finalPayloads": [{ "text": "canonical final" }]
+                }),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn openclaw_reply_abort_forwards_only_the_producer_terminal_payload() {
+        let pending_approvals = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_questions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut router = ReplyRouter::new(pending_approvals, pending_questions);
+        router.register(
+            "request-1".to_string(),
+            "chat-1".to_string(),
+            "msg-1".to_string(),
+            ImSourceType::Private,
+            None,
+            None,
+            Some(ImDeliveryProtocol::OpenClawReply),
+        );
+        let adapter = RecordingAdapter::default();
+
+        let terminal = router
+            .dispatch(
+                &json!({
+                    "requestId": "request-1",
+                    "type": "error",
+                    "data": {
+                        "finalPayloads": [{ "text": "safe error", "isError": true }]
+                    }
+                }),
+                &adapter,
+                0,
+            )
+            .await;
+
+        assert!(terminal.is_some());
+        assert_eq!(
+            adapter.reply_operations(),
+            vec![
+                json!({ "kind": "start", "requestId": "request-1" }),
+                json!({
+                    "kind": "abort",
+                    "requestId": "request-1",
+                    "reason": "error",
+                    "terminalPayload": { "text": "safe error", "isError": true }
+                }),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_adapter_reads_error_text_from_typed_terminal_payload() {
+        let pending_approvals = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_questions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut router = ReplyRouter::new(pending_approvals, pending_questions);
+        router.register(
+            "request-1".to_string(),
+            "chat-1".to_string(),
+            "msg-1".to_string(),
+            ImSourceType::Private,
+            None,
+            None,
+            None,
+        );
+        let adapter = RecordingAdapter::default();
+
+        let terminal = router
+            .dispatch(
+                &json!({
+                    "requestId": "request-1",
+                    "type": "error",
+                    "data": {
+                        "finalPayloads": [{ "text": "safe error", "isError": true }]
+                    }
+                }),
+                &adapter,
+                0,
+            )
+            .await;
+
+        assert!(terminal.is_some());
+        assert_eq!(
+            adapter.sent_messages(),
+            vec![("chat-1".to_string(), "⚠️ safe error".to_string())]
         );
     }
 }

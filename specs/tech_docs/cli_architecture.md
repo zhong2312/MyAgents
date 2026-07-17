@@ -112,7 +112,7 @@ Groups:
 Global flags:
   --help          帮助（顶层静态；子命令走 /api/admin/help 动态渲染）
   --json          JSON 输出
-  --dry-run       预览不执行（支持写操作）
+  --dry-run       仅精确 leaf help 明示支持的命令可预览；unsupported mutation fail closed
   --port NUM      覆盖端口
   --disable-nonessential  禁用非必要校验
 ```
@@ -315,7 +315,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/plugin/*` | OpenClaw 插件安装/卸载/列表 |
 | `/api/admin/im/*` | IM runtime actions（send-media） |
 | `/api/admin/session/*` | Session 间事件通信：`send` 投递新工作/通知，`watch` 监听目标当前工作完成 |
-| `/api/admin/space/*` | Cloud Space：显式 slug、whoami/assignee、Issue 操作、comment/top attachment、claim/complete/download |
+| `/api/admin/space/*` | Cloud Space：显式 slug、whoami/assignee/Goal discovery、Issue create/read/metadata update、comment/top attachment、claim/complete/download |
 | `/api/admin/widget/*` | Generative UI widget 资料 |
 | `/api/admin/config/*` | 通用配置读写 |
 | `/api/admin/status` | 应用运行状态 |
@@ -330,6 +330,9 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 - delivery Session 除 `registered_agents.json` 外还以 `delivery_log.json` 作为独立绑定证据；绑定 Agent 丢失、失效、跨 Space/device/workspace 或重复时 fail closed，绝不降级为 User。普通未登记 workspace 才使用当前 User session token，与 UI 同权执行。
 - Rust Management API 统一返回 `{ok:false,code,error,suggestion,suggestedCommand?}`；Node Admin API 原样保留，CLI human mode 渲染 `Error:`/`Suggestion:`，`--json` stdout 只输出一个可解析对象且本地参数/文件错误也走同一契约。
 - `myagents <exact leaf> --help` 是 Agent 的工具说明。每个 Space leaf 独立描述 WHEN TO CALL、EFFECT、REQUIRED CONTEXT、OPTIONS、ACTOR AND PERMISSIONS、FILE SAFETY、OUTPUT、EXAMPLES、RECOVERY，不能回落到泛化 group help。
+- Goal discovery 走 `space goal list --space <slug> [--include-archived]`，只把 active `data.items[].id` 用作 create/list/update 的 `--goal`。`myagents goal` 是本地 Session Goal Mode，`myagents space goal` 是 Cloud 组织 Goal，help 必须保持命名空间消歧。
+- Issue 元数据编辑走 `space issue update <issueId>`，只接受 title/body/Goal/humanOnly。省略 Goal 表示不变；`--clear-goal` 在 CLI→Rust 使用 tagged action，Rust 最后一跳才映射成 Cloud `goalId:null`。state、assignee、claim、comment 和 attachment 仍由各自命令拥有。
+- top help 不承诺全局 preview。所有 Space write-like command 携带 `--dry-run` 时，CLI 在端口发现、HTTP 与本地文件 IO 前返回 `DRY_RUN_UNSUPPORTED`；只读命令不会把无关 flag 描述成 preview。真正支持 dry-run 的配置类命令以各自精确 leaf help 为准。
 - repeatable `--attachment`/`--file` 只传路径；Rust 一次 bounded/no-follow 读取后同时拥有 multipart bytes 与 complete idempotency hash，Node 不读取附件内容。
 
 ### Session send/watch 协议边界

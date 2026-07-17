@@ -161,6 +161,7 @@ describe('createMaterializedSessionMetadata', () => {
       sessionId: 'registered-agent-session-id',
       scenario: 'registeredAgent',
       agent: makeAgent(),
+      title: 'Issue title must not own this session',
     });
 
     expect(meta.id).toBe('registered-agent-session-id');
@@ -168,5 +169,6 @@ describe('createMaterializedSessionMetadata', () => {
     expect(meta.model).toBeUndefined();
     expect(meta.permissionMode).toBeUndefined();
     expect(meta.configSnapshotAt).toBeUndefined();
+    expect(meta.title).toBe('Agent');
   });
 });

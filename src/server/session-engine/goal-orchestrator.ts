@@ -332,6 +332,11 @@ function createGoalTurnLifecycle(
   };
   beforeDispatch.cancel = () => {
     canceled = true;
+    // Cancellation may arrive after the claim guard returned accepted but
+    // before the runtime's synchronous commit seam (for example an MCP lease
+    // replacement). Settle the durable Goal reservation as aborted; merely
+    // flipping the local flag would strand the claimed turn.
+    return abort();
   };
 
   const finalize = async (outcome: TurnTerminalOutcome): Promise<void> => {

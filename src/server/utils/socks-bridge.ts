@@ -20,28 +20,32 @@ import { SocksClient, type SocksProxy } from 'socks';
 
 let bridgeServer: http.Server | null = null;
 let bridgePort = 0;
+let activeSocksProxy: SocksProxy | null = null;
 /** The original SOCKS5 proxy URL (for display/logging) */
 let originalSocksUrl = '';
 
 /**
  * Start the HTTP-to-SOCKS5 bridge on a random local port.
- * If a bridge is already running, stops it first.
+ * If a bridge is already running, keeps the listener/port stable and routes
+ * new CONNECT requests to the current SOCKS endpoint. This is important for a
+ * general-only scope edit: provider subprocesses keep the same bridge URL and
+ * therefore do not need an unrelated restart.
  *
  * @returns The local port the bridge is listening on
  */
 export async function startSocksBridge(socksHost: string, socksPort: number): Promise<number> {
-  // Stop existing bridge if running
-  await stopSocksBridge();
-
   originalSocksUrl = `socks5://${socksHost}:${socksPort}`;
-
-  const proxy: SocksProxy = {
+  activeSocksProxy = {
     host: socksHost,
     port: socksPort,
     type: 5,
   };
+  if (bridgeServer && bridgePort > 0) {
+    console.log(`[socks-bridge] Reusing 127.0.0.1:${bridgePort} → ${originalSocksUrl}`);
+    return bridgePort;
+  }
 
-  bridgeServer = http.createServer((_req, res) => {
+  const server = http.createServer((_req, res) => {
     // Non-CONNECT requests are not supported — all real proxy traffic uses CONNECT
     // (HTTPS to Anthropic API, MCP servers, etc.). Returning 405 is correct.
     res.writeHead(405, { 'Content-Type': 'text/plain' });
@@ -49,11 +53,12 @@ export async function startSocksBridge(socksHost: string, socksPort: number): Pr
   });
 
   // Handle CONNECT method for HTTPS tunneling (the primary use case)
-  bridgeServer.on('connect', async (req: http.IncomingMessage, clientSocket: net.Socket, head: Buffer) => {
+  server.on('connect', async (req: http.IncomingMessage, clientSocket: net.Socket, head: Buffer) => {
     const [host, portStr] = (req.url ?? '').split(':');
     const port = parseInt(portStr) || 443;
-
+    const proxy = activeSocksProxy;
     try {
+      if (!proxy) throw new Error('SOCKS5 bridge is stopping');
       const { socket: socksSocket } = await SocksClient.createConnection({
         proxy,
         command: 'connect',
@@ -86,13 +91,24 @@ export async function startSocksBridge(socksHost: string, socksPort: number): Pr
   });
 
   // Don't let bridge errors crash the sidecar
-  bridgeServer.on('error', (err) => {
+  server.on('error', (err) => {
     console.error('[socks-bridge] Server error:', err.message);
   });
-
+  bridgeServer = server;
   return new Promise<number>((resolve, reject) => {
-    bridgeServer!.listen(0, '127.0.0.1', () => {
-      const addr = bridgeServer!.address();
+    const onStartupError = (e: Error) => {
+      if (bridgeServer === server) {
+        bridgeServer = null;
+        bridgePort = 0;
+        activeSocksProxy = null;
+        originalSocksUrl = '';
+      }
+      reject(new Error(`[socks-bridge] Failed to start: ${e.message}`));
+    };
+    server.once('error', onStartupError);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', onStartupError);
+      const addr = server.address();
       if (addr && typeof addr === 'object') {
         bridgePort = addr.port;
         console.log(`[socks-bridge] HTTP-to-SOCKS5 bridge started on 127.0.0.1:${bridgePort} → ${originalSocksUrl}`);
@@ -100,9 +116,6 @@ export async function startSocksBridge(socksHost: string, socksPort: number): Pr
       } else {
         reject(new Error('[socks-bridge] Failed to get bridge address'));
       }
-    });
-    bridgeServer!.on('error', (e) => {
-      reject(new Error(`[socks-bridge] Failed to start: ${e.message}`));
     });
   });
 }
@@ -112,19 +125,20 @@ export async function startSocksBridge(socksHost: string, socksPort: number): Pr
  */
 export async function stopSocksBridge(): Promise<void> {
   if (!bridgeServer) return;
-  return new Promise<void>((resolve) => {
-    bridgeServer!.close(() => {
-      if (bridgePort > 0) {
-        console.log(`[socks-bridge] Bridge stopped (was on port ${bridgePort})`);
-      }
-      bridgeServer = null;
-      bridgePort = 0;
-      originalSocksUrl = '';
-      resolve();
+  const retiringServer = bridgeServer;
+  const retiringPort = bridgePort;
+  bridgeServer = null;
+  bridgePort = 0;
+  activeSocksProxy = null;
+  originalSocksUrl = '';
+  try {
+    retiringServer.close(() => {
+      console.log(`[socks-bridge] Bridge stopped accepting connections (was on port ${retiringPort})`);
     });
-    // Force close immediately — SOCKS tunnel connections may be long-lived
-    try { bridgeServer?.closeAllConnections?.(); } catch { /* noop */ }
-  });
+    retiringServer.closeIdleConnections?.();
+  } catch {
+    // Already stopped or failed before listen completed.
+  }
 }
 
 /**

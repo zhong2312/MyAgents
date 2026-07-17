@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SpaceIssue } from "@/api/spaceCloud";
 import { i18n } from "@/i18n";
+import {
+  ACTIVE_ISSUE_STATE_FILTER,
+  ALL_ISSUE_STATE_FILTER,
+} from "@/pages/space/spaceHelpers";
 import { formatFullTime } from "@/pages/space/spaceUi";
 import { IssuesWorkspace } from "./IssuesWorkspace";
 
@@ -35,7 +39,7 @@ describe("IssuesWorkspace", () => {
         hasMore={false}
         issueQ=""
         selectedGoalId=""
-        selectedStatus="open,todo,doing"
+        selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -59,14 +63,109 @@ describe("IssuesWorkspace", () => {
       screen.queryByText("Updates available — refresh"),
     ).not.toBeInTheDocument();
 
-    const statusFilter = screen.getByRole("button", { name: "Active" });
-    expect(statusFilter.parentElement).toHaveClass("min-w-0", "shrink");
+    const statusFilter = screen.getByRole("group", { name: "Issue status" });
+    expect(statusFilter).toHaveClass("h-9", "w-44", "grid-cols-2");
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "Incomplete" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Active" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Select" }),
+    ).not.toBeInTheDocument();
     const goalFilter = screen.getByRole("button", { name: "All goals" });
-    expect(goalFilter.parentElement).toHaveClass("min-w-0", "flex-1");
+    expect(goalFilter.parentElement).toHaveClass(
+      "min-w-0",
+      "flex-1",
+      "max-xl:min-w-20",
+    );
+    expect(screen.getByText("Related to me")).toHaveClass("max-xl:sr-only");
+    expect(screen.getByText("Create")).toHaveClass("max-xl:sr-only");
 
     const statusTag = screen.getByText("Todo");
     expect(statusTag).toHaveClass("h-5", "px-1.5", "text-xs", "font-medium");
     expect(statusTag).not.toHaveClass("h-6", "px-2", "font-semibold");
+  });
+
+  it("reserves filter width while search is expanded at narrow widths", () => {
+    render(
+      <IssuesWorkspace
+        admin={false}
+        issues={[issue]}
+        issuesLoading={false}
+        issueError={null}
+        showingPreviousIssues={false}
+        hasMore={false}
+        issueQ=""
+        selectedGoalId=""
+        selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
+        relatedToMe={false}
+        goalOptions={[{ value: "", label: "All goals" }]}
+        activeIssueId={null}
+        onQueryChange={vi.fn()}
+        onGoalChange={vi.fn()}
+        onStatusChange={vi.fn()}
+        onRelatedToMeChange={vi.fn()}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onLoadMore={vi.fn().mockResolvedValue(undefined)}
+        onCreate={vi.fn()}
+        onOpenIssue={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Search issue" }));
+
+    const search = screen.getByRole("textbox");
+    expect(search.closest("div")).toHaveClass(
+      "max-xl:w-40",
+      "max-xl:min-w-40",
+    );
+    expect(screen.getByRole("button", { name: "Create" }).parentElement).toHaveClass(
+      "max-xl:hidden",
+    );
+  });
+
+  it("maps the two status segments to all and incomplete query values", () => {
+    const onStatusChange = vi.fn();
+    render(
+      <IssuesWorkspace
+        admin={false}
+        issues={[issue]}
+        issuesLoading={false}
+        issueError={null}
+        showingPreviousIssues={false}
+        hasMore={false}
+        issueQ=""
+        selectedGoalId=""
+        selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
+        relatedToMe={false}
+        goalOptions={[{ value: "", label: "All goals" }]}
+        activeIssueId={null}
+        onQueryChange={vi.fn()}
+        onGoalChange={vi.fn()}
+        onStatusChange={onStatusChange}
+        onRelatedToMeChange={vi.fn()}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onLoadMore={vi.fn().mockResolvedValue(undefined)}
+        onCreate={vi.fn()}
+        onOpenIssue={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    fireEvent.click(screen.getByRole("button", { name: "Incomplete" }));
+
+    expect(onStatusChange).toHaveBeenNthCalledWith(1, ALL_ISSUE_STATE_FILTER);
+    expect(onStatusChange).toHaveBeenNthCalledWith(
+      2,
+      ACTIVE_ISSUE_STATE_FILTER,
+    );
   });
 
   it("exposes related-to-me as an independent toggle and renders updatedAt", () => {

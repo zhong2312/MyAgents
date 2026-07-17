@@ -53,6 +53,7 @@ import {
 } from "@/pages/space/spaceStore";
 import {
   SPACE_COLLECTION_FRAME_CLASS,
+  SPACE_NARRATIVE_INSET_CLASS,
   SPACE_PRIMARY_TOOL_BUTTON_CLASS,
   SPACE_REFRESH_TOOL_BUTTON_CLASS,
   SPACE_TWO_COLUMN_GRID_CLASS,
@@ -1803,7 +1804,9 @@ function SkillDetailWorkspace({
                   <h2 className="max-w-[68ch] text-xl font-semibold leading-snug text-[var(--ink)]">
                     {skill.name}
                   </h2>
-                  <p className="mt-2 max-w-[72ch] whitespace-pre-wrap text-sm leading-6 text-[var(--ink-secondary)]">
+                  <p
+                    className={`mt-2 max-w-[72ch] whitespace-pre-wrap text-sm leading-6 text-[var(--ink-secondary)] ${SPACE_NARRATIVE_INSET_CLASS}`}
+                  >
                     {skill.description || t("space.common.noDescription")}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-[var(--ink-muted)]">

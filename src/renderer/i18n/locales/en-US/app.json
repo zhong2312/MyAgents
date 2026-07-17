@@ -299,8 +299,6 @@
     "moreActions": "More actions"
   },
   "notifications": {
-    "messageCompleteTitle": "MyAgents - Task complete",
-    "messageCompleteBody": "Please review the result",
     "permissionTitle": "MyAgents - Permission request",
     "permissionBody": "AI requested tool access - {{toolName}}",
     "askUserTitle": "MyAgents - Confirmation needed",
@@ -441,6 +439,9 @@
       "remoteUpdatesAvailable": "Updates available — refresh"
     },
     "filters": {
+      "issueStatus": "Issue status",
+      "allIssues": "All",
+      "incompleteIssues": "Incomplete",
       "allGoals": "All goals",
       "inbox": "Inbox",
       "activeStatuses": "Active",
@@ -845,7 +846,8 @@
       "inputTokens": "Input tokens",
       "outputTokens": "Output tokens",
       "cacheInput": "Input cache",
-      "messageCount": "Turns"
+      "turnCount": "Turns",
+      "humanQueryCount": "Human inputs"
     },
     "dailyTrend": "Daily usage trend",
     "empty": "No data",
@@ -853,7 +855,8 @@
     "tooltip": {
       "input": "Input: {{tokens}}",
       "output": "Output: {{tokens}}",
-      "messages": "Turns: {{count}}"
+      "turns": "Turns: {{count}}",
+      "humanQueries": "Human inputs: {{count}}"
     },
     "legend": {
       "input": "Input",
@@ -911,7 +914,7 @@
     "noResults": "No results",
     "unfavorite": "Remove favorite",
     "favorite": "Favorite",
-    "messageCount": "{{count}} msg",
+    "turnCount": "{{count}} turn(s)",
     "viewStats": "View stats",
     "deleteBlocked": "Stop the scheduled task before deleting",
     "deleteBlockedAria": "Delete (stop the scheduled task first)",

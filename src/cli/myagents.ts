@@ -63,6 +63,25 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
       const eq = raw.indexOf('=');
       const key = eq >= 0 ? raw.slice(0, eq) : raw;
       const inlineValue = eq >= 0 ? raw.slice(eq + 1) : undefined;
+      if (key === 'human-only') {
+        const nextValue = args[i + 1];
+        if (inlineValue !== undefined) {
+          flags.humanOnly = inlineValue;
+        } else if (nextValue === 'true' || nextValue === 'false') {
+          flags.humanOnly = nextValue;
+          i++;
+        } else {
+          // Preserve the historical bare form as true. Keep (but do not
+          // consume) an invalid adjacent value so Space validators can emit
+          // BOOLEAN_VALUE_INVALID instead of silently treating it as true.
+          flags.humanOnly = true;
+          if (nextValue !== undefined && !nextValue.startsWith('-')) {
+            flags.humanOnlyInvalidValue = nextValue;
+          }
+        }
+        i++;
+        continue;
+      }
       // Boolean flags (no value follows). Missing entries trigger the
       // generic key-value branch below — which consumes the NEXT token as
       // value when it doesn't start with `--`. That silently eats short
@@ -82,7 +101,8 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'stdin' ||
         key === 'active' ||
         key === 'archived' ||
-        key === 'human-only' ||
+        key === 'include-archived' ||
+        key === 'clear-goal' ||
         key === 'create-attached' ||
         key === 'rollback'
       ) {
@@ -233,7 +253,7 @@ Commands:
   goal      Manage the current session Goal (get/create/update)
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
   thought   Manage Task Center thoughts (list/create)
-  space     MyAgents Cloud Space issue/attachment bridge
+  space     Discover Cloud Goals and manage Space Issues/attachments
   issue     Legacy read-only alias for Space issue view
   im        IM runtime actions for current chat (send-media)
   session   Session-to-session messaging (send prompts, watch completion/result events)
@@ -249,7 +269,8 @@ Commands:
 Global flags:
   --help      Show help for any command
   --json      Output as JSON
-  --dry-run   Preview changes without applying
+  --dry-run   Preview only commands whose exact leaf help documents support;
+              unsupported mutations fail without applying changes
   --port NUM  Override Sidecar port (default: $MYAGENTS_PORT)
 
 Examples:
@@ -309,7 +330,9 @@ Examples:
       --workspaceId proj --workspacePath /path/to/proj \\
       --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
   myagents space list --json
+  myagents space --help
   myagents space whoami --space <slug> --json
+  myagents space goal list --space <slug> --json
   myagents space issue list --space <slug> --goal <goalId> --state todo --limit 30
   myagents space issue view <issueId> --space <slug> --comments --json
   myagents space issue claim <issueId> --space <slug> --deliveryId <deliveryId>
@@ -386,7 +409,14 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
 // Output formatting
 // ---------------------------------------------------------------------------
 
-function printResult(group: string, action: string, result: Record<string, unknown>, jsonMode: boolean, flags: Record<string, unknown> = {}): void {
+export function printResult(
+  group: string,
+  action: string,
+  result: Record<string, unknown>,
+  jsonMode: boolean,
+  flags: Record<string, unknown> = {},
+  rest: string[] = [],
+): void {
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
     return;
@@ -394,8 +424,15 @@ function printResult(group: string, action: string, result: Record<string, unkno
 
   if (!result.success) {
     console.error(`Error: ${result.error}`);
-    if (typeof result.suggestion === 'string' && result.suggestion.trim()) {
+    const hasSuggestion = typeof result.suggestion === 'string' && result.suggestion.trim();
+    if (hasSuggestion) {
       console.error(`Suggestion: ${result.suggestion}`);
+    }
+    if (typeof result.suggestedCommand === 'string' && result.suggestedCommand.trim()) {
+      console.error(`  \u2192 Run: ${result.suggestedCommand}`);
+      return;
+    }
+    if (hasSuggestion) {
       return;
     }
     // Structured recovery hint (v0.1.69+): print `→ Run: <command>   <message>`
@@ -534,6 +571,14 @@ function printResult(group: string, action: string, result: Record<string, unkno
   }
   if (group === 'goal') {
     printGoalResult(action, result.data as Record<string, unknown> | undefined);
+    return;
+  }
+  if (group === 'space' && action === 'goal' && (rest[0] || 'list') === 'list') {
+    printSpaceGoalList(result.data as Record<string, unknown>, flags);
+    return;
+  }
+  if (group === 'space' && action === 'issue' && rest[0] === 'update') {
+    printSpaceIssueUpdate(result.data as Record<string, unknown>, flags);
     return;
   }
   if (group === 'plugin' && action === 'list') {
@@ -848,6 +893,56 @@ function printSpaceIssueCompleteResult(data: Record<string, unknown>): void {
   console.log(`  comment:   ${comment}`);
   if (taskId) console.log(`  task_id:   ${taskId}`);
   if (taskStatus) console.log(`  task:      ${taskStatus}`);
+}
+
+function printSpaceGoalList(data: Record<string, unknown>, flags: Record<string, unknown>): void {
+  const items = Array.isArray(data?.items) ? data.items as Array<Record<string, unknown>> : [];
+  const slug = typeof flags.space === 'string' ? flags.space : '';
+  const includeArchived = flags.includeArchived === true;
+  if (items.length === 0) {
+    console.log(`No ${includeArchived ? '' : 'active '}Goals in Space "${slug}".`);
+    console.log('Create the Issue without --goal to place it in Inbox.');
+    return;
+  }
+
+  console.log(`Goals in Space "${slug}"`);
+  console.log('');
+  console.log(includeArchived ? 'GOAL ID                 STATUS      PATH' : 'GOAL ID                 PATH');
+  for (const goal of items) {
+    const id = String(goal.id ?? '');
+    const depth = typeof goal.depth === 'number' ? Math.max(0, goal.depth) : 0;
+    const path = `${'  '.repeat(depth)}${String(goal.goalPathLabel ?? goal.title ?? '')}`;
+    if (includeArchived) {
+      const status = goal.archivedAt ? 'archived' : 'active';
+      console.log(`${id.padEnd(24)}${status.padEnd(12)}${path}`);
+    } else {
+      console.log(`${id.padEnd(24)}${path}`);
+    }
+  }
+  console.log('');
+  console.log('Use an active GOAL ID exactly as returned:');
+  console.log(`  create: myagents space issue create --space ${shellQuoteArg(slug)} ... --goal <goalId>`);
+  console.log(`  move:   myagents space issue update <issueId> --space ${shellQuoteArg(slug)} --goal <goalId>`);
+  console.log(`  inbox:  myagents space issue update <issueId> --space ${shellQuoteArg(slug)} --clear-goal`);
+}
+
+function printSpaceIssueUpdate(data: Record<string, unknown>, flags: Record<string, unknown>): void {
+  const issue = objectValue(data?.issue) ?? data;
+  const issueId = String(issue.id ?? '');
+  const state = String(issue.state ?? issue.status ?? '');
+  const goalId = typeof issue.goalId === 'string' && issue.goalId.trim() ? issue.goalId.trim() : '';
+  const goalPathLabel = typeof issue.goalPathLabel === 'string' && issue.goalPathLabel.trim()
+    ? issue.goalPathLabel.trim()
+    : '';
+  const slug = typeof flags.space === 'string' ? flags.space : '';
+
+  console.log('\u2713 Issue updated');
+  if (issueId) console.log(`  issue_id: ${issueId}`);
+  console.log(`  goal: ${goalId ? `${goalPathLabel || '(unnamed Goal)'} (${goalId})` : 'Inbox'}`);
+  if (state) console.log(`  state: ${state}`);
+  if (issueId && slug) {
+    console.log(`  inspect: myagents space issue view ${shellQuoteArg(issueId)} --space ${shellQuoteArg(slug)} --json`);
+  }
 }
 
 /**
@@ -1974,6 +2069,8 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (!flags.help) rejectUnsupportedSpaceDryRun(positional, flags);
+
   // Resolve port: --port flag overrides env
   PORT = (flags.port as string) || PORT;
   if (!PORT) {
@@ -2101,7 +2198,7 @@ async function main(): Promise<void> {
       }
     }
 
-    printResult(group, action, result, jsonMode, flags);
+    printResult(group, action, result, jsonMode, flags, restArgs);
   }
 
   // PRD 0.2.18 session send — granular exit codes per --help contract:
@@ -2124,6 +2221,43 @@ async function main(): Promise<void> {
 
 function groupIsSpaceCommand(group: string | undefined): boolean {
   return group === 'space' || group === 'issue';
+}
+
+export function rejectUnsupportedSpaceDryRun(
+  positional: string[],
+  flags: Record<string, unknown>,
+): void {
+  if (flags.dryRun !== true || positional[0] !== 'space') return;
+  const area = positional[1] ?? '';
+  const action = positional[2] ?? '';
+  const nested = positional[3] ?? '';
+  const issueMutation = area === 'issue' && (
+    ['create', 'update', 'comment', 'status', 'claim', 'close', 'complete', 'cancel-claim'].includes(action)
+    || (action === 'delivery' && nested === 'ignore')
+    || (action === 'attachment' && nested === 'add')
+  ) && !(action === 'comment' && nested === 'get');
+  const otherWrite = (area === 'claim' && action === 'local-task')
+    || (area === 'attachment' && ['add', 'download'].includes(action));
+  if (!issueMutation && !otherWrite) return;
+  const commandLength = area === 'issue' && ['delivery', 'attachment'].includes(action) ? 4 : 3;
+  const command = positional.slice(0, commandLength).join(' ');
+
+  if (area === 'issue' && action === 'update') {
+    requireSpacePositional(
+      flags,
+      positional[3] ?? flags.issueId,
+      'issueId',
+      'space issue update',
+      'issueId',
+    );
+    requireSpaceSlug(flags);
+  }
+  exitSpaceInputError(
+    flags,
+    'DRY_RUN_UNSUPPORTED',
+    `myagents ${command} does not support --dry-run. No changes were applied.`,
+    `Read myagents ${command} --help; remove --dry-run only when ready to apply the mutation.`,
+  );
 }
 
 export function buildRoute(group: string, action: string, rest: string[]): string {
@@ -2177,6 +2311,7 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
   if (group === 'space' && action === 'issue') {
     const issueAction = rest[0] || 'get';
     if (issueAction === 'create') return 'space/issue-create';
+    if (issueAction === 'update') return 'space/issue-update';
     if (issueAction === 'list') return 'space/issue-list';
     if (issueAction === 'get' || issueAction === 'view') return 'space/issue-get';
     if (issueAction === 'comments') return 'space/issue-comments';
@@ -2192,6 +2327,9 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
   }
   if (group === 'space' && action === 'list') return 'space/list';
   if (group === 'space' && action === 'whoami') return 'space/whoami';
+  if (group === 'space' && action === 'goal' && (rest[0] || 'list') === 'list') {
+    return 'space/goal-list';
+  }
   if (group === 'space' && action === 'assignee' && (rest[0] || 'list') === 'list') {
     return 'space/assignee-list';
   }
@@ -2279,6 +2417,42 @@ function optionalSpaceStringFlag(
     'FLAG_VALUE_REQUIRED',
     `${command} requires --${flagName} <value>.`,
     `Run \`myagents ${command} --help\`, then retry with a non-empty --${flagName} value.`,
+  );
+}
+
+function optionalSpaceBooleanFlag(
+  flags: Record<string, unknown>,
+  value: unknown,
+  flagName: string,
+  command: string,
+  invalidCandidate?: unknown,
+  allowBare = false,
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (invalidCandidate !== undefined) {
+    return exitSpaceInputError(
+      flags,
+      'BOOLEAN_VALUE_INVALID',
+      `${command} --${flagName} must be true or false; got "${String(invalidCandidate)}".`,
+      `Use --${flagName} true or --${flagName} false.`,
+    );
+  }
+  if (value === true) {
+    if (allowBare) return true;
+    return exitSpaceInputError(
+      flags,
+      'FLAG_VALUE_REQUIRED',
+      `${command} requires --${flagName} <true|false>.`,
+      `Use --${flagName} true or --${flagName} false.`,
+    );
+  }
+  if (value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return exitSpaceInputError(
+    flags,
+    'BOOLEAN_VALUE_INVALID',
+    `${command} --${flagName} must be true or false; got "${String(value)}".`,
+    `Use --${flagName} true or --${flagName} false.`,
   );
 }
 
@@ -3072,6 +3246,12 @@ export function buildRequestBody(
     const context = spaceCommandContext(flags, workspacePath);
     if (action === 'whoami') return context;
     if (action === 'assignee' && (rest[0] || 'list') === 'list') return context;
+    if (action === 'goal' && (rest[0] || 'list') === 'list') {
+      return {
+        ...context,
+        includeArchived: flags.includeArchived === true,
+      };
+    }
     if (action === 'issue') {
       const issueAction = rest[0] || 'get';
       const issueId = rest[1] || flags.issueId;
@@ -3092,14 +3272,155 @@ export function buildRequestBody(
             'Use --body-file <workspace-relative-path> for reliable multi-line content.',
           );
         }
+        const hasGoal = flags.goalId !== undefined || flags.goal !== undefined;
+        const goalId = hasGoal
+          ? optionalSpaceStringFlag(
+              flags,
+              flags.goalId ?? flags.goal,
+              'goal',
+              'space issue create',
+            )
+          : undefined;
         return {
           ...context,
           title,
           body,
-          goalId: flags.goalId ?? flags.goal,
+          goalId,
           assigneeId: flags.assignee,
-          humanOnly: truthyCliFlag(flags.humanOnly),
+          humanOnly: optionalSpaceBooleanFlag(
+            flags,
+            flags.humanOnly,
+            'human-only',
+            'space issue create',
+            flags.humanOnlyInvalidValue,
+            true,
+          ) ?? false,
           filePaths: spaceAttachmentPaths(flags),
+        };
+      }
+      if (issueAction === 'update') {
+        const requiredIssueId = requireSpacePositional(
+          flags,
+          issueId as string | undefined,
+          'issueId',
+          'space issue update',
+          'issueId',
+        );
+        const unsupportedFlag = Object.keys(flags).find(key => ![
+          'space',
+          'workspacePath',
+          'workspace',
+          'workspaceId',
+          'sessionId',
+          'agentId',
+          'issueId',
+          'title',
+          'body',
+          'bodyFile',
+          'stdin',
+          'goal',
+          'goalId',
+          'clearGoal',
+          'humanOnly',
+          'humanOnlyInvalidValue',
+          'json',
+          'help',
+          'port',
+          'dryRun',
+        ].includes(key));
+        if (unsupportedFlag) {
+          return exitSpaceInputError(
+            flags,
+            'UPDATE_FIELD_UNSUPPORTED',
+            `space issue update does not accept --${unsupportedFlag}.`,
+            'Use issue status/claim/comment/attachment commands for non-metadata mutations.',
+          );
+        }
+        const hasGoal = flags.goal !== undefined || flags.goalId !== undefined;
+        if (hasGoal && flags.clearGoal === true) {
+          return exitSpaceInputError(
+            flags,
+            'GOAL_SELECTION_CONFLICT',
+            'space issue update accepts either --goal <goalId> or --clear-goal, not both.',
+            'Keep exactly one Goal operation and retry.',
+          );
+        }
+        const bodySourceCount = [
+          flags.body !== undefined,
+          flags.bodyFile !== undefined,
+          flags.stdin === true,
+        ].filter(Boolean).length;
+        if (bodySourceCount > 1) {
+          return exitSpaceInputError(
+            flags,
+            'BODY_SOURCE_CONFLICT',
+            'space issue update accepts only one of --body, --body-file, or --stdin.',
+            'Keep exactly one body source and retry.',
+          );
+        }
+
+        const title = optionalSpaceStringFlag(
+          flags,
+          flags.title,
+          'title',
+          'space issue update',
+        );
+        const goalId = hasGoal
+          ? optionalSpaceStringFlag(
+              flags,
+              flags.goal ?? flags.goalId,
+              'goal',
+              'space issue update',
+            )
+          : undefined;
+        if (flags.body !== undefined) {
+          optionalSpaceStringFlag(flags, flags.body, 'body', 'space issue update');
+        }
+        if (flags.bodyFile !== undefined) {
+          optionalSpaceStringFlag(flags, flags.bodyFile, 'body-file', 'space issue update');
+        }
+        const bareFollowerIsIssueId = rest.length === 2
+          && flags.humanOnlyInvalidValue === rest[1];
+        const humanOnly = optionalSpaceBooleanFlag(
+          flags,
+          flags.humanOnly,
+          'human-only',
+          'space issue update',
+          bareFollowerIsIssueId ? undefined : flags.humanOnlyInvalidValue,
+          true,
+        );
+        const hasBody = bodySourceCount === 1;
+        const body = hasBody ? resolveSpaceCommentBody(flags, workspacePath) : undefined;
+        if (hasBody && !body?.trim()) {
+          return exitSpaceInputError(
+            flags,
+            'ISSUE_BODY_REQUIRED',
+            'space issue update requires a non-empty body when a body source is provided.',
+            'Provide non-empty text through exactly one of --body, --body-file, or --stdin.',
+          );
+        }
+        if (
+          title === undefined
+          && body === undefined
+          && !hasGoal
+          && flags.clearGoal !== true
+          && humanOnly === undefined
+        ) {
+          return exitSpaceInputError(
+            flags,
+            'ISSUE_UPDATE_EMPTY',
+            'space issue update requires at least one metadata field.',
+            'Run `myagents space issue update --help` and provide title, body, Goal, or human-only metadata.',
+          );
+        }
+        return {
+          ...context,
+          issueId: requiredIssueId,
+          ...(title !== undefined ? { title } : {}),
+          ...(body !== undefined ? { body } : {}),
+          ...(hasGoal ? { goalUpdate: { action: 'set', goalId } } : {}),
+          ...(flags.clearGoal === true ? { goalUpdate: { action: 'clear' } } : {}),
+          ...(humanOnly !== undefined ? { humanOnly } : {}),
         };
       }
       if (issueAction === 'list') {
@@ -3107,8 +3428,20 @@ export function buildRequestBody(
           ...context,
           goalId: flags.goalId ?? flags.goal,
           state: flags.state ?? flags.status,
-          includeSubtree: flags.includeSubtree,
-          humanOnly: flags.humanOnly,
+          includeSubtree: optionalSpaceBooleanFlag(
+            flags,
+            flags.includeSubtree,
+            'include-subtree',
+            'space issue list',
+          ),
+          humanOnly: optionalSpaceBooleanFlag(
+            flags,
+            flags.humanOnly,
+            'human-only',
+            'space issue list',
+            flags.humanOnlyInvalidValue,
+            true,
+          ),
           query: flags.query ?? flags.q,
           cursor: flags.cursor,
           limit: optionalNumberFlag(flags.limit),

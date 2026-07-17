@@ -7,7 +7,7 @@ import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
-import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
+import { GoalPathLabel } from '@/pages/space/GoalPathLabel';
 import type { IssueQueryParams } from '@/pages/space/spaceHelpers';
 import { SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions } from '@/pages/space/spaceStore';
 import { IssueAttachmentDraftList } from './IssueAttachmentDraftList';
@@ -62,14 +62,19 @@ export function CreateIssueDialog({
       {
         value: '',
         label: t('space.createIssue.unselectedGoal'),
-        content: <GoalPathSelectLabel label={t('space.createIssue.unselectedGoal')} />,
+        content: (
+          <GoalPathLabel
+            label={t('space.createIssue.unselectedGoal')}
+            leafLabel={t('space.createIssue.unselectedGoal')}
+          />
+        ),
       },
       ...goals.map((item) => {
         const label = item.goalPathLabel || item.title;
         return {
           value: item.id,
           label,
-          content: <GoalPathSelectLabel label={label} />,
+          content: <GoalPathLabel label={label} leafLabel={item.title} />,
         };
       }),
     ],

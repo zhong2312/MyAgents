@@ -23,6 +23,11 @@ fn redact_session_metadata(mut session: Value) -> Option<Value> {
             Value::String("[redacted]".to_string()),
         );
     }
+    if let Some(stats) = obj.get_mut("stats").and_then(Value::as_object_mut) {
+        if let Some(turn_count) = stats.remove("messageCount") {
+            stats.insert("turnCount".to_string(), turn_count);
+        }
+    }
     Some(session)
 }
 
@@ -82,7 +87,7 @@ pub async fn cmd_list_session_metadata(agentDir: Option<String>) -> Result<Vec<V
 #[cfg(test)]
 mod tests {
     use super::redact_session_metadata;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn redacts_provider_env_json() {
@@ -98,6 +103,25 @@ mod tests {
                 .as_deref(),
             Some("[redacted]"),
         );
+    }
+
+    #[test]
+    fn projects_legacy_message_count_as_turn_count() {
+        let value = redact_session_metadata(json!({
+            "id": "session-1",
+            "stats": {
+                "messageCount": 3,
+                "totalInputTokens": 10,
+                "totalOutputTokens": 2
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            value.pointer("/stats/turnCount").and_then(Value::as_u64),
+            Some(3)
+        );
+        assert!(value.pointer("/stats/messageCount").is_none());
     }
 
     #[test]

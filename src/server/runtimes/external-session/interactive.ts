@@ -34,7 +34,7 @@ export function clearExternalActiveRequestId(): void {
 
 /** Pattern B — emit per-request IM event. Subscribers in /api/im/chat filter
  *  by matching requestId. No-op when no active IM trace (desktop / cron). */
-export function fireExternalImCallback(type: ImEventType, data: string): void {
+export function fireExternalImCallback(type: ImEventType, data: unknown): void {
   if (activeRequestId !== null) {
     imEventBus.emit(activeRequestId, type, data);
   }

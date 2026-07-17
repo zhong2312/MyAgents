@@ -30,11 +30,24 @@ export function normalizeProxyScope(
   if (scope.mode !== 'custom') {
     return DEFAULT_PROXY_SCOPE;
   }
+  const hasGeneralRequests = Object.prototype.hasOwnProperty.call(scope, 'generalRequests');
+  const generalRequests = hasGeneralRequests ? scope.generalRequests === true : true;
   const providerIds = cleanProviderIds(scope.providerIds, visibleProviderIds);
-  if (providerIds.length === 0) {
+  // Historical empty custom scopes were treated as invalid and fell back to
+  // all. Once the new field is present, an empty provider list is an explicit
+  // and valid selection (general-only or no app-proxy owners).
+  if (!hasGeneralRequests && providerIds.length === 0) {
     return DEFAULT_PROXY_SCOPE;
   }
-  return { mode: 'custom', providerIds };
+  return { mode: 'custom', generalRequests, providerIds };
+}
+
+export function shouldUseMyAgentsProxyForGeneralRequests(
+  proxySettings: ProxySettings | null | undefined,
+): boolean {
+  if (!proxySettings?.enabled) return false;
+  const scope = normalizeProxyScope(proxySettings.scope);
+  return scope.mode === 'all' || scope.generalRequests === true;
 }
 
 export function shouldUseMyAgentsProxyForProvider(
@@ -64,6 +77,18 @@ export function effectiveProxyScopeKey(
   return `myagents-proxy:${id}:${protocol}://${host}:${port}`;
 }
 
+export function effectiveGeneralProxyScopeKey(
+  proxySettings: ProxySettings | null | undefined,
+): string {
+  if (!shouldUseMyAgentsProxyForGeneralRequests(proxySettings)) {
+    return 'myagents-proxy:general:inherited';
+  }
+  const protocol = proxySettings?.protocol || 'http';
+  const host = proxySettings?.host || '127.0.0.1';
+  const port = proxySettings?.port || 7890;
+  return `myagents-proxy:general:${protocol}://${host}:${port}`;
+}
+
 export function normalizeProxySettingsScope(
   proxySettings: ProxySettings,
   visibleProviderIds?: readonly string[],
@@ -85,10 +110,12 @@ export function removeProviderFromProxySettingsScope(
 
   const providerIds = cleanProviderIds(proxySettings.scope.providerIds)
     .filter(existingId => existingId !== id);
+  const normalizedScope = normalizeProxyScope(proxySettings.scope);
+  const generalRequests = normalizedScope.mode === 'all'
+    ? true
+    : normalizedScope.generalRequests === true;
   return {
     ...proxySettings,
-    scope: providerIds.length > 0
-      ? { mode: 'custom', providerIds }
-      : DEFAULT_PROXY_SCOPE,
+    scope: { mode: 'custom', generalRequests, providerIds },
   };
 }

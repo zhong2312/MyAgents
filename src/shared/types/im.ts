@@ -107,7 +107,7 @@ export interface ImBotConfig {
   /** Install plugin ID used to locate ~/.myagents/openclaw-plugins/<pluginId>. */
   openclawPluginId?: string;
   openclawNpmSpec?: string;
-  openclawPluginConfig?: Record<string, string>;
+  openclawPluginConfig?: Record<string, unknown>;
   openclawManifest?: Record<string, string>;
 }
 
@@ -123,7 +123,16 @@ export interface InstalledPlugin {
     name?: string;
     description?: string;
     channels?: string[];
-    configSchema?: { type: string; properties: Record<string, { type?: string; description?: string }>; required?: string[] };
+    configSchema?: {
+      type: string;
+      properties: Record<string, {
+        type?: string;
+        description?: string;
+        enum?: unknown[];
+        default?: unknown;
+      }>;
+      required?: string[];
+    };
   } | null;
   packageVersion?: string;
   homepage?: string;

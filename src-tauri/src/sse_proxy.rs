@@ -453,6 +453,17 @@ async fn connect_sse(
                                     tab_id, event_name
                                 ),
                             );
+                            if let Some(terminal) =
+                                crate::notification::completion_terminal_from_sse_data(&data)
+                            {
+                                let notification_app = app.clone();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    crate::notification::submit_session_completion(
+                                        &notification_app,
+                                        terminal,
+                                    );
+                                });
+                            }
                         }
                         // Emit with tab_id prefix: sse:tab_id:event_name
                         let prefixed_event = format!("sse:{}:{}", tab_id, event_name);

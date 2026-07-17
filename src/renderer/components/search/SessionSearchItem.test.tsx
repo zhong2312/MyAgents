@@ -20,7 +20,7 @@ function hit(overrides: Partial<SessionSearchHit> = {}): SessionSearchHit {
         matchedRole: null,
         lastActiveAt: new Date(2026, 5, 20, 8, 0).toISOString(),
         source: 'desktop',
-        messageCount: 1,
+        turnCount: 1,
         ...overrides,
     };
 }

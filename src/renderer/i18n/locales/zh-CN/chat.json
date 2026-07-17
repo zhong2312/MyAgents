@@ -429,7 +429,7 @@
       "loading": "加载中...",
       "empty": "暂无历史记录",
       "current": "当前",
-      "messageCount": "{{count}} 条消息",
+      "turnCount": "{{count}} 轮",
       "unreadNotifications": "{{count}} 条未读通知",
       "automationVisible": "定时任务对话已显示",
       "automationHidden": "定时任务对话已隐藏",
@@ -466,7 +466,8 @@
         "inputCache": "输入缓存"
       },
       "summary": {
-        "messages": "消息数",
+        "turns": "执行轮次",
+        "humanQueries": "真人输入",
         "totalTokens": "总 Tokens",
         "inputOutput": "输入 {{input}} / 输出 {{output}}",
         "inputCache": "输入缓存",
@@ -477,9 +478,9 @@
         "model": "模型",
         "count": "次数"
       },
-      "messageDetails": {
-        "title": "消息明细",
-        "question": "问题"
+      "turnDetails": {
+        "title": "Turn 用量明细",
+        "trigger": "可见触发"
       }
     },
     "queue": {
@@ -587,6 +588,49 @@
         "file": "文件: {{path}}",
         "folder": "文件夹: {{path}}"
       },
+      "filePatch": {
+        "moreActions": "更多文件操作",
+        "unnamedFile": "未命名文件",
+        "operation": {
+          "add": "新建",
+          "update": "修改",
+          "delete": "删除",
+          "move": "移动",
+          "write": "写入",
+          "change": "变更"
+        },
+        "replaceAll": "替换全部",
+        "userModified": "结果已在审批时调整",
+        "boundedPreview": "变更过大，仅展示有界预览",
+        "noTextChanges": "没有文本变更",
+        "emptyWrittenContent": "写入后的文件内容为空",
+        "detailUnavailable": "变更详情不可用",
+        "previousVersionUnavailable": "结果未提供旧版本",
+        "showAll": "展示全部",
+        "showAllForFile": "展示 {{file}} 的全部变更，还有 {{count}} 行未显示",
+        "remainingLines_one": "还有 {{count}} 行未显示",
+        "remainingLines_other": "还有 {{count}} 行未显示",
+        "onlyFirstLines": "内容过长，仅展示前 {{count}} 行",
+        "rawResult": "原始工具结果",
+        "diffAria": "{{file}} 的变更",
+        "hunkLineCount_one": "{{count}} 行",
+        "hunkLineCount_other": "{{count}} 行",
+        "hunkSameStart": "第 {{line}} 行附近 · 原 {{oldSpan}} → 新 {{newSpan}}",
+        "hunkMovedStart": "原第 {{oldStart}} 行 → 新第 {{newStart}} 行 · 原 {{oldSpan}} → 新 {{newSpan}}",
+        "addedLine": "新增第 {{line}} 行",
+        "removedLine": "删除第 {{line}} 行",
+        "addedLineUnknown": "新增行",
+        "removedLineUnknown": "删除行",
+        "moveTo": "移动到 {{path}}",
+        "status": {
+          "declined": "已拒绝",
+          "failed": "失败",
+          "stopped": "已停止",
+          "interrupted": "已中断",
+          "running": "运行中",
+          "unknown": "{{status}}"
+        }
+      },
       "image": {
         "noLocalPath": "没有可复制的本地路径",
         "copyPathSuccess": "已复制图片路径",
@@ -656,6 +700,8 @@
         "matches": "{{count}} 条匹配",
         "files": "{{count}} 个文件",
         "filesPart": "在 {{count}} 个文件中",
+        "writeLines_one": "写入 {{count}} 行",
+        "writeLines_other": "写入 {{count}} 行",
         "editImage": "编辑图片",
         "generateImage": "生成图片",
         "listVoices": "查询语音",
@@ -709,10 +755,35 @@
       },
       "bash": {
         "initializing": "正在初始化终端...",
-        "input": "输入",
+        "terminal": "终端",
+        "terminalAria": "终端执行，状态：{{status}}",
+        "transcriptAria": "终端执行记录",
+        "command": "命令",
         "output": "输出",
-        "background": "后台",
-        "running": "运行中..."
+        "rawOutput": "原始输出",
+        "stdout": "标准输出",
+        "stderr": "错误输出",
+        "waitingForOutput": "等待输出...",
+        "noOutput": "无输出",
+        "showAll": "展示全部",
+        "moreOutput": "还有更多终端内容未显示",
+        "contentTruncated": "终端内容过长，仅展示安全范围内的内容",
+        "duration": "耗时 {{duration}}",
+        "status": {
+          "initializing": "初始化中",
+          "running": "运行中",
+          "completed": "已完成",
+          "failed": "失败",
+          "stopped": "已停止",
+          "interrupted": "已中断",
+          "timeout": "已超时",
+          "background": "后台运行"
+        },
+        "format": {
+          "json": "JSON",
+          "diff": "Diff",
+          "plain": "终端文本"
+        }
       },
       "tts": {
         "querying": "查询中...",

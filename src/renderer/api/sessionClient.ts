@@ -19,7 +19,7 @@ import {
 } from '../../shared/managedScheduledJob';
 
 export interface SessionStats {
-    messageCount: number;
+    turnCount: number;
     totalInputTokens: number;
     totalOutputTokens: number;
     totalCacheReadTokens?: number;
@@ -130,7 +130,7 @@ export interface SessionData extends SessionMetadata {
 }
 
 export interface SessionDetailedStats {
-    summary: SessionStats;
+    summary: SessionStats & { humanQueryCount: number };
     byModel: Record<string, {
         inputTokens: number;
         outputTokens: number;
@@ -140,8 +140,8 @@ export interface SessionDetailedStats {
         model?: string;
         providerId?: string;
     }>;
-    messageDetails: Array<{
-        userQuery: string;
+    details: Array<{
+        turnTrigger: string;
         model?: string;
         inputTokens: number;
         outputTokens: number;
@@ -336,7 +336,8 @@ export async function getSessionStats(sessionId: string): Promise<SessionDetaile
 export interface GlobalStats {
     summary: {
         totalSessions: number;
-        messageCount: number;
+        turnCount: number;
+        humanQueryCount: number;
         totalInputTokens: number;
         totalOutputTokens: number;
         totalCacheReadTokens: number;
@@ -346,7 +347,8 @@ export interface GlobalStats {
         date: string;
         inputTokens: number;
         outputTokens: number;
-        messageCount: number;
+        turnCount: number;
+        humanQueryCount: number;
     }>;
     byModel: Record<string, {
         inputTokens: number;

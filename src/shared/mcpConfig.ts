@@ -16,6 +16,50 @@ export type McpConfigContainer = {
   launcherLastUsed?: unknown;
 };
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+/**
+ * Apply user-editable MCP env and argument additions to a resolved catalogue.
+ * `mcpServerArgs[id]` is an EXTRA-args store: replacing `server.args` would
+ * discard preset executable/package arguments (for example Playwright's npm
+ * package spec) and turn a valid MCP definition into a broken command.
+ */
+export function applyMcpServerConfigAdditions(
+  servers: readonly McpServerDefinition[],
+  config: Pick<McpConfigContainer, 'mcpServerArgs' | 'mcpServerEnv'>,
+): McpServerDefinition[] {
+  const argsByServer = asRecord(config.mcpServerArgs);
+  const envByServer = asRecord(config.mcpServerEnv);
+
+  return servers.map((server) => {
+    const extraArgs = argsByServer[server.id];
+    const extraEnv = envByServer[server.id];
+    const hasArgs = Array.isArray(extraArgs);
+    const hasEnv = !!extraEnv && typeof extraEnv === 'object' && !Array.isArray(extraEnv);
+    if (!hasArgs && !hasEnv) return server;
+
+    return {
+      ...server,
+      ...(hasArgs ? {
+        args: [
+          ...(Array.isArray(server.args) ? server.args : []),
+          ...extraArgs.filter((arg): arg is string => typeof arg === 'string'),
+        ],
+      } : {}),
+      ...(hasEnv ? {
+        env: {
+          ...(server.env ?? {}),
+          ...(extraEnv as Record<string, string>),
+        },
+      } : {}),
+    };
+  });
+}
+
 type RemoteMcpDefinition = McpServerDefinition & {
   type: 'http' | 'sse';
   url: string;

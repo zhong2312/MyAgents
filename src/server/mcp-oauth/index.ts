@@ -9,26 +9,61 @@
  *   authorizeServer()          — Start OAuth flow (auto or manual)
  *   resolveAuthHeaders()       — Get valid Authorization headers (single token entry)
  *   revokeAuthorization()      — Revoke token for a server
- *   onTokenChange()            — Register token change listener
+ *   onOAuthCredentialChange()  — Observe persisted, non-secret credential revisions
  *   startTokenRefreshScheduler() — Start background refresh
  *   getOAuthStatus()           — Get current OAuth status for UI
  */
 
 import { discoverOAuth } from './discovery';
 import { dynamicRegister } from './registration';
-import { startAuthorizationFlow, bindCallbackServer, isFlowPending } from './authorization';
-import { emitTokenChange, refreshToken } from './token-manager';
 import {
+  bindCallbackServer,
+  cancelFlow,
+  isFlowPending,
+  startAuthorizationFlow,
+} from './authorization';
+import {
+  refreshToken,
+  startTokenRefreshScheduler,
+  startTokenRevisionObserver,
+} from './token-manager';
+import {
+  clearServerToken,
   getServerState,
   updateServerState,
-  clearServerField,
   isDiscoveryCacheValid,
+  setServerToken,
 } from './state-store';
 import type { OAuthProbeResult, ManualOAuthConfig, OAuthTokenData } from './types';
+import { fetchWithGeneralProxy } from '../utils/cancellation';
+import type { SidecarRole } from '../sidecar-role';
 
 // Re-export key functions from sub-modules
-export { resolveAuthHeaders, onTokenChange, startTokenRefreshScheduler } from './token-manager';
-export type { OAuthProbeResult, ManualOAuthConfig, TokenChangeEvent } from './types';
+export {
+  onOAuthCredentialChange,
+  resolveAuthHeaders,
+  startTokenRefreshScheduler,
+  startTokenRevisionObserver,
+  stopTokenRefreshScheduler,
+  stopTokenRevisionObserver,
+} from './token-manager';
+export type {
+  ManualOAuthConfig,
+  OAuthCredentialChange,
+  OAuthProbeResult,
+  RefreshTokenOutcome,
+} from './types';
+
+/** Apply the OAuth maintenance owner contract selected at the process boundary. */
+export function startOAuthMaintenanceForSidecarRole(role: SidecarRole): void {
+  if (role === 'global') {
+    startTokenRefreshScheduler();
+  } else {
+    // Baseline the full credential store before initializeAgent() can build
+    // any MCP connection. Later config pushes never advance this baseline.
+    startTokenRevisionObserver();
+  }
+}
 
 /**
  * Probe an MCP server to detect if it requires OAuth.
@@ -153,21 +188,15 @@ export async function authorizeServer(
     tokenEndpoint,
     scopes,
     callbackPort,
+  }, async (token) => {
+    await setServerToken(serverId, token);
   }, existingServer);
 
-  // Wrap waitForToken to store token and emit event
-  const waitForCompletion = waitForToken.then(async (token: OAuthTokenData | null) => {
-    if (token) {
-      await updateServerState(serverId, { token });
-      emitTokenChange(serverId, 'acquired');
-      return true;
-    }
-    // Discovery cache might be stale if flow failed
-    if (discovery) {
-      await clearServerField(serverId, 'discovery');
-    }
-    return false;
-  });
+  // The callback response is emitted only after this durable write succeeds.
+  // A failed/superseded code exchange does not prove discovery metadata is
+  // stale. Clearing shared discovery here can race a replacement flow and
+  // remove the token endpoint that its newly committed credential needs.
+  const waitForCompletion = waitForToken.then((token: OAuthTokenData | null) => Boolean(token));
 
   return { authUrl, waitForCompletion };
 }
@@ -178,6 +207,10 @@ export async function authorizeServer(
  * Preserves discovery and registration data for re-authorization.
  */
 export async function revokeAuthorization(serverId: string): Promise<void> {
+  // Linearize revoke after any authorization flow already committing, or
+  // cancel it before commit. The tombstone must be the final credential write.
+  await cancelFlow(serverId);
+
   const state = getServerState(serverId);
   const token = state?.token;
   const discovery = state?.discovery;
@@ -188,7 +221,7 @@ export async function revokeAuthorization(serverId: string): Promise<void> {
       // Derive revocation endpoint: replace /token with /revoke (common convention)
       const tokenUrl = new URL(discovery.tokenEndpoint);
       const revocationUrl = new URL(tokenUrl.href.replace(/\/token$/, '/revoke'));
-      await fetch(revocationUrl.href, {
+      await fetchWithGeneralProxy(revocationUrl.href, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -204,8 +237,7 @@ export async function revokeAuthorization(serverId: string): Promise<void> {
     }
   }
 
-  await clearServerField(serverId, 'token');
-  emitTokenChange(serverId, 'revoked');
+  await clearServerToken(serverId);
   console.log(`[mcp-oauth] Authorization revoked for ${serverId}`);
 }
 
@@ -235,10 +267,6 @@ export function getOAuthStatus(
  * Manually refresh token for a server (called from API endpoint).
  */
 export async function manualRefreshToken(serverId: string): Promise<boolean> {
-  const result = await refreshToken(serverId);
-  if (result) {
-    emitTokenChange(serverId, 'refreshed');
-    return true;
-  }
-  return false;
+  const result = await refreshToken(serverId, 'manual');
+  return result.kind === 'refreshed_by_self' || result.kind === 'observed_after_lock';
 }

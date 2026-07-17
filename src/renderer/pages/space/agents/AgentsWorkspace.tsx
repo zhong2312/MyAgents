@@ -39,7 +39,7 @@ import {
   registeredAgentAvailability,
   type AgentAvailability,
 } from "@/pages/space/spaceHelpers";
-import { GoalPathSelectLabel } from "@/pages/space/GoalPathSelectLabel";
+import { GoalPathLabel } from "@/pages/space/GoalPathLabel";
 import AvatarPicker, {
   type AvatarPickerSelection,
 } from "@/pages/space/AvatarPicker";
@@ -462,7 +462,7 @@ function EditAgentDialog({
       return {
         value: goal.id,
         label,
-        content: <GoalPathSelectLabel label={label} />,
+        content: <GoalPathLabel label={label} leafLabel={goal.title} />,
       };
     });
     if (
@@ -473,7 +473,7 @@ function EditAgentDialog({
       options.unshift({
         value: agent.goalId,
         label,
-        content: <GoalPathSelectLabel label={label} />,
+        content: <GoalPathLabel label={label} leafLabel={label} />,
       });
     }
     return options;
@@ -1453,7 +1453,7 @@ export function RegisterAgentDialog({
         return {
           value: goal.id,
           label,
-          content: <GoalPathSelectLabel label={label} />,
+          content: <GoalPathLabel label={label} leafLabel={goal.title} />,
         };
       }),
     [goals],

@@ -22,6 +22,9 @@ let committingTurnAdmissionQueueId: string | null = null;
 let promotedItem: {
   sourceItem: MessageQueueItem;
   canceled: boolean;
+  canceledPromise: Promise<void>;
+  resolveCanceled: () => void;
+  guardSettlement: Promise<void> | null;
 } | null = null;
 let inFlightToCliId: string | null = null;
 let forceSurfaceInFlightId: string | null = null;
@@ -116,7 +119,8 @@ export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
     candidate?.kind === owner.kind && candidate.id === owner.id;
   return messageQueue.some(item => matches(item.turnOwner))
     || pendingMidTurnQueue.some(item => matches(item.sourceItem.turnOwner))
-    || turnBoundaryQueue.some(item => matches(item.sourceItem?.turnOwner))
+    || turnBoundaryQueue.some(item =>
+      matches(item.sourceItem?.turnOwner) || matches(item.admissionTicket?.turnOwner))
     || matches(promotedItem?.sourceItem.turnOwner)
     || matches(turnAdmissionTicket?.turnOwner);
 }
@@ -184,16 +188,45 @@ export function getTurnAdmissionTicket(): TurnAdmissionTicket | null {
   return turnAdmissionTicket;
 }
 
-export function cancelTurnAdmissionTicket(queueId?: string): TurnAdmissionTicket | null {
+export function cancelTurnAdmissionTicket(queueId?: string): {
+  ticket: TurnAdmissionTicket;
+  settlement: Promise<void>;
+} | null {
   if (!turnAdmissionTicket || (queueId && turnAdmissionTicket.queueId !== queueId)) return null;
   const canceled = turnAdmissionTicket;
-  canceled.canceled = true;
-  canceled.beforeDispatch?.cancel?.();
+  const settlement = cancelDetachedAdmissionTicket(canceled);
   turnAdmissionTicket = null;
   if (committingTurnAdmissionQueueId === canceled.queueId) {
     committingTurnAdmissionQueueId = null;
   }
-  return canceled;
+  return { ticket: canceled, settlement };
+}
+
+function startGuardCancellation(guard: MessageQueueItem['beforeDispatch']): Promise<void> {
+  try {
+    return Promise.resolve(guard?.cancel?.()).then(() => undefined);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+export function cancelDetachedAdmissionTicket(ticket: TurnAdmissionTicket): Promise<void> {
+  if (ticket.cancellationSettlement) return ticket.cancellationSettlement;
+  if (ticket.canceled) {
+    ticket.cancellationSettlement = Promise.resolve();
+    return ticket.cancellationSettlement;
+  }
+  ticket.canceled = true;
+  ticket.cancellationSettlement = Promise.all([
+    startGuardCancellation(ticket.beforeUserPersistence),
+    startGuardCancellation(ticket.beforeDispatch),
+  ]).then(() => undefined);
+  return ticket.cancellationSettlement;
+}
+
+export function releaseDetachedAdmissionTicket(ticket: TurnAdmissionTicket): void {
+  ticket.beforeUserPersistence = undefined;
+  ticket.beforeDispatch = undefined;
 }
 
 export function getTurnAdmissionIdentity(): TurnIdentity | null {
@@ -230,14 +263,39 @@ export function isPromotedItemInFlight(): boolean {
 }
 
 export function beginPromotedItem(sourceItem: MessageQueueItem): void {
-  promotedItem = { sourceItem, canceled: false };
+  let resolveCanceled!: () => void;
+  const canceledPromise = new Promise<void>((resolve) => {
+    resolveCanceled = resolve;
+  });
+  promotedItem = {
+    sourceItem,
+    canceled: false,
+    canceledPromise,
+    resolveCanceled,
+    guardSettlement: null,
+  };
+}
+
+export function cancelPromotedItemWithSettlement(queueId?: string): {
+  item: MessageQueueItem;
+  settlement: Promise<void>;
+} | null {
+  if (!promotedItem || (queueId && promotedItem.sourceItem.id !== queueId)) return null;
+  promotedItem.canceled = true;
+  promotedItem.resolveCanceled();
+  promotedItem.guardSettlement ??= startGuardCancellation(promotedItem.sourceItem.beforeDispatch);
+  return {
+    item: promotedItem.sourceItem,
+    settlement: promotedItem.guardSettlement,
+  };
 }
 
 export function cancelPromotedItem(queueId?: string): MessageQueueItem | null {
-  if (!promotedItem || (queueId && promotedItem.sourceItem.id !== queueId)) return null;
-  promotedItem.canceled = true;
-  promotedItem.sourceItem.beforeDispatch?.cancel?.();
-  return promotedItem.sourceItem;
+  return cancelPromotedItemWithSettlement(queueId)?.item ?? null;
+}
+
+export function getPromotedItemCancellation(queueId: string): Promise<void> | null {
+  return promotedItem?.sourceItem.id === queueId ? promotedItem.canceledPromise : null;
 }
 
 export function isPromotedItemCanceled(queueId: string): boolean {
@@ -247,6 +305,17 @@ export function isPromotedItemCanceled(queueId: string): boolean {
 export function clearPromotedItem(queueId?: string): void {
   if (!promotedItem || (queueId && promotedItem.sourceItem.id !== queueId)) return;
   promotedItem = null;
+}
+
+/**
+ * Put an item rejected by a pre-SDK dispatch fence back at the queue front.
+ * Realtime admission may already own a provisional in-flight slot; because no
+ * SDK yield occurred, that slot must be released in the same owner operation.
+ */
+export function requeuePromotedItemBeforeSdkDispatch(item: MessageQueueItem): void {
+  clearInFlightSlotIfMatches(item.id);
+  clearPromotedItem(item.id);
+  messageQueue.unshift(item);
 }
 
 export function getPromotedTurnIdentity(): TurnIdentity | null {
@@ -278,6 +347,13 @@ export function clearInFlightSlot(): void {
   inFlightMetadata = null;
   forceSurfaceInFlightId = null;
   awaitingAssistantStartAckQueueId = null;
+}
+
+/** Release a provisional SDK handoff only when the exact queue item owns it. */
+export function clearInFlightSlotIfMatches(queueId: string): boolean {
+  if (inFlightToCliId !== queueId) return false;
+  clearInFlightSlot();
+  return true;
 }
 
 export function getForceSurfaceInFlightId(): string | null {
@@ -396,14 +472,20 @@ export function drainQueuedItems(): {
 
 export function getQueueStatus(): Array<{ id: string; messagePreview: string }> {
   return [
-    ...messageQueue.map(item => ({
-      id: item.id,
-      messagePreview: item.messageText.slice(0, 100),
-    })),
-    ...turnBoundaryQueue.map(item => ({
-      id: item.queueId,
-      messagePreview: item.messageText.slice(0, 100),
-    })),
+    ...messageQueue
+      .filter(item => !item.deferVisibleAdmission)
+      .map(item => ({
+        id: item.id,
+        messagePreview: item.messageText.slice(0, 100),
+      })),
+    ...turnBoundaryQueue
+      .filter(item =>
+        item.admissionTicket?.beforeUserPersistence === undefined
+        && item.sourceItem?.deferVisibleAdmission !== true)
+      .map(item => ({
+        id: item.queueId,
+        messagePreview: item.messageText.slice(0, 100),
+      })),
   ];
 }
 

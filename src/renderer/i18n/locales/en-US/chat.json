@@ -429,7 +429,7 @@
       "loading": "Loading...",
       "empty": "No history yet",
       "current": "Current",
-      "messageCount": "{{count}} message(s)",
+      "turnCount": "{{count}} turn(s)",
       "unreadNotifications": "{{count}} unread notification(s)",
       "automationVisible": "Scheduled task chats visible",
       "automationHidden": "Scheduled task chats hidden",
@@ -466,7 +466,8 @@
         "inputCache": "Input cache"
       },
       "summary": {
-        "messages": "Messages",
+        "turns": "Turns",
+        "humanQueries": "Human inputs",
         "totalTokens": "Total tokens",
         "inputOutput": "Input {{input}} / output {{output}}",
         "inputCache": "Input cache",
@@ -477,9 +478,9 @@
         "model": "Model",
         "count": "Count"
       },
-      "messageDetails": {
-        "title": "Message details",
-        "question": "Question"
+      "turnDetails": {
+        "title": "Turn usage",
+        "trigger": "Visible trigger"
       }
     },
     "queue": {
@@ -587,6 +588,49 @@
         "file": "File: {{path}}",
         "folder": "Folder: {{path}}"
       },
+      "filePatch": {
+        "moreActions": "More file actions",
+        "unnamedFile": "Unnamed file",
+        "operation": {
+          "add": "Created",
+          "update": "Modified",
+          "delete": "Deleted",
+          "move": "Moved",
+          "write": "Write",
+          "change": "Changed"
+        },
+        "replaceAll": "Replace all",
+        "userModified": "Result adjusted during approval",
+        "boundedPreview": "Large change; showing a bounded preview",
+        "noTextChanges": "No text changes",
+        "emptyWrittenContent": "The written file content is empty",
+        "detailUnavailable": "Change details unavailable",
+        "previousVersionUnavailable": "The result did not provide the previous version",
+        "showAll": "Show all",
+        "showAllForFile": "Show all changes for {{file}}; {{count}} more lines are hidden",
+        "remainingLines_one": "{{count}} more line is hidden",
+        "remainingLines_other": "{{count}} more lines are hidden",
+        "onlyFirstLines": "Content is too long; showing the first {{count}} lines",
+        "rawResult": "Raw tool result",
+        "diffAria": "Changes for {{file}}",
+        "hunkLineCount_one": "{{count}} line",
+        "hunkLineCount_other": "{{count}} lines",
+        "hunkSameStart": "Around line {{line}} · before: {{oldSpan}} · after: {{newSpan}}",
+        "hunkMovedStart": "Old line {{oldStart}} → new line {{newStart}} · before: {{oldSpan}} · after: {{newSpan}}",
+        "addedLine": "Added line {{line}}",
+        "removedLine": "Removed line {{line}}",
+        "addedLineUnknown": "Added line",
+        "removedLineUnknown": "Removed line",
+        "moveTo": "Move to {{path}}",
+        "status": {
+          "declined": "Declined",
+          "failed": "Failed",
+          "stopped": "Stopped",
+          "interrupted": "Interrupted",
+          "running": "Running",
+          "unknown": "{{status}}"
+        }
+      },
       "image": {
         "noLocalPath": "No local path to copy",
         "copyPathSuccess": "Image path copied",
@@ -656,6 +700,8 @@
         "matches": "{{count}} match(es)",
         "files": "{{count}} file(s)",
         "filesPart": "in {{count}} file(s)",
+        "writeLines_one": "Write {{count}} line",
+        "writeLines_other": "Write {{count}} lines",
         "editImage": "Edit image",
         "generateImage": "Generate image",
         "listVoices": "List voices",
@@ -709,10 +755,35 @@
       },
       "bash": {
         "initializing": "Initializing terminal...",
-        "input": "Input",
+        "terminal": "Terminal",
+        "terminalAria": "Terminal execution, status: {{status}}",
+        "transcriptAria": "Terminal execution transcript",
+        "command": "Command",
         "output": "Output",
-        "background": "Background",
-        "running": "Running..."
+        "rawOutput": "Raw output",
+        "stdout": "Standard output",
+        "stderr": "Error output",
+        "waitingForOutput": "Waiting for output...",
+        "noOutput": "No output",
+        "showAll": "Show all",
+        "moreOutput": "More terminal content is hidden",
+        "contentTruncated": "Terminal content is too long; showing the safe inline range",
+        "duration": "Duration {{duration}}",
+        "status": {
+          "initializing": "Initializing",
+          "running": "Running",
+          "completed": "Completed",
+          "failed": "Failed",
+          "stopped": "Stopped",
+          "interrupted": "Interrupted",
+          "timeout": "Timed out",
+          "background": "Running in background"
+        },
+        "format": {
+          "json": "JSON",
+          "diff": "Diff",
+          "plain": "Terminal text"
+        }
       },
       "tts": {
         "querying": "Querying...",

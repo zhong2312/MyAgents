@@ -695,7 +695,7 @@ fn external_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
     let builder = reqwest::Client::builder()
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(30));
-    crate::proxy_config::build_client_with_proxy_for_provider(builder, CODEX_PROVIDER_ID)
+    crate::proxy_config::build_client_with_proxy(builder)
         .map_err(|e| format!("[managed-codex] Failed to build HTTP client: {}", e))
 }
 

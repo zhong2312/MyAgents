@@ -59,6 +59,14 @@ pub enum ImPlatform {
     OpenClaw(String),
 }
 
+/// Request-scoped delivery contract selected by the inbound producer.
+/// This is an observed fact for one message, not a channel capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImDeliveryProtocol {
+    #[serde(rename = "openclaw-reply")]
+    OpenClawReply,
+}
+
 impl Serialize for ImPlatform {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
@@ -306,6 +314,8 @@ pub struct ImMessage {
     pub text: String,
     pub sender_id: String,
     pub sender_name: Option<String>,
+    /// Adapter account that received this message (community plugins only).
+    pub account_id: Option<String>,
     pub source_type: ImSourceType,
     pub platform: ImPlatform,
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -324,8 +334,11 @@ pub struct ImMessage {
     /// Per-request identity (Pattern A — IM Pipeline v2).
     /// Empty by default; mod.rs main loop fills it in when dispatching to spawn task.
     /// Carried through to /api/im/chat payload + all log statements for full-chain trace.
-    /// Buffered replays generate a fresh request_id (each retry is its own request).
+    /// Native buffered replays generate a fresh request_id. OpenClaw reply
+    /// dispatches preserve the producer-owned ID so the waiting plugin promise
+    /// remains correlated across a temporary Sidecar outage.
     pub request_id: String,
+    pub delivery_protocol: Option<ImDeliveryProtocol>,
 }
 
 impl ImMessage {
@@ -596,6 +609,8 @@ pub struct BufferedMessage {
     pub text: String,
     pub sender_id: String,
     pub sender_name: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
     pub source_type: ImSourceType,
     #[serde(default = "default_platform")]
     pub platform: ImPlatform,
@@ -619,6 +634,13 @@ pub struct BufferedMessage {
     /// Group-level custom system prompt (from Bridge plugin config)
     #[serde(default)]
     pub group_system_prompt: Option<String>,
+    /// Process-scoped correlation for an in-memory replay. A Bridge pending
+    /// dispatcher cannot survive an app restart, so this must not be persisted.
+    #[serde(skip)]
+    pub request_id: String,
+    /// Same process-lifetime boundary as `request_id`.
+    #[serde(skip)]
+    pub delivery_protocol: Option<ImDeliveryProtocol>,
 }
 
 impl BufferedMessage {
@@ -630,6 +652,7 @@ impl BufferedMessage {
             text: msg.text.clone(),
             sender_id: msg.sender_id.clone(),
             sender_name: msg.sender_name.clone(),
+            account_id: msg.account_id.clone(),
             source_type: msg.source_type.clone(),
             platform: msg.platform.clone(),
             timestamp: msg.timestamp.to_rfc3339(),
@@ -639,13 +662,19 @@ impl BufferedMessage {
             hint_group_name: msg.hint_group_name.clone(),
             reply_to_body: msg.reply_to_body.clone(),
             group_system_prompt: msg.group_system_prompt.clone(),
+            request_id: if msg.delivery_protocol.is_some() {
+                msg.request_id.clone()
+            } else {
+                String::new()
+            },
+            delivery_protocol: msg.delivery_protocol.clone(),
         }
     }
 
     /// Convert back to ImMessage for route_message() replay.
     /// Note: attachments are lost (binary data too large for JSON serialization).
-    /// `request_id` is left empty — the spawn entry in mod.rs will assign a fresh
-    /// one for the retry attempt (each replay is its own logical request).
+    /// Native messages keep request_id empty for a fresh replay identity;
+    /// request-scoped plugin protocols retain their original identity.
     pub fn to_im_message(&self) -> ImMessage {
         ImMessage {
             chat_id: self.chat_id.clone(),
@@ -653,6 +682,7 @@ impl BufferedMessage {
             text: self.text.clone(),
             sender_id: self.sender_id.clone(),
             sender_name: self.sender_name.clone(),
+            account_id: self.account_id.clone(),
             source_type: self.source_type.clone(),
             platform: self.platform.clone(),
             timestamp: chrono::DateTime::parse_from_rfc3339(&self.timestamp)
@@ -665,7 +695,8 @@ impl BufferedMessage {
             hint_group_name: self.hint_group_name.clone(),
             reply_to_body: self.reply_to_body.clone(),
             group_system_prompt: self.group_system_prompt.clone(),
-            request_id: String::new(),
+            request_id: self.request_id.clone(),
+            delivery_protocol: self.delivery_protocol.clone(),
         }
     }
 }
@@ -1461,6 +1492,48 @@ pub struct AgentConfigPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffered_openclaw_reply_identity_is_process_scoped() {
+        let message = ImMessage {
+            chat_id: "chat-1".to_string(),
+            message_id: "message-1".to_string(),
+            text: "hello".to_string(),
+            sender_id: "user-1".to_string(),
+            sender_name: None,
+            account_id: Some("account-1".to_string()),
+            source_type: ImSourceType::Private,
+            platform: ImPlatform::OpenClaw("openclaw-lark".to_string()),
+            timestamp: chrono::Utc::now(),
+            attachments: Vec::new(),
+            media_group_id: None,
+            is_mention: true,
+            reply_to_bot: false,
+            hint_group_name: None,
+            reply_to_body: None,
+            group_system_prompt: None,
+            request_id: "request-1".to_string(),
+            delivery_protocol: Some(ImDeliveryProtocol::OpenClawReply),
+        };
+
+        let buffered = BufferedMessage::from_im_message(&message);
+        assert_eq!(buffered.to_im_message().request_id, "request-1");
+        assert_eq!(
+            buffered.to_im_message().account_id.as_deref(),
+            Some("account-1")
+        );
+        assert_eq!(
+            buffered.to_im_message().delivery_protocol,
+            Some(ImDeliveryProtocol::OpenClawReply)
+        );
+
+        let persisted = serde_json::to_value(&buffered).unwrap();
+        assert!(persisted.get("request_id").is_none());
+        assert!(persisted.get("delivery_protocol").is_none());
+        let restored: BufferedMessage = serde_json::from_value(persisted).unwrap();
+        assert!(restored.request_id.is_empty());
+        assert!(restored.delivery_protocol.is_none());
+    }
 
     fn base_agent() -> AgentConfigRust {
         AgentConfigRust {

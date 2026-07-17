@@ -19,6 +19,8 @@ import type {
   TurnOwner,
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
+import type { SessionActivityTurnFacts } from '../session-core/session-activity-policy';
+import type { SessionMaterializationScenario } from '../utils/session-materialization';
 
 export type BuiltinSessionState = 'idle' | 'starting' | 'running' | 'error';
 
@@ -159,13 +161,24 @@ export type MessageQueueItem = {
   requestId?: string;
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
+  sessionBirthOrigin?: SessionOrigin;
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
+  /** SessionStore work held until the runtime admission commit for guarded turns. */
+  deferredSessionMetadata?: {
+    scenario: SessionMaterializationScenario;
+    origin?: SessionOrigin;
+    allowLazyMaterialization: boolean;
+  };
+  /** Frozen at the runtime admission seam for terminal activity policy. */
+  activityFacts?: SessionActivityTurnFacts;
   /** User history/UI side effects held until a dispatch guard accepts. */
   deferredUserSurface?: DeferredUserSurface;
+  /** Infrastructure admission must stay invisible until its final guard commits. */
+  deferVisibleAdmission?: boolean;
   settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;
   transientProviderRetry?: {
     rootQueueId: string;
@@ -176,6 +189,8 @@ export type MessageQueueItem = {
 export type TurnBoundaryQueueItem = {
   queueId: string;
   ready: boolean;
+  /** Cancellation owner while an infrastructure turn is still in preflight. */
+  admissionTicket?: TurnAdmissionTicket;
   sourceItem?: MessageQueueItem;
   messageText: string;
   attachments?: MessageWire['attachments'];
@@ -193,9 +208,12 @@ export type TurnAdmissionTicket = {
   messageText: string;
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
+  beforeUserPersistence?: DispatchGuard;
   beforeDispatch?: DispatchGuard;
   settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;
   canceled: boolean;
+  /** Exact guard rollback started by cancellation; shared by overlapping cancel owners. */
+  cancellationSettlement?: Promise<void>;
 };
 
 export type InFlightMetadata = {
@@ -219,9 +237,15 @@ export type BuiltinTurnUsage = {
 
 export type BuiltinLifecycleSnapshot = {
   querySession: Query | null;
+  queryGeneration: number;
+  queryMcpRevision: number;
+  queryMcpFingerprint: string | null;
+  queryMcpServerIds: string[];
+  queryMcpMutationInFlight: boolean;
   isProcessing: boolean;
   abortRequested: boolean;
   sessionTerminationPromise: Promise<void> | null;
+  abortCleanupInFlight: boolean;
   isPreWarming: boolean;
   preWarmTimer: ReturnType<typeof setTimeout> | null;
   preWarmFailCount: number;

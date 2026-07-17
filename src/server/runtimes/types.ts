@@ -179,7 +179,7 @@ export type UnifiedEvent =
   // SubAgentScope. Absent for builtin / Gemini / Claude Code.
   | { kind: 'tool_use_start'; toolUseId: string; toolName: string; input?: Record<string, unknown>; subAgent?: SubAgentScope }
   | { kind: 'tool_input_delta'; toolUseId: string; delta: string; subAgent?: SubAgentScope }
-  | { kind: 'tool_use_stop'; toolUseId: string; subAgent?: SubAgentScope }
+  | { kind: 'tool_use_stop'; toolUseId: string; input?: Record<string, unknown>; subAgent?: SubAgentScope }
   | { kind: 'tool_result_delta'; toolUseId: string; delta: string; subAgent?: SubAgentScope }
   | {
     kind: 'tool_result';

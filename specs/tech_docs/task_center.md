@@ -68,6 +68,7 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 - permission 是本轮执行策略，可由 Task 指定；空值解析为对应 runtime 最大权限。
 - durable Task 只保存 provider identity (`providerId + model`)，不保存 credential/env。
 - 执行期间使用 `SidecarOwner::Task(taskId)`；terminal/stop/delete 对称释放。
+- Task turn 的 completion descriptor 保留 `{ kind: 'task', id: taskId }` owner；Rust 通用 Session completion policy 据此抑制 generic toast，Task outcome/notification 仍由 Task domain lifecycle 唯一负责，attached/headless 都不因 Tab 是否存在而改变归属。
 - Rust 每次 ensure attempt 只解析一次 owner-aware `RuntimeIdentity(runtime + runtimeSource)`，复用校验与 spawn 必须消费同一快照；Node 创建 Task metadata 时再从 live `SessionEngine.getRuntimeIdentity()` 取一次实际进程身份，并与同一 live config snapshot 绑定，禁止用 payload 中可能漂移的 runtime 反写。
 
 完整 provider/runtime/MCP 规则见 `task_provider_routing.md`。
@@ -132,6 +133,7 @@ Goal 是 Session 状态，不是 Task execution mode：
 
 - 不创建 Task、不占用 Task status/schedule 字段。
 - Task 与 Goal 可在同一 Session 共存；Task scheduler 不感知 Goal。
+- Goal turn 的 completion descriptor 保留 `{ kind: 'goal', id: goalId }` owner；generic Session completion 被抑制，Goal terminal/outbox/notification 继续由 Goal domain lifecycle 负责。
 - 未来 Task 如需持续执行，可让其 prompt 中的 AI 在当前 Session 调 `myagents goal create`，无需 Task->Goal 编排字段。
 
 详见 `session_architecture.md` 的 Goal Mode 章节。

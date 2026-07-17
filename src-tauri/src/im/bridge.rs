@@ -117,8 +117,6 @@ pub struct BridgeAdapter {
     client: Client,
     #[allow(dead_code)]
     max_msg_length: usize,
-    supports_streaming: bool,
-    supports_cardkit: bool,
     /// Whether the plugin supports edit_message (from capabilities.edit).
     /// When false, streaming skips draft creation and edit calls entirely.
     supports_edit: bool,
@@ -138,8 +136,6 @@ impl BridgeAdapter {
             bridge_port,
             client,
             max_msg_length: 4096,
-            supports_streaming: false,
-            supports_cardkit: false,
             supports_edit: true, // assume yes until sync_capabilities proves otherwise
             enabled_tool_groups: Vec::new(),
             all_tool_groups: Vec::new(),
@@ -147,7 +143,7 @@ impl BridgeAdapter {
         }
     }
 
-    /// Fetch plugin capabilities from bridge and update max_msg_length + streaming flags.
+    /// Fetch plugin capabilities from bridge and update outbound metadata.
     /// Called once after bridge is verified healthy.
     pub async fn sync_capabilities(&mut self) {
         match self.client.get(self.url("/capabilities")).send().await {
@@ -157,16 +153,7 @@ impl BridgeAdapter {
                         self.max_msg_length = limit as usize;
                         ulog_info!("[bridge:{}] textChunkLimit = {}", self.plugin_id, limit);
                     }
-                    // CardKit / streaming capability flags (nested under capabilities object)
                     let caps = &body["capabilities"];
-                    if caps["streaming"].as_bool() == Some(true) {
-                        self.supports_streaming = true;
-                        ulog_info!("[bridge:{}] streaming enabled", self.plugin_id);
-                    }
-                    if caps["streamingCardKit"].as_bool() == Some(true) {
-                        self.supports_cardkit = true;
-                        ulog_info!("[bridge:{}] CardKit enabled", self.plugin_id);
-                    }
                     // edit capability — when false, streaming skips draft+edit entirely
                     if caps["edit"].as_bool() == Some(false) {
                         self.supports_edit = false;
@@ -235,6 +222,30 @@ impl BridgeAdapter {
 
     fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{}", self.bridge_port, path)
+    }
+
+    async fn post_reply_operation(
+        &self,
+        path: &str,
+        operation: &str,
+        body: &serde_json::Value,
+    ) -> AdapterResult<serde_json::Value> {
+        let resp = self
+            .client
+            .post(self.url(path))
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("Bridge {} failed: {}", operation, e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "Bridge {} returned {}: {}",
+                operation, status, text
+            ));
+        }
+        Ok(resp.json().await.unwrap_or_default())
     }
 
     pub fn plugin_id(&self) -> &str {
@@ -954,113 +965,94 @@ impl ImStreamAdapter for BridgeAdapter {
         ))
     }
 
-    fn supports_streaming(&self) -> bool {
-        self.supports_streaming
+    async fn start_reply_dispatch(&self, request_id: &str) -> AdapterResult<()> {
+        self.post_reply_operation(
+            "/start-dispatch",
+            "start-dispatch",
+            &json!({ "requestId": request_id }),
+        )
+        .await?;
+        Ok(())
     }
 
-    async fn start_stream(&self, chat_id: &str, initial_text: &str) -> AdapterResult<String> {
+    async fn start_reply_stream(
+        &self,
+        request_id: &str,
+        chat_id: &str,
+        initial_text: &str,
+    ) -> AdapterResult<String> {
         let body = json!({
+            "requestId": request_id,
             "chatId": chat_id,
             "initialContent": initial_text,
-            "streamMode": if self.supports_cardkit { "cardkit" } else { "text" },
         });
-        let resp = self
-            .client
-            .post(self.url("/start-stream"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Bridge start-stream failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Bridge start-stream returned {}: {}", status, text));
-        }
-
-        let resp_body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let resp_body = self
+            .post_reply_operation("/start-stream", "start-stream", &body)
+            .await?;
         Ok(resp_body["streamId"].as_str().unwrap_or("").to_string())
     }
 
-    async fn stream_chunk(
+    async fn update_reply_stream(
         &self,
-        chat_id: &str,
         stream_id: &str,
         text: &str,
         sequence: u32,
         is_thinking: bool,
     ) -> AdapterResult<()> {
         let body = json!({
-            "chatId": chat_id,
             "streamId": stream_id,
             "content": text,
             "sequence": sequence,
             "isThinking": is_thinking,
         });
-        let resp = self
-            .client
-            .post(self.url("/stream-chunk"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Bridge stream-chunk failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Bridge stream-chunk returned {}: {}", status, text));
-        }
+        self.post_reply_operation("/stream-chunk", "stream-chunk", &body)
+            .await?;
         Ok(())
     }
 
-    async fn finalize_stream(
+    async fn finish_reply_stream_block(&self, stream_id: &str) -> AdapterResult<()> {
+        self.post_reply_operation(
+            "/finish-stream-block",
+            "finish-stream-block",
+            &json!({ "streamId": stream_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn complete_reply_dispatch(
         &self,
-        chat_id: &str,
-        stream_id: &str,
-        final_text: &str,
+        request_id: &str,
+        final_payloads: &serde_json::Value,
     ) -> AdapterResult<()> {
-        let body = json!({
-            "chatId": chat_id,
-            "streamId": stream_id,
-            "finalContent": final_text,
-        });
-        let resp = self
-            .client
-            .post(self.url("/finalize-stream"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Bridge finalize-stream failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "Bridge finalize-stream returned {}: {}",
-                status, text
-            ));
-        }
+        self.post_reply_operation(
+            "/complete-dispatch",
+            "complete-dispatch",
+            &json!({
+                "requestId": request_id,
+                "finalPayloads": final_payloads,
+            }),
+        )
+        .await?;
         Ok(())
     }
 
-    async fn abort_stream(&self, chat_id: &str, stream_id: &str) -> AdapterResult<()> {
-        let body = json!({
-            "chatId": chat_id,
-            "streamId": stream_id,
-        });
-        let resp = self
-            .client
-            .post(self.url("/abort-stream"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Bridge abort-stream failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Bridge abort-stream returned {}: {}", status, text));
-        }
+    async fn abort_reply_dispatch(
+        &self,
+        request_id: &str,
+        reason: &str,
+        terminal_payload: &serde_json::Value,
+    ) -> AdapterResult<()> {
+        self.post_reply_operation(
+            "/abort-dispatch",
+            "abort-dispatch",
+            &json!({
+                "requestId": request_id,
+                "reason": reason,
+                "terminalPayload": terminal_payload,
+            }),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -2122,7 +2114,7 @@ pub async fn install_openclaw_plugin<R: tauri::Runtime>(
 }
 
 /// Our shim's OpenClaw compat version. Must match sdk-shim/package.json and compat-runtime.ts.
-const SHIM_COMPAT_VERSION: &str = "2026.6.28";
+const SHIM_COMPAT_VERSION: &str = "2026.6.29";
 
 /// Check if installed plugin's peerDependencies.openclaw is compatible with our shim.
 /// Returns a warning message if incompatible, None if OK.

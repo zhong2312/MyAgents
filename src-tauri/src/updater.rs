@@ -427,14 +427,14 @@ fn build_updater_with_proxy(app: &AppHandle) -> Result<tauri_plugin_updater::Upd
         .target(target.to_string())
         .timeout(std::time::Duration::from_secs(15));
 
-    if let Some(proxy_settings) = proxy_config::read_proxy_settings() {
+    if let Some(proxy_settings) = proxy_config::read_proxy_settings_for_general_requests() {
         let proxy_url = proxy_config::get_proxy_url(&proxy_settings)?;
         ulog_info!("[Updater] Using proxy for update requests: {}", proxy_url);
         let url = reqwest::Url::parse(&proxy_url)
             .map_err(|e| format!("Invalid proxy URL '{}': {}", proxy_url, e))?;
         builder = builder.proxy(url);
     } else {
-        ulog_info!("[Updater] No proxy configured, inheriting system network behavior");
+        ulog_info!("[Updater] General requests inherit system network behavior");
         // Don't call .no_proxy() — let the updater respect system proxy settings
         // (Clash TUN, global proxy, etc.) just like other normal applications.
     }

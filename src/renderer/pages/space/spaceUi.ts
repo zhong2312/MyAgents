@@ -17,6 +17,7 @@ export const SPACE_BACKGROUND_STYLE: CSSProperties = {
 
 export const SPACE_LIST_FRAME_CLASS = "mx-auto max-w-4xl";
 export const SPACE_COLLECTION_FRAME_CLASS = "mx-auto max-w-6xl";
+export const SPACE_NARRATIVE_INSET_CLASS = "px-3 max-sm:px-2";
 export const SPACE_TWO_COLUMN_GRID_CLASS =
   "grid grid-cols-2 gap-3 max-lg:grid-cols-1";
 export const SPACE_PRIMARY_TOOL_BUTTON_CLASS =

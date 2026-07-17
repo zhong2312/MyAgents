@@ -34,6 +34,7 @@ import {
   type OfficialToolId,
   type OfficialToolSettings,
 } from '../../shared/official-tools';
+import { applyMcpServerConfigAdditions } from '../../shared/mcpConfig';
 import {
   coerceModelForRuntime,
   coercePermissionModeForRuntime,
@@ -403,8 +404,6 @@ export function getAllMcpServers(config?: AdminAppConfig): McpServerDefinition[]
   const c = config ?? loadConfig();
   const presets = getPresetMcpServers();
   const custom = c.mcpServers ?? [];
-  const envOverrides = c.mcpServerEnv ?? {};
-  const argsOverrides = c.mcpServerArgs ?? {};
 
   // Custom servers can override presets with same ID
   const customIds = new Set(custom.map(s => s.id));
@@ -413,16 +412,7 @@ export function getAllMcpServers(config?: AdminAppConfig): McpServerDefinition[]
     ...custom,
   ];
 
-  // Apply user env/args overrides
-  return merged.map(server => {
-    const userEnv = envOverrides[server.id];
-    const userArgs = argsOverrides[server.id];
-    return {
-      ...server,
-      ...(userEnv ? { env: { ...(server.env || {}), ...userEnv } } : {}),
-      ...(userArgs !== undefined ? { args: userArgs } : {}),
-    };
-  });
+  return applyMcpServerConfigAdditions(merged, c);
 }
 
 /**

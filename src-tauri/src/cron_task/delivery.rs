@@ -247,26 +247,26 @@ pub(crate) async fn deliver_cron_result_to_bot(
             find_agent_id_for_delivery(&agent_state, &delivery.bot_id, task_workspace.as_deref())
                 .await
         {
-            let route = match crate::im::resolve_agent_heartbeat_route(&agent_state, &agent_id)
-                .await
-            {
-                crate::im::AgentHeartbeatRouteResolution::Target(route) => route,
-                crate::im::AgentHeartbeatRouteResolution::NoPrivateTarget => {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+            let (route, _work_guard) = loop {
+                match crate::im::resolve_agent_heartbeat_route(&agent_state, &agent_id).await {
+                    crate::im::AgentHeartbeatRouteResolution::Target(route) => {
+                        if let Some(guard) = route.model_work_gate.try_enter() {
+                            break (route, guard);
+                        }
+                    }
+                    crate::im::AgentHeartbeatRouteResolution::NoPrivateTarget
+                    | crate::im::AgentHeartbeatRouteResolution::AgentMissing => {}
+                }
+                if tokio::time::Instant::now() >= deadline {
                     ulog_warn!(
-                        "[CronTask] Agent {} has no private heartbeat target; task {} result stays in execution history",
+                        "[CronTask] Agent {} unavailable during transport reconnect; task {} result stays in execution history",
                         agent_id,
                         task_id
                     );
                     return false;
                 }
-                crate::im::AgentHeartbeatRouteResolution::AgentMissing => {
-                    ulog_warn!(
-                        "[CronTask] Agent {} disappeared before cron delivery for task {}",
-                        agent_id,
-                        task_id
-                    );
-                    return false;
-                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             };
 
             append_pending_cron_event(
@@ -294,24 +294,31 @@ pub(crate) async fn deliver_cron_result_to_bot(
         }
     };
 
-    let (pending_cron_events, wake_tx) = {
-        let im_guard = im_state.lock().await;
-        let instance = match im_guard.get(&delivery.bot_id) {
-            Some(i) => i,
-            None => {
-                ulog_warn!(
-                    "[CronTask] Cannot deliver result: Bot {} not found or not running. \
-                     Task result stored in execution history only. \
-                     User needs to start the channel in Agent settings.",
-                    delivery.bot_id
-                );
-                return false;
-            }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let (pending_cron_events, wake_tx, _work_guard) = loop {
+        let candidate = {
+            let im_guard = im_state.lock().await;
+            im_guard.get(&delivery.bot_id).map(|instance| {
+                (
+                    std::sync::Arc::clone(&instance.pending_cron_events),
+                    instance.heartbeat_wake_tx.clone(),
+                    std::sync::Arc::clone(&instance.model_work_gate),
+                )
+            })
         };
-        (
-            std::sync::Arc::clone(&instance.pending_cron_events),
-            instance.heartbeat_wake_tx.clone(),
-        )
+        if let Some((pending, wake, gate)) = candidate {
+            if let Some(guard) = gate.try_enter() {
+                break (pending, wake, guard);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            ulog_warn!(
+                "[CronTask] Cannot deliver result: Bot {} is unavailable during transport reconnect. Task result remains in execution history.",
+                delivery.bot_id
+            );
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
 
     append_pending_cron_event(

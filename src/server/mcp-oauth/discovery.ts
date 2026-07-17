@@ -13,6 +13,7 @@
  */
 
 import type { OAuthServerMetadata, DiscoveryCache } from './types';
+import { fetchWithGeneralProxy } from '../utils/cancellation';
 
 const TIMEOUT_MS = 10000;
 
@@ -28,7 +29,7 @@ async function discoverProtectedResource(
   const wellKnown = `${baseUrl}/.well-known/oauth-protected-resource`;
 
   try {
-    const res = await fetch(wellKnown, {
+    const res = await fetchWithGeneralProxy(wellKnown, {
       method: 'GET',
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -67,7 +68,7 @@ async function discoverAuthServerMetadata(
   const wellKnown = `${baseUrl}/.well-known/oauth-authorization-server`;
 
   try {
-    const res = await fetch(wellKnown, {
+    const res = await fetchWithGeneralProxy(wellKnown, {
       method: 'GET',
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(TIMEOUT_MS),

@@ -9,16 +9,22 @@ export type QueueAdmissionAction =
   | 'realtime-buffer'
   | 'turn-boundary';
 
+export type RealtimeHandoff = 'sdk-inflight' | 'local-queue';
+
 export type QueueLocation = 'message' | 'pending-mid-turn' | 'turn-boundary' | 'in-flight';
 
 export type DispatchGuardResult = {
   accepted: boolean;
   error?: string;
   code?: string;
+  /** Synchronous lease check immediately before admission side effects commit. */
+  validateAtCommit?: () => DispatchGuardResult;
+  /** Durable claim rollback that must settle before rejection is published. */
+  rollbackBeforeReject?: Promise<void>;
 };
 
 export type DispatchGuard = (() => Promise<DispatchGuardResult>) & {
-  cancel?: () => void;
+  cancel?: () => void | Promise<void>;
 };
 
 export type TurnOwner = {
@@ -71,6 +77,10 @@ export function decideQueueAdmission(params: {
   return params.hasInFlight ? 'realtime-buffer' : 'realtime-inflight';
 }
 
+export function decideRealtimeHandoff(hasMessageResolver: boolean): RealtimeHandoff {
+  return hasMessageResolver ? 'sdk-inflight' : 'local-queue';
+}
+
 export function findQueueLocation(params: {
   messageIndex: number;
   pendingMidTurnIndex: number;
@@ -86,6 +96,7 @@ export function findQueueLocation(params: {
 
 export function shouldStartTurnBoundaryItem(params: {
   hasTurnInFlight: boolean;
+  hasCompetingAdmissionTicket: boolean;
   hasInFlightToCli: boolean;
   hasPendingMidTurn: boolean;
   allowRealtimePending?: boolean;
@@ -99,6 +110,7 @@ export function shouldStartTurnBoundaryItem(params: {
 }): boolean {
   return !(
     params.hasTurnInFlight
+    || params.hasCompetingAdmissionTicket
     || params.hasInFlightToCli
     || (params.hasPendingMidTurn && !params.allowRealtimePending)
     || params.hasMessageQueue

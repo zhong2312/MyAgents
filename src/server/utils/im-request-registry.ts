@@ -17,8 +17,14 @@
 // becomes a per-session map and the API gains a sessionId parameter.
 
 import type { CancelReason } from './cancellation';
+import type { ImBridgeTurnContext } from '../session-core/im-bridge-types';
 
 export type ImRequestStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type ImCancellationOwner = 'admission-route' | 'runtime';
+export type ImCancellationClaim = {
+  outcome: 'claimed' | 'already-claimed';
+  owner: ImCancellationOwner;
+};
 
 export interface ImRequestEntry {
   requestId: string;
@@ -27,6 +33,10 @@ export interface ImRequestEntry {
   /** Optional source descriptor (e.g. "feishu_private:chat-123") for log/diag. */
   source: string | null;
   abortController: AbortController;
+  /** Owns cancellation until the enqueue route has completed runtime admission. */
+  cancellationOwner: ImCancellationOwner;
+  /** Exact caller identity for Bridge tools. Owned by this request, not the Session surface. */
+  imBridgeTurnContext?: ImBridgeTurnContext;
   status: ImRequestStatus;
   createdAt: number;
   /** Updated on transitions; useful for staleness pruning. */
@@ -50,6 +60,7 @@ class ImRequestRegistryImpl {
       sessionId,
       source,
       abortController: new AbortController(),
+      cancellationOwner: 'admission-route',
       status: 'queued',
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -71,16 +82,39 @@ class ImRequestRegistryImpl {
     entry.updatedAt = Date.now();
   }
 
-  /** Trigger AbortController.abort(reason). Returns true if the entry existed
-   *  and was previously not-aborted. Pattern D /api/im/cancel uses this. */
-  abort(requestId: string, reason: CancelReason | string): boolean {
+  setImBridgeTurnContext(requestId: string, context: ImBridgeTurnContext | undefined): void {
     const entry = this.entries.get(requestId);
-    if (!entry) return false;
-    if (entry.abortController.signal.aborted) return false;
+    if (!entry) return;
+    entry.imBridgeTurnContext = context;
+    entry.updatedAt = Date.now();
+  }
+
+  /** Transfer cancellation only after runtime admission is accepted. */
+  transferCancellationToRuntime(requestId: string): void {
+    const entry = this.entries.get(requestId);
+    if (!entry) return;
+    entry.cancellationOwner = 'runtime';
+    entry.status = 'running';
+    entry.updatedAt = Date.now();
+  }
+
+  /** Atomically claim cancellation for one request and trigger its signal.
+   *  The AbortController is the one-shot claim: overlapping route calls see
+   *  `already-claimed` and must not re-enter or terminalize the runtime. */
+  claimCancellation(
+    requestId: string,
+    reason: CancelReason | string,
+  ): ImCancellationClaim | null {
+    const entry = this.entries.get(requestId);
+    if (!entry) return null;
+    const owner = entry.cancellationOwner;
+    if (entry.abortController.signal.aborted) {
+      return { outcome: 'already-claimed', owner };
+    }
     entry.abortController.abort(reason);
     entry.status = 'cancelled';
     entry.updatedAt = Date.now();
-    return true;
+    return { outcome: 'claimed', owner };
   }
 
   /** Drop a finished entry. Caller invokes after turn completes / fails so

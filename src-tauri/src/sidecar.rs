@@ -216,6 +216,107 @@ pub const GLOBAL_SIDECAR_ID: &str = "__global__";
 // This marker is added to all sidecar commands for reliable process identification
 const SIDECAR_MARKER: &str = "--myagents-sidecar";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidecarProcessRole {
+    Global,
+    Session,
+}
+
+impl SidecarProcessRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Session => "session",
+        }
+    }
+}
+
+fn append_sidecar_role_arg(cmd: &mut std::process::Command, role: SidecarProcessRole) {
+    cmd.arg("--sidecar-role").arg(role.as_str());
+}
+
+/// Append the shared Node entrypoint argv used by both generic/global and
+/// Session-centric spawn paths. Keeping role serialization in this production
+/// builder makes a missing role impossible in either caller.
+fn append_sidecar_entrypoint_args(
+    cmd: &mut std::process::Command,
+    script_path: &std::path::Path,
+    port: u16,
+    role: SidecarProcessRole,
+) {
+    if script_path.extension().and_then(|s| s.to_str()) == Some("ts") {
+        cmd.arg("--import").arg("tsx/esm");
+    }
+    cmd.arg(script_path)
+        .arg("--port")
+        .arg(port.to_string())
+        .arg(SIDECAR_MARKER);
+    append_sidecar_role_arg(cmd, role);
+}
+
+#[cfg(test)]
+mod sidecar_process_role_tests {
+    use super::{append_sidecar_entrypoint_args, append_sidecar_role_arg, SidecarProcessRole};
+    use std::path::Path;
+
+    fn role_args(role: SidecarProcessRole) -> Vec<String> {
+        let mut command = crate::process_cmd::new("node");
+        append_sidecar_role_arg(&mut command, role);
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn global_and_session_roles_have_explicit_node_argv() {
+        assert_eq!(
+            role_args(SidecarProcessRole::Global),
+            vec!["--sidecar-role", "global"]
+        );
+        assert_eq!(
+            role_args(SidecarProcessRole::Session),
+            vec!["--sidecar-role", "session"]
+        );
+    }
+
+    #[test]
+    fn production_entrypoint_builder_always_serializes_its_role() {
+        let mut global = crate::process_cmd::new("node");
+        append_sidecar_entrypoint_args(
+            &mut global,
+            Path::new("server-dist.js"),
+            31415,
+            SidecarProcessRole::Global,
+        );
+        let global_args: Vec<_> = global
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(global_args
+            .windows(2)
+            .any(|pair| pair == ["--sidecar-role", "global"]));
+
+        let mut session = crate::process_cmd::new("node");
+        append_sidecar_entrypoint_args(
+            &mut session,
+            Path::new("server.ts"),
+            31416,
+            SidecarProcessRole::Session,
+        );
+        let session_args: Vec<_> = session
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(session_args
+            .windows(2)
+            .any(|pair| pair == ["--sidecar-role", "session"]));
+        assert!(session_args
+            .windows(2)
+            .any(|pair| pair == ["--import", "tsx/esm"]));
+    }
+}
+
 // Port file for CLI discovery — written when Global Sidecar starts,
 // read by `cli.rs` to know which port to connect to.
 const PORT_FILE_NAME: &str = "sidecar.port";

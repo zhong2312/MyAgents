@@ -24,7 +24,7 @@ describe('fileChange helpers', () => {
   it('counts unified diff additions and removals', () => {
     expect(countFileChangeDiffLines({
       kind: { type: 'update' },
-      diff: '--- a/file.md\n+++ b/file.md\n@@ -1,3 +1,4 @@\n context\n-old\n+new\n+extra\n+--- content\n++++ content\n---- content',
+      diff: '--- a/file.md\n+++ b/file.md\n@@ -1,3 +1,5 @@\n context\n-old\n+new\n+extra\n+--- content\n++++ content\n---- content',
     })).toEqual({ added: 4, removed: 2 });
   });
 

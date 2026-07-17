@@ -2,7 +2,8 @@
  * tarball-fetcher.ts — Download a GitHub/raw zip and extract it into memory.
  *
  * Responsibilities:
- *   - Fetch via Bun `fetch()` (inherits HTTP_PROXY / NO_PROXY from env)
+ *   - Fetch trusted GitHub tarballs through the MyAgents general proxy overlay
+ *   - Keep arbitrary raw ZIP URLs on the DNS-pinned direct SSRF-safe path
  *   - Default-branch fallback (try main → master on 404)
  *   - Enforce size / file-count / per-file limits (zip-bomb defense)
  *   - Strip the GitHub-style wrapper root (`<repo>-<ref>/...`) automatically
@@ -17,9 +18,15 @@ import { lookup } from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
 
 import AdmZip from 'adm-zip';
-import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici';
+import {
+  Agent,
+  fetch as undiciFetch,
+  type Dispatcher,
+  type RequestInit as UndiciRequestInit,
+} from 'undici';
 
 import { buildGithubZipCandidates, SkillUrlError, type ResolvedSkillSource } from './url-resolver';
+import { getGeneralRequestDispatcher } from '../proxy-state';
 
 // ---------------------------------------------------------------------------
 // Limits (tuned for "pit of success" — refuse anything suspicious by default)
@@ -190,7 +197,7 @@ async function buildSsrfGuardedDispatcher(parsed: URL): Promise<Agent | undefine
   });
 }
 
-async function closeDispatcher(dispatcher: Agent | undefined): Promise<void> {
+async function closeDispatcher(dispatcher: Dispatcher | undefined): Promise<void> {
   if (!dispatcher) return;
   await dispatcher.close().catch(() => undefined);
 }
@@ -221,7 +228,7 @@ async function downloadZip(
 ): Promise<{ buffer: Buffer; effectiveRef?: string }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  let terminalDispatcher: Agent | undefined;
+  let terminalDispatcher: Dispatcher | undefined;
 
   try {
     // Manual redirect loop: every hop is validated against the SSRF guard,
@@ -231,9 +238,22 @@ async function downloadZip(
     let currentUrl = url;
     let resp: Response;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      let hopDispatcher: Agent | undefined;
+      let hopDispatcher: Dispatcher | undefined;
+      let ownsHopDispatcher = false;
       try {
-        hopDispatcher = await assertPublicUrl(currentUrl);
+        const pinnedDirectDispatcher = await assertPublicUrl(currentUrl);
+        if (src.kind === 'github') {
+          // GitHub coordinates resolve to a MyAgents-constructed codeload URL;
+          // use the complete general baseline (app overlay or inherited env)
+          // after the public-address check.
+          // Arbitrary raw-zip URLs retain the DNS-pinned direct dispatcher so
+          // proxy-side DNS cannot reintroduce a rebinding window.
+          await closeDispatcher(pinnedDirectDispatcher);
+          hopDispatcher = getGeneralRequestDispatcher();
+        } else {
+          hopDispatcher = pinnedDirectDispatcher;
+          ownsHopDispatcher = true;
+        }
         resp = await undiciFetch(currentUrl, {
           signal: controller.signal,
           redirect: 'manual',
@@ -244,12 +264,12 @@ async function downloadZip(
           ...(hopDispatcher ? { dispatcher: hopDispatcher } : {}),
         } as UndiciRequestInit) as unknown as Response;
       } catch (err) {
-        await closeDispatcher(hopDispatcher);
+        if (ownsHopDispatcher) await closeDispatcher(hopDispatcher);
         throw err;
       }
       if (resp.status >= 300 && resp.status < 400) {
         const location = resp.headers.get('location');
-        await closeDispatcher(hopDispatcher);
+        if (ownsHopDispatcher) await closeDispatcher(hopDispatcher);
         if (!location) {
           throw new TarballFetchError(`重定向缺少 Location 头：HTTP ${resp.status}`, 502);
         }
@@ -260,7 +280,7 @@ async function downloadZip(
         currentUrl = new URL(location, currentUrl).href;
         continue;
       }
-      terminalDispatcher = hopDispatcher;
+      terminalDispatcher = ownsHopDispatcher ? hopDispatcher : undefined;
       break;
     }
     // At this point resp is the terminal response (`break` above)

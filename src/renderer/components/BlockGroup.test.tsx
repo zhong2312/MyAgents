@@ -1,6 +1,6 @@
-// Regression test for fold-suppression on user expand.
+// Regression tests for compact process-group folding.
 //
-// A group of 6+ process blocks auto-folds the middle ones behind a 「展开全部」
+// A group of 4+ process blocks auto-folds the middle ones behind a 「展开全部」
 // bar (and UNMOUNTS them — "collapse = unmount"). If the user has deliberately
 // expanded a row, the fold must NOT kick in for that turn — otherwise it would
 // unmount the row they opened and silently drop its expanded state. Expanding
@@ -17,9 +17,70 @@ function thinking(i: number): ContentBlock {
   return { type: 'thinking', thinking: `REASON_${i}`, isComplete: true, thinkingDurationMs: 1000 } as ContentBlock;
 }
 
-describe('BlockGroup fold suppression', () => {
-  it('folds 6 blocks, then suppresses the fold once a row is expanded', () => {
-    const blocks = Array.from({ length: 6 }, (_, i) => thinking(i));
+function task(i: number): ContentBlock {
+  return {
+    type: 'tool_use',
+    tool: {
+      id: `task-${i}`,
+      name: 'Task',
+      input: {},
+      inputJson: '{}',
+      result: '{}',
+    },
+  } as ContentBlock;
+}
+
+function processRowCount(container: HTMLElement): number {
+  return container.querySelectorAll('button[aria-expanded]').length;
+}
+
+describe('BlockGroup compact folding', () => {
+  it('shows all 3 blocks without exposing an inactive fold control', () => {
+    const blocks = Array.from({ length: 3 }, (_, i) => thinking(i));
+    const { container } = render(<BlockGroup blocks={blocks} isStreaming={false} />);
+
+    expect(processRowCount(container)).toBe(3);
+    expect(screen.queryByRole('button', { name: /展开全部/ })).toBeNull();
+
+    fireEvent.click(container.querySelectorAll('button[aria-expanded]')[1]);
+    expect(screen.getByText(/REASON_1/)).toBeTruthy();
+  });
+
+  it('folds 4 blocks into first + more + latest and expands all on demand', () => {
+    const blocks = Array.from({ length: 4 }, (_, i) => task(i));
+    const { container } = render(<BlockGroup blocks={blocks} isStreaming={false} />);
+
+    expect(processRowCount(container)).toBe(2);
+    expect(container.querySelector('[data-tool-id="task-0"]')).toBeTruthy();
+    expect(container.querySelector('[data-tool-id="task-1"]')).toBeNull();
+    expect(container.querySelector('[data-tool-id="task-2"]')).toBeNull();
+    expect(container.querySelector('[data-tool-id="task-3"]')).toBeTruthy();
+    expect(screen.getByText('+2')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /展开全部/ }));
+
+    expect(processRowCount(container)).toBe(4);
+    expect(container.querySelector('[data-tool-id="task-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-tool-id="task-2"]')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /展开全部/ })).toBeNull();
+  });
+
+  it('switches from 3 visible rows to the compact layout when streaming appends a fourth block', () => {
+    const firstThree = Array.from({ length: 3 }, (_, i) => task(i));
+    const { container, rerender } = render(<BlockGroup blocks={firstThree} isStreaming />);
+
+    expect(processRowCount(container)).toBe(3);
+
+    rerender(<BlockGroup blocks={[...firstThree, task(3)]} isStreaming />);
+
+    expect(processRowCount(container)).toBe(2);
+    expect(container.querySelector('[data-tool-id="task-0"]')).toBeTruthy();
+    expect(container.querySelector('[data-tool-id="task-3"]')).toBeTruthy();
+    expect(screen.getByText('+2')).toBeTruthy();
+  });
+
+  it('suppresses the fold once a row is expanded', () => {
+    const blocks = Array.from({ length: 4 }, (_, i) => thinking(i));
     render(<BlockGroup blocks={blocks} isStreaming={false} />);
 
     // Folded: the 「展开全部」 bar's grid is open (1fr). Its nearest `.grid`

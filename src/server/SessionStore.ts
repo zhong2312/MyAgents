@@ -709,6 +709,17 @@ export function getSessionData(sessionId: string): SessionData | null {
         return null;
     }
 
+    return getSessionDataFromMetadata(metadata);
+}
+
+/**
+ * Get full session data when the caller already owns the authoritative
+ * metadata row. Bulk readers must use this path instead of looking the same
+ * row up in sessions.json again for every session.
+ */
+export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionData {
+    const sessionId = metadata.id;
+
     const jsonlPath = getSessionFilePath(sessionId);
     const legacyPath = getLegacySessionFilePath(sessionId);
 
@@ -985,6 +996,17 @@ export async function saveSessionMessages(
  * /sessions/:id endpoint can persist model / permissionMode / MCP / provider
  * onto an existing session without replaying the full SessionMetadata blob.
  */
+function monotonicLastActiveAt(current: string, incoming: string): string {
+    const incomingMs = Date.parse(incoming);
+    const currentMs = Date.parse(current);
+    const incomingIsCanonical = Number.isFinite(incomingMs)
+        && new Date(incomingMs).toISOString() === incoming;
+    if (!incomingIsCanonical || (Number.isFinite(currentMs) && incomingMs < currentMs)) {
+        return current;
+    }
+    return incoming;
+}
+
 export async function updateSessionMetadata(
     sessionId: string,
     updates: Partial<Pick<SessionMetadata,
@@ -1056,7 +1078,12 @@ export async function updateSessionMetadata(
             // CAS guard failed against the in-lock snapshot — skip the write.
             return;
         }
-        const updated: SessionMetadata = { ...all[idx], ...updates };
+        const current = all[idx];
+        const patch = { ...updates };
+        if (patch.lastActiveAt !== undefined) {
+            patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, patch.lastActiveAt);
+        }
+        const updated: SessionMetadata = { ...current, ...patch };
         all[idx] = updated;
         try {
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
@@ -1075,6 +1102,8 @@ export async function commitPreparedSessionForFirstUserTurn(
         title?: string;
         runtimeSessionId?: string;
         origin?: SessionMetadata['origin'];
+        lastActiveAt?: string;
+        lastMessagePreview?: string;
     },
 ): Promise<SessionMetadata | null> {
     ensureStorageDir();
@@ -1103,7 +1132,10 @@ export async function commitPreparedSessionForFirstUserTurn(
         if (current.materializationState === 'prepared') {
             patch.materializationState = undefined;
             patch.materializationSourceSessionId = undefined;
-            patch.lastActiveAt = new Date().toISOString();
+            patch.lastMessagePreview = params.lastMessagePreview;
+            if (params.lastActiveAt) {
+                patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, params.lastActiveAt);
+            }
         }
 
         if (Object.keys(patch).length === 0) {

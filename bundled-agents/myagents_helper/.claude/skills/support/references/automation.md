@@ -1,57 +1,86 @@
-# Cron、Task、Thought 与 Session Inbox
+# Task、定时自动化、Goal 与 Thought 诊断
 
-使用场景：定时任务没执行、任务中心任务卡住、想法/任务状态异常、需要向另一个 session 反馈。
+使用场景：Task/Cron 到点没执行、任务状态卡住、Goal 不续跑或终态错误、Thought 异常、需要向另一个 Session 反馈。
 
-## Cron
+正确产品语义先读 `/myagents-docs/references/automation.md`。这里仅处理实际行为偏离预期的现场。
 
-### Ground truth
+## Ground truth
 
-- Rust `CronTaskManager` 管理所有定时任务。
-- `myagents cron list` 默认按当前工作区作用域过滤。空结果不代表全局没有任务。
-- 执行记录在 `cron_runs/`，日志有 `[CronTask]`。
-- 手动 `cron run-now` 是 active probe，会实际触发任务。
+- Rust `TaskStore` 是 Task 与 schedule 的持久化权威，`TaskSchedulerController` 从 Running Task 重建 timer。Cron 是兼容操作面，不是另一套 `CronTaskManager` 数据源。
+- Cron 命令默认按当前 Workspace 过滤；空结果不代表其它 Workspace 没有定时 Task。
+- Goal Mode 属于当前 Session，会复用该 Session 持续推进；它不是 Task Center Task，也不是 Cloud Space Goal。
+- Goal、Task、Agent Channel、Tab 和 Background Completion 都可能持有同一个 Session Sidecar owner。没有可见 Tab 不等于执行一定应停止。
+- 长期记忆维护可由隐藏的系统 Task 触发，普通 Task 列表不一定展示这些内部维护行。
+- `cron run-now`、`task run` / `rerun` 会真实执行，属于 active probe。
 
-### 取证
+## Task / Cron 取证
 
 ```bash
 myagents cron status --json
 myagents cron list --json
 myagents cron list --workspace <absolute-workspace-path> --json
 myagents cron runs <task-id> --limit 20 --json
-rg -n "CronTask|cron|cron_runs|Task .* execution failed|nextRun|workspacePath" ./logs/unified-*.log | tail -160
-```
-
-### 判断
-
-- 任务在别的 workspace：用 `--workspace` 查，不要说任务丢了。
-- enabled=false、时间表达式错误、时区误解：配置问题。
-- 有 run 记录但 AI 没产出：看 run 里的 error，再跨 provider/runtime/session 排查。
-- 外部 runtime cron 失败：转 `runtime.md`，envPolicy 会按 Agent 配置解析。
-
-## Task / Thought
-
-```bash
 myagents task list --json
 myagents task get <task-id> --json
+rg -n "task-scheduler|\\[task\\]|CronTask|cron_runs|nextRun|workspacePath|execution failed|runtimeSource|terminal_reason" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -180
+```
+
+判断顺序：
+
+1. 先核对 Task ID、Workspace、status、enabled/schedule、时区与 next run。
+2. 有无 scheduler dispatch；没有则收窄到调度/状态恢复。
+3. 已 dispatch 但没结果，沿关联 Session 的 Runtime、Provider、terminal reason 查。
+4. 有执行结果但 Task 状态或通知不对，区分状态归并与结果投递。
+
+常见分流：
+
+- 只在别的 Workspace 查得到：作用域误解，不是任务丢失。
+- schedule 合法但应用重启后不再触发：重点查 Task scheduler 重建与 Task 当前状态。
+- 外部 Runtime 执行失败：带上 `runtimeSource` 转 `runtime.md`。
+- Task 做完但 IM/桌面没收到结果：转 `agent-channel-plugin.md` 或 Session owner/投递链路。
+
+需要复现调度时，先向用户说明会实际启动一次执行及其可能的工具调用、费用和外部副作用；只有取得明确确认后才运行：
+
+```bash
+myagents cron run-now <task-id>
+# 或按 Task 当前状态和精确 help 选择：
+myagents task run <task-id>
+myagents task rerun <task-id>
+```
+
+## Goal Mode 取证
+
+```bash
+myagents goal get
+rg -n "\\[Goal\\]|goal|token_budget|continuation|complete|blocked|pause|cancel|owner|terminal_reason" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -180
+```
+
+判断要点：
+
+- `goal get` 查的是当前 Session；不要拿另一个 Tab、Task 或 Space Goal 的状态来比较。
+- 一轮正常结束但没有续跑：查 Goal 是否仍 active、Session 是否成功完成、宿主 continuation 是否发起。
+- `complete` 应只表示目标真正完成；`blocked` 应表示达到产品定义的受阻条件。模型自行停止、报错或 token 接近上限不能冒充正确终态。
+- 用户取消由 UI/宿主负责，不要用 `goal update --status blocked` 代替取消。
+- Goal 执行中切换 Tab 或关闭可见入口后异常停止：保留 Session ID 和 owner 证据，转 `session-sidecar.md`。
+
+## Thought 与 Session Inbox
+
+```bash
 myagents thought list --json
 ```
 
-创建或修改任务前：
+Thought 只负责收集，不会自行执行。若内容存在但后续 Task 未创建，先确认用户是否真的走了对齐/物化流程。
 
-```bash
-myagents runtime list --json
-myagents runtime describe <runtime> --json
-myagents agent show <agent-id> --json
-```
-
-不要猜 runtime/model/permissionMode。CLI 的 recovery hint 是恢复路径的一部分，要照着跑。
-
-## Session Inbox
-
-当用户要你给另一个 session 反馈、追问、澄清或下指令：
+当用户明确要求给另一个 Session 反馈、追问或下指令时：
 
 ```bash
 myagents session send <session-id> -p "..."
 ```
 
-多行内容用 `--prompt-file`。仅回答当前用户时不要使用 session send。
+多行内容用 `--prompt-file`。仅回答当前用户时不要使用 `session send`；发送会改变另一个 Session，执行前确认目标 Session 和消息内容。
+
+## 修复边界
+
+- 不直接编辑 Task、Goal 或 Session store。
+- 修改 runtime/model/permission/MCP override 前，先用 `task get`、`runtime describe` 与 `agent show` 确认合法值和继承来源。
+- 修复后必须验证原 Task 的下一次 dispatch 或同路径手动执行，以及最终状态/投递；只看到 scheduler online 不算恢复。

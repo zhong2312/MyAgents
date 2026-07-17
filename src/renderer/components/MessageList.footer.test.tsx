@@ -34,7 +34,7 @@ function msg(id: string, content: string, role: 'user' | 'assistant' = 'assistan
 
 function createBaseProps(overrides: Partial<React.ComponentProps<typeof MessageList>> = {}) {
   return {
-    historyMessages: [msg('h1', 'hello', 'user')],
+    messages: [msg('h1', 'hello', 'user')],
     streamingMessage: null,
     isLoading: false,
     sessionId: 's1',

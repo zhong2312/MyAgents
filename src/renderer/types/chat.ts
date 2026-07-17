@@ -79,6 +79,7 @@ export interface SubagentToolCall {
   result?: string;
   isLoading?: boolean;
   isError?: boolean;
+  resultMeta?: ToolResultMeta;
   // Rich-media produced by a nested sub-agent tool (e.g. Codex child running
   // image_generation). Rendered via ToolAttachmentGallery, mirroring the parent
   // tool's `attachments`. Kept in sync with the server persist type in
@@ -92,6 +93,15 @@ export interface ToolResultMeta {
   cwd?: string;
   processId?: string | null;
   status?: string;
+  /** Full result body was moved to the existing `/refs/:id` large-value store. */
+  largeValueRef?: {
+    kind: 'ref';
+    id: string;
+    sizeBytes: number;
+    mimetype: string;
+    preview: string;
+    expiresAt: number;
+  };
 }
 
 // Task 工具运行统计

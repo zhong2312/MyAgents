@@ -3,13 +3,16 @@ import { appendMessage, resetTranscriptForTest, transcriptState } from './transc
 import {
   accumulateCurrentTurnUsage,
   markCurrentTurnHasOutput,
-  pushPendingRequest,
+  peekPendingOutputOwner,
+  popPendingOutputOwner,
+  pushPendingOutputOwner,
   resetTurnForTest,
   setCurrentTurnCompactResult,
   setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setCurrentTurnToolCount,
   setSawCompactBoundary,
+  waitForCurrentTurnTerminalObserver,
 } from './turn';
 import {
   resetQueueForTest,
@@ -61,17 +64,18 @@ function makeResult(overrides: Record<string, unknown> = {}): BuiltinSdkResultMe
 
 function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
   const broadcasts: Array<{ event: string; data: unknown }> = [];
+  const broadcast = vi.fn((event: string, data: unknown) => broadcasts.push({ event, data }));
   const deps: BuiltinTurnLifecycleDeps = {
     getSessionId: () => 'session-1',
+    getWorkspacePath: () => '/tmp/workspace',
     getCurrentScenario: () => ({ type: 'desktop' }),
     getProviderEnv: () => undefined,
     getCurrentModel: () => 'claude-test',
     getIsInterruptingResponse: () => false,
     setStreamingMessage: vi.fn(),
-    setForceDrainTurnStarting: vi.fn(),
     resetInFlightToolCount: vi.fn(),
     resetWatchdogFired: vi.fn(),
-    resolvePostInterruptTurnEnd: vi.fn(),
+    claimPostInterruptResultTerminal: vi.fn(),
     terminalEventAppliesToCurrentInFlight: () => true,
     dropInFlightQueueItem: vi.fn(() => null),
     preserveInFlightAfterTerminalBoundary: vi.fn(),
@@ -81,6 +85,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     abortTurnAbort: vi.fn(),
     clearAmbientTurnId: vi.fn(),
     completeCurrentImRequest: vi.fn(),
+    cancelCurrentImRequest: vi.fn(),
     failCurrentImRequest: vi.fn(),
     clearMirrorState: vi.fn(),
     clearStreamTurnMaps: vi.fn(),
@@ -94,7 +99,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     clearTrace: vi.fn(),
     nowMs: () => 100,
     elapsedMs: () => 1,
-    broadcast: (event, data) => broadcasts.push({ event, data }),
+    broadcast,
     broadcastBuiltinContextUsage: vi.fn(async () => undefined),
     getCurrentTransientProviderRetryAttempt: () => 0,
     scheduleTransientProviderRetry: vi.fn(() => false),
@@ -148,7 +153,12 @@ describe('turn-lifecycle owner', () => {
       messageText: 'run',
       wasQueued: false,
       resolve: vi.fn(),
+      turnOwner: { kind: 'goal', id: 'goal-1' },
       onTerminal,
+      activityFacts: {
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        inputText: 'run',
+      },
     });
     accumulateCurrentTurnUsage({ inputTokens: 100, outputTokens: 20 });
 
@@ -162,21 +172,39 @@ describe('turn-lifecycle owner', () => {
       },
     }));
 
-    expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     expect(transcriptState.messages[0]).toMatchObject({
       usage: { inputTokens: 12, outputTokens: 5, cacheReadTokens: 2 },
     });
-    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'complete',
-      usage: { inputTokens: 12, outputTokens: 5 },
-    }));
+    expect(onTerminal).not.toHaveBeenCalled();
     expect(deps.firePostTurnTitleHook).not.toHaveBeenCalled();
+    expect(deps.setSessionState).not.toHaveBeenCalled();
+    expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, expect.any(String));
 
     persist.resolve();
     await persist.promise;
     await lifecycle.getLastTurnEndPersist();
-    await Promise.resolve();
+    await waitForCurrentTurnTerminalObserver();
 
+    expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
+    expect(broadcasts.find(item => item.event === 'chat:message-complete')?.data).toMatchObject({
+      completionTerminal: {
+        sessionId: 'session-1',
+        workspacePath: '/tmp/workspace',
+        turnId: 'goal-turn',
+        turnOwner: { kind: 'goal', id: 'goal-1' },
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        status: 'complete',
+      },
+    });
+    const completeCall = vi.mocked(deps.broadcast).mock.calls.findIndex(([event]) => event === 'chat:message-complete');
+    expect(vi.mocked(deps.broadcast).mock.invocationCallOrder[completeCall]).toBeLessThan(
+      vi.mocked(deps.setSessionState).mock.invocationCallOrder[0],
+    );
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'complete',
+      usage: { inputTokens: 12, outputTokens: 5 },
+    }));
     expect(deps.firePostTurnTitleHook).toHaveBeenCalledWith(
       'session-1',
       'builtin',
@@ -193,19 +221,21 @@ describe('turn-lifecycle owner', () => {
 
     expect(broadcasts.map(item => item.event)).toContain('chat:message-error');
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
-    expect(deps.failCurrentImRequest).toHaveBeenCalledWith(expect.stringContaining('AI 未返回任何内容'));
+    expect(deps.failCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: expect.stringContaining('AI 未返回任何内容'), isError: true }],
+    });
     expect(transcriptState.messages.at(-1)).toMatchObject({
       role: 'assistant',
       content: expect.stringContaining('AI 未返回任何内容'),
     });
   });
 
-  it('suppresses IM error forwarding for aborted SDK diagnostic results', () => {
+  it('suppresses IM error forwarding for aborted SDK diagnostic results', async () => {
     const { deps } = makeDeps({
       getIsInterruptingResponse: () => true,
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
-    pushPendingRequest('req-1');
+    pushPendingOutputOwner('queue-1', 'req-1');
 
     lifecycle.handleSdkResult(makeResult({
       subtype: 'error_during_execution',
@@ -214,9 +244,74 @@ describe('turn-lifecycle owner', () => {
       terminal_reason: 'aborted_streaming',
       errors: ['internal abort'],
     }));
+    await lifecycle.getLastTurnEndPersist();
 
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
-    expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
+    expect(deps.cancelCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: '🛑 已取消' }],
+    });
+    expect(deps.completeCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { label: 'successful', result: makeResult({ result: 'fallback answer' }) },
+    {
+      label: 'error',
+      result: makeResult({
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'provider error',
+      }),
+    },
+  ])('consumes one non-IM output owner for a $label no-output result', async ({ result }) => {
+    const completeCurrentImRequest = vi.fn(() => {
+      popPendingOutputOwner();
+    });
+    const { deps } = makeDeps({ completeCurrentImRequest });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushPendingOutputOwner('desktop-a', null);
+    pushPendingOutputOwner('queue-b', 'request-b');
+
+    lifecycle.handleSdkResult(result);
+    await lifecycle.getLastTurnEndPersist();
+
+    expect(completeCurrentImRequest).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toEqual({ queueId: 'queue-b', requestId: 'request-b' });
+  });
+
+  it('lets a graceful interrupt result claim exactly one IM terminal owner', async () => {
+    const persist = deferred();
+    const cancelCurrentImRequest = vi.fn(() => {
+      popPendingOutputOwner();
+    });
+    const { deps, broadcasts } = makeDeps({
+      getIsInterruptingResponse: () => true,
+      persistTranscript: vi.fn(() => persist.promise),
+      cancelCurrentImRequest,
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushPendingOutputOwner('queue-a', 'request-a');
+    pushPendingOutputOwner('queue-b', 'request-b');
+    markCurrentTurnHasOutput();
+
+    lifecycle.handleSdkResult(makeResult({
+      terminal_reason: 'aborted_streaming',
+      result: 'partial answer',
+    }));
+
+    expect(cancelCurrentImRequest).toHaveBeenCalledOnce();
+    expect(deps.completeCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toEqual({ queueId: 'queue-b', requestId: 'request-b' });
+
+    persist.resolve();
+    await lifecycle.getLastTurnEndPersist();
+
+    expect(cancelCurrentImRequest).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toEqual({ queueId: 'queue-b', requestId: 'request-b' });
+    expect(broadcasts.map(item => item.event)).toContain('chat:message-stopped');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
   });
 
   it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
@@ -284,9 +379,10 @@ describe('turn-lifecycle owner', () => {
 
     lifecycle.handleSdkResult(makeResult({ result: 'hello' }));
 
-    expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     await expect(lifecycle.getLastTurnEndPersist()).rejects.toThrow('durable write failed');
     await Promise.resolve();
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     expect(deps.firePostTurnTitleHook).not.toHaveBeenCalled();
     expect(deps.emitTrace).toHaveBeenCalledWith(
       'persist_done',
@@ -295,13 +391,14 @@ describe('turn-lifecycle owner', () => {
     );
   });
 
-  it('treats compact control turns as successful even when the SDK result has no visible text', () => {
+  it('treats compact control turns as successful even when the SDK result has no visible text', async () => {
     const { deps, broadcasts } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
     setCurrentTurnCompactResult('success');
     setSawCompactBoundary(true);
 
     lifecycle.handleSdkResult(makeResult());
+    await lifecycle.getLastTurnEndPersist();
 
     expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
@@ -374,7 +471,7 @@ describe('turn-lifecycle owner', () => {
     });
   });
 
-  it('finalizes stopped turns with queue cleanup, IM completion, and persistence', () => {
+  it('finalizes stopped turns with queue cleanup, IM completion, and persistence', async () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
     const onTerminal = vi.fn();
@@ -385,30 +482,42 @@ describe('turn-lifecycle owner', () => {
       wasQueued: false,
       resolve: vi.fn(),
       onTerminal,
+      activityFacts: {
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        inputText: 'run',
+      },
     });
     accumulateCurrentTurnUsage({ inputTokens: 120, outputTokens: 30 });
     accumulateCurrentTurnUsage({ inputTokens: 80, outputTokens: 20 });
 
     lifecycle.stopTurn();
 
+    await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
       status: 'stopped',
       usage: { inputTokens: 200, outputTokens: 50 },
     }));
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('stopped');
     expect(deps.endTurnAbort).toHaveBeenCalledWith('session-1');
-    expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
+    expect(deps.completeCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.cancelCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: '🛑 已取消' }],
+    });
     expect(deps.persistTranscript).toHaveBeenCalledTimes(1);
+    expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, expect.any(String));
   });
 
-  it('persists unexpected errors but skips persistence for expected terminations', () => {
+  it('persists unexpected errors and commits terminal metadata for expected terminations', async () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
 
     lifecycle.failTurn('boom');
+    await waitForCurrentTurnTerminalObserver();
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
     expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
-    expect(deps.failCurrentImRequest).toHaveBeenCalledWith('localized:boom');
+    expect(deps.failCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: 'localized:boom', isError: true }],
+    });
     expect(deps.persistTranscript).toHaveBeenCalledTimes(1);
     expect(transcriptState.messages.at(-1)).toMatchObject({
       role: 'assistant',
@@ -418,8 +527,20 @@ describe('turn-lifecycle owner', () => {
     resetTranscriptForTest();
     vi.mocked(deps.persistTranscript).mockClear();
     lifecycle.failTurn('AbortError: interrupted');
-    expect(deps.persistTranscript).not.toHaveBeenCalled();
+    await waitForCurrentTurnTerminalObserver();
+    expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, undefined);
     expect(transcriptState.messages).toEqual([]);
+  });
+
+  it('drains deferred restart ownership after accepted setup fails before SDK dispatch', async () => {
+    const { deps } = makeDeps();
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+
+    lifecycle.failAdmittedTurnSetup('metadata setup failed');
+
+    await waitForCurrentTurnTerminalObserver();
+    expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
+    expect(deps.applyDeferredRestartIfNeeded).toHaveBeenCalledOnce();
   });
 
   it('surfaces forced in-flight items but preserves natural completions for SDK replay', () => {
@@ -435,7 +556,7 @@ describe('turn-lifecycle owner', () => {
 
     lifecycle.handleSdkResult(makeResult({ result: 'done' }));
 
-    expect(deps.setForceDrainTurnStarting).toHaveBeenCalledWith(true);
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
     expect(deps.surfaceInFlightQueueItem).toHaveBeenCalledWith(
       'queued-1',
       { messageText: 'run now' },

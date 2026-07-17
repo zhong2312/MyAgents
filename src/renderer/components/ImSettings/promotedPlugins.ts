@@ -38,7 +38,7 @@ export interface PromotedPlugin {
     /** Required config field keys (pre-populate in wizard if plugin's isConfigured pattern is non-standard) */
     requiredFields?: string[];
     /** Default config values merged into pluginConfig when creating a new channel */
-    defaultConfig?: Record<string, string>;
+    defaultConfig?: Record<string, unknown>;
     /**
      * Authentication type:
      * - 'config' (default): user fills config fields (appId, appSecret, etc.)
@@ -85,7 +85,7 @@ export const PROMOTED_PLUGINS: PromotedPlugin[] = [
         badge: 'official',
         requiredFields: ['appId', 'appSecret'],
         defaultConfig: {
-            streaming: 'true',
+            streaming: true,
         },
         setupGuide: {
             credentialTitle: '飞书应用凭证',

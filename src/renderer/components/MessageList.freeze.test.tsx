@@ -49,7 +49,7 @@ function createFollowProps(initial: boolean | 'force' = true) {
 
 function renderList(overrides: Partial<React.ComponentProps<typeof MessageList>>) {
   const props: React.ComponentProps<typeof MessageList> = {
-    historyMessages: [],
+    messages: [],
     streamingMessage: null,
     isLoading: false,
     sessionId: 's1',
@@ -91,7 +91,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     // 1. Active, streaming "a".
     const { rerender } = renderList({
-      historyMessages: history,
+      messages: [...history, msg('stream', 'a')],
       streamingMessage: msg('stream', 'a'),
       isLoading: true,
       isActive: true,
@@ -102,7 +102,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     //    streaming row — emulate by re-rendering with a longer streaming message.
     rerender(
       <MessageList
-        historyMessages={history}
+        messages={[...history, msg('stream', 'abc')]}
         streamingMessage={msg('stream', 'abc')}
         isLoading isActive={false}
         firstItemIndex={1_000_000}
@@ -119,7 +119,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // 3. More growth while still hidden → still frozen.
     rerender(
       <MessageList
-        historyMessages={history}
+        messages={[...history, msg('stream', 'abcdef')]}
         streamingMessage={msg('stream', 'abcdef')}
         isLoading isActive={false}
         firstItemIndex={1_000_000}
@@ -135,7 +135,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // 4. Re-activate → Virtuoso swaps to the live (grown) array.
     rerender(
       <MessageList
-        historyMessages={history}
+        messages={[...history, msg('stream', 'abcdefghi')]}
         streamingMessage={msg('stream', 'abcdefghi')}
         isLoading isActive
         firstItemIndex={1_000_000}
@@ -165,7 +165,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     const s1 = [msg('a1', 'x', 'user'), msg('a2', 'y')];
     const { rerender } = renderList({
-      sessionId: 's1', historyMessages: s1, isActive: true,
+      sessionId: 's1', messages: s1, isActive: true,
       ...followProps(), scrollToBottom,
     });
 
@@ -175,7 +175,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // Switch tab away → inactive snapshot captures (false @ s1).
     rerender(
       <MessageList
-        sessionId="s1" historyMessages={s1} streamingMessage={null}
+        sessionId="s1" messages={s1} streamingMessage={null}
         isLoading={false} isActive={false} firstItemIndex={1_000_000}
         virtuosoRef={{ current: null }} {...followProps()}
         scrollToBottom={scrollToBottom} handleAtBottomChange={vi.fn()}
@@ -186,7 +186,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     const s2 = [msg('b1', 'p', 'user'), msg('b2', 'q')];
     rerender(
       <MessageList
-        sessionId="s2" historyMessages={s2} streamingMessage={null}
+        sessionId="s2" messages={s2} streamingMessage={null}
         isLoading={false} isActive firstItemIndex={1_000_000}
         virtuosoRef={{ current: null }} {...followProps()}
         scrollToBottom={scrollToBottom} handleAtBottomChange={vi.fn()}
@@ -200,7 +200,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
   it('freezes firstItemIndex while inactive (no prepend anchor drift mid-hide)', () => {
     const history = [msg('h1', 'a', 'user'), msg('h2', 'b')];
     const { rerender } = renderList({
-      historyMessages: history,
+      messages: history,
       isActive: true,
       firstItemIndex: 1_000_000,
     });
@@ -209,7 +209,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // Inactive: even if a stray prepend decrements firstItemIndex, Virtuoso keeps the snapshot.
     rerender(
       <MessageList
-        historyMessages={history}
+        messages={history}
         streamingMessage={null}
         isLoading={false} isActive={false}
         firstItemIndex={999_995}
@@ -226,7 +226,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
   it('freezes heightEstimateSeed while inactive', () => {
     const history = [msg('h1', 'a', 'user'), msg('h2', 'b')];
     const { rerender } = renderList({
-      historyMessages: history,
+      messages: history,
       isActive: true,
       heightEstimateSeed: [120, 480],
     });
@@ -234,7 +234,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     rerender(
       <MessageList
-        historyMessages={history}
+        messages={[...history, msg('stream', 'hidden growth')]}
         streamingMessage={msg('stream', 'hidden growth')}
         isLoading isActive={false}
         firstItemIndex={1_000_000}
@@ -254,7 +254,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     const scrollToIndex = vi.fn();
     const autoscrollToBottom = vi.fn();
     renderList({
-      historyMessages: [msg('h1', 'hello', 'user')],
+      messages: [msg('h1', 'hello', 'user'), msg('stream', 'partial')],
       streamingMessage: msg('stream', 'partial'),
       isLoading: true,
       isActive: true,
@@ -282,7 +282,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     };
     const { rerender } = renderList({
       ...baseProps,
-      historyMessages: history,
+      messages: [...history, msg('stream', 'partial')],
       streamingMessage: msg('stream', 'partial'),
       isLoading: true,
       isActive: true,
@@ -292,7 +292,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     rerender(
       <MessageList
         {...baseProps}
-        historyMessages={[...history, msg('assistant-1', 'final')]}
+        messages={[...history, msg('assistant-1', 'final')]}
         streamingMessage={null}
         isLoading={false}
         isActive

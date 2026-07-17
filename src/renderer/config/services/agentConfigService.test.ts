@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AppConfig, Project, WorkspaceTemplate } from '../types';
 import { DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID, PRESET_TEMPLATES } from '../types';
 import {
+  applyOpenClawPluginConfigMutation,
   buildAgentForProject,
   ensureAllProjectsHaveAgent,
   migrateImBotConfigsToAgents,
@@ -11,6 +12,21 @@ import {
   resolveAgentDefaultsForProject,
   projectMemoryEvolutionTaskRuntimeForAgent,
 } from './agentConfigService';
+
+describe('OpenClaw plugin config mutation', () => {
+  it('merges independent editor saves without reviving a deleted field', () => {
+    const afterDelete = applyOpenClawPluginConfigMutation(
+      { timeout: 30, name: 'a' },
+      { type: 'delete', key: 'timeout' },
+    );
+    const afterRemountEdit = applyOpenClawPluginConfigMutation(
+      afterDelete,
+      { type: 'set', key: 'name', value: 'b' },
+    );
+
+    expect(afterRemountEdit).toEqual({ name: 'b' });
+  });
+});
 
 function project(overrides: Partial<Project> = {}): Project {
   return {

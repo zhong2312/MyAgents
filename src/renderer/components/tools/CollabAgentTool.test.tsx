@@ -173,4 +173,31 @@ describe('TaskTool renders a CollabAgent card with a nested trace', () => {
     fireEvent.click(toggle!);
     expect(screen.getByText('执行中')).toBeInTheDocument();
   });
+
+  it('routes nested Edit calls through the bounded file-patch viewer', () => {
+    const { container } = render(<TaskTool tool={collabTool({
+      result: 'Tool: spawnAgent\nStatus: completed',
+      isLoading: false,
+      subagentCalls: [{
+        id: 'edit-1',
+        name: 'Edit',
+        input: {
+          file_path: '/tmp/nested.ts',
+          changes: [{
+            path: '/tmp/nested.ts',
+            kind: { type: 'update' },
+            diff: '@@ -1 +1 @@\n-old\n+new',
+          }],
+        },
+        result: 'File changed',
+        isLoading: false,
+      }],
+    })} />);
+
+    fireEvent.click(container.querySelector('[aria-controls="task-trace-content"]')!);
+    expect(screen.getByText('nested.ts')).toBeInTheDocument();
+    expect(screen.getByText('old')).toBeInTheDocument();
+    expect(screen.getByText('new')).toBeInTheDocument();
+    expect(container.textContent).not.toContain('"changes"');
+  });
 });

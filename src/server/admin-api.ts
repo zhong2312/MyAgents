@@ -52,7 +52,7 @@ import {
   type ChannelConfigSlim,
   type ProjectSlim,
 } from './utils/admin-config';
-import { cancellableFetch } from './utils/cancellation';
+import { cancellableFetch, fetchWithGeneralProxy } from './utils/cancellation';
 import { ensureShellPath } from './utils/shell';
 import { buildCronScope } from './utils/cron-scope';
 import { readLoopbackJson } from './utils/loopback-response';
@@ -657,13 +657,13 @@ export async function handleMcpTest(payload: { id: string }): Promise<AdminRespo
       };
 
       const resp = server.type === 'http'
-        ? await fetch(server.url!, {
+        ? await fetchWithGeneralProxy(server.url!, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'MyAgents', version: '1.0' } } }),
             signal: controller.signal,
           })
-        : await fetch(server.url!, { method: 'GET', headers, signal: controller.signal });
+        : await fetchWithGeneralProxy(server.url!, { method: 'GET', headers, signal: controller.signal });
 
       clearTimeout(timeout);
 
@@ -1889,7 +1889,7 @@ Why this exists:
   for those flags intentionally does NOT list models or modes — values depend
   on which CLI you have installed and are dynamic. Use this command instead.`,
 
-  space: `myagents space — Work with MyAgents Cloud Space Issues
+  space: `myagents space — Discover Cloud Goals and work with Space Issues
 
 IDENTITY AND SPACE SELECTION
   Start with \`myagents space list --json\`. Every Space business command
@@ -1903,10 +1903,12 @@ IDENTITY AND SPACE SELECTION
 COMMANDS
   list                                          List available Space slugs
   whoami --space <slug>                         Resolve the actor for this workspace
+  goal list --space <slug>                      List Cloud Space Goals and stable IDs
   assignee list --space <slug>                  List valid typed assignee IDs
   issue create --space <slug> ...               Create an Issue, optionally with files
   issue list --space <slug> [filters]           List Issues
   issue view <id> --space <slug> --comments     Read current Issue + latest 5 comments
+  issue update <id> --space <slug> ...          Edit title/body/Goal/human-only metadata
   issue comments <id> --space <slug>            Read older comments by cursor
   issue comment get <id> <commentId> ...        Read one complete comment
   issue comment <id> --space <slug> ...         Post text and/or files atomically
@@ -1914,9 +1916,37 @@ COMMANDS
   issue claim|complete|close|status ...          Change Issue state where permitted
   attachment download <id> --space <slug>       Download attachment bytes safely
 
+DISCOVERY FLOW FOR AGENTS
+  1. myagents space list --json
+  2. myagents space whoami --space <slug> --json
+  3. myagents space goal list --space <slug> --json
+     myagents space assignee list --space <slug> --json
+  4. Create/update using returned stable IDs
+  5. myagents space issue view <issueId> --space <slug> --json
+
+GOAL NAMESPACES
+  myagents goal ...             Local Session Goal Mode
+  myagents space goal list ...  Cloud Space organization Goals
+
 HELP
   Run the exact command with --help for its Agent-oriented contract, for example:
-  myagents space issue comment --help`,
+  myagents space goal list --help
+  myagents space issue update --help`,
+
+  'space/issue': `myagents space issue — Read and mutate Cloud Space Issues
+
+Commands:
+  create                         Publish a new Issue; omit --goal for Inbox
+  list                           Discover Issues by Goal, Inbox, state, or text
+  view <issueId>                 Read authoritative Issue detail
+  update <issueId>               Edit title/body/Goal/human-only metadata
+  comments | comment get         Read comments without mutation
+  comment | attachment add       Add discussion or top-level evidence
+  claim | status | close | complete | cancel-claim
+                                 Separate responsibility/workflow mutations
+
+Run an exact leaf with --help before acting. Goal discovery is:
+  myagents space goal list --space <slug> --json`,
 
   'space/list': `myagents space list — Discover canonical Space slugs
 
@@ -1984,27 +2014,87 @@ EXAMPLES
 RECOVERY
   Run space whoami if expected candidates are missing; do not invent or strip the ID prefix.`,
 
+  'space/goal/list': `myagents space goal list — List the Cloud Goal tree for one Space
+
+WHEN TO CALL
+  Before using --goal on space issue create, update, or list. Copy a stable active Goal ID; never guess from a title or path.
+EFFECT
+  Reads the selected Space's Goal tree only. By default archived Goals are omitted. It does not enter or modify Session Goal Mode.
+REQUIRED CONTEXT
+  --space <slug> is required. Run from the workspace whose User/Registered Agent identity should be used.
+OPTIONS
+  --include-archived  Include archived Goals for diagnosis; archived IDs cannot be assigned.
+  --json              Recommended; copy one active data.items[].id exactly into --goal.
+ACTOR AND PERMISSIONS
+  Uses the automatically resolved User or Registered Agent. It never falls back to User when an Agent binding or Space context is invalid.
+FILE SAFETY
+  Does not read, write, or upload local files.
+OUTPUT
+  The full Goal tree with stable id, parentGoalId, depth, context, archivedAt, and goalPathLabel. No pagination.
+EXAMPLES
+  myagents space goal list --space myagents --json
+  myagents space goal list --space myagents --include-archived --json
+RECOVERY
+  Run space list for a valid slug and space whoami for identity. If a write rejects a Goal, list active Goals again and copy a current items[].id.
+
+NOTE
+  \`myagents goal ...\` controls local Session Goal Mode. \`myagents space goal list ...\` reads Cloud Space organization Goals; they are different resources.`,
+
   'space/issue/create': `myagents space issue create — Create a Space Issue atomically
 
 WHEN TO CALL
-  When the User or current Agent needs to publish a new request, problem, or work item.
+  When the User or current Agent needs to publish a new request, problem, or work item. Run space goal list before choosing --goal.
 EFFECT
-  Creates one Issue with its body and optional attachments in one operation. Default is unassigned.
+  Creates one Issue with its body and optional attachments in one operation. Without --goal it enters Inbox; default is unassigned.
 REQUIRED CONTEXT
   --space <slug>, --title <text>, and a non-empty --body or --body-file are required.
 OPTIONS
-  --goal <goalId>  Optional Goal. --assignee agent:<id>|user:<id>  Optional typed target.
+  --goal <goalId>  Optional active ID returned by space goal list. --assignee agent:<id>|user:<id>  Optional typed target.
   --attachment <path>  Repeatable (alias: --file). --human-only  Mark human-only.
 ACTOR AND PERMISSIONS
   Uses the automatically resolved User or Registered Agent. Run assignee list before --assignee.
 FILE SAFETY
   Files must be regular non-symlinks inside the current workspace; max 5 files, 25 MB each.
 OUTPUT
-  The created Issue including top-level attachment metadata.
+  The created Issue including goalId, goalPathLabel, and top-level attachment metadata.
 EXAMPLES
-  myagents space issue create --space myagents --title "Login fails" --body-file issue.md --attachment screenshot.png --json
+  myagents space issue create --space myagents --title "Inbox request" --body-file issue.md --json
+  myagents space goal list --space myagents --json
+  myagents space issue create --space myagents --title "Login fails" --body-file issue.md --goal goal_cli --attachment screenshot.png --json
 RECOVERY
-  Run space list for the slug, whoami for identity, and assignee list for a rejected assignee ID.`,
+  For a rejected Goal, list active Goals again and copy data.items[].id; never guess from title/path. Run whoami for identity and assignee list for a rejected assignee ID.`,
+
+  'space/issue/update': `myagents space issue update — Edit an existing Space Issue's metadata
+
+WHEN TO CALL
+  To edit title/body, move a published Issue to an active Space Goal, return it to Inbox, or change human-only metadata.
+EFFECT
+  Patches only the fields explicitly provided. It does not change workflow state, assignee, claim, comments, or attachments.
+REQUIRED CONTEXT
+  <issueId>, --space <slug>, and at least one update field are required. Read the current Issue first when acting on a delivery.
+OPTIONS
+  --title <text>
+  --body <text> | --body-file <workspace-relative-path> | --stdin
+  --goal <goalId> | --clear-goal
+  --human-only <true|false>
+  --json
+  Goal and body alternatives are mutually exclusive. This command does not support --dry-run.
+ACTOR AND PERMISSIONS
+  Uses the automatically resolved User or Registered Agent. Owner/Admin may edit; otherwise only the creator may edit while the Issue is open.
+FILE SAFETY
+  --body-file must resolve inside the current workspace and is read as text. This command does not upload files.
+OUTPUT
+  The authoritative updated Issue, including goalId, goalPathLabel, state, assignee, notificationVersion, and updatedAt.
+EXAMPLES
+  myagents space goal list --space myagents --json
+  myagents space issue update iss_123 --space myagents --goal goal_cli --json
+  myagents space issue update iss_123 --space myagents --clear-goal --json
+  myagents space issue update iss_123 --space myagents --title "Updated title" --body-file issue.md --human-only false --json
+RECOVERY
+  For a rejected Goal, list active Goals again and copy data.items[].id. For a conflict, view the current Issue and retry intentionally. For permission errors, run space whoami.
+
+NOTE
+  Omit both --goal and --clear-goal to leave Goal unchanged. Use --clear-goal, never --goal null/inbox/empty, to move the Issue to Inbox.`,
 
   'space/issue/comment': `myagents space issue comment — Post a comment with optional attachments
 
@@ -2121,7 +2211,10 @@ EFFECT
 REQUIRED CONTEXT
   --space <slug> is required.
 OPTIONS
-  --goal <id> --state <state> --query <text> --limit <n> --cursor <cursor> --human-only.
+  --goal <goalId>|inbox
+  --include-subtree <true|false>  Defaults to true when filtering by a Goal ID.
+  --state <state> --query <text> --limit <n> --cursor <cursor> --human-only.
+  Copy <goalId> from space goal list. "inbox" is only a list filter; it is not the update clear syntax.
 ACTOR AND PERMISSIONS
   Uses the resolved User or Registered Agent and returns only visible Issues.
 FILE SAFETY
@@ -2129,9 +2222,11 @@ FILE SAFETY
 OUTPUT
   A cursor-paged Issue list.
 EXAMPLES
-  myagents space issue list --space myagents --state todo --limit 30 --json
+  myagents space goal list --space myagents --json
+  myagents space issue list --space myagents --goal goal_product --include-subtree true --state todo --json
+  myagents space issue list --space myagents --goal inbox --json
 RECOVERY
-  Run space list for a valid slug; relax filters if no Items match.`,
+  Run space list for a valid slug and goal list for a current Goal ID; set --include-subtree false to match only that exact Goal.`,
 
   'space/issue/get': `myagents space issue view — Read the current server state of one Issue
 
@@ -2148,11 +2243,11 @@ ACTOR AND PERMISSIONS
 FILE SAFETY
   Returns attachment metadata only; use attachment download for bytes.
 OUTPUT
-  Issue detail, top-level attachments, latest comments, and claim facts.
+  Issue detail including issue.goalId and issue.goalPathLabel, top-level attachments, latest comments, and claim facts. goalId=null means Inbox in human output.
 EXAMPLES
   myagents space issue view iss_123 --space myagents --comments --json
 RECOVERY
-  List Issues again if the id is stale; do not rely on delivery metadata as current state.`,
+  List Issues again if the id is stale; Goal reference/context comes from this current server detail, not delivery metadata.`,
 
   'space/issue/comments': `myagents space issue comments — Page older Issue comments
 
@@ -3729,8 +3824,24 @@ export async function handleSpaceAssigneeList(payload: Record<string, unknown>):
   return spaceManagementResponse('/api/space/assignee-list', payload);
 }
 
+export async function handleSpaceGoalList(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse(
+    '/api/space/goal-list',
+    payload,
+    'Copy an active data.items[].id into --goal; never use a title or goalPathLabel as the ID.',
+  );
+}
+
 export async function handleSpaceIssueCreate(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-create', payload, 'Issue created in MyAgents Space.');
+}
+
+export async function handleSpaceIssueUpdate(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse(
+    '/api/space/issue-update',
+    payload,
+    'Issue updated in MyAgents Space. Re-read it before the next stateful action.',
+  );
 }
 
 export async function handleSpaceIssueGet(payload: Record<string, unknown>): Promise<AdminResponse> {

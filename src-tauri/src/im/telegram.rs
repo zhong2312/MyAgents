@@ -190,6 +190,7 @@ impl MessageCoalescer {
             text: batch.fragments.join("\n"),
             sender_id: batch.sender_id,
             sender_name: batch.sender_name,
+            account_id: None,
             source_type: batch.source_type,
             platform: batch.platform,
             timestamp: chrono::Utc::now(),
@@ -201,6 +202,7 @@ impl MessageCoalescer {
             reply_to_body: batch.reply_to_body,
             group_system_prompt: batch.group_system_prompt,
             request_id: String::new(),
+            delivery_protocol: None,
         })
     }
 }
@@ -1378,6 +1380,7 @@ impl TelegramAdapter {
             text: cleaned_text,
             sender_id: sender_id_str,
             sender_name,
+            account_id: None,
             source_type,
             platform: ImPlatform::Telegram,
             timestamp: chrono::Utc::now(),
@@ -1389,6 +1392,7 @@ impl TelegramAdapter {
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
+            delivery_protocol: None,
         })
     }
 
@@ -1801,6 +1805,7 @@ mod tests {
             text: text.to_string(),
             sender_id: "42".to_string(),
             sender_name: Some("testuser".to_string()),
+            account_id: None,
             source_type: ImSourceType::Private,
             platform: ImPlatform::Telegram,
             timestamp: chrono::Utc::now(),
@@ -1812,6 +1817,7 @@ mod tests {
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
+            delivery_protocol: None,
         }
     }
 

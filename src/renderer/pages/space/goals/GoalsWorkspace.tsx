@@ -18,6 +18,7 @@ import { spaceErrorMessage } from '@/api/spaceCloud';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { useToast } from '@/components/Toast';
 import type { SpaceActions } from '@/pages/space/spaceStore';
+import { SPACE_NARRATIVE_INSET_CLASS } from '@/pages/space/spaceUi';
 
 type GoalTreeNode = SpaceGoal & {
   children: GoalTreeNode[];
@@ -435,7 +436,7 @@ function GoalView({
         <h3 className="text-xl font-semibold text-[var(--ink)]">{goal.title}</h3>
       </section>
 
-      <section>
+      <section className={SPACE_NARRATIVE_INSET_CLASS}>
         <p className="whitespace-pre-wrap text-base leading-7 text-[var(--ink-secondary)]">{goal.context}</p>
       </section>
 

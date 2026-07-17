@@ -211,6 +211,17 @@ describe('buildTitleRoundsFromMessages', () => {
     ]);
     expect(rounds).toEqual([{ user: '问题一', assistant: '回答一' }]);
   });
+
+  it('lets the caller exclude automatic turns before title generation', () => {
+    const rounds = buildTitleRoundsFromMessages([
+      u('automatic issue delivery'), a('processed automatically'),
+      u('human follow-up'), a('human answer'),
+    ], {
+      isUserTitleable: index => index === 2,
+    });
+
+    expect(rounds).toEqual([{ user: 'human follow-up', assistant: 'human answer' }]);
+  });
 });
 
 describe('shouldAttemptAutoTitle', () => {

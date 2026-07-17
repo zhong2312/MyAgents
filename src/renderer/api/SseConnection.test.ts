@@ -216,4 +216,56 @@ describe('SseConnection — listener cleanup invariants', () => {
 
         await conn.disconnect();
     });
+
+    it('unwraps revisioned payloads while preserving connection ordering metadata', async () => {
+        const conn = new SseConnection('test-tab');
+        const handler = vi.fn();
+        conn.setEventHandler(handler);
+        await conn.connect();
+
+        (conn as unknown as { handleSseEvent(eventName: string, data: string): void })
+            .handleSseEvent('chat:message-chunk', JSON.stringify({
+                sessionId: 'session-a',
+                liveRevision: 9,
+                payload: 'hello',
+            }));
+
+        expect(handler).toHaveBeenCalledWith('chat:message-chunk', 'hello', {
+            connectionGeneration: 1,
+            sessionId: 'session-a',
+            liveRevision: 9,
+        });
+        await conn.disconnect();
+    });
+
+    it('unwraps a revisioned terminal error as structured data', async () => {
+        const conn = new SseConnection('test-tab');
+        const handler = vi.fn();
+        conn.setEventHandler(handler);
+        await conn.connect();
+
+        const payload = {
+            message: 'terminal failure',
+            completionTerminal: {
+                sessionId: 'session-a',
+                workspacePath: '/tmp/workspace',
+                turnId: 'turn-a',
+                origin: { kind: 'desktop', surface: 'launcher_input' },
+                status: 'error',
+            },
+        };
+        (conn as unknown as { handleSseEvent(eventName: string, data: string): void })
+            .handleSseEvent('chat:message-error', JSON.stringify({
+                sessionId: 'session-a',
+                liveRevision: 10,
+                payload,
+            }));
+
+        expect(handler).toHaveBeenCalledWith('chat:message-error', payload, {
+            connectionGeneration: 1,
+            sessionId: 'session-a',
+            liveRevision: 10,
+        });
+        await conn.disconnect();
+    });
 });

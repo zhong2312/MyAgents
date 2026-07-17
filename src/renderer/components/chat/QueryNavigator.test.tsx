@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import QueryNavigator from './QueryNavigator';
 import type { Message } from '../../types/chat';
 import { SPACE_ISSUE_CONTEXT_TAG, buildFloatingBallContextReminder } from '../../../shared/systemReminder';
+import { projectVisibleChatTimelineRows } from '@/utils/chatTimelineRows';
 
 class IntersectionObserverMock {
   observe() {}
@@ -38,12 +39,11 @@ describe('QueryNavigator', () => {
 
     const { container } = render(
       <QueryNavigator
-        historyMessages={[
+        messages={[
           userMessage('u1', 'First question'),
           userMessage('u2', 'Second question'),
           userMessage('u3', 'Third question'),
         ]}
-        streamingMessage={null}
         scrollContainerRef={scrollContainerRef}
         pauseAutoScroll={vi.fn()}
       />,
@@ -58,15 +58,14 @@ describe('QueryNavigator', () => {
 
     const { container } = render(
       <QueryNavigator
-        historyMessages={[
+        messages={projectVisibleChatTimelineRows([
           userMessage('u1', 'First question'),
           userMessage(
             'task-notification-bg-1',
             '<task-notification>{"taskId":"bg-1","status":"completed"}</task-notification>',
           ),
           userMessage('u2', 'Second question'),
-        ]}
-        streamingMessage={null}
+        ])}
         scrollContainerRef={scrollContainerRef}
         pauseAutoScroll={vi.fn()}
       />,
@@ -80,7 +79,7 @@ describe('QueryNavigator', () => {
 
     const { container } = render(
       <QueryNavigator
-        historyMessages={[
+        messages={projectVisibleChatTimelineRows([
           userMessage('u1', 'First question'),
           userMessage(
             'task-notification-bg-1',
@@ -88,8 +87,7 @@ describe('QueryNavigator', () => {
           ),
           userMessage('u2', 'Second question'),
           userMessage('u3', 'Third question'),
-        ]}
-        streamingMessage={null}
+        ])}
         scrollContainerRef={scrollContainerRef}
         pauseAutoScroll={vi.fn()}
       />,
@@ -111,12 +109,11 @@ describe('QueryNavigator', () => {
 
     const { container } = render(
       <QueryNavigator
-        historyMessages={[
+        messages={[
           userMessage('u1', 'First question'),
           userMessage('u2', mixed),
           userMessage('u3', 'Third question'),
         ]}
-        streamingMessage={null}
         scrollContainerRef={scrollContainerRef}
         pauseAutoScroll={vi.fn()}
       />,
@@ -143,12 +140,11 @@ describe('QueryNavigator', () => {
 
     const { container } = render(
       <QueryNavigator
-        historyMessages={[
+        messages={[
           userMessage('u1', 'First question'),
           userMessage('u2', mixed),
           userMessage('u3', 'Third question'),
         ]}
-        streamingMessage={null}
         scrollContainerRef={scrollContainerRef}
         pauseAutoScroll={vi.fn()}
       />,
@@ -158,5 +154,25 @@ describe('QueryNavigator', () => {
     expect(container).toHaveTextContent(visible);
     expect(container).toHaveTextContent('Third question');
     expect(container).not.toHaveTextContent('hidden issue instructions');
+  });
+
+  it('navigates a visible turn even when its hidden reminder is maintenance-shaped', () => {
+    const scrollContainerRef = { current: document.createElement('div') };
+    const mixed = '<system-reminder><HEARTBEAT>hidden schedule state</HEARTBEAT></system-reminder>Visible follow-up';
+
+    const { container } = render(
+      <QueryNavigator
+        messages={[
+          userMessage('u1', 'First question'),
+          userMessage('u2', mixed),
+          userMessage('u3', 'Third question'),
+        ]}
+        scrollContainerRef={scrollContainerRef}
+        pauseAutoScroll={vi.fn()}
+      />,
+    );
+
+    expect(container).toHaveTextContent('Visible follow-up');
+    expect(container).not.toHaveTextContent('hidden schedule state');
   });
 });

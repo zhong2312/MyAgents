@@ -27,7 +27,7 @@ import SessionStatsModal from '@/components/SessionStatsModal';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomSelect from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
-import { getFolderName, formatTime, isImSource, getSessionDisplayText, formatMessageCount } from '@/utils/taskCenterUtils';
+import { getFolderName, formatTime, isImSource, getSessionDisplayText, formatTurnCount } from '@/utils/taskCenterUtils';
 import type { SessionMetadata } from '@/api/sessionClient';
 import { workspacePathsEqual } from '@/../shared/workspacePath';
 import type { Project } from '@/config/types';
@@ -431,7 +431,7 @@ export default memo(function TaskCenterOverlay({
                                             if (!project) return null;
                                             const tags = sessionTagsMap.get(session.id) ?? [];
                                             const displayText = getSessionDisplayText(session);
-                                            const msgCount = formatMessageCount(session);
+                                            const turnCount = formatTurnCount(session);
 
                                             const isCronProtected = cronProtectedSessionIds.has(session.id);
                                             return (
@@ -450,9 +450,9 @@ export default memo(function TaskCenterOverlay({
                                                     ))}
                                                     <span className="min-w-0 flex-1 truncate text-sm text-[var(--ink-secondary)] transition-colors group-hover:text-[var(--ink)]">
                                                         {displayText}
-                                                        {msgCount && (
+                                                        {turnCount && (
                                                             <span className="ml-1.5 text-xs text-[var(--ink-muted)]/40">
-                                                                {msgCount}
+                                                                {turnCount}
                                                             </span>
                                                         )}
                                                     </span>

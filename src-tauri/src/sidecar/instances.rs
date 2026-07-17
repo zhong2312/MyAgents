@@ -2,6 +2,31 @@ use super::*;
 
 // ============= Tab-based Multi-instance Commands =============
 
+/// Resolve the Node process role from the canonical sidecar identity and
+/// reject caller-shape mismatches before any spawn side effects occur.
+///
+/// `agent_dir.is_none()` alone is not a valid Global discriminator: the
+/// generic Tab command is public IPC and may receive arbitrary Tab IDs.  If
+/// such a call minted a Global role, its distinct manager key would bypass the
+/// canonical Global singleton and start a second proactive OAuth scheduler.
+fn resolve_sidecar_process_role(
+    tab_id: &str,
+    has_agent_dir: bool,
+) -> Result<SidecarProcessRole, String> {
+    match (tab_id == GLOBAL_SIDECAR_ID, has_agent_dir) {
+        (true, false) => Ok(SidecarProcessRole::Global),
+        (false, true) => Ok(SidecarProcessRole::Session),
+        (true, true) => Err(format!(
+            "Global Sidecar '{}' must not receive an agent directory",
+            GLOBAL_SIDECAR_ID
+        )),
+        (false, false) => Err(format!(
+            "Session Sidecar '{}' requires an agent directory",
+            tab_id
+        )),
+    }
+}
+
 /// Start a Sidecar for a specific Tab
 /// Each Tab gets its own dedicated Sidecar (1:1 relationship)
 pub fn start_tab_sidecar<R: Runtime>(
@@ -10,6 +35,9 @@ pub fn start_tab_sidecar<R: Runtime>(
     tab_id: &str,
     agent_dir: Option<PathBuf>,
 ) -> Result<u16, String> {
+    let process_role = resolve_sidecar_process_role(tab_id, agent_dir.is_some())?;
+    let is_global = process_role == SidecarProcessRole::Global;
+
     let _update_spawn_permit = begin_update_spawn_permit()?;
     // Ensure file descriptor limit is high enough for Bun
     ensure_high_file_descriptor_limit();
@@ -60,16 +88,9 @@ pub fn start_tab_sidecar<R: Runtime>(
     // the loader, keeping startup lean.
     // SIDECAR_MARKER tails every argv for reliable process identification.
     let mut cmd = crate::process_cmd::new(&node_path);
-    if script_path.extension().and_then(|s| s.to_str()) == Some("ts") {
-        cmd.arg("--import").arg("tsx/esm");
-    }
-    cmd.arg(&script_path)
-        .arg("--port")
-        .arg(port.to_string())
-        .arg(SIDECAR_MARKER);
-
-    // Determine if this is a global sidecar and handle agent directory
-    let is_global = agent_dir.is_none();
+    // The role was validated against the canonical manager identity before
+    // acquiring permits, locks, ports, or filesystem resources.
+    append_sidecar_entrypoint_args(&mut cmd, &script_path, port, process_role);
     if is_global {
         cmd.arg("--no-pre-warm");
     }
@@ -800,6 +821,30 @@ mod global_restart_decision_tests {
             global_restart_decision(true, false, after_recover, T),
             (false, 1)
         );
+    }
+}
+
+#[cfg(test)]
+mod sidecar_process_role_invariant_tests {
+    use super::resolve_sidecar_process_role;
+    use crate::sidecar::{SidecarProcessRole, GLOBAL_SIDECAR_ID};
+
+    #[test]
+    fn accepts_only_the_two_canonical_identity_directory_pairs() {
+        assert_eq!(
+            resolve_sidecar_process_role(GLOBAL_SIDECAR_ID, false),
+            Ok(SidecarProcessRole::Global)
+        );
+        assert_eq!(
+            resolve_sidecar_process_role("__legacy__", true),
+            Ok(SidecarProcessRole::Session)
+        );
+    }
+
+    #[test]
+    fn rejects_both_role_identity_mismatches() {
+        assert!(resolve_sidecar_process_role(GLOBAL_SIDECAR_ID, true).is_err());
+        assert!(resolve_sidecar_process_role("session-123", false).is_err());
     }
 }
 

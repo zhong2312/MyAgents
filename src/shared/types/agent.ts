@@ -80,7 +80,7 @@ export interface ChannelConfig {
   // OpenClaw Plugin
   openclawPluginId?: string;
   openclawNpmSpec?: string;
-  openclawPluginConfig?: Record<string, string>;
+  openclawPluginConfig?: Record<string, unknown>;
   openclawManifest?: Record<string, string>;
   /** Enabled tool groups for OpenClaw plugins with tools (e.g. feishu) */
   openclawEnabledToolGroups?: string[];

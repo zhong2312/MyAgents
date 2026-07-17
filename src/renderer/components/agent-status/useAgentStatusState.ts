@@ -45,20 +45,26 @@ import type { AgentStatusState, SubagentStatus, TodoItem } from './types';
 export function useAgentStatusState(
   messages: Message[],
   runtimePlanTodos: readonly AgentStatusTodoSnapshot[] | null = null,
+  sessionId: string | null = null,
 ): AgentStatusState {
   // 订阅后台任务状态变化，触发 useMemo 重算。
   const [bgEpoch, setBgEpoch] = useState(0);
   useEffect(() => {
-    const handler = () => setBgEpoch(v => v + 1);
+    const handler = (event: Event) => {
+      const eventSessionId = (event as CustomEvent<{ sessionId?: string | null }>).detail?.sessionId ?? null;
+      if ((eventSessionId ?? null) !== (sessionId ?? null)) return;
+      setBgEpoch(v => v + 1);
+    };
     window.addEventListener(BACKGROUND_TASK_STATUS_EVENT, handler);
     return () => window.removeEventListener(BACKGROUND_TASK_STATUS_EVENT, handler);
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
-    hydrateBackgroundTaskStatusesFromHistory(messages);
-  }, [messages]);
+    hydrateBackgroundTaskStatusesFromHistory(messages, sessionId);
+  }, [messages, sessionId]);
 
   return useMemo<AgentStatusState>(() => {
+    void bgEpoch;
     let todos: TodoItem[] = [];
     const subagents: SubagentStatus[] = [];
     const seenSubagentToolIds = new Set<string>();
@@ -111,21 +117,21 @@ export function useAgentStatusState(
             //   2. backgroundTaskStatus 模块里 status 是 terminal（运行期间正常完成路径）
             //   3. 模块里根本没注册过（要么没启动要么已被 LRU 驱逐 → 不应复活僵尸）
             if (completedBgFromHistory.has(tool.id)) continue;
-            if (!isBackgroundTaskRegistered(tool.id)) continue;
-            const status = getBackgroundTaskStatus(tool.id);
+            if (!isBackgroundTaskRegistered(tool.id, sessionId)) continue;
+            const status = getBackgroundTaskStatus(tool.id, sessionId);
             if (isTerminalStatus(status)) continue;
-            subagents.push(buildSubagentStatus(tool, input, 'background'));
+            subagents.push(buildSubagentStatus(tool, input, 'background', sessionId));
           } else {
             // 同步任务：父工具还在跑，或 Codex spawn 已完成但 nested trace 仍在跑。
             const isActive = isSubagentContainerRunning(tool);
             if (!isActive) continue;
-            subagents.push(buildSubagentStatus(tool, input, 'sync'));
+            subagents.push(buildSubagentStatus(tool, input, 'sync', sessionId));
           }
         }
       }
     }
 
-    for (const task of getActiveBackgroundTasks()) {
+    for (const task of getActiveBackgroundTasks(sessionId)) {
       if (seenSubagentToolIds.has(task.toolUseId)) continue;
       if (completedBgFromHistory.has(task.toolUseId)) continue;
       if (isTerminalStatus(task.status)) continue;
@@ -197,8 +203,7 @@ export function useAgentStatusState(
       },
     };
     // bgEpoch 在 deps 里仅为触发重算；其引用本身在闭包外不使用。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, runtimePlanTodos, bgEpoch]);
+  }, [messages, runtimePlanTodos, bgEpoch, sessionId]);
 }
 
 // 稳定 fallback startedAt：tool.taskStartTime 缺失时，记录首次见到此 toolId 的时间。
@@ -209,15 +214,17 @@ function buildSubagentStatus(
   tool: Pick<ToolUseSimple, 'id' | 'name' | 'parsedInput' | 'taskStartTime' | 'taskStats' | 'subagentCalls'>,
   input: AgentInput | undefined,
   mode: 'sync' | 'background',
+  sessionId: string | null,
 ): SubagentStatus {
   let startedAt = tool.taskStartTime;
   if (startedAt === undefined) {
-    const cached = firstSeenAtByToolId.get(tool.id);
+    const cacheKey = `${sessionId ?? '__default__'}\u0000${tool.id}`;
+    const cached = firstSeenAtByToolId.get(cacheKey);
     if (cached !== undefined) {
       startedAt = cached;
     } else {
       startedAt = Date.now();
-      firstSeenAtByToolId.set(tool.id, startedAt);
+      firstSeenAtByToolId.set(cacheKey, startedAt);
     }
   }
   const fallback = buildSubagentStatusFallback(tool);

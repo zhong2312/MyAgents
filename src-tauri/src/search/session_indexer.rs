@@ -712,7 +712,7 @@ impl SessionIndex {
                 matched_role: if role == "title" { None } else { Some(role) },
                 last_active_at,
                 source: Some(source),
-                message_count: Some(message_count as u32),
+                turn_count: Some(message_count as u32),
             });
         }
 

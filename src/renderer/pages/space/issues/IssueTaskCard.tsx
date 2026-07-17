@@ -10,6 +10,7 @@ import type {
   SpaceSession,
 } from '@/api/spaceCloud';
 import { SpaceIdentityLine } from '@/pages/space/SpaceAvatar';
+import { GoalPathLabel } from '@/pages/space/GoalPathLabel';
 import { issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { statusPillClass, statusTextClass } from '@/pages/space/spaceUi';
 import { Popover } from '@/components/ui/Popover';
@@ -51,11 +52,15 @@ export function IssueTaskCard({
   const [goalOpen, setGoalOpen] = useState(false);
   const admin = session.membership.role === 'owner' || session.membership.role === 'admin';
   const creator = issue.creator ?? issue.author ?? null;
+  const selectedGoal = issue.goalId
+    ? goals.find((goal) => goal.id === issue.goalId)
+    : null;
 
   const goalLabel = goalReference?.goalPathLabel
     || goalReference?.goalTitle
     || issue.goalPathLabel
     || t('space.detail.noGoal');
+  const goalLeafLabel = goalReference?.goalTitle || selectedGoal?.title;
 
   return (
     <section
@@ -84,7 +89,10 @@ export function IssueTaskCard({
             className="inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] active:scale-[0.98] disabled:pointer-events-none"
           >
             {goalBusy && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
-            <span className="truncate">{goalLabel}</span>
+            <GoalPathLabel
+              label={goalLabel}
+              leafLabel={goalLeafLabel || goalLabel}
+            />
             {admin && <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />}
           </button>
           <Popover
@@ -120,7 +128,10 @@ export function IssueTaskCard({
                     }}
                     className="flex min-h-9 w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-sm font-medium text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)]"
                   >
-                    <span className="truncate">{goal.goalPathLabel || goal.path || goal.title}</span>
+                    <GoalPathLabel
+                      label={goal.goalPathLabel || goal.path || goal.title}
+                      leafLabel={goal.title}
+                    />
                     {selected && <Check className="h-4 w-4 shrink-0 text-[var(--accent-cool)]" />}
                   </button>
                 );

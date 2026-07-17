@@ -69,6 +69,8 @@ describe('pre-query session draft visibility', () => {
         const committed = await store.commitPreparedSessionForFirstUserTurn(id, {
             messageText: 'hello from managed codex',
             runtimeSessionId: 'codex-thread-1',
+            lastActiveAt: '2026-07-14T10:00:00.000Z',
+            lastMessagePreview: 'hello from managed codex',
         });
 
         expect(committed).toEqual(expect.objectContaining({
@@ -78,6 +80,8 @@ describe('pre-query session draft visibility', () => {
             runtime: 'codex',
             runtimeSource: 'managed-provider',
             runtimeSessionId: 'codex-thread-1',
+            lastActiveAt: '2026-07-14T10:00:00.000Z',
+            lastMessagePreview: 'hello from managed codex',
             providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
             materializationState: undefined,
             materializationSourceSessionId: undefined,

@@ -179,12 +179,19 @@ function extractMessageText(content: string): string {
  * `terminal_reason`, which is not persisted) — the error-text pattern match is
  * the disk-side equivalent gate.
  */
-export function buildTitleRoundsFromMessages(messages: readonly TitleRoundMessage[]): TitleRound[] {
+export function buildTitleRoundsFromMessages(
+  messages: readonly TitleRoundMessage[],
+  options?: { isUserTitleable?: (messageIndex: number) => boolean },
+): TitleRound[] {
   const rounds: TitleRound[] = [];
   for (let i = 0; i < messages.length - 1; i++) {
     const msg = messages[i];
     const next = messages[i + 1];
     if (msg.role !== 'user' || next.role !== 'assistant') continue;
+    if (options?.isUserTitleable && !options.isUserTitleable(i)) {
+      i++;
+      continue;
+    }
 
     const rawUserText = extractMessageText(msg.content);
     const reminder = parseLeadingSystemReminder(rawUserText);

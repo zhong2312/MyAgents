@@ -118,7 +118,9 @@ describe('GoalsWorkspace', () => {
     renderGoals(actions);
 
     fireEvent.click(screen.getByRole('button', { name: 'Runtime Delivery' }));
-    expect(screen.getByText('Runtime context')).toBeInTheDocument();
+    const context = screen.getByText('Runtime context');
+    expect(context).toBeInTheDocument();
+    expect(context.parentElement).toHaveClass('px-3', 'max-sm:px-2');
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     fireEvent.change(screen.getByLabelText('标题'), {

@@ -75,6 +75,82 @@ pub(crate) struct ImConsumerHandle {
 
 pub(crate) type ImConsumers = Arc<Mutex<HashMap<String, ImConsumerHandle>>>;
 
+/// Admission boundary for model-bound work owned by one IM channel. Proxy
+/// reconnect closes the gate, waits for admitted work plus ReplyRouter slots
+/// to drain, then uses the normal channel lifecycle.
+pub(crate) struct ChannelModelWorkGate {
+    accepting: std::sync::atomic::AtomicBool,
+    active: std::sync::atomic::AtomicUsize,
+}
+
+impl ChannelModelWorkGate {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            accepting: std::sync::atomic::AtomicBool::new(true),
+            active: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    pub(crate) fn try_enter(self: &Arc<Self>) -> Option<ChannelModelWorkGuard> {
+        use std::sync::atomic::Ordering;
+
+        if !self.accepting.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.active.fetch_add(1, Ordering::SeqCst);
+        if self.accepting.load(Ordering::SeqCst) {
+            Some(ChannelModelWorkGuard {
+                gate: Arc::clone(self),
+            })
+        } else {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            None
+        }
+    }
+
+    /// Transfer work from another tracked owner (for example ReplyRouter) into
+    /// an async finalizer without reopening admission.
+    pub(crate) fn begin_handoff(self: &Arc<Self>) -> ChannelModelWorkGuard {
+        self.active
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ChannelModelWorkGuard {
+            gate: Arc::clone(self),
+        }
+    }
+
+    pub(crate) fn try_close(&self) -> bool {
+        self.accepting
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+
+    pub(crate) fn reopen(&self) {
+        self.accepting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn active(&self) -> usize {
+        self.active.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+pub(crate) struct ChannelModelWorkGuard {
+    gate: Arc<ChannelModelWorkGate>,
+}
+
+impl Drop for ChannelModelWorkGuard {
+    fn drop(&mut self) {
+        self.gate
+            .active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 use bridge::BridgeAdapter;
 use buffer::MessageBuffer;
 use dingtalk::DingtalkAdapter;
@@ -774,6 +850,110 @@ impl adapter::ImStreamAdapter for AnyAdapter {
             Self::Bridge(a) => a.bridge_context(),
         }
     }
+    async fn start_reply_dispatch(&self, request_id: &str) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => a.start_reply_dispatch(request_id).await,
+            Self::Feishu(a) => a.start_reply_dispatch(request_id).await,
+            Self::Dingtalk(a) => a.start_reply_dispatch(request_id).await,
+            Self::Bridge(a) => a.start_reply_dispatch(request_id).await,
+        }
+    }
+    async fn start_reply_stream(
+        &self,
+        request_id: &str,
+        chat_id: &str,
+        initial_text: &str,
+    ) -> adapter::AdapterResult<String> {
+        match self {
+            Self::Telegram(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+            Self::Feishu(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+            Self::Dingtalk(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+            Self::Bridge(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+        }
+    }
+    async fn update_reply_stream(
+        &self,
+        stream_id: &str,
+        text: &str,
+        sequence: u32,
+        is_thinking: bool,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+            Self::Feishu(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+            Self::Dingtalk(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+            Self::Bridge(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+        }
+    }
+    async fn finish_reply_stream_block(&self, stream_id: &str) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => a.finish_reply_stream_block(stream_id).await,
+            Self::Feishu(a) => a.finish_reply_stream_block(stream_id).await,
+            Self::Dingtalk(a) => a.finish_reply_stream_block(stream_id).await,
+            Self::Bridge(a) => a.finish_reply_stream_block(stream_id).await,
+        }
+    }
+    async fn complete_reply_dispatch(
+        &self,
+        request_id: &str,
+        final_payloads: &serde_json::Value,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+            Self::Feishu(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+            Self::Dingtalk(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+            Self::Bridge(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+        }
+    }
+    async fn abort_reply_dispatch(
+        &self,
+        request_id: &str,
+        reason: &str,
+        terminal_payload: &serde_json::Value,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+            Self::Feishu(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+            Self::Dingtalk(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+            Self::Bridge(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+        }
+    }
     fn supports_streaming(&self) -> bool {
         match self {
             Self::Telegram(a) => a.supports_streaming(),
@@ -865,6 +1045,9 @@ pub struct ImBotInstance {
     pub(crate) health: Arc<HealthManager>,
     pub(crate) router: Arc<Mutex<SessionRouter>>,
     pub(crate) im_consumers: ImConsumers,
+    /// Covers enqueue setup, heartbeat turns, cron hand-off, and terminal
+    /// finalization across a proxy-triggered transport restart boundary.
+    pub(crate) model_work_gate: Arc<ChannelModelWorkGate>,
     pub(super) buffer: Arc<Mutex<MessageBuffer>>,
     pub(super) started_at: Instant,
     /// JoinHandle for the message processing loop (awaited during graceful shutdown)

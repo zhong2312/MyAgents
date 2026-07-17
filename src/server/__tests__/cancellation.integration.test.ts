@@ -21,6 +21,7 @@ import {
   anySignal,
   cancellableDelay,
   withAbortSignal,
+  raceWithAbortSignal,
   withBoundedTimeout,
 } from '../utils/cancellation';
 
@@ -103,6 +104,21 @@ describe('withAbortSignal', () => {
       }),
     ).rejects.toThrow('n/a');
     expect(innerAborted).toBe(true);
+  });
+});
+
+describe('raceWithAbortSignal', () => {
+  it('stops one caller wait without cancelling shared work', async () => {
+    const ctrl = new AbortController();
+    let resolveShared!: (value: string) => void;
+    const shared = new Promise<string>((resolve) => { resolveShared = resolve; });
+    const waiting = raceWithAbortSignal(shared, ctrl.signal);
+
+    ctrl.abort('user');
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError', message: 'user' });
+
+    resolveShared('ready');
+    await expect(shared).resolves.toBe('ready');
   });
 });
 

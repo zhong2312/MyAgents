@@ -5,6 +5,7 @@ import { withProjectsLock } from './configStore';
 import { loadAppConfig, atomicModifyConfig } from './appConfigService';
 import { loadProjects, saveProjects } from './projectService';
 import { apiPostJson } from '@/api/apiFetch';
+import { applyMcpServerConfigAdditions } from '../../../shared/mcpConfig';
 
 /**
  * Detect host platform in the renderer using the same vocabulary as
@@ -56,21 +57,7 @@ export function getAllMcpServersFromConfig(config: AppConfig): McpServerDefiniti
         ...getPlatformFilteredPresets().filter(p => !customIds.has(p.id)),
         ...customServers,
     ];
-    const serverArgsConfig = config.mcpServerArgs && typeof config.mcpServerArgs === 'object' && !Array.isArray(config.mcpServerArgs)
-        ? config.mcpServerArgs : {};
-    const serverEnvConfig = config.mcpServerEnv && typeof config.mcpServerEnv === 'object' && !Array.isArray(config.mcpServerEnv)
-        ? config.mcpServerEnv : {};
-
-    return allServers.map(server => {
-        const extraArgs = serverArgsConfig[server.id];
-        const extraEnv = serverEnvConfig[server.id];
-        if (extraArgs === undefined && !extraEnv) return server;
-        return {
-            ...server,
-            ...(Array.isArray(extraArgs) && { args: [...(Array.isArray(server.args) ? server.args : []), ...extraArgs] }),
-            ...(extraEnv && typeof extraEnv === 'object' && !Array.isArray(extraEnv) && { env: { ...server.env, ...extraEnv } }),
-        };
-    });
+    return applyMcpServerConfigAdditions(allServers, config);
 }
 
 /**

@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   data: null as unknown as Record<string, unknown>,
   actions: {
     switchSpace: vi.fn().mockResolvedValue(undefined),
+    logout: vi.fn().mockResolvedValue(undefined),
     refreshIssues: vi.fn().mockResolvedValue(undefined),
     refreshGoals: vi.fn().mockResolvedValue(undefined),
     refreshSkills: vi.fn().mockResolvedValue(undefined),
@@ -60,9 +61,11 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
   SpaceSidebar: ({
     onSpaceTabChange,
     onSpaceSwitch,
+    onLogout,
   }: {
     onSpaceTabChange: (mode: string) => void;
     onSpaceSwitch: (spaceId: string, mode: string) => void;
+    onLogout: () => void;
   }) => (
     <aside>
       <button type="button" onClick={() => onSpaceTabChange("skills")}>
@@ -71,12 +74,38 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
       <button type="button" onClick={() => onSpaceSwitch("team", "skills")}>
         show team skills
       </button>
+      <button type="button" onClick={() => onSpaceSwitch("team", "issues")}>
+        show team issues
+      </button>
+      <button type="button" onClick={onLogout}>
+        logout
+      </button>
     </aside>
   ),
 }));
 
 vi.mock("@/pages/space/issues/IssuesWorkspace", () => ({
-  IssuesWorkspace: () => <main>issues</main>,
+  IssuesWorkspace: ({
+    selectedStatus,
+    onStatusChange,
+  }: {
+    selectedStatus: string;
+    onStatusChange: (value: string) => void;
+  }) => (
+    <main>
+      issues
+      <output aria-label="selected issue status">
+        {selectedStatus || "empty"}
+      </output>
+      <button
+        type="button"
+        onClick={() => onStatusChange("open,todo,doing")}
+      >
+        set incomplete
+      </button>
+      <button type="button" onClick={() => onStatusChange("all")}>set all</button>
+    </main>
+  ),
 }));
 
 vi.mock("@/pages/space/issues/CreateIssueDialog", () => ({
@@ -143,6 +172,7 @@ describe("Space switching", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     harness.actions.switchSpace.mockReset().mockResolvedValue(undefined);
+    harness.actions.logout.mockReset().mockResolvedValue(undefined);
     harness.actions.refreshIssues.mockClear();
     harness.actions.refreshGoals.mockClear();
     harness.actions.refreshSkills.mockClear();
@@ -163,6 +193,13 @@ describe("Space switching", () => {
     });
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
     expect(harness.actions.refreshGoals).toHaveBeenCalledTimes(1);
+    expect(harness.actions.refreshIssues).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: "open,todo,doing" }),
+      expect.any(Object),
+    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
 
     harness.data = snapshot("myagents");
     view.rerender(<Space isActive />);
@@ -188,6 +225,73 @@ describe("Space switching", () => {
       switching.resolve();
       await switching.promise;
     });
+  });
+
+  it("resets the Issue status to incomplete when entering another Space", () => {
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "show team issues" }));
+
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith("team", undefined);
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "open,todo,doing",
+    );
+  });
+
+  it("resets the Issue status at the local logout boundary", async () => {
+    const remoteLogout = deferred<void>();
+    harness.actions.logout.mockReturnValueOnce(remoteLogout.promise);
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "logout" }));
+
+    expect(harness.actions.logout).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "open,todo,doing",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+
+    await act(async () => {
+      remoteLogout.resolve();
+      await remoteLogout.promise;
+    });
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+    expect(harness.toast.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the incomplete default when remote logout fails after local sign-out", async () => {
+    harness.actions.logout.mockRejectedValueOnce(new Error("remote unavailable"));
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "logout" }));
+    });
+
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "open,todo,doing",
+    );
+    expect(harness.toast.error).toHaveBeenCalledTimes(1);
   });
 
   it("reloads the selected non-Issue workspace for the new Space", async () => {

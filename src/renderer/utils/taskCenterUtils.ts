@@ -118,17 +118,15 @@ const BUILTIN_PLATFORM_NAMES: Record<string, string> = {
     dingtalk: '钉钉',
 };
 
-/**
- * Format message count suffix (e.g., "3 条消息")
- */
-export function formatMessageCount(
+/** Format persisted user-turn count suffix. */
+export function formatTurnCount(
     session: SessionMetadata,
     locale: SupportedLocale = currentSupportedLocale(),
 ): string | null {
-    const count = session.stats?.messageCount;
+    const count = session.stats?.turnCount;
     if (!count || count <= 0) return null;
-    if (locale === 'en-US') return `${count} message${count === 1 ? '' : 's'}`;
-    return `${count} 条消息`;
+    if (locale === 'en-US') return `${count} turn${count === 1 ? '' : 's'}`;
+    return `${count} 轮`;
 }
 
 /**

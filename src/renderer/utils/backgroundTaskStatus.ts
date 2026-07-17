@@ -44,12 +44,37 @@ const MAX_ACTIVE_SOFT_WARN = 512;    // soft warning threshold for active entrie
 
 // ─── Primary state ───
 
-const statuses = new Map<string, string>();                     // taskId → status
-const descriptions = new Map<string, string>();                 // taskId → description
-const toolUseIdToTaskId = new Map<string, string>();            // toolUseId → taskId
-const taskIdToToolUseId = new Map<string, string>();            // taskId → toolUseId
-const taskStartedAt = new Map<string, number>();                 // taskId → first observed start time
-const taskTypes = new Map<string, string>();                     // taskId → SDK task_type
+const DEFAULT_SCOPE = '__default__';
+const KEY_SEPARATOR = '\u0000';
+
+function scopeFor(sessionId?: string | null): string {
+    return sessionId || DEFAULT_SCOPE;
+}
+
+function taskKey(sessionId: string | null | undefined, taskId: string): string {
+    return `${scopeFor(sessionId)}${KEY_SEPARATOR}${taskId}`;
+}
+
+function toolKey(sessionId: string | null | undefined, toolUseId: string): string {
+    return `${scopeFor(sessionId)}${KEY_SEPARATOR}${toolUseId}`;
+}
+
+function keyPrefix(sessionId: string | null | undefined): string {
+    return `${scopeFor(sessionId)}${KEY_SEPARATOR}`;
+}
+
+function splitTaskKey(key: string): { scope: string; taskId: string } {
+    const idx = key.indexOf(KEY_SEPARATOR);
+    if (idx === -1) return { scope: DEFAULT_SCOPE, taskId: key };
+    return { scope: key.slice(0, idx), taskId: key.slice(idx + KEY_SEPARATOR.length) };
+}
+
+const statuses = new Map<string, string>();                     // scoped taskId → status
+const descriptions = new Map<string, string>();                 // scoped taskId → description
+const toolUseIdToTaskId = new Map<string, string>();            // scoped toolUseId → taskId
+const taskIdToToolUseId = new Map<string, string>();            // scoped taskId → toolUseId
+const taskStartedAt = new Map<string, number>();                // scoped taskId → first observed start time
+const taskTypes = new Map<string, string>();                    // scoped taskId → SDK task_type
 
 // Insertion-ordered set of taskIds that have reached a terminal state.
 // Map preserves insertion order — treating it as an LRU by deleting+re-adding on touch.
@@ -68,13 +93,14 @@ const EVENT_NAME = 'background-task-status';
 
 // ─── Registration (task started) ───
 
-function linkTaskToolUse(taskId: string, toolUseId: string): void {
-    const previousToolUseId = taskIdToToolUseId.get(taskId);
+function linkTaskToolUse(taskId: string, toolUseId: string, sessionId?: string | null): void {
+    const scopedTaskKey = taskKey(sessionId, taskId);
+    const previousToolUseId = taskIdToToolUseId.get(scopedTaskKey);
     if (previousToolUseId && previousToolUseId !== toolUseId) {
-        toolUseIdToTaskId.delete(previousToolUseId);
+        toolUseIdToTaskId.delete(toolKey(sessionId, previousToolUseId));
     }
-    toolUseIdToTaskId.set(toolUseId, taskId);
-    taskIdToToolUseId.set(taskId, toolUseId);
+    toolUseIdToTaskId.set(toolKey(sessionId, toolUseId), taskId);
+    taskIdToToolUseId.set(scopedTaskKey, toolUseId);
 }
 
 /** Register the toolUseId↔taskId mapping (called when chat:task-started arrives).
@@ -83,44 +109,46 @@ export function registerBackgroundTask(
     taskId: string,
     toolUseId: string,
     meta?: { description?: string; taskType?: string },
+    sessionId?: string | null,
 ): void {
-    linkTaskToolUse(taskId, toolUseId);
-    if (!taskStartedAt.has(taskId)) {
-        taskStartedAt.set(taskId, Date.now());
+    const scopedTaskKey = taskKey(sessionId, taskId);
+    linkTaskToolUse(taskId, toolUseId, sessionId);
+    if (!taskStartedAt.has(scopedTaskKey)) {
+        taskStartedAt.set(scopedTaskKey, Date.now());
     }
     if (meta?.description) {
-        descriptions.set(taskId, meta.description);
+        descriptions.set(scopedTaskKey, meta.description);
     }
     if (meta?.taskType) {
-        taskTypes.set(taskId, meta.taskType);
+        taskTypes.set(scopedTaskKey, meta.taskType);
     }
 
     // Reconcile: if a terminal notification arrived earlier with no toolUseId,
     // promote it to a proper status now and dispatch once so listeners catch up.
-    const orphan = orphanByTaskId.get(taskId);
+    const orphan = orphanByTaskId.get(scopedTaskKey);
     if (orphan) {
-        orphanByTaskId.delete(taskId);
-        applyStatus(taskId, orphan.status, toolUseId);
+        orphanByTaskId.delete(scopedTaskKey);
+        applyStatus(taskId, orphan.status, toolUseId, sessionId);
         return;
     }
     window.dispatchEvent(new CustomEvent(EVENT_NAME, {
-        detail: { taskId, toolUseId, status: 'started' },
+        detail: { taskId, toolUseId, status: 'started', sessionId: sessionId ?? null },
     }));
 }
 
 // ─── Status updates ───
 
 /** Called by TabProvider when `chat:task-started` arrives. Stores description for later display. */
-export function setBackgroundTaskDescription(taskId: string, description: string): void {
-    descriptions.set(taskId, description);
+export function setBackgroundTaskDescription(taskId: string, description: string, sessionId?: string | null): void {
+    descriptions.set(taskKey(sessionId, taskId), description);
 }
 
 /** Read task description (set at task-started time).
  * Accepts either taskId or toolUseId — resolves through the mapping like getBackgroundTaskStatus.
  */
-export function getBackgroundTaskDescription(key: string): string | undefined {
-    const taskId = toolUseIdToTaskId.get(key) ?? key;
-    return descriptions.get(taskId);
+export function getBackgroundTaskDescription(key: string, sessionId?: string | null): string | undefined {
+    const taskId = toolUseIdToTaskId.get(toolKey(sessionId, key)) ?? key;
+    return descriptions.get(taskKey(sessionId, taskId));
 }
 
 /** Called by TabProvider when `chat:task-notification` arrives.
@@ -129,10 +157,16 @@ export function getBackgroundTaskDescription(key: string): string | undefined {
  *   If still absent and the status is terminal, the notification is parked
  *   in the orphan pool for later reconciliation via reconcileOrphanForToolUse.
  */
-export function setBackgroundTaskStatus(taskId: string, status: string, directToolUseId?: string): void {
-    const toolUseId = directToolUseId ?? taskIdToToolUseId.get(taskId);
+export function setBackgroundTaskStatus(
+    taskId: string,
+    status: string,
+    directToolUseId?: string,
+    sessionId?: string | null,
+): void {
+    const scopedTaskKey = taskKey(sessionId, taskId);
+    const toolUseId = directToolUseId ?? taskIdToToolUseId.get(scopedTaskKey);
     if (toolUseId) {
-        linkTaskToolUse(taskId, toolUseId);
+        linkTaskToolUse(taskId, toolUseId, sessionId);
     }
 
     if (!toolUseId && isTerminalStatus(status)) {
@@ -142,7 +176,7 @@ export function setBackgroundTaskStatus(taskId: string, status: string, directTo
             const oldest = orphanByTaskId.keys().next().value;
             if (oldest !== undefined) orphanByTaskId.delete(oldest);
         }
-        orphanByTaskId.set(taskId, { taskId, status });
+        orphanByTaskId.set(scopedTaskKey, { taskId, status });
         console.warn(
             '[backgroundTaskStatus] Terminal notification for taskId=%s has no toolUseId ' +
             'mapping — parked in orphan pool (%d/%d).',
@@ -151,22 +185,27 @@ export function setBackgroundTaskStatus(taskId: string, status: string, directTo
         return;
     }
 
-    applyStatus(taskId, status, toolUseId);
+    applyStatus(taskId, status, toolUseId, sessionId);
 }
 
 /** Core status-apply path: writes status, updates LRU, dispatches event, enforces caps. */
-function applyStatus(taskId: string, status: string, toolUseId: string | undefined): void {
-    statuses.set(taskId, status);
+function applyStatus(taskId: string, status: string, toolUseId: string | undefined, sessionId?: string | null): void {
+    const scopedTaskKey = taskKey(sessionId, taskId);
+    statuses.set(scopedTaskKey, status);
 
     if (isTerminalStatus(status)) {
         // Refresh LRU position: delete+re-add so this entry becomes most-recent.
-        terminalOrder.delete(taskId);
-        terminalOrder.set(taskId, true);
-        enforceTerminalCap();
+        terminalOrder.delete(scopedTaskKey);
+        terminalOrder.set(scopedTaskKey, true);
+        enforceTerminalCap(sessionId);
     }
 
     // Soft warn on active-set inflation — active entries are only cleared by session reset.
-    const activeCount = statuses.size - terminalOrder.size;
+    const prefix = keyPrefix(sessionId);
+    let activeCount = 0;
+    for (const key of statuses.keys()) {
+        if (key.startsWith(prefix) && !terminalOrder.has(key)) activeCount++;
+    }
     if (activeCount > MAX_ACTIVE_SOFT_WARN) {
         console.warn(
             '[backgroundTaskStatus] Active entries exceed soft cap (%d > %d). Long session?',
@@ -175,23 +214,25 @@ function applyStatus(taskId: string, status: string, toolUseId: string | undefin
     }
 
     window.dispatchEvent(new CustomEvent(EVENT_NAME, {
-        detail: { taskId, toolUseId, status },
+        detail: { taskId, toolUseId, status, sessionId: sessionId ?? null },
     }));
 }
 
 /** Evict oldest terminal entries (and their associated metadata) to stay under cap. */
-function enforceTerminalCap(): void {
-    while (terminalOrder.size > MAX_TERMINAL_RETAINED) {
-        const oldestTaskId = terminalOrder.keys().next().value;
-        if (oldestTaskId === undefined) break;
-        terminalOrder.delete(oldestTaskId);
-        statuses.delete(oldestTaskId);
-        descriptions.delete(oldestTaskId);
-        taskStartedAt.delete(oldestTaskId);
-        taskTypes.delete(oldestTaskId);
-        const tuid = taskIdToToolUseId.get(oldestTaskId);
-        taskIdToToolUseId.delete(oldestTaskId);
-        if (tuid) toolUseIdToTaskId.delete(tuid);
+function enforceTerminalCap(sessionId?: string | null): void {
+    const prefix = keyPrefix(sessionId);
+    const scopedTerminalKeys = Array.from(terminalOrder.keys()).filter(key => key.startsWith(prefix));
+    while (scopedTerminalKeys.length > MAX_TERMINAL_RETAINED) {
+        const oldestTaskKey = scopedTerminalKeys.shift();
+        if (oldestTaskKey === undefined) break;
+        terminalOrder.delete(oldestTaskKey);
+        statuses.delete(oldestTaskKey);
+        descriptions.delete(oldestTaskKey);
+        taskStartedAt.delete(oldestTaskKey);
+        taskTypes.delete(oldestTaskKey);
+        const tuid = taskIdToToolUseId.get(oldestTaskKey);
+        taskIdToToolUseId.delete(oldestTaskKey);
+        if (tuid) toolUseIdToTaskId.delete(toolKey(sessionId, tuid));
     }
 }
 
@@ -201,10 +242,10 @@ function enforceTerminalCap(): void {
  * Read current status by toolUseId (the key TaskTool components have).
  * Falls back to direct taskId lookup for backward compatibility.
  */
-export function getBackgroundTaskStatus(key: string): string | undefined {
+export function getBackgroundTaskStatus(key: string, sessionId?: string | null): string | undefined {
     // Try as toolUseId first (new path), then as taskId (old path / direct)
-    const taskId = toolUseIdToTaskId.get(key) ?? key;
-    return statuses.get(taskId);
+    const taskId = toolUseIdToTaskId.get(toolKey(sessionId, key)) ?? key;
+    return statuses.get(taskKey(sessionId, taskId));
 }
 
 export interface BackgroundTaskNotificationRecord {
@@ -255,19 +296,19 @@ export function collectCompletedBackgroundToolIdsFromHistory(messages: Message[]
  * records. This keeps all UI surfaces on the same background task state after
  * Cmd+R, session restore, or lazy-loading older pages.
  */
-export function hydrateBackgroundTaskStatusesFromHistory(messages: Message[]): void {
+export function hydrateBackgroundTaskStatusesFromHistory(messages: Message[], sessionId?: string | null): void {
     for (const message of messages) {
         const record = parseBackgroundTaskNotificationMessage(message);
         if (!record) continue;
         if (record.description) {
-            setBackgroundTaskDescription(record.taskId, record.description);
+            setBackgroundTaskDescription(record.taskId, record.description, sessionId);
         }
         // Persisted rows without toolUseId cannot prove which Task tool they
         // complete after a renderer reload. Do not keep re-parking them as
         // live orphans on every messages change; the server-side history row
         // still preserves the audit text.
         if (!record.toolUseId) continue;
-        setBackgroundTaskStatus(record.taskId, record.status, record.toolUseId);
+        setBackgroundTaskStatus(record.taskId, record.status, record.toolUseId, sessionId);
     }
 }
 
@@ -290,8 +331,8 @@ export function hydrateBackgroundTaskStatusesFromHistory(messages: Message[]): v
  * For genuinely still-running tasks the mapping is never evicted (capping
  * only touches the `terminalOrder` set).
  */
-export function isBackgroundTaskRegistered(toolUseId: string): boolean {
-    return toolUseIdToTaskId.has(toolUseId);
+export function isBackgroundTaskRegistered(toolUseId: string, sessionId?: string | null): boolean {
+    return toolUseIdToTaskId.has(toolKey(sessionId, toolUseId));
 }
 
 export interface ActiveBackgroundTask {
@@ -303,33 +344,48 @@ export interface ActiveBackgroundTask {
     status?: string;
 }
 
-export function getActiveBackgroundTasks(): ActiveBackgroundTask[] {
+export function getActiveBackgroundTasks(sessionId?: string | null): ActiveBackgroundTask[] {
     const out: ActiveBackgroundTask[] = [];
-    for (const [taskId, toolUseId] of taskIdToToolUseId) {
-        const status = statuses.get(taskId);
+    const scope = scopeFor(sessionId);
+    for (const [scopedTaskKey, toolUseId] of taskIdToToolUseId) {
+        const { scope: taskScope, taskId } = splitTaskKey(scopedTaskKey);
+        if (taskScope !== scope) continue;
+        const status = statuses.get(scopedTaskKey);
         if (isTerminalStatus(status)) continue;
         out.push({
             taskId,
             toolUseId,
-            description: descriptions.get(taskId),
-            taskType: taskTypes.get(taskId),
-            startedAt: taskStartedAt.get(taskId) ?? Date.now(),
+            description: descriptions.get(scopedTaskKey),
+            taskType: taskTypes.get(scopedTaskKey),
+            startedAt: taskStartedAt.get(scopedTaskKey) ?? Date.now(),
             status,
         });
     }
     return out;
 }
 
-/** Clear all entries — call on session reset to prevent unbounded growth. */
-export function clearAllBackgroundTaskStatuses(): void {
-    statuses.clear();
-    descriptions.clear();
-    toolUseIdToTaskId.clear();
-    taskIdToToolUseId.clear();
-    taskStartedAt.clear();
-    taskTypes.clear();
-    terminalOrder.clear();
-    orphanByTaskId.clear();
+/** Clear entries. Pass sessionId on session reset; omit in tests/global teardown. */
+export function clearAllBackgroundTaskStatuses(sessionId?: string | null): void {
+    if (sessionId === undefined) {
+        statuses.clear();
+        descriptions.clear();
+        toolUseIdToTaskId.clear();
+        taskIdToToolUseId.clear();
+        taskStartedAt.clear();
+        taskTypes.clear();
+        terminalOrder.clear();
+        orphanByTaskId.clear();
+        return;
+    }
+    const prefix = keyPrefix(sessionId);
+    for (const map of [statuses, descriptions, taskIdToToolUseId, taskStartedAt, taskTypes, terminalOrder, orphanByTaskId]) {
+        for (const key of Array.from(map.keys())) {
+            if (key.startsWith(prefix)) map.delete(key);
+        }
+    }
+    for (const key of Array.from(toolUseIdToTaskId.keys())) {
+        if (key.startsWith(prefix)) toolUseIdToTaskId.delete(key);
+    }
 }
 
 /** Event name for addEventListener — exported to avoid magic strings. */

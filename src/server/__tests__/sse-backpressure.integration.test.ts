@@ -17,7 +17,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { createSseClient, getSseMetrics, SSE_EVENT_PRIORITIES } from '../sse';
+import {
+  broadcastLive,
+  createSseClient,
+  flushPendingLiveEvents,
+  getSseMetrics,
+  SSE_EVENT_PRIORITIES,
+} from '../sse';
 
 /** Drain the SSE reader to a single string. Stops when stream closes. */
 async function drain(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
@@ -67,6 +73,30 @@ describe('SSE backpressure — critical events', () => {
 });
 
 describe('SSE backpressure — coalescible events', () => {
+  it('allocates one revision for the independently applied coalesced text chunk', async () => {
+    const { client, response } = createSseClient(() => { /* noop */ });
+    const reader = response.body!.getReader();
+    let revision = 0;
+    const scope = {
+      sessionId: 'session-a',
+      nextRevision: () => ++revision,
+    };
+
+    broadcastLive('chat:message-chunk', 'hello ', scope);
+    broadcastLive('chat:message-chunk', 'world', scope);
+    flushPendingLiveEvents();
+    client.close();
+
+    const raw = await drain(reader);
+    expect(countEvent(raw, 'chat:message-chunk')).toBe(1);
+    expect(raw).toContain(JSON.stringify({
+      sessionId: 'session-a',
+      liveRevision: 1,
+      payload: 'hello world',
+    }));
+    expect(revision).toBe(1);
+  });
+
   it('coalescible delta events do not pile up unboundedly under pressure', async () => {
     // The exact "replace tail" behavior only kicks in once the queue reaches
     // the COALESCE_HIGH_WATER (256). We send 2000 coalescible chunks without

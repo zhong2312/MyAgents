@@ -7,7 +7,7 @@ import type {
   SessionEngineSnapshotMaterializePatch,
 } from "../session-engine/types";
 import type { InteractionScenario } from "../system-prompt";
-import { configureNovelWorkbenchRequest } from "../tools/novel-workbench-context";
+import { configureNovelWorkbenchRequest } from "../novel-workbench-context";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

@@ -8,9 +8,10 @@ import { isRuntimeBackedProvider } from '../../shared/providerExecution';
 
 interface ProxyScopeDialogProps {
   providers: Provider[];
+  initialGeneralRequests: boolean;
   initialProviderIds: string[];
   onClose: () => void;
-  onSave: (providerIds: string[]) => void;
+  onSave: (selection: { generalRequests: boolean; providerIds: string[] }) => void;
 }
 
 function providerKindKey(provider: Provider): string {
@@ -21,12 +22,14 @@ function providerKindKey(provider: Provider): string {
 
 export default function ProxyScopeDialog({
   providers,
+  initialGeneralRequests,
   initialProviderIds,
   onClose,
   onSave,
 }: ProxyScopeDialogProps) {
   const { t } = useTranslation('settings');
   const providerIds = useMemo(() => providers.map(provider => provider.id), [providers]);
+  const [generalRequests, setGeneralRequests] = useState(initialGeneralRequests);
   const [selectedIds, setSelectedIds] = useState<string[]>(() => {
     const allowed = new Set(providerIds);
     const seen = new Set<string>();
@@ -37,7 +40,8 @@ export default function ProxyScopeDialog({
     });
   });
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const allSelected = providerIds.length > 0 && selectedIds.length === providerIds.length;
+  const allSelected = generalRequests && selectedIds.length === providerIds.length;
+  const selectedCount = selectedIds.length + (generalRequests ? 1 : 0);
 
   const toggle = (providerId: string) => {
     setSelectedIds(prev => (
@@ -70,13 +74,16 @@ export default function ProxyScopeDialog({
 
         <div className="flex items-center justify-between gap-3 border-b border-[var(--line-subtle)] px-5 py-3">
           <span className="text-sm text-[var(--ink-muted)]">
-            {t('general.proxyScopeDialogSelected', { count: selectedIds.length })}
+            {t('general.proxyScopeDialogSelected', { count: selectedCount })}
           </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setSelectedIds(allSelected ? [] : providerIds)}
-              className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+              onClick={() => {
+                setGeneralRequests(!allSelected);
+                setSelectedIds(allSelected ? [] : providerIds);
+              }}
+              className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)] active:scale-[0.98]"
             >
               {t(allSelected ? 'general.proxyScopeDialogDeselectAll' : 'general.proxyScopeDialogSelectAll')}
             </button>
@@ -84,12 +91,48 @@ export default function ProxyScopeDialog({
         </div>
 
         <div className="max-h-[56vh] overflow-y-auto">
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={generalRequests}
+            onClick={() => setGeneralRequests(selected => !selected)}
+            className="flex w-full items-center gap-3 border-b border-[var(--line-subtle)] px-5 py-3 text-left transition-colors hover:bg-[var(--hover-bg)]"
+          >
+            <span
+              className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--accent)]"
+              aria-hidden="true"
+            >
+              {generalRequests ? <Check size={18} /> : <Square size={18} />}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-[var(--ink)]">
+                {t('general.proxyScopeDialogGeneralRequests')}
+              </span>
+              <span className="block text-xs text-[var(--ink-muted)]">
+                {t('general.proxyScopeDialogGeneralRequestsDescription')}
+              </span>
+            </span>
+            <span className="shrink-0 rounded-md bg-[var(--paper-elevated)] px-2 py-1 text-xs text-[var(--ink-muted)]">
+              {t('general.proxyScopeDialogGeneral')}
+            </span>
+          </button>
+
+          <div className="border-b border-[var(--line-subtle)] px-5 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
+            {t('general.proxyScopeDialogProviders')}
+          </div>
+          {providers.length === 0 && (
+            <p className="border-b border-[var(--line-subtle)] px-5 py-4 text-sm text-[var(--ink-muted)]">
+              {t('general.proxyScopeDialogNoProviders')}
+            </p>
+          )}
           {providers.map((provider) => {
             const selected = selectedSet.has(provider.id);
             return (
               <button
                 key={provider.id}
                 type="button"
+                role="checkbox"
+                aria-checked={selected}
                 onClick={() => toggle(provider.id)}
                 className="flex w-full items-center gap-3 border-b border-[var(--line-subtle)] px-5 py-3 text-left transition-colors last:border-b-0 hover:bg-[var(--hover-bg)]"
               >
@@ -115,15 +158,14 @@ export default function ProxyScopeDialog({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+            className="rounded-md border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)] active:scale-[0.98]"
           >
             {t('general.proxyScopeDialogCancel')}
           </button>
           <button
             type="button"
-            disabled={selectedIds.length === 0}
-            onClick={() => onSave(selectedIds)}
-            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => onSave({ generalRequests, providerIds: selectedIds })}
+            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-transform active:scale-[0.98]"
           >
             <Check size={16} />
             {t('general.proxyScopeDialogSave')}

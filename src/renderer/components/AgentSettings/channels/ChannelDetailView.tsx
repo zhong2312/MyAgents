@@ -17,7 +17,16 @@ import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, getEffectiveModelAliases, getProviderModels, isProviderEnabled } from '@/config/types';
 import { isProviderAvailable } from '@/config/services/providerService';
-import { patchAgentConfig, invokeStartAgentChannel, stopAndDisableAgentChannel, startAndEnableAgentChannel, channelHasCredentials } from '@/config/services/agentConfigService';
+import {
+    channelHasCredentials,
+    invokeStartAgentChannel,
+    patchAgentChannelConfig,
+    patchAgentChannelOpenClawConfig,
+    removeAgentChannelConfig,
+    startAndEnableAgentChannel,
+    stopAndDisableAgentChannel,
+    type OpenClawPluginConfigMutation,
+} from '@/config/services/agentConfigService';
 import {
     resolveAgentChannelDefaultPermissionMode,
     resolveEffectiveConfig,
@@ -43,49 +52,114 @@ import type { InstalledPlugin } from '../../../../shared/types/im';
 import { findPromotedByPlatform } from '../../ImSettings/promotedPlugins';
 import { FEISHU_PERMISSIONS_JSON } from './ChannelWizard';
 import OpenClawToolGroupsSelector from './OpenClawToolGroupsSelector';
+import OpenClawScalarField from './OpenClawScalarField';
+import {
+    coerceOpenClawConfigValue,
+    inferOpenClawSchemaField,
+    isOpenClawConfigValueInvalid,
+    isOpenClawConfigValueMissing,
+    mergeOpenClawSchemaProperties,
+    type OpenClawSchemaProperties,
+} from './openclawConfigScalars';
 
 // ===== OpenClaw Plugin Config Editor =====
-function OpenClawConfigEditor({
+export function OpenClawConfigEditor({
     pluginConfig,
     pluginId,
     npmSpec,
+    schemaProperties,
     onChange,
 }: {
     pluginConfig: Record<string, unknown>;
     pluginId: string;
     npmSpec: string;
-    onChange: (config: Record<string, unknown>) => void;
+    schemaProperties?: OpenClawSchemaProperties;
+    onChange: (mutation: OpenClawPluginConfigMutation) => Promise<Record<string, unknown>>;
 }) {
     const { t } = useTranslation('settings');
-    const entries = Object.entries(pluginConfig);
+    const [draftConfig, setDraftConfig] = useState(pluginConfig);
+    const [saveError, setSaveError] = useState<string | null>(null);
+    const desiredConfigRef = useRef(pluginConfig);
+    const persistedConfigRef = useRef(pluginConfig);
+    const fieldRevisionRef = useRef<Record<string, number>>({});
+    const fieldNames = Array.from(new Set([
+        ...Object.keys(schemaProperties ?? {}),
+        ...Object.keys(draftConfig),
+    ]));
+
+    const commitConfig = (
+        nextConfig: Record<string, unknown>,
+        mutation: OpenClawPluginConfigMutation,
+    ) => {
+        desiredConfigRef.current = nextConfig;
+        const revision = (fieldRevisionRef.current[mutation.key] ?? 0) + 1;
+        fieldRevisionRef.current[mutation.key] = revision;
+        setSaveError(null);
+        void (async () => {
+            try {
+                persistedConfigRef.current = await onChange(mutation);
+            } catch (error) {
+                // Roll back only this field, and only if the user has not
+                // submitted a newer value for the same field. Other field
+                // mutations are independent disk-latest transactions.
+                if (fieldRevisionRef.current[mutation.key] === revision) {
+                    const rollback = { ...desiredConfigRef.current };
+                    if (Object.prototype.hasOwnProperty.call(persistedConfigRef.current, mutation.key)) {
+                        rollback[mutation.key] = persistedConfigRef.current[mutation.key];
+                    } else {
+                        delete rollback[mutation.key];
+                    }
+                    desiredConfigRef.current = rollback;
+                    setDraftConfig(rollback);
+                    setSaveError(t('agentSettings.channelDetail.operationFailed', { message: String(error) }));
+                }
+            }
+        })();
+    };
 
     return (
         <div className="space-y-4">
             <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
                 <span>{t('agentSettings.channelDetail.pluginLabel', { name: npmSpec || pluginId })}</span>
             </div>
-            {entries.length === 0 ? (
+            {fieldNames.length === 0 ? (
                 <p className="text-sm text-[var(--ink-muted)]">{t('agentSettings.channelDetail.noExtraConfig')}</p>
             ) : (
                 <div className="space-y-3">
-                    {entries.map(([key, value]) => (
-                        <div key={key}>
-                            <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                                {key}
-                            </label>
-                            <input
-                                type={key.toLowerCase().includes('secret') || key.toLowerCase().includes('token') ? 'password' : 'text'}
-                                value={String(value ?? '')}
-                                onChange={(e) => {
-                                    onChange({ ...pluginConfig, [key]: e.target.value });
+                    {fieldNames.map((key) => {
+                        const value = draftConfig[key];
+                        const field = schemaProperties?.[key] ?? inferOpenClawSchemaField(value);
+                        return (
+                            <OpenClawScalarField
+                                key={key}
+                                name={key}
+                                field={field}
+                                value={value}
+                                onChange={(nextValue) => {
+                                    const nextDraft = { ...draftConfig, [key]: nextValue };
+                                    setDraftConfig(nextDraft);
+                                    if (isOpenClawConfigValueInvalid(nextValue, field)) return;
+                                    if (isOpenClawConfigValueMissing(nextValue)) {
+                                        const nextConfig = { ...desiredConfigRef.current };
+                                        delete nextConfig[key];
+                                        commitConfig(nextConfig, { type: 'delete', key });
+                                        return;
+                                    }
+                                    const typedValue = field.type === 'string'
+                                        ? nextValue
+                                        : coerceOpenClawConfigValue(nextValue, field);
+                                    commitConfig(
+                                        { ...desiredConfigRef.current, [key]: typedValue },
+                                        { type: 'set', key, value: typedValue },
+                                    );
                                 }}
                                 placeholder={t('agentSettings.channelDetail.inputPlaceholder', { key })}
-                                className="w-full rounded-[var(--radius-sm)] border border-[var(--line)] bg-transparent px-3 py-2.5 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--button-primary-bg)] focus:outline-none transition-colors"
                             />
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
+            {saveError && <p role="alert" className="text-xs text-[var(--error)]">{saveError}</p>}
             <p className="text-xs text-[var(--ink-muted)]">
                 {t('agentSettings.channelDetail.restartRequired')}
             </p>
@@ -215,12 +289,15 @@ export default function ChannelDetailView({
 
     // Patch channel config in agent
     const patchChannel = useCallback(async (patch: Partial<ChannelConfig>) => {
-        const updatedChannels = (agent.channels ?? []).map(ch =>
-            ch.id === channelId ? { ...ch, ...patch } : ch,
-        );
-        await patchAgentConfig(agent.id, { channels: updatedChannels });
+        await patchAgentChannelConfig(agent.id, channelId, patch);
         if (isMountedRef.current) onChanged();
-    }, [agent, channelId, onChanged]);
+    }, [agent.id, channelId, onChanged]);
+
+    const patchOpenClawConfig = useCallback(async (mutation: OpenClawPluginConfigMutation) => {
+        const updated = await patchAgentChannelOpenClawConfig(agent.id, channelId, mutation);
+        if (isMountedRef.current) onChanged();
+        return updated.openclawPluginConfig ?? {};
+    }, [agent.id, channelId, onChanged]);
 
     // Patch channel overrides
     const patchOverrides = useCallback(async (overridePatch: Partial<ChannelOverrides>) => {
@@ -272,10 +349,7 @@ export default function ChannelDetailView({
                                     ? `@${status.botUsername}`
                                     : status.botUsername;
                                 if (ch?.name !== displayName) {
-                                    const updatedChannels = (agent.channels ?? []).map(c =>
-                                        c.id === channelId ? { ...c, name: displayName } : c,
-                                    );
-                                    patchAgentConfig(agent.id, { channels: updatedChannels })
+                                    patchAgentChannelConfig(agent.id, channelId, { name: displayName })
                                         .then(() => { if (isMountedRef.current) onChanged(); })
                                         .catch(err => {
                                             console.error('[ChannelDetail] Failed to sync channel name:', err);
@@ -393,8 +467,7 @@ export default function ChannelDetailView({
                     // May not be running
                 }
             }
-            const updatedChannels = (agent.channels ?? []).filter(ch => ch.id !== channelId);
-            await patchAgentConfig(agent.id, { channels: updatedChannels });
+            await removeAgentChannelConfig(agent.id, channelId);
             track('agent_channel_remove', {
                 source: 'desktop',
                 platform: channelRef.current?.type ?? 'unknown',
@@ -409,7 +482,7 @@ export default function ChannelDetailView({
                 setShowDeleteConfirm(false);
             }
         }
-    }, [agent, channelId, onChanged, onBack, t]);
+    }, [agent.id, channelId, onChanged, onBack, t]);
 
     // === Override section: provider/model/permission ===
     // Resolve effective values (agent default or channel override)
@@ -467,6 +540,13 @@ export default function ChannelDetailView({
     const isRunning = botStatus?.status === 'online' || botStatus?.status === 'connecting';
     const isOpenClaw = channel ? isOpenClawPlatform(channel.type) : false;
     const promoted = isOpenClaw && channel ? findPromotedByPlatform(channel.type) : undefined;
+    const openclawSchemaProperties = useMemo(
+        () => mergeOpenClawSchemaProperties(
+            installedPlugin?.manifest?.configSchema?.properties,
+            promoted?.defaultConfig,
+        ),
+        [installedPlugin?.manifest?.configSchema?.properties, promoted?.defaultConfig],
+    );
     const isQrLoginPlugin = promoted?.authType === 'qrLogin' || installedPlugin?.supportsQrLogin === true;
     const isDualConfigPlugin = promoted?.authType === 'dualConfig';
 
@@ -504,20 +584,21 @@ export default function ChannelDetailView({
                 }
                 if (poll.status === 'success' && poll.bot_id && poll.secret) {
                     if (!isMountedRef.current || wecomQrRunIdRef.current !== runId) return;
-                    // Re-read fresh config to avoid stale closure overwriting concurrent changes
-                    const freshConfig = await import('@/config/services/appConfigService').then(m => m.loadAppConfig());
-                    const freshAgent = freshConfig.agents?.find(a => a.id === agent.id);
-                    const freshChannel = freshAgent?.channels?.find(c => c.id === channelId);
-                    const freshPluginConfig = freshChannel?.openclawPluginConfig ?? {};
-                    const updatedPluginConfig = { ...freshPluginConfig, botId: poll.bot_id, secret: poll.secret };
-                    await patchChannel({ openclawPluginConfig: updatedPluginConfig });
+                    await patchAgentChannelOpenClawConfig(
+                        agent.id,
+                        channelId,
+                        { type: 'set', key: 'botId', value: poll.bot_id },
+                    );
+                    const updatedChannel = await patchAgentChannelOpenClawConfig(
+                        agent.id,
+                        channelId,
+                        { type: 'set', key: 'secret', value: poll.secret },
+                    );
                     // Restart the channel so it reconnects with new credentials
-                    if (freshChannel) {
-                        try {
-                            await invoke('cmd_stop_agent_channel', { agentId: agent.id, channelId });
-                            await invokeStartAgentChannel(agent, { ...freshChannel, openclawPluginConfig: updatedPluginConfig });
-                        } catch { /* best-effort restart */ }
-                    }
+                    try {
+                        await invoke('cmd_stop_agent_channel', { agentId: agent.id, channelId });
+                        await invokeStartAgentChannel(agent, updatedChannel);
+                    } catch { /* best-effort restart */ }
                     setWecomQrStatus('success');
                     toastRef.current.success(t('agentSettings.channelDetail.wecomCredentialsUpdated'));
                     setDualDetailMode('view');
@@ -528,7 +609,7 @@ export default function ChannelDetailView({
         } catch {
             if (isMountedRef.current) setWecomQrStatus('error');
         }
-    }, [agent, channelId, patchChannel, t]);
+    }, [agent, channelId, t]);
 
     // QR Login state — must be declared before any early return (rules-of-hooks)
     const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -582,15 +663,11 @@ export default function ChannelDetailView({
                         await invoke('cmd_plugin_restart_gateway', { agentId: agent.id, channelId: channel.id, accountId: waitResult.accountId });
                         // Persist accountId so Bridge finds credentials on restart
                         if (waitResult.accountId) {
-                            const { loadAppConfig } = await import('@/config/configService');
-                            const lat = await loadAppConfig();
-                            const latAgent = (lat.agents ?? []).find(a => a.id === agent.id);
-                            const updChs = (latAgent?.channels ?? agent.channels ?? []).map(ch =>
-                                ch.id === channel.id
-                                    ? { ...ch, openclawPluginConfig: { ...(ch.openclawPluginConfig ?? {}), accountId: waitResult.accountId! } }
-                                    : ch,
+                            await patchAgentChannelOpenClawConfig(
+                                agent.id,
+                                channel.id,
+                                { type: 'set', key: 'accountId', value: waitResult.accountId },
                             );
-                            await patchAgentConfig(agent.id, { channels: updChs });
                             await refreshConfig();
                         }
                         toastRef.current.success(t('agentSettings.channelDetail.scanLoginSuccess'));
@@ -619,7 +696,7 @@ export default function ChannelDetailView({
         } catch (err) {
             if (isMountedRef.current) { setQrStatus('error'); setQrMessage(t('agentSettings.channelDetail.detailQrFailed', { message: String(err) })); }
         }
-    }, [isRunning, agent.id, agent.channels, channel, promoted?.name, refreshConfig, t]);
+    }, [isRunning, agent.id, channel, promoted?.name, refreshConfig, t]);
 
     // Early return AFTER all hooks (rules-of-hooks compliance)
     if (!channel) {
@@ -759,9 +836,10 @@ export default function ChannelDetailView({
                                         <div className="space-y-2">
                                             {(promoted?.requiredFields ?? ['botId', 'secret']).map((key) => {
                                                 const val = channel.openclawPluginConfig?.[key] ?? '';
+                                                const displayValue = String(val);
                                                 const masked = /secret|token|password|key/i.test(key)
                                                     ? (val ? '••••••••••••' : t('agentSettings.channelDetail.notConfigured'))
-                                                    : (val || t('agentSettings.channelDetail.notConfigured'));
+                                                    : (displayValue || t('agentSettings.channelDetail.notConfigured'));
                                                 return (
                                                     <div key={key} className="flex items-center justify-between">
                                                         <span className="text-sm text-[var(--ink-muted)]">{key}</span>
@@ -809,12 +887,12 @@ export default function ChannelDetailView({
                                 {dualDetailMode === 'edit' && (
                                     <div className="space-y-3">
                                         <OpenClawConfigEditor
+                                            key={channel.id}
                                             pluginConfig={channel.openclawPluginConfig ?? {}}
                                             pluginId={channel.openclawPluginId ?? ''}
                                             npmSpec={channel.openclawNpmSpec ?? ''}
-                                            onChange={async (newConfig) => {
-                                                await patchChannel({ openclawPluginConfig: newConfig as Record<string, string> });
-                                            }}
+                                            schemaProperties={openclawSchemaProperties}
+                                            onChange={patchOpenClawConfig}
                                         />
                                         <button
                                             onClick={() => setDualDetailMode('view')}
@@ -827,12 +905,12 @@ export default function ChannelDetailView({
                             </div>
                         ) : isOpenClaw ? (
                             <OpenClawConfigEditor
+                                key={channel.id}
                                 pluginConfig={channel.openclawPluginConfig ?? {}}
                                 pluginId={channel.openclawPluginId ?? ''}
                                 npmSpec={channel.openclawNpmSpec ?? ''}
-                                onChange={async (newConfig) => {
-                                    await patchChannel({ openclawPluginConfig: newConfig as Record<string, string> });
-                                }}
+                                schemaProperties={openclawSchemaProperties}
+                                onChange={patchOpenClawConfig}
                             />
                         ) : channel.type === 'dingtalk' ? (
                             <DingtalkCredentialInput

@@ -34,7 +34,7 @@ export interface SessionSearchHit {
     matchedRole: string | null;
     lastActiveAt: string;
     source: string | null;
-    messageCount: number | null;
+    turnCount: number | null;
 }
 
 export interface FileSearchResult {

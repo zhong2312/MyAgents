@@ -1,52 +1,55 @@
-# 实验门控与功能入口
+# 实验门控与功能入口诊断
 
-使用场景：用户说某个功能入口没有、设置页找不到、工具箱模块不显示、外部 Runtime 选项不存在、CLI 工具注册不可用。
+使用场景：功能入口、设置项、Runtime、CLI 工具注册表或 Team Space 看不到。
 
-## Ground truth
+先读 `/myagents-docs/references/settings-safety.md`。实验功能不可见通常是正常门控；只有满足门控后仍不出现才进入 Bug 诊断。
 
-部分功能是实验室开关，默认关闭。小助理要解释并引导用户打开，不要通过 config 绕过人类可见门控。
+## 总原则
 
-## 当前关键门控
+- 实验室开关需要用户在可见 UI 中主动开启，不通过 config 或内部 store 绕过。
+- 区分“当前构建不包含能力”“实验开关关闭”“现场 readiness 不满足”“入口 render 异常”。
+- 开关打开后，涉及 prompt/Skill/Runtime discovery 的能力可能需要新消息或新 Session；导航入口应按各自产品契约出现。
 
-### 更多 Agent Runtime
+## 更多 Agent Runtime
 
-- 设置位置：设置 -> 关于&反馈 -> 实验室 -> 更多 Agent Runtime
-- 配置字段：`multiAgentRuntime`
-- 默认关闭
-- 关闭时：Agent 实际跑 builtin；外部 runtime 的 UI/选择和配置可能不可见或不生效
-- 只管 `runtimeSource=system-cli` 的外部 Runtime。`codex-sub` 这类 `runtimeSource=managed-provider` 的订阅 Provider 不按这个实验门控判断，而按 Provider readiness 判断。
-
-诊断：
+- 设置：设置 → 关于&反馈 → 实验室 → 更多 Agent Runtime
+- 字段：`multiAgentRuntime`，默认关闭
+- 只门控 `runtimeSource=system-cli`；`codex-sub` 由 Provider readiness 管理
 
 ```bash
 myagents runtime list --json
 myagents agent show <agent-id> --json
-rg -n "multiAgentRuntime|runtimeSource|managed-provider|codex-sub" ./logs/unified-*.log | tail -120
+rg -n "multiAgentRuntime|runtimeSource|managed-provider|codex-sub" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -120
 ```
 
-### CLI 工具注册表
+## CLI 工具注册表
 
-- 设置位置：设置 -> 关于&反馈 -> 实验室 -> CLI 工具注册表
-- 配置字段：`cliToolRegistryEnabled`
-- 默认关闭
-- 关闭时：
-  - Settings 工具箱不渲染 CLI 工具模块
-  - `myagents tool --help` 只显示开启指引
-  - `myagents tool ...` 管理 API 被门控
-  - 用户注册工具不会注入新 session prompt
-  - `tool-creator` skill 不注入工作区
-- 不受影响：稳定内置 `myagents` CLI，例如 cron/task/model/mcp/runtime/status/version
-- 不能通过 `myagents config set cliToolRegistryEnabled ...` 开启
-
-诊断：
+- 设置：设置 → 关于&反馈 → 实验室 → CLI 工具注册表
+- 字段：`cliToolRegistryEnabled`，默认关闭
+- 关闭时用户 CLI Tool 与 `tool-creator` 不注入；稳定内置 `myagents` CLI 不受影响
 
 ```bash
 myagents tool --help
 ```
 
-## 回答方式
+若关闭，help 只显示开启指引属于正常行为。开启后当前 Session 仍看不到工具描述时，再核对 Session 刷新边界和 tool registry sync。
 
-- 说明这是实验功能，默认关闭是产品策略，不是用户配置坏了。
-- 给出设置路径。
-- 如果用户当前任务可以不用该实验功能完成，先用稳定 CLI 完成一次性需求。
-- 如果用户明确要使用实验功能，引导其手动打开开关，然后新开 session 或发新消息让 prompt/skill 集合刷新。
+## Team Space
+
+Team Space 有两层可用性：
+
+1. 当前 Tauri 构建必须包含 Space capability；不包含时设置会显示不可用原因。
+2. 用户需在 设置 → 关于&反馈 → 实验室 打开 Team Space（字段 `teamSpaceEnabled`，默认关闭）。
+
+```bash
+myagents space list --json
+rg -n "\\[space\\]|Team Space|space_build_capability|teamSpaceEnabled|not enabled in this build|requires a Tauri build" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -160
+```
+
+- build capability 不可用：这是发行构建能力边界，不应写 config 强开。
+- capability 与开关均满足但标题栏/页面仍不出现：转 `frontend-render.md`。
+- 入口出现但登录、数据或操作失败：转 `cloud-space.md`。
+
+## 回答与验证
+
+说明具体是哪一层门控、UI 入口和正常生效时机。如果用户当前目标可用稳定能力完成，可以给替代路径，但不要擅自开启实验功能。用户手动开启后，从原入口验证；仅看到字段变为 true 不算 UI 已恢复。

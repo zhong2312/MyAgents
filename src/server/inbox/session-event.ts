@@ -1,3 +1,9 @@
+import {
+  SESSION_EVENT_TAG,
+  SYSTEM_REMINDER_CLOSE,
+  SYSTEM_REMINDER_OPEN,
+} from '../../shared/systemReminder';
+
 export type SessionEventType =
   | 'send.request'
   | 'send.result'
@@ -86,6 +92,7 @@ const STRUCTURAL_TAGS = [
   'latest-result',
   'inbox-message',
   'inbox-reply',
+  'system-reminder',
 ];
 
 export function sanitizeSessionEventAttribute(raw: string | undefined | null): string {
@@ -182,6 +189,7 @@ function payloadForEvent(event: RenderableSessionEvent): string {
 export function renderSessionEventPrompt(event: SessionEvent): string {
   assertRenderableSessionEvent(event);
   return [
+    SYSTEM_REMINDER_OPEN,
     renderOpenTag(event),
     '<event-summary>',
     summaryForEvent(event),
@@ -189,6 +197,7 @@ export function renderSessionEventPrompt(event: SessionEvent): string {
     '<payload>',
     payloadForEvent(event),
     '</payload>',
-    '</myagents-session-event>',
+    `</${SESSION_EVENT_TAG}>`,
+    SYSTEM_REMINDER_CLOSE,
   ].join('\n');
 }

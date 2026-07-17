@@ -150,13 +150,13 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 内置 SDK（builtin）+ 外部 Runtime（Claude Code / Codex / Gemini CLI），门控 `config.multiAgentRuntime`（默认关闭）。**新增"config 同步 / 注入 user 消息 / 等待 turn 完成 / session 读操作"的 sidecar 端点 MUST 走 `src/server/session-engine/` facade**（`selector.ts` 统一选 adapter），禁止手写 `shouldUseExternalRuntime()` 分支——漏分流 = builtin 去 resume 外部会话 → 静默空转 + 假成功。`completed` 必须 gate 在真·turn 成功（external=`didLastTurnSucceed`，builtin=`!getAndClearLastAgentError()`），别只凭 `waitForSessionIdle`。`agent-session.ts` / `runtimes/external-session.ts` 是 public facade 不是 owner state 落点，内核在 `src/server/builtin-session/*` 与 `src/server/runtimes/external-session/*`。详见 `tech_docs/multi_agent_runtime.md`。
 
 ### 定时任务系统
-Rust `TaskStore` 是所有新定时自动化的唯一权威，`TaskSchedulerController` 直接从 Running Task 重建 timer；Chat/CLI/IM 的 Cron 命令只是兼容 surface，禁止写 `cron_tasks.json`。旧文件只在 backend startup 迁移，Loop 不迁移。Cron Tool（`im-cron` MCP）对所有 Session 可用。详见 ARCHITECTURE「定时任务系统」。
+Rust `TaskStore` 是所有新定时自动化的唯一权威，`TaskSchedulerController` 直接从 Running Task 重建 timer；Chat/CLI/IM 的 Cron 命令只是兼容 surface，禁止写 `cron_tasks.json`。旧文件只在 backend startup 迁移，Loop 不迁移。AI 统一通过 `myagents cron ...` CLI 使用定时任务能力；历史 `im-cron` MCP 已退役。详见 ARCHITECTURE「定时任务系统」。
 
 ### Config 持久化（disk-first）
 `AppConfig` 同时存在于磁盘（`config.json`）和 React 状态，可能不同步。写盘 MUST 以磁盘为准（`await loadAppConfig()` 读最新再合并），**禁止**直接用 React `config` 状态写盘。Agent 配置走 Rust `cmd_update_agent_config`，写盘后 MUST 调 `refreshConfig()` 同步 React。
 
 ### Builtin MCP 懒加载
-6 个 in-process 内置 MCP 采用 META / INSTANCE 两层懒加载。`src/server/tools/*.ts` **禁止顶层 value-import** SDK / zod（结构性 ESLint 规则封禁）。MUST 在 `createXxxServer()` 内部 `await import(...)`。详见 `tech_docs/pit_of_success.md` 的「Builtin MCP 懒加载」节。
+当前 user-toggleable in-process builtins（`gemini-image` / `edge-tts`）采用 META / INSTANCE 两层懒加载；runtime-dynamic `im-bridge-tools` 是独立的 context-injected surface，不进 META registry。`src/server/tools/*.ts` **禁止顶层 value-import** SDK / zod（结构性 ESLint 规则封禁）。MUST 在 server factory / surface initialization 内部 `await import(...)`。详见 `tech_docs/pit_of_success.md` 的「Builtin MCP 懒加载」节。
 
 ### Plugin Bridge
 独立 Node.js 进程加载 OpenClaw Channel Plugin。MUST 与 Sidecar 同等待遇（环境变量、日志宏、config 范围）。修改 SDK shim MUST 三处同步 bump 版本（`sdk-shim/package.json` / `compat-runtime.ts` / `bridge.rs::SHIM_COMPAT_VERSION`）。详见 `tech_docs/plugin_bridge_architecture.md`。
@@ -196,7 +196,7 @@ Rust `TaskStore` 是所有新定时自动化的唯一权威，`TaskSchedulerCont
 | 渲染器**原生 fetch 直连**的 sidecar 路由（`/refs/:id`、`/attachment/*`；invoke-proxy 接口不受影响）不带 `Access-Control-Allow-Origin` | WebKit opaque 响应拒绝可读 → JS 报 `TypeError: Load failed`（#109） | `fileResponse(path, { headers: { 'Access-Control-Allow-Origin': '*' } })`；端口列进 CSP `connect-src`。详见 `pit_of_success.md`「file-response」 | — (handler 内部行为靠 review) |
 | 同步 busy-wait（`Atomics.wait` / spin / `while Date.now()`） | 阻塞 event loop / Sidecar 停止 drain SDK 消息 / pegs CPU | 异步 polling / 现成 helper（`setTimeout` / `withFileLock`） | eslint (`Atomics.wait`) |
 | readiness 等同 liveness | renderer 假就绪 | `/health/{live,ready,functional}` 三分；renderer 挂 `/health/ready` | — (语义检查) |
-| `src/server/tools/*.ts` 顶层 import SDK / zod | builtin MCP 懒加载失效，冷启动每次税 ~500–1000ms（6 tools = ~3–6s） | factory 内部 `await import(...)` | eslint |
+| `src/server/tools/*.ts` 顶层 import SDK / zod | builtin MCP 懒加载失效；即使当前 Session 不使用该工具，Sidecar 冷启动也会无条件执行 SDK / zod / schema 初始化 | factory / surface initialization 内部 `await import(...)` | eslint |
 | 直接设置 `shouldAbortSession = true` | 跳过 abort cleanup 链（pending 救援、IM bus 通知、generator 唤醒）→ pending IM 回复永久 hang | `abortPersistentSession()` | eslint |
 | 假设 `canUseTool` / `permissionMode:'plan'` / per-agent `permissionMode` 能拦住所有工具调用 | **SDK 多条路径根本不调 canUseTool**：plan + `allowDangerouslySkipPermissions` 被降级 allow-all（#295 弱模型直接 `rm -rf`）；后台子 Agent 从不进 canUseTool，无 hook 放行即自动拒绝（#264 委派静默失败） | 用 **hook** 硬闸（跑在原生解析器之前，deny 无条件采纳）：plan 用 `PreToolUse`（`plan-mode-gate.ts`，fail-closed），后台 Agent 用 `PermissionRequest`（`background-agent-permission.ts`）。详见 `tech_docs/sdk_canUseTool_guide.md`「hook 硬闸」 | — |
 | 函数参数用 `undefined` / `null` 表特定动作 | 内部调用方误触发 | 自解释字面量（如 `'subscription'`） | — (设计原则) |

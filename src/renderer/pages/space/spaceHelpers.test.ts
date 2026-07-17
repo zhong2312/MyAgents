@@ -7,6 +7,7 @@ import type {
 } from "@/api/spaceCloud";
 import type { Project } from "@/config/types";
 import {
+  ALL_ISSUE_STATE_FILTER,
   ACTIVE_ISSUE_STATE_FILTER,
   buildIssueCommandPrompt,
   buildIssueQueryKey,
@@ -94,6 +95,7 @@ describe("space issue helpers", () => {
   });
 
   it("keeps the active issue filter aligned with non-terminal states", () => {
+    expect(ALL_ISSUE_STATE_FILTER).toBe("all");
     expect(ACTIVE_ISSUE_STATE_FILTER.split(",")).toEqual([
       "open",
       "todo",

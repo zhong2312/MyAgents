@@ -1,7 +1,7 @@
 /**
  * SessionStatsModal - Detailed session statistics modal
  */
-import { BarChart2, Clock, Loader2, MessageSquare, Wrench, X } from 'lucide-react';
+import { BarChart2, Clock, Loader2, MessageSquare, UserRound, Wrench, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -103,14 +103,23 @@ export default function SessionStatsModal({
                     ) : stats ? (
                         <div className="space-y-6">
                             {/* Summary Cards */}
-                            <div className="grid grid-cols-3 gap-4">
+                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                                 <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
                                         <MessageSquare className="h-4 w-4" />
-                                        <span className="text-xs">{t('shell.stats.summary.messages')}</span>
+                                        <span className="text-xs">{t('shell.stats.summary.turns')}</span>
                                     </div>
                                     <div className="mt-2 text-2xl font-semibold text-[var(--ink)]">
-                                        {stats.summary.messageCount}
+                                        {stats.summary.turnCount}
+                                    </div>
+                                </div>
+                                <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
+                                    <div className="flex items-center gap-2 text-[var(--ink-muted)]">
+                                        <UserRound className="h-4 w-4" />
+                                        <span className="text-xs">{t('shell.stats.summary.humanQueries')}</span>
+                                    </div>
+                                    <div className="mt-2 text-2xl font-semibold text-[var(--ink)]">
+                                        {stats.summary.humanQueryCount}
                                     </div>
                                 </div>
                                 <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
@@ -202,11 +211,11 @@ export default function SessionStatsModal({
                                 </div>
                             )}
 
-                            {/* Message Details Table */}
-                            {stats.messageDetails.length > 0 && (
+                            {/* Turn Details Table */}
+                            {stats.details.length > 0 && (
                                 <div>
                                     <h3 className="mb-3 text-sm font-semibold text-[var(--ink)]">
-                                        {t('shell.stats.messageDetails.title')}
+                                        {t('shell.stats.turnDetails.title')}
                                     </h3>
                                     <div className="overflow-hidden rounded-lg border border-[var(--line)]">
                                         <div className="max-h-64 overflow-y-auto">
@@ -214,7 +223,7 @@ export default function SessionStatsModal({
                                                 <thead className="sticky top-0 bg-[var(--paper-elevated)]">
                                                     <tr>
                                                         <th className="px-4 py-2 text-left text-xs font-medium text-[var(--ink-muted)]">
-                                                            {t('shell.stats.messageDetails.question')}
+                                                            {t('shell.stats.turnDetails.trigger')}
                                                         </th>
                                                         <th className="px-4 py-2 text-right text-xs font-medium text-[var(--ink-muted)]">
                                                             {t('shell.stats.common.input')}
@@ -234,13 +243,13 @@ export default function SessionStatsModal({
                                                     </tr>
                                                 </thead>
                                                 <tbody className="divide-y divide-[var(--line)]">
-                                                    {stats.messageDetails.map((detail, index) => (
+                                                    {stats.details.map((detail, index) => (
                                                         <tr key={index}>
                                                             <td
                                                                 className="max-w-[200px] truncate px-4 py-2 text-[var(--ink)]"
-                                                                title={detail.userQuery}
+                                                                title={detail.turnTrigger}
                                                             >
-                                                                {detail.userQuery || '-'}
+                                                                {detail.turnTrigger || '-'}
                                                             </td>
                                                             <td className="px-4 py-2 text-right text-[var(--ink-muted)]">
                                                                 {formatTokens(detail.inputTokens)}
@@ -269,7 +278,7 @@ export default function SessionStatsModal({
                             )}
 
                             {/* Empty state */}
-                            {stats.messageDetails.length === 0 && (
+                            {stats.details.length === 0 && (
                                 <div className="py-8 text-center text-sm text-[var(--ink-muted)]">
                                     {t('shell.stats.empty')}
                                 </div>

@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useChatScrollController } from './useChatScrollController';
+import { projectVisibleChatTimelineRows } from '@/utils/chatTimelineRows';
 import type { Message } from '@/types/chat';
 
 const controls = vi.hoisted(() => ({
@@ -76,6 +77,31 @@ describe('useChatScrollController', () => {
     expect(controls.pauseAutoScroll).toHaveBeenCalledWith(1234);
     expect(controls.scrollToIndex).toHaveBeenCalledWith({
       index: 1,
+      align: 'center',
+      behavior: 'auto',
+    });
+  });
+
+  it('does not assign a navigation index to hidden task notification records', () => {
+    const messages = projectVisibleChatTimelineRows([
+      msg('m1'),
+      {
+        ...msg('task-notification-bg-1'),
+        role: 'user',
+        content: '<task-notification>{"taskId":"bg-1","status":"completed"}</task-notification>',
+      },
+      msg('m2'),
+      msg('m3'),
+    ]);
+    const { result } = renderHook(() => useChatScrollController({ messages, isActive: true }));
+
+    act(() => {
+      result.current.scrollToMessage('m3', { align: 'center', behavior: 'auto' });
+    });
+
+    expect(messages.map(message => message.id)).toEqual(['m1', 'm2', 'm3']);
+    expect(controls.scrollToIndex).toHaveBeenCalledWith({
+      index: 2,
       align: 'center',
       behavior: 'auto',
     });

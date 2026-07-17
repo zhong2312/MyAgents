@@ -1,21 +1,20 @@
 # Runtime 诊断
 
-使用场景：Codex / Gemini / Claude Code 不工作；用户说“终端能用，MyAgents 里不行”；外部 Runtime 的模型、权限、MCP、connector、代理状态异常。
+使用场景：Codex / Gemini / Claude Code 不工作；终端能用但 MyAgents 里不行；外部 Runtime 的模型、权限、MCP、登录或代理异常。
+
+先读 `/myagents-docs/references/models-providers-runtimes.md` 确认 Provider / Model / Runtime 与 `runtimeSource` 的产品边界。
 
 ## Ground truth
 
-- 外部 Runtime 有两个来源，诊断时必须保留 `runtimeSource`：
-  - `system-cli`：用户系统里安装和登录的 Claude Code / Codex / Gemini CLI，受实验室开关 `multiAgentRuntime` 控制。关闭时 system-cli Runtime 配置不会生效，Agent 实际跑 builtin。
-  - `managed-provider`：由 MyAgents Provider 管理的 runtime-backed provider，典型是 `codex-sub`。它不受 `multiAgentRuntime` 门控，而由 Provider readiness gate 控制。
-- 不同 Runtime 的 model 和 permissionMode 值域不同，不要把 builtin 的 `auto/plan/fullAgency` 套到 Codex/Gemini。
-- system-cli Codex 以 app-server JSON-RPC 持久进程运行。Codex 的 MCP 由 `~/.codex/` 管，不由 MyAgents MCP 配置注入。
-- `codex/system-cli` 和 `codex/managed-provider` 是两种会话身份。只看到 `runtime=codex` 不足以判断问题路径。
-- Gemini 走 ACP。Claude Code 走自己的 CLI 协议。
-- 外部 Runtime 的 env/proxy/PATH 可能与用户交互式终端不同，不能靠 `codex --version` 判断完整可用性。
+- `system-cli`：用户系统安装和登录的 Claude Code / Codex / Gemini CLI，受实验室开关 `multiAgentRuntime` 控制。
+- `managed-provider`：由 Provider 管理的 Runtime，典型是 `codex-sub`。它不受上述实验开关控制，而由 Provider readiness 与 Managed Codex 状态控制。
+- `codex/system-cli` 与 `codex/managed-provider` 都显示 `runtime=codex`，但登录、Runtime Home、MCP、版本和恢复身份不同；必须保留 `runtimeSource`。
+- system-cli Codex 的 MCP 由 Codex 自己管理，MyAgents 不把 Workspace MCP 注入其中。
+- managed-provider Codex 启动 app-server 时，会尝试注入当前 Workspace 中安全且兼容的 MyAgents MCP；builtin/in-process、不支持的传输或不安全配置会被跳过。因此“Codex MCP 都与 MyAgents 无关”只适用于 system-cli。
+- 不同 Runtime 动态声明自己的 model 与 permission mode，不能套用 builtin 值域。
+- 外部 Runtime 的 env/proxy/PATH 可能与交互式终端不同，`codex --version` 只能证明终端路径的一小段。
 
-## 取证命令
-
-被动发现：
+## 被动取证
 
 ```bash
 myagents runtime list --json
@@ -23,37 +22,34 @@ myagents runtime describe codex --json
 myagents runtime describe gemini --json
 myagents agent list --json
 myagents agent show <agent-id> --json
+rg -n "MYAGENTS_RUNTIME|external-session|external-runtime|runtime_diagnostics|RuntimeDiagnostics|runtimeSource|managed-provider|managed-codex|codex-sub|Codex|Gemini|ACP|app-server|envPolicy|mcp" ./logs/unified-*.log | node .claude/skills/support/scripts/redact-log-output.mjs | tail -200
 ```
 
-system-cli Codex active probe：
+先确认：当前 Session ID、Provider、runtime、runtimeSource、model、permission mode、Workspace。不要把 Agent 默认配置直接当作已有 Session 的实际身份。
+
+## system-cli Codex active probe
 
 ```bash
 myagents runtime diagnose codex --workspacePath <absolute-workspace-path> --json
 ```
 
-这个命令会启动短命 Codex app-server，读取 Codex 自己看到的 auth、experimental features、MCP server status、apps 和 effective env。它可能启动进程、读取 Codex 配置、触发 Codex 侧检查，执行前要说明目的。
+它会启动短命 Codex app-server，并读取 Codex 自己看到的 auth、experimental features、MCP server status、apps 与 effective env。执行前说明会启动进程并触发 Codex 侧检查。
 
-如果会话来自 `codex-sub` / `runtimeSource=managed-provider`，不要把 `runtime diagnose codex` 的结果直接当作该会话证据。先查 Provider 和 managed Codex 日志，确认安装、订阅登录和 Provider readiness。
-
-日志：
-
-```bash
-rg -n "MYAGENTS_RUNTIME|external-session|external-runtime|runtime_diagnostics|chat:runtime-diagnostics|RuntimeDiagnostics|runtimeSource|managed-provider|managed-codex|codex-sub|Codex|Gemini|ACP|app-server|envPolicy" ./logs/unified-*.log | tail -160
-```
+该结果只证明 `codex/system-cli` 路径。对 `codex-sub` / `runtimeSource=managed-provider`，应看 Provider readiness、Managed Codex 版本/安装/订阅登录和对应 Session 日志，不能拿 system-cli probe 代替。
 
 ## 判断要点
 
-- system-cli `runtime list` 未安装：这是环境问题，按 CLI 的 recovery hint 处理。
-- system-cli 实验室开关关闭：解释“更多 Agent Runtime”默认关闭，不要用 `config set` 绕过。`codex-sub` 是 Provider 路径，不按这个门控判断。
-- `runtime describe` 失败：先按 recovery hint 跑；可能是 CLI 探测超时、runtime 不在 PATH、runtime 本身启动慢。
-- system-cli Codex auth 不健康：让用户在 Codex 自己的登录方式里修复；MyAgents 不应伪造 Codex 登录状态。
-- managed Codex / `codex-sub` 不健康：查 `[managed-codex]`、`codex-sub`、`subscription`、`runtimeSource=managed-provider`，重点是 MyAgents 管理的 runtime 版本、订阅登录状态和 Provider readiness。
-- Codex MCP/apps 不可达：看 `runtime diagnose` 的 `mcpServerStatus` / `apps`，不要查 MyAgents MCP 配置误判。
-- `effectiveEnv.proxyPolicy=terminal` 但 proxy 为空：说明用户 shell 里也没有导出 proxy，不是 MyAgents 漏注入。
-- builtin runtime 不受 external `envPolicy` 影响。Provider 网络问题应走 provider/proxy 路径。
+- system-cli 未安装或探测不到：按 `runtime list/describe` 的 recovery hint 处理，检查 PATH 与 CLI 自身启动。
+- `multiAgentRuntime` 关闭：system-cli 路径不生效；不要用 config 写入绕过 UI 门控。`codex-sub` 不按此判断。
+- system-cli auth 不健康：让用户用 Runtime 自己的登录入口恢复；MyAgents 不伪造其登录态。
+- managed-provider 不健康：查 `[managed-codex]`、订阅状态、Provider readiness 与 `runtimeSource=managed-provider`，不要要求用户修系统 Codex Home。
+- system-cli MCP/apps 异常：看 `runtime diagnose` 的 Codex 自有状态。
+- managed-provider MCP 缺失：先确认它是否属于允许注入的 Workspace MCP，再查 app-server 启动参数与 skip 原因；不能笼统归因给 Codex 自有配置。
+- `effectiveEnv.proxyPolicy=terminal` 但 proxy 为空：说明探测到的终端环境没有这些变量，不足以证明 MyAgents 漏注入。
+- `No conversation found` / 空成功：保留 Session runtime identity，转 `session-sidecar.md` 查错误恢复或分流。
 
 ## 修复边界
 
-- 可以用 CLI 调整 Agent 的 runtime/model/permissionMode，但写之前先 `agent show` 和 `runtime describe`。
-- 不要猜外部 Runtime 的模型名。每次都用 `runtime describe` 查。
-- 不要把 Codex/Gemini 的 MCP 问题归到 MyAgents MCP，除非证据显示调用的是 MyAgents builtin runtime。
+- 调整 Agent runtime/model/permission 前先 `agent show` 与 `runtime describe`，并说明是改变默认值还是当前/后续 Session。
+- 不猜模型名，不直接改 Runtime Home 或凭据文件。
+- 修复后从用户原入口新发一轮，核对实际 Session 的 runtimeSource、真·turn 成功和工具状态；仅 `runtime list` 变绿不算完成。

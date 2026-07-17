@@ -10,8 +10,7 @@ import { parseLeadingSystemReminder } from '../../../shared/systemReminder';
 const MIN_QUERIES = 3;
 
 interface QueryNavigatorProps {
-  historyMessages: Message[];
-  streamingMessage: Message | null;
+  messages: readonly Message[];
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   pauseAutoScroll: (duration?: number) => void;
   /** Virtuoso-aware navigation: scrolls to message by ID even if virtualized (not in DOM) */
@@ -33,28 +32,22 @@ function getQueryText(msg: Message): string {
 /** Extract the real user query from a mixed system-reminder + user message. */
 function getVisibleQueryText(text: string): string {
   const trimmed = text.trim();
-  if (trimmed.includes('<HEARTBEAT>') || trimmed.includes('<MEMORY_UPDATE>')) {
-    return '';
-  }
   const reminder = parseLeadingSystemReminder(trimmed);
   if (reminder.hasReminder) return reminder.visibleText;
   return text;
 }
 
 /** Match Message.tsx's non-bubble system render paths. */
-function isNonUserQueryMessage(msg: Message, text: string): boolean {
+function isNonUserQueryMessage(text: string): boolean {
   const trimmed = text.trim();
   return (
-    msg.id.startsWith('task-notification-') ||
-    trimmed.startsWith('<task-notification>') ||
     trimmed.startsWith('<local-command-stdout>') ||
     getVisibleQueryText(trimmed).trim() === ''
   );
 }
 
 export default function QueryNavigator({
-  historyMessages,
-  streamingMessage,
+  messages,
   scrollContainerRef,
   pauseAutoScroll,
   onNavigateToQuery,
@@ -66,18 +59,14 @@ export default function QueryNavigator({
 
   // Extract real user queries (filter out system injections)
   const queries = useMemo(() => {
-    const allMessages = streamingMessage
-      ? [...historyMessages, streamingMessage]
-      : historyMessages;
-
-    return allMessages
+    return messages
       .flatMap((msg) => {
         if (msg.role !== 'user') return [];
         const text = getVisibleQueryText(getQueryText(msg));
-        if (text.trim() === '' || isNonUserQueryMessage(msg, text)) return [];
+        if (text.trim() === '' || isNonUserQueryMessage(text)) return [];
         return [{ id: msg.id, text }];
       });
-  }, [historyMessages, streamingMessage]);
+  }, [messages]);
 
   // Clamp activeIndex to valid range (handles session switch, query list shrink)
   const activeIndex = activeIndexRaw >= 0 && activeIndexRaw < queries.length ? activeIndexRaw : -1;

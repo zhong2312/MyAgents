@@ -86,3 +86,54 @@ describe('ProcessRow Codex CollabAgent activity', () => {
     expect(container.querySelector('.animate-pulse')).not.toBeNull();
   });
 });
+
+describe('ProcessRow tool body layout ownership', () => {
+  it('gives only Edit/Write the full-width body while preserving header expansion semantics', () => {
+    const editBlock = {
+      type: 'tool_use',
+      tool: {
+        id: 'edit-full-width',
+        name: 'Edit',
+        input: {
+          file_path: '/tmp/example.ts',
+          old_string: 'const oldValue = 1;',
+          new_string: 'const newValue = 2;',
+        },
+        inputJson: JSON.stringify({
+          file_path: '/tmp/example.ts',
+          old_string: 'const oldValue = 1;',
+          new_string: 'const newValue = 2;',
+        }),
+        streamIndex: 0,
+      },
+    } as ContentBlock;
+
+    const { container } = render(<ProcessRow block={editBlock} index={0} totalBlocks={1} />);
+    const header = screen.getByRole('button', { expanded: false });
+    fireEvent.click(header);
+
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    const body = container.querySelector('[data-process-body-layout="full"]');
+    expect(body).toBeInTheDocument();
+    expect(body).not.toHaveClass('ml-7');
+  });
+
+  it('keeps non-file tools on the established indented body layout', () => {
+    const readBlock = {
+      type: 'tool_use',
+      tool: {
+        id: 'read-indented',
+        name: 'Read',
+        input: { file_path: '/tmp/example.ts' },
+        inputJson: JSON.stringify({ file_path: '/tmp/example.ts' }),
+        result: 'const value = 1;',
+        streamIndex: 0,
+      },
+    } as ContentBlock;
+
+    const { container } = render(<ProcessRow block={readBlock} index={0} totalBlocks={1} />);
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+
+    expect(container.querySelector('[data-process-body-layout="indented"]')).toHaveClass('ml-7');
+  });
+});

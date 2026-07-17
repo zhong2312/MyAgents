@@ -5,6 +5,7 @@ import {
   decideMcpSync,
   getMcpAuthorityForScenario,
   mcpConfigFingerprint,
+  shouldDeferLiveMcpMutation,
 } from './mcp-sync-policy';
 
 function server(overrides: Partial<McpServerDefinition> & { id: string }): McpServerDefinition {
@@ -80,5 +81,16 @@ describe('mcp-sync-policy', () => {
       shouldRestart: true,
       reason: 'fingerprint-changed',
     });
+  });
+
+  it.each([
+    { promotedItemInFlight: false, turnInFlight: false, sdkCommandInFlight: false, expected: false },
+    { promotedItemInFlight: true, turnInFlight: false, sdkCommandInFlight: false, expected: true },
+    { promotedItemInFlight: false, turnInFlight: true, sdkCommandInFlight: false, expected: true },
+    { promotedItemInFlight: false, turnInFlight: false, sdkCommandInFlight: true, expected: true },
+    { promotedItemInFlight: false, turnInFlight: false, sdkCommandInFlight: false, backgroundTasksActive: true, expected: true },
+    { promotedItemInFlight: true, turnInFlight: true, sdkCommandInFlight: true, expected: true },
+  ])('defers live MCP mutation while Query dispatch ownership is active: $expected', (input) => {
+    expect(shouldDeferLiveMcpMutation(input)).toBe(input.expected);
   });
 });

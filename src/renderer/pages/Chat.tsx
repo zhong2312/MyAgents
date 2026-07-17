@@ -3340,14 +3340,14 @@ export default function Chat({
         toastRef.current.warning(t("shell.toasts.configPartiallySaved"));
       }
       return !result.snapshotWriteFailed;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
     },
     [
+      apiPost,
       skipSnapshotWrite,
-      currentProject?.id,
-      currentProject?.agentId,
+      currentProject,
       isExternalRuntime,
       currentRuntime,
+      currentAgent?.providerId,
       currentAgent?.runtimeConfig,
       patchSnapshot,
       patchProject,
@@ -4257,16 +4257,12 @@ export default function Chat({
 
       // Suppress the deferred provider-change useEffect — we've already set the correct model
       providerInitRef.current = true;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; messagesRef avoids dep on messages array
     },
     [
       effectiveSelectedProviderId,
       selectedModel,
       providers,
-      currentProviderForHistory?.id,
-      currentProviderForHistory?.type,
-      currentProviderForHistory?.config.baseUrl,
-      currentProviderForHistory?.apiProtocol,
+      currentProviderForHistory,
       currentProviderExecutionIntent,
       builtinSnapshotProviderHistoryUnknown,
       effectivePermissionMode,
@@ -4340,14 +4336,10 @@ export default function Chat({
       if (nextIntent?.kind === "runtime-backed-provider") {
         setRuntimeModel(nextIntent.model);
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; currentProvider fields cover toProviderHistoryEnv inputs
     },
     [
       selectedModel,
-      currentProviderForHistory?.id,
-      currentProviderForHistory?.type,
-      currentProviderForHistory?.config.baseUrl,
-      currentProviderForHistory?.apiProtocol,
+      currentProviderForHistory,
       currentProviderExecutionIntent,
       effectiveSelectedProviderId,
       currentProvider?.id,
@@ -4716,11 +4708,15 @@ export default function Chat({
           setSessionState("idle");
         }
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
     },
     [
+      agentDir,
+      buildProviderEnv,
+      currentRuntime,
+      disableCronMode,
       sessionState,
       isLoading,
+      providers,
       queuedMessages.length,
       startScheduledTask,
       sendMessage,
@@ -4734,6 +4730,9 @@ export default function Chat({
       builtinSnapshotProviderSelectionIncomplete,
       showPinnedProviderUnavailableToast,
       showSnapshotProviderIncompleteToast,
+      setIsLoading,
+      setMessages,
+      setSessionState,
       t,
     ],
   );
@@ -6391,8 +6390,7 @@ export default function Chat({
 
             {/* Query Navigator — floating right-side panel for quick session navigation */}
             <QueryNavigator
-              historyMessages={historyMessages}
-              streamingMessage={streamingMessage}
+              messages={chatScrollModel.data}
               scrollContainerRef={
                 scrollerRef as React.RefObject<HTMLDivElement | null>
               }
@@ -6431,7 +6429,7 @@ export default function Chat({
                 onRevealInTree={handleRevealInTree}
               >
                 <MessageList
-                  historyMessages={historyMessages}
+              messages={chatScrollModel.data}
                   streamingMessage={streamingMessage}
                   firstItemIndex={chatScrollModel.firstItemIndex}
                   heightEstimateSeed={chatScrollModel.heightEstimateSeed}

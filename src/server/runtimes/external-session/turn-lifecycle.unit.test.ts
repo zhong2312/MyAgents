@@ -31,7 +31,7 @@ describe('external turn lifecycle owner', () => {
       { kind: 'session_complete', subtype: 'error', result: 'process exited' },
       {
         hasAssistantText: true,
-        consumeUserRequestedStop: () => true,
+        isUserRequestedStop: () => true,
       },
     );
 
@@ -46,7 +46,7 @@ describe('external turn lifecycle owner', () => {
       { kind: 'session_complete', subtype: 'error', result: 'process exited' },
       {
         hasAssistantText: true,
-        consumeUserRequestedStop: () => true,
+        isUserRequestedStop: () => true,
       },
     );
 
@@ -108,7 +108,7 @@ describe('external turn lifecycle owner', () => {
 
     markExternalSessionComplete(
       { kind: 'session_complete', subtype: 'success', result: '' },
-      { hasAssistantText: true, consumeUserRequestedStop: () => false },
+      { hasAssistantText: true, isUserRequestedStop: () => false },
     );
     expect(getExternalTurnTerminalGeneration()).toBe(before + 1);
 
@@ -116,12 +116,12 @@ describe('external turn lifecycle owner', () => {
     markExternalTurnStarted(200);
     markExternalSessionComplete(
       { kind: 'session_complete', subtype: 'success', result: '' },
-      { hasAssistantText: true, consumeUserRequestedStop: () => false },
+      { hasAssistantText: true, isUserRequestedStop: () => false },
     );
     expect(getExternalTurnTerminalGeneration()).toBe(before + 2);
   });
 
-  it('notifies the current queue turn once without retaining an outcome cache', () => {
+  it('notifies the current queue turn once without retaining an outcome cache', async () => {
     const onTerminal = vi.fn();
     bindExternalTurn('queue-1', { kind: 'goal', id: 'goal-1' }, onTerminal);
     expect(getExternalCurrentTurnIdentity()).toEqual({
@@ -145,6 +145,7 @@ describe('external turn lifecycle owner', () => {
       success: true,
       text: 'duplicate',
     });
+    await waitForExternalTurnTerminalObserver();
 
     expect(onTerminal).toHaveBeenCalledTimes(1);
     expect(onTerminal).toHaveBeenCalledWith({
@@ -157,7 +158,7 @@ describe('external turn lifecycle owner', () => {
     expect(getExternalCurrentTurnIdentity()).toBeNull();
   });
 
-  it('settles the current queue turn when process stop has no terminal event', () => {
+  it('settles the current queue turn when process stop has no terminal event', async () => {
     const onTerminal = vi.fn();
     bindExternalTurn('queue-stop', { kind: 'goal', id: 'goal-1' }, onTerminal);
 
@@ -166,6 +167,7 @@ describe('external turn lifecycle owner', () => {
       usage: { inputTokens: 90, outputTokens: 10 },
     });
     notifyExternalTurnStopped('duplicate');
+    await waitForExternalTurnTerminalObserver();
 
     expect(onTerminal).toHaveBeenCalledTimes(1);
     expect(onTerminal).toHaveBeenCalledWith({
@@ -186,15 +188,35 @@ describe('external turn lifecycle owner', () => {
     }));
 
     notifyExternalTurnStopped('partial');
+    notifyExternalTurnStopped('duplicate');
     let settled = false;
     void waitForExternalTurnTerminalObserver().then(() => {
       settled = true;
     });
     await Promise.resolve();
+    await Promise.resolve();
     expect(settled).toBe(false);
 
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
     release();
     await waitForExternalTurnTerminalObserver();
     expect(settled).toBe(true);
+  });
+
+  it('does not run the terminal observer before durable finalization settles', async () => {
+    let finishPersist!: () => void;
+    const finalization = new Promise<void>((resolve) => {
+      finishPersist = resolve;
+    });
+    const onTerminal = vi.fn();
+    bindExternalTurn('queue-finalization', undefined, onTerminal);
+
+    notifyExternalTurnStopped('partial', {}, finalization);
+    await Promise.resolve();
+    expect(onTerminal).not.toHaveBeenCalled();
+
+    finishPersist();
+    await waitForExternalTurnTerminalObserver();
+    expect(onTerminal).toHaveBeenCalledOnce();
   });
 });

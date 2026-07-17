@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SpaceIssueDetail, SpaceSession } from '@/api/spaceCloud';
+import type { SpaceGoal, SpaceIssueDetail, SpaceSession } from '@/api/spaceCloud';
 import type { SpaceActions } from '@/pages/space/spaceStore';
 import { IssueDetailDrawer } from '@/pages/space/issues/IssueDetailDrawer';
 
@@ -130,9 +130,58 @@ describe('IssueDetailDrawer', () => {
     expect(commentsHeading.querySelector('svg')).not.toBeInTheDocument();
 
     expect(screen.getByText('bold issue text').tagName).toBe('STRONG');
-    expect(screen.getByRole('heading', { name: 'Comment heading' })).toBeInTheDocument();
+    const issueContent = screen.getByText('bold issue text').closest('.ai-message-content')?.parentElement;
+    expect(issueContent).toHaveClass('px-3', 'max-sm:px-2');
+    const commentHeading = screen.getByRole('heading', { name: 'Comment heading' });
+    expect(commentHeading).toBeInTheDocument();
+    expect(commentHeading.closest('.ai-message-content')?.parentElement).toHaveClass('px-3', 'max-sm:px-2');
     expect(screen.getByText('inline code')).toBeInTheDocument();
     expect(container.querySelectorAll('.ai-message-content')).toHaveLength(2);
+  });
+
+  it('uses the shared hierarchy label for a compact deep goal path', () => {
+    const compactPath = '../MyAgents BUGFIX/Windows 系统兼容性优化';
+    const deepGoal: SpaceGoal = {
+      id: 'goal-deep',
+      spaceId: 'space-1',
+      parentGoalId: 'goal-parent',
+      path: '/goal-root/goal-parent/goal-deep/',
+      depth: 2,
+      title: 'Windows 系统兼容性优化',
+      context: 'Windows context',
+      goalPathLabel: compactPath,
+      createdAt: '2026-06-25T00:00:00.000Z',
+      updatedAt: '2026-06-25T00:00:00.000Z',
+    };
+    const detailWithGoal: SpaceIssueDetail = {
+      ...detail,
+      issue: { ...detail.issue, goalId: deepGoal.id, goalPathLabel: compactPath },
+      goalReference: {
+        goalId: deepGoal.id,
+        goalPath: deepGoal.path,
+        goalPathLabel: compactPath,
+        goalTitle: deepGoal.title,
+        goalContext: deepGoal.context,
+      },
+    };
+
+    render(
+      <IssueDetailDrawer
+        issueId="iss-1"
+        session={session}
+        projects={[]}
+        goals={[deepGoal]}
+        registeredAgents={[]}
+        detailState={{ detail: detailWithGoal, isLoading: false, lastFetchedAt: Date.now(), error: null }}
+        actions={actions()}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    const goalLabel = screen.getByTitle(compactPath);
+    expect(within(goalLabel).getByText('../MyAgents BUGFIX')).toHaveClass('text-[var(--ink-muted)]/75');
+    expect(within(goalLabel).getByText('Windows 系统兼容性优化')).toHaveClass('font-normal', 'text-[var(--ink)]');
   });
 
   it('saves edited issue title and body', async () => {
@@ -241,6 +290,7 @@ describe('IssueDetailDrawer', () => {
     const commentAttachmentList = commentAttachment.closest('.divide-y');
     expect(commentAttachmentList).toHaveClass('border-b');
     expect(commentAttachmentList).not.toHaveClass('border-y');
+    expect(commentAttachmentList?.parentElement).toHaveClass('px-3', 'max-sm:px-2');
 
     await user.click(screen.getByRole('button', { name: '上传附件' }));
     expect(await screen.findByText('evidence.pdf')).toBeInTheDocument();

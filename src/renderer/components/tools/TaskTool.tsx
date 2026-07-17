@@ -5,8 +5,9 @@ import Markdown from '@/components/Markdown';
 import { formatDuration } from '@/components/tools/toolBadgeConfig';
 import { isBackgroundSubagentTool, isSubagentCallRunning, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
+import FilePatchTool from '@/components/tools/FilePatchTool';
 import { ExpandableResult } from '@/components/tools/utils';
-import { useTabApiOptional } from '@/context/TabContext';
+import { useTabApiOptional, useTabStateOptional } from '@/context/TabContext';
 import { useBackgroundTaskPolling } from '@/hooks/useBackgroundTaskPolling';
 import { getBackgroundTaskStatus, isTerminalStatus, BACKGROUND_TASK_STATUS_EVENT, type BackgroundTaskTerminalStatus } from '@/utils/backgroundTaskStatus';
 import { CheckCircle, ChevronDown, ChevronRight, Clock, Coins, Loader2, Terminal, Wrench, XCircle } from 'lucide-react';
@@ -409,6 +410,7 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
   }, [call.inputJson, call.input]);
 
   const isCallRunning = isSubagentCallRunning(call);
+  const isFilePatchCall = call.name === 'Edit' || call.name === 'Write';
 
   return (
     <div className="group flex flex-col gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] p-3">
@@ -429,7 +431,23 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
 
       {description && <div className="text-xs text-[var(--ink-muted)]">{description}</div>}
 
-      {inputText && (
+      {isFilePatchCall ? (
+        <FilePatchTool
+          tool={{
+            id: call.id,
+            name: call.name,
+            input: call.input,
+            streamIndex: 0,
+            inputJson: call.inputJson,
+            parsedInput: call.parsedInput,
+            result: call.result,
+            resultMeta: call.resultMeta,
+            isLoading: call.isLoading,
+            isError: call.isError,
+            attachments: call.attachments,
+          }}
+        />
+      ) : inputText && (
         <div className="relative overflow-hidden rounded-md bg-[var(--paper-inset)] border border-[var(--line-subtle)]">
           <pre className="max-h-32 overflow-y-auto p-2 font-mono text-xs text-[var(--ink-secondary)] whitespace-pre-wrap break-words">
             {inputText}
@@ -437,7 +455,7 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
         </div>
       )}
 
-      {call.result && (
+      {call.result && !isFilePatchCall && (
         <div className="mt-1">
           <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">{t('shell.toolChrome.common.result')}</div>
           <ExpandableResult
@@ -542,19 +560,22 @@ export default function TaskTool({ tool }: TaskToolProps) {
   // toolUseId via that mapping. This replaces the old regex-from-text approach which
   // was brittle (SDK text format changes) and fundamentally broken (agentId ≠ taskId).
   const bgToolUseId = isBackgroundTask ? tool.id : null;
+  const tabState = useTabStateOptional();
+  const backgroundTaskSessionId = tabState?.sessionId ?? null;
 
   // Terminal status: solely from SDK's task_notification (persisted in module-level Map).
   // Map survives timing races — if notification arrived before mount, we read it on mount.
   const [bgTerminalStatus, setBgTerminalStatus] = useState<BackgroundTaskTerminalStatus | null>(null);
   useEffect(() => {
     if (!isBackgroundTask || !bgToolUseId || bgTerminalStatus) return;
-    const existing = getBackgroundTaskStatus(bgToolUseId);
+    const existing = getBackgroundTaskStatus(bgToolUseId, backgroundTaskSessionId);
     if (isTerminalStatus(existing)) {
       const rafId = requestAnimationFrame(() => setBgTerminalStatus(existing));
       return () => cancelAnimationFrame(rafId);
     }
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
+      if ((detail.sessionId ?? null) !== backgroundTaskSessionId) return;
       // Match strictly by toolUseId — the mapping module and server both
       // resolve taskId→toolUseId, so detail.toolUseId is always populated
       // when the mapping was registered at task-started time.
@@ -564,18 +585,18 @@ export default function TaskTool({ tool }: TaskToolProps) {
     };
     window.addEventListener(BACKGROUND_TASK_STATUS_EVENT, handler);
     return () => window.removeEventListener(BACKGROUND_TASK_STATUS_EVENT, handler);
-  }, [isBackgroundTask, bgToolUseId, bgTerminalStatus]);
+  }, [isBackgroundTask, bgToolUseId, bgTerminalStatus, backgroundTaskSessionId]);
 
   const bgComplete = bgTerminalStatus !== null;
 
   // Live stats polling (for tool count display during execution, NOT for completion)
   const outputFile = isBackgroundTask ? parsedResult?.output_file ?? null : null;
-  const tabState = useTabApiOptional();
+  const tabApi = useTabApiOptional();
   const noopApiPost = useCallback(async <T,>(_path: string, _body?: unknown): Promise<T> => { throw new Error('no apiPost'); }, []);
   const { stats: bgStats } = useBackgroundTaskPolling({
     outputFile,
     isActive: isBackgroundTask && !!outputFile && !isRunning && !bgComplete,
-    apiPost: tabState?.apiPost ?? noopApiPost
+    apiPost: tabApi?.apiPost ?? noopApiPost
   });
 
   // Show background stats when task is background, not running in foreground,

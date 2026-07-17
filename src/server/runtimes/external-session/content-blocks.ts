@@ -291,6 +291,25 @@ export function appendExternalToolInputDelta(
   return { parentToolUseId, found: !!entry };
 }
 
+export function replaceExternalToolUseInput(
+  toolUseId: string,
+  input: Record<string, unknown>,
+): string | null {
+  const entry = pendingToolInputs.get(toolUseId);
+  if (!entry) return null;
+  entry.inputJson = JSON.stringify(input, null, 2);
+
+  const parentToolUseId = childToolToParent.get(toolUseId);
+  if (parentToolUseId) {
+    const call = findExternalSubagentCall(parentToolUseId, toolUseId);
+    if (call) {
+      call.input = input;
+      call.inputJson = entry.inputJson;
+    }
+  }
+  return entry.name;
+}
+
 export function finalizeExternalSubagentToolInput(parentToolUseId: string, toolUseId: string): boolean {
   const entry = pendingToolInputs.get(toolUseId);
   if (!entry) return false;
@@ -335,6 +354,7 @@ export function applyExternalSubagentToolResult(input: {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  metadata?: NonNullable<PersistContentBlock['tool']>['resultMeta'];
   attachments?: ToolAttachment[];
 }): void {
   const call = findExternalSubagentCall(input.parentToolUseId, input.toolUseId);
@@ -343,6 +363,7 @@ export function applyExternalSubagentToolResult(input: {
     call.result = input.content;
     call.isError = input.isError ?? false;
     call.isLoading = false;
+    if (input.metadata !== undefined) call.resultMeta = input.metadata;
     if (hasAttachments) call.attachments = input.attachments;
   }
   if (hasAttachments) subagentAttachmentParents.set(input.toolUseId, input.parentToolUseId);
@@ -371,6 +392,21 @@ export function applyExternalToolResultToContent(input: {
     }
   }
   return false;
+}
+
+export function appendExternalToolResultDeltaToContent(toolUseId: string, delta: string): boolean {
+  const parentToolUseId = childToolToParent.get(toolUseId);
+  if (parentToolUseId) {
+    const call = findExternalSubagentCall(parentToolUseId, toolUseId);
+    if (!call) return false;
+    call.result = `${call.result ?? ''}${delta}`;
+    call.isLoading = true;
+    return true;
+  }
+  const block = findExternalToolBlockById(toolUseId);
+  if (!block?.tool) return false;
+  block.tool.result = `${block.tool.result ?? ''}${delta}`;
+  return true;
 }
 
 export function getExternalSubagentAttachmentParent(toolUseId: string): string | undefined {

@@ -1,9 +1,14 @@
 import type { SessionMessage } from '../types/session';
 import {
-  FLOATING_BALL_CONTEXT_TAG,
+  LOCAL_COMMAND_OUTPUT_TAG,
+  SESSION_EVENT_TAG,
   SPACE_ISSUE_CONTEXT_TAG,
   parseLeadingSystemReminder,
 } from '../../shared/systemReminder';
+import {
+  normalizeSessionOrigin,
+  type SessionOrigin,
+} from '../../shared/session-origin';
 
 export const CLIENT_MESSAGE_INLINE_MAX_BYTES = 256 * 1024;
 const PREVIEW_HEAD_BYTES = 24 * 1024;
@@ -136,54 +141,49 @@ function extractTextPreview(content: string, maxLen: number): string {
   return content.slice(0, maxLen);
 }
 
-function stripSystemReminderPrefix(text: string): string | null {
-  if (text.includes('<HEARTBEAT>') || text.includes('<MEMORY_UPDATE>')) {
-    return null;
-  }
+export function resolveVisibleUserTurnText(text: string): string | null {
   const reminder = parseLeadingSystemReminder(text);
   if (!reminder.hasReminder) {
     return text;
   }
   if (reminder.visibleText) return reminder.visibleText;
-  if (reminder.kind === FLOATING_BALL_CONTEXT_TAG) return null;
-
-  if (!reminder.body.includes('<CRON_TASK>')) return null;
-
-  const withoutCronTags = reminder.body.replace(/<\/?CRON_TASK>/g, ' ');
-  return withoutCronTags
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean)
-    ?? null;
+  return null;
 }
 
 /**
- * Whether a persisted user row represents fresh human input for session
- * recency. Scheduled and maintenance turns are never human activity, even when
- * their prompt is intentionally visible in the transcript. User-originated
- * reminders count when they carry a visible tail or a real attachment.
+ * Whether a persisted user row represents a human-authored query. This is for
+ * Memory and human-query analytics only; Session activity/recency is owned by
+ * the admitted turn lifecycle and must not use this classifier.
  */
 export function isHumanUserMessage(
   message: Pick<SessionMessage, 'content' | 'attachments'>,
+  origin?: SessionOrigin,
 ): boolean {
   const reminder = parseLeadingSystemReminder(message.content);
-  const trimmed = message.content.trimStart();
   if (
     reminder.kind === 'MEMORY_UPDATE'
     || reminder.kind === 'HEARTBEAT'
     || reminder.kind === 'CRON_TASK'
     || reminder.kind === SPACE_ISSUE_CONTEXT_TAG
-    || trimmed.startsWith('<MEMORY_UPDATE>')
-    || trimmed.startsWith('/UPDATE_MEMORY')
-    || trimmed.startsWith('<HEARTBEAT>')
-    || trimmed.startsWith('<CRON_TASK>')
-    || trimmed.startsWith('<local-command-stdout>')
-    || trimmed.startsWith('<inbox-message')
-    || trimmed.startsWith('<inbox-reply')
-    || trimmed.startsWith('<cron-task-context')
-    || trimmed.startsWith('<myagents-session-event')
-    || trimmed.startsWith('<task-notification>')
-  ) return false;
+    || reminder.kind === LOCAL_COMMAND_OUTPUT_TAG
+    || reminder.kind === SESSION_EVENT_TAG
+  ) {
+    return false;
+  }
+  const normalizedOrigin = normalizeSessionOrigin(origin);
+  const hasKnownOrigin = Boolean(
+    normalizedOrigin
+    && (normalizedOrigin.kind !== 'unknown' || normalizedOrigin.surface !== 'unknown'),
+  );
+  if (hasKnownOrigin) {
+    if (
+      normalizedOrigin!.kind === 'automation'
+      || normalizedOrigin!.kind === 'registered-agent'
+      || normalizedOrigin!.kind === 'session-inbox'
+      || normalizedOrigin!.surface === 'memory_update'
+      || normalizedOrigin!.surface === 'channel_heartbeat'
+    ) return false;
+  }
 
   const hasVisibleText = reminder.hasReminder
     ? reminder.visibleText.trim().length > 0
@@ -191,18 +191,22 @@ export function isHumanUserMessage(
   return hasVisibleText || Boolean(message.attachments?.length);
 }
 
-export function resolveLastRealUserMessagePreview(
+export function resolveLastVisibleTurnPreview(
   messages: Pick<SessionMessage, 'role' | 'content'>[],
   maxLen = 60,
 ): { found: boolean; preview?: string } {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role !== 'user') continue;
-    const visibleText = stripSystemReminderPrefix(msg.content);
+    const reminder = parseLeadingSystemReminder(msg.content);
+    if (reminder.kind === LOCAL_COMMAND_OUTPUT_TAG || reminder.kind === SESSION_EVENT_TAG) continue;
+    const visibleText = resolveVisibleUserTurnText(msg.content);
     if (visibleText === null) continue;
+    const preview = extractTextPreview(visibleText, maxLen).trim();
+    if (!preview) continue;
     return {
       found: true,
-      preview: extractTextPreview(visibleText, maxLen) || undefined,
+      preview,
     };
   }
 

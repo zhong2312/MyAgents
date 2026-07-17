@@ -37,7 +37,8 @@ export interface ImEvent {
   requestId: string | null;
   type: ImEventType;
   /** Event payload. Type depends on `type`:
-   *    - 'delta' / 'block-end' / 'complete' / 'error' / 'cancelled': string
+   *    - 'delta' / 'block-end': string
+   *    - 'complete' / 'error' / 'cancelled': { finalPayloads: ReplyPayload[] }
    *    - 'permission-request': JSON string with { requestId, toolName, input }
    *    - 'ask-user-question-request': JSON string with { requestId, sessionId?, questions, previewFormat }
    *    - 'ask-user-question-expired': JSON string with { requestId, reason }

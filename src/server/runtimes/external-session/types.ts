@@ -15,6 +15,15 @@ import type {
   TurnTerminalObserver,
 } from '../../session-core/turn-queue';
 
+export interface PersistToolResultMeta {
+  exitCode?: number | null;
+  durationMs?: number | null;
+  cwd?: string;
+  processId?: string | null;
+  status?: string;
+  largeValueRef?: LargeValueRef;
+}
+
 export interface PersistContentBlock {
   type: 'text' | 'tool_use' | 'thinking';
   text?: string;
@@ -26,14 +35,7 @@ export interface PersistContentBlock {
     isLoading?: boolean;
     result?: string;
     isError?: boolean;
-    resultMeta?: {
-      exitCode?: number | null;
-      durationMs?: number | null;
-      cwd?: string;
-      processId?: string | null;
-      status?: string;
-      largeValueRef?: LargeValueRef;
-    };
+    resultMeta?: PersistToolResultMeta;
     streamIndex: number;
     attachments?: ToolAttachment[];
     display?: ToolDisplayPayload;
@@ -45,6 +47,7 @@ export interface PersistContentBlock {
       result?: string;
       isLoading?: boolean;
       isError?: boolean;
+      resultMeta?: PersistToolResultMeta;
       attachments?: ToolAttachment[];
     }>;
   };

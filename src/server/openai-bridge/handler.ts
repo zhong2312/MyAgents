@@ -51,9 +51,9 @@ export function shouldSendProviderReasoningEffort(
  * terminal `message_delta`/`message_stop` must be deferred until usage is in
  * hand. Keying that solely on transport EOF is fragile: a provider that sends
  * `[DONE]` but lingers before closing the body would have its terminal events
- * delayed to the idle timeout → abort → `flush()` never runs → usage + stop
- * lost. Finalizing on `[DONE]` fixes that; `flush()` remains a fallback for
- * streams that close without a `[DONE]`. See issue #277.
+ * delayed indefinitely behind transport EOF. Finalizing on `[DONE]` fixes
+ * that; `flush()` remains a fallback for streams that close without a
+ * `[DONE]`. See issue #277.
  */
 const STREAM_DONE = Symbol('openai-stream-done');
 type ChatPipelineItem = OpenAIStreamChunk | typeof STREAM_DONE;
@@ -283,7 +283,7 @@ export interface BridgeHandler {
 /** Create a bridge handler that translates Anthropic → OpenAI → Anthropic */
 export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
   const log = config.logger === null ? () => {} : (config.logger ?? console.log);
-  const timeout = config.upstreamTimeout ?? DEFAULT_TIMEOUT;
+  const upstreamHeadersTimeoutMs = config.upstreamHeadersTimeoutMs ?? DEFAULT_TIMEOUT;
   const translateReasoning = config.translateReasoning ?? true;
   const imageSaver: ToolImageSaver | undefined = config.workspacePath
     ? createToolImageSaver(config.workspacePath)
@@ -443,7 +443,6 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
     type UpstreamAttempt = {
       upstreamResp: Response;
       controller: AbortController;
-      headersTimer: ReturnType<typeof setTimeout>;
       onDownstreamAbort: () => void;
     };
     type UpstreamAttemptResult =
@@ -451,7 +450,6 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       | { ok: false; response: Response };
 
     const cleanupAttempt = (attempt: UpstreamAttempt): void => {
-      clearTimeout(attempt.headersTimer);
       if (request.signal) {
         request.signal.removeEventListener('abort', attempt.onDownstreamAbort);
       }
@@ -461,13 +459,19 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       requestBody: string,
       bearer: string,
     ): Promise<UpstreamAttemptResult> => {
-      // Pattern 1: the AbortController's lifetime spans the entire stream, not
-      // just headers arrival. On retry, each attempt owns its own controller and
-      // downstream-abort listener so cleanup stays exact.
+      // The AbortController spans the entire stream so downstream cancellation
+      // and protocol terminal cleanup can release the upstream transport. Only
+      // the pre-headers phase is time-bounded here; stream-body liveness belongs
+      // to the Session turn watchdog, which has the turn/suspension context the
+      // bridge does not.
       const controller = new AbortController();
+      let didHeadersTimeout = false;
       const headersTimer = setTimeout(
-        () => controller.abort(new Error(`Upstream headers timeout after ${timeout}ms`)),
-        timeout,
+        () => {
+          didHeadersTimeout = true;
+          controller.abort(new Error(`Upstream headers timeout after ${upstreamHeadersTimeoutMs}ms`));
+        },
+        upstreamHeadersTimeoutMs,
       );
 
       const onDownstreamAbort = (): void => {
@@ -504,13 +508,16 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         // iterators. Downstream handlers (handleStreamResponse etc.) treat the
         // body as a ReadableStream<Uint8Array>, which works for both shapes.
         const upstreamResp = await fetch(upstreamUrl, fetchInit as Parameters<typeof fetch>[1]) as unknown as Response;
-        return { ok: true, attempt: { upstreamResp, controller, headersTimer, onDownstreamAbort } };
+        // fetch() resolves when response headers arrive. End the headers-only
+        // timeout here for every status, before any success or error body read.
+        clearTimeout(headersTimer);
+        return { ok: true, attempt: { upstreamResp, controller, onDownstreamAbort } };
       } catch (err) {
         clearTimeout(headersTimer);
         if (request.signal) {
           request.signal.removeEventListener('abort', onDownstreamAbort);
         }
-        const isTimeout = err instanceof Error && err.name === 'AbortError';
+        const isTimeout = didHeadersTimeout;
         // undici surfaces the real reason on `err.cause` (TypeError: fetch failed
         // is the wrapper). Inline the cause so logs aren't useless.
         const causeRaw = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
@@ -544,8 +551,12 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
         if (attempt.upstreamResp.ok) return { ok: true, attempt };
 
         const status = attempt.upstreamResp.status;
-        const errBody = await attempt.upstreamResp.text();
-        cleanupAttempt(attempt);
+        let errBody: string;
+        try {
+          errBody = await attempt.upstreamResp.text();
+        } finally {
+          cleanupAttempt(attempt);
+        }
 
         if (status === 401
             && upstream.recoverAuth
@@ -613,12 +624,11 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       }
     })();
     if (!finalAttempt.ok) return finalAttempt.response;
-    const { upstreamResp, controller, headersTimer, onDownstreamAbort } = finalAttempt.attempt;
+    const { upstreamResp, controller, onDownstreamAbort } = finalAttempt.attempt;
 
-    // Headers arrived → cancel the headers timeout (we now switch to per-read
-    // idle timeout inside the stream handler). The controller stays live for
-    // the stream's lifetime so cancel() can reach it.
-    clearTimeout(headersTimer);
+    // The headers-only timer ended inside fetchUpstreamAttempt as soon as
+    // fetch() returned this Response. The controller stays live for downstream
+    // cancellation and protocol-terminal transport cleanup.
 
     // 7. Detect Content-Type to handle unexpected SSE on non-stream requests
     const contentType = upstreamResp.headers.get('content-type') ?? '';
@@ -633,7 +643,8 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       // Hand off lifecycle ownership to the stream handler — it owns:
       //  - controller (so stream.cancel() can abort upstream fetch)
       //  - request.signal listener cleanup
-      //  - idle timeout enforcement (60s)
+      // Stream-body liveness is intentionally not inferred from byte cadence;
+      // the Session inactivity watchdog owns true turn liveness.
       return isResponses
         ? handleResponsesStreamResponse(upstreamResp, anthropicReq.model, log, controller, request.signal, onDownstreamAbort)
         : handleStreamResponse(upstreamResp, anthropicReq.model, translateReasoning, log, thoughtSignatureCache, controller, request.signal, onDownstreamAbort);
@@ -692,15 +703,6 @@ async function handleNonStreamResponse(
   });
 }
 
-/**
- * Pattern 1: idle timeout for upstream SSE. If no bytes arrive for this many
- * milliseconds, the upstream fetch is aborted with reason='timeout'.
- * Bridge-level safety net — providers occasionally drop the TCP socket
- * silently mid-stream (no FIN), and without an idle bound we'd block on
- * `reader.read()` forever.
- */
-const UPSTREAM_IDLE_TIMEOUT_MS = 60_000;
-
 // Exported for the streaming-usage integration test (issue #277): drives the
 // real parse→translate pipeline from a synthetic upstream Response so the
 // `[DONE]`-driven finalization can be asserted without mocking the network.
@@ -726,9 +728,10 @@ export function handleStreamResponse(
   // its internal queue fills up, which in turn stops the upstream reader.
   //
   // Cancellation: downstream cancel propagates via the readable's cancel(),
-  // which we wire to abort the upstream fetch (Pattern 1's protocol).
+  // which we wire to abort the upstream fetch.
   const translator = new StreamTranslator(requestModel, translateReasoning);
   const sseParser = new SSEParser();
+  const logStreamEnd = createStreamEndLogger('chat_completions', log);
   if (!upstreamResp.body) {
     // Detach the downstream-abort listener the main handler wired to
     // request.signal before handing us lifecycle ownership. Every other exit
@@ -737,24 +740,10 @@ export function handleStreamResponse(
     if (downstreamSignal) {
       try { downstreamSignal.removeEventListener('abort', onDownstreamAbort); } catch { /* ignore */ }
     }
+    logStreamEnd('empty_body');
     return new Response('', { status: 200, headers: streamHeaders() });
   }
 
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const armIdleTimer = (): void => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      log(`[bridge] Upstream idle ${UPSTREAM_IDLE_TIMEOUT_MS}ms — aborting (reason=timeout)`);
-      try { upstreamController.abort(new Error('Upstream idle timeout')); } catch { /* ignore */ }
-    }, UPSTREAM_IDLE_TIMEOUT_MS);
-    idleTimer.unref?.();
-  };
-  const cleanupIdleTimer = (): void => {
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = null;
-    }
-  };
   const detachDownstream = (): void => {
     if (downstreamSignal) {
       try { downstreamSignal.removeEventListener('abort', onDownstreamAbort); } catch { /* ignore */ }
@@ -764,11 +753,7 @@ export function handleStreamResponse(
   // Stage 1: bytes → SSE events (parse via SSEParser).
   const decoder = new TextDecoder();
   const sseParseTransform = new TransformStream<Uint8Array, ChatPipelineItem>({
-    start() {
-      armIdleTimer();
-    },
     transform(chunk, controller) {
-      armIdleTimer();
       const text = decoder.decode(chunk, { stream: true });
       const sseEvents = sseParser.feed(text);
       for (const sseEvent of sseEvents) {
@@ -784,9 +769,6 @@ export function handleStreamResponse(
         }
       }
     },
-    flush() {
-      cleanupIdleTimer();
-    },
   });
 
   // Stage 2: OpenAI chunks → Anthropic events.
@@ -801,16 +783,15 @@ export function handleStreamResponse(
       // We must close downstream here, not wait for transport EOF: the Anthropic
       // SDK's SSE reader loops until the HTTP body ends (it does NOT stop on
       // message_stop — see @anthropic-ai/sdk core/streaming.js), so a provider
-      // that sends [DONE] then lingers would otherwise hang the SDK until the
-      // 60s idle-timeout abort. terminate() closes the readable (the enqueued
-      // finalize bytes drain first, the SDK then sees a clean EOF) and unwinds
-      // the pipeline; we also clear the idle timer and abort the upstream fetch
-      // to release a lingering provider socket. See issue #277.
+      // that sends [DONE] then lingers would otherwise hang the SDK. terminate()
+      // closes the readable (the enqueued finalize bytes drain first, the SDK
+      // then sees a clean EOF) and unwinds the pipeline; aborting the upstream
+      // fetch releases the lingering provider socket. See issue #277.
       if (chunk === STREAM_DONE) {
         for (const event of translator.finalize()) {
           controller.enqueue(encoder.encode(formatSSE(event)));
         }
-        cleanupIdleTimer();
+        logStreamEnd('protocol_done');
         controller.terminate();
         try { upstreamController.abort(new Error('Upstream [DONE]')); } catch { /* ignore */ }
         return;
@@ -864,8 +845,8 @@ export function handleStreamResponse(
 
   // Wrap once more to catch downstream cancellation and route it back to the
   // upstream AbortController. pipeThrough() forwards cancel() through each
-  // stage, but our Pattern 1 contract demands we ALSO abort the upstream
-  // fetch, which neither TransformStream knows about.
+  // stage, but we must ALSO abort the upstream fetch, which neither
+  // TransformStream knows about.
   //
   // Backpressure: drive the read loop from `pull()` rather than recursing
   // unconditionally after each enqueue. Web Streams calls `pull` once per
@@ -879,7 +860,7 @@ export function handleStreamResponse(
         const { done, value } = await reader.read();
         if (done) {
           try { controller.close(); } catch { /* ignore */ }
-          cleanupIdleTimer();
+          logStreamEnd('transport_eof');
           // Fix #8: detach the downstream-abort listener on the done path
           // too. Without this, request.signal kept a strong ref to
           // onDownstreamAbort until GC, leaking listeners across streamed
@@ -892,16 +873,13 @@ export function handleStreamResponse(
         controller.enqueue(value);
         // Don't recurse — Web Streams will call pull() again when desiredSize > 0.
       } catch (err) {
-        log(`[bridge] Stream error: ${err}`);
+        logStreamEnd('transport_error', err);
         try { controller.error(err); } catch { /* ignore */ }
-        cleanupIdleTimer();
         detachDownstream();
       }
     },
     cancel(reason): void {
-      const reasonStr = reason instanceof Error ? reason.message : String(reason ?? 'unknown');
-      log(`[bridge] Downstream cancelled stream: ${reasonStr.slice(0, 200)}`);
-      cleanupIdleTimer();
+      logStreamEnd('downstream_cancel', reason);
       detachDownstream();
       try { upstreamController.abort(new Error('Downstream cancel')); } catch { /* ignore */ }
       try {
@@ -929,6 +907,23 @@ function streamHeaders(): Record<string, string> {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
+  };
+}
+
+function createStreamEndLogger(
+  protocol: 'chat_completions' | 'responses',
+  log: (msg: string) => void,
+): (terminalKind: string, reason?: unknown) => void {
+  const startedAt = Date.now();
+  let logged = false;
+  return (terminalKind, reason) => {
+    if (logged) return;
+    logged = true;
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    const reasonText = reason === undefined
+      ? ''
+      : ` reason=${JSON.stringify(reason instanceof Error ? reason.message.slice(0, 200) : String(reason).slice(0, 200))}`;
+    log(`[bridge] Stream ended protocol=${protocol} terminal=${terminalKind} duration_ms=${durationMs}${reasonText}`);
   };
 }
 
@@ -976,30 +971,17 @@ export function handleResponsesStreamResponse(
   // Pattern 2 §2.3.3 — TransformStream pipeline (mirror of handleStreamResponse).
   const translator = new ResponsesStreamTranslator(requestModel);
   const sseParser = new SSEParser();
+  const logStreamEnd = createStreamEndLogger('responses', log);
   if (!upstreamResp.body) {
     // See handleStreamResponse: detach the request.signal listener so the rare
     // empty-body return doesn't leak it.
     if (downstreamSignal) {
       try { downstreamSignal.removeEventListener('abort', onDownstreamAbort); } catch { /* ignore */ }
     }
+    logStreamEnd('empty_body');
     return new Response('', { status: 200, headers: streamHeaders() });
   }
 
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const armIdleTimer = (): void => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      log(`[bridge] Upstream Responses idle ${UPSTREAM_IDLE_TIMEOUT_MS}ms — aborting (reason=timeout)`);
-      try { upstreamController.abort(new Error('Upstream idle timeout')); } catch { /* ignore */ }
-    }, UPSTREAM_IDLE_TIMEOUT_MS);
-    idleTimer.unref?.();
-  };
-  const cleanupIdleTimer = (): void => {
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = null;
-    }
-  };
   const detachDownstream = (): void => {
     if (downstreamSignal) {
       try { downstreamSignal.removeEventListener('abort', onDownstreamAbort); } catch { /* ignore */ }
@@ -1008,17 +990,16 @@ export function handleResponsesStreamResponse(
 
   const decoder = new TextDecoder();
   const sseParseTransform = new TransformStream<Uint8Array, ResponsesStreamEvent>({
-    start() { armIdleTimer(); },
     transform(chunk, controller) {
-      armIdleTimer();
       const text = decoder.decode(chunk, { stream: true });
       const sseEvents = sseParser.feed(text);
       for (const sseEvent of sseEvents) {
         // Intentional asymmetry vs the Chat path: the Responses translator
         // finalizes inline on `response.completed`/`response.failed` (its real
         // protocol terminators), so `[DONE]` — which isn't part of the OpenAI
-        // Responses streaming spec — is simply dropped here. The idle-timeout
-        // covers a (non-spec) provider that sends only `[DONE]`. See issue #277.
+        // Responses streaming spec — is simply dropped here. A provider that
+        // sends only `[DONE]` has not supplied a valid Responses terminal; true
+        // turn liveness remains owned by the Session watchdog. See issue #277.
         if (sseEvent.data === '[DONE]') continue;
         try {
           controller.enqueue(JSON.parse(sseEvent.data) as ResponsesStreamEvent);
@@ -1027,7 +1008,6 @@ export function handleResponsesStreamResponse(
         }
       }
     },
-    flush() { cleanupIdleTimer(); },
   });
 
   const encoder = new TextEncoder();
@@ -1041,10 +1021,10 @@ export function handleResponsesStreamResponse(
       // `response.failed` (emits message_stop). That is the protocol terminator,
       // so end the downstream response NOW rather than waiting for transport EOF
       // — same liveness fix as the Chat path: the SDK reads until EOF, so a
-      // provider that lingers after the terminal event would otherwise hang it
-      // until the idle-timeout abort. See issue #277.
+      // provider that lingers after the terminal event would otherwise hang it.
+      // See issue #277.
       if (anthropicEvents.some((ae) => ae.type === 'message_stop')) {
-        cleanupIdleTimer();
+        logStreamEnd(event.type === 'response.failed' ? 'response_failed' : 'response_completed');
         controller.terminate();
         try { upstreamController.abort(new Error('Upstream response complete')); } catch { /* ignore */ }
       }
@@ -1070,7 +1050,7 @@ export function handleResponsesStreamResponse(
         const { done, value } = await reader.read();
         if (done) {
           try { controller.close(); } catch { /* ignore */ }
-          cleanupIdleTimer();
+          logStreamEnd('transport_eof');
           // Fix #8: detach downstream listener on done too — covers both
           // normal completion and "upstream errored before any chunk" path
           // (immediate done:true without a flush).
@@ -1080,16 +1060,13 @@ export function handleResponsesStreamResponse(
         controller.enqueue(value);
         // Don't recurse — Web Streams will call pull() again when desiredSize > 0.
       } catch (err) {
-        log(`[bridge] Responses stream error: ${err}`);
+        logStreamEnd('transport_error', err);
         try { controller.error(err); } catch { /* ignore */ }
-        cleanupIdleTimer();
         detachDownstream();
       }
     },
     cancel(reason): void {
-      const reasonStr = reason instanceof Error ? reason.message : String(reason ?? 'unknown');
-      log(`[bridge] Downstream cancelled Responses stream: ${reasonStr.slice(0, 200)}`);
-      cleanupIdleTimer();
+      logStreamEnd('downstream_cancel', reason);
       detachDownstream();
       try { upstreamController.abort(new Error('Downstream cancel')); } catch { /* ignore */ }
       try {

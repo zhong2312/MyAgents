@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { localTimestamp } from '../shared/logTime';
+import { isLiveRevisionEnvelope, type LiveRevisionEnvelope } from '../shared/liveRevision';
 
 type SseClient = {
   id: string;
@@ -490,7 +491,18 @@ const SILENT_EVENTS = new Set([
 // frequency and flows through already. Keeping the rule narrow avoids
 // semantic surprises.
 const CHUNK_COALESCE_MS = 40;
-const chunkBuffers = new Map<string, { merged: string; timer: ReturnType<typeof setTimeout> }>();
+type LiveRevisionScope = {
+  sessionId: string;
+  nextRevision: () => number;
+};
+
+type ChunkBuffer = {
+  merged: string;
+  timer: ReturnType<typeof setTimeout>;
+  liveScope?: LiveRevisionScope;
+};
+
+const chunkBuffers = new Map<string, ChunkBuffer>();
 
 // Events that don't carry ordering semantics with the text stream and must
 // NOT cause a pending-chunk buffer drain. `chat:log` fires from inside the
@@ -511,6 +523,15 @@ function flushCoalescedChunk(event: string): void {
   if (!entry) return;
   chunkBuffers.delete(event);
   clearTimeout(entry.timer);
+  if (entry.liveScope) {
+    const envelope: LiveRevisionEnvelope<string> = {
+      sessionId: entry.liveScope.sessionId,
+      liveRevision: entry.liveScope.nextRevision(),
+      payload: entry.merged,
+    };
+    broadcastImmediate(event, envelope);
+    return;
+  }
   broadcastImmediate(event, entry.merged);
 }
 
@@ -522,13 +543,14 @@ function flushAllCoalesced(): void {
 }
 
 function broadcastImmediate(event: string, data: unknown): void {
+  const eventPayload = isLiveRevisionEnvelope(data) ? data.payload : data;
   if (AGGREGATED_EVENTS.has(event)) {
-    recordStreamingLog(event, data);
+    recordStreamingLog(event, eventPayload);
   } else {
-    flushStreamingLogsForBoundary(event, data);
+    flushStreamingLogsForBoundary(event, eventPayload);
   }
   if (!SILENT_EVENTS.has(event) && !AGGREGATED_EVENTS.has(event)) {
-    console.log(`[sse] ${event} -> ${summarizePayload(event, data)}`);
+    console.log(`[sse] ${event} -> ${summarizePayload(event, eventPayload)}`);
   }
   // Update last-value cache for stateful events
   if (CACHED_EVENTS.has(event)) {
@@ -561,6 +583,46 @@ export function broadcast(event: string, data: unknown): void {
     flushAllCoalesced();
   }
   broadcastImmediate(event, data);
+}
+
+export function broadcastLive(
+  event: string,
+  data: unknown,
+  scope: LiveRevisionScope,
+): void {
+  if (event === 'chat:message-chunk' && typeof data === 'string') {
+    let entry = chunkBuffers.get(event);
+    if (entry && entry.liveScope?.sessionId !== scope.sessionId) {
+      flushCoalescedChunk(event);
+      entry = undefined;
+    }
+    if (!entry) {
+      entry = {
+        merged: data,
+        liveScope: scope,
+        timer: setTimeout(() => flushCoalescedChunk(event), CHUNK_COALESCE_MS),
+      };
+      chunkBuffers.set(event, entry);
+    } else {
+      entry.merged += data;
+    }
+    return;
+  }
+
+  if (chunkBuffers.size > 0 && !NON_FLUSHING_EVENTS.has(event)) {
+    flushAllCoalesced();
+  }
+  const envelope: LiveRevisionEnvelope = {
+    sessionId: scope.sessionId,
+    liveRevision: scope.nextRevision(),
+    payload: data,
+  };
+  broadcastImmediate(event, envelope);
+}
+
+/** Flush before an owner exposes a live snapshot so its revision covers all content. */
+export function flushPendingLiveEvents(): void {
+  flushAllCoalesced();
 }
 
 /**

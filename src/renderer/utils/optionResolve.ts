@@ -352,8 +352,8 @@ export function isResetSessionBirth(args: {
 /**
  * A real persisted-session switch must run loadSession, even if the renderer
  * still thinks the previous session is active. Pending->real and reset-birth
- * transitions are the live sidecar becoming durable; persisted real->real is a
- * user/history switch and needs /sessions/switch to rebind the sidecar state.
+ * transitions are the live sidecar becoming durable; initial null->persisted
+ * adoption and persisted real->real are history loads and need REST restore.
  */
 export function isExistingSessionSwitch(args: {
   sessionChanged: boolean;

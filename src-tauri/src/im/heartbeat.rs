@@ -20,7 +20,7 @@ use super::types::{
     ActiveHours, HeartbeatConfig, HeartbeatWake, HostInteractionCapability, PendingCronEvent,
     WakeReason,
 };
-use super::{AnyAdapter, PeerLocks};
+use super::{AnyAdapter, ChannelModelWorkGate, PeerLocks};
 
 /// Response from sidecar /api/im/heartbeat endpoint
 #[derive(Debug, Deserialize)]
@@ -60,6 +60,14 @@ fn count_pending_cron_events_for_session(pending: &[PendingCronEvent], session_k
         .iter()
         .filter(|event| cron_event_matches_session(event, session_key))
         .count()
+}
+
+pub(super) fn wake_for_pending_cron_event(event: &PendingCronEvent) -> HeartbeatWake {
+    HeartbeatWake::new(WakeReason::CronComplete {
+        task_id: event.task_id.clone(),
+        summary: event.content.clone(),
+    })
+    .with_target(event.target_session_key.clone())
 }
 
 /// Heartbeat prompt sent to sidecar
@@ -107,22 +115,22 @@ pub struct HeartbeatRunner {
     /// entries only after IM push success. Same Arc as the bot instance, so
     /// deliver-side appends and runner-side clears coordinate without IPC.
     pending_cron_events: Arc<Mutex<Vec<PendingCronEvent>>>,
+    model_work_gate: Arc<ChannelModelWorkGate>,
     /// Self-wake channel (clone of the same `mpsc::Sender` whose `Receiver`
     /// drives `run_loop`). Used at the end of `run_once` to cascade-trigger
     /// the next iteration when there are still pending cron events: the
     /// run_once contract is "process at most one cron event per cycle" (so
     /// the AI can't accidentally drop a relay by under-quoting a multi-event
     /// prompt), and without cascade the second event would wait a full
-    /// heartbeat interval. `try_send` with the existing 64-slot buffer is
-    /// fine — pending is durable, so missing a wake just means waiting one
-    /// interval tick instead of immediate processing.
+    /// heartbeat interval. Each successful delivery targets the next queue
+    /// entry, so one Channel can drain events for multiple private peers.
     self_wake_tx: mpsc::Sender<HeartbeatWake>,
 }
 
 impl HeartbeatRunner {
     /// Create a new HeartbeatRunner.
     /// Returns (runner, config_arc) — caller keeps the config arc for hot-updating.
-    pub fn new(
+    pub(crate) fn new(
         config: HeartbeatConfig,
         bot_label: String,
         current_model: Arc<RwLock<Option<String>>>,
@@ -132,6 +140,7 @@ impl HeartbeatRunner {
         runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
         host_interaction: HostInteractionCapability,
         pending_cron_events: Arc<Mutex<Vec<PendingCronEvent>>>,
+        model_work_gate: Arc<ChannelModelWorkGate>,
         self_wake_tx: mpsc::Sender<HeartbeatWake>,
     ) -> (Self, Arc<RwLock<HeartbeatConfig>>) {
         let config = Arc::new(RwLock::new(config));
@@ -149,6 +158,7 @@ impl HeartbeatRunner {
             runtime_config,
             host_interaction,
             pending_cron_events,
+            model_work_gate,
             self_wake_tx,
         };
         (runner, config)
@@ -369,6 +379,11 @@ impl HeartbeatRunner {
                 }
             }
         }
+
+        let Some(_model_work_guard) = self.model_work_gate.try_enter() else {
+            ulog_debug!("[heartbeat] Skipped: channel transport is reconnecting");
+            return true;
+        };
 
         // Gate 3: Concurrent execution guard
         // Both paths do check+set in a single lock acquisition to avoid TOCTOU races.
@@ -877,34 +892,28 @@ impl HeartbeatRunner {
         *self.executing.lock().await = false;
 
         // Cascade-wake: only trigger an immediate next heartbeat if THIS cycle
-        // actually made progress (acked at least one cron event) AND there are
-        // still events waiting. Without the progress check we'd hot-loop on
+        // actually made progress (acked at least one cron event) AND there is
+        // another event waiting. Without the progress check we'd hot-loop on
         // persistent failure modes (AI giving silent for cron, or IM platform
         // refusing pushes), each cycle costing AI tokens or hammering the
         // platform. Falling back to the regular interval tick gives natural
         // backoff (30 min by default). Pending is durable across the wait, so
         // nothing is lost — just deferred.
-        //
-        // `Manual` (not `CronComplete`) because the wake reason is just a
-        // trigger; the actual payload lives in `self.pending_cron_events`,
-        // which is the single source of truth that run_once snapshots.
         if cron_event_acked_this_cycle {
-            let still_pending = {
+            let next_pending = {
                 let pending = self.pending_cron_events.lock().await;
-                count_pending_cron_events_for_session(&pending, &session_key)
+                pending.first().map(wake_for_pending_cron_event)
             };
-            if still_pending > 0 {
-                let cascade_wake =
-                    HeartbeatWake::new(WakeReason::Manual).with_target(Some(session_key.clone()));
+            if let Some(cascade_wake) = next_pending {
                 match self.self_wake_tx.try_send(cascade_wake) {
-                    Ok(_) => ulog_info!(
-                        "[heartbeat] Cascade-wake scheduled — {} cron event(s) still pending",
-                        still_pending
-                    ),
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        // Queue capacity is 64 — full means a wake storm; existing
-                        // wakes will drain pending eventually.
-                        ulog_debug!("[heartbeat] Cascade-wake skipped: wake channel full");
+                    Ok(_) => ulog_info!("[heartbeat] Cascade-wake scheduled for next cron event"),
+                    Err(mpsc::error::TrySendError::Full(wake)) => {
+                        // The runner cannot await its own full queue. Wait for
+                        // the next receiver slot without blocking this cycle.
+                        let wake_tx = self.self_wake_tx.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = wake_tx.send(wake).await;
+                        });
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         // Receiver dropped → runner is shutting down; nothing to do.
@@ -1021,6 +1030,23 @@ mod tests {
             count_pending_cron_events_for_session(&pending, "im:feishu:private:b"),
             2,
         );
+    }
+
+    #[test]
+    fn next_pending_cron_wake_switches_private_target() {
+        let event = cron_event("task-b", Some("im:feishu:private:b"));
+
+        let wake = wake_for_pending_cron_event(&event);
+
+        assert!(wake.is_high_priority());
+        assert_eq!(
+            wake.target_session_key.as_deref(),
+            Some("im:feishu:private:b")
+        );
+        assert!(matches!(
+            wake.reason,
+            WakeReason::CronComplete { task_id, .. } if task_id == "task-b"
+        ));
     }
 
     #[test]

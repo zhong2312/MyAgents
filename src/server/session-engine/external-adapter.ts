@@ -19,7 +19,8 @@ import {
   getActiveRuntimeSource,
   getActiveRuntimeType,
   getCurrentBoundSessionId,
-  getExternalLiveAssistantMessage,
+  getExternalLiveSessionSnapshot,
+  getExternalSessionCompletionTerminal,
   getExternalPendingInteractiveRequests,
   getExternalQueueStatus,
   getExternalSessionId,
@@ -31,6 +32,7 @@ import {
   getExternalSystemInitPayload,
   getExternalCurrentTurnIdentity,
   getLastExternalAssistantText,
+  handleExternalOfficialToolIdsChange,
   handleExternalProxyConfigChange,
   hasExternalQueuedTurnByOwner,
   hasExternalRuntimeProcess,
@@ -64,7 +66,6 @@ import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
 import { getSessionData, updateSessionMetadata } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
-import type { SessionMessage } from '../types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import {
   getProcessProxyEnvKey,
@@ -122,21 +123,6 @@ function normalizeExternalRuntimeSource(
 ): RuntimeSource | undefined {
   if (runtime === 'builtin') return undefined;
   return runtimeSource ?? 'system-cli';
-}
-
-function externalLiveMessageToSessionMessage(message: SessionMessage): SessionMessage {
-  return {
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    timestamp: message.timestamp,
-    sdkUuid: message.sdkUuid,
-    attachments: message.attachments,
-    metadata: message.metadata,
-    usage: message.usage,
-    toolCount: message.toolCount,
-    durationMs: message.durationMs,
-  };
 }
 
 type ExternalFreezeSnapshotPatch = NonNullable<
@@ -252,20 +238,23 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     getLiveSessionOverlay(sessionId: string) {
-      if (sessionId !== getRuntimeSessionId()) {
+      const snapshot = getExternalLiveSessionSnapshot(sessionId);
+      if (!snapshot) {
         return { isActive: false };
       }
-      const liveMessage = getExternalLiveAssistantMessage();
       return {
         isActive: true,
         runtime: getActiveRuntimeType(),
-        liveStreamingMessage: liveMessage ? externalLiveMessageToSessionMessage(liveMessage) : null,
-        liveSessionState: getExternalSessionState(),
+        ...snapshot,
       };
     },
 
     getCurrentTurnIdentity() {
       return getExternalCurrentTurnIdentity();
+    },
+
+    getSessionCompletionTerminal() {
+      return getExternalSessionCompletionTerminal();
     },
 
     hasQueuedTurnOwnedBy(owner) {
@@ -543,6 +532,18 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async stopOwnedTurn(owner) {
+      const admitted = getExternalCurrentTurnIdentity();
+      if (
+        admitted
+        && admitted.owner.kind === owner.kind
+        && admitted.owner.id === owner.id
+        && isExternalTurnCurrent(admitted.queueId)
+      ) {
+        const stopped = await stopExternalTarget();
+        return stopped
+          ? { success: true, alreadyStopped: false }
+          : { success: false, error: 'External runtime process did not stop' };
+      }
       const canceled = cancelExternalQueuedTurnsByOwner(owner);
       const promotionSettlement = await canceled.promotion?.settled;
       if (promotionSettlement?.status === 'termination-unconfirmed') {
@@ -600,11 +601,8 @@ export function createExternalSessionEngine(): SessionEngine {
       return setExternalReasoningEffort(effort);
     },
 
-    async updateOfficialToolIds(_ids) {
-      if (hasExternalRuntimeProcess() && getExternalSessionState() !== 'running') {
-        await stopExternalSession();
-      }
-      return { success: true };
+    updateOfficialToolIds(ids) {
+      return handleExternalOfficialToolIdsChange(ids);
     },
 
     async updateProxyConfig(proxySettings) {

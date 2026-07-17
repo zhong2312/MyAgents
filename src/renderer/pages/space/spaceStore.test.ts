@@ -767,6 +767,51 @@ describe("spaceStore issue refresh", () => {
     expect(list.nextCursor).toBeNull();
   });
 
+  it("preserves the explicit all-state contract through refresh and pagination", async () => {
+    __setSpaceStoreStateForTest({ boot: "ready", session: fakeSession });
+    const nextIssue = {
+      ...fakeIssue,
+      id: "iss_done",
+      state: "done",
+      title: "Completed issue",
+      updatedAt: "2026-06-23T00:00:00.000Z",
+    };
+    apiMocks.spaceListIssues
+      .mockResolvedValueOnce({
+        items: [fakeIssue],
+        hasMore: true,
+        nextCursor: "cursor-all-2",
+      })
+      .mockResolvedValueOnce({
+        items: [nextIssue],
+        hasMore: false,
+        nextCursor: null,
+      });
+
+    await actions.refreshIssues({ state: "all", limit: 50 }, { force: true });
+    await actions.loadMoreIssues({ state: "all", limit: 50 });
+
+    expect(apiMocks.spaceListIssues).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ state: "all", limit: 50 }),
+      "official",
+    );
+    expect(apiMocks.spaceListIssues).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        state: "all",
+        cursor: "cursor-all-2",
+        limit: 50,
+      }),
+      "official",
+    );
+    expect(
+      getIssueListState({ state: "all", limit: 50 }).items.map(
+        (issue) => issue.id,
+      ),
+    ).toEqual([fakeIssue.id, nextIssue.id]);
+  });
+
   it("dedupes same-key issue refreshes while a request is in flight", async () => {
     __setSpaceStoreStateForTest({ boot: "ready", session: fakeSession });
     const pending = deferred<{

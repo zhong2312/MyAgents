@@ -5,6 +5,7 @@ import type { RuntimeModelInfo, RuntimeSource, RuntimeType } from './types/runti
 import type { UiLanguage } from './i18n';
 import type { OfficialToolId, OfficialToolSettings } from './official-tools';
 import type { SubscriptionVerifyFailureKind } from './subscription';
+import { PLAYWRIGHT_MCP_PACKAGE_SPEC } from './mcpPackages';
 import managedCodexRuntimeLock from './managed-codex-runtime.json';
 
 /**
@@ -752,6 +753,11 @@ export type ProxyScopeMode = 'all' | 'custom';
 
 export interface ProxyScopeSettings {
   mode: ProxyScopeMode;
+  /**
+   * Whether non-provider-owned network requests use the MyAgents app proxy.
+   * Missing on legacy custom scopes means `true` for backward compatibility.
+   */
+  generalRequests?: boolean;
   providerIds?: string[];
 }
 
@@ -1815,7 +1821,7 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
     description: '浏览器自动化能力，支持网页浏览、截图、表单填写等',
     type: 'stdio',
     command: 'npx',
-    args: ['@playwright/mcp@latest'],
+    args: [PLAYWRIGHT_MCP_PACKAGE_SPEC],
     isBuiltin: true,
     isFree: true,
   },

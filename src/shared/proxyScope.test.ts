@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { ProxySettings } from './config-types';
 import {
+  effectiveGeneralProxyScopeKey,
   effectiveProxyScopeKey,
   normalizeProxyScope,
   removeProviderFromProxySettingsScope,
+  shouldUseMyAgentsProxyForGeneralRequests,
   shouldUseMyAgentsProxyForProvider,
 } from './proxyScope';
 
@@ -26,14 +28,50 @@ describe('proxy scope normalization', () => {
 
   it('dedupes custom provider ids and drops blanks', () => {
     expect(normalizeProxyScope({ mode: 'custom', providerIds: ['deepseek', '', 'deepseek', ' openrouter '] }))
-      .toEqual({ mode: 'custom', providerIds: ['deepseek', 'openrouter'] });
+      .toEqual({ mode: 'custom', generalRequests: true, providerIds: ['deepseek', 'openrouter'] });
   });
 
-  it('cleans stale ids against visible providers and falls back to all when empty', () => {
+  it('keeps legacy general behavior and only falls back for legacy empty custom scopes', () => {
     expect(normalizeProxyScope({ mode: 'custom', providerIds: ['stale', 'deepseek'] }, ['deepseek']))
-      .toEqual({ mode: 'custom', providerIds: ['deepseek'] });
+      .toEqual({ mode: 'custom', generalRequests: true, providerIds: ['deepseek'] });
     expect(normalizeProxyScope({ mode: 'custom', providerIds: ['stale'] }, ['deepseek']))
       .toEqual({ mode: 'all' });
+  });
+
+  it('preserves explicit general selection and allows zero providers', () => {
+    expect(normalizeProxyScope({ mode: 'custom', generalRequests: false, providerIds: ['stale'] }, ['deepseek']))
+      .toEqual({ mode: 'custom', generalRequests: false, providerIds: [] });
+    expect(normalizeProxyScope({ mode: 'custom', generalRequests: true, providerIds: [] }))
+      .toEqual({ mode: 'custom', generalRequests: true, providerIds: [] });
+    expect(normalizeProxyScope({ mode: 'custom', generalRequests: false, providerIds: [] }))
+      .toEqual({ mode: 'custom', generalRequests: false, providerIds: [] });
+  });
+});
+
+describe('general request proxy decision', () => {
+  it('requires the global switch and defaults legacy scopes to enabled', () => {
+    expect(shouldUseMyAgentsProxyForGeneralRequests(proxy(undefined, false))).toBe(false);
+    expect(shouldUseMyAgentsProxyForGeneralRequests(proxy())).toBe(true);
+    expect(shouldUseMyAgentsProxyForGeneralRequests(proxy({ mode: 'custom', providerIds: ['deepseek'] })))
+      .toBe(true);
+  });
+
+  it('honors explicit custom general selection independently from providers', () => {
+    expect(shouldUseMyAgentsProxyForGeneralRequests(proxy({
+      mode: 'custom', generalRequests: false, providerIds: ['deepseek'],
+    }))).toBe(false);
+    expect(shouldUseMyAgentsProxyForGeneralRequests(proxy({
+      mode: 'custom', generalRequests: true, providerIds: [],
+    }))).toBe(true);
+  });
+
+  it('changes the effective key only when the general path changes', () => {
+    const generalOff = proxy({ mode: 'custom', generalRequests: false, providerIds: ['deepseek'] });
+    const generalOffOtherProvider = proxy({ mode: 'custom', generalRequests: false, providerIds: ['openrouter'] });
+    expect(effectiveGeneralProxyScopeKey(generalOff))
+      .toBe(effectiveGeneralProxyScopeKey(generalOffOtherProvider));
+    expect(effectiveGeneralProxyScopeKey(proxy()))
+      .toBe('myagents-proxy:general:http://127.0.0.1:7897');
   });
 });
 
@@ -58,14 +96,21 @@ describe('provider-owned proxy decision', () => {
       .toBe('myagents-proxy:disabled-for-provider:deepseek');
   });
 
-  it('removes deleted provider ids from custom scope and falls back to all when empty', () => {
+  it('removes deleted provider ids while preserving custom general scope', () => {
     expect(removeProviderFromProxySettingsScope(
-      proxy({ mode: 'custom', providerIds: ['deepseek', 'openrouter'] }),
+      proxy({ mode: 'custom', generalRequests: false, providerIds: ['deepseek', 'openrouter'] }),
       'deepseek',
-    )?.scope).toEqual({ mode: 'custom', providerIds: ['openrouter'] });
+    )?.scope).toEqual({ mode: 'custom', generalRequests: false, providerIds: ['openrouter'] });
     expect(removeProviderFromProxySettingsScope(
       proxy({ mode: 'custom', providerIds: ['deepseek'] }),
       'deepseek',
-    )?.scope).toEqual({ mode: 'all' });
+    )?.scope).toEqual({ mode: 'custom', generalRequests: true, providerIds: [] });
+  });
+
+  it('keeps provider restart keys independent from general-only changes', () => {
+    const providerOn = proxy({ mode: 'custom', generalRequests: true, providerIds: ['deepseek'] });
+    const providerOnGeneralOff = proxy({ mode: 'custom', generalRequests: false, providerIds: ['deepseek'] });
+    expect(effectiveProxyScopeKey(providerOn, 'deepseek'))
+      .toBe(effectiveProxyScopeKey(providerOnGeneralOff, 'deepseek'));
   });
 });

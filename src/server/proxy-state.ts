@@ -1,9 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { Agent, Dispatcher, ProxyAgent } from 'undici';
 
 import type { ProxySettings } from '../shared/config-types';
-import { effectiveProxyScopeKey, shouldUseMyAgentsProxyForProvider } from '../shared/proxyScope';
+import {
+  effectiveProxyScopeKey,
+  normalizeProxyScope,
+  shouldUseMyAgentsProxyForGeneralRequests,
+  shouldUseMyAgentsProxyForProvider,
+} from '../shared/proxyScope';
 import {
   isSocksBridgeRunning,
   startSocksBridge,
@@ -28,11 +34,79 @@ const proxyInheritedEnvJson = process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON;
 delete process.env.MYAGENTS_PROXY_INJECTED;
 delete process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON;
 
-const inheritedProxySnapshot: Record<string, string | undefined> = readInheritedProxySnapshot();
+let inheritedProxySnapshot: Record<string, string | undefined> = readInheritedProxySnapshot();
 
 let currentProxySettings: ProxySettings | null = readInitialProxySettings();
+let appProxyEnvSnapshot: Record<string, string | undefined> | null = currentProxySettings?.enabled
+  ? createAppProxyEnvSnapshot(rawProxyUrl(currentProxySettings))
+  : null;
+let providerOwnedConsumersEnabled = true;
 let proxyConfigGeneration = 0;
 let proxyConfigTransition: Promise<void> = Promise.resolve();
+let generalRequestDispatcher: { key: string; dispatcher: Dispatcher } | null = null;
+
+/**
+ * Select a direct or protocol-specific proxy child with the canonical
+ * NO_PROXY matcher. MyAgents' localhost invariant includes the whole 127/8
+ * range, which Undici's conventional hostname matcher does not cover.
+ */
+class GeneralRequestDispatcher extends Dispatcher {
+  private readonly direct = new Agent();
+  private readonly httpProxy?: ProxyAgent;
+  private readonly httpsProxy?: ProxyAgent;
+  private readonly noProxy: string;
+
+  constructor(options: { httpProxy?: string; httpsProxy?: string; noProxy: string }) {
+    super();
+    this.noProxy = options.noProxy;
+    if (options.httpProxy) this.httpProxy = new ProxyAgent(options.httpProxy);
+    if (options.httpsProxy) this.httpsProxy = new ProxyAgent(options.httpsProxy);
+  }
+
+  override dispatch(
+    options: Dispatcher.DispatchOptions,
+    handler: Dispatcher.DispatchHandler,
+  ): boolean {
+    const origin = typeof options.origin === 'string'
+      ? new URL(options.origin)
+      : options.origin;
+    if (!origin || shouldBypassProxy(origin, this.noProxy)) {
+      return this.direct.dispatch(options, handler);
+    }
+    const proxied = origin.protocol === 'https:' ? this.httpsProxy : this.httpProxy;
+    return (proxied ?? this.direct).dispatch(options, handler);
+  }
+
+  override async close(): Promise<void> {
+    await Promise.all([
+      this.direct.close(),
+      this.httpProxy?.close(),
+      this.httpsProxy?.close(),
+    ]);
+  }
+
+  override destroy(err: Error | null, callback: () => void): void;
+  override destroy(callback: () => void): void;
+  override destroy(err: Error | null): Promise<void>;
+  override destroy(): Promise<void>;
+  override destroy(
+    errOrCallback?: Error | null | (() => void),
+    callback?: () => void,
+  ): void | Promise<void> {
+    const err = typeof errOrCallback === 'function' ? null : (errOrCallback ?? null);
+    const completion = Promise.all([
+      this.direct.destroy(err),
+      this.httpProxy?.destroy(err),
+      this.httpsProxy?.destroy(err),
+    ]).then(() => undefined);
+    const done = typeof errOrCallback === 'function' ? errOrCallback : callback;
+    if (done) {
+      void completion.finally(done);
+      return;
+    }
+    return completion;
+  }
+}
 
 function readInheritedProxySnapshot(): Record<string, string | undefined> {
   if (proxyWasInjectedByRust && proxyInheritedEnvJson) {
@@ -59,13 +133,6 @@ function readInheritedProxySnapshot(): Record<string, string | undefined> {
     }
   }
   return snapshot;
-}
-
-function proxySnapshotForLog(snapshot: Record<string, string | undefined>): string {
-  for (const key of PROXY_VARS_LIST) {
-    if (snapshot[key]) return snapshot[key] ?? '';
-  }
-  return '';
 }
 
 function readInitialProxySettings(): ProxySettings | null {
@@ -95,23 +162,19 @@ function rawProxyUrl(settings: ProxySettings): string {
   return `${settings.protocol || 'http'}://${settings.host || '127.0.0.1'}:${settings.port || 7890}`;
 }
 
-function applyProxyEnvVars(proxyUrl: string, noProxyVal: string): void {
-  process.env.HTTP_PROXY = proxyUrl;
-  process.env.HTTPS_PROXY = proxyUrl;
-  process.env.http_proxy = proxyUrl;
-  process.env.https_proxy = proxyUrl;
-  process.env.NO_PROXY = noProxyVal;
-  process.env.no_proxy = noProxyVal;
-  delete process.env.ALL_PROXY;
-  delete process.env.all_proxy;
+function createAppProxyEnvSnapshot(proxyUrl: string): Record<string, string | undefined> {
+  return {
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+    NO_PROXY: PROXY_NO_PROXY_VAL,
+    no_proxy: PROXY_NO_PROXY_VAL,
+  };
 }
 
 function restoreInheritedProxyEnvToProcess(): void {
-  for (const key of PROXY_VARS_LIST) {
-    const value = inheritedProxySnapshot[key];
-    if (value !== undefined) process.env[key] = value;
-    else delete process.env[key];
-  }
+  copyProxyEnvVars(process.env, inheritedProxySnapshot);
 }
 
 function copyProxyEnvVars(
@@ -125,42 +188,91 @@ function copyProxyEnvVars(
   }
   delete target.MYAGENTS_PROXY_INJECTED;
   delete target.MYAGENTS_PROXY_INHERITED_ENV_JSON;
-  if (!target.NO_PROXY && !target.no_proxy) {
-    target.NO_PROXY = PROXY_NO_PROXY_VAL;
-    target.no_proxy = PROXY_NO_PROXY_VAL;
+  const inheritedNoProxy = target.no_proxy || target.NO_PROXY;
+  const noProxy = mergeNoProxyWithLocalhost(inheritedNoProxy);
+  target.NO_PROXY = noProxy;
+  target.no_proxy = noProxy;
+}
+
+function mergeNoProxyWithLocalhost(value: string | undefined): string {
+  if (!value) return PROXY_NO_PROXY_VAL;
+  if (value.trim() === '*') return '*';
+  const entries = value.split(',').map(entry => entry.trim()).filter(Boolean);
+  const seen = new Set(entries.map(entry => entry.toLowerCase()));
+  for (const entry of PROXY_NO_PROXY_VAL.split(',')) {
+    if (!seen.has(entry.toLowerCase())) entries.push(entry);
   }
+  return entries.join(',');
+}
+
+function applyGeneralProxyEnv(): void {
+  if (
+    shouldUseMyAgentsProxyForGeneralRequests(currentProxySettings)
+    && appProxyEnvSnapshot
+  ) {
+    copyProxyEnvVars(process.env, appProxyEnvSnapshot);
+    return;
+  }
+  restoreInheritedProxyEnvToProcess();
+}
+
+function hasAnyAppProxyConsumer(settings: ProxySettings): boolean {
+  if (!settings.enabled) return false;
+  const scope = normalizeProxyScope(settings.scope);
+  if (scope.mode === 'all') return true;
+  return scope.generalRequests === true
+    || (providerOwnedConsumersEnabled && (scope.providerIds?.length ?? 0) > 0);
 }
 
 function proxyForUrlFromEnv(url: string, env: Record<string, string | undefined>): string | undefined {
-  const proxy = env.https_proxy || env.HTTPS_PROXY
-    || env.http_proxy || env.HTTP_PROXY
-    || env.ALL_PROXY || env.all_proxy;
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return undefined;
+  }
+
+  const allProxy = env.all_proxy || env.ALL_PROXY;
+  const httpProxy = env.http_proxy || env.HTTP_PROXY || allProxy;
+  const httpsProxy = env.https_proxy || env.HTTPS_PROXY || httpProxy || allProxy;
+  const proxy = parsedUrl.protocol === 'http:' ? httpProxy : httpsProxy;
   if (!proxy) return undefined;
 
   const noProxy = env.no_proxy || env.NO_PROXY || '';
-  if (noProxy === '*') return undefined;
-  if (noProxy) {
-    try {
-      const host = new URL(url).hostname.toLowerCase();
-      const excluded = noProxy.split(',').some(patternRaw => {
-        const pattern = patternRaw.trim().toLowerCase();
-        if (!pattern) return false;
-        const normalizedHost = normalizeNoProxyHost(host);
-        const normalizedPattern = normalizeNoProxyHost(pattern);
-        if (normalizedPattern === '127.0.0.0/8' || normalizedPattern === '127/8') {
-          return normalizedHost === '127.0.0.1' || normalizedHost.startsWith('127.');
-        }
-        if (normalizedPattern.startsWith('.')) {
-          return normalizedHost.endsWith(normalizedPattern);
-        }
-        return normalizedHost === normalizedPattern || normalizedHost.endsWith(`.${normalizedPattern}`);
-      });
-      if (excluded) return undefined;
-    } catch {
-      // Invalid target URL: leave proxy detection to the caller's fetch error.
-    }
-  }
+  if (shouldBypassProxy(parsedUrl, noProxy)) return undefined;
   return proxy;
+}
+
+function shouldBypassProxy(url: URL, noProxy: string): boolean {
+  if (noProxy.trim() === '*') return true;
+  if (!noProxy) return false;
+
+  const host = normalizeNoProxyHost(url.hostname);
+  const port = url.port || (url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '');
+  return noProxy.split(/[\s,]/).some(patternRaw => {
+    let pattern = patternRaw.trim().toLowerCase();
+    if (!pattern) return false;
+
+    let patternPort = '';
+    const bracketed = /^(\[[^\]]+\])(?::(\d+))?$/.exec(pattern);
+    if (bracketed) {
+      pattern = bracketed[1];
+      patternPort = bracketed[2] ?? '';
+    } else {
+      const withPort = /^(.*):(\d+)$/.exec(pattern);
+      if (withPort) {
+        pattern = withPort[1];
+        patternPort = withPort[2];
+      }
+    }
+    if (patternPort && patternPort !== port) return false;
+
+    const normalizedPattern = normalizeNoProxyHost(pattern.replace(/^\*?\./, ''));
+    if (normalizedPattern === '127.0.0.0/8' || normalizedPattern === '127/8') {
+      return host === '127.0.0.1' || host.startsWith('127.');
+    }
+    return host === normalizedPattern || host.endsWith(`.${normalizedPattern}`);
+  });
 }
 
 function normalizeNoProxyHost(host: string): string {
@@ -185,7 +297,6 @@ export function getProcessProxyEnvKey(): string {
 
 export async function setProcessProxyConfig(rawSettings: unknown): Promise<void> {
   const proxySettings = coerceProxySettings(rawSettings);
-  currentProxySettings = proxySettings;
   const generation = ++proxyConfigGeneration;
 
   const transition = proxyConfigTransition
@@ -205,32 +316,37 @@ async function applyProcessProxyConfig(
     if (isSocksBridgeRunning()) {
       await stopSocksBridge().catch(() => { /* ignore */ });
     }
-    restoreInheritedProxyEnvToProcess();
-    const restoredProxy = proxySnapshotForLog(inheritedProxySnapshot);
-    console.log(`[proxy-state] Proxy disabled, restored inherited state${restoredProxy ? ` (${restoredProxy})` : ''}`);
+    commitProxyState(proxySettings, null);
+    console.log('[proxy-state] owner=general path=inherited reason=proxy-disabled');
     return;
   }
 
   const proxyUrl = rawProxyUrl(proxySettings);
   if (proxySettings.protocol === 'socks5') {
+    if (!hasAnyAppProxyConsumer(proxySettings)) {
+      if (isSocksBridgeRunning()) {
+        await stopSocksBridge().catch(() => { /* ignore */ });
+      }
+      commitProxyState(proxySettings, createAppProxyEnvSnapshot(proxyUrl));
+      console.log('[proxy-state] owner=general path=inherited scope=empty');
+      return;
+    }
     try {
       const bridgePort = await startSocksBridge(proxySettings.host || '127.0.0.1', proxySettings.port || 7890);
       if (generation !== proxyConfigGeneration) {
         console.log('[proxy-state] SOCKS5 bridge callback discarded (superseded)');
-        await stopSocksBridge().catch(() => { /* ignore stale bridge */ });
         return;
       }
       const bridgeUrl = `http://127.0.0.1:${bridgePort}`;
-      applyProxyEnvVars(bridgeUrl, PROXY_NO_PROXY_VAL);
-      console.log(`[proxy-state] SOCKS5 proxy applied: ${proxyUrl} -> bridge ${bridgeUrl}`);
+      commitProxyState(proxySettings, createAppProxyEnvSnapshot(bridgeUrl));
+      console.log(`[proxy-state] owner=general path=${shouldUseMyAgentsProxyForGeneralRequests(proxySettings) ? 'myagents-proxy' : 'inherited'} protocol=socks5-bridge`);
       return;
     } catch (err) {
       if (generation !== proxyConfigGeneration) {
-        await stopSocksBridge().catch(() => { /* ignore stale bridge */ });
         return;
       }
       console.error(`[proxy-state] Failed to start SOCKS5 bridge: ${err instanceof Error ? err.message : String(err)}. Falling back to raw URL.`);
-      applyProxyEnvVars(proxyUrl, PROXY_NO_PROXY_VAL);
+      commitProxyState(proxySettings, createAppProxyEnvSnapshot(proxyUrl));
       return;
     }
   }
@@ -238,41 +354,96 @@ async function applyProcessProxyConfig(
   if (isSocksBridgeRunning()) {
     await stopSocksBridge().catch(() => { /* ignore */ });
   }
-  applyProxyEnvVars(proxyUrl, PROXY_NO_PROXY_VAL);
-  console.log(`[proxy-state] Proxy applied: ${proxyUrl}`);
+  commitProxyState(proxySettings, createAppProxyEnvSnapshot(proxyUrl));
+  console.log(`[proxy-state] owner=general path=${shouldUseMyAgentsProxyForGeneralRequests(proxySettings) ? 'myagents-proxy' : 'inherited'} protocol=${proxySettings.protocol || 'http'}`);
 }
 
-export async function initSocksBridgeFromCurrentEnv(): Promise<void> {
-  const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY || '';
-  if (!proxyUrl.startsWith('socks5://')) return;
+function commitProxyState(
+  settings: ProxySettings | null,
+  appSnapshot: Record<string, string | undefined> | null,
+): void {
+  currentProxySettings = settings;
+  appProxyEnvSnapshot = appSnapshot;
+  applyGeneralProxyEnv();
+  retireGeneralRequestDispatcher();
+}
 
-  try {
-    const url = new URL(proxyUrl);
-    const host = url.hostname || '127.0.0.1';
-    const port = parseInt(url.port, 10) || 1080;
-    const bridgePort = await startSocksBridge(host, port);
-    const bridgeUrl = `http://127.0.0.1:${bridgePort}`;
-    applyProxyEnvVars(bridgeUrl, PROXY_NO_PROXY_VAL);
-    console.log(`[proxy-state] SOCKS5 bridge initialized at startup: ${proxyUrl} -> ${bridgeUrl}`);
-  } catch (err) {
-    console.error(`[proxy-state] Failed to initialize SOCKS5 bridge from env: ${err instanceof Error ? err.message : String(err)}`);
+function retireGeneralRequestDispatcher(): void {
+  const retired = generalRequestDispatcher;
+  generalRequestDispatcher = null;
+  if (retired) {
+    void retired.dispatcher.close().catch((err: unknown) => {
+      console.warn('[proxy-state] Failed to close retired general request dispatcher:', err);
+    });
   }
+}
+
+function generalRequestEnvSnapshot(): Record<string, string | undefined> {
+  return shouldUseMyAgentsProxyForGeneralRequests(currentProxySettings)
+    ? (appProxyEnvSnapshot ?? {})
+    : inheritedProxySnapshot;
+}
+
+function envHttpProxyOptions(env: Record<string, string | undefined>): {
+  httpProxy?: string;
+  httpsProxy?: string;
+  noProxy: string;
+} {
+  const allProxy = env.all_proxy || env.ALL_PROXY;
+  const httpProxy = env.http_proxy || env.HTTP_PROXY || allProxy;
+  const httpsProxy = env.https_proxy || env.HTTPS_PROXY || httpProxy || allProxy;
+  return {
+    ...(httpProxy ? { httpProxy } : {}),
+    ...(httpsProxy ? { httpsProxy } : {}),
+    noProxy: mergeNoProxyWithLocalhost(env.no_proxy || env.NO_PROXY),
+  };
+}
+
+/**
+ * Dispatcher for generic MyAgents-owned network requests. The selected source
+ * is either the live app-proxy overlay or the immutable startup environment;
+ * it never reinterprets the process env after Rust/Node have overlaid it.
+ */
+export function getGeneralRequestDispatcher(): Dispatcher {
+  const options = envHttpProxyOptions(generalRequestEnvSnapshot());
+  const key = JSON.stringify(options);
+  if (generalRequestDispatcher?.key === key) return generalRequestDispatcher.dispatcher;
+
+  const retired = generalRequestDispatcher;
+  const dispatcher = new GeneralRequestDispatcher(options);
+  generalRequestDispatcher = { key, dispatcher };
+  if (retired) {
+    void retired.dispatcher.close().catch((err: unknown) => {
+      console.warn('[proxy-state] Failed to close superseded general request dispatcher:', err);
+    });
+  }
+  return dispatcher;
+}
+
+/** Initialize complete proxy state from disk-derived settings at Sidecar startup. */
+export async function initializeProxyStateFromCurrentSettings(options?: {
+  providerOwnedConsumers?: boolean;
+}): Promise<void> {
+  providerOwnedConsumersEnabled = options?.providerOwnedConsumers !== false;
+  await setProcessProxyConfig(currentProxySettings);
 }
 
 export function applyProviderProxyPolicyToEnv(
   env: Record<string, string | undefined>,
   providerId: string,
 ): void {
-  if (shouldUseMyAgentsProxyForProvider(currentProxySettings, providerId)) {
-    copyProxyEnvVars(env, process.env);
-    return;
+  const useAppProxy = shouldUseMyAgentsProxyForProvider(currentProxySettings, providerId);
+  if (useAppProxy) {
+    copyProxyEnvVars(env, appProxyEnvSnapshot ?? {});
+  } else {
+    copyProxyEnvVars(env, inheritedProxySnapshot);
   }
-  copyProxyEnvVars(env, inheritedProxySnapshot);
+  console.log(`[proxy-state] owner=provider provider=${providerId} path=${useAppProxy ? 'myagents-proxy' : 'inherited'}`);
 }
 
 export function getProxyForProviderUrl(providerId: string, url: string): string | undefined {
   const source = shouldUseMyAgentsProxyForProvider(currentProxySettings, providerId)
-    ? process.env
+    ? (appProxyEnvSnapshot ?? {})
     : inheritedProxySnapshot;
   return proxyForUrlFromEnv(url, source);
 }
@@ -281,6 +452,37 @@ export function getProxyForUrl(url: string): string | undefined {
   return proxyForUrlFromEnv(url, process.env);
 }
 
-export function _resetProxyStateForTests(settings: ProxySettings | null): void {
+/**
+ * Resolve only the proxy explicitly configured by MyAgents for general
+ * requests. Security-sensitive callers use this to distinguish the trusted
+ * app overlay from the inherited baseline.
+ */
+export function getMyAgentsProxyForGeneralUrl(url: string): string | undefined {
+  if (!shouldUseMyAgentsProxyForGeneralRequests(currentProxySettings)) return undefined;
+  return proxyForUrlFromEnv(url, appProxyEnvSnapshot ?? {});
+}
+
+export function _getInheritedProxySnapshotForTests(): Record<string, string | undefined> {
+  return { ...inheritedProxySnapshot };
+}
+
+export function _getGeneralRequestProxyOptionsForTests(): ReturnType<typeof envHttpProxyOptions> {
+  return envHttpProxyOptions(generalRequestEnvSnapshot());
+}
+
+export function _shouldBypassProxyForTests(url: string, noProxy: string): boolean {
+  return shouldBypassProxy(new URL(url), noProxy);
+}
+
+export function _resetProxyStateForTests(
+  settings: ProxySettings | null,
+  inheritedEnv?: Record<string, string | undefined>,
+): void {
+  if (inheritedEnv !== undefined) inheritedProxySnapshot = { ...inheritedEnv };
   currentProxySettings = settings;
+  appProxyEnvSnapshot = settings?.enabled
+    ? createAppProxyEnvSnapshot(rawProxyUrl(settings))
+    : null;
+  applyGeneralProxyEnv();
+  retireGeneralRequestDispatcher();
 }

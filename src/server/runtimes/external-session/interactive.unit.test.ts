@@ -86,7 +86,7 @@ describe('external interactive owner integration', () => {
       writeLine: vi.fn(async () => undefined),
       kill: vi.fn(),
       waitForExit: vi.fn(async () => 0),
-    } satisfies RuntimeProcess);
+    } satisfies RuntimeProcess, []);
     setExternalActiveRuntime({
       type: 'codex',
       respondPermission,
@@ -127,7 +127,7 @@ describe('external interactive owner integration', () => {
       writeLine: vi.fn(async () => undefined),
       kill: vi.fn(),
       waitForExit: vi.fn(async () => 0),
-    } satisfies RuntimeProcess);
+    } satisfies RuntimeProcess, []);
     setExternalActiveRuntime({
       type: 'codex',
       respondPermission,

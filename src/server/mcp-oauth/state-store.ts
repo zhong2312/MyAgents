@@ -11,7 +11,12 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { McpOAuthState, McpOAuthStateStore, LegacyOAuthToken } from './types';
+import type {
+  LegacyOAuthToken,
+  McpOAuthState,
+  McpOAuthStateStore,
+  OAuthTokenData,
+} from './types';
 import { ensureDirSync } from '../utils/fs-utils';
 import { withFileLock } from '../utils/file-lock';
 
@@ -142,16 +147,12 @@ export function loadStateStore(_forceReload = false): McpOAuthStateStore {
 
 function saveStateStoreUnlocked(store: McpOAuthStateStore): void {
   const stateFile = getStateFile();
-  try {
-    ensureDir();
-    const tmpFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmpFile, JSON.stringify(store, null, 2), { encoding: 'utf-8', mode: 0o600 });
-    renameSync(tmpFile, stateFile);
-    memoryCache = store;
-    memoryCacheFile = stateFile;
-  } catch (err) {
-    console.error('[mcp-oauth] Failed to save state store:', err);
-  }
+  ensureDir();
+  const tmpFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmpFile, JSON.stringify(store, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  renameSync(tmpFile, stateFile);
+  memoryCache = store;
+  memoryCacheFile = stateFile;
 }
 
 /** Save the full state store to disk (atomic write via tmp+rename) and update cache */
@@ -168,8 +169,11 @@ export function getServerState(serverId: string): McpOAuthState | undefined {
   return loadStateStore()[serverId];
 }
 
-/** Update state for a specific server (merge) */
-export async function updateServerState(serverId: string, patch: Partial<McpOAuthState>): Promise<void> {
+type NonTokenStatePatch = Omit<Partial<McpOAuthState>, 'token' | 'tokenRevision'>;
+type NonTokenStateField = Exclude<keyof McpOAuthState, 'token' | 'tokenRevision'>;
+
+/** Update non-credential state for a specific server (merge). */
+export async function updateServerState(serverId: string, patch: NonTokenStatePatch): Promise<void> {
   try {
     await withWriteLock(() => {
       const store = loadStateStore(true);
@@ -181,8 +185,8 @@ export async function updateServerState(serverId: string, patch: Partial<McpOAut
   }
 }
 
-/** Clear a specific field from server state */
-export async function clearServerField(serverId: string, field: keyof McpOAuthState): Promise<void> {
+/** Clear a specific non-credential field from server state. */
+export async function clearServerField(serverId: string, field: NonTokenStateField): Promise<void> {
   try {
     await withWriteLock(() => {
       const store = loadStateStore(true);
@@ -198,6 +202,71 @@ export async function clearServerField(serverId: string, field: keyof McpOAuthSt
   } catch (err) {
     console.error(`[mcp-oauth] Failed to clear ${field} for ${serverId}:`, err);
   }
+}
+
+function nextTokenRevision(current: number | undefined): number {
+  return Number.isSafeInteger(current) && (current ?? 0) >= 0
+    ? (current ?? 0) + 1
+    : 1;
+}
+
+function currentTokenRevision(current: number | undefined): number {
+  return Number.isSafeInteger(current) && (current ?? 0) >= 0 ? current ?? 0 : 0;
+}
+
+/**
+ * Persist a credential and its revision as one atomic state-store mutation.
+ * Unlike best-effort metadata writes, credential write failures propagate so
+ * callers cannot report a refresh that other Sidecars cannot observe.
+ */
+export async function setServerToken(
+  serverId: string,
+  token: OAuthTokenData,
+): Promise<number> {
+  return await withWriteLock(() => {
+    const store = loadStateStore(true);
+    const tokenRevision = nextTokenRevision(store[serverId]?.tokenRevision);
+    store[serverId] = { ...store[serverId], token, tokenRevision };
+    saveStateStoreUnlocked(store);
+    return tokenRevision;
+  });
+}
+
+/**
+ * Commit a refresh response only if no authorization/revoke mutation occurred
+ * while its token-endpoint request was in flight. The compare and write share
+ * the state-store lock, so an obsolete response cannot resurrect a revoked
+ * credential or overwrite a newer authorization grant.
+ */
+export async function setServerTokenIfRevision(
+  serverId: string,
+  expectedRevision: number,
+  token: OAuthTokenData,
+): Promise<number | null> {
+  return await withWriteLock(() => {
+    const store = loadStateStore(true);
+    const currentRevision = currentTokenRevision(store[serverId]?.tokenRevision);
+    if (currentRevision !== expectedRevision) return null;
+
+    const tokenRevision = nextTokenRevision(currentRevision);
+    store[serverId] = { ...store[serverId], token, tokenRevision };
+    saveStateStoreUnlocked(store);
+    return tokenRevision;
+  });
+}
+
+/** Clear a credential while retaining a monotonic tombstone revision. */
+export async function clearServerToken(serverId: string): Promise<number> {
+  return await withWriteLock(() => {
+    const store = loadStateStore(true);
+    const current = store[serverId];
+    const tokenRevision = nextTokenRevision(current?.tokenRevision);
+    const next = { ...current, tokenRevision };
+    delete next.token;
+    store[serverId] = next;
+    saveStateStoreUnlocked(store);
+    return tokenRevision;
+  });
 }
 
 /** Check if discovery cache is still valid */

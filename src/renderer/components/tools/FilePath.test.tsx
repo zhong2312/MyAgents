@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -36,6 +36,7 @@ vi.mock('@/hooks/useWorkspaceFileService', () => ({
 
 import { FileActionProvider } from '@/context/FileActionContext';
 
+import EditTool from './EditTool';
 import { FilePath } from './utils';
 
 const WORKSPACE = '/Users/zhihu/Documents/project/MyAgents';
@@ -118,6 +119,70 @@ describe('FilePath tool chip — clickable file paths', () => {
     // 引用 inserts the relative path, matching inline-path @-mention behavior.
     fireEvent.click(screen.getByText('引用'));
     expect(mocks.onInsertReference).toHaveBeenCalledWith([REL_FILE]);
+  });
+
+  it('integrates exactly one More action and delegates its items to the existing file menu', async () => {
+    mocks.checkPaths.mockResolvedValue({ results: { [REL_FILE]: { exists: true, type: 'file' } } });
+    render(
+      <FileActionProvider workspacePath={WORKSPACE} onInsertReference={mocks.onInsertReference}>
+        <EditTool tool={{
+          id: 'call-edit-toolbar',
+          name: 'Edit',
+          input: {
+            file_path: FILE_PATH,
+            changes: [{
+              path: FILE_PATH,
+              kind: { type: 'update' },
+              diff: '@@ -1 +1 @@\n-old\n+new',
+            }],
+          },
+          streamIndex: 0,
+        }} />
+      </FileActionProvider>,
+    );
+
+    const more = await screen.findByRole('button', { name: '更多文件操作' });
+    expect(mocks.checkPaths).toHaveBeenCalledWith({ paths: [REL_FILE] });
+    const toolbar = more.closest('header');
+    expect(toolbar).not.toBeNull();
+    expect(within(toolbar as HTMLElement).getAllByRole('button')).toEqual([more]);
+    expect(screen.queryByText('复制')).not.toBeInTheDocument();
+    expect(screen.queryByText('打开')).not.toBeInTheDocument();
+
+    fireEvent.click(more);
+    expect(screen.getByText('预览')).toBeInTheDocument();
+    expect(screen.getByText('复制')).toBeInTheDocument();
+    expect(screen.getByText('引用')).toBeInTheDocument();
+    expect(screen.getByText('打开')).toBeInTheDocument();
+  });
+
+  it('keeps a declined move action attached to the still-existing source file', async () => {
+    const source = `${WORKSPACE}/src/old.ts`;
+    mocks.checkPaths.mockResolvedValue({ results: { 'src/old.ts': { exists: true, type: 'file' } } });
+    render(
+      <FileActionProvider workspacePath={WORKSPACE} onInsertReference={mocks.onInsertReference}>
+        <EditTool tool={{
+          id: 'call-declined-move-toolbar',
+          name: 'Edit',
+          input: {
+            file_path: source,
+            changes: [{
+              path: source,
+              kind: { type: 'move', move_path: `${WORKSPACE}/src/new.ts` },
+              diff: '@@ -1 +1 @@\n-old\n+new',
+            }],
+          },
+          streamIndex: 0,
+          result: '[declined]',
+          resultMeta: { status: 'declined' },
+          isError: true,
+        }} />
+      </FileActionProvider>,
+    );
+
+    await screen.findByRole('button', { name: '更多文件操作' });
+    expect(mocks.checkPaths).toHaveBeenCalledWith({ paths: ['src/old.ts'] });
+    expect(mocks.checkPaths).not.toHaveBeenCalledWith({ paths: ['src/new.ts'] });
   });
 
   // Regression for the shipped-but-dead 0.2.29 feature: file-tool cards carry

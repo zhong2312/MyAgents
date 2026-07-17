@@ -8,6 +8,7 @@
 pub type AdapterResult<T> = Result<T, String>;
 
 use super::types::{AskUserQuestionPayload, ImSourceType};
+use serde_json::Value;
 
 pub trait ImAdapter: Send + Sync + 'static {
     /// Verify the bot connection and return a human-readable identifier
@@ -178,6 +179,61 @@ pub trait ImStreamAdapter: ImAdapter {
     /// Default: None (not a Bridge adapter).
     fn bridge_context(&self) -> Option<(u16, String, Vec<String>)> {
         None
+    }
+
+    // ===== Request-scoped OpenClaw reply protocol =====
+    // The producer selects this contract per message. Implementations only
+    // transport operations; rendering, pacing, fallback, and delivery idle
+    // remain owned by the loaded OpenClaw plugin.
+
+    fn start_reply_dispatch(
+        &self,
+        _request_id: &str,
+    ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
+        async { Err("request-scoped reply dispatch is not supported".to_string()) }
+    }
+
+    fn start_reply_stream(
+        &self,
+        _request_id: &str,
+        _chat_id: &str,
+        _initial_text: &str,
+    ) -> impl std::future::Future<Output = AdapterResult<String>> + Send {
+        async { Err("request-scoped reply streaming is not supported".to_string()) }
+    }
+
+    fn update_reply_stream(
+        &self,
+        _stream_id: &str,
+        _text: &str,
+        _sequence: u32,
+        _is_thinking: bool,
+    ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
+        async { Err("request-scoped reply streaming is not supported".to_string()) }
+    }
+
+    fn finish_reply_stream_block(
+        &self,
+        _stream_id: &str,
+    ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
+        async { Err("request-scoped reply streaming is not supported".to_string()) }
+    }
+
+    fn complete_reply_dispatch(
+        &self,
+        _request_id: &str,
+        _final_payloads: &Value,
+    ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
+        async { Err("request-scoped reply dispatch is not supported".to_string()) }
+    }
+
+    fn abort_reply_dispatch(
+        &self,
+        _request_id: &str,
+        _reason: &str,
+        _terminal_payload: &Value,
+    ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
+        async { Err("request-scoped reply dispatch is not supported".to_string()) }
     }
 
     // ===== CardKit Streaming Protocol =====

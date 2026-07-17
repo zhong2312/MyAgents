@@ -698,15 +698,8 @@ fn create_new_session_sidecar<R: Runtime>(
 
     // Build command (see sibling SessionSidecar path for the tsx-loader rationale)
     let mut cmd = crate::process_cmd::new(&node_path);
-    if script_path.extension().and_then(|s| s.to_str()) == Some("ts") {
-        cmd.arg("--import").arg("tsx/esm");
-    }
-    cmd.arg(&script_path)
-        .arg("--port")
-        .arg(port.to_string())
-        .arg(SIDECAR_MARKER)
-        .arg("--agent-dir")
-        .arg(workspace_path);
+    append_sidecar_entrypoint_args(&mut cmd, &script_path, port, SidecarProcessRole::Session);
+    cmd.arg("--agent-dir").arg(workspace_path);
 
     // Pass session_id to Bun for real sessions (not pending-xxx)
     // so Bun uses the same UUID as Rust/SDK, enabling resume on crash recovery

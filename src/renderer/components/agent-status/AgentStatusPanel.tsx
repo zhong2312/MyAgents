@@ -41,7 +41,7 @@ const AgentStatusPanel = memo(function AgentStatusPanel({ containerRef, onJumpTo
   // derived DOM only changes when todos/subagents do (cost absorbed by React).
   const tab = useTabStateOptional();
   const messages = tab?.messages ?? EMPTY_MESSAGES;
-  const state = useAgentStatusState(messages, tab?.agentPlanTodos ?? null);
+  const state = useAgentStatusState(messages, tab?.agentPlanTodos ?? null, tab?.sessionId ?? null);
   // hasContent：todos 全部 completed 时视为「已结束」→ 进入 fade-out
   // （对齐 PRD §8.1 #6 验收：「5/5 ☑ 后 1.5s 整段淡出」）
   const todosActive = state.todos.length > 0 && state.todos.some(t => t.status !== 'completed');

@@ -1177,6 +1177,57 @@ pub struct SpaceCliContextInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SpaceCliGoalListInput {
+    pub space_slug: String,
+    #[serde(default)]
+    pub include_archived: bool,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "action")]
+pub enum SpaceCliIssueGoalUpdate {
+    #[serde(rename = "set")]
+    Set {
+        #[serde(rename = "goalId")]
+        goal_id: String,
+    },
+    #[serde(rename = "clear")]
+    Clear,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueUpdateInput {
+    pub issue_id: String,
+    pub space_slug: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub goal_update: Option<SpaceCliIssueGoalUpdate>,
+    #[serde(default)]
+    pub human_only: Option<bool>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceCliIssueCreateInput {
     pub space_slug: String,
     pub title: String,
@@ -3310,6 +3361,35 @@ pub async fn space_cli_assignee_list(input: SpaceCliContextInput) -> Result<Valu
     Ok(serde_json::json!({ "items": items }))
 }
 
+pub async fn space_cli_goal_list(input: SpaceCliGoalListInput) -> Result<Value, String> {
+    let context = resolve_space_cli_context(
+        &input.space_slug,
+        input.session_id.as_deref(),
+        input.workspace_id.as_deref(),
+        input.workspace_path.as_deref(),
+        input.agent_id.as_deref(),
+    )
+    .await?;
+    let archived_query = if input.include_archived {
+        "?includeArchived=true"
+    } else {
+        ""
+    };
+    authorized_json_data_request_scoped(
+        &context.base_url,
+        &format!(
+            "/api/spaces/{}/goals{}",
+            url_component(&context.space_slug),
+            archived_query
+        ),
+        &context.token,
+        reqwest::Method::GET,
+        None,
+        Some(&context.space_id),
+    )
+    .await
+}
+
 fn parse_cli_assignee(value: Option<&str>) -> Result<Option<Value>, String> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -3469,6 +3549,61 @@ pub async fn space_cli_issue_get(input: SpaceCliIssueGetInput) -> Result<Value, 
         &context.token,
         reqwest::Method::GET,
         None,
+        Some(&context.space_id),
+    )
+    .await
+}
+
+fn space_cli_issue_update_payload(input: &SpaceCliIssueUpdateInput) -> Result<Value, String> {
+    let mut payload = serde_json::Map::new();
+    if let Some(title) = &input.title {
+        payload.insert("title".to_string(), Value::String(title.clone()));
+    }
+    if let Some(body) = &input.body {
+        payload.insert("body".to_string(), Value::String(body.clone()));
+    }
+    if let Some(goal_update) = &input.goal_update {
+        let goal_id = match goal_update {
+            SpaceCliIssueGoalUpdate::Set { goal_id } => {
+                let goal_id = goal_id.trim();
+                if goal_id.is_empty() {
+                    return Err(
+                        "GOAL_ID_REQUIRED: --goal requires a non-empty Goal ID.".to_string()
+                    );
+                }
+                Value::String(goal_id.to_string())
+            }
+            SpaceCliIssueGoalUpdate::Clear => Value::Null,
+        };
+        payload.insert("goalId".to_string(), goal_id);
+    }
+    if let Some(human_only) = input.human_only {
+        payload.insert("humanOnly".to_string(), Value::Bool(human_only));
+    }
+    if payload.is_empty() {
+        return Err(
+            "ISSUE_UPDATE_EMPTY: Provide at least one Issue metadata field to update.".to_string(),
+        );
+    }
+    Ok(Value::Object(payload))
+}
+
+pub async fn space_cli_issue_update(input: SpaceCliIssueUpdateInput) -> Result<Value, String> {
+    let payload = space_cli_issue_update_payload(&input)?;
+    let context = resolve_space_cli_context(
+        &input.space_slug,
+        input.session_id.as_deref(),
+        input.workspace_id.as_deref(),
+        input.workspace_path.as_deref(),
+        input.agent_id.as_deref(),
+    )
+    .await?;
+    authorized_json_data_request_scoped(
+        &context.base_url,
+        &format!("/api/issues/{}", url_component(input.issue_id.trim())),
+        &context.token,
+        reqwest::Method::PATCH,
+        Some(payload),
         Some(&context.space_id),
     )
     .await
@@ -5947,11 +6082,12 @@ async fn authorized_json_data_request_scoped(
     space_id: Option<&str>,
 ) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::api_data_request_with_token(
+        return crate::space_cloud_mock::api_data_request_scoped_with_token(
             method.as_str(),
             path,
             Some(token),
             body,
+            space_id,
         );
     }
     let capability = ensure_space_available()?;
@@ -6324,6 +6460,18 @@ fn cli_workspace_matches(
         .unwrap_or(false)
 }
 
+fn cli_agent_owner_binding_is_valid(
+    agent: &LocalRegisteredAgent,
+    user_id: &str,
+    device_id: &str,
+    role: &str,
+) -> bool {
+    agent.owner_user_id.as_deref() == Some(user_id)
+        && agent.device_id.as_deref() == Some(device_id)
+        && matches!(role, "owner" | "admin")
+        && !agent.token.trim().is_empty()
+}
+
 fn cli_space_item<'a>(session: &'a SpaceSession, slug: &str) -> Option<&'a Value> {
     session
         .spaces
@@ -6454,11 +6602,8 @@ async fn resolve_space_cli_context(
         if let Some(agent) = bound.first() {
             let valid = agent.status == "active"
                 && agent.space_id == space_id
-                && agent.owner_user_id.as_deref() == Some(user_id.as_str())
-                && agent.device_id.as_deref() == Some(identity.device_id.as_str())
                 && cli_workspace_matches(agent, workspace_id, &workspace_root)
-                && matches!(role.as_str(), "owner" | "admin")
-                && !agent.token.trim().is_empty();
+                && cli_agent_owner_binding_is_valid(agent, &user_id, &identity.device_id, &role);
             if !valid {
                 return Err("SPACE_AGENT_BINDING_INVALID: This delivery Session no longer matches an active Registered Agent for the selected Space and workspace. Do not retry as the User actor.".to_string());
             }
@@ -6485,40 +6630,28 @@ async fn resolve_space_cli_context(
         }
     }
 
-    let eligible = agents
+    let requested_agent_id = legacy_agent_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let matches = agents
         .iter()
         .filter(|agent| {
             agent.status == "active"
                 && agent.space_id == space_id
-                && agent.owner_user_id.as_deref() == Some(user_id.as_str())
-                && agent.device_id.as_deref() == Some(identity.device_id.as_str())
-                && matches!(role.as_str(), "owner" | "admin")
-                && !agent.token.trim().is_empty()
+                && requested_agent_id.is_none_or(|agent_id| agent.id == agent_id)
+                && cli_workspace_matches(agent, workspace_id, &workspace_root)
         })
         .collect::<Vec<_>>();
-    let matches = if let Some(agent_id) = legacy_agent_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        eligible
-            .into_iter()
-            .filter(|agent| {
-                agent.id == agent_id && cli_workspace_matches(agent, workspace_id, &workspace_root)
-            })
-            .collect::<Vec<_>>()
-    } else {
-        eligible
-            .into_iter()
-            .filter(|agent| cli_workspace_matches(agent, workspace_id, &workspace_root))
-            .collect::<Vec<_>>()
-    };
     if matches.len() > 1 {
         return Err("SPACE_AGENT_WORKSPACE_AMBIGUOUS: Multiple active Registered Agents match this Space and workspace. Clean up duplicate registrations in Space settings.".to_string());
     }
-    if legacy_agent_id.is_some() && matches.is_empty() {
+    if requested_agent_id.is_some() && matches.is_empty() {
         return Err("SPACE_AGENT_BINDING_INVALID: The requested legacy Registered Agent does not match the selected Space and workspace.".to_string());
     }
     if let Some(agent) = matches.first() {
+        if !cli_agent_owner_binding_is_valid(agent, &user_id, &identity.device_id, &role) {
+            return Err("SPACE_AGENT_BINDING_INVALID: The active Registered Agent for this Space and workspace no longer matches the current owner, device, role, or token. Do not retry as the User actor.".to_string());
+        }
         return Ok(SpaceCliContext {
             base_url: session.base_url,
             space_id,
@@ -6534,7 +6667,7 @@ async fn resolve_space_cli_context(
             token: agent.token.clone(),
             workspace_id: effective_space_workspace_id(agent).map(ToString::to_string),
             workspace_path: workspace_root,
-            session_binding: if legacy_agent_id.is_some() {
+            session_binding: if requested_agent_id.is_some() {
                 SpaceCliSessionBinding::LegacyAgentId
             } else {
                 SpaceCliSessionBinding::RegisteredAgentWorkspace
@@ -8675,6 +8808,364 @@ mod tests {
             .pointer("/attachments/0/id")
             .and_then(Value::as_str)
             .is_some());
+    }
+
+    #[test]
+    fn cli_agent_binding_fails_closed_after_owner_demotion_or_token_loss() {
+        let mut agent = test_registered_agent(Some("usr_current"), Some("device_current"));
+        assert!(cli_agent_owner_binding_is_valid(
+            &agent,
+            "usr_current",
+            "device_current",
+            "owner"
+        ));
+        assert!(!cli_agent_owner_binding_is_valid(
+            &agent,
+            "usr_current",
+            "device_current",
+            "member"
+        ));
+        agent.token.clear();
+        assert!(!cli_agent_owner_binding_is_valid(
+            &agent,
+            "usr_current",
+            "device_current",
+            "owner"
+        ));
+    }
+
+    #[test]
+    fn cli_issue_update_payload_preserves_missing_set_clear_and_false() {
+        let empty = SpaceCliIssueUpdateInput {
+            issue_id: "iss_test".to_string(),
+            space_slug: "official".to_string(),
+            title: None,
+            body: None,
+            goal_update: None,
+            human_only: None,
+            session_id: None,
+            workspace_id: None,
+            workspace_path: None,
+            agent_id: None,
+        };
+        assert!(space_cli_issue_update_payload(&empty)
+            .expect_err("empty updates must fail locally")
+            .starts_with("ISSUE_UPDATE_EMPTY:"));
+        let empty_goal = SpaceCliIssueUpdateInput {
+            goal_update: Some(SpaceCliIssueGoalUpdate::Set {
+                goal_id: "  ".to_string(),
+            }),
+            ..empty
+        };
+        assert!(space_cli_issue_update_payload(&empty_goal)
+            .expect_err("empty Goal IDs must fail locally")
+            .starts_with("GOAL_ID_REQUIRED:"));
+
+        let base = SpaceCliIssueUpdateInput {
+            issue_id: "iss_test".to_string(),
+            space_slug: "official".to_string(),
+            title: Some("Updated title".to_string()),
+            body: Some("Updated body".to_string()),
+            goal_update: None,
+            human_only: Some(false),
+            session_id: None,
+            workspace_id: None,
+            workspace_path: None,
+            agent_id: None,
+        };
+        assert_eq!(
+            space_cli_issue_update_payload(&base).expect("metadata payload"),
+            serde_json::json!({
+                "title": "Updated title",
+                "body": "Updated body",
+                "humanOnly": false
+            })
+        );
+
+        let set = SpaceCliIssueGoalUpdate::Set {
+            goal_id: " goal_current ".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&set).expect("tagged set serialization"),
+            serde_json::json!({ "action": "set", "goalId": " goal_current " })
+        );
+        let set_input = SpaceCliIssueUpdateInput {
+            title: None,
+            body: None,
+            goal_update: Some(set),
+            human_only: None,
+            ..base
+        };
+        assert_eq!(
+            space_cli_issue_update_payload(&set_input).expect("set Goal payload"),
+            serde_json::json!({ "goalId": "goal_current" })
+        );
+
+        let clear_input = SpaceCliIssueUpdateInput {
+            title: None,
+            body: None,
+            goal_update: Some(SpaceCliIssueGoalUpdate::Clear),
+            human_only: None,
+            ..set_input
+        };
+        assert_eq!(
+            space_cli_issue_update_payload(&clear_input).expect("clear Goal payload"),
+            serde_json::json!({ "goalId": null })
+        );
+        assert_eq!(
+            serde_json::to_value(SpaceCliIssueGoalUpdate::Clear)
+                .expect("tagged clear serialization"),
+            serde_json::json!({ "action": "clear" })
+        );
+    }
+
+    #[tokio::test]
+    async fn cli_goal_list_and_issue_update_use_user_and_registered_agent_contexts() {
+        let _mock = crate::space_cloud_mock::enable_for_test();
+        let workspace = std::env::current_dir().expect("current workspace");
+        let user_workspace =
+            tempfile::tempdir_in(&workspace).expect("User workspace inside project");
+
+        let created_goal = crate::space_cloud_mock::api_data_request_with_token(
+            "POST",
+            "/api/spaces/official/goals",
+            Some("mock-session-token"),
+            Some(serde_json::json!({
+                "parentGoalId": "goal_mock_root",
+                "title": "Archived CLI Goal",
+                "context": "Used to verify includeArchived passthrough."
+            })),
+        )
+        .expect("create mock Goal");
+        let archived_goal_id = created_goal
+            .pointer("/goal/id")
+            .and_then(Value::as_str)
+            .expect("created Goal ID")
+            .to_string();
+        crate::space_cloud_mock::api_data_request_with_token(
+            "POST",
+            &format!("/api/goals/{archived_goal_id}/archive"),
+            Some("mock-session-token"),
+            None,
+        )
+        .expect("archive mock Goal");
+
+        let user_context = || SpaceCliGoalListInput {
+            space_slug: "official".to_string(),
+            include_archived: false,
+            session_id: None,
+            workspace_id: None,
+            workspace_path: Some(user_workspace.path().to_string_lossy().to_string()),
+            agent_id: None,
+        };
+        let active_goals = space_cli_goal_list(user_context())
+            .await
+            .expect("User should list active Goals");
+        assert!(active_goals
+            .get("items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().all(|goal| {
+                goal.get("id").and_then(Value::as_str) != Some(archived_goal_id.as_str())
+            })));
+        let archived_goals = space_cli_goal_list(SpaceCliGoalListInput {
+            include_archived: true,
+            ..user_context()
+        })
+        .await
+        .expect("User should include archived Goals on request");
+        assert!(archived_goals
+            .get("items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|goal| {
+                goal.get("id").and_then(Value::as_str) == Some(archived_goal_id.as_str())
+                    && goal.get("archivedAt").is_some_and(|value| !value.is_null())
+            })));
+
+        let user_issue = space_cli_issue_create(SpaceCliIssueCreateInput {
+            space_slug: "official".to_string(),
+            title: "User metadata update".to_string(),
+            body: "Created under the root Goal".to_string(),
+            goal_id: Some("goal_mock_root".to_string()),
+            assignee_id: None,
+            human_only: None,
+            file_paths: Vec::new(),
+            session_id: None,
+            workspace_id: None,
+            workspace_path: Some(user_workspace.path().to_string_lossy().to_string()),
+            agent_id: None,
+        })
+        .await
+        .expect("User should create Issue");
+        let user_issue_id = user_issue
+            .pointer("/issue/id")
+            .and_then(Value::as_str)
+            .expect("User Issue ID")
+            .to_string();
+        assert_eq!(
+            user_issue
+                .pointer("/issue/creator/type")
+                .and_then(Value::as_str),
+            Some("user")
+        );
+        let user_updated = space_cli_issue_update(SpaceCliIssueUpdateInput {
+            issue_id: user_issue_id,
+            space_slug: "official".to_string(),
+            title: Some("User updated title".to_string()),
+            body: None,
+            goal_update: Some(SpaceCliIssueGoalUpdate::Clear),
+            human_only: Some(false),
+            session_id: None,
+            workspace_id: None,
+            workspace_path: Some(user_workspace.path().to_string_lossy().to_string()),
+            agent_id: None,
+        })
+        .await
+        .expect("User should update Issue metadata");
+        assert_eq!(
+            user_updated.pointer("/issue/title").and_then(Value::as_str),
+            Some("User updated title")
+        );
+        assert!(user_updated
+            .pointer("/issue/goalId")
+            .is_some_and(Value::is_null));
+        assert!(user_updated
+            .pointer("/issue/goalPathLabel")
+            .is_some_and(Value::is_null));
+
+        cmd_space_update_registered_agent(SpaceUpdateRegisteredAgentInput {
+            id: "rag_mock_frontend".to_string(),
+            display_name: None,
+            workspace_id: Some("project-current".to_string()),
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+            workspace_label: None,
+            goal_id: None,
+            state_filter: None,
+            goal_md: None,
+            status: None,
+            issue_subscription_run_mode: None,
+        })
+        .await
+        .expect("bind mock Registered Agent to current workspace");
+        let agent_goals = space_cli_goal_list(SpaceCliGoalListInput {
+            space_slug: "official".to_string(),
+            include_archived: false,
+            session_id: None,
+            workspace_id: Some("project-current".to_string()),
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+            agent_id: None,
+        })
+        .await
+        .expect("Registered Agent should list Goals");
+        assert!(agent_goals
+            .get("items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty()));
+
+        let agent_issue = space_cli_issue_create(SpaceCliIssueCreateInput {
+            space_slug: "official".to_string(),
+            title: "Agent metadata update".to_string(),
+            body: "Claim and assignment must survive Goal edits".to_string(),
+            goal_id: Some("goal_mock_runtime".to_string()),
+            assignee_id: Some("agent:rag_mock_frontend".to_string()),
+            human_only: Some(false),
+            file_paths: Vec::new(),
+            session_id: None,
+            workspace_id: Some("project-current".to_string()),
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+            agent_id: None,
+        })
+        .await
+        .expect("Registered Agent should create assigned Issue");
+        let agent_issue_id = agent_issue
+            .pointer("/issue/id")
+            .and_then(Value::as_str)
+            .expect("Agent Issue ID")
+            .to_string();
+        let claimed = space_cli_issue_claim(SpaceCliIssueClaimInput {
+            issue_id: agent_issue_id.clone(),
+            space_slug: "official".to_string(),
+            delivery_id: None,
+            session_id: None,
+            workspace_id: Some("project-current".to_string()),
+            agent_id: None,
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+        })
+        .await
+        .expect("Registered Agent should claim its assigned Issue");
+        let claim_id = claimed
+            .pointer("/claim/id")
+            .and_then(Value::as_str)
+            .expect("claim ID")
+            .to_string();
+        let set_goal = space_cli_issue_update(SpaceCliIssueUpdateInput {
+            issue_id: agent_issue_id.clone(),
+            space_slug: "official".to_string(),
+            title: None,
+            body: None,
+            goal_update: Some(SpaceCliIssueGoalUpdate::Set {
+                goal_id: "goal_mock_ui".to_string(),
+            }),
+            human_only: Some(false),
+            session_id: None,
+            workspace_id: Some("project-current".to_string()),
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+            agent_id: None,
+        })
+        .await
+        .expect("Registered Agent should set Goal");
+        assert_eq!(
+            set_goal.pointer("/issue/goalId").and_then(Value::as_str),
+            Some("goal_mock_ui")
+        );
+        assert_eq!(
+            set_goal
+                .pointer("/issue/goalPathLabel")
+                .and_then(Value::as_str),
+            Some("MyAgents社区 / UI Quality")
+        );
+        assert_eq!(
+            set_goal
+                .pointer("/issue/assignee/id")
+                .and_then(Value::as_str),
+            Some("rag_mock_frontend")
+        );
+        assert_eq!(
+            set_goal.pointer("/issue/claim/id").and_then(Value::as_str),
+            Some(claim_id.as_str())
+        );
+
+        let cleared = space_cli_issue_update(SpaceCliIssueUpdateInput {
+            issue_id: agent_issue_id.clone(),
+            space_slug: "official".to_string(),
+            title: None,
+            body: None,
+            goal_update: Some(SpaceCliIssueGoalUpdate::Clear),
+            human_only: None,
+            session_id: None,
+            workspace_id: Some("project-current".to_string()),
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+            agent_id: None,
+        })
+        .await
+        .expect("Registered Agent should clear Goal");
+        assert!(cleared.pointer("/issue/goalId").is_some_and(Value::is_null));
+        assert!(cleared
+            .pointer("/issue/goalPathLabel")
+            .is_some_and(Value::is_null));
+        assert_eq!(
+            cleared.pointer("/issue/state").and_then(Value::as_str),
+            Some("open")
+        );
+        assert_eq!(
+            cleared
+                .pointer("/issue/assignee/id")
+                .and_then(Value::as_str),
+            Some("rag_mock_frontend")
+        );
+        assert_eq!(
+            cleared.pointer("/issue/claim/id").and_then(Value::as_str),
+            Some(claim_id.as_str())
+        );
     }
 
     #[test]

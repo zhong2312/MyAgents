@@ -14,7 +14,7 @@ vi.mock('@/utils/taskCenterUtils', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/utils/taskCenterUtils')>();
     return {
         ...actual,
-        formatMessageCount: vi.fn(actual.formatMessageCount),
+        formatTurnCount: vi.fn(actual.formatTurnCount),
     };
 });
 
@@ -270,7 +270,7 @@ describe('LauncherRightRail', () => {
     });
 
     it('does not re-render non-target history rows when opening a row menu', () => {
-        const formatMessageCount = vi.mocked(taskCenterUtils.formatMessageCount);
+        const formatTurnCount = vi.mocked(taskCenterUtils.formatTurnCount);
         renderRail({
             sessions: [
                 session({ id: 'session-a', title: 'Session A' }),
@@ -279,11 +279,11 @@ describe('LauncherRightRail', () => {
             ],
         });
 
-        formatMessageCount.mockClear();
+        formatTurnCount.mockClear();
         fireEvent.click(within(screen.getByRole('button', { name: /Session A/ })).getByLabelText('更多'));
 
-        expect(formatMessageCount).toHaveBeenCalledTimes(1);
-        expect(formatMessageCount.mock.calls[0]?.[0].id).toBe('session-a');
+        expect(formatTurnCount).toHaveBeenCalledTimes(1);
+        expect(formatTurnCount.mock.calls[0]?.[0].id).toBe('session-a');
     });
 
     it('toggles favorite from the history row menu without opening the session', () => {

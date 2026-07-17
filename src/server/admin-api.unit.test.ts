@@ -187,9 +187,84 @@ describe('admin-api help registry', () => {
       expect(text, path.join(' ')).not.toContain('myagents space — Work with');
     }
   });
+
+  it('provides exact nine-section contracts for Goal discovery and Issue metadata update', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const sections = [
+      'WHEN TO CALL',
+      'EFFECT',
+      'REQUIRED CONTEXT',
+      'OPTIONS',
+      'ACTOR AND PERMISSIONS',
+      'FILE SAFETY',
+      'OUTPUT',
+      'EXAMPLES',
+      'RECOVERY',
+    ];
+
+    const goalText = String((handleHelp({ path: ['space', 'goal', 'list'] }).data as { text?: string })?.text ?? '');
+    const updateText = String((handleHelp({ path: ['space', 'issue', 'update'] }).data as { text?: string })?.text ?? '');
+    for (const section of sections) {
+      expect(goalText).toContain(section);
+      expect(updateText).toContain(section);
+    }
+    expect(goalText).toContain('data.items[].id');
+    expect(goalText).toContain('archived IDs cannot be assigned');
+    expect(goalText).toContain('Session Goal Mode');
+    expect(updateText).toContain('--clear-goal');
+    expect(updateText).toContain('does not change workflow state, assignee, claim');
+    expect(updateText).toContain('does not support --dry-run');
+    expect(goalText).not.toContain('myagents space — Discover');
+    expect(updateText).not.toContain('myagents space — Discover');
+  });
+
+  it('keeps Space group and related Issue help aligned on discovery, Inbox, and Goal output', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const spaceText = String((handleHelp({ path: ['space'] }).data as { text?: string })?.text ?? '');
+    const issueText = String((handleHelp({ path: ['space', 'issue'] }).data as { text?: string })?.text ?? '');
+    const createText = String((handleHelp({ path: ['space', 'issue', 'create'] }).data as { text?: string })?.text ?? '');
+    const listText = String((handleHelp({ path: ['space', 'issue', 'list'] }).data as { text?: string })?.text ?? '');
+    const viewText = String((handleHelp({ path: ['space', 'issue', 'view'] }).data as { text?: string })?.text ?? '');
+
+    expect(spaceText).toContain('DISCOVERY FLOW FOR AGENTS');
+    expect(spaceText).toContain('GOAL NAMESPACES');
+    expect(issueText).toContain('update <issueId>');
+    expect(createText).toContain('Without --goal it enters Inbox');
+    expect(createText).toContain('goalId, goalPathLabel');
+    expect(listText).toContain('--goal <goalId>|inbox');
+    expect(listText).toContain('--include-subtree <true|false>');
+    expect(viewText).toContain('issue.goalId');
+    expect(viewText).toContain('issue.goalPathLabel');
+  });
 });
 
 describe('admin-api Space workspace identity', () => {
+  it('forwards Goal discovery and Issue update through the existing Space management bridge', async () => {
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({ ok: true, data: { items: [] } })
+      .mockResolvedValueOnce({ ok: true, data: { issue: { id: 'iss_1' } } });
+    const { handleSpaceGoalList, handleSpaceIssueUpdate } = await import('./admin-api');
+
+    const goalResult = await handleSpaceGoalList({ spaceSlug: 'official', includeArchived: true });
+    const updateResult = await handleSpaceIssueUpdate({
+      spaceSlug: 'official',
+      issueId: 'iss_1',
+      goalUpdate: { action: 'clear' },
+    });
+
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(1, '/api/space/goal-list', 'POST', {
+      spaceSlug: 'official',
+      includeArchived: true,
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(2, '/api/space/issue-update', 'POST', {
+      spaceSlug: 'official',
+      issueId: 'iss_1',
+      goalUpdate: { action: 'clear' },
+    });
+    expect(goalResult).toMatchObject({ success: true, hint: expect.stringContaining('data.items[].id') });
+    expect(updateResult).toMatchObject({ success: true, hint: expect.stringContaining('Re-read') });
+  });
+
   it('enriches Space commands with the stable project id for the requested workspace', async () => {
     const workspace = join(scratch, 'workspace');
     mkdirSync(workspace);

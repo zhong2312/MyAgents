@@ -33,6 +33,7 @@ import {
   AUTO_TITLE_MIN_ROUNDS,
   type TitleRound,
 } from '../shared/sessionTitle';
+import { isHumanUserMessage } from './utils/session-message-preview';
 
 /** Cap the rounds fed to title-gen — keep the prompt small + bounded cost. The
  *  most RECENT rounds carry the conversation's settled topic, so take the tail. */
@@ -125,7 +126,9 @@ export async function maybeGenerateTitleAfterTurn(
     // Expensive step, now justified: read the transcript and reconstruct rounds.
     const data = getSessionData(sessionId);
     if (!data) return;
-    const rounds = buildTitleRoundsFromMessages(data.messages);
+    const rounds = buildTitleRoundsFromMessages(data.messages, {
+      isUserTitleable: index => isHumanUserMessage(data.messages[index], meta.origin),
+    });
     if (rounds.length < AUTO_TITLE_MIN_ROUNDS) return; // self-heals on a later turn
 
     // Record the attempt BEFORE generating: a crash / restart mid-call must not

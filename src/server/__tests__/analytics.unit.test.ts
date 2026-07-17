@@ -28,15 +28,30 @@ function enabledConfig(): string {
 }
 
 describe('server analytics', () => {
-  beforeEach(() => {
+  let restoreProxyState: (() => void) | undefined;
+
+  beforeEach(async () => {
     vi.useFakeTimers();
     mocks.configRaw = null;
     mocks.fetch.mockReset();
     mocks.fetch.mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', mocks.fetch);
+    const cancellation = await import('../utils/cancellation');
+    cancellation._setGeneralFetchTransportForTests(
+      async (url, init) => globalThis.fetch(url, init as RequestInit),
+    );
+    const proxyState = await import('../proxy-state');
+    const settings = proxyState.getCurrentProxySettings();
+    const inherited = proxyState._getInheritedProxySnapshotForTests();
+    proxyState._resetProxyStateForTests(null, {});
+    restoreProxyState = () => proxyState._resetProxyStateForTests(settings, inherited);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const cancellation = await import('../utils/cancellation');
+    cancellation._setGeneralFetchTransportForTests();
+    restoreProxyState?.();
+    restoreProxyState = undefined;
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.resetModules();

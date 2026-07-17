@@ -8,7 +8,7 @@
 //!
 //! **All** child processes that may use `fetch()` or HTTP clients MUST call
 //! `proxy_config::apply_to_subprocess()` before spawning. This ensures:
-//! - User-configured proxy is injected when enabled
+//! - User-configured proxy is injected when enabled for that request owner
 //! - System proxy is inherited when not configured (like other normal apps)
 //! - `NO_PROXY` always protects localhost (Bun's `fetch()` honors `HTTP_PROXY`)
 //!
@@ -76,7 +76,7 @@ pub struct ProxySettings {
     pub host: Option<String>,
     /// Proxy port (1-65535)
     pub port: Option<u16>,
-    /// Optional provider scope. Missing scope means legacy "all providers".
+    /// Optional general/provider scope. Missing scope means legacy "all".
     pub scope: Option<ProxyScopeSettings>,
 }
 
@@ -88,6 +88,16 @@ pub enum ProxyScopeSettings {
     All,
     #[serde(rename = "custom")]
     Custom {
+        /// Missing in legacy custom scopes means general requests used the app
+        /// proxy. `Option` preserves field presence so a historical empty
+        /// custom scope can still be distinguished from a new explicit zero
+        /// selection.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "generalRequests"
+        )]
+        general_requests: Option<bool>,
         #[serde(default, rename = "providerIds")]
         provider_ids: Vec<String>,
     },
@@ -188,7 +198,10 @@ pub fn get_proxy_url(settings: &ProxySettings) -> Result<String, String> {
 
 pub fn normalized_proxy_scope(settings: &ProxySettings) -> ProxyScopeSettings {
     match &settings.scope {
-        Some(ProxyScopeSettings::Custom { provider_ids }) => {
+        Some(ProxyScopeSettings::Custom {
+            general_requests,
+            provider_ids,
+        }) => {
             let mut seen = std::collections::HashSet::new();
             let mut cleaned = Vec::new();
             for raw in provider_ids {
@@ -198,18 +211,31 @@ pub fn normalized_proxy_scope(settings: &ProxySettings) -> ProxyScopeSettings {
                 }
                 cleaned.push(id.to_string());
             }
-            if cleaned.is_empty() {
+            if cleaned.is_empty() && general_requests.is_none() {
                 ulog_warn!(
                     "[proxy_config] Empty custom proxy scope found; falling back to all providers"
                 );
                 ProxyScopeSettings::All
             } else {
                 ProxyScopeSettings::Custom {
+                    general_requests: Some(general_requests.unwrap_or(true)),
                     provider_ids: cleaned,
                 }
             }
         }
         _ => ProxyScopeSettings::All,
+    }
+}
+
+pub fn proxy_enabled_for_general_requests(settings: &ProxySettings) -> bool {
+    if !settings.enabled {
+        return false;
+    }
+    match normalized_proxy_scope(settings) {
+        ProxyScopeSettings::All => true,
+        ProxyScopeSettings::Custom {
+            general_requests, ..
+        } => general_requests.unwrap_or(true),
     }
 }
 
@@ -223,10 +249,14 @@ pub fn proxy_enabled_for_provider(settings: &ProxySettings, provider_id: &str) -
     }
     match normalized_proxy_scope(settings) {
         ProxyScopeSettings::All => true,
-        ProxyScopeSettings::Custom { provider_ids } => {
+        ProxyScopeSettings::Custom { provider_ids, .. } => {
             provider_ids.iter().any(|id| id == provider_id)
         }
     }
+}
+
+pub fn read_proxy_settings_for_general_requests() -> Option<ProxySettings> {
+    read_proxy_settings().filter(proxy_enabled_for_general_requests)
 }
 
 pub fn read_proxy_settings_for_provider(provider_id: &str) -> Option<ProxySettings> {
@@ -246,6 +276,41 @@ pub fn inherited_proxy_env_json() -> String {
     serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".to_string())
 }
 
+/// Preserve inherited bypass rules while adding MyAgents' mandatory localhost
+/// exclusions. Lowercase follows the precedence used by Undici/curl when both
+/// casings are present.
+pub fn inherited_no_proxy_with_localhost() -> String {
+    let inherited = env::var("no_proxy")
+        .ok()
+        .or_else(|| env::var("NO_PROXY").ok());
+    merge_no_proxy_with_localhost(inherited.as_deref())
+}
+
+fn merge_no_proxy_with_localhost(inherited: Option<&str>) -> String {
+    let Some(raw) = inherited.map(str::trim).filter(|value| !value.is_empty()) else {
+        return LOCALHOST_NO_PROXY.to_string();
+    };
+    if raw == "*" {
+        return "*".to_string();
+    }
+    let mut entries = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let mut seen = entries
+        .iter()
+        .map(|entry| entry.to_ascii_lowercase())
+        .collect::<std::collections::HashSet<_>>();
+    for localhost in LOCALHOST_NO_PROXY.split(',') {
+        if seen.insert(localhost.to_ascii_lowercase()) {
+            entries.push(localhost.to_string());
+        }
+    }
+    entries.join(",")
+}
+
 fn mark_proxy_injected(cmd: &mut Command) {
     cmd.env(PROXY_INJECTED_MARKER_ENV, "1");
     cmd.env(PROXY_INHERITED_ENV_JSON, inherited_proxy_env_json());
@@ -258,19 +323,16 @@ fn mark_proxy_injected(cmd: &mut Command) {
 /// it will silently break when the proxy policy changes.
 ///
 /// Behavior:
-/// - **Proxy enabled in config**: injects HTTP_PROXY/HTTPS_PROXY + NO_PROXY + marker flag
+/// - **Proxy enabled for general requests**: injects HTTP_PROXY/HTTPS_PROXY + NO_PROXY + marker flag
 /// - **Proxy config invalid**: strips all proxy vars (fail-safe)
-/// - **No proxy configured**: inherits system env + injects NO_PROXY to protect localhost
+/// - **No general app proxy selected**: inherits system env + injects NO_PROXY to protect localhost
 ///
 /// Returns `true` if explicit proxy was injected (for TypeScript-side snapshot logic).
 pub fn apply_to_subprocess(cmd: &mut Command) -> bool {
-    if let Some(proxy_settings) = read_proxy_settings() {
+    if let Some(proxy_settings) = read_proxy_settings_for_general_requests() {
         match get_proxy_url(&proxy_settings) {
             Ok(proxy_url) => {
-                ulog_info!(
-                    "[proxy_config] Injecting proxy for subprocess: {}",
-                    proxy_url
-                );
+                ulog_info!("[proxy_config] owner=general path=myagents-proxy");
                 cmd.env("HTTP_PROXY", &proxy_url);
                 cmd.env("HTTPS_PROXY", &proxy_url);
                 cmd.env("http_proxy", &proxy_url);
@@ -307,9 +369,10 @@ pub fn apply_to_subprocess(cmd: &mut Command) -> bool {
         // No MyAgents proxy configured: inherit system network behavior.
         // CRITICAL: Still inject NO_PROXY to protect Bun's localhost fetch calls
         // from being routed through any inherited system proxy.
-        ulog_debug!("[proxy_config] No proxy configured, inheriting system network behavior");
-        cmd.env("NO_PROXY", LOCALHOST_NO_PROXY);
-        cmd.env("no_proxy", LOCALHOST_NO_PROXY);
+        ulog_debug!("[proxy_config] owner=general path=inherited");
+        let no_proxy = inherited_no_proxy_with_localhost();
+        cmd.env("NO_PROXY", &no_proxy);
+        cmd.env("no_proxy", &no_proxy);
         false
     }
 }
@@ -322,9 +385,8 @@ pub fn apply_to_subprocess_for_provider(cmd: &mut Command, provider_id: &str) ->
         match get_proxy_url(&proxy_settings) {
             Ok(proxy_url) => {
                 ulog_info!(
-                    "[proxy_config] Injecting proxy for provider subprocess provider={}: {}",
-                    provider_id,
-                    proxy_url
+                    "[proxy_config] owner=provider providerId={} path=myagents-proxy",
+                    provider_id
                 );
                 cmd.env("HTTP_PROXY", &proxy_url);
                 cmd.env("HTTPS_PROXY", &proxy_url);
@@ -352,11 +414,12 @@ pub fn apply_to_subprocess_for_provider(cmd: &mut Command, provider_id: &str) ->
         }
     } else {
         ulog_debug!(
-            "[proxy_config] No MyAgents proxy configured for provider {}, inheriting system network behavior",
+            "[proxy_config] owner=provider providerId={} path=inherited",
             provider_id
         );
-        cmd.env("NO_PROXY", LOCALHOST_NO_PROXY);
-        cmd.env("no_proxy", LOCALHOST_NO_PROXY);
+        let no_proxy = inherited_no_proxy_with_localhost();
+        cmd.env("NO_PROXY", &no_proxy);
+        cmd.env("no_proxy", &no_proxy);
         false
     }
 }
@@ -367,12 +430,9 @@ pub fn apply_to_subprocess_for_provider(cmd: &mut Command, provider_id: &str) ->
 /// NOTE: This function is for OUTGOING requests only (CDN, IM APIs). Localhost
 /// communication MUST use `local_http` module which unconditionally bypasses proxy.
 pub fn build_client_with_proxy(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, String> {
-    let final_builder = if let Some(proxy_settings) = read_proxy_settings() {
+    let final_builder = if let Some(proxy_settings) = read_proxy_settings_for_general_requests() {
         let proxy_url = get_proxy_url(&proxy_settings)?;
-        ulog_info!(
-            "[proxy_config] Using proxy for external requests: {}",
-            proxy_url
-        );
+        ulog_info!("[proxy_config] owner=general path=myagents-proxy");
 
         // Configure proxy but exclude localhost and all loopback addresses
         // Comprehensive NO_PROXY list for maximum compatibility:
@@ -389,7 +449,7 @@ pub fn build_client_with_proxy(builder: reqwest::ClientBuilder) -> Result<reqwes
         // Let reqwest use its default proxy detection (env vars + macOS system proxy).
         // This ensures the app respects system-level proxy (Clash TUN, global proxy, etc.)
         // just like other normal applications.
-        ulog_info!("[proxy_config] No proxy configured, inheriting system network behavior");
+        ulog_info!("[proxy_config] owner=general path=inherited");
         builder
     };
 
@@ -406,9 +466,8 @@ pub fn build_client_with_proxy_for_provider(
     {
         let proxy_url = get_proxy_url(&proxy_settings)?;
         ulog_info!(
-            "[proxy_config] Using proxy for provider requests provider={}: {}",
-            provider_id,
-            proxy_url
+            "[proxy_config] owner=provider providerId={} path=myagents-proxy",
+            provider_id
         );
         let proxy = reqwest::Proxy::all(&proxy_url)
             .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
@@ -416,7 +475,7 @@ pub fn build_client_with_proxy_for_provider(
         builder.proxy(proxy)
     } else {
         ulog_info!(
-            "[proxy_config] No MyAgents proxy configured for provider {}, inheriting system network behavior",
+            "[proxy_config] owner=provider providerId={} path=inherited",
             provider_id
         );
         builder
@@ -442,9 +501,8 @@ pub fn build_blocking_client_with_proxy_for_provider(
     {
         let proxy_url = get_proxy_url(&proxy_settings)?;
         ulog_info!(
-            "[proxy_config] Using proxy for blocking provider requests provider={}: {}",
-            provider_id,
-            proxy_url
+            "[proxy_config] owner=provider providerId={} path=myagents-proxy blocking=true",
+            provider_id
         );
         let proxy = reqwest::Proxy::all(&proxy_url)
             .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
@@ -452,7 +510,7 @@ pub fn build_blocking_client_with_proxy_for_provider(
         builder.proxy(proxy)
     } else {
         ulog_info!(
-            "[proxy_config] No MyAgents proxy configured for blocking provider {}, inheriting system network behavior",
+            "[proxy_config] owner=provider providerId={} path=inherited blocking=true",
             provider_id
         );
         builder
@@ -563,6 +621,7 @@ mod tests {
             host: None,
             port: None,
             scope: Some(ProxyScopeSettings::Custom {
+                general_requests: None,
                 provider_ids: vec!["codex-sub".to_string(), "deepseek".to_string()],
             }),
         };
@@ -595,10 +654,83 @@ mod tests {
             host: None,
             port: None,
             scope: Some(ProxyScopeSettings::Custom {
+                general_requests: None,
                 provider_ids: vec![],
             }),
         };
 
         assert!(proxy_enabled_for_provider(&settings, "deepseek"));
+    }
+
+    #[test]
+    fn test_general_scope_legacy_custom_defaults_to_enabled() {
+        let settings: ProxySettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "scope": { "mode": "custom", "providerIds": ["codex-sub"] }
+        }))
+        .unwrap();
+
+        assert!(proxy_enabled_for_general_requests(&settings));
+        assert_eq!(
+            serde_json::to_value(normalized_proxy_scope(&settings)).unwrap(),
+            serde_json::json!({
+                "mode": "custom",
+                "generalRequests": true,
+                "providerIds": ["codex-sub"]
+            })
+        );
+    }
+
+    #[test]
+    fn test_general_and_provider_scope_are_independent() {
+        let settings: ProxySettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "scope": {
+                "mode": "custom",
+                "generalRequests": false,
+                "providerIds": ["codex-sub"]
+            }
+        }))
+        .unwrap();
+
+        assert!(!proxy_enabled_for_general_requests(&settings));
+        assert!(proxy_enabled_for_provider(&settings, "codex-sub"));
+        assert!(!proxy_enabled_for_provider(&settings, "deepseek"));
+    }
+
+    #[test]
+    fn test_explicit_empty_custom_scope_is_preserved() {
+        for general_requests in [true, false] {
+            let settings: ProxySettings = serde_json::from_value(serde_json::json!({
+                "enabled": true,
+                "scope": {
+                    "mode": "custom",
+                    "generalRequests": general_requests,
+                    "providerIds": []
+                }
+            }))
+            .unwrap();
+
+            assert_eq!(
+                normalized_proxy_scope(&settings),
+                ProxyScopeSettings::Custom {
+                    general_requests: Some(general_requests),
+                    provider_ids: vec![],
+                }
+            );
+            assert_eq!(
+                proxy_enabled_for_general_requests(&settings),
+                general_requests
+            );
+            assert!(!proxy_enabled_for_provider(&settings, "deepseek"));
+        }
+    }
+
+    #[test]
+    fn test_inherited_no_proxy_keeps_existing_entries_and_localhost() {
+        let merged = merge_no_proxy_with_localhost(Some(".corp.local,localhost"));
+        assert!(merged.split(',').any(|entry| entry == ".corp.local"));
+        assert!(merged.split(',').any(|entry| entry == "127.0.0.0/8"));
+        assert_eq!(merge_no_proxy_with_localhost(Some("*")), "*");
     }
 }

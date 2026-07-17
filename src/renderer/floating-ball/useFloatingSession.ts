@@ -15,6 +15,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { createSseConnection, type SseConnection } from '@/api/SseConnection';
 import { ensureSessionSidecar, getSessionPort, proxyFetch, releaseSessionSidecar, startBackgroundCompletion } from '@/api/tauriClient';
+import { fetchJsonLargeValueRef } from '@/api/largeValueRef';
 import { createSession } from '@/api/sessionClient';
 import { initAnalytics, setAnalyticsContext, track } from '@/analytics';
 import { originAnalyticsFields } from '../../shared/session-origin';
@@ -151,6 +152,28 @@ function parseAssistantContent(content: string): ContentBlock[] {
 
 function isToolBlock(block: ContentBlock): block is ContentBlock & { tool: ToolUseSimple } {
     return (block.type === 'tool_use' || block.type === 'server_tool_use') && !!block.tool;
+}
+
+function replaceFloatingToolInput(
+    message: FbAssistantMsg,
+    toolUseId: string,
+    input: Record<string, unknown>,
+): FbAssistantMsg {
+    return {
+        ...message,
+        content: message.content.map((block) => {
+            if (!isToolBlock(block) || block.tool.id !== toolUseId) return block;
+            return {
+                ...block,
+                tool: {
+                    ...block.tool,
+                    input,
+                    inputJson: undefined,
+                    parsedInput: input as ToolInput,
+                },
+            };
+        }),
+    };
 }
 
 function closeOpenThinkingBlocks(content: ContentBlock[], now = Date.now()): ContentBlock[] {
@@ -725,7 +748,13 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'chat:content-block-stop': {
-                    const payload = data as { index?: number; toolId?: string; type?: string } | null;
+                    const payload = data as {
+                        index?: number;
+                        toolId?: string;
+                        type?: string;
+                        input?: Record<string, unknown>;
+                        inputRef?: unknown;
+                    } | null;
                     if (payload?.type === 'text') {
                         markTextStopped();
                         break;
@@ -744,7 +773,42 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         }));
                     }
                     if (payload?.toolId) {
+                        if (payload.inputRef) {
+                            const targetSessionId = sessionIdRef.current;
+                            if (targetSessionId) {
+                                void sessionBaseUrl(targetSessionId)
+                                    .then((baseUrl) => {
+                                        if (!baseUrl) throw new Error('Session sidecar is unavailable');
+                                        return fetchJsonLargeValueRef(
+                                            baseUrl,
+                                            payload.inputRef,
+                                        );
+                                    })
+                                    .then((resolvedInput) => {
+                                        if (sessionIdRef.current !== targetSessionId) return;
+                                        updateToolBlock(payload.toolId, (tool) => ({
+                                            ...tool,
+                                            input: resolvedInput,
+                                            inputJson: undefined,
+                                            parsedInput: resolvedInput as ToolInput,
+                                        }));
+                                        setMessages((prev) => prev.map((message) => message.role === 'ai'
+                                            ? replaceFloatingToolInput(message, payload.toolId!, resolvedInput)
+                                            : message));
+                                    })
+                                    .catch((err) => console.error('[fb-session] Failed to resolve final tool input ref:', err));
+                            }
+                            break;
+                        }
                         updateToolBlock(payload.toolId, (tool) => {
+                            if (payload.input) {
+                                return {
+                                    ...tool,
+                                    input: payload.input,
+                                    inputJson: undefined,
+                                    parsedInput: payload.input as ToolInput,
+                                };
+                            }
                             if (!tool.inputJson) return tool;
                             let parsedInput: ToolInput | undefined;
                             try {

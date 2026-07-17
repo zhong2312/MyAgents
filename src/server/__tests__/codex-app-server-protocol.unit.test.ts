@@ -6,13 +6,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildCodexFileChangeResultContent,
+  buildCodexCompletedFileChangeInput,
   buildCodexAppServerArgs,
+  buildCodexAppServerLaunchConfig,
   buildCodexInitializeParams,
   buildCodexSandboxPolicy,
   buildCodexTurnStartParams,
+  buildCodexStartedFileChangeInput,
   CodexRuntime,
   codexModelCacheKey,
   configureCodexSkillExtraRoots,
+  createCodexMcpStartupBarrier,
   initializeCodexRpc,
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
   mapCodexTurnCompletedNotification,
@@ -26,6 +30,7 @@ describe('Codex app-server protocol helpers', () => {
   const tempRoots: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     while (tempRoots.length > 0) {
       const dir = tempRoots.pop();
       if (dir) rmSync(dir, { recursive: true, force: true });
@@ -173,14 +178,162 @@ describe('Codex app-server protocol helpers', () => {
     expect(args).toContain('mcp_servers.fs_tool.command="node"');
     expect(args).toContain('mcp_servers.fs_tool.args=["server.js"]');
     expect(args).toContain('mcp_servers.fs_tool.env_vars=["FS_TOKEN","HTTPS_PROXY","NO_PROXY","no_proxy"]');
+    expect(args).toContain('mcp_servers.fs_tool.startup_timeout_sec=10');
     expect(args).toContain('mcp_servers.remote-http.url="https://example.com/mcp"');
     expect(args).toContain('mcp_servers.remote-http.env_http_headers={Authorization="MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION"}');
+    expect(args).toContain('mcp_servers.remote-http.startup_timeout_sec=10');
     expect(args.join('\n')).not.toContain('secret-token');
     expect(args.join('\n')).not.toContain('remote-secret');
     expect(env.FS_TOKEN).toBe('secret-token');
     expect(env.MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION).toBe('Bearer remote-secret');
     expect(env.REMOTE_TOKEN).toBeUndefined();
     expect(env.NO_PROXY).toContain('127.0.0.1');
+  });
+
+  it('normalizes legacy preset npx MCP commands before managed Codex startup', () => {
+    const env: Record<string, string | undefined> = {};
+    const launch = buildCodexAppServerLaunchConfig({
+      commandPath: '/managed/codex',
+      runtimeSource: 'managed-provider',
+      codexEnv: env,
+      mcpServers: [{
+        id: 'playwright',
+        name: 'Playwright',
+        type: 'stdio',
+        command: 'npx',
+        args: ['@playwright/mcp@latest', '--isolated'],
+        isBuiltin: true,
+      }],
+    });
+
+    const commandArg = launch.args.find((arg) => arg.startsWith('mcp_servers.playwright.command='));
+    const mcpArgs = launch.args.find((arg) => arg.startsWith('mcp_servers.playwright.args='));
+    expect(commandArg).toBeDefined();
+    expect(commandArg).not.toBe('mcp_servers.playwright.command="npx"');
+    expect(mcpArgs).toContain('@playwright/mcp@0.0.68');
+    expect(mcpArgs).not.toContain('@latest');
+    expect(mcpArgs).toContain('"-y"');
+    expect(launch.mcpServerNames).toEqual(['playwright']);
+  });
+
+  it('settles managed Codex MCP readiness only after every injected server is terminal', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright', 'remote-http']);
+    barrier.arm();
+    let settled = false;
+    const ready = barrier.wait().then((result) => {
+      settled = true;
+      return result;
+    });
+
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'starting',
+      error: null,
+      failureReason: null,
+    });
+    barrier.observe({
+      threadId: null,
+      name: 'unrelated-user-config',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    barrier.observe({
+      threadId: null,
+      name: 'remote-http',
+      status: 'failed',
+      error: 'connection refused',
+      failureReason: null,
+    });
+
+    await expect(ready).resolves.toEqual({
+      outcome: 'degraded',
+      reason: 'terminal_status',
+      states: {
+        playwright: 'ready',
+        'remote-http': 'failed',
+      },
+      pendingNames: [],
+      elapsedMs: expect.any(Number),
+    });
+  });
+
+  it('soft-degrades when injected MCP startup never reaches a terminal state', async () => {
+    vi.useFakeTimers();
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+    barrier.arm();
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'starting',
+      error: null,
+      failureReason: null,
+    });
+
+    const startup = barrier.wait();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(startup).resolves.toEqual({
+      outcome: 'degraded',
+      reason: 'timeout',
+      states: { playwright: 'starting' },
+      pendingNames: ['playwright'],
+      elapsedMs: 10_000,
+    });
+  });
+
+  it('releases the startup wait as a failure when the Codex process exits', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+    barrier.arm();
+    const startup = barrier.wait();
+
+    barrier.fail(new Error('Codex process exited during MCP startup with code 1'));
+
+    await expect(startup).rejects.toThrow('Codex process exited during MCP startup with code 1');
+  });
+
+  it('does not charge process initialization time to the native MCP startup window', async () => {
+    vi.useFakeTimers();
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    barrier.arm();
+    const startup = barrier.wait();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(startup).resolves.toMatchObject({
+      outcome: 'degraded',
+      reason: 'timeout',
+      elapsedMs: 10_000,
+    });
+  });
+
+  it('returns ready when every injected MCP reaches ready inside the armed window', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+    barrier.arm();
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+
+    await expect(barrier.wait()).resolves.toMatchObject({
+      outcome: 'ready',
+      pendingNames: [],
+      states: { playwright: 'ready' },
+    });
   });
 
   it('skips managed Codex MCP entries that cannot be represented safely', () => {
@@ -454,6 +607,29 @@ describe('Codex app-server protocol helpers', () => {
       },
     ])).toBe('move: /tmp/old.md -> /tmp/new.md');
     expect(buildCodexFileChangeResultContent([])).toBe('File changed');
+  });
+
+  it('keeps started fileChange lightweight and promotes the completed patch as final input', () => {
+    const startedChanges = [{
+      path: '/workspace/a.ts',
+      kind: { type: 'update', move_path: null },
+      diff: '@@ -1 +1 @@\n-old started\n+new started',
+    }];
+    const completedChanges = [{
+      path: '/workspace/a.ts',
+      kind: { type: 'update', move_path: null },
+      diff: '@@ -1 +1 @@\n-old applied\n+new applied',
+    }];
+
+    expect(buildCodexStartedFileChangeInput(startedChanges, '/workspace')).toEqual({
+      file_path: '/workspace/a.ts',
+      cwd: '/workspace',
+    });
+    expect(buildCodexCompletedFileChangeInput(completedChanges, '/workspace')).toEqual({
+      file_path: '/workspace/a.ts',
+      cwd: '/workspace',
+      changes: completedChanges,
+    });
   });
 
   it('ignores malformed fileChange entries before formatting result text', () => {

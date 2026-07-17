@@ -249,6 +249,9 @@ pub(super) async fn enqueue_to_sidecar(
         body["bridgePluginId"] = json!(bridge_plugin_id);
         body["bridgeEnabledToolGroups"] = json!(tool_groups);
         body["senderId"] = json!(msg.sender_id);
+        if let Some(account_id) = msg.account_id.as_deref() {
+            body["accountId"] = json!(account_id);
+        }
         let is_owner = match allowed_users {
             Some(users) if !users.is_empty() => users.contains(&msg.sender_id),
             _ => false,

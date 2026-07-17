@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   decideQueueAdmission,
+  decideRealtimeHandoff,
   findQueueLocation,
   moveQueueIndexToFront,
   resolveChatQueueResponseMode,
@@ -31,6 +32,11 @@ describe('turn-queue policy', () => {
     })).toBe('turn-boundary');
   });
 
+  it('claims SDK in-flight ownership only when the generator can accept the handoff', () => {
+    expect(decideRealtimeHandoff(true)).toBe('sdk-inflight');
+    expect(decideRealtimeHandoff(false)).toBe('local-queue');
+  });
+
   it('finds queue locations in cancellation priority order', () => {
     expect(findQueueLocation({
       messageIndex: -1,
@@ -56,6 +62,7 @@ describe('turn-queue policy', () => {
   it('blocks turn-boundary starts while adjacent queues or lifecycle gates are active', () => {
     const base = {
       hasTurnInFlight: false,
+      hasCompetingAdmissionTicket: false,
       hasInFlightToCli: false,
       hasPendingMidTurn: false,
       hasMessageQueue: false,
@@ -67,6 +74,7 @@ describe('turn-queue policy', () => {
       hasRewindInProgress: false,
     };
     expect(shouldStartTurnBoundaryItem(base)).toBe(true);
+    expect(shouldStartTurnBoundaryItem({ ...base, hasCompetingAdmissionTicket: true })).toBe(false);
     expect(shouldStartTurnBoundaryItem({ ...base, hasPendingMidTurn: true })).toBe(false);
     expect(shouldStartTurnBoundaryItem({ ...base, hasPendingMidTurn: true, allowRealtimePending: true })).toBe(true);
     expect(shouldStartTurnBoundaryItem({ ...base, shouldAbortSession: true, reason: 'complete' })).toBe(false);

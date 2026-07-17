@@ -170,9 +170,12 @@ where
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                router_guard.unregister(&request_id);
                                 drop(router_guard);
-                                on_terminal(request_id, outcome);
+                                // The terminal callback synchronously acquires its
+                                // model-work guard before ReplyRouter ownership is
+                                // released, so proxy reconnect cannot observe a gap.
+                                on_terminal(request_id.clone(), outcome);
+                                router.lock().await.unregister(&request_id);
                             }
                         }
                     }

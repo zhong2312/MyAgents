@@ -1,3 +1,4 @@
+import { Ellipsis } from 'lucide-react';
 import { cloneElement, isValidElement, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -96,6 +97,26 @@ export function MonoText({
 
 const FILE_PATH_BOX_CLASS = 'rounded border border-[var(--line-subtle)] bg-[var(--paper-inset)]/50 px-1.5 py-0.5';
 
+function useResolvedFileAction(path?: string | null) {
+  const fileAction = useFileAction();
+  const displayPath = path?.trim() || null;
+  const actionTarget = displayPath && fileAction
+    ? resolveFileActionTarget(displayPath, fileAction.workspacePath)
+    : null;
+  const pathInfo = actionTarget ? fileAction?.checkFileTarget(actionTarget) ?? null : null;
+
+  if (!displayPath || !fileAction || !actionTarget || !pathInfo?.exists) return null;
+  return {
+    displayPath,
+    pathInfo,
+    openMenu: (x: number, y: number) => {
+      fileAction.openFileMenu(x, y, actionTarget.path, pathInfo.type, displayPath, {
+        scope: actionTarget.scope,
+      });
+    },
+  };
+}
+
 /**
  * File-path chip rendered by file tools (Write / Edit / Read / NotebookEdit).
  *
@@ -108,7 +129,7 @@ const FILE_PATH_BOX_CLASS = 'rounded border border-[var(--line-subtle)] bg-[var(
  */
 export function FilePath({ path }: { path?: string | null }) {
   const { t } = useTranslation('chat');
-  const fileAction = useFileAction(); // null outside Chat
+  const resolvedAction = useResolvedFileAction(path);
   // A file tool can arrive with NO path: a partial/streaming tool input where
   // `file_path` hasn't parsed yet, or a restored/old persisted tool block whose
   // input lacks it (parsedInput comes from parsePartialJson and is optional).
@@ -118,26 +139,9 @@ export function FilePath({ path }: { path?: string | null }) {
   // toWorkspaceRelativePath's emptiness test so a whitespace-only path (also
   // non-actionable) renders nothing rather than a blank chip.
   if (!path?.trim()) return null;
-  // File tools (Write/Edit/Read/NotebookEdit) emit ABSOLUTE `file_path` values,
-  // but the workspace existence-check + read commands only accept
-  // workspace-relative paths (Rust `resolve_inside_workspace` rejects absolute
-  // paths outright → the chip would always collapse to a plain box). Normalize
-  // an in-workspace absolute path to the same relative form inline AI-text
-  // paths already use, so the existence check resolves and the menu actions
-  // (预览/引用/打开/打开所在文件夹) work. Falls back to the raw path — which stays
-  // a plain chip — when it's outside the workspace or no workspace is known.
-  const actionTarget = fileAction ? resolveFileActionTarget(path, fileAction.workspacePath) : null;
-  // Triggers a batched existence check; returns cached result or null (pending).
-  const pathInfo = actionTarget ? fileAction?.checkFileTarget(actionTarget) ?? null : null;
-
-  if (!fileAction || !actionTarget || !pathInfo?.exists) {
+  if (!resolvedAction) {
     return <MonoText className={FILE_PATH_BOX_CLASS}>{path}</MonoText>;
   }
-
-  const openMenu = (x: number, y: number) =>
-    fileAction.openFileMenu(x, y, actionTarget.path, pathInfo.type, path, {
-      scope: actionTarget.scope,
-    });
 
   return (
     <code
@@ -146,19 +150,49 @@ export function FilePath({ path }: { path?: string | null }) {
         e.preventDefault();
         e.stopPropagation();
         const rect = e.currentTarget.getBoundingClientRect();
-        openMenu(rect.left, rect.bottom + 4);
+        resolvedAction.openMenu(rect.left, rect.bottom + 4);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        openMenu(e.clientX, e.clientY);
+        resolvedAction.openMenu(e.clientX, e.clientY);
       }}
-      title={pathInfo.type === 'dir' ?
+      title={resolvedAction.pathInfo.type === 'dir' ?
         t('shell.toolChrome.filePath.folder', { path })
         : t('shell.toolChrome.filePath.file', { path })}
     >
       {path}
     </code>
+  );
+}
+
+/**
+ * The single file-toolbar action used by FilePatchTool. It deliberately shares
+ * the same resolution, existence gate, and FileActionContext menu owner as
+ * FilePath; unsafe or missing paths render no misleading action at all.
+ */
+export function FileActionMenuButton({ path, className = '' }: { path?: string | null; className?: string }) {
+  const { t } = useTranslation('chat');
+  const resolvedAction = useResolvedFileAction(path);
+  if (!resolvedAction) return null;
+
+  const label = t('shell.toolChrome.filePatch.moreActions');
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-haspopup="menu"
+      title={label}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        resolvedAction.openMenu(rect.right, rect.bottom + 4);
+      }}
+      className={`flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-[background-color,color,transform] duration-150 hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] active:translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-border)]/30 ${className}`}
+    >
+      <Ellipsis className="size-4" aria-hidden="true" />
+    </button>
   );
 }
 

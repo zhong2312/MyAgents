@@ -35,6 +35,14 @@ import telegramIcon from '../../ImSettings/assets/telegram.png';
 import feishuIcon from '../../ImSettings/assets/feishu.jpeg';
 import dingtalkIcon from '../../ImSettings/assets/dingtalk.svg';
 import { findPromotedByPlatform } from '../../ImSettings/promotedPlugins';
+import OpenClawScalarField from './OpenClawScalarField';
+import {
+    buildTypedOpenClawConfig,
+    isOpenClawConfigValueInvalid,
+    isOpenClawConfigValueMissing,
+    mergeOpenClawSchemaProperties,
+    type OpenClawSchemaProperties,
+} from './openclawConfigScalars';
 
 export const FEISHU_PERMISSIONS_JSON = `{
   "scopes": {
@@ -193,7 +201,9 @@ export default function ChannelWizard({
 
     // OpenClaw plugin state
     const [installedPlugin, setInstalledPlugin] = useState<InstalledPlugin | null>(null);
-    const [openclawSchemaValues, setOpenclawSchemaValues] = useState<Record<string, string>>({});
+    const [openclawSchemaValues, setOpenclawSchemaValues] = useState<Record<string, unknown>>(
+        () => ({ ...(promoted?.defaultConfig ?? {}) }),
+    );
     const [openclawCustomFields, setOpenclawCustomFields] = useState<Array<{ key: string; value: string }>>([{ key: '', value: '' }]);
 
     const [verifyStatus, setVerifyStatus] = useState<'idle' | 'verifying' | 'valid' | 'invalid'>('idle');
@@ -386,6 +396,16 @@ export default function ChannelWizard({
                 const found = plugins.find(p => p.pluginId === openclawPluginId);
                 if (found) {
                     setInstalledPlugin(found);
+                    const schemaDefaults = Object.fromEntries(
+                        Object.entries(found.manifest?.configSchema?.properties ?? {})
+                            .filter(([, field]) => field.default !== undefined)
+                            .map(([key, field]) => [key, field.default]),
+                    );
+                    setOpenclawSchemaValues(prev => ({
+                        ...(promoted?.defaultConfig ?? {}),
+                        ...schemaDefaults,
+                        ...prev,
+                    }));
                     // Pre-populate custom fields from requiredFields if no schema
                     const hasSchema = found.manifest?.configSchema?.properties
                         && Object.keys(found.manifest.configSchema.properties).length > 0;
@@ -400,33 +420,32 @@ export default function ChannelWizard({
             } catch { /* ignore */ }
         })();
         return () => { cancelled = true; };
-    }, [isOpenClaw, openclawPluginId, promoted?.requiredFields]);
+    }, [isOpenClaw, openclawPluginId, promoted?.defaultConfig, promoted?.requiredFields]);
 
     // OpenClaw config schema helpers
-    const openclawSchemaProps = installedPlugin?.manifest?.configSchema?.properties as
-        Record<string, { type?: string; description?: string }> | undefined;
-    const hasOpenclawSchema = !!(openclawSchemaProps && Object.keys(openclawSchemaProps).length > 0);
+    const openclawSchemaProps = useMemo(
+        () => mergeOpenClawSchemaProperties(
+            installedPlugin?.manifest?.configSchema?.properties as OpenClawSchemaProperties | undefined,
+            promoted?.defaultConfig,
+        ),
+        [installedPlugin?.manifest?.configSchema?.properties, promoted?.defaultConfig],
+    );
+    const hasOpenclawSchema = Object.keys(openclawSchemaProps).length > 0;
     const openclawSchemaRequired = useMemo(
         () => new Set(installedPlugin?.manifest?.configSchema?.required ?? []),
         [installedPlugin?.manifest?.configSchema?.required],
     );
 
-    const buildOpenclawConfig = useCallback((): Record<string, string> => {
-        const cfg: Record<string, string> = { ...openclawSchemaValues };
-        for (const f of openclawCustomFields) {
-            const key = f.key.trim();
-            const value = f.value.trim();
-            // Skip empty values so pre-populated requiredField keys (initialized as
-            // {key, value:''}) don't wipe values the user typed via the dualConfig
-            // schema UI (which writes to openclawSchemaValues under the same keys).
-            if (key && value) cfg[key] = value;
-        }
-        return cfg;
-    }, [openclawSchemaValues, openclawCustomFields]);
+    const buildOpenclawConfig = useCallback((): Record<string, unknown> => (
+        buildTypedOpenClawConfig(openclawSchemaValues, openclawSchemaProps, openclawCustomFields)
+    ), [openclawSchemaValues, openclawSchemaProps, openclawCustomFields]);
 
     const openclawHasIncompleteFields = openclawCustomFields.some(f => f.key.trim() && !f.value.trim());
     const openclawHasIncompleteSchema = hasOpenclawSchema
-        && Array.from(openclawSchemaRequired).some(k => !openclawSchemaValues[k]?.trim());
+        && Object.entries(openclawSchemaProps).some(([key, field]) => (
+            (openclawSchemaRequired.has(key) && isOpenClawConfigValueMissing(openclawSchemaValues[key]))
+            || isOpenClawConfigValueInvalid(openclawSchemaValues[key], field)
+        ));
 
     // Poll status when in binding step
     useEffect(() => {
@@ -475,7 +494,10 @@ export default function ChannelWizard({
     const hasCredentials = isDualConfig
         ? (dualConfigMode === 'qr'
             ? wecomQrStatus === 'success' // QR scan returned botId+secret
-            : !!(openclawSchemaValues['botId']?.trim() && openclawSchemaValues['secret']?.trim()))
+            : !!(
+                String(openclawSchemaValues['botId'] ?? '').trim()
+                && String(openclawSchemaValues['secret'] ?? '').trim()
+            ))
         : isOpenClaw
             ? true // OpenClaw uses its own validation
             : isFeishu
@@ -1217,7 +1239,7 @@ export default function ChannelWizard({
                                         </label>
                                         <input
                                             type={/secret|token|password|key/i.test(key) ? 'password' : 'text'}
-                                            value={openclawSchemaValues[key] || ''}
+                                            value={String(openclawSchemaValues[key] ?? '')}
                                             onChange={(e) => setOpenclawSchemaValues(prev => ({ ...prev, [key]: e.target.value }))}
                                             placeholder={t('agentSettings.channelWizard.config.fieldPlaceholder', { field: key })}
                                             className="w-full rounded-[var(--radius-sm)] border border-[var(--line)] bg-transparent px-3 py-2.5 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--button-primary-bg)] focus:outline-none transition-colors"
@@ -1321,25 +1343,18 @@ export default function ChannelWizard({
                             {hasOpenclawSchema ? (
                                 <div className="space-y-4">
                                     <div className="space-y-3">
-                                        {Object.entries(openclawSchemaProps!).map(([key, field]) => {
+                                        {Object.entries(openclawSchemaProps).map(([key, field]) => {
                                             const isRequired = openclawSchemaRequired.has(key);
                                             return (
-                                                <div key={key}>
-                                                    <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                                                        {key}
-                                                        {isRequired && <span className="ml-1 text-[var(--error)]">*</span>}
-                                                    </label>
-                                                    {field.description && (
-                                                        <p className="mb-1 text-xs text-[var(--ink-muted)]">{field.description}</p>
-                                                    )}
-                                                    <input
-                                                        type={/secret|token|password|key/i.test(key) ? 'password' : 'text'}
-                                                        value={openclawSchemaValues[key] || ''}
-                                                        onChange={(e) => setOpenclawSchemaValues(prev => ({ ...prev, [key]: e.target.value }))}
-                                                        placeholder={t('agentSettings.channelWizard.config.fieldPlaceholder', { field: key })}
-                                                        className="w-full rounded-[var(--radius-sm)] border border-[var(--line)] bg-transparent px-3 py-2.5 text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:border-[var(--button-primary-bg)] focus:outline-none transition-colors"
-                                                    />
-                                                </div>
+                                                <OpenClawScalarField
+                                                    key={key}
+                                                    name={key}
+                                                    field={field}
+                                                    value={openclawSchemaValues[key]}
+                                                    required={isRequired}
+                                                    onChange={(value) => setOpenclawSchemaValues(prev => ({ ...prev, [key]: value }))}
+                                                    placeholder={t('agentSettings.channelWizard.config.fieldPlaceholder', { field: key })}
+                                                />
                                             );
                                         })}
                                     </div>

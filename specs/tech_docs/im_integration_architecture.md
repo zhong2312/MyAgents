@@ -303,7 +303,13 @@ pub struct SessionRouter {
 
 **Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar owner，与 `Tab`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
-### 2.6.1 IM / Agent Channel 中的 Goal Mode
+### 2.6.1 通用代理变化时的 Channel 重连
+
+Rust IM adapter 与 Plugin Bridge 是通用网络 owner。`generalRequests` 的有效值变化后，Channel model-work gate 覆盖普通 enqueue、ReplyRouter 回复、terminal finalizer、heartbeat turn 与 cron hand-off；到达空闲边界时关闭入口并再次复核 ReplyRouter/active work，然后复用标准 Channel stop/start lifecycle 从磁盘权威配置重建实例。显式命令、启动恢复、健康监控、Channel 热配置同步与代理重连共用按 `{agentId, channelId}` / `{botId}` 定位的 lifecycle lock；所有 start/replacement 都在取得锁后重读磁盘权威配置，避免并发 stop/start 重复创建或 replacement 发布旧配置。切换窗口内的新普通消息会收到稍后重试提示。
+
+这里不复制 `SessionRouter` 或 Sidecar owner，也不引入代理专用进程管理器。pending cron 是 Rust Channel 拥有的未完成投递状态，transport replacement 复用同一个 `Arc`，并向新 heartbeat runner 补发首个 pending event 的定向高优先级 wake；每次成功 ACK 后再按整个 queue 的下一项目标级联，因此同一 Channel 的多个 private target 都能继续排空，旧 wake channel 随 shutdown 消失也不会让事件停滞。标准 shutdown 仍负责持久化 session binding、释放 Sidecar owner，标准 start 再恢复。连续代理修改由 reconciliation mutex 串行，generation fence 只让最新一轮落地；即使某一代快照暂时没有运行中 Channel，也仍排队 waiter，保证更新一代不会被旧 replacement 的临时 remove 窗口吞掉。
+
+### 2.6.2 IM / Agent Channel 中的 Goal Mode
 
 Goal Mode 是 current-session 状态，因此 IM / Agent Channel 里由 AI 调 `myagents goal create --objective-file ...` 创建的 Goal，仍属于当前 peer session：
 
@@ -375,30 +381,30 @@ pub struct MessageBuffer {
 }
 ```
 
-Sidecar 不可用时入站消息进入缓冲队列；恢复后由 peer lock 保护入队顺序，回复生命周期仍由 `/api/im/events` 的 requestId 事件归属，而不是依赖同一 SSE 流内重放。
+Sidecar 不可用时入站消息进入缓冲队列；恢复后由 peer lock 保护入队顺序，回复生命周期仍由 `/api/im/events` 的 requestId 事件归属，而不是依赖同一 SSE 流内重放。OpenClaw reply 的 requestId/deliveryProtocol 只在当前进程的内存缓冲中保留，以维持仍在等待的 Bridge dispatcher；它们不写入 `buffer.json`，因为 app/Bridge 重启后原 pending owner 已不存在，磁盘重放必须走普通 outbound 路径。
 
 ### 2.10 Draft / Reply 渲染（`/api/im/events` → ReplyRouter）
 
-当前实现是 Sidecar 事件总线 + Rust consumer：
+当前实现是 Sidecar 事件总线 + Rust consumer。渲染路径由每个 `ReplySlot` 的 delivery protocol 决定：
 
 ```
 Rust ImEventConsumer 连接 Node /api/im/events?since=<seq>
  │
- ├── 收到 { requestId, type:"partial" }
- │ └── ReplyRouter 找到 requestId slot，创建/编辑 draft（节流 + 平台长度限制）
+ ├── Native adapter（deliveryProtocol 为空）
+ │ ├── "partial" → 创建/编辑 draft（节流 + 平台长度限制）
+ │ ├── "block-end" → 定稿当前 block
+ │ └── terminal → 平台收尾并移除 slot
  │
- ├── 收到 { requestId, type:"block-end" }
- │ ├── 文本在平台限制内 → editMessageText / finalize_message 定稿
- │ └── 文本超限 → delete draft → 分片发送
- │
- ├── 收到 { requestId, type:"complete" }
- │ └── terminal outcome 携带 sessionId，移除 slot，record_response
- │
- └── 收到 { requestId, type:"error"|"cancelled" }
-   └── delete draft / send error or cancelled feedback，移除 slot
+ └── OpenClaw reply（deliveryProtocol="openclaw-reply"）
+   ├── "partial" → 发送当前 raw text block 的 full snapshot
+   ├── "block-end" → 仅发送顺序屏障并清空 block accumulator
+   ├── "complete" → 透传 terminal outcome 的 canonical finalPayloads
+   └── "error"|"cancelled" → 透传 producer-owned terminal payload
 ```
 
-`ImEventConsumer` 拥有 SSE reconnect lifecycle，使用 `since=<lastSeq>` 恢复 ring-buffered events；`ReplyRouter` 拥有每个 requestId 的 draft/message slot。多 block 回复继续按 block 独立创建/编辑/定稿。
+`ImEventConsumer` 拥有 SSE reconnect lifecycle，使用 `since=<lastSeq>` 恢复 ring-buffered events；`ReplyRouter` 拥有每个 requestId 的 draft/message slot。Native adapter 继续按 block 独立创建/编辑/定稿；OpenClaw 路径中，插件拥有渲染、节奏和 fallback，Rust 只做 request-scoped protocol forwarding。两条路径不得用 channel 全局 capability 相互推导。
+
+OpenClaw pending dispatcher 在 Rust admission 之前已经存在，因此每个早退分支也属于协议生命周期：有用户可见结果时经 `complete`/`abort` 交回插件 renderer，无结果时发送空 `complete`。群聊是否进入模型仍由 Rust 的 `GroupActivation` 权威决定，Bridge 不得用插件侧 `isMention` 跳过 request protocol。协议请求只允许进进程内 buffer；无法 enqueue 时必须 terminal abort，不能写入 `buffer.json` 后让原 dispatcher永久等待。
 
 ### 2.11 Tauri 事件
 
@@ -495,7 +501,7 @@ Rust BridgeAdapter ←─ HTTP ──→ Plugin Bridge (Node.js 进程)
  │ │
  │ POST /send-text │ import(plugin)
  │ POST /send-media │ compat-api → register()
- │ POST /edit-message │ compat-runtime → dispatchReply 拦截
+ │ reply protocol │ compat-runtime → OpenClaw dispatcher
  │ GET /status │
  │ │ POST /api/im-bridge/message → Rust
  │ │
@@ -510,32 +516,50 @@ SessionRouter → Sidecar(AI) 社区 IM 平台 (QQ/Matrix/…)
 | `BridgeAdapter` | `src-tauri/src/im/bridge.rs` | 实现 ImAdapter + ImStreamAdapter，通过 HTTP 与 Bridge 进程通信 |
 | Plugin Bridge 入口 | `src/server/plugin-bridge/index.ts` | 启动 HTTP server，加载插件，转发消息 |
 | compat-api | `src/server/plugin-bridge/compat-api.ts` | OpenClaw API shim，捕获 `registerChannel()` |
-| compat-runtime | `src/server/plugin-bridge/compat-runtime.ts` | channelRuntime mock，拦截 `dispatchReply` 提取用户消息 |
-| plugin-sdk-shim | `src/server/plugin-bridge/plugin-sdk-shim/` | 为 `openclaw/plugin-sdk` imports 提供运行时 shim |
+| compat-runtime | `src/server/plugin-bridge/compat-runtime.ts` | channelRuntime mock，建立真实 OpenClaw reply dispatcher 并提取用户消息 |
+| pending-dispatch | `src/server/plugin-bridge/pending-dispatch.ts` | 按 requestId 串行投递 partial/barrier/terminal；只合并相邻同 lane snapshot |
+| sdk-shim | `src/server/plugin-bridge/sdk-shim/` | 为 `openclaw/plugin-sdk` imports 提供运行时 shim |
 | Bridge sender registry | `bridge.rs` 静态 `BRIDGE_SENDERS` | bot_id → (sender_channel, plugin_id) 路由映射 |
+
+#### Bridge MCP tool surface 与 Turn context
+
+Plugin tool schema 是 Session 级控制面，sender/chat/account/owner 是 Turn 级调用身份，两者必须由不同 owner 持有：
+
+- `src/server/tools/im-bridge-tools.ts` 以规范化的 `{bridgePort, pluginId, sorted enabledToolGroups}` 作为 stable surface identity；`interaction` group 在规范化时统一加入。新 identity 只请求一次 Bridge `/mcp/tools`；只有发现非空工具 schema 时才创建一次 `createSdkMcpServer()`，零工具则直接 terminal ready，失败/超时则 terminal degraded。
+- 同一 surface generation 的连续消息直接复用 settled surface outcome（存在时复用 SDK server）；不再请求 `/mcp/tools`、不重建 SDK server，也不触发 `setMcpServers()`。discovery 失败/超时后该 generation terminal degraded，后续消息不重试；真实 surface identity 变化或新 Session 清空 owner 后才重试。
+- Bridge discovery 与随后对 SDK readiness 的观察共享 `MCP_PREWARM_GRACE_MS` 的 absolute soft window。live `setMcpServers()` map mutation 是独立的 30 秒正确性 fence：mutation 本身不被 10 秒 deadline 截断，但 absolute wall clock 继续前进，所以 mutation 结束后只观察原窗口的剩余时间，甚至可能已为 0；mutation 不会重置或延长 soft budget。只有当前 Query 的 installed-map fingerprint 尚未确认该 surface identity 时，`/api/im/enqueue` 才同步 map；零工具或 degraded generation 也会发布 identity 以阻止逐消息重试，但不会伪造一个 SDK tool server。真实 identity drift 若撞上 active turn，则消息留在既有 turn-boundary queue，replacement Query 确认新 surface 后再 dispatch。
+- `ImBridgeTurnContext` 只由 exact `requestId` 的 `ImRequestRegistry` entry 持有，不随 SessionEngine request 或 queue item 复制。SDK stdin 的每次 user-message yield 都在 output-owner FIFO 占一个槽位（非 IM turn 占 `null` 槽）；tool callback 只在 FIFO head 是 IM request 时解析 sender/chat/account/owner。realtime 消息 B 即使已 yield，也不会覆盖仍在产出/调用工具的消息 A；terminal unregister 后上下文立即不可读。
+- request entry 创建后，取消与异常清理先由 `/api/im/enqueue` admission route 持有；runtime admission 成功后同步移交给 builtin/external runtime。移交前的 catch 由 route unregister；移交后的正常 terminal cleanup 归 runtime，cancel route 仅在成功移除 queued item 时接管 terminal/unregister，running turn 始终由 runtime 收尾。禁止两个 owner 同时清理或在 turn 执行中提前删除 Bridge 身份。
+- graceful interrupt 已收到 SDK `result` 时，该 result handler 同步 claim 并消费当前 output owner，interrupt caller 不再追加 `stopped` terminal；没有 result / Session 直接结束时才由 interrupt caller terminalize。`/api/im/cancel` 以 registry AbortController 的首次 abort 作为原子 cancellation claim，重复请求只确认“取消进行中”，不得二次进入 runtime。route 只为 admission-owned / queued 请求补发 terminal；running turn 始终由 runtime terminal owner 收尾，确保每个 request 恰好一个 terminal emitter、每个 SDK result 恰好消费一个 FIFO 槽。
+
+这条分离保证同一飞书 Session 连续对话只支付一次工具发现，同时群聊不同 sender 或并发相邻消息不会串用 OAuth / chat identity。300 秒工具执行预算从 callback 真正调用 `/mcp/call-tool` 时开始，与 10 秒 surface pre-warm预算无关。
 
 #### 消息流
 
 **入站**（社区平台 → AI）：
 1. 社区插件收到消息 → 调 `withReplyDispatcher({ run })` 或 `dispatchReplyFromConfig()`
-2. compat-runtime 拦截 → 提取 ctx 字段 → POST `/api/im-bridge/message` → Rust
-3. Rust 查 `BRIDGE_SENDERS` registry → `mpsc::Sender<ImMessage>` → 标准消息处理循环
-4. SessionRouter → ensure sidecar/consumer → `/api/im/enqueue` → `/api/im/events` → ReplyRouter/BridgeAdapter 回复
+2. compat-runtime 创建 dispatcher，生成 requestId 并注册 pending dispatch
+3. 提取 ctx 字段 → 携带同一 `requestId + deliveryProtocol: "openclaw-reply"` POST `/api/im-bridge/message` → Rust
+4. Rust 查 `BRIDGE_SENDERS` registry → `mpsc::Sender<ImMessage>` → 标准消息处理循环
+5. SessionRouter → ensure sidecar/consumer → `/api/im/enqueue` → `/api/im/events` → ReplyRouter/BridgeAdapter 回复
 
 **出站**（AI → 社区平台）：
-1. Rust `BridgeAdapter::send_message()` → POST `/send-text` 到 Bridge 进程
-2. Bridge 调用插件的 deliver 回调 → 社区平台 API
+1. ReplyRouter 按 requestId 调 Bridge reply protocol endpoints；HTTP ACK 只表示合法入队
+2. pending queue 严格保持 run/block/terminal 顺序，并调用 dispatcher 的 partial/final callbacks
+3. 插件依据自身 typed config 选择 CardKit streaming 或静态消息 fallback
+
+`/send-text` 仍是普通 outbound surface，不参与标准 reply dispatcher，也不能作为 pending reply 的隐式 fallback。
 
 #### Dispatch 返回值约定
 
-OpenClaw 插件对 dispatch 函数的返回值做 `{ queuedFinal, counts }` 解构。**所有** dispatch 相关函数 MUST 返回此结构，否则插件崩溃：
+OpenClaw 插件对 dispatch 函数的返回值做 `{ queuedFinal, counts }` 解构。shim dispatcher 必须实现上游的同步 admission、顺序投递、typing 与 idle contract，并返回此结构：
 
 | 函数 | 返回 |
 |------|------|
-| `withReplyDispatcher({ run })` | `{ queuedFinal: 0, counts: {} }` |
-| `dispatchReplyFromConfig(params)` | 透传 `dispatchReplyWithBufferedBlockDispatcher` 的返回值 |
-| `dispatchReplyWithBufferedBlockDispatcher(params)` | `{ queuedFinal: 0, counts: {} }`（包括 empty text 提前返回路径） |
-| `createReplyDispatcherWithTyping()` 的 `dispatch` 回调 | `{ queuedFinal: 0, counts: {} }` |
+| `withReplyDispatcher({ run })` | 等待 run 与 dispatcher idle，返回真实计数 |
+| `dispatchReplyFromConfig(params)` | 注册 pending、投递 Rust 请求并等待 request terminal |
+| `dispatchReplyWithBufferedBlockDispatcher(params)` | 仅作为不支持标准 dispatcher 的 legacy inbound fallback |
+| `createReplyDispatcherWithTyping()` | 同步接纳 payload，按序调用 deliver，并暴露 `waitForIdle()` |
 
 #### ctx 字段提取映射
 
@@ -569,9 +593,9 @@ OpenClaw 飞书插件通过 `mentionedBot(ctx.mentions)` 检测 @mention，结�
 
 ```
 安装：cmd_install_openclaw_plugin(npm_spec)
- → bun init + bun add <spec>
+ → 使用内置 Node.js 执行 npm install <spec>
  → 读取 openclaw.plugin.json manifest
- → 复制 plugin-sdk-shim → node_modules/openclaw/
+ → 最后写入 sdk-shim → node_modules/openclaw/
  → 返回 manifest + capabilities
 
 启动：start_im_bot(platform="openclaw:<install-or-route-id>")
@@ -758,6 +782,10 @@ interface ImBotConfig {
 ```
 
 **OpenClaw 身份边界**：历史配置里的 `platform: "openclaw:<...>"` 可能保存安装 ID（如 `openclaw-lark`、`wecom-openclaw-plugin`），也可能保存协议 Channel ID（如 `qqbot`）。Rust/Renderer 用 `openclawPluginId` 作为安装目录身份保持兼容；Node Plugin Bridge 则必须从 OpenClaw manifest / `package.json.openclaw.channel.id` / `registerChannel()` 得到协议 Channel ID，并用它构造 `cfg.channels.<channelId>`。不要在 Bridge 内用安装 ID 作为 canonical OpenClaw config key。
+
+**配置类型边界**：`openclawPluginConfig` 保留 manifest scalar 的原生 JSON 类型（boolean/string/number）。Renderer 按 schema/default 渲染并持久化 typed value；Rust 在现有 config lock 内只把已知 Lark 身份的历史 `streaming: "true"|"false"` read-heal 为 boolean，未知值及其他插件不猜测、不迁移。插件据此自行决定 streaming/fallback。
+
+**配置写 owner**：Channel detail 不得把 React 中的旧 `channels[]` 全量写回。通用字段走 `patchAgentChannelConfig()`，OpenClaw scalar 走显式 field `set/delete` mutation；两者都在 `atomicModifyConfig` 内合并 disk-latest Agent/Channel。写盘后仍用权威 `channels` 触发 runtime sync；Rust 只把 `patch.channels` 当 refresh signal，运行态 `groupActivation/groupPermissions` 始终从锁内重读的 `updated_agent.channels` 投影，不信任可能乱序的 invoke payload。
 
 **存储位置**：`~/.myagents/config.json` → `imBotConfigs: ImBotConfig[]`
 
@@ -949,8 +977,8 @@ src/renderer/
 src/server/plugin-bridge/
 ├── index.ts # Bridge 入口：CLI args 解析、插件加载、HTTP server
 ├── compat-api.ts # OpenClaw API shim（registerChannel 捕获）
-├── compat-runtime.ts # channelRuntime mock（dispatchReply 拦截 → Rust，ctx 字段提取）
-├── streaming-adapter.ts # 流式卡片适配（start-stream/stream-chunk/finalize-stream）
+├── compat-runtime.ts # channelRuntime mock（dispatcher 注册 → Rust，ctx 字段提取）
+├── pending-dispatch.ts # requestId-scoped 有序 reply transport
 ├── mcp-handler.ts # Bridge 插件 MCP 工具暴露
 └── sdk-shim/
  └── plugin-sdk/

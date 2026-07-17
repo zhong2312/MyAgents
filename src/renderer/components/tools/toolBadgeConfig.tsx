@@ -28,8 +28,8 @@ import { getEffectiveTodoWriteTodos } from '@/utils/todoWriteState';
 import { getTaskListSnapshot } from '@/utils/taskTodoState';
 import {
   getFilePatchPrimaryPath,
-  resolveFilePatchDisplay,
-  type FilePatchDisplay,
+  resolveFilePatchRenderModel,
+  type FilePatchRenderModel,
 } from '../../../shared/toolDisplay/filePatch';
 import {
   isSubagentCallRunning,
@@ -219,7 +219,7 @@ function getTodoWriteLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): strin
 }
 
 function getFilePatchLabel(tool: ToolUseSimple): string | null {
-  const display = resolveFilePatchDisplay(tool);
+  const display = resolveFilePatchRenderModel(tool);
   const filePath = display ? getFilePatchPrimaryPath(display) : null;
   if (!filePath) return null;
   const fileName = filePath.split(/[/\\]/).pop() || filePath;
@@ -909,11 +909,20 @@ function parseGlobStats(result: string | undefined): { files: number } | null {
   return null;
 }
 
-function renderFilePatchSummary(display: FilePatchDisplay): ReactNode {
+function renderFilePatchSummary(display: FilePatchRenderModel, t?: ToolChromeTranslator): ReactNode {
   const { added, removed } = display.summary;
+  const written = display.changes.reduce((total, change) => total + (change.written ?? 0), 0);
+  if (written > 0 && added === 0 && removed === 0) {
+    return (
+      <span className="text-xs font-mono whitespace-nowrap text-[var(--ink-muted)]">
+        {tc(t, 'labels.writeLines', { count: written })}
+      </span>
+    );
+  }
+  if (added === 0 && removed === 0) return null;
   const showRemoved =
     removed > 0 ||
-    display.changes.some((change) => change.kind !== 'add' || change.removed > 0 || change.view.kind === 'old-new');
+    display.changes.some((change) => change.kind !== 'add' || change.removed > 0 || change.viewKind === 'old-new');
 
   if (!showRemoved) {
     return (
@@ -946,8 +955,8 @@ export function getToolSummaryNode(tool: ToolUseSimple, t?: ToolChromeTranslator
   switch (tool.name) {
     case 'Edit':
     case 'Write': {
-      const display = resolveFilePatchDisplay(tool);
-      return display ? renderFilePatchSummary(display) : null;
+      const display = resolveFilePatchRenderModel(tool);
+      return display ? renderFilePatchSummary(display, t) : null;
     }
     case 'Grep': {
       const stats = parseGrepStats(tool.result);

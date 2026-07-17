@@ -49,3 +49,15 @@ export function decideMcpSync(params: {
   if (params.isSnapshotted) return { changed: true, shouldRestart: false, reason: 'snapshot-authoritative' };
   return { changed: true, shouldRestart: true, reason: 'fingerprint-changed' };
 }
+
+export function shouldDeferLiveMcpMutation(params: {
+  promotedItemInFlight: boolean;
+  turnInFlight: boolean;
+  sdkCommandInFlight: boolean;
+  backgroundTasksActive?: boolean;
+}): boolean {
+  return params.promotedItemInFlight
+    || params.turnInFlight
+    || params.sdkCommandInFlight
+    || params.backgroundTasksActive === true;
+}

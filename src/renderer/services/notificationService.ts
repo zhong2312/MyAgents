@@ -70,14 +70,6 @@ function notificationText(key: string, options?: Record<string, unknown>): strin
 }
 
 /**
- * Notify that AI has completed a response.
- * @param tabId - Optional deep-link target consumed when the user clicks.
- */
-export function notifyMessageComplete(tabId?: string): void {
-    void notify(notificationText('messageCompleteTitle'), notificationText('messageCompleteBody'), tabId);
-}
-
-/**
  * Notify that a cron task has completed.
  * Used by the cron path that originates inside Rust — kept on the front-end
  * surface for symmetry, but the cron module emits via Rust directly so the

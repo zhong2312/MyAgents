@@ -18,7 +18,7 @@ import {
   type SpaceActions,
   type SpaceIssueDetailState,
 } from '@/pages/space/spaceStore';
-import { formatBytes, formatTime } from '@/pages/space/spaceUi';
+import { formatBytes, formatTime, SPACE_NARRATIVE_INSET_CLASS } from '@/pages/space/spaceUi';
 import { IssueAttachmentDraftList } from './IssueAttachmentDraftList';
 import { IssueTaskCard } from './IssueTaskCard';
 import { useSpaceAttachmentDrafts } from './useSpaceAttachmentDrafts';
@@ -641,7 +641,7 @@ export function IssueDetailDrawer({
                     <div className="mt-4">
                       <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
                     </div>
-                    <div className="mt-5">
+                    <div className={`mt-5 ${SPACE_NARRATIVE_INSET_CLASS}`}>
                       <IssueMarkdown>{detail.issue.body}</IssueMarkdown>
                     </div>
                   </>
@@ -727,12 +727,14 @@ export function IssueDetailDrawer({
                           />
                           <span>{formatTime(item.createdAt)}</span>
                         </div>
-                        {item.body.trim() && <IssueMarkdown>{item.body}</IssueMarkdown>}
-                        {(item.attachments?.length ?? 0) > 0 && (
-                          <div className={`${item.body.trim() ? 'mt-3' : ''} divide-y divide-[var(--line-subtle)] border-b border-[var(--line-subtle)]`}>
-                            {(item.attachments ?? []).map(renderAttachmentRow)}
-                          </div>
-                        )}
+                        <div className={SPACE_NARRATIVE_INSET_CLASS}>
+                          {item.body.trim() && <IssueMarkdown>{item.body}</IssueMarkdown>}
+                          {(item.attachments?.length ?? 0) > 0 && (
+                            <div className={`${item.body.trim() ? 'mt-3' : ''} divide-y divide-[var(--line-subtle)] border-b border-[var(--line-subtle)]`}>
+                              {(item.attachments ?? []).map(renderAttachmentRow)}
+                            </div>
+                          )}
+                        </div>
                       </article>
                     ))
                   )}

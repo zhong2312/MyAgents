@@ -3,12 +3,17 @@ import { describe, expect, it } from 'vitest';
 import {
   CLIENT_MESSAGE_INLINE_MAX_BYTES,
   isHumanUserMessage,
-  resolveLastRealUserMessagePreview,
+  resolveLastVisibleTurnPreview,
+  resolveVisibleUserTurnText,
   shrinkSessionMessageForClient,
   shrinkReplayContentForClient,
 } from './session-message-preview';
 import type { SessionMessage } from '../types/session';
-import { buildFloatingBallContextReminder } from '../../shared/systemReminder';
+import {
+  buildFloatingBallContextReminder,
+  LOCAL_COMMAND_OUTPUT_TAG,
+  SESSION_EVENT_TAG,
+} from '../../shared/systemReminder';
 
 function msg(content: string): SessionMessage {
   return {
@@ -36,13 +41,18 @@ describe('session-message-preview', () => {
       '<system-reminder><GOAL_CONTINUATION>continue</GOAL_CONTINUATION></system-reminder>',
     )).toBe(false);
     expect(isHuman(
+      '<system-reminder><GOAL_CONTINUATION>continue</GOAL_CONTINUATION></system-reminder>用户发起的 Goal 输入',
+    )).toBe(true);
+    expect(isHuman(
       '<system-reminder><GOAL_CONTEXT>context</GOAL_CONTEXT></system-reminder>用户追问',
     )).toBe(true);
     expect(isHuman('请解释为什么会出现 /UPDATE_MEMORY')).toBe(true);
     expect(isHuman('请解释 <CRON_TASK> 标签')).toBe(true);
-    expect(isHuman('<local-command-stdout>cost output</local-command-stdout>')).toBe(false);
     expect(isHuman(
-      '<myagents-session-event type="watch.completed">result</myagents-session-event>',
+      `<system-reminder><${LOCAL_COMMAND_OUTPUT_TAG}>local</${LOCAL_COMMAND_OUTPUT_TAG}></system-reminder><local-command-stdout>cost output</local-command-stdout>`,
+    )).toBe(false);
+    expect(isHuman(
+      `<system-reminder><${SESSION_EVENT_TAG}>result</${SESSION_EVENT_TAG}></system-reminder>`,
     )).toBe(false);
     expect(isHuman(
       '<system-reminder><myagents-space-issue>issue</myagents-space-issue></system-reminder>',
@@ -54,6 +64,14 @@ describe('session-message-preview', () => {
       mimeType: 'image/png',
       path: 'image.png',
     }])).toBe(true);
+    expect(isHumanUserMessage(
+      { content: '<system-reminder><CRON_TASK>quoted</CRON_TASK></system-reminder>human text' },
+      { kind: 'desktop', surface: 'launcher_input' },
+    )).toBe(false);
+    expect(isHumanUserMessage(
+      { content: '<system-reminder><myagents-space-issue>issue</myagents-space-issue></system-reminder>Visible issue' },
+      { kind: 'registered-agent', surface: 'space_issue_delivery' },
+    )).toBe(false);
   });
 
   it('keeps normal history messages unchanged by reference', () => {
@@ -160,7 +178,7 @@ describe('session-message-preview', () => {
   });
 
   it('extracts last real user preview instead of the trailing assistant response', () => {
-    const result = resolveLastRealUserMessagePreview([
+    const result = resolveLastVisibleTurnPreview([
       { role: 'user', content: '用户真正的问题', id: 'u1', timestamp: 't1' } as SessionMessage,
       { role: 'assistant', content: '我会先处理这个问题', id: 'a1', timestamp: 't2' } as SessionMessage,
     ]);
@@ -168,8 +186,28 @@ describe('session-message-preview', () => {
     expect(result).toEqual({ found: true, preview: '用户真正的问题' });
   });
 
+  it('keeps the previous visible preview after an attachment-only turn', () => {
+    const result = resolveLastVisibleTurnPreview([
+      { role: 'user', content: '前一条可见问题' },
+      { role: 'user', content: '   ' },
+    ]);
+
+    expect(result).toEqual({ found: true, preview: '前一条可见问题' });
+  });
+
+  it('keeps local command output visible without making it the conversation preview', () => {
+    const localCommand = `<system-reminder><${LOCAL_COMMAND_OUTPUT_TAG}>local</${LOCAL_COMMAND_OUTPUT_TAG}></system-reminder><local-command-stdout>cost output</local-command-stdout>`;
+    expect(resolveVisibleUserTurnText(localCommand)).toBe(
+      '<local-command-stdout>cost output</local-command-stdout>',
+    );
+    expect(resolveLastVisibleTurnPreview([
+      { role: 'user', content: '真人问题' },
+      { role: 'user', content: localCommand },
+    ])).toEqual({ found: true, preview: '真人问题' });
+  });
+
   it('skips pure system reminders but keeps mixed user-visible text', () => {
-    const result = resolveLastRealUserMessagePreview([
+    const result = resolveLastVisibleTurnPreview([
       {
         role: 'user',
         content: '<system-reminder><HEARTBEAT>A schedule fired</HEARTBEAT></system-reminder>',
@@ -188,8 +226,8 @@ describe('session-message-preview', () => {
     expect(result).toEqual({ found: true, preview: '用户群聊消息' });
   });
 
-  it('extracts the first non-empty cron task line from system reminders', () => {
-    const result = resolveLastRealUserMessagePreview([
+  it('does not mine hidden cron payloads for a display preview', () => {
+    const result = resolveLastVisibleTurnPreview([
       {
         role: 'user',
         content: '<system-reminder>\n<CRON_TASK>\n\n执行任务：# GitHub Issue 自动化处理\n\n每 6 小时自动 triage\n</CRON_TASK>\n</system-reminder>',
@@ -199,11 +237,11 @@ describe('session-message-preview', () => {
       { role: 'assistant', content: 'assistant', id: 'a1', timestamp: 't2' } as SessionMessage,
     ]);
 
-    expect(result).toEqual({ found: true, preview: '执行任务：# GitHub Issue 自动化处理' });
+    expect(result).toEqual({ found: false });
   });
 
   it('keeps floating-ball mixed queries but skips pure floating context', () => {
-    const result = resolveLastRealUserMessagePreview([
+    const result = resolveLastVisibleTurnPreview([
       {
         role: 'user',
         content: buildFloatingBallContextReminder({ screenshotAttached: true }),
@@ -276,7 +314,7 @@ describe('session-message-preview', () => {
   });
 
   it('keeps heartbeat and memory-update system reminders out of previews', () => {
-    const result = resolveLastRealUserMessagePreview([
+    const result = resolveLastVisibleTurnPreview([
       {
         role: 'user',
         content: '<system-reminder><HEARTBEAT>A schedule fired</HEARTBEAT></system-reminder>',

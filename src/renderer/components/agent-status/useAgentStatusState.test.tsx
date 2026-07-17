@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 
 import type { ContentBlock, Message, ToolUseSimple } from '@/types/chat';
-import { clearAllBackgroundTaskStatuses, getBackgroundTaskStatus, hydrateBackgroundTaskStatusesFromHistory, registerBackgroundTask } from '@/utils/backgroundTaskStatus';
+import {
+  clearAllBackgroundTaskStatuses,
+  getBackgroundTaskStatus,
+  hydrateBackgroundTaskStatusesFromHistory,
+  isBackgroundTaskRegistered,
+  registerBackgroundTask,
+} from '@/utils/backgroundTaskStatus';
 
 import { useAgentStatusState } from './useAgentStatusState';
 
@@ -182,7 +188,7 @@ describe('useAgentStatusState — builtin background subagents', () => {
   });
 
   it('reacts to a live task-started event when the panel is already mounted', async () => {
-    const { result } = renderHook(() => useAgentStatusState([]));
+    const { result } = renderHook(() => useAgentStatusState([], null, 'session-a'));
 
     expect(result.current.summary.subagentRunning).toBe(0);
 
@@ -190,7 +196,7 @@ describe('useAgentStatusState — builtin background subagents', () => {
       registerBackgroundTask('bg-task-1', 'Task-m1', {
         description: 'Audit background tasks',
         taskType: 'local_agent',
-      });
+      }, 'session-a');
     });
 
     await waitFor(() => {
@@ -201,6 +207,47 @@ describe('useAgentStatusState — builtin background subagents', () => {
       agentType: 'local_agent',
       description: 'Audit background tasks',
       mode: 'background',
+    });
+  });
+
+  it('does not show live background tasks from another session', async () => {
+    const { result: sessionA } = renderHook(() => useAgentStatusState([], null, 'session-a'));
+    const { result: sessionB } = renderHook(() => useAgentStatusState([], null, 'session-b'));
+
+    act(() => {
+      registerBackgroundTask('bg-task-1', 'Task-m1', {
+        description: 'Audit session A',
+        taskType: 'local_agent',
+      }, 'session-a');
+    });
+
+    await waitFor(() => {
+      expect(sessionA.current.summary.subagentRunning).toBe(1);
+    });
+    expect(sessionB.current.summary.subagentRunning).toBe(0);
+  });
+
+  it('clears only the requested session scope', () => {
+    registerBackgroundTask('bg-task-1', 'Task-m1', {
+      description: 'Audit session A',
+      taskType: 'local_agent',
+    }, 'session-a');
+    registerBackgroundTask('bg-task-2', 'Task-m2', {
+      description: 'Audit session B',
+      taskType: 'local_agent',
+    }, 'session-b');
+
+    clearAllBackgroundTaskStatuses('session-a');
+
+    expect(getBackgroundTaskStatus('Task-m1', 'session-a')).toBeUndefined();
+    expect(isBackgroundTaskRegistered('Task-m1', 'session-a')).toBe(false);
+    expect(isBackgroundTaskRegistered('Task-m2', 'session-b')).toBe(true);
+
+    const { result } = renderHook(() => useAgentStatusState([], null, 'session-b'));
+    expect(result.current.summary.subagentRunning).toBe(1);
+    expect(result.current.subagents[0]).toMatchObject({
+      id: 'Task-m2',
+      description: 'Audit session B',
     });
   });
 
@@ -215,6 +262,22 @@ describe('useAgentStatusState — builtin background subagents', () => {
     ]);
 
     expect(getBackgroundTaskStatus('bg-task-1')).toBeUndefined();
+  });
+
+  it('hydrates persisted terminal task notifications only into the requested session scope', () => {
+    const messages: Message[] = [
+      {
+        id: 'task-notification-bg-task-1',
+        role: 'user',
+        content: '<task-notification>{"taskId":"bg-task-1","toolUseId":"Task-m1","status":"completed","description":"Audit repo"}</task-notification>',
+        timestamp: new Date(0),
+      },
+    ];
+
+    hydrateBackgroundTaskStatusesFromHistory(messages, 'session-a');
+
+    expect(getBackgroundTaskStatus('Task-m1', 'session-a')).toBe('completed');
+    expect(getBackgroundTaskStatus('Task-m1', 'session-b')).toBeUndefined();
   });
 
   it('does not treat explicit run_in_background false as background', () => {

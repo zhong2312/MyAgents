@@ -54,7 +54,7 @@ export interface SystemNotice {
 }
 
 export interface LoadOlderMessagesOptions {
-    beforePrepend?: (freshCount: number) => void;
+    beforePrepend?: (visibleFreshCount: number) => void;
 }
 
 /**
@@ -71,7 +71,7 @@ export interface TabState {
     streamingMessage: Message | null;  // Only this updates during streaming
     // Pagination (session-load-time): initial load pulls the last N messages;
     // older pages load lazily as the user scrolls up.
-    firstItemIndex: number;        // Absolute index of historyMessages[0] in the virtual list
+    firstItemIndex: number;        // Absolute index of the first visible chat row in Virtuoso
     hasMoreBefore: boolean;        // True if there are older messages available on disk
     isLoading: boolean;
     isSessionLoading: boolean;  // true while loadSession REST API is in-flight

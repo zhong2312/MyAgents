@@ -58,9 +58,9 @@ async function loadProxyState() {
 const scopedProxySettings: ProxySettings = {
   enabled: true,
   protocol: 'http',
-  host: '127.0.0.1',
+  host: 'myagents.proxy',
   port: 7890,
-  scope: { mode: 'custom', providerIds: ['included-provider'] },
+  scope: { mode: 'custom', generalRequests: false, providerIds: ['included-provider'] },
 };
 
 describe('proxy-state provider scope', () => {
@@ -76,7 +76,34 @@ describe('proxy-state provider scope', () => {
     restoreEnv();
   });
 
-  it('restores the Rust pre-injection proxy baseline for providers excluded by custom scope', async () => {
+  it('captures an inherited startup baseline without an app-injection marker', async () => {
+    process.env.HTTPS_PROXY = 'http://system.proxy:8443';
+    process.env.no_proxy = '.corp.local,localhost';
+
+    const proxyState = await loadProxyState();
+    await proxyState.setProcessProxyConfig(scopedProxySettings);
+
+    expect(process.env.HTTPS_PROXY).toBe('http://system.proxy:8443');
+    expect(proxyState.getProxyForProviderUrl(
+      'excluded-provider',
+      'https://api.example.com/v1',
+    )).toBe('http://system.proxy:8443');
+    expect(proxyState._getInheritedProxySnapshotForTests().no_proxy).toBe(
+      '.corp.local,localhost',
+    );
+  });
+
+  it.each([
+    { generalRequests: true, providerId: 'included-provider', generalUsesApp: true, providerUsesApp: true },
+    { generalRequests: true, providerId: 'excluded-provider', generalUsesApp: true, providerUsesApp: false },
+    { generalRequests: false, providerId: 'included-provider', generalUsesApp: false, providerUsesApp: true },
+    { generalRequests: false, providerId: 'excluded-provider', generalUsesApp: false, providerUsesApp: false },
+  ])('keeps general and provider proxy policy independent: $generalRequests / $providerId', async ({
+    generalRequests,
+    providerId,
+    generalUsesApp,
+    providerUsesApp,
+  }) => {
     process.env.MYAGENTS_PROXY_INJECTED = '1';
     process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON = JSON.stringify({
       HTTPS_PROXY: 'http://system.proxy:8080',
@@ -90,27 +117,181 @@ describe('proxy-state provider scope', () => {
     process.env.no_proxy = 'localhost,127.0.0.1';
 
     const proxyState = await loadProxyState();
-    proxyState._resetProxyStateForTests(scopedProxySettings);
+    await proxyState.setProcessProxyConfig({
+      ...scopedProxySettings,
+      scope: {
+        mode: 'custom',
+        generalRequests,
+        providerIds: ['included-provider'],
+      },
+    });
 
-    const excludedEnv: Record<string, string | undefined> = {};
-    proxyState.applyProviderProxyPolicyToEnv(excludedEnv, 'excluded-provider');
-
-    expect(excludedEnv.HTTPS_PROXY).toBe('http://system.proxy:8080');
-    expect(excludedEnv.HTTP_PROXY).toBeUndefined();
-    expect(excludedEnv.NO_PROXY).toBe('.corp.local');
-    expect(excludedEnv.MYAGENTS_PROXY_INJECTED).toBeUndefined();
-    expect(excludedEnv.MYAGENTS_PROXY_INHERITED_ENV_JSON).toBeUndefined();
-    expect(proxyState.getProxyForProviderUrl('excluded-provider', 'https://api.example.com/v1')).toBe(
-      'http://system.proxy:8080',
+    expect(process.env.HTTPS_PROXY).toBe(
+      generalUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
+    );
+    expect(process.env.HTTP_PROXY).toBe(
+      generalUsesApp ? 'http://myagents.proxy:7890' : undefined,
+    );
+    expect(proxyState.getProxyForUrl('https://space.example.com/v1')).toBe(
+      generalUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
+    );
+    expect(proxyState.getMyAgentsProxyForGeneralUrl('https://space.example.com/v1')).toBe(
+      generalUsesApp ? 'http://myagents.proxy:7890' : undefined,
     );
 
-    const includedEnv: Record<string, string | undefined> = {};
-    proxyState.applyProviderProxyPolicyToEnv(includedEnv, 'included-provider');
-    expect(includedEnv.HTTP_PROXY).toBe('http://myagents.proxy:7890');
-    expect(includedEnv.HTTPS_PROXY).toBe('http://myagents.proxy:7890');
+    const providerEnv: Record<string, string | undefined> = {};
+    proxyState.applyProviderProxyPolicyToEnv(providerEnv, providerId);
+    expect(providerEnv.HTTPS_PROXY).toBe(
+      providerUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
+    );
+    expect(providerEnv.HTTP_PROXY).toBe(
+      providerUsesApp ? 'http://myagents.proxy:7890' : undefined,
+    );
+    expect(providerEnv.NO_PROXY).toContain('localhost');
+    if (!providerUsesApp) expect(providerEnv.NO_PROXY).toContain('.corp.local');
+    expect(providerEnv.MYAGENTS_PROXY_INJECTED).toBeUndefined();
+    expect(providerEnv.MYAGENTS_PROXY_INHERITED_ENV_JSON).toBeUndefined();
+    expect(proxyState.getProxyForProviderUrl(providerId, 'https://api.example.com/v1')).toBe(
+      providerUsesApp ? 'http://myagents.proxy:7890' : 'http://system.proxy:8080',
+    );
   });
 
-  it('stops a SOCKS bridge started by a superseded proxy transition', async () => {
+  it.each([
+    { protocol: 'http' as const, generalRequests: true, providerId: 'included-provider', generalUsesApp: true, providerUsesApp: true },
+    { protocol: 'http' as const, generalRequests: true, providerId: 'excluded-provider', generalUsesApp: true, providerUsesApp: false },
+    { protocol: 'http' as const, generalRequests: false, providerId: 'included-provider', generalUsesApp: false, providerUsesApp: true },
+    { protocol: 'http' as const, generalRequests: false, providerId: 'excluded-provider', generalUsesApp: false, providerUsesApp: false },
+    { protocol: 'https' as const, generalRequests: true, providerId: 'included-provider', generalUsesApp: true, providerUsesApp: true },
+    { protocol: 'https' as const, generalRequests: true, providerId: 'excluded-provider', generalUsesApp: true, providerUsesApp: false },
+    { protocol: 'https' as const, generalRequests: false, providerId: 'included-provider', generalUsesApp: false, providerUsesApp: true },
+    { protocol: 'https' as const, generalRequests: false, providerId: 'excluded-provider', generalUsesApp: false, providerUsesApp: false },
+  ])('selects independent $protocol baselines for general=$generalRequests provider=$providerId', async ({
+    protocol,
+    generalRequests,
+    providerId,
+    generalUsesApp,
+    providerUsesApp,
+  }) => {
+    process.env.MYAGENTS_PROXY_INJECTED = '1';
+    process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON = JSON.stringify({
+      HTTP_PROXY: 'http://system-http.proxy:8080',
+      HTTPS_PROXY: 'http://system-https.proxy:8443',
+    });
+
+    const proxyState = await loadProxyState();
+    await proxyState.setProcessProxyConfig({
+      enabled: true,
+      protocol,
+      host: 'myagents.proxy',
+      port: 7890,
+      scope: { mode: 'custom', generalRequests, providerIds: ['included-provider'] },
+    });
+
+    const appUrl = `${protocol}://myagents.proxy:7890`;
+    const generalOptions = proxyState._getGeneralRequestProxyOptionsForTests();
+    expect(generalOptions.httpProxy).toBe(
+      generalUsesApp ? appUrl : 'http://system-http.proxy:8080',
+    );
+    expect(generalOptions.httpsProxy).toBe(
+      generalUsesApp ? appUrl : 'http://system-https.proxy:8443',
+    );
+    expect(proxyState.getProxyForProviderUrl(providerId, 'https://api.example.com/v1')).toBe(
+      providerUsesApp ? appUrl : 'http://system-https.proxy:8443',
+    );
+  });
+
+  it('keeps a SOCKS bridge overlay for a selected provider when general requests inherit', async () => {
+    process.env.MYAGENTS_PROXY_INJECTED = '1';
+    process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON = JSON.stringify({
+      HTTPS_PROXY: 'http://system.proxy:8080',
+      NO_PROXY: '.corp.local',
+    });
+    process.env.HTTP_PROXY = 'socks5://127.0.0.1:1080';
+    process.env.HTTPS_PROXY = 'socks5://127.0.0.1:1080';
+
+    const proxyState = await loadProxyState();
+    await proxyState.setProcessProxyConfig({
+      enabled: true,
+      protocol: 'socks5',
+      host: '127.0.0.1',
+      port: 1080,
+      scope: {
+        mode: 'custom',
+        generalRequests: false,
+        providerIds: ['included-provider'],
+      },
+    });
+
+    expect(socksBridgeMocks.startSocksBridge).toHaveBeenCalledWith('127.0.0.1', 1080);
+    expect(process.env.HTTP_PROXY).toBeUndefined();
+    expect(process.env.HTTPS_PROXY).toBe('http://system.proxy:8080');
+
+    const providerEnv: Record<string, string | undefined> = {};
+    proxyState.applyProviderProxyPolicyToEnv(providerEnv, 'included-provider');
+    expect(providerEnv.HTTP_PROXY).toBe('http://127.0.0.1:41234');
+    expect(providerEnv.HTTPS_PROXY).toBe('http://127.0.0.1:41234');
+    expect(proxyState.getProxyForProviderUrl(
+      'included-provider',
+      'https://api.example.com/v1',
+    )).toBe('http://127.0.0.1:41234');
+  });
+
+  it.each([
+    { generalRequests: true, providerId: 'included-provider', generalUsesApp: true, providerUsesApp: true },
+    { generalRequests: true, providerId: 'excluded-provider', generalUsesApp: true, providerUsesApp: false },
+    { generalRequests: false, providerId: 'included-provider', generalUsesApp: false, providerUsesApp: true },
+    { generalRequests: false, providerId: 'excluded-provider', generalUsesApp: false, providerUsesApp: false },
+  ])('keeps SOCKS bridge routing independent for general=$generalRequests provider=$providerId', async ({
+    generalRequests,
+    providerId,
+    generalUsesApp,
+    providerUsesApp,
+  }) => {
+    process.env.MYAGENTS_PROXY_INJECTED = '1';
+    process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON = JSON.stringify({
+      HTTP_PROXY: 'http://system.proxy:8080',
+      HTTPS_PROXY: 'http://system.proxy:8080',
+    });
+
+    const proxyState = await loadProxyState();
+    await proxyState.setProcessProxyConfig({
+      enabled: true,
+      protocol: 'socks5',
+      host: '127.0.0.1',
+      port: 1080,
+      scope: { mode: 'custom', generalRequests, providerIds: ['included-provider'] },
+    });
+
+    const bridgeUrl = 'http://127.0.0.1:41234';
+    expect(proxyState._getGeneralRequestProxyOptionsForTests().httpsProxy).toBe(
+      generalUsesApp ? bridgeUrl : 'http://system.proxy:8080',
+    );
+    expect(proxyState.getProxyForProviderUrl(providerId, 'https://api.example.com/v1')).toBe(
+      providerUsesApp ? bridgeUrl : 'http://system.proxy:8080',
+    );
+  });
+
+  it('does not start a provider-only SOCKS bridge in a general-only process', async () => {
+    const proxyState = await loadProxyState();
+    proxyState._resetProxyStateForTests({
+      enabled: true,
+      protocol: 'socks5',
+      host: '127.0.0.1',
+      port: 1080,
+      scope: {
+        mode: 'custom',
+        generalRequests: false,
+        providerIds: ['included-provider'],
+      },
+    });
+
+    await proxyState.initializeProxyStateFromCurrentSettings({ providerOwnedConsumers: false });
+
+    expect(socksBridgeMocks.startSocksBridge).not.toHaveBeenCalled();
+    expect(process.env.HTTP_PROXY).toBeUndefined();
+  });
+
+  it('does not tear down a stable SOCKS bridge from a superseded transition', async () => {
     const socksStart = deferred<number>();
     socksBridgeMocks.startSocksBridge.mockReturnValueOnce(socksStart.promise);
 
@@ -135,8 +316,45 @@ describe('proxy-state provider scope', () => {
     socksStart.resolve(45678);
     await Promise.all([first, second]);
 
-    expect(socksBridgeMocks.stopSocksBridge).toHaveBeenCalledTimes(1);
+    expect(socksBridgeMocks.stopSocksBridge).not.toHaveBeenCalled();
     expect(process.env.HTTP_PROXY).toBeUndefined();
     expect(process.env.HTTPS_PROXY).toBeUndefined();
+  });
+
+  it('retires the previous general dispatcher when the selected baseline changes', async () => {
+    const proxyState = await loadProxyState();
+    proxyState._resetProxyStateForTests(null, {
+      HTTP_PROXY: 'http://127.0.0.1:18080',
+    });
+    const first = proxyState.getGeneralRequestDispatcher();
+    expect(first).toBeDefined();
+    const close = vi.spyOn(first!, 'close').mockResolvedValue(undefined);
+
+    proxyState._resetProxyStateForTests({
+      enabled: true,
+      protocol: 'http',
+      host: '127.0.0.1',
+      port: 7890,
+      scope: { mode: 'custom', generalRequests: true, providerIds: [] },
+    });
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(proxyState.getGeneralRequestDispatcher()).not.toBe(first);
+  });
+
+  it('applies the canonical localhost CIDR and standard NO_PROXY root semantics', async () => {
+    const proxyState = await loadProxyState();
+    expect(proxyState._shouldBypassProxyForTests(
+      'http://127.42.0.9:8080/check',
+      '127.0.0.0/8',
+    )).toBe(true);
+    expect(proxyState._shouldBypassProxyForTests(
+      'https://corp.local/check',
+      '.corp.local',
+    )).toBe(true);
+    expect(proxyState._shouldBypassProxyForTests(
+      'https://api.corp.local/check',
+      '.corp.local',
+    )).toBe(true);
   });
 });

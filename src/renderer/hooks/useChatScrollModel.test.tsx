@@ -32,6 +32,28 @@ describe('useChatScrollModel', () => {
     expect(result.current.layoutByMessageId.has('m2')).toBe(true);
   });
 
+  it('excludes persisted task notifications before building geometry', () => {
+    const history = [
+      message('m1', 'hello'),
+      message(
+        'task-notification-bg-1',
+        '<task-notification>{"taskId":"bg-1","status":"completed"}</task-notification>',
+      ),
+      message('m2', 'done'),
+    ];
+
+    const { result } = renderHook(() => useChatScrollModel({
+      historyMessages: history,
+      streamingMessage: null,
+      firstItemIndex: 999,
+      sessionId: 'sid',
+    }));
+
+    expect(result.current.data.map(m => m.id)).toEqual(['m1', 'm2']);
+    expect(result.current.heightEstimateSeed).toHaveLength(2);
+    expect([...result.current.layoutByMessageId.keys()]).toEqual(['m1', 'm2']);
+  });
+
   it('keeps estimate seed stable for token-level text changes in the same layout bucket', () => {
     const firstHistory = [message('m1', 'short reply')];
     const { result, rerender } = renderHook(

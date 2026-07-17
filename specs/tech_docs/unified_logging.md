@@ -246,8 +246,8 @@ for (const entry of entries) {
 应用启动和每个 Sidecar 创建时输出 `[boot]` 单行自检信息：
 
 ```
-[boot] v=0.2.0 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 cron=12 proxy=false dir=/Users/xxx/.myagents
-[boot] pid=12345 port=31415 node=24.14.0 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright,im-cron builtin-mcp-meta=cron-tools,im-cron,im-media,gemini-image,edge-tts
+[boot] v=0.3.1 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
+[boot] pid=12345 port=31415 node=24.14.0 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright builtin-mcp-meta=gemini-image,edge-tts
 ```
 
 **排查第一步**：`grep '[boot]' ./logs/unified-*.log`

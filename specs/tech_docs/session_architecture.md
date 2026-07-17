@@ -54,7 +54,7 @@ interface SessionStats {
 
 `configSnapshotAt` 是配置权威边界：存在时，session snapshot 拥有当前会话配置；缺字段不是“自动读 Agent 默认值”的许可。Agent/Project 只作为新 session 模板、legacy/no-snapshot 兼容源、以及 IM 无 Tab owner live-follow 源。
 
-`lastActiveAt` 表示最近一次用户参与，不是“最后一次 transcript 写入”。Transcript persistence 只能在本次新增的 user row 确认为真人消息时推进它；assistant 结果、`<MEMORY_UPDATE>`、Heartbeat、Cron、session event、local-command output 等自动 turn 仍可持久化消息、usage、context 和 preview，但不得刷新 Session 活跃时间。带可见 user tail 的 Goal/浮球消息以及 attachment-only user message 仍属于真人输入。用户显式编辑 title/model/permission/provider 等 Session 设置也属于参与行为，可由 metadata PATCH 推进排序时间。读取方若需要严格的“最近真人 query”业务判定，应以 JSONL 的真人 user timestamp 为权威；`lastActiveAt` 只适合历史排序或 I/O 粗筛。
+`lastActiveAt` 表示 Session 最近一次 meaningful activity，是历史排序时间，不是真人输入时间，也不是任意 transcript 写入时间。被 turn lifecycle 真正接纳的普通 desktop、Space、Task/Cron/Goal、Session Inbox 等工作在 admission 推进一次，并在 complete/stopped/error terminal 再反映终态时间；Memory、silent Heartbeat、prewarm、replay、纯持久化重写与 system maintenance Session 不推进。Heartbeat 只有携带 visible work，或终态在移除 `HEARTBEAT_OK` 与格式空白后仍有内容时才算 meaningful。`isHumanUserMessage` 只服务真人 query/Memory/统计语义，不拥有 recency。用户显式编辑 title/model/permission/provider 等 Session 设置仍可由 metadata PATCH 推进排序时间，favorite 不推进。`SessionStore.updateSessionMetadata` 在 sessions file lock 内保证 `lastActiveAt` 单调不回退；读取方若需要真人 query 时间，必须按 JSONL message timestamp 精确判断，不能用 `lastActiveAt` 预筛。
 
 `providerRoute` 是 owned builtin snapshot 的 canonical provider/model 身份。它只持久化 `{kind, providerId, model}`，不持久化 `baseUrl`、`apiKey`、`authType`、`modelAliases` 等运行时 env。真正发起请求时，Sidecar 用 `providerRoute` + 当前磁盘配置 materialize 出 `ProviderEnv`；subscription route materialize 为 `'subscription'` sentinel，API route 必须能从当前配置解析出 API key，否则本次发送失败并提示用户修复配置。
 
@@ -275,9 +275,9 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 
 | Owner | 拥有内容 | 典型写入 / 行为入口 |
 |---|---|---|
-| `lifecycle.ts` | SDK `Query`、processing/abort、termination promise、generator resolver、pre-warm/readiness | abort/restart/termination/pre-warm/generator wakeup |
+| `lifecycle.ts` | SDK `Query`、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry | abort/restart/termination/pre-warm/generator wakeup、domain rollback join、MCP owner publication/mutation serialization、background task quiescence |
 | `queue.ts` | `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue`、in-flight metadata、admission ticket | enqueue/cancel/force/rescue/drain |
-| `turn.ts` | current turn usage/output/error、pending request FIFO、injected turn outcomes、inbox binding | turn state mutation API |
+| `turn.ts` | current turn usage/output/error、SDK output-owner FIFO、injected turn outcomes、inbox binding | turn state mutation API |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 语义、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 | terminal complete/stopped/error、SDK result finalization |
 | `config.ts` | MCP/agents/plugins/model/permission/reasoning/provider、deferred restart、MCP fingerprint | config setters、provider boundary reset、MCP sync |
 | `transcript.ts` | live `messages`、message sequence、persist cursor/cache、current/live SDK UUID sets、reload anchor | transcript state mutation API |
@@ -291,6 +291,28 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 - `abortPersistentSession()` 仍是唯一语义化 abort 入口；abort flag 的内部写入归 `lifecycle.ts`。
 - `agent-session.ts` 需要修改 owner state 时走 `builtin-session/*` 的命名 API；`runtime-boundary.unit.test.ts` 有 direct-write guard，防止重新裸写 lifecycle/queue/turn/config/transcript 状态。
 - `agent-session.ts` 不再解释 SDK terminal result，也不再实现 transcript persistence mapping/chain；这两类行为分别归 `turn-lifecycle.ts` 与 `transcript-persistence.ts`，facade 只组装必要依赖并委托。
+
+#### Builtin 公共 MCP soft pre-warm 与 dispatch transaction
+
+`Query.initializationResult()` 只表示 SDK control request 可用，streamed `system_init` 只表示某一 turn 的 metadata；SDK 的 MCP transport 仍可能处于 `pending`、`failed`、`needs-auth` 或 `disabled`。这不是 AI turn 的可用性前置条件：Desktop、Launcher、IM 与 injected turn 全部在公共 `messageGenerator()` dispatch seam 观察同一个 Query/map generation owner，adapter 入口不再因 MCP hard-reject 任务。soft observation 仍串行发生在 domain guard 之前；因此带 `beforeDispatch` 的 injected turn 保持 `soft observation → domain guard → admission/persistence → SDK dispatch` 顺序，`pending` 最多按该 owner 的剩余绝对预算延迟后续步骤，但任何 MCP outcome 都不能拒绝任务。
+
+`builtin-session/lifecycle.ts` 持有 Query/map generation 的一次性 soft pre-warm owner：
+
+- Query object identity 改变时递增 generation；成功安装新 map 时递增 revision，并创建 owner-owned absolute deadline。
+- 当前预算由 `MCP_PREWARM_GRACE_MS` 派生，现为 10 秒；用户发送只消费从 owner 创建时起的**剩余**时间，不创建 per-turn 新窗口。
+- `connected` 全部到齐即 ready；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 都 terminal degraded，随后照常 dispatch。
+- settled outcome 保存在 owner 上；同 generation 后续 turn 是零 control-RPC fast path。owner replacement 时 promoted item 原样 requeue，只交给 replacement Query。
+- `mcpServerStatus()` 仍按 owner single-flight，避免无 AbortSignal 的 SDK control request 被重复堆积；它的异常只降级 MCP，不重建 Query。
+
+Cron / Goal / Heartbeat / Memory Update 的领域 `beforeDispatch` guard 仍在公共 soft observation 之后执行，继续负责 claim、cancel、rollback 与 dispatch acceptance；MCP 不参与领域拒绝，也不再拥有 injected-only pre-persistence/final 双 fence。
+
+Live MCP replacement 是独立的 Query-generation **正确性 fence**，不属于 10 秒 soft budget：mutation owner 在异步 map build 前同步发布，使用既有 30 秒 `setMcpServers()` timeout。promotion 与 mutation 按同一 event-loop turn 线性化；promoted item、active turn、SDK command in-flight 任一存在时都不原地替换 transport。真实 Bridge surface drift 会把新消息留在既有 turn-boundary queue，并锁存 deferred restart；旧 turn 继续使用旧 installed surface，replacement Query 安装新 map 后再 dispatch。mutation 失败/超时的等待 item 同样原样 requeue，不能穿越到不确定的 transport owner。
+
+#### Background task 与 deferred restart
+
+SDK background Agent/Bash 不拥有独立 Sidecar；它与父 turn 共用产生它的 builtin Query。`task_started` 因而登记到 `lifecycle.ts` 的 exact Query registry，而不是只留在 `startStreamingSession()` 局部。`applyDeferredRestartIfNeeded()` 与 `schedulePreWarm()` 的既有 drain 点同时检查该 registry：有 active task 时 reasons 保持锁存，不 drain、不 abort；最后一个 `task_updated` / `task_notification` terminal 删除 task 后重试 drain。旧 Query 的 terminal 不能删除 replacement Query 的同名 task。
+
+用户显式 Stop/Reset/Switch、应用退出和真实 Query crash 仍保留终止权；finalizer 对 exact Query 剩余任务发 synthetic `stopped`。这条规则只修 automatic deferred restart 的 quiescence 判断，不为 Cron/config send 新增 waiter，不改变 queue/HTTP lifetime，也不把 startup/watchdog/transcript 等独立竞态并入该 repair radius。
 
 ### External Session Owner Split（Phase8）
 
@@ -638,21 +660,33 @@ const sendMessage = async (text) => {
 
 **为什么不能等 API 返回后**：API 是异步的，期间后端会发 `chat:message-replay`（用户消息），如果标志还是 `true` 用户消息会被过滤丢失。
 
-但 Goal scheduler、CLI Goal、Rust direct Cron 等 server-initiated turn 不经过 renderer `sendMessage()`。Runtime 因此必须发送 session-scoped turn 边界：直接消息用 `chat:message-replay { replayKind:'live-user-echo', sessionId, message }`，排队消息实际开始用 `queue:started { sessionId, ... }`。renderer 只有在 `sessionId` 通过当前 SSE/session scope 校验后，才清除 `isNewSessionRef` 并渲染气泡。这样后续 thinking/tool/message chunk 会实时进入当前 turn，同时旧 session 或无身份的迟到事件仍被防护标志拒绝。带 `beforeDispatch` 的 builtin Goal 在 guard accepted 前必须延迟 append、持久化和上述 turn 边界，与 external Runtime 保持 fail-closed。
+但 Goal scheduler、CLI Goal、Rust direct Cron 等 server-initiated turn 不经过 renderer `sendMessage()`。Runtime 因此必须发送 session-scoped turn 边界：直接消息用 `chat:message-replay { replayKind:'live-user-echo', sessionId, message }`，排队消息实际开始用 `queue:started { sessionId, ... }`。renderer 只有在 `sessionId` 通过当前 SSE/session scope 校验后，才清除 `isNewSessionRef` 并渲染气泡。这样后续 thinking/tool/message chunk 会实时进入当前 turn，同时旧 session 或无身份的迟到事件仍被防护标志拒绝。带 `beforeDispatch` 的 builtin infrastructure turn 在 guard commit 前必须隐藏 `chat:status`、`queue:added`、queue snapshot、append、持久化和上述 turn 边界；commit 时先同步转交 active-turn owner 并确认 dispatch acceptance，再执行异步 SessionStore/user-surface work。这样异步持久化窗口内的 Stop/timeout 仍能精确命中已接纳 turn，不会形成“磁盘已写、调用方却收到未入队”的双重事实。
+
+### Renderer turn activity 的唯一权威
+
+`chat:system-init` 只同步 session birth identity、runtime/config 与 initialization metadata，**不表示 turn 正在运行**。模型、alias、context-window 或 runtime control re-init 都可能在 idle 时产生该事件；由它设置 loading/active 会制造假 Stop UI。
+
+Renderer activity 只来自两种同源快照：
+
+- live SSE `chat:status`：`starting/running` 设置 active + loading，`idle/error` 清理；
+- REST `liveSessionState`：历史恢复/重连时使用相同状态分类，即使首个 assistant chunk 尚未出现也必须标记 active。
+
+`isStreamingRef` 仍只表示“React 已有 streaming message”，不能替代 backend activity；prewarm/system-init 也不能替代 `chat:status`。SSE reconnect 的 `chat:init idle` 仅保留为丢失 terminal 事件后的清理兜底，不从 `chat:init running` 推导新 activity。
 
 ### 9 种结束场景必须重置的状态
 
 | 变量 | 用途 |
 |-----|------|
-| `isLoading` | 流式输出中 |
+| `isLoading` | UI 正在等待/展示 active turn |
 | `sessionState` | 会话状态（`'idle'` / `'running'`） |
 | `systemStatus` | 系统任务状态（如 `'compacting'`） |
 | `isStreamingRef` | 内部流跟踪 |
+| `isSessionActiveRef` | backend status / REST live snapshot 的 turn activity |
 
-每个场景 MUST 重置全部 4 个：
+每个场景 MUST 收敛全部 activity 状态；`isStreamingRef` 与 `isSessionActiveRef` 统一通过 `clearSessionActive()` 清理：
 
 ```typescript
-isStreamingRef.current = false;
+clearSessionActive();
 setIsLoading(false);
 setSessionState('idle');
 setSystemStatus(null);
@@ -664,7 +698,7 @@ setSystemStatus(null);
 | 2 | `chat:message-stopped` | 用户点击停止，后端确认 |
 | 3 | `chat:message-error` | AI 回复出错 |
 | 4 | `chat:init` 同步 | SSE 重连，后端状态为 idle |
-| 5 | `chat:status` 同步 | 后端广播状态变为 idle |
+| 5 | `chat:status` 同步 | 后端广播状态变为 idle/error |
 | 6 | `stopResponse` 超时 | 停止请求 5s 后无 SSE 确认 |
 | 7 | `stopResponse` 失败 | 停止请求网络错误 |
 | 8 | `resetSession` | 用户点击「新对话」 |
@@ -676,8 +710,16 @@ setSystemStatus(null);
 
 - `loadSession` 用**同步**标志 `restoredSessionIdRef`（**不是**异步滞后的 `historyMessagesRef.length`）决定是否 skip replay。在 `setHistoryMessages` 前就放开 loading 标志，会让迟到的 `chat:init` 命中 `!isLoading && length===0` → 清掉刚恢复的 REST 页 + `seenIds` → 内存 replay（可能传输截断）回填**旧**集（#0608 实测：后端发 id 111-190，前端却停在 109）。
 - 冷历史 backfill 打 `replayKind:'cold-history'`；新发 user/command 气泡打 `replayKind:'live-user-echo'` 并携带创建事件时的 `sessionId`。REST-restored session 只 skip cold history；新 session birth 只接受通过当前 session scope 校验的 live echo。决策纯核心 `sessionRestoreGuards.ts`（可单测）。
-- `GET /sessions/:id` 的 active overlay（builtin 内存未持久化消息、external live streaming message、live session state）由 `SessionEngine.getLiveSessionOverlay()` 提供。Route 只做分页、redaction、response shaping，不直接读取 `agent-session.ts` / `external-session.ts`。
+- `GET /sessions/:id` 的 active overlay 由 `SessionEngine.getLiveSessionOverlay()` 提供：磁盘历史先与 finalized in-memory tail 按 message id 合并，当前 streaming assistant 独立返回，同时带 live session state、pending interactive requests 与 `snapshotRevision`。builtin/external public facade 都返回 immutable snapshot；Route 只做分页、redaction、response shaping，不直接读取 runtime owner internal。
+- 需要与快照对齐的非幂等 streaming/turn-boundary/interactive SSE 事件由 `participatesInLiveRestore()` 统一选择并包成 `{ sessionId, liveRevision, payload }`。Sidecar 在暴露 snapshot 前先 flush coalesced chunk，因此 `snapshotRevision` 覆盖快照已包含的全部事件。Renderer 在 REST pending 时 buffer；快照落地后丢弃 `revision <= snapshotRevision`，只按序 replay 连续后缀。发现 gap、没有已采纳基线，或 SSE connection generation 变化时，重新请求 REST snapshot，不用 `loading/seenIds` 猜顺序。
+- `liveRevision` 是当前 Sidecar 绑定 Session 的 generation-local 内存序号，Session identity 切换时归零；它不写 JSONL、不做 checkpoint，也不改变 REST 的历史权威。新 Session 在首次被 REST adopt 前仍可走 SSE-native birth，避免为尚未持久化的会话制造恢复状态机。
 - 诊断"恢复只显示一部分"：读磁盘 `~/.myagents/refs/<id>` 的 spilled body（后端实发的 JSON，可直接 `node` 解析）对比前端显示，先把"后端发了什么 vs 前端显示什么"一刀切开。
+
+### Turn terminal 与通用完成通知
+
+builtin/external 的真实 turn owner 在 complete/stopped/error 时生成同一份 immutable `SessionCompletionTerminal`：`sessionId + workspacePath + turnId + optional turnOwner + origin + status`。descriptor 保存在各 runtime 既有 turn lifecycle state 中；terminal SSE payload 与 `GET /api/session-state` 返回同一事实，route 和 Rust caller 不重建 owner/origin。新 turn admission 或 session reset 会清掉上一份 descriptor。
+
+Rust `notification.rs` 是普通 Session 通用完成通知的唯一业务 owner：Tab-attached 路径由 SSE proxy 提交，headless 路径由 `BackgroundCompletion` 在 active→terminal 后从 `/api/session-state` 提交；两者先经过同一 owner/origin eligibility，再以 `(sessionId, turnId)` 做进程内 exactly-once claim，随后统一执行窗口 focus、通知偏好、系统 toast、badge 与 session/workspace deep-link。Task/Goal owner、Agent Channel、automation/Cron/Task run、Memory 与 Heartbeat 抑制 generic 通知，继续由各自 domain surface 负责；ordinary desktop、registered-agent/Space 与 Session Inbox 可发送 generic 通知。claim 刻意不持久化，不新增 notification ledger。`TabProvider` 只保留 terminal UI 与 unread 状态，不拥有 OS completion toast。
 
 ### 会话快照类 SSE 必须按 session scope 过滤
 

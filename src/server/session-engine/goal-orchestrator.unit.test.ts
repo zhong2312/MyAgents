@@ -195,6 +195,29 @@ describe('Goal orchestrator', () => {
     expect(client.mock.calls.some(([path]) => path === '/api/goal/turn/finalize')).toBe(false);
   });
 
+  it('aborts a durable Goal claim when the runtime commit seam cancels its guard', async () => {
+    const client = clientWithGoal();
+    const sendDesktopMessage = vi.fn(async (request: DesktopMessageRequest) => {
+      const acceptance = await request.beforeDispatch?.() ?? { accepted: true };
+      request.beforeDispatch?.cancel?.();
+      return {
+        success: true,
+        queued: true,
+        queueId: request.queueId,
+        dispatchAcceptance: Promise.resolve(acceptance),
+      };
+    });
+
+    await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage },
+      desktopRequest(),
+    );
+    await flushPromises();
+
+    expect(client.mock.calls.some(([path]) => path === '/api/goal/turn/claim')).toBe(true);
+    expect(client.mock.calls.some(([path]) => path === '/api/goal/turn/abort')).toBe(true);
+  });
+
   it('acknowledges a pre-claim admission failure so Rust can continue the Goal', async () => {
     const client = clientWithGoal(goal({ turnCount: 0 }));
     const sendDesktopMessage = vi.fn(async () => ({

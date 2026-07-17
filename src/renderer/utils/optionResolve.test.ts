@@ -514,6 +514,15 @@ describe('session-load transition classification (#255)', () => {
     })).toBe(true);
   });
 
+  it('treats initial null-to-persisted adoption as an existing-session load', () => {
+    expect(isExistingSessionSwitch({
+      sessionChanged: true,
+      wasPendingSession: false,
+      isPendingSession: false,
+      isResetSessionBirth: false,
+    })).toBe(true);
+  });
+
   it('does not treat pending upgrades or reset births as history switches', () => {
     expect(isExistingSessionSwitch({
       sessionChanged: true,

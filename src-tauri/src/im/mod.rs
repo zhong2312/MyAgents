@@ -41,7 +41,10 @@ use tokio::task::JoinSet;
 use tokio::sync::mpsc;
 
 use crate::sidecar::ManagedSidecarManager;
-use agent_channel::{create_bot_instance, shutdown_bot_instance};
+use agent_channel::{
+    agent_channel_lifecycle_lock, create_bot_instance, legacy_bot_lifecycle_lock,
+    restart_agent_channel_instance, shutdown_bot_instance,
+};
 pub use agent_channel::{get_all_bots_status, get_im_bot_status, start_im_bot, stop_im_bot};
 use bridge::BridgeAdapter;
 use buffer::MessageBuffer;
@@ -57,7 +60,7 @@ pub use commands::{
     cmd_update_agent_config, cmd_update_im_bot_config,
 };
 use commands::{persist_bot_config_patch, read_available_providers_from_disk};
-pub(crate) use config_store::{is_agent_workspace_archived, read_agent_configs_from_disk};
+pub(crate) use config_store::read_agent_configs_from_disk;
 use config_store::{
     missing_configured_channel_status, persist_agent_config_patch, read_im_configs_from_disk,
     route_agent_heartbeat_once, should_report_missing_configured_channel,
@@ -82,8 +85,8 @@ use state::{
     sync_runtime_config_to_sidecars,
 };
 pub(crate) use state::{
-    AgentChannelLink, AnyAdapter, ImConsumerHandle, ImConsumers, PeerLocks, PendingApproval,
-    PendingApprovals, PendingQuestion, PendingQuestions, SharedAgentLink,
+    AgentChannelLink, AnyAdapter, ChannelModelWorkGate, ImConsumerHandle, ImConsumers, PeerLocks,
+    PendingApproval, PendingApprovals, PendingQuestion, PendingQuestions, SharedAgentLink,
 };
 use telegram::TelegramAdapter;
 use types::{
@@ -123,6 +126,40 @@ pub async fn shutdown_all_channels_for_update(
     agent_state: &ManagedAgents,
     sidecar_manager: &ManagedSidecarManager,
 ) {
+    let mut legacy_ids = im_state.lock().await.keys().cloned().collect::<Vec<_>>();
+    legacy_ids.sort();
+    let legacy_locks = legacy_ids
+        .iter()
+        .map(|bot_id| legacy_bot_lifecycle_lock(bot_id))
+        .collect::<Vec<_>>();
+    let mut _legacy_guards = Vec::with_capacity(legacy_locks.len());
+    for lock in &legacy_locks {
+        _legacy_guards.push(lock.lock().await);
+    }
+
+    let mut agent_channels = {
+        let agents = agent_state.lock().await;
+        agents
+            .iter()
+            .flat_map(|(agent_id, agent)| {
+                agent
+                    .channels
+                    .keys()
+                    .map(|channel_id| (agent_id.clone(), channel_id.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    agent_channels.sort();
+    let agent_locks = agent_channels
+        .iter()
+        .map(|(agent_id, channel_id)| agent_channel_lifecycle_lock(agent_id, channel_id))
+        .collect::<Vec<_>>();
+    let mut _agent_guards = Vec::with_capacity(agent_locks.len());
+    for lock in &agent_locks {
+        _agent_guards.push(lock.lock().await);
+    }
+
     let legacy_bots = {
         let mut guard = im_state.lock().await;
         std::mem::take(&mut *guard)
@@ -244,6 +281,32 @@ pub async fn stop_agent_channels_for_archive(
     sidecar_manager: &ManagedSidecarManager,
     agent_id: &str,
 ) -> usize {
+    let mut channel_ids = {
+        let guard = agent_state.lock().await;
+        guard
+            .get(agent_id)
+            .map(|agent| {
+                agent
+                    .config
+                    .channels
+                    .iter()
+                    .map(|channel| channel.id.clone())
+                    .chain(agent.channels.keys().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    channel_ids.sort();
+    channel_ids.dedup();
+    let lifecycle_locks = channel_ids
+        .iter()
+        .map(|channel_id| agent_channel_lifecycle_lock(agent_id, channel_id))
+        .collect::<Vec<_>>();
+    let mut _lifecycle_guards = Vec::with_capacity(lifecycle_locks.len());
+    for lock in &lifecycle_locks {
+        _lifecycle_guards.push(lock.lock().await);
+    }
+
     let maybe_agent = {
         let mut guard = agent_state.lock().await;
         guard.remove(agent_id)
@@ -274,6 +337,24 @@ pub async fn stop_agent_channels_for_archive(
     }
 
     stopped
+}
+
+/// Schedule serialized IM/Agent transport reconnects after a general proxy
+/// change. The lifecycle and durable reconciliation live in `config_store`;
+/// this facade remains for the proxy command boundary.
+pub async fn restart_channels_for_general_proxy_change(
+    app_handle: &AppHandle,
+    agent_state: &ManagedAgents,
+    im_state: &ManagedImBots,
+    sidecar_manager: &ManagedSidecarManager,
+) -> u32 {
+    config_store::schedule_general_proxy_channel_reconnects(
+        app_handle,
+        agent_state,
+        im_state,
+        sidecar_manager,
+    )
+    .await
 }
 
 /// Format draft display text (truncate if needed for platform limit).

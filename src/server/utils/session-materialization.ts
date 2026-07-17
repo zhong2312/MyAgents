@@ -62,7 +62,9 @@ export function createMaterializedSessionMetadata(params: {
       : undefined;
   }
   meta.id = params.sessionId;
-  meta.title = params.title ?? 'New Chat';
+  meta.title = params.scenario === 'registeredAgent'
+    ? (params.agent?.name.trim() || 'New Chat')
+    : (params.title ?? 'New Chat');
   meta.origin = params.origin ?? originFromMaterializationScenario(params.scenario);
   return meta;
 }

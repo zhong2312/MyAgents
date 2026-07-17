@@ -1,6 +1,6 @@
 {
   "name": "openclaw",
-  "version": "2026.6.28-shim",
+  "version": "2026.6.29-shim",
   "type": "module",
   "exports": {
     "./plugin-sdk": "./plugin-sdk/index.js",

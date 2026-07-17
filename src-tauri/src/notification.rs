@@ -43,16 +43,15 @@
 // which drained the same entry and emitted a *second* identical event. The
 // strict cfg-split below makes the bug structurally unrepresentable.
 
-// `Mutex` / `Duration` / `Instant` only feed the non-Windows fallback
-// click-latch path below. Windows uses the WinRT `on_activated` closure
-// which captures per-toast state synchronously and needs none of these.
-#[cfg(not(target_os = "windows"))]
+// `Duration` / `Instant` only feed the non-Windows fallback click-latch.
+// `Mutex` is also used by the cross-platform session-completion claim below.
+use std::collections::HashSet;
 use std::sync::Mutex;
 #[cfg(not(target_os = "windows"))]
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 // `NotificationExt` powers `show_via_plugin` (the macOS / Linux toast
 // path). Windows goes through `tauri_winrt_notification::Toast` directly.
 #[cfg(not(target_os = "windows"))]
@@ -102,6 +101,8 @@ enum PendingState {
 
 #[cfg(not(target_os = "windows"))]
 static PENDING_CLICK: Mutex<PendingState> = Mutex::new(PendingState::Empty);
+
+static SESSION_COMPLETION_CLAIMS: Mutex<Option<HashSet<(String, String)>>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -174,6 +175,158 @@ pub struct NotificationClickPayload {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCompletionTurnOwner {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCompletionOrigin {
+    pub kind: String,
+    pub surface: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionCompletionStatus {
+    Complete,
+    Stopped,
+    Error,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCompletionTerminal {
+    pub session_id: String,
+    pub workspace_path: String,
+    pub turn_id: String,
+    #[serde(default)]
+    pub turn_owner: Option<SessionCompletionTurnOwner>,
+    pub origin: SessionCompletionOrigin,
+    pub status: SessionCompletionStatus,
+}
+
+fn is_generic_session_completion_eligible(terminal: &SessionCompletionTerminal) -> bool {
+    if matches!(
+        terminal
+            .turn_owner
+            .as_ref()
+            .map(|owner| owner.kind.as_str()),
+        Some("task" | "goal")
+    ) {
+        return false;
+    }
+    !matches!(
+        (
+            terminal.origin.kind.as_str(),
+            terminal.origin.surface.as_str()
+        ),
+        ("agent-channel", _)
+            | ("automation", _)
+            | (
+                _,
+                "channel_message" | "channel_heartbeat" | "memory_update" | "cron" | "task_run"
+            )
+    )
+}
+
+fn claim_session_completion(terminal: &SessionCompletionTerminal) -> bool {
+    let mut guard = SESSION_COMPLETION_CLAIMS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    guard
+        .get_or_insert_with(HashSet::new)
+        .insert((terminal.session_id.clone(), terminal.turn_id.clone()))
+}
+
+fn should_show_session_completion<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.get_webview_window("main")
+        .map(|window| {
+            !window.is_visible().unwrap_or(false) || !window.is_focused().unwrap_or(false)
+        })
+        .unwrap_or(true)
+}
+
+pub fn completion_terminal_from_sse_data(data: &str) -> Option<SessionCompletionTerminal> {
+    let value: serde_json::Value = serde_json::from_str(data).ok()?;
+    let payload = value.get("payload").unwrap_or(&value);
+    serde_json::from_value(payload.get("completionTerminal")?.clone()).ok()
+}
+
+pub fn submit_session_completion<R: Runtime>(
+    app: &AppHandle<R>,
+    terminal: SessionCompletionTerminal,
+) {
+    if !is_generic_session_completion_eligible(&terminal) {
+        ulog_debug!(
+            "[Notification] Generic session completion suppressed by owner/origin: session={} turn={} owner={:?} origin={:?}",
+            terminal.session_id,
+            terminal.turn_id,
+            terminal.turn_owner,
+            terminal.origin,
+        );
+        return;
+    }
+    if !claim_session_completion(&terminal) {
+        ulog_debug!(
+            "[Notification] Duplicate session completion ignored: session={} turn={}",
+            terminal.session_id,
+            terminal.turn_id,
+        );
+        return;
+    }
+    if !should_show_session_completion(app) {
+        ulog_debug!(
+            "[Notification] Session completion toast suppressed while main window is focused: session={} turn={}",
+            terminal.session_id,
+            terminal.turn_id,
+        );
+        return;
+    }
+
+    let locale = crate::i18n::current_locale();
+    let (title_key, body_key) = match terminal.status {
+        SessionCompletionStatus::Complete => (
+            "notification.sessionCompleteTitle",
+            "notification.sessionCompleteBody",
+        ),
+        SessionCompletionStatus::Stopped => (
+            "notification.sessionStoppedTitle",
+            "notification.sessionStoppedBody",
+        ),
+        SessionCompletionStatus::Error => (
+            "notification.sessionErrorTitle",
+            "notification.sessionErrorBody",
+        ),
+    };
+    let navigation = NotificationNavigation::for_session(
+        None,
+        terminal.session_id.clone(),
+        terminal.workspace_path.clone(),
+    );
+    show_with_navigation_target_and_badge(
+        app,
+        crate::i18n::t(title_key, locale),
+        crate::i18n::t(body_key, locale),
+        navigation,
+        Some(NotificationBadgeIncrement {
+            id: format!(
+                "session-completion:{}:{}",
+                terminal.session_id, terminal.turn_id
+            ),
+            source: "session-completion".to_string(),
+            created_at: chrono::Utc::now().timestamp_millis(),
+            target: crate::notification_badge::NotificationBadgeTarget::Session {
+                session_id: terminal.session_id,
+                workspace_path: terminal.workspace_path,
+            },
+        }),
+    );
 }
 
 /// Send an OS notification.
@@ -809,6 +962,126 @@ mod tests {
             take_pending_click(),
             NotificationNavigation::from_tab_id(Some("tab-after-ambiguous".into())),
             "stale Ambiguous must not poison subsequent routes",
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_completion_tests {
+    use super::*;
+
+    fn terminal(
+        session_id: &str,
+        turn_id: &str,
+        owner: Option<&str>,
+        origin_kind: &str,
+        origin_surface: &str,
+    ) -> SessionCompletionTerminal {
+        SessionCompletionTerminal {
+            session_id: session_id.to_string(),
+            workspace_path: "/tmp/workspace".to_string(),
+            turn_id: turn_id.to_string(),
+            turn_owner: owner.map(|kind| SessionCompletionTurnOwner {
+                kind: kind.to_string(),
+                id: "owner-1".to_string(),
+            }),
+            origin: SessionCompletionOrigin {
+                kind: origin_kind.to_string(),
+                surface: origin_surface.to_string(),
+            },
+            status: SessionCompletionStatus::Complete,
+        }
+    }
+
+    #[test]
+    fn generic_completion_policy_uses_owner_and_origin() {
+        assert!(is_generic_session_completion_eligible(&terminal(
+            "desktop",
+            "turn-1",
+            None,
+            "desktop",
+            "launcher_input",
+        )));
+        assert!(is_generic_session_completion_eligible(&terminal(
+            "space",
+            "turn-1",
+            None,
+            "registered-agent",
+            "space_issue_delivery",
+        )));
+        assert!(is_generic_session_completion_eligible(&terminal(
+            "inbox",
+            "turn-1",
+            None,
+            "session-inbox",
+            "session_send",
+        )));
+        assert!(!is_generic_session_completion_eligible(&terminal(
+            "task",
+            "turn-1",
+            Some("task"),
+            "automation",
+            "task_run",
+        )));
+        assert!(!is_generic_session_completion_eligible(&terminal(
+            "goal",
+            "turn-1",
+            Some("goal"),
+            "desktop",
+            "assistant",
+        )));
+        assert!(!is_generic_session_completion_eligible(&terminal(
+            "channel",
+            "turn-1",
+            None,
+            "agent-channel",
+            "channel_message",
+        )));
+        assert!(!is_generic_session_completion_eligible(&terminal(
+            "memory",
+            "turn-1",
+            None,
+            "automation",
+            "memory_update",
+        )));
+    }
+
+    #[test]
+    fn claims_each_session_turn_once() {
+        let session_id = "claim-test-session";
+        let first = terminal(session_id, "turn-1", None, "desktop", "launcher_input");
+        let second = terminal(session_id, "turn-2", None, "desktop", "launcher_input");
+        assert!(claim_session_completion(&first));
+        assert!(!claim_session_completion(&first));
+        assert!(claim_session_completion(&second));
+        assert!(!claim_session_completion(&second));
+        assert!(!claim_session_completion(&first));
+    }
+
+    #[test]
+    fn extracts_terminal_from_plain_and_live_payloads() {
+        let raw = serde_json::json!({
+            "completionTerminal": {
+                "sessionId": "session-1",
+                "workspacePath": "/tmp/workspace",
+                "turnId": "turn-1",
+                "origin": { "kind": "desktop", "surface": "launcher_input" },
+                "status": "complete"
+            }
+        });
+        assert_eq!(
+            completion_terminal_from_sse_data(&raw.to_string()).map(|value| value.turn_id),
+            Some("turn-1".to_string()),
+        );
+
+        let live = serde_json::json!({
+            "sessionId": "session-1",
+            "liveRevision": 3,
+            "payload": raw,
+        });
+        assert_eq!(
+            completion_terminal_from_sse_data(&live.to_string()).map(|value| value.turn_id),
+            Some("turn-1".to_string()),
         );
     }
 }

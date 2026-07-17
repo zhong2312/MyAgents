@@ -6,6 +6,7 @@
  */
 
 import type { RegistrationResponse, RegistrationData } from './types';
+import { fetchWithGeneralProxy } from '../utils/cancellation';
 
 const TIMEOUT_MS = 15000;
 
@@ -33,7 +34,7 @@ export async function dynamicRegister(
 
   console.log(`[mcp-oauth] Dynamic registration at ${registrationEndpoint}`);
 
-  const res = await fetch(registrationEndpoint, {
+  const res = await fetchWithGeneralProxy(registrationEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),

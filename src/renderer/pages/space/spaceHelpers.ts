@@ -17,6 +17,9 @@ export const ISSUE_STATUSES = [
 ] as const;
 
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
+// Cloud intentionally treats a missing state as the active-state default.
+// Product-level “All” must stay explicit across the query boundary.
+export const ALL_ISSUE_STATE_FILTER = "all";
 export const ACTIVE_ISSUE_STATE_FILTER = "open,todo,doing";
 const CLOSED_ISSUE_STATUSES = new Set(["done", "closed"]);
 const ISSUE_STATUS_LABEL_FALLBACKS: Record<IssueStatus, string> = {

@@ -946,7 +946,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "23";
+const ADMIN_AGENT_VERSION: &str = "24";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1044,7 +1044,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "36";
+const CLI_VERSION: &str = "37";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "33";
+const SYSTEM_SKILLS_VERSION: &str = "35";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1240,6 +1240,11 @@ const SYSTEM_SKILLS: &[&str] = &[
     // skills, Cloud Space, widgets) through the CLI. SKILL.md changes track CLI surface
     // changes, so it must force-overwrite on version bumps.
     "myagents-cli",
+    // v35: product-use knowledge shared by every MyAgents session. It owns
+    // stable user-facing concepts, feature relationships, prerequisites and
+    // expected behaviour; live state/actions stay in myagents-cli and the
+    // helper-local support skill owns diagnosis.
+    "myagents-docs",
     // v18: tool-creator — meta-skill for the CLI tool registry (PRD 0.2.36
     // cli_first_tool_registry). Teaches AI to author standards-compliant
     // Agent-CLI tools (tool.json + entry + readme/--help contract) and
@@ -1562,7 +1567,7 @@ mod system_skills_tests {
     use super::{
         all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
         is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
-        SystemSkillSync, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
+        SystemSkillSync, ADMIN_AGENT_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
     use std::fs;
 
@@ -1584,11 +1589,15 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v33_refreshes_memory_maintenance_and_space_cli_contracts() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "33");
+    fn v35_adds_myagents_docs_and_preserves_v34_contracts() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "35");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
+        assert!(bundled.contains("myagents space goal list --space <slug> --json"));
+        assert!(bundled.contains("myagents space issue update <issueId>"));
+        assert!(bundled.contains("--clear-goal"));
+        assert!(bundled.contains("只有精确 leaf help 明确声明支持的命令才使用 `--dry-run`"));
         assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
@@ -1597,6 +1606,75 @@ mod system_skills_tests {
         assert!(memory_update.contains("不要根据任务语义或相似表述自行触发"));
         assert!(memory_update.contains("commit 并成功 push"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
+
+        let product_docs = include_str!("../../bundled-skills/myagents-docs/SKILL.md");
+        assert!(product_docs.contains("name: myagents-docs"));
+        assert!(product_docs.contains("它面向软件使用而非源码开发"));
+        assert!(product_docs.contains("随后加载 `/myagents-cli`"));
+        assert!(product_docs.contains("在内置小助理里加载 `/support`"));
+        assert!(SYSTEM_SKILLS.contains(&"myagents-docs"));
+    }
+
+    #[test]
+    fn v24_helper_routes_product_knowledge_and_diagnosis() {
+        assert_eq!(ADMIN_AGENT_VERSION, "24");
+        let helper = include_str!("../../bundled-agents/myagents_helper/CLAUDE.md");
+        let support =
+            include_str!("../../bundled-agents/myagents_helper/.claude/skills/support/SKILL.md");
+        assert!(helper.contains("`/myagents-docs`"));
+        assert!(helper.contains("`/myagents-cli`"));
+        assert!(helper.contains("`/support`"));
+        assert!(support.contains("先用 `/myagents-docs` 确认正确产品预期"));
+        assert!(support.contains("不读取 `~/.myagents/credentials/`"));
+    }
+
+    #[test]
+    fn bundled_product_and_support_reference_closures_are_complete() {
+        fn assert_reference_closure(skill_dir: &str) {
+            let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("src-tauri must live under the repository root");
+            let skill_dir = repo_root.join(skill_dir);
+            let index = fs::read_to_string(skill_dir.join("SKILL.md")).expect("skill index");
+            let routed: std::collections::BTreeSet<String> = index
+                .split('`')
+                .filter_map(|token| token.strip_prefix("references/"))
+                .filter(|token| token.ends_with(".md"))
+                .map(str::to_owned)
+                .collect();
+            let references_dir = skill_dir.join("references");
+            let bundled: std::collections::BTreeSet<String> = fs::read_dir(&references_dir)
+                .expect("references directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect();
+
+            assert!(
+                !routed.is_empty(),
+                "skill must route at least one reference"
+            );
+            assert_eq!(
+                routed, bundled,
+                "SKILL.md routes and bundled references drifted"
+            );
+            for name in routed {
+                let content = fs::read_to_string(references_dir.join(&name))
+                    .unwrap_or_else(|error| panic!("missing reference {name}: {error}"));
+                assert!(
+                    content.starts_with("# "),
+                    "{name} must contain reference content"
+                );
+            }
+        }
+
+        assert_reference_closure("bundled-skills/myagents-docs");
+        assert_reference_closure("bundled-agents/myagents_helper/.claude/skills/support");
+
+        let redactor = include_str!(
+            "../../bundled-agents/myagents_helper/.claude/skills/support/scripts/redact-log-output.mjs"
+        );
+        assert!(redactor.contains("<redacted-token>"));
     }
 
     #[test]

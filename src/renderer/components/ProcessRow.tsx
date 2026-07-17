@@ -63,6 +63,9 @@ const ProcessRow = memo(function ProcessRow({
     const isServerTool = block.type === 'server_tool_use';
     const isLastBlock = index === totalBlocks - 1;
     const isTaskTool = isTool && !isServerTool && !!block.tool?.name && isSubagentContainerTool(block.tool.name);
+    const isFilePatchTool = isTool
+        && !isServerTool
+        && (block.tool?.name === 'Edit' || block.tool?.name === 'Write');
 
     // Thinking: 没有 isComplete 且正在 streaming 才是 active（避免历史消息计时器永跑）
     const isThinkingActive = isThinking && block.isComplete !== true && isStreaming;
@@ -297,6 +300,7 @@ const ProcessRow = memo(function ProcessRow({
                 type="button"
                 onClick={handleToggle}
                 disabled={!hasContent}
+                aria-expanded={hasContent ? isExpanded : undefined}
                 className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors ${hasContent ? 'cursor-pointer hover:bg-[var(--hover-bg)]' : 'cursor-default'
                     }`}
             >
@@ -380,7 +384,10 @@ const ProcessRow = memo(function ProcessRow({
                 <div className="grid grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
                     <div className="overflow-hidden">
                         <div className="border-t border-[var(--line)] bg-[var(--paper-elevated)]/50 px-4 pb-4 pt-3">
-                            <div className="ml-7">
+                            <div
+                                data-process-body-layout={isFilePatchTool ? 'full' : 'indented'}
+                                className={isFilePatchTool ? '' : 'ml-7'}
+                            >
                                 {isThinking && block.thinking && (
                                     <div className="group/think text-[var(--ink-secondary)] select-text">
                                         <Markdown compact>{block.thinking}</Markdown>

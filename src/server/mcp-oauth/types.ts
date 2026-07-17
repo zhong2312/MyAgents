@@ -13,6 +13,8 @@ export interface OAuthTokenData {
   refreshToken?: string;
   tokenType: string;
   expiresAt?: number;   // Unix ms
+  /** Token lifetime returned by the authorization server. Used to derive safe refresh lead time. */
+  lifetimeMs?: number;
   scope?: string;
 }
 
@@ -50,6 +52,8 @@ export interface McpOAuthState {
   registration?: RegistrationData;
   manualConfig?: ManualOAuthConfig;
   token?: OAuthTokenData;
+  /** Monotonic, non-secret credential revision shared by all Sidecar processes. */
+  tokenRevision?: number;
 }
 
 /** Full state store structure */
@@ -62,11 +66,30 @@ export type OAuthProbeResult =
   | { required: false }
   | { required: true; supportsDynamicRegistration: boolean; scopes?: string[] };
 
-/** Token change event types */
-export type TokenChangeEvent = 'acquired' | 'refreshed' | 'expired' | 'revoked';
+export type OAuthCredentialStatus = 'available' | 'expired' | 'missing';
 
-/** Token change listener */
-export type TokenChangeListener = (serverId: string, event: TokenChangeEvent) => void;
+/** Non-secret snapshot emitted when a persisted credential revision or status changes. */
+export interface OAuthCredentialChange {
+  serverId: string;
+  tokenRevision: number;
+  status: OAuthCredentialStatus;
+  expiresAt?: number;
+}
+
+export type OAuthCredentialChangeListener = (change: OAuthCredentialChange) => void;
+
+export type RefreshTokenOutcome =
+  | { kind: 'refreshed_by_self'; token: OAuthTokenData; tokenRevision: number }
+  | { kind: 'observed_after_lock'; token: OAuthTokenData; tokenRevision: number }
+  | {
+      kind: 'discarded_after_conflict';
+      reason: 'credential_missing' | 'credential_replaced';
+      tokenRevision: number;
+      /** Present only when the replacement credential is usable for this caller. */
+      token?: OAuthTokenData;
+    }
+  | { kind: 'not_refreshable'; reason: 'missing_token' | 'missing_refresh_token' | 'missing_token_endpoint' }
+  | { kind: 'failed'; error: string; http: 'not_sent' | 'failed' | 'success' };
 
 // ===== Internal Types =====
 

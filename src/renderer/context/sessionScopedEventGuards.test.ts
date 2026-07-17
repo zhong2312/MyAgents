@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    classifySessionActivity,
     decideSystemInitSessionId,
     decidePersistedContextUsageSeed,
     shouldAcceptSessionScopedSseSnapshot,
@@ -10,6 +11,20 @@ const SID_A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const SID_B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
 const SID_C = 'cccccccc-cccc-4ccc-cccc-cccccccccccc';
 const PENDING_B = 'pending-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
+
+describe('classifySessionActivity', () => {
+    it.each(['starting', 'running'] as const)('classifies %s as active', (state) => {
+        expect(classifySessionActivity(state)).toBe('active');
+    });
+
+    it.each(['idle', 'error'] as const)('classifies %s as terminal', (state) => {
+        expect(classifySessionActivity(state)).toBe('terminal');
+    });
+
+    it('does not infer backend activity from the renderer-only stopping state', () => {
+        expect(classifySessionActivity('stopping')).toBe('none');
+    });
+});
 
 describe('shouldAcceptSessionScopedSseSnapshot', () => {
     it('rejects a stale A snapshot while the tab is switching to pending B', () => {

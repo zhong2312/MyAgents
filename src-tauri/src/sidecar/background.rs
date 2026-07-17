@@ -19,7 +19,15 @@ pub struct BackgroundCompletionResult {
 
 /// Check if a Sidecar's session is currently in "running" state
 /// by calling GET /api/session-state
-pub(super) fn check_sidecar_session_state(port: u16) -> Option<String> {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SidecarSessionSnapshot {
+    session_state: String,
+    #[serde(default)]
+    completion_terminal: Option<crate::notification::SessionCompletionTerminal>,
+}
+
+fn check_sidecar_session_snapshot(port: u16) -> Option<SidecarSessionSnapshot> {
     let url = format!("http://127.0.0.1:{}/api/session-state", port);
     let client = match crate::local_http::blocking_builder()
         .timeout(Duration::from_secs(3))
@@ -31,18 +39,14 @@ pub(super) fn check_sidecar_session_state(port: u16) -> Option<String> {
 
     match client.get(&url).send() {
         Ok(response) if response.status().is_success() => {
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct SessionStateResponse {
-                session_state: String,
-            }
-            match response.json::<SessionStateResponse>() {
-                Ok(state) => Some(state.session_state),
-                Err(_) => None,
-            }
+            response.json::<SidecarSessionSnapshot>().ok()
         }
         _ => None,
     }
+}
+
+pub(super) fn check_sidecar_session_state(port: u16) -> Option<String> {
+    check_sidecar_session_snapshot(port).map(|snapshot| snapshot.session_state)
 }
 
 /// Start background completion for a session.
@@ -288,22 +292,27 @@ fn poll_background_completion<R: Runtime>(
         // Check session state via HTTP (lock released, no contention).
         // (issue #174) `starting` keeps the poll alive — same rationale as
         // the initial gate above: the subprocess is bootstrapping, not done.
-        match check_sidecar_session_state(port) {
-            Some(ref state) if state == "running" || state == "starting" => {
+        match check_sidecar_session_snapshot(port) {
+            Some(ref snapshot)
+                if snapshot.session_state == "running" || snapshot.session_state == "starting" =>
+            {
                 consecutive_http_failures = 0;
                 ulog_debug!(
                     "[bg-completion] Session {} still active (state: {}), continuing poll",
                     session_id,
-                    state
+                    snapshot.session_state
                 );
                 continue;
             }
-            Some(ref state) => {
+            Some(snapshot) => {
                 ulog_info!(
                     "[bg-completion] Session {} finished (state: {})",
                     session_id,
-                    state
+                    snapshot.session_state
                 );
+                if let Some(terminal) = snapshot.completion_terminal {
+                    crate::notification::submit_session_completion(app_handle, terminal);
+                }
                 break;
             }
             None => {
