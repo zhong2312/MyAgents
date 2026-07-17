@@ -1,32 +1,38 @@
-import { act, render, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, render, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
-import { CUSTOM_EVENTS } from '../shared/constants';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from "../shared/config-types";
+import { CUSTOM_EVENTS } from "../shared/constants";
 
 const mocks = vi.hoisted(() => {
   const project = {
-    id: 'helper-project',
-    path: '/Users/me/.myagents',
-    displayName: 'MA Helper',
-    agentId: 'helper-agent',
+    id: "helper-project",
+    name: "Novel",
+    path: "/Users/me/.myagents",
+    displayName: "MA Helper",
+    agentId: "helper-agent",
+    providerId: "stale-volcengine",
+    permissionMode: null,
+    workbenchId: "io.myagents.novel",
   };
   const agent = {
-    id: 'helper-agent',
-    name: 'MA Helper',
+    id: "helper-agent",
+    name: "MA Helper",
     workspacePath: project.path,
-    runtime: 'builtin',
-    permissionMode: 'auto',
+    runtime: "builtin",
+    permissionMode: "auto",
     reasoningEffort: undefined as string | undefined,
-    runtimeConfig: undefined as { permissionMode?: string; reasoningEffort?: string } | undefined,
+    runtimeConfig: undefined as
+      | { permissionMode?: string; reasoningEffort?: string }
+      | undefined,
   };
   const provider = {
-    id: 'provider-1',
-    name: 'Provider',
-    type: 'openai-compatible',
-    baseUrl: 'https://example.com',
-    primaryModel: 'mimo-v2.5-pro',
-    models: [{ id: 'mimo-v2.5-pro', name: 'mimo-v2.5-pro' }],
+    id: "provider-1",
+    name: "Provider",
+    type: "openai-compatible",
+    baseUrl: "https://example.com",
+    primaryModel: "mimo-v2.5-pro",
+    models: [{ id: "mimo-v2.5-pro", name: "mimo-v2.5-pro" }],
   };
 
   return {
@@ -34,18 +40,23 @@ const mocks = vi.hoisted(() => {
     agent,
     provider,
     multiAgentRuntime: false,
-    resolveBuiltinSelection: vi.fn(() => ({ provider, model: 'mimo-v2.5-pro' })),
+    resolveBuiltinSelection: vi.fn(
+      (): { provider: typeof provider; model: string } | undefined => ({
+        provider,
+        model: "mimo-v2.5-pro",
+      }),
+    ),
     createSession: vi.fn(async () => ({
-      id: 'prepared-managed-session',
+      id: "prepared-managed-session",
       agentDir: project.path,
-      title: 'Prepared',
-      createdAt: '2026-06-27T00:00:00.000Z',
-      lastActiveAt: '2026-06-27T00:00:00.000Z',
+      title: "Prepared",
+      createdAt: "2026-06-27T00:00:00.000Z",
+      lastActiveAt: "2026-06-27T00:00:00.000Z",
     })),
     startGlobalSidecar: vi.fn(async () => undefined),
     initGlobalSidecarReadyPromise: vi.fn(),
     markGlobalSidecarReady: vi.fn(),
-    getGlobalServerUrl: vi.fn(async () => 'http://127.0.0.1:31415'),
+    getGlobalServerUrl: vi.fn(async () => "http://127.0.0.1:31415"),
     ensureSessionSidecar: vi.fn(async () => ({ port: 31417, isNew: true })),
     activateSession: vi.fn(async () => undefined),
     releaseTabSession: vi.fn(async () => false),
@@ -55,10 +66,11 @@ const mocks = vi.hoisted(() => {
     setAppActiveTabId: vi.fn(),
     chatProps: [] as Array<Record<string, unknown>>,
     launcherProps: [] as Array<Record<string, unknown>>,
+    workbenchShellProps: [] as Array<Record<string, unknown>>,
   };
 });
 
-vi.mock('@/analytics', () => ({
+vi.mock("@/analytics", () => ({
   initAnalytics: vi.fn(async () => undefined),
   track: vi.fn(),
   setAnalyticsContext: vi.fn(),
@@ -69,14 +81,14 @@ vi.mock('@/analytics', () => ({
   clearPendingSessionBirth: vi.fn(),
   birthContextForSurface: vi.fn((surface: string) => ({
     surface,
-    entryIntent: surface === 'new_chat_button' ? 'new_chat' : 'unknown',
-    hasInitialMessage: surface !== 'new_chat_button',
+    entryIntent: surface === "new_chat_button" ? "new_chat" : "unknown",
+    hasInitialMessage: surface !== "new_chat_button",
   })),
-  hashAgentName: vi.fn(async () => 'agent-hash'),
-  hashAgentNameSync: vi.fn(() => 'agent-hash'),
+  hashAgentName: vi.fn(async () => "agent-hash"),
+  hashAgentNameSync: vi.fn(() => "agent-hash"),
 }));
 
-vi.mock('@/api/tauriClient', () => ({
+vi.mock("@/api/tauriClient", () => ({
   stopTabSidecar: vi.fn(async () => undefined),
   setAppActiveCorrelation: mocks.setAppActiveCorrelation,
   startGlobalSidecar: mocks.startGlobalSidecar,
@@ -97,78 +109,100 @@ vi.mock('@/api/tauriClient', () => ({
   cancelBackgroundCompletion: vi.fn(async () => undefined),
   updateGlobalServerUrl: vi.fn(),
   canRestoreSession: vi.fn(async () => true),
-  getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({ runningTaskCount: 0, protectedSessionIds: [] })),
+  getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({
+    runningTaskCount: 0,
+    protectedSessionIds: [],
+  })),
   sessionHasPersistentOwners: vi.fn(async () => false),
 }));
 
-vi.mock('@/api/apiFetch', () => ({
+vi.mock("@/api/apiFetch", () => ({
   apiGetJson: vi.fn(async () => ({ success: true })),
 }));
 
-vi.mock('@/api/cronTaskClient', () => ({
+vi.mock("@/api/cronTaskClient", () => ({
   getAllCronTasks: vi.fn(async () => []),
   getTabCronTask: vi.fn(async () => null),
   updateCronTaskTab: vi.fn(async () => undefined),
 }));
 
-vi.mock('@/api/sessionClient', () => ({
+vi.mock("@/api/sessionClient", () => ({
   createSession: mocks.createSession,
   updateSession: vi.fn(async () => undefined),
 }));
 
-vi.mock('@/components/ChatBootOverlay', () => ({
+vi.mock("@/components/ChatBootOverlay", () => ({
   default: () => <div data-testid="chat-boot-overlay" />,
 }));
 
-vi.mock('@/components/ConfirmDialog', () => ({
+vi.mock("@/components/ConfirmDialog", () => ({
   default: () => <div data-testid="confirm-dialog" />,
 }));
 
-vi.mock('@/components/BugReportOverlay', () => ({
+vi.mock("@/components/BugReportOverlay", () => ({
   default: () => <div data-testid="bug-report-overlay" />,
 }));
 
-vi.mock('@/components/CustomTitleBar', () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div data-testid="titlebar">{children}</div>,
-}));
-
-vi.mock('@/components/LinkContextMenuProvider', () => ({
-  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
-vi.mock('@/components/TabBar', () => ({
-  default: ({ tabs, activeTabId }: { tabs: Array<{ id: string; title: string }>; activeTabId: string | null }) => (
-    <div data-testid="tabbar-active">{tabs.find(t => t.id === activeTabId)?.title ?? 'missing'}</div>
+vi.mock("@/components/CustomTitleBar", () => ({
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="titlebar">{children}</div>
   ),
 }));
 
-vi.mock('@/context/TabProvider', () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div data-testid="tab-provider">{children}</div>,
+vi.mock("@/components/LinkContextMenuProvider", () => ({
+  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-vi.mock('@/pages/Chat', () => ({
+vi.mock("@/components/TabBar", () => ({
+  default: ({
+    tabs,
+    activeTabId,
+  }: {
+    tabs: Array<{ id: string; title: string }>;
+    activeTabId: string | null;
+  }) => (
+    <div data-testid="tabbar-active">
+      {tabs.find((t) => t.id === activeTabId)?.title ?? "missing"}
+    </div>
+  ),
+}));
+
+vi.mock("@/context/TabProvider", () => ({
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="tab-provider">{children}</div>
+  ),
+}));
+
+vi.mock("@/pages/Chat", () => ({
   default: (props: Record<string, unknown>) => {
     mocks.chatProps.push(props);
     return <div data-testid="chat-page" />;
   },
 }));
 
-vi.mock('@/pages/Launcher', () => ({
+vi.mock("@/pages/Launcher", () => ({
   default: (props: Record<string, unknown>) => {
     mocks.launcherProps.push(props);
     return <div data-testid="launcher-page" />;
   },
 }));
 
-vi.mock('@/pages/Settings', () => ({
+vi.mock("@/pages/Settings", () => ({
   default: () => <div data-testid="settings-page" />,
 }));
 
-vi.mock('@/pages/TaskCenter', () => ({
+vi.mock("@/pages/TaskCenter", () => ({
   default: () => <div data-testid="taskcenter-page" />,
 }));
 
-vi.mock('@/components/Toast', () => ({
+vi.mock("@/workbench-sdk/WorkbenchShell", () => ({
+  default: (props: Record<string, unknown>) => {
+    mocks.workbenchShellProps.push(props);
+    return <div data-testid="workbench-shell" />;
+  },
+}));
+
+vi.mock("@/components/Toast", () => ({
   useToast: () => ({
     error: vi.fn(),
     success: vi.fn(),
@@ -177,7 +211,7 @@ vi.mock('@/components/Toast', () => ({
   }),
 }));
 
-vi.mock('@/hooks/useUpdater', () => ({
+vi.mock("@/hooks/useUpdater", () => ({
   useUpdater: () => ({
     updateReady: false,
     updateVersion: null,
@@ -187,37 +221,37 @@ vi.mock('@/hooks/useUpdater', () => ({
     updatePreparing: false,
     pendingUpdateOnStartup: null,
     dismissPendingUpdate: vi.fn(),
-    checkForUpdate: vi.fn(async () => 'up-to-date'),
+    checkForUpdate: vi.fn(async () => "up-to-date"),
     restartAndUpdate: vi.fn(),
   }),
 }));
 
-vi.mock('@/hooks/useTrayEvents', () => ({
+vi.mock("@/hooks/useTrayEvents", () => ({
   useTrayEvents: vi.fn(),
 }));
 
-vi.mock('@/hooks/useHelperAgentModelDefaults', () => ({
+vi.mock("@/hooks/useHelperAgentModelDefaults", () => ({
   useHelperAgentModelDefaults: () => ({
     providerId: mocks.provider.id,
-    model: 'mimo-v2.5-pro',
+    model: "mimo-v2.5-pro",
     setDefaults: vi.fn(),
   }),
 }));
 
-vi.mock('@/hooks/useConfig', () => ({
+vi.mock("@/hooks/useConfig", () => ({
   useConfig: () => ({
     config: {
       projects: [mocks.project],
       agents: [mocks.agent],
       multiAgentRuntime: mocks.multiAgentRuntime,
-      defaultPermissionMode: 'auto',
+      defaultPermissionMode: "auto",
     },
     isLoading: false,
     error: null,
     projects: [mocks.project],
     providers: [mocks.provider],
-    apiKeys: { [mocks.provider.id]: 'key' },
-    providerVerifyStatus: { [mocks.provider.id]: { status: 'valid' } },
+    apiKeys: { [mocks.provider.id]: "key" },
+    providerVerifyStatus: { [mocks.provider.id]: { status: "valid" } },
     addProject: vi.fn(async () => mocks.project),
     updateProject: vi.fn(async () => undefined),
     patchProject: vi.fn(async () => undefined),
@@ -242,83 +276,94 @@ vi.mock('@/hooks/useConfig', () => ({
   }),
 }));
 
-vi.mock('@/hooks/useTheme', () => ({
+vi.mock("@/hooks/useTheme", () => ({
   useThemeEffect: vi.fn(),
 }));
 
-vi.mock('@/hooks/useTabSwipeGesture', () => ({
+vi.mock("@/hooks/useTabSwipeGesture", () => ({
   useTabSwipeGesture: vi.fn(),
 }));
 
-vi.mock('@/utils/browserMock', () => ({
+vi.mock("@/utils/browserMock", () => ({
   isBrowserDevMode: () => false,
   isTauriEnvironment: () => false,
 }));
 
-vi.mock('@/utils/frontendLogger', () => ({
+vi.mock("@/utils/frontendLogger", () => ({
   forceFlushLogs: vi.fn(async () => undefined),
   setLogServerUrl: vi.fn(),
   clearLogServerUrl: vi.fn(),
   setAppActiveTabId: mocks.setAppActiveTabId,
 }));
 
-vi.mock('@/utils/lastExitMarker', () => ({
+vi.mock("@/utils/lastExitMarker", () => ({
   consumeCleanExitMarker: vi.fn(async () => true),
 }));
 
-vi.mock('@/utils/tabPersistenceDurable', () => ({
+vi.mock("@/utils/tabPersistenceDurable", () => ({
   persistOpenTabsDurable: vi.fn(async () => undefined),
   loadAndClearOpenTabsDurable: vi.fn(async () => null),
   clearOpenTabsDurable: vi.fn(async () => undefined),
 }));
 
-vi.mock('@/utils/tauriListen', () => ({
+vi.mock("@/utils/tauriListen", () => ({
   listenWithCleanup: vi.fn(async () => undefined),
 }));
 
-vi.mock('@/config/configService', () => ({
+vi.mock("@/config/configService", () => ({
   ensureSelfAwarenessWorkspace: vi.fn(async () => mocks.project),
   resolveBuiltinSelection: mocks.resolveBuiltinSelection,
-  pairBuiltinSelection: vi.fn((_provider, model) => ({ providerId: mocks.provider.id, model })),
+  pairBuiltinSelection: vi.fn((_provider, model) => ({
+    providerId: mocks.provider.id,
+    model,
+  })),
   isProviderAvailable: vi.fn(() => true),
 }));
 
-vi.mock('@/config/services/agentConfigService', () => ({
+vi.mock("@/config/services/agentConfigService", () => ({
   getAgentByWorkspacePath: vi.fn(() => mocks.agent),
   getAgentById: vi.fn(() => mocks.agent),
 }));
 
-import App from './App';
+import App from "./App";
 
-describe('App helper launch', () => {
+describe("App helper launch", () => {
   afterEach(() => {
     vi.clearAllMocks();
     mocks.chatProps.length = 0;
     mocks.launcherProps.length = 0;
-    mocks.agent.runtime = 'builtin';
-    mocks.agent.permissionMode = 'auto';
+    mocks.workbenchShellProps.length = 0;
+    mocks.agent.runtime = "builtin";
+    mocks.agent.permissionMode = "auto";
     mocks.agent.reasoningEffort = undefined;
     mocks.agent.runtimeConfig = undefined;
     mocks.multiAgentRuntime = false;
-    mocks.resolveBuiltinSelection.mockReturnValue({ provider: mocks.provider, model: 'mimo-v2.5-pro' });
+    mocks.resolveBuiltinSelection.mockReturnValue({
+      provider: mocks.provider,
+      model: "mimo-v2.5-pro",
+    });
   });
 
   function managedCodexProvider() {
     return {
       ...mocks.provider,
       id: CODEX_SUBSCRIPTION_PROVIDER_ID,
-      name: 'Codex Subscription',
-      type: 'subscription',
-      baseUrl: '',
-      execution: { kind: 'runtime-backed' as const, runtime: 'codex' as const, source: 'managed-provider' as const },
-      primaryModel: 'gpt-5.5',
-      models: [{ id: 'gpt-5.5', name: 'GPT-5.5' }],
+      name: "Codex Subscription",
+      type: "subscription",
+      baseUrl: "",
+      execution: {
+        kind: "runtime-backed" as const,
+        runtime: "codex" as const,
+        source: "managed-provider" as const,
+      },
+      primaryModel: "gpt-5.5",
+      models: [{ id: "gpt-5.5", name: "GPT-5.5" }],
     };
   }
 
   function latestLauncherProps() {
     const props = mocks.launcherProps.at(-1);
-    if (!props) throw new Error('Launcher props were not captured');
+    if (!props) throw new Error("Launcher props were not captured");
     return props as {
       onLaunchProject: (
         project: typeof mocks.project,
@@ -330,14 +375,30 @@ describe('App helper launch', () => {
     };
   }
 
-  it('prepares a managed Codex provider session when opening an empty Launcher workspace', async () => {
+  function latestWorkbenchShellProps() {
+    const props = mocks.workbenchShellProps.at(-1);
+    if (!props) throw new Error("WorkbenchShell props were not captured");
+    return props as {
+      onOpenAgentSession: (
+        workspacePath: string,
+        request: {
+          version: 1;
+          title: string;
+          initialMessage: string;
+          promptId?: string;
+        },
+      ) => Promise<void>;
+    };
+  }
+
+  it("prepares a managed Codex provider session when opening an empty Launcher workspace", async () => {
     mocks.agent.runtimeConfig = {
-      permissionMode: 'suggest',
-      reasoningEffort: 'xhigh',
+      permissionMode: "suggest",
+      reasoningEffort: "xhigh",
     };
     mocks.resolveBuiltinSelection.mockReturnValue({
       provider: managedCodexProvider(),
-      model: 'gpt-5.5',
+      model: "gpt-5.5",
     });
 
     render(<App />);
@@ -349,19 +410,19 @@ describe('App helper launch', () => {
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith(
         mocks.project.path,
-        'codex',
+        "codex",
         expect.objectContaining({
-          runtimeSource: 'managed-provider',
+          runtimeSource: "managed-provider",
           providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-          model: 'gpt-5.5',
-          permissionMode: 'suggest',
-          reasoningEffort: 'xhigh',
+          model: "gpt-5.5",
+          permissionMode: "suggest",
+          reasoningEffort: "xhigh",
           providerExecutionIdentity: expect.objectContaining({
-            kind: 'runtime-backed-provider',
+            kind: "runtime-backed-provider",
             providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-            runtime: 'codex',
-            runtimeSource: 'managed-provider',
-            model: 'gpt-5.5',
+            runtime: "codex",
+            runtimeSource: "managed-provider",
+            model: "gpt-5.5",
           }),
           prepareForFirstUserMessage: true,
           materializationSourceSessionId: expect.stringMatching(/^pending-/),
@@ -369,20 +430,20 @@ describe('App helper launch', () => {
       );
     });
     expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
-      'prepared-managed-session',
+      "prepared-managed-session",
       mocks.project.path,
-      'tab',
+      "tab",
       expect.stringMatching(/^tab-/),
     );
   });
 
-  it('uses a Launcher birth hint before stale config when opening an empty workspace', async () => {
+  it("uses a Launcher birth hint before stale config when opening an empty workspace", async () => {
     const providerExecutionIdentity = {
-      kind: 'runtime-backed-provider' as const,
+      kind: "runtime-backed-provider" as const,
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-      runtime: 'codex' as const,
-      runtimeSource: 'managed-provider' as const,
-      model: 'gpt-5.5',
+      runtime: "codex" as const,
+      runtimeSource: "managed-provider" as const,
+      model: "gpt-5.5",
     };
 
     render(<App />);
@@ -392,13 +453,13 @@ describe('App helper launch', () => {
         mocks.project,
         undefined,
         undefined,
-        { surface: 'agent_card', entryIntent: 'open_workspace' },
+        { surface: "agent_card", entryIntent: "open_workspace" },
         {
           providerExecutionIdentity,
-          permissionMode: 'fullAgency',
-          reasoningEffort: 'xhigh',
-          mcpEnabledServers: ['filesystem'],
-          enabledPluginIds: ['plugin-a'],
+          permissionMode: "fullAgency",
+          reasoningEffort: "xhigh",
+          mcpEnabledServers: ["filesystem"],
+          enabledPluginIds: ["plugin-a"],
         },
       );
     });
@@ -406,16 +467,16 @@ describe('App helper launch', () => {
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith(
         mocks.project.path,
-        'codex',
+        "codex",
         expect.objectContaining({
-          runtimeSource: 'managed-provider',
+          runtimeSource: "managed-provider",
           providerExecutionIdentity,
           providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-          model: 'gpt-5.5',
-          permissionMode: 'no-restrictions',
-          reasoningEffort: 'xhigh',
-          mcpEnabledServers: ['filesystem'],
-          enabledPluginIds: ['plugin-a'],
+          model: "gpt-5.5",
+          permissionMode: "no-restrictions",
+          reasoningEffort: "xhigh",
+          mcpEnabledServers: ["filesystem"],
+          enabledPluginIds: ["plugin-a"],
           prepareForFirstUserMessage: true,
           materializationSourceSessionId: expect.stringMatching(/^pending-/),
         }),
@@ -423,12 +484,12 @@ describe('App helper launch', () => {
     });
   });
 
-  it('keeps external-runtime empty launches on the pending-session path', async () => {
+  it("keeps external-runtime empty launches on the pending-session path", async () => {
     mocks.multiAgentRuntime = true;
-    mocks.agent.runtime = 'codex';
+    mocks.agent.runtime = "codex";
     mocks.resolveBuiltinSelection.mockReturnValue({
       provider: managedCodexProvider(),
-      model: 'gpt-5.5',
+      model: "gpt-5.5",
     });
 
     render(<App />);
@@ -442,92 +503,192 @@ describe('App helper launch', () => {
     expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
       expect.stringMatching(/^pending-tab-/),
       mocks.project.path,
-      'tab',
+      "tab",
       expect.stringMatching(/^tab-/),
     );
   });
 
-  it('commits the helper tab before launching so the active tab is renderable', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it("freezes an available provider selection for workbench Agent auto-send", async () => {
+    render(<App />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(CUSTOM_EVENTS.OPEN_WORKBENCH, {
+          detail: {
+            workbenchId: "io.myagents.novel",
+            workspacePath: mocks.project.path,
+          },
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(mocks.workbenchShellProps.length).toBeGreaterThan(0),
+    );
+
+    await act(async () => {
+      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
+        version: 1,
+        title: "世界架构向导",
+        initialMessage: "创建小说世界",
+        promptId: "novel.world.guide",
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        mocks.chatProps.some((props) => {
+          const initialMessage = props.initialMessage as
+            | { builtinSelection?: { providerId: string; model: string } }
+            | undefined;
+          return (
+            initialMessage?.builtinSelection?.providerId ===
+              mocks.provider.id &&
+            initialMessage.builtinSelection.model === "mimo-v2.5-pro"
+          );
+        }),
+      ).toBe(true);
+    });
+    expect(mocks.resolveBuiltinSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: mocks.agent,
+        workspace: mocks.project,
+      }),
+      expect.any(Object),
+      expect.any(Array),
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("does not start a workbench Agent session without an available provider", async () => {
+    mocks.resolveBuiltinSelection.mockReturnValue(undefined);
+    render(<App />);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(CUSTOM_EVENTS.OPEN_WORKBENCH, {
+          detail: {
+            workbenchId: "io.myagents.novel",
+            workspacePath: mocks.project.path,
+          },
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(mocks.workbenchShellProps.length).toBeGreaterThan(0),
+    );
+
+    await expect(
+      latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
+        version: 1,
+        title: "世界架构向导",
+        initialMessage: "创建小说世界",
+      }),
+    ).rejects.toThrow("当前没有可用的模型服务");
+    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it("commits the helper tab before launching so the active tab is renderable", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     try {
       render(<App />);
 
       await act(async () => {
-        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
-          detail: {
-            description: 'help',
-            providerId: mocks.provider.id,
-            model: 'mimo-v2.5-pro',
-            appVersion: 'test',
-            images: [],
-          },
-        }));
+        window.dispatchEvent(
+          new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+            detail: {
+              description: "help",
+              providerId: mocks.provider.id,
+              model: "mimo-v2.5-pro",
+              appVersion: "test",
+              images: [],
+            },
+          }),
+        );
       });
 
-      await waitFor(() => expect(mocks.ensureSessionSidecar).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(mocks.ensureSessionSidecar).toHaveBeenCalled(),
+      );
 
       const launchStart = logSpy.mock.calls
-        .map(call => String(call[0]))
-        .find(message => message.includes('[App][launch] START'));
+        .map((call) => String(call[0]))
+        .find((message) => message.includes("[App][launch] START"));
 
-      expect(launchStart).toContain('view=launcher');
-      expect(launchStart).not.toContain('view=undefined');
+      expect(launchStart).toContain("view=launcher");
+      expect(launchStart).not.toContain("view=undefined");
       expect(mocks.setAppActiveTabId).toHaveBeenCalledWith(
         expect.stringMatching(/^tab-/),
         expect.arrayContaining([expect.stringMatching(/^tab-/)]),
       );
-      expect(mocks.setAppActiveCorrelation).toHaveBeenCalledWith(expect.objectContaining({
-        tabId: expect.stringMatching(/^tab-/),
-      }));
+      expect(mocks.setAppActiveCorrelation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tabId: expect.stringMatching(/^tab-/),
+        }),
+      );
     } finally {
       logSpy.mockRestore();
     }
   });
 
-  it('releases the fork tab owner when fork tab activation fails', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("releases the fork tab owner when fork tab activation fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
       render(<App />);
 
       await act(async () => {
-        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
-          detail: {
-            description: 'help',
-            providerId: mocks.provider.id,
-            model: 'mimo-v2.5-pro',
-            appVersion: 'test',
-            images: [],
-          },
-        }));
+        window.dispatchEvent(
+          new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+            detail: {
+              description: "help",
+              providerId: mocks.provider.id,
+              model: "mimo-v2.5-pro",
+              appVersion: "test",
+              images: [],
+            },
+          }),
+        );
       });
 
       await waitFor(() => {
-        expect(mocks.chatProps.some((props) => typeof props.onForkSession === 'function')).toBe(true);
+        expect(
+          mocks.chatProps.some(
+            (props) => typeof props.onForkSession === "function",
+          ),
+        ).toBe(true);
       });
 
-      mocks.activateSession.mockRejectedValueOnce(new Error('activate failed'));
+      mocks.activateSession.mockRejectedValueOnce(new Error("activate failed"));
       const chatProps = [...mocks.chatProps]
         .reverse()
-        .find((props) => typeof props.onForkSession === 'function') as {
-          onForkSession: (sessionId: string, agentDir: string, title: string) => Promise<boolean>;
-        };
+        .find((props) => typeof props.onForkSession === "function") as {
+        onForkSession: (
+          sessionId: string,
+          agentDir: string,
+          title: string,
+        ) => Promise<boolean>;
+      };
 
       let opened = true;
       await act(async () => {
-        opened = await chatProps.onForkSession('fork-session', mocks.project.path, 'Fork');
+        opened = await chatProps.onForkSession(
+          "fork-session",
+          mocks.project.path,
+          "Fork",
+        );
       });
 
       expect(opened).toBe(false);
       expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
-        'fork-session',
+        "fork-session",
         mocks.project.path,
-        'tab',
+        "tab",
         expect.stringMatching(/^tab-/),
       );
       expect(mocks.releaseTabSession).toHaveBeenCalledWith(
-        'fork-session',
+        "fork-session",
         expect.stringMatching(/^tab-/),
       );
     } finally {

@@ -24,6 +24,7 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 // Markdown → mermaid/katex/syntax-highlighter) leave the eager entry chunk.
 const TaskCenterOverlay = lazy(() => import('@/components/TaskCenterOverlay'));
 import { BrandSection, LauncherRightRail, TemplateLibraryDialog, WorkspaceEditDialog } from '@/components/launcher';
+import type { WorkbenchCreateAction } from '@/components/launcher/AddWorkspaceMenu';
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 import { useConfig } from '@/hooks/useConfig';
 import { useTaskCenterData } from '@/hooks/useTaskCenterData';
@@ -61,6 +62,8 @@ import { useAgentStatuses } from '@/hooks/useAgentStatuses';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { InitialMessage, LaunchSessionBirthHint } from '@/types/tab';
+import { workbenchRegistry } from '@/workbench-registry';
+import type { WorkbenchProjectCreateRequest } from '@/workbench-sdk';
 
 interface LauncherProps {
     onLaunchProject: (
@@ -108,12 +111,40 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     // but they are excluded from launch selectors and default workspace choice.
     const userVisibleProjects = useMemo(() => projects.filter(isProjectVisibleToUser), [projects]);
     const visibleProjects = useMemo(() => userVisibleProjects.filter(isProjectActiveForUser), [userVisibleProjects]);
+    const launcherWorkbenchRegistrations = useMemo(
+        () => workbenchRegistry.list()
+            .filter(registration => (
+                registration.compatibility.compatible
+                && registration.definition.launcher
+                && registration.ProjectCreator
+            ))
+            .sort((left, right) => (
+                (left.definition.launcher?.order ?? 0) - (right.definition.launcher?.order ?? 0)
+                || left.definition.manifest.name.localeCompare(right.definition.manifest.name)
+            )),
+        [],
+    );
+    const workbenchCreateActions = useMemo<readonly WorkbenchCreateAction[]>(
+        () => launcherWorkbenchRegistrations.map(registration => ({
+            id: registration.definition.manifest.id,
+            label: registration.definition.launcher?.createLabel ?? registration.definition.manifest.name,
+            icon: registration.definition.launcher?.icon,
+        })),
+        [launcherWorkbenchRegistrations],
+    );
+    const workbenchTypeLabels = useMemo(
+        () => new Map(launcherWorkbenchRegistrations.map(registration => [
+            registration.definition.manifest.id,
+            registration.definition.launcher?.projectTypeLabel ?? registration.definition.manifest.name,
+        ])),
+        [launcherWorkbenchRegistrations],
+    );
 
     // Poll agent statuses only when any project has proactive mode
     const hasAnyAgent = useMemo(() => visibleProjects.some(p => p.isAgent), [visibleProjects]);
     const { statuses: agentStatuses } = useAgentStatuses(hasAnyAgent);
     const taskCenterData = useTaskCenterData({ isActive });
-    const { openPathExternal } = useWorkspaceFileService(null);
+    const { initializeProject, openPathExternal } = useWorkspaceFileService(null);
 
     // Build agent lookup: project path → { agent config, runtime status }
     const agentLookup = useMemo(() => {
@@ -135,9 +166,30 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const [projectToRemove, setProjectToRemove] = useState<Project | null>(null);
     const [showOverlay, setShowOverlay] = useState(false);
     const [showTemplateDialog, setShowTemplateDialog] = useState(false);
+    const [activeWorkbenchCreatorId, setActiveWorkbenchCreatorId] = useState<string | null>(null);
     const [editingProject, setEditingProject] = useState<Project | null>(null);
     // Agent overlay — opens WorkspaceConfigPanel for agent settings or upgrade
     const [agentOverlay, setAgentOverlay] = useState<{ workspacePath: string; initialTab: 'agent' } | null>(null);
+    const activeWorkbenchCreator = activeWorkbenchCreatorId
+        ? workbenchRegistry.get(activeWorkbenchCreatorId)
+        : undefined;
+    const ActiveProjectCreator = activeWorkbenchCreator?.ProjectCreator;
+    const defaultWorkbenchParentPath = useMemo(() => {
+        if (typeof window !== 'undefined') {
+            const stored = window.localStorage.getItem('myagents:lastNovelProjectDir')
+                ?? window.localStorage.getItem('myagents:lastProjectDir');
+            if (stored) return stored;
+        }
+        const latestPath = visibleProjects[0]?.path;
+        if (latestPath) {
+            const normalized = latestPath.replace(/\\/g, '/');
+            const parent = normalized.split('/').slice(0, -1).join('/');
+            if (parent) return parent;
+        }
+        return typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+            ? 'F:\\workspace\\novels'
+            : '~/Documents/Novels';
+    }, [visibleProjects]);
 
     // ===== Launcher-specific state for BrandSection =====
 
@@ -797,6 +849,18 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         touchProject(project.id).catch((err) => {
             console.warn('[Launcher] Failed to update lastOpened:', err);
         });
+        if (!sessionId && project.workbenchId) {
+            window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_WORKBENCH, {
+                detail: {
+                    workbenchId: project.workbenchId,
+                    workspacePath: project.path,
+                    route: project.workbenchRoute,
+                    title: project.displayName || project.name,
+                },
+            }));
+            setLaunchingProjectId(null);
+            return;
+        }
         let sessionBirthHint: LaunchSessionBirthHint | undefined;
         if (
             !sessionId
@@ -853,6 +917,47 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         config.plugins,
         config.enabledPlugins,
     ]);
+
+    const handlePickWorkbenchParent = useCallback(async (): Promise<string | null> => {
+        if (isBrowserDevMode()) {
+            const folderInfo = await pickFolderForDialog();
+            return folderInfo?.defaultPath ?? null;
+        }
+        const selected = await open({
+            directory: true,
+            multiple: false,
+            title: '选择小说保存位置',
+        });
+        return typeof selected === 'string' ? selected : null;
+    }, []);
+
+    const handleCreateWorkbenchProject = useCallback(async (request: WorkbenchProjectCreateRequest) => {
+        if (!activeWorkbenchCreatorId) throw new Error('未选择工作台');
+        const registration = workbenchRegistry.get(activeWorkbenchCreatorId);
+        if (!registration?.definition.launcher) throw new Error('工作台创建入口不可用');
+
+        const initialized = await initializeProject({
+            workspacePath: request.workspacePath,
+            initialization: request.initialization,
+        });
+        let project: Project;
+        try {
+            project = await addProject(initialized.workspacePath, {
+                icon: request.icon,
+                displayName: request.displayName,
+                workbenchId: registration.definition.manifest.id,
+                workbenchRoute: request.route ?? registration.definition.manifest.entry.defaultRoute,
+            });
+        } catch (cause) {
+            const message = cause instanceof Error ? cause.message : String(cause);
+            throw new Error(`小说目录已创建，但加入 MyAgents 失败：${message}`);
+        }
+        const normalizedPath = initialized.workspacePath.replace(/\\/g, '/');
+        const parentPath = normalizedPath.split('/').slice(0, -1).join('/');
+        if (parentPath) window.localStorage.setItem('myagents:lastNovelProjectDir', parentPath);
+        setActiveWorkbenchCreatorId(null);
+        handleLaunch(project);
+    }, [activeWorkbenchCreatorId, addProject, handleLaunch, initializeProject]);
 
     const handleOpenTask = useCallback((session: SessionMetadata, project: Project, historyEntrySource: HistoryEntrySource = 'launcher_recent') => {
         handleLaunch(project, session.id, historyEntrySource);
@@ -1017,6 +1122,8 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
             displayName,
             templateId: template.id,
             templateSource: template.isBuiltin ? 'builtin' : 'user',
+            workbenchId: template.workbenchId,
+            workbenchRoute: template.workbenchRoute,
             agentDefaults: template.isBuiltin ? template.agentDefaults : undefined,
         });
         track('workspace_create', { source: 'template' });
@@ -1196,6 +1303,9 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     onToggleProjectPin={handleToggleProjectPin}
                     onAddFolder={handleAddProject}
                     onCreateFromTemplate={handleOpenTemplateDialog}
+                    workbenchCreateActions={workbenchCreateActions}
+                    workbenchTypeLabels={workbenchTypeLabels}
+                    onCreateWorkbench={setActiveWorkbenchCreatorId}
                     onShowLogs={handleShowLogs}
                 />
             </main>
@@ -1219,6 +1329,17 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     onCreateWorkspace={handleCreateFromTemplate}
                     onClose={handleCloseTemplateDialog}
                 />
+            )}
+
+            {ActiveProjectCreator && (
+                <Suspense fallback={null}>
+                    <ActiveProjectCreator
+                        defaultParentPath={defaultWorkbenchParentPath}
+                        onPickDirectory={handlePickWorkbenchParent}
+                        onCreate={handleCreateWorkbenchProject}
+                        onClose={() => setActiveWorkbenchCreatorId(null)}
+                    />
+                </Suspense>
             )}
 
             {/* Workspace Edit Dialog */}

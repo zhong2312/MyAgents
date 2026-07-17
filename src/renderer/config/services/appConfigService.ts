@@ -5,10 +5,8 @@ import {
     type AppConfig,
     DEFAULT_CONFIG,
     type Project,
-    type Provider,
     DEFAULT_SYSTEM_PRESET_WORKSPACE_ID,
     getSystemPresetProjectMetadataPatch,
-    mergePresetModelWithCustomEntry,
     normalizeClaudeTranscriptCleanupPeriodDays,
 } from '../types';
 import {
@@ -327,48 +325,7 @@ async function _writeAppConfigLocked(config: AppConfig): Promise<void> {
 
 // ============= Available Providers Cache =============
 
-// Forward declarations for circular-dependency-free import
-// These are passed in from providerService via rebuildAndPersistAvailableProviders below
-import type { ModelEntity } from '../types';
-
-/**
- * Merge preset custom models into providers.
- * Shared utility used by both providerService and this module.
- */
-export function mergePresetCustomModels(
-    providers: Provider[],
-    presetCustomModels: Record<string, ModelEntity[]> | undefined,
-    presetRemovedModels?: Record<string, string[]>,
-): Provider[] {
-    const hasCustom = presetCustomModels && Object.keys(presetCustomModels).length > 0;
-    const hasRemoved = presetRemovedModels && Object.keys(presetRemovedModels).length > 0;
-    if (!hasCustom && !hasRemoved) return providers;
-
-    return providers.map(provider => {
-        if (!provider.isBuiltin) return provider;
-        const customModels = presetCustomModels?.[provider.id];
-        const removedIds = presetRemovedModels?.[provider.id];
-        if (!customModels?.length && !removedIds?.length) return provider;
-
-        const removedSet = new Set(removedIds ?? []);
-
-        // 1. 预设模型：排除用户删除的，从 discovered 补充元数据
-        const presetIds = new Set(provider.models.map(m => m.model));
-        const enrichedPresets = provider.models
-            .filter(m => !removedSet.has(m.model))
-            .map(preset => {
-                const extra = customModels?.find(c => c.model === preset.model);
-                return mergePresetModelWithCustomEntry(preset, extra);
-            });
-        // 2. 用户添加的新模型（不在预设中的）
-        const newModels = customModels?.filter(c => !presetIds.has(c.model)) ?? [];
-
-        return {
-            ...provider,
-            models: [...enrichedPresets, ...newModels],
-        };
-    });
-}
+export { mergePresetCustomModels } from '../types';
 
 // ============= Bundled Workspace =============
 

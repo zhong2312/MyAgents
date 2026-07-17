@@ -184,7 +184,7 @@ describe('LauncherRightRail', () => {
 
         renderRail({ projects, sessions: [] });
 
-        expect(screen.getByRole('heading', { name: 'Agent Workspaces' })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: 'Workspaces' })).toBeInTheDocument();
         expect(screen.getByRole('button', { name: /Show 2 more/ })).toBeInTheDocument();
         expect(screen.getByRole('heading', { name: 'Chat History' })).toBeInTheDocument();
         expect(screen.getByRole('button', { name: /Filter chat history: All/ })).toBeInTheDocument();

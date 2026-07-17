@@ -34,11 +34,11 @@
     "remove": "移除"
   },
   "rightRail": {
-    "workspaceTitle": "Agent 工作区",
+    "workspaceTitle": "工作区",
     "logsTitle": "查看 Rust 日志",
     "loading": "加载中...",
     "emptyWorkspaceTitle": "还没有工作区",
-    "emptyWorkspaceDescription": "添加本地项目文件夹，或从模板快速创建",
+    "emptyWorkspaceDescription": "创建小说项目，或添加已有工作目录",
     "addFolder": "添加文件夹",
     "createFromTemplate": "从模板创建",
     "collapse": "收起",

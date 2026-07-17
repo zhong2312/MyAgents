@@ -409,6 +409,49 @@ export interface Provider {
 }
 
 /**
+ * Apply the user's discovered/manual model catalogue edits to bundled providers.
+ * Both renderer selection and sidecar validation must use this effective list.
+ */
+export function mergePresetCustomModels(
+  providers: Provider[],
+  presetCustomModels: Record<string, ModelEntity[]> | undefined,
+  presetRemovedModels?: Record<string, string[]>,
+): Provider[] {
+  const hasCustom = Boolean(
+    presetCustomModels && Object.keys(presetCustomModels).length > 0,
+  );
+  const hasRemoved = Boolean(
+    presetRemovedModels && Object.keys(presetRemovedModels).length > 0,
+  );
+  if (!hasCustom && !hasRemoved) return providers;
+
+  return providers.map((provider) => {
+    if (!provider.isBuiltin) return provider;
+    const customModels = presetCustomModels?.[provider.id];
+    const removedIds = presetRemovedModels?.[provider.id];
+    if (!customModels?.length && !removedIds?.length) return provider;
+
+    const removedSet = new Set(removedIds ?? []);
+    const presetIds = new Set(provider.models.map((model) => model.model));
+    const enrichedPresets = provider.models
+      .filter((model) => !removedSet.has(model.model))
+      .map((preset) =>
+        mergePresetModelWithCustomEntry(
+          preset,
+          customModels?.find((custom) => custom.model === preset.model),
+        ),
+      );
+    const newModels =
+      customModels?.filter((custom) => !presetIds.has(custom.model)) ?? [];
+
+    return {
+      ...provider,
+      models: [...enrichedPresets, ...newModels],
+    };
+  });
+}
+
+/**
  * Project/workspace configuration
  */
 export type WorkspaceType = 'user' | 'system-preset';
@@ -452,6 +495,10 @@ export interface Project {
   templateId?: string;
   /** Template source. Built-in templates can carry product-level Agent defaults. */
   templateSource?: WorkspaceTemplateSource;
+  /** Primary workbench opened when the workspace card is activated. */
+  workbenchId?: string;
+  /** Optional logical route used when opening the primary workbench. */
+  workbenchRoute?: string;
   /** Lifecycle owner. Missing means ordinary user workspace for backward compatibility. */
   workspaceType?: WorkspaceType;
   /** Stable ID for a system-preset workspace instance. Current preset set: mino. */
@@ -495,6 +542,10 @@ export interface WorkspaceTemplate {
   path?: string;        // User template: absolute path under ~/.myagents/templates/
   /** Product-level Agent defaults applied when creating a workspace from this template. */
   agentDefaults?: WorkspaceTemplateAgentDefaults;
+  /** Workbench ownership stamped onto workspaces created from this template. */
+  workbenchId?: string;
+  /** Initial logical workbench route. */
+  workbenchRoute?: string;
 }
 
 export const DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID = 'mino';

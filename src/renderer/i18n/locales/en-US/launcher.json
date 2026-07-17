@@ -34,11 +34,11 @@
     "remove": "Remove"
   },
   "rightRail": {
-    "workspaceTitle": "Agent Workspaces",
+    "workspaceTitle": "Workspaces",
     "logsTitle": "View Rust logs",
     "loading": "Loading...",
     "emptyWorkspaceTitle": "No workspaces yet",
-    "emptyWorkspaceDescription": "Add a local project folder or create one from a template",
+    "emptyWorkspaceDescription": "Create a novel project or add an existing work folder",
     "addFolder": "Add folder",
     "createFromTemplate": "Create from template",
     "collapse": "Collapse",

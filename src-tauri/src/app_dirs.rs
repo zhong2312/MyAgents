@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use crate::{ulog_error, ulog_info, ulog_warn};
 
 const LAST_EXIT_FILE: &str = "last-exit.json";
+const MYAGENTS_DATA_DIR_ENV: &str = "MYAGENTS_DATA_DIR";
 
 /// Record that the app exited cleanly — i.e. the user deliberately quit
 /// (Cmd+Q / Dock / tray "Exit"), as opposed to an update-restart or a crash.
@@ -106,16 +107,72 @@ impl LockAcquireResult {
 
 /// Return the MyAgents data directory (`~/.myagents/` by default).
 ///
-/// Future: debug builds may return `~/.myagents-dev/` to enable simultaneous
-/// dev/prod operation with fully isolated state (config, bots, sidecars, ports).
-/// For now, both profiles share the same directory.
+/// Portable/test packages may set `MYAGENTS_DATA_DIR` to an absolute directory.
+/// This explicit protocol is required on Windows because OS Known Folder APIs
+/// can ignore process-local HOME/USERPROFILE overrides.
+fn resolve_myagents_data_dir(
+    configured: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    configured
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(|path| path.join(".myagents")))
+}
+
 pub fn myagents_data_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".myagents"))
+    let configured = std::env::var_os(MYAGENTS_DATA_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    resolve_myagents_data_dir(configured, dirs::home_dir())
 }
 
 /// Path to the PID lock file.
 fn lock_file_path() -> Option<PathBuf> {
     myagents_data_dir().map(|d| d.join("app.lock"))
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::resolve_myagents_data_dir;
+    use std::path::PathBuf;
+
+    #[test]
+    fn absolute_configured_directory_is_authoritative() {
+        let configured = if cfg!(windows) {
+            PathBuf::from(r"F:\portable\profile\.myagents")
+        } else {
+            PathBuf::from("/portable/profile/.myagents")
+        };
+        let home = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\tester")
+        } else {
+            PathBuf::from("/home/tester")
+        };
+
+        assert_eq!(
+            resolve_myagents_data_dir(Some(configured.clone()), Some(home)),
+            Some(configured),
+        );
+    }
+
+    #[test]
+    fn relative_configured_directory_falls_back_to_home() {
+        let home = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\tester")
+        } else {
+            PathBuf::from("/home/tester")
+        };
+
+        assert_eq!(
+            resolve_myagents_data_dir(Some(PathBuf::from("relative-data")), Some(home.clone())),
+            Some(home.join(".myagents")),
+        );
+    }
+
+    #[test]
+    fn missing_configured_directory_and_home_returns_none() {
+        assert_eq!(resolve_myagents_data_dir(None, None), None);
+    }
 }
 
 /// Write the current process PID to `~/.myagents/app.lock` and report

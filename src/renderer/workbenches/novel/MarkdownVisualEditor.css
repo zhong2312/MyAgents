@@ -1,0 +1,193 @@
+.novel-markdown-editor {
+  --basePageBg: var(--paper);
+  --baseBase: var(--paper-elevated);
+  --baseBgSubtle: var(--paper-inset);
+  --baseBg: var(--paper-inset);
+  --baseBgHover: var(--hover-bg);
+  --baseBgActive: var(--accent-cool-subtle);
+  --baseLine: var(--line-subtle);
+  --baseBorder: var(--line);
+  --baseBorderHover: var(--ink-subtle);
+  --baseSolid: var(--ink-subtle);
+  --baseSolidHover: var(--ink-muted);
+  --baseText: var(--ink-muted);
+  --baseTextContrast: var(--ink);
+  --accentBase: var(--paper);
+  --accentBgSubtle: var(--accent-cool-subtle);
+  --accentBg: var(--accent-cool-subtle);
+  --accentBgHover: var(--accent-cool-subtle);
+  --accentBgActive: var(--accent-cool-subtle);
+  --accentLine: var(--accent-cool);
+  --accentBorder: var(--accent-cool);
+  --accentBorderHover: var(--accent-cool);
+  --accentSolid: var(--accent-cool);
+  --accentSolidHover: var(--accent-cool);
+  --accentText: var(--accent-cool);
+  --accentTextContrast: var(--ink);
+
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.novel-markdown-toolbar {
+  position: relative;
+  top: auto;
+  min-height: 3rem;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line-subtle);
+  border-radius: 0;
+  padding: 0.5rem 1rem;
+  background: var(--paper-elevated);
+}
+
+.novel-markdown-toolbar button,
+.novel-markdown-toolbar [role="button"] {
+  cursor: pointer;
+}
+
+.novel-markdown-editor > div:last-child {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.novel-markdown-content {
+  box-sizing: border-box;
+  min-height: 100%;
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 2.5rem 3.5rem 5rem;
+  color: var(--ink);
+  font-size: 1rem;
+  line-height: 2;
+  outline: none;
+}
+
+.novel-markdown-content--full {
+  max-width: none;
+  margin: 0;
+  padding: 2rem 2.5rem 4rem;
+}
+
+.novel-markdown-content h1 {
+  margin: 0 0 1.75rem;
+  font-size: 1.875rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.novel-markdown-content h2 {
+  margin: 2.25rem 0 0.75rem;
+  border-bottom: 1px solid var(--line-subtle);
+  padding-bottom: 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.novel-markdown-content h3,
+.novel-markdown-content h4,
+.novel-markdown-content h5,
+.novel-markdown-content h6 {
+  margin: 1.75rem 0 0.5rem;
+  font-size: 1.0625rem;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.novel-markdown-content p {
+  margin: 1rem 0;
+}
+
+.novel-markdown-content ul,
+.novel-markdown-content ol {
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+}
+
+.novel-markdown-content ul {
+  list-style: disc;
+}
+
+.novel-markdown-content ol {
+  list-style: decimal;
+}
+
+.novel-markdown-content li {
+  margin: 0.25rem 0;
+}
+
+.novel-markdown-content blockquote {
+  margin: 1.5rem 0;
+  border-left: 2px solid var(--accent-cool);
+  background: var(--accent-cool-subtle);
+  padding: 0.75rem 1.25rem;
+  color: var(--ink-muted);
+}
+
+.novel-markdown-content a {
+  color: var(--accent-cool);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.novel-markdown-content table {
+  width: 100%;
+  margin: 1.25rem 0;
+  border-collapse: collapse;
+}
+
+.novel-markdown-content th,
+.novel-markdown-content td {
+  border: 1px solid var(--line);
+  padding: 0.5rem 0.625rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.novel-markdown-content th {
+  background: var(--paper-inset);
+  font-weight: 600;
+}
+
+.novel-markdown-editor .cm-editor {
+  min-height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+.novel-markdown-editor .cm-scroller {
+  padding: 1.75rem 2rem 4rem;
+}
+
+.novel-markdown-editor .cm-gutters {
+  border-right-color: var(--line-subtle);
+  background: var(--paper-inset);
+  color: var(--ink-subtle);
+}
+
+@media (max-width: 640px) {
+  .novel-markdown-toolbar {
+    padding-inline: 0.625rem;
+  }
+
+  .novel-markdown-content {
+    padding: 1.75rem 1.5rem 4rem;
+  }
+
+  .novel-markdown-content--full {
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .novel-markdown-editor .cm-scroller {
+    padding-inline: 1rem;
+  }
+}

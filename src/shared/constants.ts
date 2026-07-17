@@ -86,6 +86,8 @@ export const CUSTOM_EVENTS = {
     OPEN_TASK_CENTER: 'open-task-center',
     /** Fired to open the Team Space singleton tab when the build/runtime gates allow it. */
     OPEN_SPACE: 'open-space',
+    /** Fired to open a workspace-bound workbench tab. Payload follows OpenWorkbenchRequest. */
+    OPEN_WORKBENCH: 'open-workbench',
     /**
      * Fired to open a new chat tab primed with `/task-alignment` for a thought.
      * Payload: `{ thoughtId: string; content: string; tags: string[] }`.

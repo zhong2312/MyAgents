@@ -78,6 +78,7 @@
 | 埋点 / Analytics 事件 / runtime 维度口径 | `tech_docs/analytics_design.md` |
 | Tool Attachment 管道 / 富媒体产物归一化 | `tech_docs/tool_attachment_pipeline.md` |
 | Claude Plugin 加载（PRD 0.2.17）/ SDK Options.plugins / 安装管线 | `tech_docs/plugin_loading.md` |
+| Workbench SDK / manifest / 注册表 / 工作台 Tab / Workbench Shell | `tech_docs/workbench_platform.md` |
 
 ---
 

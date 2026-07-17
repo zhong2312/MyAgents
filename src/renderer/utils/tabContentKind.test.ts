@@ -38,6 +38,7 @@ describe('tabContentKind', () => {
         expect(tabContentKind(tab({ view: 'settings' }), false)).toBe('settings');
         expect(tabContentKind(tab({ view: 'taskcenter' }), false)).toBe('taskcenter');
         expect(tabContentKind(tab({ view: 'space' }), false)).toBe('space');
+        expect(tabContentKind(tab({ view: 'workbench', workbench: { workbenchId: 'io.myagents.test', route: 'home' } }), false)).toBe('workbench');
     });
 
     it('once restoreState is cleared, the tab becomes a live chat tab', () => {

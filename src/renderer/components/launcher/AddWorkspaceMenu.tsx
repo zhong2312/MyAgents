@@ -4,19 +4,29 @@
  */
 
 import { memo, useCallback, useRef, useState } from 'react';
-import { Plus, FolderPlus, LayoutTemplate } from 'lucide-react';
+import { BookOpen, Plus, FolderPlus, LayoutTemplate } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Popover } from '@/components/ui/Popover';
 
+export interface WorkbenchCreateAction {
+    id: string;
+    label: string;
+    icon?: string;
+}
+
 interface AddWorkspaceMenuProps {
     onAddFolder: () => void;
     onCreateFromTemplate: () => void;
+    workbenchCreateActions?: readonly WorkbenchCreateAction[];
+    onCreateWorkbench?: (workbenchId: string) => void;
 }
 
 export default memo(function AddWorkspaceMenu({
     onAddFolder,
     onCreateFromTemplate,
+    workbenchCreateActions = [],
+    onCreateWorkbench,
 }: AddWorkspaceMenuProps) {
     const { t } = useTranslation('launcher');
     const [open, setOpen] = useState(false);
@@ -39,8 +49,26 @@ export default memo(function AddWorkspaceMenu({
                 onClose={() => setOpen(false)}
                 anchorRef={buttonRef}
                 placement="bottom-end"
-                className="w-[180px] py-1"
+                className="w-[210px] py-1"
             >
+                {workbenchCreateActions.map((action) => (
+                    <button
+                        key={action.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                            setOpen(false);
+                            onCreateWorkbench?.(action.id);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                    >
+                        <BookOpen className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
+                        {action.label}
+                    </button>
+                ))}
+                {workbenchCreateActions.length > 0 && (
+                    <div className="mx-2 my-1 border-t border-[var(--line-subtle)]" />
+                )}
                 <button
                     type="button"
                     role="menuitem"

@@ -19,6 +19,7 @@ import { useCallback, useMemo } from 'react';
 
 import { i18n } from '@/i18n';
 import { isTauriEnvironment } from '@/utils/browserMock';
+import type { WorkbenchProjectInitialization } from '../../shared/workbench-sdk';
 
 function workspaceFileText(key: string): string {
   return String(i18n.t(`app:workspaceFile.${key}`));
@@ -203,6 +204,13 @@ interface GitignoreResult {
   reason: string;
 }
 
+export interface InitializeWorkspaceProjectResult {
+  workspacePath: string;
+  gitInitialized: boolean;
+  directoriesCreated: number;
+  filesCreated: number;
+}
+
 /**
  * `WorkspaceFileService` exposes Rust workspace_files commands as a stable
  * callable surface.
@@ -216,7 +224,7 @@ interface GitignoreResult {
  * `watchStart`, `checkPaths`.
  *
  * # Methods that DO NOT require a workspace (callable with `useWorkspaceFileService(null)`):
- * `openPathExternal`, `openPathWithDefault`, `checkLocalPaths`,
+ * `initializeProject`, `openPathExternal`, `openPathWithDefault`, `checkLocalPaths`,
  * `readLocalPreview`, `downloadLocalFile`, `downloadLocalFileBytes`,
  * `readLocalFileAsBlobUrl` (all take absolute paths), `readPathsAsBase64`
  * (legacy absolute image path → base64), `prepareUserImageAttachments`
@@ -229,6 +237,11 @@ interface GitignoreResult {
  * are safe to call when the hook was instantiated with `null`.
  */
 export interface WorkspaceFileService {
+  /** [workspace-free] Atomically create a brand-new workspace from a validated text blueprint. */
+  initializeProject(args: {
+    workspacePath: string;
+    initialization: WorkbenchProjectInitialization;
+  }): Promise<InitializeWorkspaceProjectResult>;
   /** [requires workspace] Import base64-encoded files into `<workspace>/<targetDir>/`. */
   importBase64Files(args: {
     files: { name: string; content: string }[];
@@ -377,6 +390,16 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     }
     return workspacePath;
   }, [workspacePath]);
+
+  const initializeProject: WorkspaceFileService['initializeProject'] = useCallback(
+    async ({ workspacePath: targetPath, initialization }) => {
+      return invokeIfTauri<InitializeWorkspaceProjectResult>('cmd_workspace_initialize_project', {
+        workspacePath: targetPath,
+        initialization,
+      });
+    },
+    [invokeIfTauri],
+  );
 
   const importBase64Files: WorkspaceFileService['importBase64Files'] = useCallback(
     async ({ files, targetDir }) => {
@@ -779,6 +802,7 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
   const isAvailable = tauri && workspacePath != null;
   return useMemo(
     () => ({
+      initializeProject,
       importBase64Files,
       copyPaths,
       copyInternal,
@@ -819,6 +843,7 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       workspacePath,
     }),
     [
+      initializeProject,
       importBase64Files,
       copyPaths,
       copyInternal,

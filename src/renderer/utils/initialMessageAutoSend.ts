@@ -5,6 +5,7 @@ export interface InitialMessageAutoSendGate {
   isConnected: boolean;
   isActive: boolean;
   runtimeReady?: boolean;
+  providerCatalogReady?: boolean;
 }
 
 /**
@@ -18,5 +19,20 @@ export function shouldAutoSendInitialMessage(args: InitialMessageAutoSendGate): 
   if (!args.hasSessionId) return false;
   if (!args.isConnected) return false;
   if (args.runtimeReady === false) return false;
+  if (args.providerCatalogReady === false) return false;
   return true;
+}
+
+/**
+ * An initial message with an explicit provider is an execution identity, not a
+ * preference. Never substitute the project's current provider when that exact
+ * provider has not been loaded.
+ */
+export function resolveInitialMessageProvider<T extends { id: string }>(args: {
+  explicitProviderId?: string;
+  providers: readonly T[];
+  currentProvider?: T;
+}): T | undefined {
+  if (!args.explicitProviderId) return args.currentProvider;
+  return args.providers.find(provider => provider.id === args.explicitProviderId);
 }

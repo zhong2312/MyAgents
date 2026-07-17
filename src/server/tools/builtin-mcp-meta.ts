@@ -25,7 +25,7 @@
 // at a tool file's top level — CLAUDE.md codifies this as a forbidden
 // pattern, and any violation silently defeats the refactor.
 
-import { registerBuiltinMcpMeta } from './builtin-mcp-registry';
+import { registerBuiltinMcpMeta } from "./builtin-mcp-registry";
 
 // --- User-toggleable builtins ---
 // (gemini-image, edge-tts) — appear in Settings with `command: '__builtin__'`.
@@ -33,9 +33,9 @@ import { registerBuiltinMcpMeta } from './builtin-mcp-registry';
 // to the SDK; `/api/mcp/enable` + `handleMcpTest` call `.validate(env)`.
 
 registerBuiltinMcpMeta({
-  id: 'gemini-image',
+  id: "gemini-image",
   load: async () => {
-    const m = await import('./gemini-image-tool');
+    const m = await import("./gemini-image-tool");
     return {
       server: await m.createGeminiImageServer(),
       configure: m.configureGeminiImage,
@@ -45,13 +45,27 @@ registerBuiltinMcpMeta({
 });
 
 registerBuiltinMcpMeta({
-  id: 'edge-tts',
+  id: "edge-tts",
   load: async () => {
-    const m = await import('./edge-tts-tool');
+    const m = await import("./edge-tts-tool");
     return {
       server: await m.createEdgeTtsServer(),
       configure: m.configureEdgeTts,
       // No validate — free service, no API key to verify
+    };
+  },
+});
+
+// --- Workbench-controlled builtins ---
+// Hidden from Settings. The session route establishes context first, then
+// agent-session injects this server only for that controlled conversation.
+registerBuiltinMcpMeta({
+  id: "novel-workbench",
+  load: async () => {
+    const m = await import("./novel-workbench-tool");
+    return {
+      server: await m.createNovelWorkbenchServer(),
+      configure: m.configureNovelWorkbench,
     };
   },
 });

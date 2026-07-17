@@ -48,6 +48,7 @@ interface WorkspaceCardProps {
     onAgentSettings: (project: Project) => void;
     onOpenFolder: (project: Project) => void;
     onTogglePin: (project: Project) => void;
+    workbenchLabel?: string;
     isLoading?: boolean;
     archived?: boolean;
 }
@@ -63,6 +64,7 @@ export default memo(function WorkspaceCard({
     onAgentSettings,
     onOpenFolder,
     onTogglePin,
+    workbenchLabel,
     isLoading,
     archived = false,
 }: WorkspaceCardProps) {
@@ -138,6 +140,11 @@ export default memo(function WorkspaceCard({
                         {archived && (
                             <span className="shrink-0 rounded-[3px] bg-[var(--paper-inset)] px-1.5 py-[1px] text-xs font-medium text-[var(--ink-muted)]">
                                 {t('workspaceCard.archivedBadge')}
+                            </span>
+                        )}
+                        {workbenchLabel && (
+                            <span className="shrink-0 rounded-[3px] bg-[var(--accent-warm-subtle)] px-1.5 py-[1px] text-xs font-medium text-[var(--accent-warm)]">
+                                {workbenchLabel}
                             </span>
                         )}
                         {isProactive && <HeartPulse className="h-3 w-3 shrink-0 text-[var(--heartbeat)]" />}

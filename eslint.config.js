@@ -152,7 +152,7 @@ export default defineConfig(
   includeIgnoreFile(gitignorePath),
   {
     // Additional ignore patterns for build output and bundled resources
-    ignores: ['**/out/**', '**/dist/**', '**/.vite/**', '**/coverage/**', '**/.eslintcache', 'bundled-skills/**', '**/sdk-shim/**']
+    ignores: ['**/out/**', '**/dist/**', '**/.vite/**', '**/coverage/**', '**/.eslintcache', 'bundled-skills/**', '**/sdk-shim/**', '.opendesign/export/**']
   },
   js.configs.recommended,
   ...ts.configs.recommended,

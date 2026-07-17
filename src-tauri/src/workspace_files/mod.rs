@@ -34,6 +34,7 @@ pub mod gitignore;
 pub mod memory_rules;
 pub mod path_safety;
 pub mod platform_blocks;
+pub mod project_init;
 pub mod read_preview;
 pub mod save_file;
 pub mod search;

@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>MyAgents · 烬海编年史设定库 v3</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./meta.css" />
+  <link rel="stylesheet" href="./responsive.css" />
+  <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script defer src="https://unpkg.com/marked@14.1.4/marked.min.js"></script>
+  <script defer src="https://unpkg.com/dompurify@3.1.7/dist/purify.min.js"></script>
+  <script defer src="https://unpkg.com/turndown@7.2.0/dist/turndown.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <div class="app-shell" data-od-id="setting-library-v3-app">
+    <header class="product-bar" data-od-id="product-header">
+      <div class="brand-lockup" aria-label="MyAgents">
+        <span class="brand-mark">M</span>
+        <span class="brand-name">MyAgents</span>
+      </div>
+      <button class="project-switcher" type="button" id="project-switcher" aria-label="切换项目">
+        <span class="project-dot"></span>
+        <span class="project-name">烬海编年史</span>
+        <span class="project-meta">长篇小说</span>
+        <i data-lucide="chevrons-up-down" aria-hidden="true"></i>
+      </button>
+      <div class="product-actions">
+        <span class="save-state" id="save-state" role="status" aria-live="polite" aria-busy="false"><i data-lucide="circle-check" aria-hidden="true"></i>全部更改已保存</span>
+        <button class="icon-button" type="button" aria-label="更多项目操作" title="更多项目操作"><i data-lucide="ellipsis" aria-hidden="true"></i></button>
+      </div>
+    </header>
+
+    <nav class="workbench-rail" data-od-id="workbench-navigation" aria-label="小说工作台导航">
+      <button class="rail-button desktop-rail-toggle" type="button" id="rail-toggle" aria-label="收起工作台菜单" title="收起工作台菜单"><i data-lucide="panel-left-close" aria-hidden="true"></i><span>工作台</span></button>
+      <span class="rail-divider" aria-hidden="true"></span>
+      <button class="rail-button" type="button" aria-label="项目概览" title="项目概览"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span>项目概览</span></button>
+      <button class="rail-button" type="button" aria-label="章节" title="章节"><i data-lucide="book-open" aria-hidden="true"></i><span>章节</span></button>
+      <div class="rail-setting-group" data-od-id="settings-navigation-group">
+        <div class="rail-section-title"><i data-lucide="library-big" aria-hidden="true"></i><span>设定</span></div>
+        <div class="rail-subnav">
+          <button class="rail-subitem active" type="button" id="open-tree" data-section-route="library" aria-current="page">
+          <i data-lucide="network" aria-hidden="true"></i><span>世界架构</span>
+          </button>
+          <button class="rail-subitem mobile-settings-shortcut" type="button" id="open-settings" aria-label="打开当前节点设定" title="当前节点设定"><i data-lucide="files" aria-hidden="true"></i><span>当前设定</span></button>
+          <button class="rail-subitem" type="button" data-section-route="templates">
+            <i data-lucide="layout-template" aria-hidden="true"></i><span>模板配置</span>
+          </button>
+        </div>
+      </div>
+      <button class="rail-button" type="button" id="map-destination" aria-label="世界地图（独立模块）" title="世界地图（独立模块）"><i data-lucide="map" aria-hidden="true"></i><span>世界地图</span></button>
+      <button class="rail-button" type="button" aria-label="人物" title="人物"><i data-lucide="users" aria-hidden="true"></i><span>人物</span></button>
+      <button class="rail-button rail-bottom" type="button" aria-label="工作台设置" title="工作台设置"><i data-lucide="settings-2" aria-hidden="true"></i><span>工作台设置</span></button>
+    </nav>
+
+    <main class="main-shell" data-od-id="setting-library-main">
+      <section class="screen active" id="library-view" data-od-id="library-workspace">
+        <div class="workspace-grid" data-od-id="three-column-workspace">
+          <aside class="workspace-column tree-column drawer-panel" id="tree-panel" data-od-id="spatial-tree-panel" aria-label="空间层级">
+            <header class="tree-search-toolbar" data-od-id="path-0-2-0-1-0-0">
+              <label class="search-field">
+                <i data-lucide="search" aria-hidden="true"></i>
+                <input id="tree-search" type="search" aria-label="搜索空间节点" placeholder="搜索空间节点" autocomplete="off" />
+              </label>
+              <div class="column-actions">
+                <button class="icon-button mobile-close" type="button" data-close-drawer aria-label="关闭空间层级" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
+                <button class="icon-button" type="button" id="collapse-tree" aria-label="折叠空间树" title="折叠空间树"><i data-lucide="fold-vertical" aria-hidden="true"></i></button>
+                <button class="icon-button" type="button" id="add-node" aria-label="新增子节点" title="新增子节点"><i data-lucide="plus" aria-hidden="true"></i></button>
+              </div>
+            </header>
+            <div class="tree-legend"><span><i data-lucide="tag" aria-hidden="true"></i>每个节点必须关联层级类型</span></div>
+            <div class="spatial-tree" id="spatial-tree" role="tree" aria-label="烬海世界空间树"></div>
+            <footer class="column-footer">
+              <button class="text-button" type="button" id="add-root-node"><i data-lucide="plus" aria-hidden="true"></i>新增根节点</button>
+              <span id="node-count">9 个节点</span>
+            </footer>
+          </aside>
+
+          <section class="workspace-column settings-column drawer-panel" id="settings-panel" data-od-id="node-settings-panel" aria-label="当前节点设定">
+            <div class="node-strip">
+              <span class="node-strip-icon"><i data-lucide="orbit" aria-hidden="true"></i></span>
+              <div><strong id="settings-node-name">主宇宙</strong><span id="settings-node-meta">宇宙 · 7 个默认模板</span></div>
+            </div>
+            <div class="settings-tools">
+              <label class="search-field compact-search"><i data-lucide="search" aria-hidden="true"></i><input id="settings-search" type="search" aria-label="搜索当前节点设定" placeholder="搜索当前节点设定" autocomplete="off" /></label>
+              <button class="icon-button mobile-close" type="button" data-close-drawer aria-label="关闭设定列表" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
+              <button class="icon-button" type="button" id="sort-settings" aria-label="按名称排序设定" aria-pressed="false" title="按名称排序"><i data-lucide="arrow-down-a-z" aria-hidden="true"></i></button>
+              <button class="primary-icon-button" type="button" id="add-setting" aria-label="新增自定义设定" title="新增自定义设定"><i data-lucide="file-plus-2" aria-hidden="true"></i></button>
+            </div>
+            <div class="setting-list" id="setting-list"></div>
+            <footer class="settings-footer">
+              <i data-lucide="shield-check" aria-hidden="true"></i>
+              <span>模板只提供起点，不限制幻想设定</span>
+            </footer>
+          </section>
+
+          <article class="editor-column" data-od-id="markdown-editor-panel">
+            <header class="editor-view-tabs" id="editor-view-tabs" role="tablist" aria-label="设定编辑视图" data-od-id="editor-view-tabs">
+              <button class="editor-view-tab active" type="button" id="editor-tab-content" role="tab" aria-selected="true" aria-controls="editor-content-panel" data-editor-view="content">内容</button>
+              <button class="editor-view-tab" type="button" id="editor-tab-entries" role="tab" aria-selected="false" aria-controls="editor-entry-panel" tabindex="-1" data-editor-view="entries">词条<span class="tab-count" id="entry-count" aria-live="polite">3</span></button>
+            </header>
+            <section class="editor-content-panel" id="editor-content-panel" role="tabpanel" aria-labelledby="editor-tab-content" data-od-id="editor-content-view">
+              <div class="editor-toolbar" role="toolbar" aria-label="Markdown 格式工具">
+                <div class="toolbar-group">
+                  <button class="tool-button" type="button" data-command="bold" aria-label="加粗" title="加粗"><i data-lucide="bold" aria-hidden="true"></i></button>
+                  <button class="tool-button" type="button" data-command="italic" aria-label="斜体" title="斜体"><i data-lucide="italic" aria-hidden="true"></i></button>
+                  <button class="tool-button" type="button" data-block="h2" aria-label="二级标题" title="二级标题"><i data-lucide="heading-2" aria-hidden="true"></i></button>
+                  <button class="tool-button" type="button" data-command="insertUnorderedList" aria-label="无序列表" title="无序列表"><i data-lucide="list" aria-hidden="true"></i></button>
+                  <button class="tool-button" type="button" id="insert-table" data-od-id="insert-table" aria-label="插入表格" title="插入表格"><i data-lucide="table-2" aria-hidden="true"></i></button>
+                  <button class="tool-button" type="button" data-command="formatBlock" data-value="blockquote" aria-label="引用" title="引用"><i data-lucide="quote" aria-hidden="true"></i></button>
+                  <button class="tool-button" type="button" id="insert-link" aria-label="插入链接" title="插入链接"><i data-lucide="link" aria-hidden="true"></i></button>
+                </div>
+                <div class="toolbar-spacer"></div>
+                <div class="segmented-control" aria-label="编辑模式">
+                  <button class="segment active" type="button" data-editor-mode="visual">可视化</button>
+                  <button class="segment" type="button" data-editor-mode="source">源码</button>
+                </div>
+              </div>
+              <div class="editor-surface">
+                <div class="visual-editor" id="visual-editor" contenteditable="true" spellcheck="true" aria-label="可视化 Markdown 编辑器"></div>
+                <textarea class="source-editor hidden" id="source-editor" spellcheck="false" aria-label="Markdown 源码编辑器"></textarea>
+              </div>
+            </section>
+            <section class="entry-panel hidden" id="editor-entry-panel" role="tabpanel" aria-labelledby="editor-tab-entries" data-od-id="editor-entry-view">
+              <div class="entry-tools">
+                <label class="search-field compact-search"><i data-lucide="search" aria-hidden="true"></i><input id="entry-search" type="search" aria-label="搜索当前设定词条" placeholder="搜索当前设定词条" autocomplete="off" /></label>
+                <button class="primary-icon-button" type="button" id="add-entry" aria-label="新增词条" title="新增词条"><i data-lucide="file-plus-2" aria-hidden="true"></i></button>
+              </div>
+              <div class="entry-workspace">
+                <nav class="entry-list" id="entry-list" aria-label="当前设定词条" data-od-id="entry-list"></nav>
+                <div class="entry-empty" id="entry-empty"><i data-lucide="notebook-tabs" aria-hidden="true"></i><strong>当前设定还没有词条</strong><span>新增词条后可记录名称、分类、别名与定义。</span></div>
+                <form class="entry-form hidden" id="entry-form" data-od-id="entry-editor">
+                  <header class="entry-form-header"><div><span class="column-eyebrow" id="entry-context">当前设定词条</span><h2 id="entry-editor-title">天河</h2></div><span class="source-label">自动保存</span></header>
+                  <div class="entry-fields">
+                    <label class="field"><span>词条名称</span><input id="entry-name" type="text" required /></label>
+                    <label class="field"><span>分类</span><select id="entry-category"><option>地理现象</option><option>地点</option><option>历法</option><option>器物</option><option>组织</option><option>人物</option><option>术语</option></select></label>
+                    <label class="field full"><span>别名</span><input id="entry-aliases" type="text" placeholder="使用顿号分隔多个别名" /></label>
+                    <label class="field full"><span>定义</span><textarea id="entry-definition" rows="10"></textarea></label>
+                  </div>
+                  <footer class="entry-form-actions"><button class="text-button danger" type="button" id="delete-entry"><i data-lucide="trash-2" aria-hidden="true"></i>删除词条</button></footer>
+                </form>
+              </div>
+            </section>
+          </article>
+        </div>
+      </section>
+
+      <section class="screen" id="meta-view" data-od-id="meta-configuration-workspace">
+        <header class="meta-header">
+          <button class="icon-button back-button" type="button" id="close-meta" aria-label="返回设定库" title="返回设定库"><i data-lucide="arrow-left" aria-hidden="true"></i></button>
+          <div>
+            <span class="column-eyebrow">项目级配置</span>
+            <h1>设定元配置</h1>
+          </div>
+          <div class="non-destructive-note"><i data-lucide="shield-check" aria-hidden="true"></i><span>配置变化不会删除正文或覆盖已填写内容</span></div>
+        </header>
+        <nav class="meta-tabs" role="tablist" aria-label="元配置页面">
+          <button class="meta-tab active" type="button" role="tab" aria-selected="true" data-meta-tab="types"><i data-lucide="tags" aria-hidden="true"></i>层级类型 <span id="type-tab-count">12</span></button>
+          <button class="meta-tab" type="button" role="tab" aria-selected="false" data-meta-tab="templates"><i data-lucide="file-code-2" aria-hidden="true"></i>设定模板 <span id="template-tab-count">18</span></button>
+          <button class="meta-tab" type="button" role="tab" aria-selected="false" data-meta-tab="profiles"><i data-lucide="list-tree" aria-hidden="true"></i>类型模板关联</button>
+        </nav>
+
+        <div class="meta-page active" data-meta-page="types" id="types-page">
+          <aside class="meta-list-pane" data-od-id="level-type-list">
+            <header class="meta-pane-header"><div><h2>层级类型</h2><span>项目内可编辑、复制和排序</span></div><button class="primary-icon-button" type="button" id="new-level-type" aria-label="新建层级类型" title="新建层级类型"><i data-lucide="plus" aria-hidden="true"></i></button></header>
+            <label class="search-field"><i data-lucide="search" aria-hidden="true"></i><input id="type-search" type="search" placeholder="搜索类型" /></label>
+            <div class="meta-list" id="level-type-list"></div>
+          </aside>
+          <section class="meta-detail-pane" data-od-id="level-type-editor">
+            <header class="detail-header"><div><span class="source-label" id="type-source">内置初始模板 · 项目副本</span><h2 id="type-detail-title">宇宙</h2></div><div class="detail-actions"><button class="secondary-button" type="button" id="copy-level-type"><i data-lucide="copy" aria-hidden="true"></i>复制</button><button class="icon-button" type="button" id="archive-level-type" aria-label="归档类型" title="归档类型"><i data-lucide="archive" aria-hidden="true"></i></button></div></header>
+            <div class="form-grid two-columns">
+              <label class="field"><span>类型名称</span><input id="type-name" type="text" /></label>
+              <label class="field"><span>地图表现类型</span><select id="type-map-kind"><option>宇宙区域</option><option>星域轮廓</option><option>行星点位</option><option>地理面</option><option>聚落点位</option><option>不在地图显示</option></select></label>
+              <label class="field full"><span>说明</span><textarea id="type-description" rows="3"></textarea></label>
+              <label class="field"><span>图标</span><select id="type-icon"><option value="orbit">轨道</option><option value="globe-2">世界</option><option value="sparkles">星群</option><option value="sun">恒星</option><option value="circle-dot">星球</option><option value="land-plot">疆域</option><option value="flag">国家</option><option value="map">区域</option><option value="building-2">城市</option><option value="landmark">地标</option><option value="brackets">自定义</option></select></label>
+              <label class="field"><span>正在使用</span><input id="type-usage" type="text" disabled /></label>
+            </div>
+            <div class="relation-config">
+              <div class="relation-section"><div><h3>建议父类型</h3><span>仅用于新建时提示，不限制空间树</span></div><div class="check-chip-list" id="parent-type-options"></div></div>
+              <div class="relation-section"><div><h3>建议子类型</h3><span>作者始终可以选择其他类型</span></div><div class="check-chip-list" id="child-type-options"></div></div>
+            </div>
+            <footer class="detail-footer"><span><i data-lucide="info" aria-hidden="true"></i>空间父子关系自由设计，类型建议不会阻止保存。</span><div class="order-controls"><button class="icon-button" type="button" id="type-move-up" aria-label="上移类型" title="上移"><i data-lucide="arrow-up" aria-hidden="true"></i></button><button class="icon-button" type="button" id="type-move-down" aria-label="下移类型" title="下移"><i data-lucide="arrow-down" aria-hidden="true"></i></button></div></footer>
+          </section>
+        </div>
+
+        <div class="meta-page" data-meta-page="templates" id="templates-page">
+          <aside class="meta-list-pane" data-od-id="setting-template-list">
+            <header class="meta-pane-header"><div><h2>设定模板</h2><span>页面级 Markdown 初始结构</span></div><button class="primary-icon-button" type="button" id="new-template" aria-label="新建设定模板" title="新建设定模板"><i data-lucide="plus" aria-hidden="true"></i></button></header>
+            <label class="field compact-field"><span>分组</span><select id="template-group-filter"><option value="all">全部分组</option></select></label>
+            <div class="meta-list" id="template-list"></div>
+          </aside>
+          <section class="meta-detail-pane" data-od-id="setting-template-editor">
+            <header class="detail-header"><div><span class="source-label" id="template-source">内置初始模板 · v1.3</span><h2 id="template-detail-title">宇宙总览</h2></div><div class="detail-actions"><button class="secondary-button" type="button" id="preview-template"><i data-lucide="eye" aria-hidden="true"></i>预览</button><button class="secondary-button" type="button" id="copy-template"><i data-lucide="copy" aria-hidden="true"></i>复制</button></div></header>
+            <div class="form-grid two-columns template-fields">
+              <label class="field"><span>模板名称</span><input id="template-name" type="text" /></label>
+              <label class="field"><span>分组</span><select id="template-group"><option>世界</option><option>地理</option><option>政治</option><option>军事</option><option>经济</option><option>社会</option><option>文化</option></select></label>
+              <label class="field full"><span>说明</span><input id="template-description" type="text" /></label>
+              <label class="field full code-field"><span>Markdown 初始骨架</span><textarea id="template-skeleton" rows="12" spellcheck="false"></textarea></label>
+              <label class="field full"><span>Agent 引导</span><textarea id="template-agent-guide" rows="4"></textarea></label>
+            </div>
+            <footer class="detail-footer"><span><i data-lucide="history" aria-hidden="true"></i>新版本只影响未填写的虚拟页面，不覆盖已有正文。</span><span id="template-version-note">最近修改：项目初始化</span></footer>
+          </section>
+        </div>
+
+        <div class="meta-page profile-page" data-meta-page="profiles" id="profiles-page">
+          <aside class="profile-types" data-od-id="profile-type-list">
+            <header class="meta-pane-header"><div><h2>选择层级类型</h2><span>配置其默认设定起点</span></div></header>
+            <div class="meta-list" id="profile-type-list"></div>
+          </aside>
+          <section class="profile-associations" data-od-id="profile-association-editor">
+            <header class="detail-header"><div><span class="source-label">LevelTypeSettingProfile</span><h2><span id="profile-type-name">宇宙</span> · 默认模板</h2></div><label class="field inline-filter"><span>筛选分组</span><select id="profile-group-filter"><option value="all">全部</option></select></label></header>
+            <div class="association-message"><i data-lucide="shield-plus" aria-hidden="true"></i><span><strong>默认模板不是限制。</strong>任何节点仍可新增任意自定义设定，移除关联也不会删除已填写正文。</span></div>
+            <div class="association-list-header"><span>启用</span><span>模板 / 分组</span><span>顺序</span></div>
+            <div class="association-list" id="association-list"></div>
+          </section>
+          <aside class="profile-preview" data-od-id="profile-new-node-preview">
+            <header class="meta-pane-header"><div><span class="column-eyebrow">即时预览</span><h2>新建节点将出现</h2></div><span class="count-badge" id="profile-preview-count">7 页</span></header>
+            <div class="preview-node"><span class="node-strip-icon"><i data-lucide="orbit" aria-hidden="true"></i></span><div><strong id="preview-node-name">未命名宇宙</strong><span>全部为未落盘虚拟页面</span></div></div>
+            <ol class="profile-preview-list" id="profile-preview-list"></ol>
+            <footer class="preview-footer"><i data-lucide="file-clock" aria-hidden="true"></i><span>首次编辑某页时才创建对应 Markdown 文件。</span></footer>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+    <div class="toast-region" id="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+
+    <dialog class="app-dialog" id="node-dialog" data-od-id="add-node-dialog">
+      <form method="dialog" id="node-form">
+        <header class="dialog-header"><div><span class="column-eyebrow">自由空间树</span><h2>新增空间节点</h2></div><button class="icon-button" type="button" data-close-dialog="node-dialog" aria-label="关闭" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button></header>
+        <div class="dialog-body">
+          <div class="parent-summary"><span>父节点</span><strong id="node-parent-name">主宇宙</strong><small>类型仅提供建议，不限制保存位置</small></div>
+          <label class="field"><span>节点名称</span><input id="new-node-name" type="text" value="天河源界" required /></label>
+          <label class="field"><span>层级类型 <em>必选</em></span><select id="new-node-type" required></select></label>
+          <button class="text-button" type="button" id="quick-type-toggle"><i data-lucide="plus" aria-hidden="true"></i>快速创建新类型</button>
+          <div class="quick-type-fields hidden" id="quick-type-fields"><label class="field"><span>新类型名称</span><input id="quick-type-name" type="text" placeholder="例如：源界" /></label><span>创建后会自动选中，并可在元配置中继续完善。</span></div>
+        </div>
+        <footer class="dialog-footer"><button class="secondary-button" type="button" data-close-dialog="node-dialog">取消</button><button class="primary-button" type="submit">创建节点</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog" id="change-type-dialog" data-od-id="change-level-type-dialog">
+      <form method="dialog" id="change-type-form">
+        <header class="dialog-header"><div><span class="column-eyebrow">非破坏性变更</span><h2>更改“<span id="change-type-node-name">主宇宙</span>”的层级类型</h2></div><button class="icon-button" type="button" data-close-dialog="change-type-dialog" aria-label="关闭" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button></header>
+        <div class="dialog-body">
+          <label class="field"><span>新的层级类型</span><select id="change-type-select"></select></label>
+          <div class="change-summary" id="change-type-summary"></div>
+        </div>
+        <footer class="dialog-footer"><button class="secondary-button" type="button" data-close-dialog="change-type-dialog">取消</button><button class="primary-button" type="submit">应用更改</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog" id="setting-dialog" data-od-id="add-custom-setting-dialog">
+      <form method="dialog" id="setting-form">
+        <header class="dialog-header"><div><span class="column-eyebrow">突破默认模板</span><h2>新增自定义设定</h2></div><button class="icon-button" type="button" data-close-dialog="setting-dialog" aria-label="关闭" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button></header>
+        <div class="dialog-body">
+          <label class="field"><span>设定名称</span><input id="new-setting-name" type="text" value="贯穿诸界的天河水系" required /></label>
+          <label class="field"><span>模板分组</span><select id="new-setting-group"><option>地理</option><option>世界</option><option>政治</option><option>社会</option><option>文化</option></select></label>
+          <fieldset class="choice-fieldset"><legend>如何使用这份设定？</legend><label class="choice-row"><input type="radio" name="promotion" value="node" checked /><span><strong>仅添加到当前节点</strong><small>只为“主宇宙”创建自定义 Markdown 页面</small></span></label><label class="choice-row"><input type="radio" name="promotion" value="profile" /><span><strong>同时加入当前层级类型默认</strong><small>创建可编辑模板，并加入“宇宙”的类型模板方案</small></span></label></fieldset>
+          <div class="safety-line"><i data-lucide="shield-check" aria-hidden="true"></i><span>后续移除默认关联时，这份正文会保留为节点自定义设定。</span></div>
+        </div>
+        <footer class="dialog-footer"><button class="secondary-button" type="button" data-close-dialog="setting-dialog">取消</button><button class="primary-button" type="submit">创建并编辑</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog preview-dialog" id="template-preview-dialog" data-od-id="template-preview-dialog">
+      <header class="dialog-header"><div><span class="column-eyebrow">Markdown 预览</span><h2 id="preview-dialog-title">宇宙总览</h2></div><button class="icon-button" type="button" data-close-dialog="template-preview-dialog" aria-label="关闭" title="关闭"><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="template-preview-body" id="template-preview-body"></div>
+      <footer class="dialog-footer"><span>预览只展示新建页面的初始骨架。</span><button class="secondary-button" type="button" data-close-dialog="template-preview-dialog">关闭</button></footer>
+    </dialog>
+  </div>
+</body>
+</html>

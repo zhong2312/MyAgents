@@ -56,6 +56,12 @@ describe('WorkspaceCard', () => {
         expect(screen.queryByText('待配置聊天机器人')).not.toBeInTheDocument();
     });
 
+    it('shows the registered workbench type beside the workspace name', () => {
+        renderCard({ workbenchLabel: '小说' });
+
+        expect(screen.getByText('小说')).toBeInTheDocument();
+    });
+
     it('still renders channel status tags when channels exist', () => {
         const status: AgentStatusData = {
             agentId: 'agent-1',

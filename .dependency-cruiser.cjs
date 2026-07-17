@@ -159,6 +159,35 @@ module.exports = {
         'src/shared is consumed by BOTH renderer and sidecar — it must stay free of process-specific imports. A renderer-only or sidecar-only dep would either crash on the other side at bundle time or sneak the wrong runtime code into the wrong bundle (e.g. React in the sidecar, fs in the renderer). If you need to share something process-specific, put it in src/renderer/shared or src/server/shared instead.',
       from: { path: '^src/shared/' },
       to: { path: '^src/(renderer|server|cli)/' }
+    },
+    {
+      name: 'workbench-core-no-concrete-imports',
+      severity: 'error',
+      comment:
+        'MyAgents renderer core MUST NOT import a concrete workbench. Doing so makes each new workbench require core edits and turns the plugin boundary into a naming convention. Only src/renderer/workbench-registry.ts may aggregate src/renderer/workbenches/*; all other core code resolves definitions through workbench-sdk.',
+      from: {
+        path: '^src/renderer/',
+        pathNot: [
+          '^src/renderer/workbenches/',
+          '^src/renderer/workbench-registry\\.ts$'
+        ]
+      },
+      to: { path: '^src/renderer/workbenches/' }
+    },
+    {
+      name: 'workbench-uses-sdk-boundary',
+      severity: 'error',
+      comment:
+        'Concrete workbenches MUST depend on MyAgents only through src/renderer/workbench-sdk or src/shared/workbench-sdk. Importing App, config stores, Chat internals, sidecar code, or other host modules couples the workbench to unstable implementation details and prevents independent versioning. Add a capability to workbench-sdk instead.',
+      from: { path: '^src/renderer/workbenches/' },
+      to: {
+        path: '^src/',
+        pathNot: [
+          '^src/renderer/workbenches/',
+          '^src/renderer/workbench-sdk/',
+          '^src/shared/workbench-sdk/'
+        ]
+      }
     }
   ],
   options: {

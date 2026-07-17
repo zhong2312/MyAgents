@@ -17,40 +17,43 @@
 //  - Restored tabs are mounted "cold" (no TabProvider, no sidecar) until first
 //    activation; this module only owns the persisted shape, not that lifecycle.
 
-import { MAX_TABS, type Tab } from '@/types/tab';
-import { isPendingSessionId } from '../../shared/constants';
+import { MAX_TABS, type Tab } from "@/types/tab";
+import { isPendingSessionId } from "../../shared/constants";
 
-const PERSIST_KEY = 'myagents.openTabs.v1';
+const PERSIST_KEY = "myagents.openTabs.v1";
 const PERSIST_VERSION = 1 as const;
 
 /** The whitelisted, persisted shape of a restorable chat tab. Intentionally a
  *  subset of `Tab` — runtime-only fields (isGenerating / hasUnread /
  *  sidecarConfigDisposition / initialMessage / restoreState) are never stored. */
 export interface PersistedTab {
-    id: string;
-    agentDir: string; // non-null (launcher tabs filtered out)
-    sessionId: string; // real UUID (pending- filtered out)
-    title: string;
+  id: string;
+  agentDir: string; // non-null (launcher tabs filtered out)
+  sessionId: string; // real UUID (pending- filtered out)
+  title: string;
 }
 
 export interface PersistedTabState {
-    version: typeof PERSIST_VERSION;
-    tabs: PersistedTab[];
-    activeTabId: string | null;
+  version: typeof PERSIST_VERSION;
+  tabs: PersistedTab[];
+  activeTabId: string | null;
 }
 
 /** A tab is restorable iff it is a chat tab pointing at a real, on-disk
  *  session in a real workspace. Existence-on-disk is validated lazily at
  *  activation (App.activateRestoredTab); here we only enforce shape. */
-function isRestorable(tab: Tab): tab is Tab & { agentDir: string; sessionId: string } {
-    return (
-        tab.view === 'chat' &&
-        typeof tab.agentDir === 'string' &&
-        tab.agentDir.length > 0 &&
-        typeof tab.sessionId === 'string' &&
-        tab.sessionId.length > 0 &&
-        !isPendingSessionId(tab.sessionId)
-    );
+function isRestorable(
+  tab: Tab,
+): tab is Tab & { agentDir: string; sessionId: string } {
+  return (
+    tab.view === "chat" &&
+    tab.workbenchAgentSurface === undefined &&
+    typeof tab.agentDir === "string" &&
+    tab.agentDir.length > 0 &&
+    typeof tab.sessionId === "string" &&
+    tab.sessionId.length > 0 &&
+    !isPendingSessionId(tab.sessionId)
+  );
 }
 
 /**
@@ -66,46 +69,53 @@ function isRestorable(tab: Tab): tab is Tab & { agentDir: string; sessionId: str
  *  - activeTabId is preserved only if it survives filtering; otherwise falls
  *    back to the first surviving tab
  */
-export function serializeTabs(tabs: Tab[], activeTabId: string | null): PersistedTabState | null {
-    const seenSessions = new Set<string>();
-    const seenIds = new Set<string>();
-    const persisted: PersistedTab[] = [];
-    for (const tab of tabs) {
-        if (!isRestorable(tab)) continue;
-        // De-dupe by BOTH sessionId (one session lives in one tab — the
-        // session-open planner's singleton invariant) and tab id (duplicate ids
-        // would collide as React keys + Rust sidecar owner ids).
-        if (seenSessions.has(tab.sessionId) || seenIds.has(tab.id)) continue;
-        seenSessions.add(tab.sessionId);
-        seenIds.add(tab.id);
-        persisted.push({
-            id: tab.id,
-            agentDir: tab.agentDir,
-            sessionId: tab.sessionId,
-            title: tab.title,
-        });
-        if (persisted.length >= MAX_TABS) break;
-    }
-    if (persisted.length === 0) return null;
+export function serializeTabs(
+  tabs: Tab[],
+  activeTabId: string | null,
+): PersistedTabState | null {
+  const seenSessions = new Set<string>();
+  const seenIds = new Set<string>();
+  const persisted: PersistedTab[] = [];
+  for (const tab of tabs) {
+    if (!isRestorable(tab)) continue;
+    // De-dupe by BOTH sessionId (one session lives in one tab — the
+    // session-open planner's singleton invariant) and tab id (duplicate ids
+    // would collide as React keys + Rust sidecar owner ids).
+    if (seenSessions.has(tab.sessionId) || seenIds.has(tab.id)) continue;
+    seenSessions.add(tab.sessionId);
+    seenIds.add(tab.id);
+    persisted.push({
+      id: tab.id,
+      agentDir: tab.agentDir,
+      sessionId: tab.sessionId,
+      title: tab.title,
+    });
+    if (persisted.length >= MAX_TABS) break;
+  }
+  if (persisted.length === 0) return null;
 
-    const activeSurvives = activeTabId != null && persisted.some((t) => t.id === activeTabId);
-    return {
-        version: PERSIST_VERSION,
-        tabs: persisted,
-        activeTabId: activeSurvives ? activeTabId : persisted[0].id,
-    };
+  const activeSurvives =
+    activeTabId != null && persisted.some((t) => t.id === activeTabId);
+  return {
+    version: PERSIST_VERSION,
+    tabs: persisted,
+    activeTabId: activeSurvives ? activeTabId : persisted[0].id,
+  };
 }
 
 function isValidPersistedTab(value: unknown): value is PersistedTab {
-    if (typeof value !== 'object' || value === null) return false;
-    const t = value as Record<string, unknown>;
-    return (
-        typeof t.id === 'string' && t.id.length > 0 &&
-        typeof t.agentDir === 'string' && t.agentDir.length > 0 &&
-        typeof t.sessionId === 'string' && t.sessionId.length > 0 &&
-        !isPendingSessionId(t.sessionId) &&
-        typeof t.title === 'string'
-    );
+  if (typeof value !== "object" || value === null) return false;
+  const t = value as Record<string, unknown>;
+  return (
+    typeof t.id === "string" &&
+    t.id.length > 0 &&
+    typeof t.agentDir === "string" &&
+    t.agentDir.length > 0 &&
+    typeof t.sessionId === "string" &&
+    t.sessionId.length > 0 &&
+    !isPendingSessionId(t.sessionId) &&
+    typeof t.title === "string"
+  );
 }
 
 /**
@@ -117,68 +127,70 @@ function isValidPersistedTab(value: unknown): value is PersistedTab {
  * an older/buggy build or hand-edited.
  */
 export function deserializeTabs(raw: string | null): PersistedTabState | null {
-    if (!raw) return null;
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        return null;
-    }
-    if (typeof parsed !== 'object' || parsed === null) return null;
-    const obj = parsed as Record<string, unknown>;
-    if (obj.version !== PERSIST_VERSION) return null;
-    if (!Array.isArray(obj.tabs)) return null;
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  if (obj.version !== PERSIST_VERSION) return null;
+  if (!Array.isArray(obj.tabs)) return null;
 
-    const seenSessions = new Set<string>();
-    const seenIds = new Set<string>();
-    const tabs: PersistedTab[] = [];
-    for (const candidate of obj.tabs) {
-        if (!isValidPersistedTab(candidate)) continue;
-        if (seenSessions.has(candidate.sessionId) || seenIds.has(candidate.id)) continue;
-        seenSessions.add(candidate.sessionId);
-        seenIds.add(candidate.id);
-        tabs.push({
-            id: candidate.id,
-            agentDir: candidate.agentDir,
-            sessionId: candidate.sessionId,
-            title: candidate.title,
-        });
-        if (tabs.length >= MAX_TABS) break;
-    }
-    if (tabs.length === 0) return null;
+  const seenSessions = new Set<string>();
+  const seenIds = new Set<string>();
+  const tabs: PersistedTab[] = [];
+  for (const candidate of obj.tabs) {
+    if (!isValidPersistedTab(candidate)) continue;
+    if (seenSessions.has(candidate.sessionId) || seenIds.has(candidate.id))
+      continue;
+    seenSessions.add(candidate.sessionId);
+    seenIds.add(candidate.id);
+    tabs.push({
+      id: candidate.id,
+      agentDir: candidate.agentDir,
+      sessionId: candidate.sessionId,
+      title: candidate.title,
+    });
+    if (tabs.length >= MAX_TABS) break;
+  }
+  if (tabs.length === 0) return null;
 
-    const activeTabId =
-        typeof obj.activeTabId === 'string' && tabs.some((t) => t.id === obj.activeTabId)
-            ? obj.activeTabId
-            : tabs[0].id;
+  const activeTabId =
+    typeof obj.activeTabId === "string" &&
+    tabs.some((t) => t.id === obj.activeTabId)
+      ? obj.activeTabId
+      : tabs[0].id;
 
-    return { version: PERSIST_VERSION, tabs, activeTabId };
+  return { version: PERSIST_VERSION, tabs, activeTabId };
 }
 
 /** Synchronous persist-on-mutation. Clears the key when there's nothing to
  *  store. Swallows storage errors (quota / private mode) — persistence is
  *  best-effort and must never break the app. */
 export function saveOpenTabs(tabs: Tab[], activeTabId: string | null): void {
-    try {
-        const state = serializeTabs(tabs, activeTabId);
-        if (state === null) {
-            window.localStorage.removeItem(PERSIST_KEY);
-        } else {
-            window.localStorage.setItem(PERSIST_KEY, JSON.stringify(state));
-        }
-    } catch {
-        // ignore — localStorage unavailable / quota exceeded
+  try {
+    const state = serializeTabs(tabs, activeTabId);
+    if (state === null) {
+      window.localStorage.removeItem(PERSIST_KEY);
+    } else {
+      window.localStorage.setItem(PERSIST_KEY, JSON.stringify(state));
     }
+  } catch {
+    // ignore — localStorage unavailable / quota exceeded
+  }
 }
 
 /** Read + validate the persisted state. Returns null when nothing restorable
  *  is stored (caller falls back to a fresh launcher tab). */
 export function loadPersistedTabs(): PersistedTabState | null {
-    try {
-        return deserializeTabs(window.localStorage.getItem(PERSIST_KEY));
-    } catch {
-        return null;
-    }
+  try {
+    return deserializeTabs(window.localStorage.getItem(PERSIST_KEY));
+  } catch {
+    return null;
+  }
 }
 
 /** Hydrate a validated PersistedTabState into live `Tab` objects flagged
@@ -186,28 +198,34 @@ export function loadPersistedTabs(): PersistedTabState | null {
  *  TabProvider / sidecar) until first activation. Shared by the localStorage
  *  boot read (buildRestoredTabs) and the durable-handoff recovery path (see
  *  tabPersistenceDurable). */
-export function hydratePersistedState(state: PersistedTabState): { tabs: Tab[]; activeTabId: string | null } {
-    const tabs: Tab[] = state.tabs.map((t) => ({
-        id: t.id,
-        agentDir: t.agentDir,
-        sessionId: t.sessionId,
-        view: 'chat',
-        title: t.title,
-        restoreState: 'cold',
-        // Cold tabs aren't ensured yet and render a placeholder (NOT Chat), so this is
-        // never read by a mounted chat. activateRestoredTab resolves it to push|adopt
-        // (from result.isNew) before clearing restoreState on first activation.
-        sidecarConfigDisposition: 'pending',
-    }));
-    return { tabs, activeTabId: state.activeTabId };
+export function hydratePersistedState(state: PersistedTabState): {
+  tabs: Tab[];
+  activeTabId: string | null;
+} {
+  const tabs: Tab[] = state.tabs.map((t) => ({
+    id: t.id,
+    agentDir: t.agentDir,
+    sessionId: t.sessionId,
+    view: "chat",
+    title: t.title,
+    restoreState: "cold",
+    // Cold tabs aren't ensured yet and render a placeholder (NOT Chat), so this is
+    // never read by a mounted chat. activateRestoredTab resolves it to push|adopt
+    // (from result.isNew) before clearing restoreState on first activation.
+    sidecarConfigDisposition: "pending",
+  }));
+  return { tabs, activeTabId: state.activeTabId };
 }
 
 /** Read + hydrate the localStorage-persisted tabs. Returns null when there's
  *  nothing to restore (caller falls back to a fresh launcher tab). */
-export function buildRestoredTabs(): { tabs: Tab[]; activeTabId: string | null } | null {
-    const state = loadPersistedTabs();
-    if (!state) return null;
-    return hydratePersistedState(state);
+export function buildRestoredTabs(): {
+  tabs: Tab[];
+  activeTabId: string | null;
+} | null {
+  const state = loadPersistedTabs();
+  if (!state) return null;
+  return hydratePersistedState(state);
 }
 
 /** Decide whether the durable-handoff snapshot (fsync'd to disk right before an
@@ -221,12 +239,12 @@ export function buildRestoredTabs(): { tabs: Tab[]; activeTabId: string | null }
  *  (the exact failure this backstop exists to fix). Returns the state to adopt,
  *  or null to keep the localStorage result. */
 export function pickDurableOverride(
-    hadLocalRestore: boolean,
-    durable: PersistedTabState | null,
+  hadLocalRestore: boolean,
+  durable: PersistedTabState | null,
 ): PersistedTabState | null {
-    if (hadLocalRestore) return null;
-    if (!durable || durable.tabs.length === 0) return null;
-    return durable;
+  if (hadLocalRestore) return null;
+  if (!durable || durable.tabs.length === 0) return null;
+  return durable;
 }
 
 /** Parse the Rust-written clean-exit marker (`~/.myagents/last-exit.json`).
@@ -234,13 +252,17 @@ export function pickDurableOverride(
  *  (absent → null, malformed, `clean:false`) is treated as NOT a clean quit so
  *  the boot offers to restore. See `lastExitMarker.ts`. */
 export function parseCleanMarker(raw: string | null): boolean {
-    if (!raw) return false;
-    try {
-        const v = JSON.parse(raw) as unknown;
-        return typeof v === 'object' && v !== null && (v as { clean?: unknown }).clean === true;
-    } catch {
-        return false;
-    }
+  if (!raw) return false;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return (
+      typeof v === "object" &&
+      v !== null &&
+      (v as { clean?: unknown }).clean === true
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Decide whether to surface the "restore last session" pill on boot (Issue
@@ -249,8 +271,11 @@ export function parseCleanMarker(raw: string | null): boolean {
  *  snapshot. A clean quit means the user chose to end their session → boot
  *  fresh, no nag. Pure + unit-tested; the title-bar pill and the App boot
  *  effect share this single predicate. */
-export function shouldOfferRestore(lastExitWasClean: boolean, restorableTabCount: number): boolean {
-    return !lastExitWasClean && restorableTabCount > 0;
+export function shouldOfferRestore(
+  lastExitWasClean: boolean,
+  restorableTabCount: number,
+): boolean {
+  return !lastExitWasClean && restorableTabCount > 0;
 }
 
 /** Plan how clicking the "恢复对话" pill (Issue #309) merges the previous
@@ -267,30 +292,34 @@ export function shouldOfferRestore(lastExitWasClean: boolean, restorableTabCount
  *  the active id point at a tab that got sliced/deduped out → blank content).
  *  Returns null when there is nothing to restore. Pure + unit-tested. */
 export function planRestoreTabs(
-    prev: Tab[],
-    candidate: { tabs: Tab[]; activeTabId: string | null },
-    maxTabs: number = MAX_TABS,
+  prev: Tab[],
+  candidate: { tabs: Tab[]; activeTabId: string | null },
+  maxTabs: number = MAX_TABS,
 ): { tabs: Tab[]; activeTabId: string } | null {
-    if (candidate.tabs.length === 0) return null;
-    const onlyPristineLauncher =
-        prev.length === 1 && prev[0]?.view === 'launcher' && !prev[0]?.sessionId;
-    const base = onlyPristineLauncher ? [] : prev;
-    const openSessions = new Set(base.map((t) => t.sessionId).filter(Boolean));
-    const toAdd = candidate.tabs.filter((t) => t.sessionId && !openSessions.has(t.sessionId));
-    if (toAdd.length === 0) return null; // everything is already open — nothing to bring back
+  if (candidate.tabs.length === 0) return null;
+  const onlyPristineLauncher =
+    prev.length === 1 && prev[0]?.view === "launcher" && !prev[0]?.sessionId;
+  const base = onlyPristineLauncher ? [] : prev;
+  const openSessions = new Set(base.map((t) => t.sessionId).filter(Boolean));
+  const toAdd = candidate.tabs.filter(
+    (t) => t.sessionId && !openSessions.has(t.sessionId),
+  );
+  if (toAdd.length === 0) return null; // everything is already open — nothing to bring back
 
-    const tabs = [...base, ...toAdd].slice(0, maxTabs);
-    const addedIds = new Set(toAdd.map((t) => t.id));
-    // If the cap left no room for ANY restored tab (base already at maxTabs),
-    // the restore would be a visual no-op → signal "nothing happened".
-    if (!tabs.some((t) => addedIds.has(t.id))) return null;
+  const tabs = [...base, ...toAdd].slice(0, maxTabs);
+  const addedIds = new Set(toAdd.map((t) => t.id));
+  // If the cap left no room for ANY restored tab (base already at maxTabs),
+  // the restore would be a visual no-op → signal "nothing happened".
+  if (!tabs.some((t) => addedIds.has(t.id))) return null;
 
-    const inList = (id: string | null | undefined): id is string =>
-        id != null && tabs.some((t) => t.id === id);
-    // Active id from the SAME merge: candidate's active if it survived dedup+cap,
-    // else the first restored tab still in the list (guaranteed to exist), else
-    // the last tab. Never points outside `tabs`.
-    const firstRestoredInList = tabs.find((t) => addedIds.has(t.id))!.id;
-    const activeTabId = inList(candidate.activeTabId) ? candidate.activeTabId : firstRestoredInList;
-    return { tabs, activeTabId };
+  const inList = (id: string | null | undefined): id is string =>
+    id != null && tabs.some((t) => t.id === id);
+  // Active id from the SAME merge: candidate's active if it survived dedup+cap,
+  // else the first restored tab still in the list (guaranteed to exist), else
+  // the last tab. Never points outside `tabs`.
+  const firstRestoredInList = tabs.find((t) => addedIds.has(t.id))!.id;
+  const activeTabId = inList(candidate.activeTabId)
+    ? candidate.activeTabId
+    : firstRestoredInList;
+  return { tabs, activeTabId };
 }

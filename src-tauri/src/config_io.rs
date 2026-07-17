@@ -17,6 +17,17 @@ use std::path::{Path, PathBuf};
 use crate::utils::bom::strip_bom;
 use crate::utils::file_lock::{with_file_lock_blocking, FileLockError, FileLockOptions};
 
+/// Return the single authoritative MyAgents data directory used by Rust and
+/// every child Sidecar. The renderer must not derive this path independently:
+/// on Windows, Tauri's `homeDir()` resolves the OS profile even when a portable
+/// test package intentionally overrides HOME/USERPROFILE for process isolation.
+#[tauri::command]
+pub fn cmd_get_myagents_data_dir() -> Result<String, String> {
+    crate::app_dirs::myagents_data_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .ok_or_else(|| "[config-io] Cannot determine MyAgents data directory".to_string())
+}
+
 fn read_config_json(config_path: &Path) -> Result<serde_json::Value, String> {
     if !config_path.exists() {
         return Ok(serde_json::json!({}));

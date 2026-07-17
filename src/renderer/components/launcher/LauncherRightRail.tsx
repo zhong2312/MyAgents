@@ -3,6 +3,7 @@ import {
     AlertCircle,
     Archive,
     BarChart2,
+    BookOpen,
     Check,
     ChevronDown,
     ChevronUp,
@@ -37,7 +38,7 @@ import { isAutomationHistoryOrigin } from '@/../shared/session-origin';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { isSupportedLocale } from '../../../shared/i18n';
 import { formatMessageCount, formatTime, getFolderName, getSessionDisplayText } from '@/utils/taskCenterUtils';
-import AddWorkspaceMenu from './AddWorkspaceMenu';
+import AddWorkspaceMenu, { type WorkbenchCreateAction } from './AddWorkspaceMenu';
 import WorkspaceCard from './WorkspaceCard';
 import WorkspaceIcon from './WorkspaceIcon';
 import { sortLauncherProjects } from './workspaceSort';
@@ -74,6 +75,9 @@ interface LauncherRightRailProps {
     onToggleProjectPin: (project: Project) => void;
     onAddFolder: () => void;
     onCreateFromTemplate: () => void;
+    workbenchCreateActions?: readonly WorkbenchCreateAction[];
+    workbenchTypeLabels?: ReadonlyMap<string, string>;
+    onCreateWorkbench?: (workbenchId: string) => void;
     onShowLogs: () => void;
 }
 
@@ -132,6 +136,9 @@ export default memo(function LauncherRightRail({
     onToggleProjectPin,
     onAddFolder,
     onCreateFromTemplate,
+    workbenchCreateActions = [],
+    workbenchTypeLabels,
+    onCreateWorkbench,
     onShowLogs,
 }: LauncherRightRailProps) {
     const { t } = useTranslation('launcher');
@@ -352,6 +359,8 @@ export default memo(function LauncherRightRail({
                                     <AddWorkspaceMenu
                                         onAddFolder={onAddFolder}
                                         onCreateFromTemplate={onCreateFromTemplate}
+                                        workbenchCreateActions={workbenchCreateActions}
+                                        onCreateWorkbench={onCreateWorkbench}
                                     />
                                 )}
                             </div>
@@ -370,7 +379,7 @@ export default memo(function LauncherRightRail({
                                 <p className="mb-6 max-w-[220px] text-sm leading-relaxed text-[var(--ink-muted)]/60">
                                     {t('rightRail.emptyWorkspaceDescription')}
                                 </p>
-                                <div className="flex items-center gap-3">
+                                <div className="flex flex-wrap items-center justify-center gap-3">
                                     <button
                                         onClick={onAddFolder}
                                         className="flex items-center gap-1.5 rounded-full bg-[var(--button-secondary-bg)] px-4 py-2.5 text-sm font-medium text-[var(--button-secondary-text)] transition-all hover:bg-[var(--button-secondary-bg-hover)] hover:shadow-sm"
@@ -378,13 +387,23 @@ export default memo(function LauncherRightRail({
                                         <FolderPlus className="h-3.5 w-3.5" />
                                         {t('rightRail.addFolder')}
                                     </button>
-                                    <button
-                                        onClick={onCreateFromTemplate}
-                                        className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-2.5 text-sm font-medium text-[var(--button-primary-text)] transition-all hover:bg-[var(--button-primary-bg-hover)] hover:shadow-sm"
-                                    >
-                                        <LayoutTemplate className="h-3.5 w-3.5" />
-                                        {t('rightRail.createFromTemplate')}
-                                    </button>
+                                    {workbenchCreateActions[0] ? (
+                                        <button
+                                            onClick={() => onCreateWorkbench?.(workbenchCreateActions[0].id)}
+                                            className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-2.5 text-sm font-medium text-[var(--button-primary-text)] transition-all hover:bg-[var(--button-primary-bg-hover)] hover:shadow-sm"
+                                        >
+                                            <BookOpen className="h-3.5 w-3.5" />
+                                            {workbenchCreateActions[0].label}
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={onCreateFromTemplate}
+                                            className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-2.5 text-sm font-medium text-[var(--button-primary-text)] transition-all hover:bg-[var(--button-primary-bg-hover)] hover:shadow-sm"
+                                        >
+                                            <LayoutTemplate className="h-3.5 w-3.5" />
+                                            {t('rightRail.createFromTemplate')}
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         ) : (
@@ -409,6 +428,7 @@ export default memo(function LauncherRightRail({
                                                     onAgentSettings={onAgentSettings}
                                                     onOpenFolder={onOpenProjectFolder}
                                                     onTogglePin={onToggleProjectPin}
+                                                    workbenchLabel={project.workbenchId ? workbenchTypeLabels?.get(project.workbenchId) : undefined}
                                                     isLoading={launchingProjectId === project.id && isStarting}
                                                 />
                                             );
@@ -440,6 +460,7 @@ export default memo(function LauncherRightRail({
                                                     onAgentSettings={onAgentSettings}
                                                     onOpenFolder={onOpenProjectFolder}
                                                     onTogglePin={onToggleProjectPin}
+                                                    workbenchLabel={project.workbenchId ? workbenchTypeLabels?.get(project.workbenchId) : undefined}
                                                     isLoading={launchingProjectId === project.id && isStarting}
                                                 />
                                             );

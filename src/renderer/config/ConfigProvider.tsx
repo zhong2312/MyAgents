@@ -232,6 +232,8 @@ export interface AddProjectOptions {
     templateId?: string;
     templateSource?: WorkspaceTemplateSource;
     agentDefaults?: WorkspaceTemplateAgentDefaults;
+    workbenchId?: string;
+    workbenchRoute?: string;
 }
 
 // ============= Contexts =============
@@ -801,6 +803,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         if (options.displayName) metadataPatch.displayName = options.displayName;
         if (options.templateId) metadataPatch.templateId = options.templateId;
         if (options.templateSource) metadataPatch.templateSource = options.templateSource;
+        if (options.workbenchId) metadataPatch.workbenchId = options.workbenchId;
+        if (options.workbenchRoute) metadataPatch.workbenchRoute = options.workbenchRoute;
         if (project.hidden) {
             metadataPatch.hidden = false;
             metadataPatch.hiddenAt = undefined;

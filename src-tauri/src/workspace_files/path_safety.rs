@@ -73,6 +73,76 @@ pub fn validate_workspace_root(workspace_path: &str) -> WfResult<PathBuf> {
     Ok(canonical)
 }
 
+/// Validate a brand-new workspace root before it exists.
+///
+/// Project creation is different from normal workspace IO: the root itself is
+/// the write target, so `validate_workspace_root` cannot be used yet. Missing
+/// parent segments are validated but not created here; the nearest existing
+/// ancestor provides the canonical, blacklist-checked anchor.
+pub fn validate_new_workspace_root(workspace_path: &str) -> WfResult<PathBuf> {
+    let lexical = system_blacklist_check(workspace_path)?;
+    let name = lexical
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Workspace directory name is not valid UTF-8".to_string())?;
+    validate_item_name(name)?;
+
+    let parent = lexical
+        .parent()
+        .ok_or_else(|| "Workspace parent directory is required".to_string())?;
+
+    let mut existing_ancestor = parent.to_path_buf();
+    let mut missing_segments = Vec::new();
+    loop {
+        match fs::symlink_metadata(&existing_ancestor) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let segment = existing_ancestor
+                    .file_name()
+                    .ok_or_else(|| "Workspace parent directory is invalid".to_string())?;
+                let segment_str = segment.to_str().ok_or_else(|| {
+                    "Workspace parent directory name is not valid UTF-8".to_string()
+                })?;
+                validate_item_name(segment_str)?;
+                missing_segments.push(segment.to_os_string());
+                existing_ancestor = existing_ancestor
+                    .parent()
+                    .ok_or_else(|| "Workspace parent directory is invalid".to_string())?
+                    .to_path_buf();
+            }
+            Err(error) => {
+                return Err(format!("Failed to inspect workspace parent: {}", error));
+            }
+        }
+    }
+    let existing_metadata = fs::metadata(&existing_ancestor)
+        .map_err(|error| format!("Failed to inspect workspace parent: {}", error))?;
+    if !existing_metadata.is_dir() {
+        return Err("Workspace parent ancestor is not a directory".to_string());
+    }
+    let mut canonical_parent = fs::canonicalize(&existing_ancestor)
+        .map(crate::commands::normalize_security_path)
+        .map_err(|error| format!("Workspace parent canonicalize failed: {}", error))?;
+    for segment in missing_segments.iter().rev() {
+        canonical_parent.push(segment);
+    }
+    let canonical_parent_str = canonical_parent
+        .to_str()
+        .ok_or_else(|| "Workspace parent path is not valid UTF-8".to_string())?;
+    system_blacklist_check(canonical_parent_str)?;
+
+    let target = canonical_parent.join(name);
+    let target_str = target
+        .to_str()
+        .ok_or_else(|| "Workspace path is not valid UTF-8".to_string())?;
+    let target = system_blacklist_check(target_str)?;
+    match fs::symlink_metadata(&target) {
+        Ok(_) => Err(format!("Workspace already exists: {}", workspace_path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(target),
+        Err(error) => Err(format!("Failed to inspect workspace path: {}", error)),
+    }
+}
+
 /// Resolve a `relative` path inside `workspace_root`. The relative segment may
 /// also be empty / "." — in which case the workspace root itself is returned.
 ///

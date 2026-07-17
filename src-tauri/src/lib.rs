@@ -516,6 +516,7 @@ pub fn run() {
             commands::cmd_delete_workspace_file,
             commands::cmd_read_file_base64,
             commands::cmd_open_file,
+            config_io::cmd_get_myagents_data_dir,
             config_io::cmd_fsync_path,
             // Workspace file IO (workspace_files module).
             // Phase A (input-box unification): files_b64 / transfer / gitignore /
@@ -533,6 +534,7 @@ pub fn run() {
             workspace_files::files_b64::cmd_workspace_import_files_b64,
             workspace_files::files_b64::cmd_workspace_read_files_b64,
             workspace_files::user_attachments::cmd_prepare_user_image_attachments,
+            workspace_files::project_init::cmd_workspace_initialize_project,
             workspace_files::check_paths::cmd_workspace_check_paths,
             workspace_files::check_paths::cmd_check_local_paths,
             workspace_files::transfer::cmd_workspace_copy_paths,
@@ -643,6 +645,7 @@ pub fn run() {
             // Initialize logging before acquire_lock() and cleanup_stale_sidecars()
             // because those paths need a logger backend for log::warn!/info! calls.
             use tauri_plugin_log::{Target, TargetKind};
+            use tauri_plugin_fs::FsExt;
 
             let log_level = if cfg!(debug_assertions) {
                 log::LevelFilter::Debug
@@ -657,6 +660,18 @@ pub fn run() {
                     .target(Target::new(TargetKind::LogDir { file_name: None }))
                     .build(),
             )?;
+
+            // The static fs capability covers the normal `$HOME/.myagents`
+            // location. Portable/test packages can deliberately place the
+            // authoritative data directory elsewhere via MYAGENTS_DATA_DIR.
+            // Rust and Sidecars already resolve that override through
+            // app_dirs::myagents_data_dir(); extend the renderer's fs scope to
+            // the same directory so config.json, projects.json, providers and
+            // renderer lock files do not split across two storage roots.
+            if let Some(data_dir) = app_dirs::myagents_data_dir() {
+                std::fs::create_dir_all(&data_dir)?;
+                app.fs_scope().allow_directory(&data_dir, true)?;
+            }
 
             // Initialize global AppHandle for unified logging (IM module etc.)
             logger::init_app_handle(app.handle().clone());

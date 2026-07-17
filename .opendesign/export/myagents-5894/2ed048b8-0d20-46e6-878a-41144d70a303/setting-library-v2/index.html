@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>MyAgents · 烬海编年史设定库</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./editor.css" />
+  <link rel="stylesheet" href="./responsive.css" />
+  <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script defer src="https://unpkg.com/marked@14.1.4/marked.min.js"></script>
+  <script defer src="https://unpkg.com/dompurify@3.1.7/dist/purify.min.js"></script>
+  <script defer src="https://unpkg.com/turndown@7.2.0/dist/turndown.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <div class="app-shell" data-od-id="setting-library-app">
+    <header class="product-bar" data-od-id="product-header">
+      <div class="brand-lockup" aria-label="MyAgents">
+        <span class="brand-mark">M</span>
+        <span class="brand-name">MyAgents</span>
+      </div>
+      <button class="project-switcher" type="button" id="project-switcher" aria-haspopup="menu">
+        <span class="project-dot"></span>
+        <span class="project-name">烬海编年史</span>
+        <span class="project-meta">长篇小说</span>
+        <i data-lucide="chevrons-up-down" aria-hidden="true"></i>
+      </button>
+      <div class="product-actions">
+        <button class="icon-button mobile-only" type="button" id="mobile-search" aria-label="搜索" title="搜索">
+          <i data-lucide="search" aria-hidden="true"></i>
+        </button>
+        <span class="save-state" id="save-state"><i data-lucide="circle-check" aria-hidden="true"></i>全部更改已保存</span>
+        <button class="icon-button" type="button" aria-label="更多操作" title="更多操作"><i data-lucide="ellipsis" aria-hidden="true"></i></button>
+      </div>
+    </header>
+
+    <nav class="workbench-rail" data-od-id="workbench-navigation" aria-label="小说工作台导航">
+      <button class="rail-button" type="button" aria-label="展开工作台菜单" title="展开工作台菜单" id="rail-toggle">
+        <i data-lucide="panel-left" aria-hidden="true"></i>
+      </button>
+      <div class="rail-divider"></div>
+      <button class="rail-button" type="button" aria-label="项目概览" title="项目概览"><i data-lucide="layout-dashboard" aria-hidden="true"></i></button>
+      <button class="rail-button" type="button" aria-label="章节" title="章节"><i data-lucide="book-open" aria-hidden="true"></i></button>
+      <button class="rail-button active" type="button" aria-current="page" aria-label="设定库" title="设定库"><i data-lucide="library-big" aria-hidden="true"></i></button>
+      <button class="rail-button" type="button" id="map-destination" aria-label="世界地图（独立模块）" title="世界地图（独立模块）"><i data-lucide="map" aria-hidden="true"></i></button>
+      <button class="rail-button" type="button" aria-label="人物" title="人物"><i data-lucide="users" aria-hidden="true"></i></button>
+      <button class="rail-button rail-bottom" type="button" aria-label="工作台设置" title="工作台设置"><i data-lucide="settings-2" aria-hidden="true"></i></button>
+    </nav>
+
+    <main class="library-shell" data-od-id="setting-library-main">
+      <header class="library-header" data-od-id="library-header">
+        <div class="library-title-wrap">
+          <button class="icon-button mobile-only" type="button" id="open-catalog" aria-label="打开设定类目" title="打开设定类目"><i data-lucide="library-big" aria-hidden="true"></i></button>
+          <div>
+            <div class="crumbs"><span>小说工作台</span><i data-lucide="chevron-right"></i><span>设定库</span></div>
+            <h1>军事制度 <span class="title-slash">/</span> 军制编成</h1>
+          </div>
+        </div>
+        <div class="library-header-actions">
+          <label class="global-search" data-od-id="global-search">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input id="global-query" type="search" placeholder="搜索设定、空间或制度" aria-label="搜索设定、空间或制度" />
+            <kbd>Ctrl K</kbd>
+          </label>
+          <button class="button secondary mobile-scope-trigger" type="button" id="open-scope">
+            <i data-lucide="split-square-horizontal" aria-hidden="true"></i><span>作用域</span>
+          </button>
+          <button class="button primary" type="button" id="new-setting"><i data-lucide="plus" aria-hidden="true"></i><span>新建设定</span></button>
+        </div>
+      </header>
+
+      <div class="workspace-grid">
+        <aside class="catalog-panel drawer" id="catalog-panel" data-od-id="setting-catalog" aria-label="设定类目">
+          <div class="panel-heading">
+            <div><span class="eyebrow">设定类目</span><strong>内容模板</strong></div>
+            <button class="icon-button mobile-only close-drawer" type="button" aria-label="关闭类目"><i data-lucide="x"></i></button>
+          </div>
+          <label class="panel-search">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input id="catalog-query" type="search" placeholder="筛选类目" aria-label="筛选设定类目" />
+          </label>
+          <nav class="category-list" id="category-list" aria-label="设定分类"></nav>
+          <div class="catalog-footer"><span>15 个类目</span><span>72 个页面模板</span></div>
+        </aside>
+
+        <aside class="scope-panel drawer" id="scope-panel" data-od-id="scope-workbench" aria-label="空间与制度作用域">
+          <div class="panel-heading scope-heading">
+            <div><span class="eyebrow">作用域坐标</span><strong>两条独立轴</strong></div>
+            <button class="icon-button mobile-only close-drawer" type="button" aria-label="关闭作用域"><i data-lucide="x"></i></button>
+          </div>
+          <div class="axis-tabs" role="tablist" aria-label="作用域轴">
+            <button class="axis-tab active" type="button" role="tab" aria-selected="true" data-axis="spatial"><i data-lucide="orbit"></i><span>空间层级</span><b id="spatial-count">1</b></button>
+            <button class="axis-tab" type="button" role="tab" aria-selected="false" data-axis="institution"><i data-lucide="landmark"></i><span>制度作用域</span><b id="institution-count">3</b></button>
+          </div>
+          <div class="axis-context">
+            <span id="axis-context-label">定位世界中的物理或自定义层级</span>
+            <button class="text-button" id="add-custom-node" type="button"><i data-lucide="plus"></i>新建子层</button>
+          </div>
+          <div class="axis-content" id="spatial-axis" role="tabpanel">
+            <div class="tree-toolbar">
+              <button class="compact-select" type="button"><span>景曜 347 年</span><i data-lucide="chevron-down"></i></button>
+              <button class="icon-button" id="collapse-tree" type="button" aria-label="折叠层级" title="折叠层级"><i data-lucide="fold-vertical"></i></button>
+            </div>
+            <div class="spatial-tree" id="spatial-tree" role="tree"></div>
+          </div>
+          <div class="axis-content hidden" id="institution-axis" role="tabpanel">
+            <div class="scope-selection-note">
+              <i data-lucide="mouse-pointer-2"></i>
+              <span>可勾选不连续节点、整个宇宙或跨宇宙范围。</span>
+            </div>
+            <div class="institution-groups" id="institution-groups"></div>
+          </div>
+          <div class="scope-footer">
+            <div class="independence-key"><span class="axis-dot spatial"></span>空间锚点</div>
+            <i data-lucide="unplug"></i>
+            <div class="independence-key"><span class="axis-dot institution"></span>制度范围</div>
+          </div>
+        </aside>
+
+        <section class="editor-workspace" data-od-id="editor-workspace">
+          <div class="scope-summary" data-od-id="dual-axis-summary">
+            <div class="summary-axis">
+              <span class="summary-label"><i data-lucide="map-pin"></i>空间锚点</span>
+              <button class="summary-value" type="button" data-open-axis="spatial"><strong id="selected-spatial">北境军镇辖区</strong><span id="selected-spatial-path">大晟王朝下的自定义层级</span><i data-lucide="chevron-down"></i></button>
+            </div>
+            <div class="axis-independent" aria-label="两条轴相互独立"><i data-lucide="unplug"></i><span>独立</span></div>
+            <div class="summary-axis scope-multi">
+              <span class="summary-label"><i data-lucide="network"></i>制度作用域</span>
+              <button class="summary-value" type="button" data-open-axis="institution"><strong><span id="selected-institution-count">3</span> 个范围</strong><span id="selected-institution-summary">主宇宙、镜海界、无昼界</span><i data-lucide="chevron-down"></i></button>
+            </div>
+            <div class="summary-controls">
+              <label class="inheritance-select"><span>合并方式</span><select id="inheritance-mode" aria-label="继承合并方式"><option value="inherit">继承</option><option value="extend" selected>扩展</option><option value="override">覆盖</option><option value="replace">替换</option></select></label>
+              <label class="priority-select"><span>冲突优先级</span><select id="priority-mode" aria-label="冲突优先级"><option value="locked">锁定</option><option value="high" selected>高</option><option value="normal">普通</option><option value="low">低</option></select></label>
+            </div>
+          </div>
+
+          <div class="conflict-banner" id="conflict-banner" data-od-id="conflict-banner" role="status">
+            <div class="conflict-icon"><i data-lucide="triangle-alert"></i></div>
+            <div class="conflict-copy"><strong>发现 2 条作用域冲突</strong><span id="conflict-message">“诸界远征军征募制”与镜海界《禁止外域征召令》在同一时间切片重叠。</span></div>
+            <button class="button tertiary" type="button" id="review-conflicts">审查冲突</button>
+            <button class="icon-button" type="button" id="dismiss-conflict" aria-label="暂时收起冲突提示" title="暂时收起"><i data-lucide="x"></i></button>
+          </div>
+
+          <div class="editor-header" data-od-id="editor-view-tabs">
+            <div class="view-tabs" role="tablist" aria-label="设定内容视图">
+              <button class="view-tab active" type="button" role="tab" aria-selected="true" data-view="content">正文</button>
+              <button class="view-tab" type="button" role="tab" aria-selected="false" data-view="entries">词条 <b id="entry-count">4</b></button>
+              <button class="view-tab" type="button" role="tab" aria-selected="false" data-view="structure">结构</button>
+              <button class="view-tab" type="button" role="tab" aria-selected="false" data-view="relations">关系</button>
+            </div>
+            <div class="editor-meta"><span class="status-badge"><i data-lucide="git-merge"></i><span id="inheritance-status">扩展自：大晟军制总则</span></span><button class="icon-button" type="button" aria-label="页面操作" title="页面操作"><i data-lucide="ellipsis-vertical"></i></button></div>
+          </div>
+
+          <div class="view-panel active" id="view-content" data-view-panel="content">
+            <div class="markdown-toolbar" role="toolbar" aria-label="Markdown 格式工具">
+              <div class="tool-group">
+                <button class="tool-button" type="button" data-command="undo" aria-label="撤销" title="撤销"><i data-lucide="undo-2"></i></button>
+                <button class="tool-button" type="button" data-command="redo" aria-label="重做" title="重做"><i data-lucide="redo-2"></i></button>
+              </div>
+              <div class="tool-group">
+                <button class="tool-button text-tool" type="button" data-command="formatBlock" data-value="h2" aria-label="二级标题" title="二级标题">H2</button>
+                <button class="tool-button text-tool strong" type="button" data-command="bold" aria-label="加粗" title="加粗">B</button>
+                <button class="tool-button text-tool italic" type="button" data-command="italic" aria-label="斜体" title="斜体">I</button>
+                <button class="tool-button" type="button" data-command="strikeThrough" aria-label="删除线" title="删除线"><i data-lucide="strikethrough"></i></button>
+              </div>
+              <div class="tool-group">
+                <button class="tool-button" type="button" data-command="insertUnorderedList" aria-label="无序列表" title="无序列表"><i data-lucide="list"></i></button>
+                <button class="tool-button" type="button" data-command="insertOrderedList" aria-label="有序列表" title="有序列表"><i data-lucide="list-ordered"></i></button>
+                <button class="tool-button" type="button" data-command="formatBlock" data-value="blockquote" aria-label="引用" title="引用"><i data-lucide="quote"></i></button>
+                <button class="tool-button" type="button" data-command="createLink" data-value="#" aria-label="插入链接" title="插入链接"><i data-lucide="link"></i></button>
+              </div>
+              <div class="editor-mode" role="group" aria-label="编辑模式">
+                <button class="active" type="button" data-editor-mode="visual">可视化</button>
+                <button type="button" data-editor-mode="source">Markdown</button>
+              </div>
+            </div>
+            <article class="document-canvas" data-od-id="markdown-editor">
+              <div class="document-kicker"><span>军事制度</span><i data-lucide="chevron-right"></i><span>军制编成</span></div>
+              <div class="visual-editor" id="visual-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="军制编成可视化 Markdown 编辑器" spellcheck="true">
+                <h1>诸界远征军征募与编成</h1>
+                <p class="lead">远征军不隶属于任何单一王朝或宇宙，其兵源、指挥权与驻扎地分别由联席议会、军团契约和当地协定确定。</p>
+                <aside class="document-note"><strong>当前实例</strong><span>空间锚点为“北境军镇辖区”，制度范围同时覆盖主宇宙、镜海界与无昼界。本页以扩展方式继承《大晟军制总则》。</span></aside>
+                <h2>编成原则</h2>
+                <p>远征军以“界团”为最高常设战术单位。每个界团可以从不同宇宙征募，但必须在名册中分别记录原籍法域、契约期限和跨界通行权限。</p>
+                <ul><li><strong>中央枢密院</strong>提供主宇宙的训练与军需标准。</li><li><strong>诸界联席议会</strong>拥有跨宇宙任务的最终调度权。</li><li><strong>驻地协定</strong>只约束驻扎、补给与司法移交，不改变组织归属。</li></ul>
+                <h2>北境例外</h2>
+                <p>北境军镇辖区不是预设的省、市层级，而是大晟王朝为灵脉防线临时建立的自定义辖区。雪门营与漕渠署直辖水网均可作为其任意子层存在。</p>
+                <blockquote><p>镜海界禁止外域组织直接征召本界常住民。当前草案以高优先级覆盖这一限制，因此产生一条待审查冲突。</p></blockquote>
+                <h2>叙事使用</h2>
+                <p>角色的制服与军衔来自所属界团，法律身份来自原籍法域，行动权限则由当前任务范围决定。三者不应合并为单一“阵营”字段。</p>
+              </div>
+              <textarea class="source-editor hidden" id="source-editor" aria-label="Markdown 源码编辑器"></textarea>
+            </article>
+            <footer class="document-status"><span>Markdown · UTF-8 · 684 字</span><span>最后编辑：刚刚 · 本地原型</span></footer>
+          </div>
+
+          <div class="view-panel" id="view-entries" data-view-panel="entries">
+            <div class="data-view-heading"><div><span class="eyebrow">结构化词条</span><h2>军制编成词条</h2><p>词条引用正文，但拥有独立标识与作用域。</p></div><button class="button secondary" id="add-entry" type="button"><i data-lucide="plus"></i>新建词条</button></div>
+            <div class="entry-table" id="entry-table" role="table" aria-label="军制编成词条"></div>
+          </div>
+
+          <div class="view-panel" id="view-structure" data-view-panel="structure">
+            <div class="data-view-heading"><div><span class="eyebrow">可计算结构</span><h2>作用域与模板字段</h2><p>空间锚点、制度范围和继承策略分别存储。</p></div><span class="valid-state"><i data-lucide="badge-check"></i>Schema 有效</span></div>
+            <div class="structure-section">
+              <div class="section-title"><div><h3>实例策略</h3><p>当前页面如何组合上层规则。</p></div></div>
+              <dl class="property-grid" id="strategy-properties"></dl>
+            </div>
+            <div class="structure-section">
+              <div class="section-title"><div><h3>模板字段</h3><p>供 Agent、检索器与校验器稳定读取。</p></div><button class="text-button" id="add-field" type="button"><i data-lucide="plus"></i>新增字段</button></div>
+              <div class="field-table" id="field-table"></div>
+            </div>
+          </div>
+
+          <div class="view-panel" id="view-relations" data-view-panel="relations">
+            <div class="data-view-heading"><div><span class="eyebrow">多轴关系</span><h2>实体与作用域关系</h2><p>物理包含、政治身份与制度覆盖互不替代。</p></div><button class="button secondary" id="add-relation" type="button"><i data-lucide="plus"></i>新建关系</button></div>
+            <div class="relation-legend"><span><i class="relation-mark contains"></i>空间包含</span><span><i class="relation-mark identity"></i>政治身份</span><span><i class="relation-mark scope"></i>制度作用</span></div>
+            <div class="relation-table" id="relation-table"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div class="drawer-scrim" id="drawer-scrim" aria-hidden="true"></div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <dialog class="conflict-dialog" id="conflict-dialog" aria-labelledby="conflict-title">
+      <div class="dialog-header"><div><span class="eyebrow">规则审查</span><h2 id="conflict-title">作用域冲突</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭"><i data-lucide="x"></i></button></div>
+      <div class="conflict-detail">
+        <div class="conflict-side current"><span class="conflict-rank">优先级：高</span><strong>诸界远征军征募制</strong><p>允许在联席议会授权的宇宙范围内跨界征募。</p><small>本页 · 扩展规则</small></div>
+        <div class="conflict-versus"><i data-lucide="git-compare-arrows"></i><span>范围重叠</span></div>
+        <div class="conflict-side inherited"><span class="conflict-rank">优先级：锁定</span><strong>镜海界禁止外域征召令</strong><p>禁止外域组织直接征召镜海界常住民。</p><small>镜海界 · 上位法</small></div>
+      </div>
+      <label class="resolution-field"><span>本实例处理方式</span><select id="resolution-choice"><option value="exception">建立镜海界例外</option><option value="current">保留当前规则</option><option value="inherited">遵循上位规则</option></select></label>
+      <div class="dialog-footer"><button class="button tertiary" type="button" data-close-dialog>取消</button><button class="button primary" type="button" id="resolve-conflict">应用处理</button></div>
+    </dialog>
+  </div>
+</body>
+</html>

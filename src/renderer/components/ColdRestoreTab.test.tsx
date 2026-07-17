@@ -24,6 +24,7 @@ vi.mock('@/pages/Chat', () => ({ default: () => <div data-testid="chat" /> }));
 vi.mock('@/pages/Launcher', () => ({ default: () => <div data-testid="launcher" /> }));
 vi.mock('@/pages/Settings', () => ({ default: () => <div data-testid="settings" /> }));
 vi.mock('@/pages/TaskCenter', () => ({ default: () => <div data-testid="taskcenter" /> }));
+vi.mock('@/workbench-sdk/WorkbenchShell', () => ({ default: () => <div data-testid="workbench" /> }));
 
 import { MemoizedTabContent } from '@/App';
 
@@ -60,6 +61,7 @@ const noopProps = {
   onUpdateSessionId: vi.fn(async () => true),
   onClearInitialMessage: vi.fn(),
   onSidecarConfigAdopted: vi.fn(),
+  onUpdateWorkbenchRoute: vi.fn(),
   onSettingsSectionChange: vi.fn(),
   updateReady: false,
   updateVersion: null,
@@ -90,5 +92,23 @@ describe('cold restored tab', () => {
     // Chat is route-split (React.lazy + Suspense, P1), so it resolves one
     // microtask after mount — await it rather than asserting synchronously.
     expect(await screen.findByTestId('chat')).not.toBeNull();
+  });
+
+  it('renders a workbench without mounting TabProvider', async () => {
+    tabProviderSpy.mockClear();
+    render(
+      <MemoizedTabContent
+        tab={coldTab({
+          view: 'workbench',
+          sessionId: null,
+          restoreState: undefined,
+          workbench: { workbenchId: 'io.myagents.testbench', route: 'home' },
+        })}
+        isActive
+        {...noopProps}
+      />,
+    );
+    expect(await screen.findByTestId('workbench')).not.toBeNull();
+    expect(tabProviderSpy).not.toHaveBeenCalled();
   });
 });

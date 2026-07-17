@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "setting-library-v2/index.html",
+  "entry": "setting-library-v2/index.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-15T04:40:32.779Z",
+  "updatedAt": "2026-07-15T04:40:32.779Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

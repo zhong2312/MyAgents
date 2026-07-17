@@ -7,6 +7,7 @@
 MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent SDK 的图形界面。
 
 支持：
+
 - 多 Tab 对话
 - Goal 模式（current-session 长程目标）
 - IM Bot（Telegram / 钉钉 / OpenClaw 社区插件）
@@ -17,13 +18,13 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 ## 技术栈
 
-| 层级 | 技术 |
-|------|------|
-| 前端 | React 19 + TypeScript + Vite + TailwindCSS |
-| 桌面框架 | Tauri v2 (Rust) |
-| 后端 | Node.js v24 + Claude Agent SDK 0.3.201（多实例 Sidecar 进程） |
-| 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
-| 拖拽 | @dnd-kit/sortable |
+| 层级     | 技术                                                          |
+| -------- | ------------------------------------------------------------- |
+| 前端     | React 19 + TypeScript + Vite + TailwindCSS                    |
+| 桌面框架 | Tauri v2 (Rust)                                               |
+| 后端     | Node.js v24 + Claude Agent SDK 0.3.201（多实例 Sidecar 进程） |
+| 通信     | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块)           |
+| 拖拽     | @dnd-kit/sortable                                             |
 
 > **单一 runtime 原则**：所有 MyAgents 自己的代码（Sidecar / Bridge / CLI）跑在内置 Node.js v24 上。
 > SDK native binary 子进程内部静态链接的 Bun 是 SDK 团队的实现细节，通过 stdio NDJSON 与我们通信，
@@ -92,12 +93,12 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 ### Sidecar Owner 模型
 
-| 概念 | 说明 |
-|------|------|
-| **Sidecar = Agent 实例** | 一个 Sidecar 进程 = 一个 Claude Agent SDK 实例 |
-| **Session : Sidecar = 1 : 1** | 每个 Session 最多一个 Sidecar，严格对应 |
-| **后端优先，前端辅助** | Sidecar 可独立运行（定时任务、Agent Channel），无需前端 Tab |
-| **Owner 模型** | Tab、Task、Goal、BackgroundCompletion、Agent 是 Sidecar 的使用者。所有 Owner 释放后 Sidecar 才停止 |
+| 概念                          | 说明                                                                                               |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| **Sidecar = Agent 实例**      | 一个 Sidecar 进程 = 一个 Claude Agent SDK 实例                                                     |
+| **Session : Sidecar = 1 : 1** | 每个 Session 最多一个 Sidecar，严格对应                                                            |
+| **后端优先，前端辅助**        | Sidecar 可独立运行（定时任务、Agent Channel），无需前端 Tab                                        |
+| **Owner 模型**                | Tab、Task、Goal、BackgroundCompletion、Agent 是 Sidecar 的使用者。所有 Owner 释放后 Sidecar 才停止 |
 
 ```rust
 pub enum SidecarOwner {
@@ -113,11 +114,11 @@ pub enum SidecarOwner {
 
 每个 Chat Tab 拥有独立的 Node.js Sidecar 进程。
 
-| 页面类型 | TabProvider | Sidecar 类型 | API 来源 |
-|----------|-------------|--------------|----------|
-| Chat | ✅ 包裹 | Session Sidecar | `useTabState()` |
-| Settings | ❌ 不包裹 | Global Sidecar | `apiFetch.ts`（全局） |
-| Launcher | ❌ 不包裹 | Global Sidecar | `apiFetch.ts`（全局） |
+| 页面类型               | TabProvider   | Sidecar 类型    | API 来源                        |
+| ---------------------- | ------------- | --------------- | ------------------------------- |
+| Chat                   | ✅ 包裹       | Session Sidecar | `useTabState()`                 |
+| Settings               | ❌ 不包裹     | Global Sidecar  | `apiFetch.ts`（全局）           |
+| Launcher               | ❌ 不包裹     | Global Sidecar  | `apiFetch.ts`（全局）           |
 | IM Bot / Agent Channel | — (Rust 驱动) | Session Sidecar | Rust `ensure_session_sidecar()` |
 
 不在 TabProvider 内的组件调用 `useTabStateOptional()` 返回 `null`，自动 fallback 到 Global API。
@@ -132,10 +133,10 @@ pub enum SidecarOwner {
 
 **两种重启机制不要混淆：**
 
-| 机制 | 行为 | 触发点 |
-|------|------|--------|
-| 直接 abort（`abortPersistentSession()`） | 立即中断 + interrupt subprocess | resetSession / switchToSession / rewindSession / recoverFromStaleSession / enqueueUserMessage provider change / provider proxy 凭证变化 / startup timeout / watchdog / end-of-turn drain / pre-warm drain |
-| 延迟重启（`scheduleDeferredRestart('mcp' \| 'agents')`） | 合并防抖 + 下次 pre-warm 时柔性重启 | `setMcpServers` / `setAgents` |
+| 机制                                                     | 行为                                | 触发点                                                                                                                                                                                                    |
+| -------------------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 直接 abort（`abortPersistentSession()`）                 | 立即中断 + interrupt subprocess     | resetSession / switchToSession / rewindSession / recoverFromStaleSession / enqueueUserMessage provider change / provider proxy 凭证变化 / startup timeout / watchdog / end-of-turn drain / pre-warm drain |
+| 延迟重启（`scheduleDeferredRestart('mcp' \| 'agents')`） | 合并防抖 + 下次 pre-warm 时柔性重启 | `setMcpServers` / `setAgents`                                                                                                                                                                             |
 
 ### Pre-warm 机制
 
@@ -145,6 +146,7 @@ pub enum SidecarOwner {
 - 新增配置同步端点时，确保 `currentXxx` 变量在 pre-warm 前已设置
 
 **MCP 配置权威来源分离：**
+
 - Tab 会话的 MCP 由前端 `/api/mcp/set` 配置（`initializeAgent` 中 MUST NOT self-resolve MCP）
 - IM 与尚未 materialize 的 backend-created Task Session 可从磁盘初始化；已有 Session 始终沿用自己的 MCP authority
 - 混用会导致 fingerprint 差异 → abort → 30s 重启循环
@@ -200,6 +202,7 @@ Tab2 listen('sse:tab2:*') ◄── Rust emit(sse:tab2:event) ◄── reqwest 
 ```
 
 Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广播：
+
 - `broadcast(event, data)` —— 向所有客户端广播
 - **Last-Value Cache** —— 缓存 `chat:status` 最新值。新 SSE 客户端连接时自动 replay
 - **日志降噪** —— 高频流式事件（chunk / delta）跳过 `console.log`
@@ -217,6 +220,7 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 ### Tauri IPC
 
 用于不需要流式的 Rust ↔ 前端调用：
+
 - 内嵌终端事件（`terminal:data:{id}`）
 - 内嵌浏览器事件（`browser:url-changed:{tabId}`）
 - 任务状态变更（`task:status-changed`）
@@ -230,15 +234,15 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 
 `src-tauri/src/management_api.rs` 在 app 启动时监听 `127.0.0.1:${随机端口}`（axum），直接暴露 HTTP 路由给 Node 内部工具调用。端口通过 `MYAGENTS_MANAGEMENT_PORT` 注入到 Sidecar 进程。
 
-| 前缀 | 职责 | 调用方 |
-|------|------|--------|
-| `/api/cron/*` | Scheduled Task 兼容 CRUD + 调度控制 | CLI、`im-cron-tool.ts` |
-| `/api/task/*`（13 条） | Task Center 任务 CRUD + run/rerun + doc 读写 | CLI、`admin-api.ts` |
-| `/api/mcp/remove-references` | Task 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
-| `/api/thought/*`（2 条） | 想法 create / list | CLI、`admin-api.ts` |
-| `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调 | Node.js / 社区插件 Bridge |
-| `/api/plugin/*`（3 条） | OpenClaw 插件 CRUD | CLI |
-| `/api/agent/runtime-status` | Agent 运行时状态查询 | Node.js / 前端 |
+| 前缀                             | 职责                                         | 调用方                            |
+| -------------------------------- | -------------------------------------------- | --------------------------------- |
+| `/api/cron/*`                    | Scheduled Task 兼容 CRUD + 调度控制          | CLI、`im-cron-tool.ts`            |
+| `/api/task/*`（13 条）           | Task Center 任务 CRUD + run/rerun + doc 读写 | CLI、`admin-api.ts`               |
+| `/api/mcp/remove-references`     | Task 中删除 custom MCP identity 的持久引用   | `admin-api.ts` MCP remove cascade |
+| `/api/thought/*`（2 条）         | 想法 create / list                           | CLI、`admin-api.ts`               |
+| `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调  | Node.js / 社区插件 Bridge         |
+| `/api/plugin/*`（3 条）          | OpenClaw 插件 CRUD                           | CLI                               |
+| `/api/agent/runtime-status`      | Agent 运行时状态查询                         | Node.js / 前端                    |
 
 这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"所有前端 HTTP 走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
 
@@ -254,68 +258,84 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 
 `src-tauri/src/sidecar.rs` 是兼容导出与少量共享常量的 facade。真实 owner 在 `src-tauri/src/sidecar/`：
 
-| Owner module | 职责 |
-|------|------|
-| `manager.rs` / `types.rs` | `ManagedSidecarManager`、owner model、端口分配、runtime drift 判定 |
-| `session_lifecycle.rs` | `ensure_session_sidecar` / release / upgrade / activation lifecycle |
-| `instances.rs` | global/tab sidecar spawn、monitor、wake lock、terminal event forward |
-| `spawn.rs` | Node/script 定位、`normalize_external_path`、spawn diagnostic、kill helper |
-| `health.rs` | TCP health / readiness / reusable sidecar HTTP health check |
-| `cleanup.rs` | startup stale-process cleanup barrier、global port file、child cleanup patterns |
-| `cron_execute.rs` | Rust → Node Task `/cron/execute-sync` 与 Goal `/goal/execute-sync` bridge |
-| `runtime_identity.rs` | session/agent runtime identity resolve 与 restore guard |
-| `background.rs` | background completion lifecycle |
+| Owner module                                                          | 职责                                                                                |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `manager.rs` / `types.rs`                                             | `ManagedSidecarManager`、owner model、端口分配、runtime drift 判定                  |
+| `session_lifecycle.rs`                                                | `ensure_session_sidecar` / release / upgrade / activation lifecycle                 |
+| `instances.rs`                                                        | global/tab sidecar spawn、monitor、wake lock、terminal event forward                |
+| `spawn.rs`                                                            | Node/script 定位、`normalize_external_path`、spawn diagnostic、kill helper          |
+| `health.rs`                                                           | TCP health / readiness / reusable sidecar HTTP health check                         |
+| `cleanup.rs`                                                          | startup stale-process cleanup barrier、global port file、child cleanup patterns     |
+| `cron_execute.rs`                                                     | Rust → Node Task `/cron/execute-sync` 与 Goal `/goal/execute-sync` bridge           |
+| `runtime_identity.rs`                                                 | session/agent runtime identity resolve 与 restore guard                             |
+| `background.rs`                                                       | background completion lifecycle                                                     |
 | `proxy.rs` / `commands.rs` / `legacy.rs` / `shutdown.rs` / `stdio.rs` | proxy propagation、IPC glue、legacy global sidecar、shutdown、stderr classification |
 
 **IPC 命令：**
 
-| 命令 | 用途 |
-|------|------|
-| `cmd_ensure_session_sidecar` | 确保 Session 有运行中的 Sidecar |
-| `cmd_release_session_sidecar` | 释放 Owner 对 Sidecar 的使用 |
-| `cmd_release_tab_session` | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation |
-| `cmd_delete_session_if_unowned` | 在同一 owner 锁边界内拒绝删除仍被 Sidecar 或持久 scheduler 拥有的 Session；检查 ownership/entry，不用 process liveness 代替 |
-| `cmd_get_session_port` | 获取 Session 的 Sidecar 端口 |
-| `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
-| `cmd_upgrade_session_id` | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename |
-| `cmd_start_global_sidecar` | 启动 Global Sidecar |
-| `cmd_stop_all_sidecars` | 应用退出清理 |
+| 命令                                              | 用途                                                                                                                        |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `cmd_ensure_session_sidecar`                      | 确保 Session 有运行中的 Sidecar                                                                                             |
+| `cmd_release_session_sidecar`                     | 释放 Owner 对 Sidecar 的使用                                                                                                |
+| `cmd_release_tab_session`                         | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation                                                   |
+| `cmd_delete_session_if_unowned`                   | 在同一 owner 锁边界内拒绝删除仍被 Sidecar 或持久 scheduler 拥有的 Session；检查 ownership/entry，不用 process liveness 代替 |
+| `cmd_get_session_port`                            | 获取 Session 的 Sidecar 端口                                                                                                |
+| `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理                                                                                                            |
+| `cmd_upgrade_session_id`                          | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename                                    |
+| `cmd_start_global_sidecar`                        | 启动 Global Sidecar                                                                                                         |
+| `cmd_stop_all_sidecars`                           | 应用退出清理                                                                                                                |
 
 冷启动性能详见 `tech_docs/sidecar_cold_start.md`。
 
 ### 2. Multi-Tab 前端 (`src/renderer/context/`)
 
-| 组件 | 职责 |
-|------|------|
-| `TabContext.tsx` | Context 定义，提供 Tab-scoped API |
+| 组件              | 职责                                           |
+| ----------------- | ---------------------------------------------- |
+| `TabContext.tsx`  | Context 定义，提供 Tab-scoped API              |
 | `TabProvider.tsx` | 状态容器，管理 messages / logs / SSE / Session |
 
 Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPostJson` / `apiGetJson`（会发到 Global Sidecar）。
 
 Phase4 后，几个历史大型 UI 入口保留原路径作为兼容 facade，真实实现按 owner 目录维护：
 
-| Facade | 当前 owner |
-|------|------|
-| `src/renderer/pages/Settings.tsx` | re-export `pages/settings/SettingsPage.tsx`；section/sidebar/navigation/provider form 拆到 `pages/settings/*` |
-| `src/renderer/components/SimpleChatInput.tsx` | re-export `components/chat-input/SimpleChatInput.tsx`；附件处理、mention/thought row、常量/types 拆到 `components/chat-input/*` |
-| `src/renderer/components/DirectoryPanel.tsx` | re-export `components/directory-panel/DirectoryPanel.tsx`；搜索 hook、path display、types 拆到 `components/directory-panel/*`，树 viewport 仍在 `components/workspace-tree/*` |
+| Facade                                        | 当前 owner                                                                                                                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/renderer/pages/Settings.tsx`             | re-export `pages/settings/SettingsPage.tsx`；section/sidebar/navigation/provider form 拆到 `pages/settings/*`                                                                 |
+| `src/renderer/components/SimpleChatInput.tsx` | re-export `components/chat-input/SimpleChatInput.tsx`；附件处理、mention/thought row、常量/types 拆到 `components/chat-input/*`                                               |
+| `src/renderer/components/DirectoryPanel.tsx`  | re-export `components/directory-panel/DirectoryPanel.tsx`；搜索 hook、path display、types 拆到 `components/directory-panel/*`，树 viewport 仍在 `components/workspace-tree/*` |
 
 ### 3. 系统提示词组装 (`src/server/system-prompt.ts`)
 
 三层 Prompt 架构：
 
-| 层 | 用途 | 何时包含 |
-|----|------|---------|
-| **L1** 基础身份 | 告诉 AI 运行在 MyAgents 产品中 | 始终 |
-| **L2** 交互方式 | 桌面客户端 / IM Bot / Agent Channel | 互斥选一 |
+| 层              | 用途                                                       | 何时包含 |
+| --------------- | ---------------------------------------------------------- | -------- |
+| **L1** 基础身份 | 告诉 AI 运行在 MyAgents 产品中                             | 始终     |
+| **L2** 交互方式 | 桌面客户端 / IM Bot / Agent Channel                        | 互斥选一 |
 | **L3** 场景指令 | Cron 定时任务上下文 / IM 心跳 / 浮球小窗 / Browser Storage | 按需叠加 |
 
 ```typescript
 type InteractionScenario =
-  | { type: 'desktop'; surface?: 'chat' | 'floating-ball' }
-  | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string }
-  | { type: 'agent-channel'; platform: string; sourceType: 'private' | 'group'; botName?: string; agentName?: string }
-  | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean };
+  | { type: "desktop"; surface?: "chat" | "floating-ball" }
+  | {
+      type: "im";
+      platform: "telegram" | "feishu";
+      sourceType: "private" | "group";
+      botName?: string;
+    }
+  | {
+      type: "agent-channel";
+      platform: string;
+      sourceType: "private" | "group";
+      botName?: string;
+      agentName?: string;
+    }
+  | {
+      type: "cron";
+      taskId: string;
+      intervalMinutes: number;
+      aiCanExit: boolean;
+    };
 ```
 
 `desktop.surface` 区分同一桌面渠道下的入口形态：默认 Chat 不额外指定；浮球入口使用 `surface: 'floating-ball'`，系统提示词追加小窗交互约束，同时每条浮球消息自带 `system-reminder` 上下文，覆盖已预热 session 不能重组 systemPrompt 的情况。
@@ -326,10 +346,10 @@ type InteractionScenario =
 
 **两个使用场景：**
 
-| 场景 | 调用方式 | 端口来源 |
-|------|---------|---------|
-| AI 内部调用（主要） | SDK Bash 工具 → `myagents mcp add ...` | `MYAGENTS_PORT` 环境变量 |
-| 用户终端调用 | `MyAgents mcp list` | `~/.myagents/sidecar.port` 文件 |
+| 场景                | 调用方式                               | 端口来源                        |
+| ------------------- | -------------------------------------- | ------------------------------- |
+| AI 内部调用（主要） | SDK Bash 工具 → `myagents mcp add ...` | `MYAGENTS_PORT` 环境变量        |
+| 用户终端调用        | `MyAgents mcp list`                    | `~/.myagents/sidecar.port` 文件 |
 
 为什么 CLI 放在 `~/.myagents/bin/` 而非 app bundle：SDK 子进程 PATH 不含 app bundle 内部路径；shebang 执行需要可执行权限和去掉 `.ts` 后缀；`~/.myagents/bin/` 是跨平台稳定的工具投放点。
 
@@ -348,6 +368,7 @@ type InteractionScenario =
 `Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`run-now` 可执行 Stopped Task但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
 
 **Node.js 层**（`src/server/tools/im-cron-tool.ts`）：
+
 - `im-cron` MCP server —— **所有 Session 可用**（不仅 IM Bot）
 - 用户可见命令名保持 Cron 兼容，但 CRUD/start/stop/run-now 全部落 TaskStore
 - `/cron/execute-sync` 只是历史 wire name，domain owner 是 Task，并统一经过 SessionEngine selector
@@ -371,32 +392,33 @@ Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖�
 
 **适配器：**
 
-| 适配器 | 协议 | 说明 |
-|--------|------|------|
-| `TelegramAdapter` | Bot API 长轮询 | 内置，消息收发 / 白名单 / 碎片合并 |
-| `DingtalkAdapter` | Stream 长连接 | 内置，消息收发 |
-| `BridgeAdapter` | HTTP 双向转发 | OpenClaw 社区插件，Rust → 独立 Node.js Bridge 进程 |
+| 适配器            | 协议           | 说明                                               |
+| ----------------- | -------------- | -------------------------------------------------- |
+| `TelegramAdapter` | Bot API 长轮询 | 内置，消息收发 / 白名单 / 碎片合并                 |
+| `DingtalkAdapter` | Stream 长连接  | 内置，消息收发                                     |
+| `BridgeAdapter`   | HTTP 双向转发  | OpenClaw 社区插件，Rust → 独立 Node.js Bridge 进程 |
 
 详见 `tech_docs/im_integration_architecture.md`。
 
 `src-tauri/src/im/mod.rs` 是 facade 与少量共享 helper。当前主要 owner：
 
-| Owner module | 职责 |
-|------|------|
-| `agent_channel.rs` | channel lifecycle、消息入口、Sidecar ensure/enqueue 编排 |
-| `enqueue.rs` | Rust → Node `/api/im/enqueue` 同步 ACK 请求 |
-| `event_consumer.rs` / `reply_router.rs` | `/api/im/events` long-poll SSE consumer 与 requestId → draft/reply slot 路由 |
-| `state.rs` | `ManagedAgents` / `ManagedImBots` / runtime config sync / channel state |
-| `config_store.rs` | Agent/Bot config 读写、auto-start、missing config reporting |
-| `commands.rs` | Tauri IM/Agent command glue |
-| `adapter.rs` + `telegram.rs` / `dingtalk.rs` / `feishu.rs` / `bridge.rs` | 平台适配器 |
-| `buffer.rs` / `group_history.rs` / `handover.rs` / `heartbeat.rs` / `memory_update.rs` / `runtime_change.rs` | 消息缓冲、群历史、session handover、heartbeat、记忆更新、runtime 切换 |
+| Owner module                                                                                                 | 职责                                                                         |
+| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `agent_channel.rs`                                                                                           | channel lifecycle、消息入口、Sidecar ensure/enqueue 编排                     |
+| `enqueue.rs`                                                                                                 | Rust → Node `/api/im/enqueue` 同步 ACK 请求                                  |
+| `event_consumer.rs` / `reply_router.rs`                                                                      | `/api/im/events` long-poll SSE consumer 与 requestId → draft/reply slot 路由 |
+| `state.rs`                                                                                                   | `ManagedAgents` / `ManagedImBots` / runtime config sync / channel state      |
+| `config_store.rs`                                                                                            | Agent/Bot config 读写、auto-start、missing config reporting                  |
+| `commands.rs`                                                                                                | Tauri IM/Agent command glue                                                  |
+| `adapter.rs` + `telegram.rs` / `dingtalk.rs` / `feishu.rs` / `bridge.rs`                                     | 平台适配器                                                                   |
+| `buffer.rs` / `group_history.rs` / `handover.rs` / `heartbeat.rs` / `memory_update.rs` / `runtime_change.rs` | 消息缓冲、群历史、session handover、heartbeat、记忆更新、runtime 切换        |
 
 ### 7. Plugin Bridge (`src/server/plugin-bridge/`)
 
 独立 Node.js 进程加载 OpenClaw Channel Plugin。MUST 与 Sidecar 保持同等待遇（环境变量注入、日志宏、config 查询范围）。
 
 **关键约束：**
+
 - **入口解析协议**：按 OpenClaw 官方 `package.json["openclaw"].extensions[]` 读取，**不再**信任 `main` / `exports`
 - **CJS+ESM 混用插件兼容**：通过 `module.registerHooks()` 同步 loader hook 拦截 `openclaw-plugins/*/node_modules/**` 下所有 `.js` 文件
 - **始终注入 `--import tsx/esm`**（dev 和 prod 都要）
@@ -433,54 +455,54 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 `src/server/session-engine/` 是 Sidecar HTTP route 面向“当前会话运行时”的门面层：
 
-| 文件 | 职责 |
-|------|------|
-| `selector.ts` | `shouldUseExternalRuntime()` 的 route 分流 owner；选择 builtin/external `SessionEngine` |
-| `builtin-adapter.ts` | 委托 `agent-session.ts`，保持内置 Claude Agent SDK 会话语义 |
-| `external-adapter.ts` | 委托 `external-session.ts`，保持 Claude Code / Codex / Gemini 会话语义 |
-| `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
-| `route-contracts.ts` | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping |
+| 文件                  | 职责                                                                                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `selector.ts`         | `shouldUseExternalRuntime()` 的 route 分流 owner；选择 builtin/external `SessionEngine`                                                  |
+| `builtin-adapter.ts`  | 委托 `agent-session.ts`，保持内置 Claude Agent SDK 会话语义                                                                              |
+| `external-adapter.ts` | 委托 `external-session.ts`，保持 Claude Code / Codex / Gemini 会话语义                                                                   |
+| `types.ts`            | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
+| `route-contracts.ts`  | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping                                            |
 
 `src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策。
 
 `src/server/agent-session.ts` 仍是 builtin SDK 的 public facade，供 `session-engine/builtin-adapter.ts` 委托。Phase6 后，主要 mutable state 不再由 facade 顶层变量直接拥有；Phase7 后，最重的 turn terminal 与 transcript persistence 行为也有独立 owner。真实维护入口在 `src/server/builtin-session/`：
 
-| Owner module | 职责 |
-|------|------|
-| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination promise、generator wakeup、pre-warm readiness |
-| `queue.ts` | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket |
-| `turn.ts` | current turn usage/output/error state、IM pending request FIFO、injected turn outcome |
-| `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
-| `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
-| `transcript.ts` | live messages、message sequence、persist cursor/cache、SDK UUID freshness sets |
+| Owner module                | 职责                                                                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `lifecycle.ts`              | SDK `Query` 进程、abort flag、termination promise、generator wakeup、pre-warm readiness                                           |
+| `queue.ts`                  | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket                                            |
+| `turn.ts`                   | current turn usage/output/error state、IM pending request FIFO、injected turn outcome                                             |
+| `turn-lifecycle.ts`         | SDK `result` / stopped / error terminal 解释、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序                      |
+| `config.ts`                 | MCP/agents/plugins/model/permission/provider state、deferred restart latch                                                        |
+| `transcript.ts`             | live messages、message sequence、persist cursor/cache、SDK UUID freshness sets                                                    |
 | `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
-| `types.ts` | builtin owner 间共享的结构类型 |
+| `types.ts`                  | builtin owner 间共享的结构类型                                                                                                    |
 
 约束：route modules 与 `session-engine/*` 不直接 import `builtin-session/*`；它们只看 `agent-session.ts` facade。`builtin-session/*` 也不 import route 或 SessionEngine。`session-core/*` 继续保持 pure policy，不引入 SDK/SSE/文件系统副作用。`runtime-boundary.unit.test.ts` 会目录级扫描这些边界，并拦截 `agent-session.ts` 对 owner state 的 direct write 回退，以及 turn terminal / transcript persistence 行为回流到 facade；新增写入或 terminal/persist 规则应先在对应 owner 中加命名 API。
 
 `src/server/runtimes/` 只表示外部 runtime adapter：
 
-| 文件 | 职责 |
-|------|------|
-| `types.ts` | `AgentRuntime` 接口 + `UnifiedEvent` 联合类型 |
-| `factory.ts` | Runtime 工厂，`getCurrentRuntimeType()` 读 `MYAGENTS_RUNTIME` 环境变量 |
-| `claude-code.ts` | CC Runtime：NDJSON over stdio，`-p` 模式 |
-| `codex.ts` | Codex Runtime：JSON-RPC 2.0 over stdio，`app-server` 持久进程 |
-| `gemini.ts` | Gemini Runtime：ACP JSON-RPC 2.0 over stdio，`gemini --acp` |
-| `external-session.ts` | 外部 runtime public facade：start/send/prewarm/stop、UnifiedEvent shell、SessionEngine-facing exports |
-| `external-session/*` | 外部 runtime owner modules：lifecycle、runtime config、operation queue、turn lifecycle、content blocks、transcript persistence、interactive requests |
+| 文件                  | 职责                                                                                                                                                 |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`            | `AgentRuntime` 接口 + `UnifiedEvent` 联合类型                                                                                                        |
+| `factory.ts`          | Runtime 工厂，`getCurrentRuntimeType()` 读 `MYAGENTS_RUNTIME` 环境变量                                                                               |
+| `claude-code.ts`      | CC Runtime：NDJSON over stdio，`-p` 模式                                                                                                             |
+| `codex.ts`            | Codex Runtime：JSON-RPC 2.0 over stdio，`app-server` 持久进程                                                                                        |
+| `gemini.ts`           | Gemini Runtime：ACP JSON-RPC 2.0 over stdio，`gemini --acp`                                                                                          |
+| `external-session.ts` | 外部 runtime public facade：start/send/prewarm/stop、UnifiedEvent shell、SessionEngine-facing exports                                                |
+| `external-session/*`  | 外部 runtime owner modules：lifecycle、runtime config、operation queue、turn lifecycle、content blocks、transcript persistence、interactive requests |
 
 `external-session.ts` 不再是 external runtime 的 state owner。真实 mutable state 归 `src/server/runtimes/external-session/`：
 
-| Owner module | 职责 |
-|------|------|
-| `lifecycle.ts` | active runtime/process、starting guard、session binding、prewarm/system-init、user-stop flag |
-| `runtime-config.ts` | desired/live model、permission、reasoning effort state；snapshot/source guard integration |
-| `operation-queue.ts` | desktop queued message/config FIFO、drain reservation、generation-based stale dispatch rejection、desktop send tail reset、force/cancel/status bookkeeping |
-| `turn-lifecycle.ts` | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类 |
-| `content-blocks.ts` | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot backing state |
-| `transcript-persistence.ts` | in-memory session messages、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
-| `interactive.ts` | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
+| Owner module                | 职责                                                                                                                                                                                    |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lifecycle.ts`              | active runtime/process、starting guard、session binding、prewarm/system-init、user-stop flag                                                                                            |
+| `runtime-config.ts`         | desired/live model、permission、reasoning effort state；snapshot/source guard integration                                                                                               |
+| `operation-queue.ts`        | desktop queued message/config FIFO、drain reservation、generation-based stale dispatch rejection、desktop send tail reset、force/cancel/status bookkeeping                              |
+| `turn-lifecycle.ts`         | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类                                          |
+| `content-blocks.ts`         | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot backing state                                                                  |
+| `transcript-persistence.ts` | in-memory session messages、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update             |
+| `interactive.ts`            | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
 
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
@@ -492,12 +514,12 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 ### 10. Session 切换与持久化
 
-| 场景 | 描述 | 行为 |
-|------|------|------|
-| 1 | 新 Tab + 新 Session | 创建新 Sidecar |
-| 2 | 新 Tab + 其他 Tab 正在用的 Session | 跳转到已有 Tab |
-| 3 | 同 Tab 切换到后台 Task/Goal Session | 跳转 / 连接到现有 Session Sidecar |
-| 4 | 同 Tab 切换到无人使用的 Session | **Handover**：Sidecar 资源复用 |
+| 场景 | 描述                                | 行为                              |
+| ---- | ----------------------------------- | --------------------------------- |
+| 1    | 新 Tab + 新 Session                 | 创建新 Sidecar                    |
+| 2    | 新 Tab + 其他 Tab 正在用的 Session  | 跳转到已有 Tab                    |
+| 3    | 同 Tab 切换到后台 Task/Goal Session | 跳转 / 连接到现有 Session Sidecar |
+| 4    | 同 Tab 切换到无人使用的 Session     | **Handover**：Sidecar 资源复用    |
 
 **编排收敛**（PRD 0.2.6）：所有切换入口（`handleSwitchSession` / `handleLaunchProject` / `OPEN_SESSION_IN_NEW_TAB`）MUST 通过纯函数 `src/renderer/utils/sessionOpenPlan.ts::planSessionOpen()` 拿到统一 plan 类型（`jump-to-tab` / `open-new-tab` / `attach-existing-sidecar` / `switch-current-tab`）再执行。已有后台 owner 的 attach 必须排在 runtime-mismatch 检查前，否则 Session 会被错误 fork 并丢失后台 activation。部分字段名仍保留 `cron` 作为 wire compatibility。
 
@@ -509,10 +531,10 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 **分层 Config Snapshot：** Session 创建时按 Owner 类型选择 config 快照策略：
 
-| Owner 类型 | Snapshot helper | 策略 |
-|-----------|----------------|------|
+| Owner 类型              | Snapshot helper                                                                | 策略                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
 | Tab / Cron / Background | `snapshotForOwnedSession(agent, { runtimeOverride?, runtimeSourceOverride? })` | 冻结 model / permission / MCP / provider / runtime identity；runtime 切换出生路径用 override 生成目标 runtime view |
-| IM / Agent Channel | `snapshotForImSession(agent, { runtimeOverride?, runtimeSourceOverride? })` | 仅保存完整 runtime identity（`runtime` + `runtimeSource`）；其它每次消息 live resolve |
+| IM / Agent Channel      | `snapshotForImSession(agent, { runtimeOverride?, runtimeSourceOverride? })`    | 仅保存完整 runtime identity（`runtime` + `runtimeSource`）；其它每次消息 live resolve                              |
 
 读侧通过 `resolveSessionConfig(sessionMeta, ownerKind)` 统一消费。详见 `tech_docs/pit_of_success.md` 的「Snapshot Helpers」节。
 
@@ -530,6 +552,7 @@ PTY master read → emit('terminal:data:{id}') → xterm.write → 屏幕渲染
 ```
 
 **关键设计：**
+
 - Rust `TerminalManager` 管理 `HashMap<String, TerminalSession>`，每个 session 持有 PTY pair（`portable-pty`）
 - 不走 SSE Proxy，用 Tauri event
 - 终端绑定 Tab 生命周期，面板关闭不杀进程
@@ -544,6 +567,7 @@ PTY 进程由 `portable-pty` 管理，**不走** `process_cmd`。
 Chat 分屏右侧面板的 URL 预览器（Tauri Multi-Webview）。AI Markdown 链接和 HTML 文件优先在此打开。
 
 **关键设计：**
+
 - 依赖 Tauri `"unstable"` feature（`Window::add_child()` 多 Webview API）
 - **安全隔离**：`browser.json` Capability 零权限，Webview 无法访问 Tauri IPC；`on_navigation` 限制 http/https scheme
 - **Overlay 协调**：原生 Webview 浮于 React DOM 之上，Overlay 出现时通过 `closeLayer.hasOverlayLayer()` 自动 hide
@@ -569,6 +593,7 @@ Cmd+W 层级关闭：Overlay → 分屏面板 → Tab，高 z-index 优先。
 **仅 Tauri 可用** —— 前端通过 `invoke('cmd_search_*')` 直接调 Rust，不经 Sidecar。浏览器开发模式不提供 fallback。
 
 **关键设计：**
+
 - Session 索引：单一全局索引 `~/.myagents/search_index/sessions/`
 - Session watcher：`notify-debouncer-full` 5s 滑动去抖观察 `~/.myagents/sessions/`，**任何**写入者的变更都自动流入索引
 - 读写并发：`Arc<SessionIndex>`（无外层 mutex），读路径 lock-free
@@ -583,6 +608,7 @@ Cmd+W 层级关闭：Overlay → 分屏面板 → Tab，高 z-index 优先。
 支持从 GitHub 链接、`npx skills add` 命令或直连 zip 一键把社区 skill 装到 `~/.myagents/skills/`（或当前工作区 `.claude/skills/`）。
 
 **三段流水线：**
+
 ```
 url-resolver.ts      — 宽容解析 → ResolvedSkillSource
     ▼
@@ -602,10 +628,12 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 把"想法速记 → 对齐 → 派发 → 执行 → 验收 → 审计"的完整工作流一等公民化。
 
 **两个持久化 Store：**
+
 - `ThoughtStore` —— `~/.myagents/thoughts/<YYYY-MM>/<id>.md`
 - `TaskStore` —— `~/.myagents/tasks.jsonl` + `~/.myagents/tasks/<id>/{task.md, verify.md, progress.md, alignment/}`
 
 **关键设计：**
+
 - Task 状态机 + 审计链（每次状态变更原子写入 `statusHistory`）
 - TaskStore 是 schedule/status/config 唯一权威；TaskScheduler 直接触发并在每次 tick 动态读取 `task.md`
 - Task/Session identity protection 由 per-Session lifecycle guard 串行化：任何 durable mutation（含 legacy migration）只要让 Task 进入受保护状态或新增受保护 Session binding，都与 Session 删除遵循 `lifecycle → TaskStore` 锁序；scheduler active execution 覆盖 Session id 已 claim、Sidecar `Task` owner 尚未附着的窗口，birth guard 只保留到权威 Session metadata 出现（不持满整轮），shared-session joiner 不得提前 adopt。metadata creator 由该 reservation 决定，不绑定 Sidecar `isNew`；被删除的 fixed Session 换新 UUID，不复活旧 identity
@@ -622,29 +650,31 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 把 "OS 文件操作" 从 "AI runtime 容器（Sidecar）" 里剥出来，走 Tauri invoke 而非 Sidecar HTTP。
 
 **核心动机：**
+
 - 启动页（Launcher）没有 Sidecar，但仍要能 @ 文件、列 / 命令、附图、新建/重命名 — 不能依赖 AI runtime 起来。
 - 未来云端协作把 "客户端" 与 "AI runtime" 分进程 / 分主机时，文件操作天然留在客户端侧。
 
 **模块结构（`src-tauri/src/workspace_files/`）：**
 
-| 子模块 | 职责 | 暴露的 cmd |
-|------|------|-----------|
-| `path_safety` | 唯一路径解析/安全打开 chokepoint：lexical/canonical resolve、`read_workspace_file_no_follow`、`open_regular_file_no_follow`、文件名校验与 sanitize | — |
-| `tree` | 工作区目录树初始化 + 懒展开 | `cmd_workspace_dir_tree` / `cmd_workspace_dir_expand` |
-| `read_preview` | 文本文件预览（≤512KB，bounded read 防 TOCTOU 增长） | `cmd_workspace_read_preview` |
-| `download` | 二进制下载（≤25MB，base64 IPC） | `cmd_workspace_download_file` |
-| `crud` | new-file / new-folder / rename / move（symlink-safe `slot_occupied`） | 4 个 cmd |
-| `delete` | 删除：默认进 OS 回收站（`trash` crate，Finder「放回原处」承担恢复），`permanent:true` 直删；symlink（含断链）一律直接 unlink 不入 trash | `cmd_workspace_delete` |
-| `transfer` | 外部路径拷贝（drag-drop，源过 external-read 黑名单 + 存在时 canonical 复查）与工作区内部 copy/paste（源走 canonical 工作区解析，自动重名）；两者 per-file `errors[]` 上报，symlink-safe collision check | `cmd_workspace_copy_paths` / `cmd_workspace_copy_internal` |
-| `files_b64` | drag-drop 字节侧（base64 IPC，import + read），拒 symlink + bounded read 防身份伪装 | `cmd_workspace_import_files_b64` / `cmd_workspace_read_files_b64` |
-| `user_attachments` | 用户输入图片附件 staging：绝对路径图片由 Rust 读取并复制到 `~/.myagents/attachments/<session>/`，返回 session-owned `relativePath`；≤10MB 作为图片预览/vision ref，>10MB 交回 `transfer` 转 `@myagents_files/...` 文件引用 | `cmd_prepare_user_image_attachments` |
-| `check_paths` | 200-batch existence 探针（与读侧 symlink-escape gate 一致，挡 chip 假阳性） | `cmd_workspace_check_paths` |
-| `gitignore` | `.gitignore` append（`with_file_lock_blocking` 串行写） | `cmd_workspace_add_gitignore` |
-| `slash` | / 命令扫描（builtin + 项目 + 用户 skills；`agent-browser` Windows 屏蔽） | `cmd_list_slash_commands` |
-| `search` | 模糊文件名搜索（fuzzy_matcher，跳 node_modules / dotfiles） | `cmd_workspace_search_files_fuzzy` |
-| `git_branch` | 当前 git 分支查询 | `cmd_workspace_git_branch` |
-| `system_open` | 揭示在文件管理器 / 默认应用打开（`process_cmd::new` 防 Windows console flash） | `cmd_workspace_open_in_finder` / `cmd_workspace_open_with_default` / `cmd_open_path_external`（绝对路径，过 credential 黑名单） |
-| `watcher` | 进程级 fs watcher 注册表（ref-counted，token-based handle） | `cmd_workspace_watch_start` / `cmd_workspace_watch_stop` |
+| 子模块             | 职责                                                                                                                                                                                                                       | 暴露的 cmd                                                                                                                      |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `path_safety`      | 唯一路径解析/安全打开 chokepoint：lexical/canonical resolve、`read_workspace_file_no_follow`、`open_regular_file_no_follow`、文件名校验与 sanitize                                                                         | —                                                                                                                               |
+| `project_init`     | 新 Workspace 的声明式 UTF-8 蓝图校验、同级暂存写入、可选 Git 初始化与原子提交                                                                                                                                              | `cmd_workspace_initialize_project`                                                                                              |
+| `tree`             | 工作区目录树初始化 + 懒展开                                                                                                                                                                                                | `cmd_workspace_dir_tree` / `cmd_workspace_dir_expand`                                                                           |
+| `read_preview`     | 文本文件预览（≤512KB，bounded read 防 TOCTOU 增长）                                                                                                                                                                        | `cmd_workspace_read_preview`                                                                                                    |
+| `download`         | 二进制下载（≤25MB，base64 IPC）                                                                                                                                                                                            | `cmd_workspace_download_file`                                                                                                   |
+| `crud`             | new-file / new-folder / rename / move（symlink-safe `slot_occupied`）                                                                                                                                                      | 4 个 cmd                                                                                                                        |
+| `delete`           | 删除：默认进 OS 回收站（`trash` crate，Finder「放回原处」承担恢复），`permanent:true` 直删；symlink（含断链）一律直接 unlink 不入 trash                                                                                    | `cmd_workspace_delete`                                                                                                          |
+| `transfer`         | 外部路径拷贝（drag-drop，源过 external-read 黑名单 + 存在时 canonical 复查）与工作区内部 copy/paste（源走 canonical 工作区解析，自动重名）；两者 per-file `errors[]` 上报，symlink-safe collision check                    | `cmd_workspace_copy_paths` / `cmd_workspace_copy_internal`                                                                      |
+| `files_b64`        | drag-drop 字节侧（base64 IPC，import + read），拒 symlink + bounded read 防身份伪装                                                                                                                                        | `cmd_workspace_import_files_b64` / `cmd_workspace_read_files_b64`                                                               |
+| `user_attachments` | 用户输入图片附件 staging：绝对路径图片由 Rust 读取并复制到 `~/.myagents/attachments/<session>/`，返回 session-owned `relativePath`；≤10MB 作为图片预览/vision ref，>10MB 交回 `transfer` 转 `@myagents_files/...` 文件引用 | `cmd_prepare_user_image_attachments`                                                                                            |
+| `check_paths`      | 200-batch existence 探针（与读侧 symlink-escape gate 一致，挡 chip 假阳性）                                                                                                                                                | `cmd_workspace_check_paths`                                                                                                     |
+| `gitignore`        | `.gitignore` append（`with_file_lock_blocking` 串行写）                                                                                                                                                                    | `cmd_workspace_add_gitignore`                                                                                                   |
+| `slash`            | / 命令扫描（builtin + 项目 + 用户 skills；`agent-browser` Windows 屏蔽）                                                                                                                                                   | `cmd_list_slash_commands`                                                                                                       |
+| `search`           | 模糊文件名搜索（fuzzy_matcher，跳 node_modules / dotfiles）                                                                                                                                                                | `cmd_workspace_search_files_fuzzy`                                                                                              |
+| `git_branch`       | 当前 git 分支查询                                                                                                                                                                                                          | `cmd_workspace_git_branch`                                                                                                      |
+| `system_open`      | 揭示在文件管理器 / 默认应用打开（`process_cmd::new` 防 Windows console flash）                                                                                                                                             | `cmd_workspace_open_in_finder` / `cmd_workspace_open_with_default` / `cmd_open_path_external`（绝对路径，过 credential 黑名单） |
+| `watcher`          | 进程级 fs watcher 注册表（ref-counted，token-based handle）                                                                                                                                                                | `cmd_workspace_watch_start` / `cmd_workspace_watch_stop`                                                                        |
 
 **关键约束：**
 
@@ -658,7 +688,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 **前端入口：**
 
-- `useWorkspaceFileService(workspacePath)` — 唯一对前端开放的 hook。返回 `useMemo` 稳定的服务对象，每方法 `useCallback` 包装。所有方法的 JSDoc 标注 `[requires workspace]` vs `[workspace-free]`，传 `null` 也能调 workspace-free 方法（`openPathExternal` / `readPathsAsBase64` / `prepareUserImageAttachments` / `watchStop`）。
+- `useWorkspaceFileService(workspacePath)` — 唯一对前端开放的 hook。返回 `useMemo` 稳定的服务对象，每方法 `useCallback` 包装。所有方法的 JSDoc 标注 `[requires workspace]` vs `[workspace-free]`，传 `null` 也能调 workspace-free 方法（`initializeProject` / `openPathExternal` / `readPathsAsBase64` / `prepareUserImageAttachments` / `watchStop`）。
 - `persistInputOptionChange(...)` (`src/renderer/api/persistInputOption.ts`) — Chat 和 Launcher 共用的 "选项变更持久化" helper，分支条件（`isExternalRuntime` / `runtimeConfig` / MCP push）由它处理。新增字段只改这一个文件。
 
 **Phase 状态：**
@@ -757,59 +787,67 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 ---
 
+### 21. Workbench Platform (`src/shared/workbench-sdk/` + `src/renderer/workbench-sdk/`)
+
+Workbench 是完整产品模块的扩展边界，不复用 Claude Plugin 或 OpenClaw Channel Plugin 协议。共享层定义 manifest v1、宿主 API 版本协商、打开请求和声明式新项目初始化蓝图；Renderer 层提供密封注册表、单一 `workbench` Tab、懒加载 `WorkbenchShell` 与局部错误边界。宿主 API 1.2 的初始化能力由 Workspace File Service 落到 Tauri，具体工作台拥有目录业务含义，宿主仅验证和原子提交；API 1.3 通过 `agentSessions.open()` 把大型领域任务交给现有 MyAgents Chat Session 生命周期。
+
+核心只通过 `src/renderer/workbench-registry.ts` 解析具体工作台，具体工作台只依赖 Workbench SDK。两条依赖方向由 dependency-cruiser 强制。Workspace/Template 可声明 `workbenchId`，Launcher 点击后发送 `OPEN_WORKBENCH`；工作台 Tab 不挂载 `TabProvider`，不会隐式创建 Sidecar。显式 Agent 请求由 Shell 绑定 Workspace，App 负责普通 Chat Tab、模型配置和 Sidecar 生命周期。
+
+详见 [Workbench Platform Foundation](./tech_docs/workbench_platform.md)。
+
 ## Pit-of-Success 索引
 
 每个模块在 helper 层把"正确路径"做成默认。完整 Problem / Surface / Invariants / Don't 见 `tech_docs/pit_of_success.md`。
 
-| 模块 | 层 | 用途 |
-|------|----|------|
-| `local_http` | Rust | 防系统代理拦截 localhost → 502 |
-| `process_cmd` | Rust | 防 Windows 控制台窗口弹出 |
-| `proxy_config` | Rust | 子进程 NO_PROXY 注入 |
-| `system_binary` | Rust | 系统工具查找（Finder PATH 缺失） |
-| `tauri::async_runtime::spawn` + clippy ban | Rust | 防 macOS startup-abort（`tokio::spawn` 跨 FFI 不能 unwind） |
-| Session watcher | Rust | 文件系统观察索引（写入路径解耦） |
-| `withConfigLock` / `with_config_lock` | Node + Rust + renderer | `config.json` 跨进程串行写入 |
-| `withFileLock` / `with_file_lock` | Node + Rust | 单写者文件原子性 |
-| `killWithEscalation` | Node | 子进程 stop SIGTERM → SIGKILL → orphan 升级链 |
-| `withAbortSignal` / `cancellableFetch` | Node | 统一 cancel 协议（fetch / stream / process） |
-| `maybeSpill` + `/refs/:id` + SSE 优先级 | Node + Rust | 大 payload 流到 ref，SSE 三档队列 |
-| `withLogContext` + ALS pipeline | Node + Rust | 自动注入 sessionId/tabId/turnId/runtime/requestId |
-| `DeferredInitState` + readiness endpoints | Node | 三分健康探针（live/ready/functional） |
-| `fs-utils` | Node | 跨平台 mkdir / 目录判定（Windows junction） |
-| `subprocess` | Node | Bun→Node spawn 形态适配 |
-| `file-response` | Node | 流式 HTTP 文件响应 |
-| Builtin MCP META/INSTANCE 懒加载 | Node | 防冷启动每次付 ~1s SDK+zod 税 |
-| Snapshot helpers | Node | owned vs live-follow 命名分裂 |
-| Legacy Cron → Task startup migration | Rust | 后端启动期幂等迁移，旧 store 保持只读 |
-| `saveToolAttachment` + `path-safety.ts` | Node | 任意工具图片产物统一落盘 + symlink-safe 路径校验 + SSRF 防护 |
-| `awaitInFlightSaves` + `rebuildAttachmentRegistry` | Node | 异步 attachment 落盘的 turn-boundary 守卫 + session resume 重 register |
-| `workspacePath` / `workspacePathsEqual` | shared (renderer) | 工作区路径跨存储标识比较（Rust `normalize_path` 的 TS 端口，防 Win 斜杠/盘符误判） |
-| Client-action 斜杠命令 (`slashActions`) | renderer | UI 动作命令名字保留 + 勿进文本插入 builtin 清单（防死条目 / shadow） |
-| System-skill 同步完整性门控 | Rust + Node | 验源含 SKILL.md 再清目标 + 全落地才写版本戳（防空目录冻结） |
+| 模块                                               | 层                     | 用途                                                                               |
+| -------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------- |
+| `local_http`                                       | Rust                   | 防系统代理拦截 localhost → 502                                                     |
+| `process_cmd`                                      | Rust                   | 防 Windows 控制台窗口弹出                                                          |
+| `proxy_config`                                     | Rust                   | 子进程 NO_PROXY 注入                                                               |
+| `system_binary`                                    | Rust                   | 系统工具查找（Finder PATH 缺失）                                                   |
+| `tauri::async_runtime::spawn` + clippy ban         | Rust                   | 防 macOS startup-abort（`tokio::spawn` 跨 FFI 不能 unwind）                        |
+| Session watcher                                    | Rust                   | 文件系统观察索引（写入路径解耦）                                                   |
+| `withConfigLock` / `with_config_lock`              | Node + Rust + renderer | `config.json` 跨进程串行写入                                                       |
+| `withFileLock` / `with_file_lock`                  | Node + Rust            | 单写者文件原子性                                                                   |
+| `killWithEscalation`                               | Node                   | 子进程 stop SIGTERM → SIGKILL → orphan 升级链                                      |
+| `withAbortSignal` / `cancellableFetch`             | Node                   | 统一 cancel 协议（fetch / stream / process）                                       |
+| `maybeSpill` + `/refs/:id` + SSE 优先级            | Node + Rust            | 大 payload 流到 ref，SSE 三档队列                                                  |
+| `withLogContext` + ALS pipeline                    | Node + Rust            | 自动注入 sessionId/tabId/turnId/runtime/requestId                                  |
+| `DeferredInitState` + readiness endpoints          | Node                   | 三分健康探针（live/ready/functional）                                              |
+| `fs-utils`                                         | Node                   | 跨平台 mkdir / 目录判定（Windows junction）                                        |
+| `subprocess`                                       | Node                   | Bun→Node spawn 形态适配                                                            |
+| `file-response`                                    | Node                   | 流式 HTTP 文件响应                                                                 |
+| Builtin MCP META/INSTANCE 懒加载                   | Node                   | 防冷启动每次付 ~1s SDK+zod 税                                                      |
+| Snapshot helpers                                   | Node                   | owned vs live-follow 命名分裂                                                      |
+| Legacy Cron → Task startup migration               | Rust                   | 后端启动期幂等迁移，旧 store 保持只读                                              |
+| `saveToolAttachment` + `path-safety.ts`            | Node                   | 任意工具图片产物统一落盘 + symlink-safe 路径校验 + SSRF 防护                       |
+| `awaitInFlightSaves` + `rebuildAttachmentRegistry` | Node                   | 异步 attachment 落盘的 turn-boundary 守卫 + session resume 重 register             |
+| `workspacePath` / `workspacePathsEqual`            | shared (renderer)      | 工作区路径跨存储标识比较（Rust `normalize_path` 的 TS 端口，防 Win 斜杠/盘符误判） |
+| Client-action 斜杠命令 (`slashActions`)            | renderer               | UI 动作命令名字保留 + 勿进文本插入 builtin 清单（防死条目 / shadow）               |
+| System-skill 同步完整性门控                        | Rust + Node            | 验源含 SKILL.md 再清目标 + 全落地才写版本戳（防空目录冻结）                        |
 
 ---
 
 ## 资源管理
 
-| 事件 | 操作 |
-|------|------|
-| 打开/切换 Session | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)` |
-| 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 scheduler + Sidecar owner 锁内同时释放 Tab owner 并保留或撤销 activation |
-| 定时 Task 启动 | `run_task_by_id` 提交 Running 并 arm `TaskSchedulerController` |
-| Task Turn 执行/结束 | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner |
-| Memory Auto-Update | 作为隐藏 managed Task 使用 `SidecarOwner::Task(taskId)`；复用 Ready Sidecar 也先 retain，只有执行完成或进程终止已确认才由 RAII 释放，`terminationUnconfirmed` 时保留给精确 Stop |
-| Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；进入 Node dispatch 前附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Runtime claim 时附着 |
-| Goal Pause/终态 | 先提交 SessionGoal 状态，再精确 stop queue Turn；确认后才清 authority / 释放 Goal owner并广播 `goal:changed`，不确定时保留 |
-| IM 消息到达 | `ensureSessionSidecar(sessionId, workspace, 'agent', sessionKey)` |
-| IM Session 空闲超时 | `releaseSessionSidecar(sessionId, 'agent', sessionKey)` |
-| 终端打开 | `cmd_terminal_create(workspace, rows, cols, port, id)` |
-| 终端关闭 / Tab 关闭 | `cmd_terminal_close(terminalId)` |
-| 浏览器打开 | `cmd_browser_create(tabId, url, x, y, width, height)` |
-| 浏览器关闭 / Tab 关闭 | `cmd_browser_close(tabId)` |
-| 任务立即执行 / 重新派发 | `task::run` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
-| Task 软删除 | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 thought |
-| 应用退出 | `stopAllSidecars()` + `close_all_terminals()` + `close_all_browsers()` |
+| 事件                    | 操作                                                                                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 打开/切换 Session       | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)`                                                                                                                |
+| 关闭/切换桌面 Tab       | `releaseTabSession(sessionId, tabId)`；Rust 在 scheduler + Sidecar owner 锁内同时释放 Tab owner 并保留或撤销 activation                                                         |
+| 定时 Task 启动          | `run_task_by_id` 提交 Running 并 arm `TaskSchedulerController`                                                                                                                  |
+| Task Turn 执行/结束     | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner                                                                                   |
+| Memory Auto-Update      | 作为隐藏 managed Task 使用 `SidecarOwner::Task(taskId)`；复用 Ready Sidecar 也先 retain，只有执行完成或进程终止已确认才由 RAII 释放，`terminationUnconfirmed` 时保留给精确 Stop |
+| Goal 自动续跑           | active Goal 使用一个 one-shot continuation handle；进入 Node dispatch 前附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Runtime claim 时附着                               |
+| Goal Pause/终态         | 先提交 SessionGoal 状态，再精确 stop queue Turn；确认后才清 authority / 释放 Goal owner并广播 `goal:changed`，不确定时保留                                                      |
+| IM 消息到达             | `ensureSessionSidecar(sessionId, workspace, 'agent', sessionKey)`                                                                                                               |
+| IM Session 空闲超时     | `releaseSessionSidecar(sessionId, 'agent', sessionKey)`                                                                                                                         |
+| 终端打开                | `cmd_terminal_create(workspace, rows, cols, port, id)`                                                                                                                          |
+| 终端关闭 / Tab 关闭     | `cmd_terminal_close(terminalId)`                                                                                                                                                |
+| 浏览器打开              | `cmd_browser_create(tabId, url, x, y, width, height)`                                                                                                                           |
+| 浏览器关闭 / Tab 关闭   | `cmd_browser_close(tabId)`                                                                                                                                                      |
+| 任务立即执行 / 重新派发 | `task::run` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask                                                                                                |
+| Task 软删除             | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 thought                                                                                                                  |
+| 应用退出                | `stopAllSidecars()` + `close_all_terminals()` + `close_all_browsers()`                                                                                                          |
 
 **Owner 释放规则：** 当一个 Session 的所有 Owner 都释放后，Sidecar 才停止。
 
@@ -831,24 +869,24 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 ### 平台差异
 
-| 特性 | macOS | Windows | Linux |
-|------|-------|---------|-------|
-| 字体渲染 | 更平滑 | 更锐利 | 介于之间 |
-| 窗口控制 | 左上红绿灯 | 右上三按钮 | 取决于桌面环境 |
-| 滚动条 | 自动隐藏 | WebView2 经典滚动条（renderer 用活动态隐藏 thumb） | 取决于桌面环境 |
-| Shell | zsh | PowerShell / cmd | bash |
-| Console window 抑制 | — | `process_cmd::new()` 注入 `CREATE_NO_WINDOW` | — |
-| 系统 PATH 查找 | `system_binary::find()`（Finder 启动 PATH 缺失） | — | — |
+| 特性                | macOS                                            | Windows                                            | Linux          |
+| ------------------- | ------------------------------------------------ | -------------------------------------------------- | -------------- |
+| 字体渲染            | 更平滑                                           | 更锐利                                             | 介于之间       |
+| 窗口控制            | 左上红绿灯                                       | 右上三按钮                                         | 取决于桌面环境 |
+| 滚动条              | 自动隐藏                                         | WebView2 经典滚动条（renderer 用活动态隐藏 thumb） | 取决于桌面环境 |
+| Shell               | zsh                                              | PowerShell / cmd                                   | bash           |
+| Console window 抑制 | —                                                | `process_cmd::new()` 注入 `CREATE_NO_WINDOW`       | —              |
+| 系统 PATH 查找      | `system_binary::find()`（Finder 启动 PATH 缺失） | —                                                  | —              |
 
 ### 跨平台环境变量 (`src/server/utils/platform.ts`)
 
 `buildCrossPlatformEnv()` 自动设置双平台变量：
 
-| 用途 | macOS / Linux | Windows |
-|------|--------------|---------|
-| Home 目录 | `HOME` | `USERPROFILE` |
-| 用户名 | `USER` | `USERNAME` |
-| 临时目录 | `TMPDIR` | `TEMP` / `TMP` |
+| 用途      | macOS / Linux | Windows        |
+| --------- | ------------- | -------------- |
+| Home 目录 | `HOME`        | `USERPROFILE`  |
+| 用户名    | `USER`        | `USERNAME`     |
+| 临时目录  | `TMPDIR`      | `TEMP` / `TMP` |
 
 详见 `tech_docs/windows_platform.md` / `guides/linux_build_guide.md`。
 
@@ -858,13 +896,13 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 ### Node.js v24（唯一 MyAgents 自有 runtime）
 
-| 用途 |
-|------|
-| Sidecar |
-| Plugin Bridge |
-| MCP Server (`npx`) |
-| 社区 npm 包 |
-| `myagents` CLI |
+| 用途                           |
+| ------------------------------ |
+| Sidecar                        |
+| Plugin Bridge                  |
+| MCP Server (`npx`)             |
+| 社区 npm 包                    |
+| `myagents` CLI                 |
 | AI Bash `node` / `npx` / `npm` |
 
 打包位置：`src-tauri/resources/nodejs/`（构建 staging 目录；按架构缓存见 `tech_docs/bundled_node.md`）。
@@ -877,11 +915,12 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 ### 预置原生二进制 MCP
 
-| 二进制 | 用途 | 来源 | 打包位置 |
-|--------|------|------|---------|
+| 二进制   | 用途                                                           | 来源                                                                                                                                                                   | 打包位置                                   |
+| -------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | **cuse** | 预置 Computer-Use MCP（截图/点击/输入/滚动，仅 macOS/Windows） | Cloudflare R2: `https://download.myagents.io/cuse/...`（源头是私有 `hAcKlyc/MyAgents-Cuse` GH Release，由该仓库的 `publish_r2.sh` 镜像到 R2 供本开源 repo build 使用） | `src-tauri/binaries/cuse-*-<triple>[.exe]` |
 
 新增同类二进制约定：
+
 - 注册到 `PRESET_MCP_SERVERS` 时用 `command: '__bundled_xxx__'` 哨兵
 - 平台差异通过 `McpServerDefinition.platforms` 字段
 - `build_macos.sh` 通配 `src-tauri/binaries/*-apple-darwin` 自动继承应用签名
@@ -903,6 +942,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 ### Boot Banner
 
 应用启动和每个 Sidecar 创建时输出 `[boot]` 单行自检信息：
+
 ```
 [boot] v=0.3.0 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
 [boot] pid=12345 port=31415 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright,im-cron
@@ -913,6 +953,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 ### 统一日志格式
 
 三个来源汇入 `~/.myagents/logs/unified-{YYYY-MM-DD}.log`（本地时间）：
+
 - **[REACT]** 前端日志
 - **[NODE]** Node.js Sidecar 日志（logger interceptor 直写）
 - **[RUST]** Rust 层日志
@@ -925,22 +966,22 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### macOS
 
-| 脚本 | 用途 |
-|------|------|
-| `setup.sh` | 首次环境初始化 |
-| `start_dev.sh` | 浏览器开发模式 |
-| `build_dev.sh` | Debug 构建（含 DevTools） |
-| `build_macos.sh` | 生产 DMG 构建 |
-| `publish_release.sh` | 发布到 R2 |
+| 脚本                               | 用途                                                 |
+| ---------------------------------- | ---------------------------------------------------- |
+| `setup.sh`                         | 首次环境初始化                                       |
+| `start_dev.sh`                     | 浏览器开发模式                                       |
+| `build_dev.sh`                     | Debug 构建（含 DevTools）                            |
+| `build_macos.sh`                   | 生产 DMG 构建                                        |
+| `publish_release.sh`               | 发布到 R2                                            |
 | `publish_managed_codex_runtime.sh` | 单独发布 Managed Codex runtime set 的 macOS 平台资源 |
 
 ### Windows
 
-| 脚本 | 用途 |
-|------|------|
-| `setup_windows.ps1` | 首次环境初始化 |
-| `build_windows.ps1` | 生产构建（NSIS + 便携版） |
-| `publish_windows.ps1` | 发布到 R2 |
+| 脚本                                | 用途                                                   |
+| ----------------------------------- | ------------------------------------------------------ |
+| `setup_windows.ps1`                 | 首次环境初始化                                         |
+| `build_windows.ps1`                 | 生产构建（NSIS + 便携版）                              |
+| `publish_windows.ps1`               | 发布到 R2                                              |
 | `publish_managed_codex_runtime.ps1` | 单独发布 Managed Codex runtime set 的 Windows 平台资源 |
 
 详见 `guides/windows_build_guide.md`。
@@ -952,12 +993,14 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 按场景分组：
 
 ### 启动与运行时
+
 - [Node.js 打包架构](./tech_docs/bundled_node.md) — 内置 Node.js v24 + SDK native binary 分发、PATH 注入
 - [Sidecar 冷启动性能](./tech_docs/sidecar_cold_start.md) — listen 时序、Tier 2 懒加载、Tab fast-path
 - [Pit-of-Success 模块完整规范](./tech_docs/pit_of_success.md) — Rust + Node 全部 helper
 - [自动更新系统](./tech_docs/auto_update.md) — Chrome/VSCode 风格静默更新机制
 
 ### 通信与会话
+
 - [Session 架构](./tech_docs/session_architecture.md) — ID 格式、JSONL 存储、SDK 双重存储、状态同步、Goal Mode session 状态
 - [System Reminder 隐藏消息协议](./tech_docs/system_reminder_protocol.md) — 注入 user message 的 hidden payload、badge tag、visible tail 前端展示规则
 - [代理配置](./tech_docs/proxy_config.md) — 系统代理 + SOCKS5 桥接
@@ -965,6 +1008,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 - [三方供应商](./tech_docs/third_party_providers.md) — 环境变量、认证模式、Bridge 原理
 
 ### Multi-Agent Runtime / Agent / IM
+
 - [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) — CC / Codex / Gemini 协议、会话管理、门控链路
 - [Tool Attachment 管道](./tech_docs/tool_attachment_pipeline.md) — 任意 runtime 产图归一化、落盘 helper、SSRF 防护、placeholder 异步落盘
 - [IM 集成技术架构](./tech_docs/im_integration_architecture.md) — Agent / Channel 详细设计、适配器模型
@@ -972,24 +1016,29 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 - [Claude Plugin 加载](./tech_docs/plugin_loading.md) — Anthropic Claude Plugin 协议接入（PRD 0.2.17）、SDK Options.plugins、安装管线、与 OpenClaw plugin 的命名隔离
 
 ### 任务中心 / 搜索
+
 - [任务中心架构](./tech_docs/task_center.md) — TaskStore 权威、直接调度、Legacy Cron 迁移、CLI
 - [Cloud Space 架构](./tech_docs/space_cloud.md) — 实验室 Space 登录、Issue/Skill、registered agent、IssueDelivery/claim 到 attached-session Task
 - [全文搜索架构](./tech_docs/search_architecture.md) — Tantivy + jieba、session watcher、UTF-16 高亮
 
 ### SDK 集成
+
 - [`canUseTool` 回调指南](./tech_docs/sdk_canUseTool_guide.md) — 人工干预工具权限的实现要点
 - [自定义 Tools 指南](./tech_docs/sdk_custom_tools_guide.md) — `createSdkMcpServer` + `tool` 用法、当前 SDK 工具清单
 
 ### 平台与构建
+
 - [Windows 编码约束](./tech_docs/windows_platform.md) — 路径前缀 / 进程 / 环境变量 / CSP（写代码时查）
 - [Windows AI Review Traps](./tech_docs/windows_ai_review_traps.md) — macOS 开发时对抗性 review Windows 易错边界（真实事故模式 + owner/helper）
 - [Linux 构建与分发](./guides/linux_build_guide.md) — AppImage / deb / 支持矩阵
 - [构建问题排查](./guides/build_troubleshooting.md) — Windows 构建 / CSP / Resources 缓存 / 代理
 
 ### 前端
+
 - [设计系统](./DESIGN.md) — Token / 组件 / 页面规范
 - [React 稳定性规范](./tech_docs/react_stability_rules.md) — Context / useEffect / memo 5 条规则
 - [UI 国际化架构](./tech_docs/i18n_architecture.md) — `uiLanguage`、i18next resources、native tray language mirror、增加新语言流程
 
 ### CLI
+
 - [CLI 架构](./tech_docs/cli_architecture.md) — 自配置 CLI 设计、版本门控、Admin API、PATH 注入

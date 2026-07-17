@@ -23,8 +23,8 @@ import { getHomeDirOrNull } from './platform';
 import { stripBom } from '../../shared/utils';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
-import type { ManagedProviderCredential, McpServerDefinition, PermissionMode, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
-import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS, XAI_SUBSCRIPTION_API_BASE_URL, XAI_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
+import type { ManagedProviderCredential, McpServerDefinition, ModelEntity, PermissionMode, Provider, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
+import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, mergePresetCustomModels, PRESET_MCP_SERVERS, PRESET_PROVIDERS, XAI_SUBSCRIPTION_API_BASE_URL, XAI_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
@@ -122,6 +122,9 @@ export interface AdminAppConfig {
   providerVerifyStatus?: Record<string, ProviderVerifyStatus>;
   providerOrder?: string[];
   disabledProviderIds?: string[];
+  presetCustomModels?: Record<string, ModelEntity[]>;
+  presetRemovedModels?: Record<string, string[]>;
+  providerPrimaryModels?: Record<string, string>;
   // Agent
   agents?: AgentConfigSlim[];
   defaultPermissionMode?: string;
@@ -695,7 +698,20 @@ export function getAllEffectiveProviders(config?: AdminAppConfig): ProviderRecor
   const presetProviders = ((PRESET_PROVIDERS ?? []) as unknown as Array<Record<string, unknown>>)
     .filter(hasProviderId);
   const customProviders = loadCustomProviderFiles().filter(hasProviderId);
-  return applyProviderEnablementAndOrder([...presetProviders, ...customProviders], c);
+  const mergedProviders = mergePresetCustomModels(
+    [...presetProviders, ...customProviders] as unknown as Provider[],
+    c.presetCustomModels,
+    c.presetRemovedModels,
+  ).map(provider => {
+    const primaryOverride = c.providerPrimaryModels?.[provider.id];
+    return primaryOverride && provider.models.some(model => model.model === primaryOverride)
+      ? { ...provider, primaryModel: primaryOverride }
+      : provider;
+  });
+  return applyProviderEnablementAndOrder(
+    mergedProviders as unknown as ProviderRecord[],
+    c,
+  );
 }
 
 export function findEffectiveProvider(id: string, config?: AdminAppConfig): ProviderRecord | null {

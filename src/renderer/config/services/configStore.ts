@@ -147,8 +147,12 @@ let configDirPath: string | null = null;
 export async function getConfigDir(): Promise<string> {
     if (configDirPath) return configDirPath;
 
-    const home = await homeDir();
-    configDirPath = await join(home, CONFIG_DIR_NAME);
+    if (isBrowserDevMode()) {
+        const home = await homeDir();
+        configDirPath = await join(home, CONFIG_DIR_NAME);
+    } else {
+        configDirPath = await invoke<string>('cmd_get_myagents_data_dir');
+    }
     console.log('[configStore] Config directory:', configDirPath);
     return configDirPath;
 }

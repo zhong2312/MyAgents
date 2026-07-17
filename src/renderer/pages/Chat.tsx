@@ -1,98 +1,165 @@
-import { AlertTriangle, ArrowLeft, Bot, Globe, History, Loader2, Plus, PanelRightOpen, RotateCcw, TerminalSquare, X } from 'lucide-react';
-import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import type { TFunction } from 'i18next';
-import { useTranslation } from 'react-i18next';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Bot,
+  Globe,
+  History,
+  Loader2,
+  Plus,
+  PanelRightOpen,
+  RotateCcw,
+  TerminalSquare,
+  X,
+} from "lucide-react";
+import {
+  forwardRef,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 
-import { track } from '@/analytics';
-import type { HistoryEntrySource } from '@/analytics';
-import { useCloseLayer } from '@/hooks/useCloseLayer';
-import ConfirmDialog from '@/components/ConfirmDialog';
-import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
-import { useToast } from '@/components/Toast';
-import Tip from '@/components/Tip';
-import DirectoryPanel, { type DirectoryPanelHandle, type WorkspaceTreePersistedState } from '@/components/DirectoryPanel';
-import DropZoneOverlay from '@/components/DropZoneOverlay';
-import OverlayBackdrop from '@/components/OverlayBackdrop';
-import MessageList from '@/components/MessageList';
-import SessionHistoryDropdown from '@/components/SessionHistoryDropdown';
-import SessionSurfaceTags from '@/components/SessionSurfaceTags';
-import SessionMenuButton, { type BotChannelCandidate } from '@/components/SessionMenuButton';
-import { FileActionProvider } from '@/context/FileActionContext';
-import SimpleChatInput, { type ImageAttachment, type SimpleChatInputHandle } from '@/components/SimpleChatInput';
-import AgentStatusPanel from '@/components/agent-status/AgentStatusPanel';
-import ContextUsageIndicator from '@/components/ContextUsageIndicator';
-import ChatBootOverlay from '@/components/ChatBootOverlay';
-import QueryNavigator from '@/components/chat/QueryNavigator';
-import ChatSearchPanel from '@/components/ChatSearchPanel';
-import { useChatSearch, isHighlightApiSupported } from '@/hooks/useChatSearch';
-import SelectionCommentMenu from '@/components/SelectionCommentMenu';
-import TerminalReasonBanner from '@/components/TerminalReasonBanner';
-import RuntimeDiagnosticsBanner from '@/components/RuntimeDiagnosticsBanner';
-import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
-import WorkspaceConfigPanel, { type Tab as WorkspaceTab } from '@/components/WorkspaceConfigPanel';
+import { track } from "@/analytics";
+import type { HistoryEntrySource } from "@/analytics";
+import { useCloseLayer } from "@/hooks/useCloseLayer";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import WorkspaceIcon from "@/components/launcher/WorkspaceIcon";
+import { useToast } from "@/components/Toast";
+import Tip from "@/components/Tip";
+import DirectoryPanel, {
+  type DirectoryPanelHandle,
+  type WorkspaceTreePersistedState,
+} from "@/components/DirectoryPanel";
+import DropZoneOverlay from "@/components/DropZoneOverlay";
+import OverlayBackdrop from "@/components/OverlayBackdrop";
+import MessageList from "@/components/MessageList";
+import SessionHistoryDropdown from "@/components/SessionHistoryDropdown";
+import SessionSurfaceTags from "@/components/SessionSurfaceTags";
+import SessionMenuButton, {
+  type BotChannelCandidate,
+} from "@/components/SessionMenuButton";
+import { FileActionProvider } from "@/context/FileActionContext";
+import SimpleChatInput, {
+  type ImageAttachment,
+  type SimpleChatInputHandle,
+} from "@/components/SimpleChatInput";
+import AgentStatusPanel from "@/components/agent-status/AgentStatusPanel";
+import ContextUsageIndicator from "@/components/ContextUsageIndicator";
+import ChatBootOverlay from "@/components/ChatBootOverlay";
+import QueryNavigator from "@/components/chat/QueryNavigator";
+import ChatSearchPanel from "@/components/ChatSearchPanel";
+import { useChatSearch, isHighlightApiSupported } from "@/hooks/useChatSearch";
+import SelectionCommentMenu from "@/components/SelectionCommentMenu";
+import TerminalReasonBanner from "@/components/TerminalReasonBanner";
+import RuntimeDiagnosticsBanner from "@/components/RuntimeDiagnosticsBanner";
+import { UnifiedLogsPanel } from "@/components/UnifiedLogsPanel";
+import WorkspaceConfigPanel, {
+  type Tab as WorkspaceTab,
+} from "@/components/WorkspaceConfigPanel";
 import CronTaskSettingsModal, {
   GOAL_SLASH_PRESET,
   type CronInitialConfig,
   type CronSettingsResult,
-} from '@/components/cron/CronTaskSettingsModal';
-import { transitionChannelBoundSession } from '@/pages/chatChannelSession';
-import { useTabState, useTabActive } from '@/context/TabContext';
-import { useChatScrollController } from '@/hooks/useChatScrollController';
-import { useChatScrollModel } from '@/hooks/useChatScrollModel';
-import { useAgentStatuses } from '@/hooks/useAgentStatuses';
-import { useSessionSurfaces, type ChannelSurface } from '@/hooks/useSessionSurfaces';
-import { resolveFloatingBallBoundSession } from '@/hooks/taskCenterStore';
-import { useConfig } from '@/hooks/useConfig';
-import { useFileDropZone } from '@/hooks/useFileDropZone';
-import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
-import { useCronTask } from '@/hooks/useCronTask';
-import { useSessionGoal, type SessionGoalDraftConfig } from '@/hooks/useSessionGoal';
-import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
-import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
-import { isIntroductionAbsentError, shouldShowIntroductionOverlay, useIntroductionContent } from '@/hooks/useIntroductionContent';
-import { resolveAdoptedBuiltinProviderId } from '@/utils/sessionConfigAdoption';
-import { getSessionCronTask, isTaskExecuting, createCronTask, startCronTask as startCronTaskIpc } from '@/api/cronTaskClient';
-import { updateSession as patchSessionMetadata } from '@/api/sessionClient';
-import { sessionHasPersistentOwners } from '@/api/tauriClient';
-import { persistInputOptionChange, type BuiltinModelSelection, type BuiltinProviderEnvPolicy } from '@/api/persistInputOption';
-import { materializePendingSessionConfig } from '@/api/sessionMaterialize';
-import type { CronTask } from '@/types/cronTask';
-import type { SessionGoal } from '@/types/sessionGoal';
-import { isTerminalGoalStatus } from '@/types/sessionGoal';
-import { formatCronScheduleDescription } from '@/utils/cronTaskI18n';
-import CronTaskCard from '@/components/scheduled-tasks/CronTaskCard';
-import CronTaskDetailPanel from '@/components/CronTaskDetailPanel';
-import { projectTaskExecutionOverrides } from '@/utils/taskProviderProjection';
-import { isTauriEnvironment } from '@/utils/browserMock';
-import { isDebugMode } from '@/utils/debug';
-import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
-import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
-import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
-import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
+} from "@/components/cron/CronTaskSettingsModal";
+import { transitionChannelBoundSession } from "@/pages/chatChannelSession";
+import { useTabState, useTabActive } from "@/context/TabContext";
+import { useChatScrollController } from "@/hooks/useChatScrollController";
+import { useChatScrollModel } from "@/hooks/useChatScrollModel";
+import { useAgentStatuses } from "@/hooks/useAgentStatuses";
+import {
+  useSessionSurfaces,
+  type ChannelSurface,
+} from "@/hooks/useSessionSurfaces";
+import { resolveFloatingBallBoundSession } from "@/hooks/taskCenterStore";
+import { useConfig } from "@/hooks/useConfig";
+import { useFileDropZone } from "@/hooks/useFileDropZone";
+import { useTauriFileDrop } from "@/hooks/useTauriFileDrop";
+import { useCronTask } from "@/hooks/useCronTask";
+import {
+  useSessionGoal,
+  type SessionGoalDraftConfig,
+} from "@/hooks/useSessionGoal";
+import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
+import { useWorkspaceChangeSignal } from "@/hooks/useWorkspaceChangeSignal";
+import {
+  isIntroductionAbsentError,
+  shouldShowIntroductionOverlay,
+  useIntroductionContent,
+} from "@/hooks/useIntroductionContent";
+import { resolveAdoptedBuiltinProviderId } from "@/utils/sessionConfigAdoption";
+import {
+  getSessionCronTask,
+  isTaskExecuting,
+  createCronTask,
+  startCronTask as startCronTaskIpc,
+} from "@/api/cronTaskClient";
+import { updateSession as patchSessionMetadata } from "@/api/sessionClient";
+import { sessionHasPersistentOwners } from "@/api/tauriClient";
+import {
+  persistInputOptionChange,
+  type BuiltinModelSelection,
+  type BuiltinProviderEnvPolicy,
+} from "@/api/persistInputOption";
+import { materializePendingSessionConfig } from "@/api/sessionMaterialize";
+import type { CronTask } from "@/types/cronTask";
+import type { SessionGoal } from "@/types/sessionGoal";
+import { isTerminalGoalStatus } from "@/types/sessionGoal";
+import { formatCronScheduleDescription } from "@/utils/cronTaskI18n";
+import CronTaskCard from "@/components/scheduled-tasks/CronTaskCard";
+import CronTaskDetailPanel from "@/components/CronTaskDetailPanel";
+import { projectTaskExecutionOverrides } from "@/utils/taskProviderProjection";
+import { isTauriEnvironment } from "@/utils/browserMock";
+import { isDebugMode } from "@/utils/debug";
+import { getChannelTypeLabel } from "@/utils/taskCenterUtils";
+import { appendCronPromptToDraft } from "@/utils/cronComposerRecovery";
+import { launchSupportDiagnostics } from "@/utils/supportDiagnostics";
+import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  type PermissionMode,
+  type McpServerDefinition,
+  type Provider,
+  getEffectiveModelAliases,
+} from "@/config/types";
+import { syncMcpServerNames } from "@/components/tools/toolBadgeConfig";
 import {
   getAllMcpServers,
   getEnabledMcpServerIds,
   isProviderAvailable,
   resolveProvider,
-} from '@/config/configService';
-import { patchAgentConfig, getAgentById } from '@/config/services/agentConfigService';
-import { BrowserPanelContext } from '@/context/BrowserPanelContext';
-import { BROWSER_BLANK_URL } from '@/components/browserConstants';
-import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
+} from "@/config/configService";
+import {
+  patchAgentConfig,
+  getAgentById,
+} from "@/config/services/agentConfigService";
+import { BrowserPanelContext } from "@/context/BrowserPanelContext";
+import { BROWSER_BLANK_URL } from "@/components/browserConstants";
+import { CUSTOM_EVENTS, isPendingSessionId } from "../../shared/constants";
 import {
   IMAGE_UNDERSTANDING_TOOL_ID,
   OFFICIAL_TOOLS,
   isImageUnderstandingToolConfigured,
   normalizeOfficialToolIds,
   type OfficialToolId,
-} from '../../shared/official-tools';
-import { isSupportedLocale } from '../../shared/i18n';
-import { workspacePathsEqual } from '../../shared/workspacePath';
-import { coerceReasoningEffortForRuntime, reasoningEffortChoices } from '../../shared/reasoningEffort';
-import type { ProviderHistoryEnv } from '../../shared/providerHistory';
-import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
-import type { ProviderRoute } from '../../shared/providerRoute';
+} from "../../shared/official-tools";
+import { isSupportedLocale } from "../../shared/i18n";
+import { workspacePathsEqual } from "../../shared/workspacePath";
+import {
+  coerceReasoningEffortForRuntime,
+  reasoningEffortChoices,
+} from "../../shared/reasoningEffort";
+import type { ProviderHistoryEnv } from "../../shared/providerHistory";
+import {
+  createConcreteProviderRoute,
+  hasProviderRouteCredential,
+  isConcreteProviderRoute,
+} from "../../shared/providerRoute";
+import type { ProviderRoute } from "../../shared/providerRoute";
 import {
   isRuntimeBackedProvider,
   managedCodexProviderPermissionToRuntimePermission,
@@ -101,9 +168,9 @@ import {
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
   type ProviderExecutionIntent,
-} from '../../shared/providerExecution';
-import type { SessionOrigin } from '../../shared/session-origin';
-import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
+} from "../../shared/providerExecution";
+import type { SessionOrigin } from "../../shared/session-origin";
+import type { CapabilityInitialSelect } from "../../shared/skillsTypes";
 import {
   buildRuntimeChangePatch,
   CC_MODELS,
@@ -113,11 +180,23 @@ import {
   coercePermissionModeForRuntime,
   GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
-} from '../../shared/types/runtime';
-import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics } from '../../shared/types/runtime';
-import type { FilePreviewIntent, InitialMessage, SidecarConfigDisposition } from '@/types/tab';
-import type { FilePreviewFocusTarget } from '@/types/filePreview';
-import { shouldAutoSendInitialMessage } from '@/utils/initialMessageAutoSend';
+} from "../../shared/types/runtime";
+import type {
+  RuntimeType,
+  RuntimeDetections,
+  RuntimeConfig,
+  RuntimeDiagnostics,
+} from "../../shared/types/runtime";
+import type {
+  FilePreviewIntent,
+  InitialMessage,
+  SidecarConfigDisposition,
+} from "@/types/tab";
+import type { FilePreviewFocusTarget } from "@/types/filePreview";
+import {
+  resolveInitialMessageProvider,
+  shouldAutoSendInitialMessage,
+} from "@/utils/initialMessageAutoSend";
 import {
   canResumeProviderHistoryForSwitch,
   resolveBuiltinPermissionMode,
@@ -127,32 +206,42 @@ import {
   shouldBlockSendForLabsDisabledExternalRuntime,
   shouldResetModelOnProviderChange,
   shouldSkipSnapshotWrite,
-} from '@/utils/optionResolve';
-import { buildProviderSwitchSessionBirth } from '@/utils/providerSwitchSessionBirth';
+} from "@/utils/optionResolve";
+import { buildProviderSwitchSessionBirth } from "@/utils/providerSwitchSessionBirth";
 import {
   projectInputChromeRuntime,
   shouldUseExternalRuntimeInputControls,
-} from '@/utils/runtimeUiProjection';
-import { DEFAULT_WORKSPACE_LAYOUT_METRICS, resolveWorkspacePanelMode } from '@/utils/chatWorkspaceLayout';
+} from "@/utils/runtimeUiProjection";
+import {
+  DEFAULT_WORKSPACE_LAYOUT_METRICS,
+  resolveWorkspacePanelMode,
+} from "@/utils/chatWorkspaceLayout";
 import {
   isManagedProviderSessionSnapshot,
   managedProviderSnapshotModel,
   managedProviderSnapshotProviderId,
   shouldSessionSnapshotUseProviderPicker,
-} from '@/utils/sessionSnapshotProviderProjection';
-import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthFields';
+} from "@/utils/sessionSnapshotProviderProjection";
+import { coerceRuntimeBirthPermissionMode } from "../../shared/runtimeBirthFields";
 // CronTaskConfig type is used via useCronTask hook
 
-import { getRichDocKind, isPreviewable, type RichDocKind } from '../../shared/fileTypes';
+import {
+  getRichDocKind,
+  isPreviewable,
+  type RichDocKind,
+} from "../../shared/fileTypes";
 
-const DESKTOP_SESSION_FORK_ORIGIN: SessionOrigin = { kind: 'desktop', surface: 'session_fork' };
+const DESKTOP_SESSION_FORK_ORIGIN: SessionOrigin = {
+  kind: "desktop",
+  surface: "session_fork",
+};
 
 type SplitPreviewFile = {
   name: string;
   content: string;
   size: number;
   path: string;
-  sourceScope?: 'workspace' | 'local';
+  sourceScope?: "workspace" | "local";
   localPath?: string;
   richDocKind?: RichDocKind;
   initialEditMode?: boolean;
@@ -173,7 +262,7 @@ type WorkspaceLayoutMetrics = {
 };
 
 function readRootPixelToken(tokenName: string, fallback: number): number {
-  if (typeof document === 'undefined') return fallback;
+  if (typeof document === "undefined") return fallback;
   const value = Number.parseFloat(
     getComputedStyle(document.documentElement).getPropertyValue(tokenName),
   );
@@ -182,13 +271,16 @@ function readRootPixelToken(tokenName: string, fallback: number): number {
 
 function readWorkspaceLayoutMetrics(): WorkspaceLayoutMetrics {
   return {
-    viewportWidthPx: typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth,
+    viewportWidthPx:
+      typeof window === "undefined"
+        ? Number.POSITIVE_INFINITY
+        : window.innerWidth,
     contentMinWidthPx: readRootPixelToken(
-      '--breakpoint-mobile',
+      "--breakpoint-mobile",
       DEFAULT_WORKSPACE_LAYOUT_METRICS.contentMinWidthPx,
     ),
     sidebarMinWidthPx: readRootPixelToken(
-      '--sidebar-min-width',
+      "--sidebar-min-width",
       DEFAULT_WORKSPACE_LAYOUT_METRICS.sidebarMinWidthPx,
     ),
   };
@@ -196,127 +288,175 @@ function readWorkspaceLayoutMetrics(): WorkspaceLayoutMetrics {
 
 function shouldShowWorkspaceByDefault(): boolean {
   const metrics = readWorkspaceLayoutMetrics();
-  return metrics.viewportWidthPx - metrics.sidebarMinWidthPx >= metrics.contentMinWidthPx;
+  return (
+    metrics.viewportWidthPx - metrics.sidebarMinWidthPx >=
+    metrics.contentMinWidthPx
+  );
 }
 
 // Lazy load FilePreviewModal for split view panel
-const FilePreviewModal = lazy(() => import('@/components/FilePreviewModal'));
+const FilePreviewModal = lazy(() => import("@/components/FilePreviewModal"));
 // Lazy load TerminalPanel for embedded terminal
-const LazyTerminalPanel = lazy(() => import('@/components/TerminalPanel').then(m => ({ default: m.TerminalPanel })));
+const LazyTerminalPanel = lazy(() =>
+  import("@/components/TerminalPanel").then((m) => ({
+    default: m.TerminalPanel,
+  })),
+);
 // Lazy load BrowserPanel for embedded browser
-const LazyBrowserPanel = lazy(() => import('@/components/BrowserPanel'));
+const LazyBrowserPanel = lazy(() => import("@/components/BrowserPanel"));
 // Lazy load IntroductionOverlay for empty session welcome content
-const LazyIntroductionOverlay = lazy(() => import('@/components/IntroductionOverlay'));
+const LazyIntroductionOverlay = lazy(
+  () => import("@/components/IntroductionOverlay"),
+);
 // Terminal chrome now uses CSS tokens that auto-switch with light/dark theme.
 // No need for cached theme constants — the header uses var(--paper), var(--ink), etc.
 
 /** Human-readable label for a runtime type (used in confirm dialogs, toasts, etc.) */
 function getRuntimeDisplayLabel(runtime: RuntimeType | undefined): string {
   switch (runtime) {
-    case 'claude-code': return 'Claude Code';
-    case 'codex': return 'Codex';
-    case 'gemini': return 'Gemini CLI';
-    case 'builtin':
+    case "claude-code":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "gemini":
+      return "Gemini CLI";
+    case "builtin":
     default:
-      return 'MyAgents';
+      return "MyAgents";
   }
 }
 
-function buildBuiltinProviderRoute(provider: Provider | undefined, model: string | undefined): ProviderRoute | undefined {
+function buildBuiltinProviderRoute(
+  provider: Provider | undefined,
+  model: string | undefined,
+): ProviderRoute | undefined {
   if (!provider || !model) return undefined;
   if (isRuntimeBackedProvider(provider)) return undefined;
   return createConcreteProviderRoute(provider.id, model);
 }
 
 function buildProviderExecutionIntent(
-  provider: Pick<Provider, 'id' | 'execution'> | undefined,
+  provider: Pick<Provider, "id" | "execution"> | undefined,
   model: string | undefined,
 ): ProviderExecutionIntent | undefined {
   if (!provider || !model) return undefined;
   return toProviderExecutionIntent(provider, model);
 }
 
-function isRuntimeBackedIntent(intent: ProviderExecutionIntent | undefined): boolean {
-  return intent?.kind === 'runtime-backed-provider';
+function isRuntimeBackedIntent(
+  intent: ProviderExecutionIntent | undefined,
+): boolean {
+  return intent?.kind === "runtime-backed-provider";
 }
 
-function isCodexSubscriptionIntent(intent: ProviderExecutionIntent | undefined): boolean {
-  return intent?.kind === 'runtime-backed-provider'
-    && intent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID;
+function isCodexSubscriptionIntent(
+  intent: ProviderExecutionIntent | undefined,
+): boolean {
+  return (
+    intent?.kind === "runtime-backed-provider" &&
+    intent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+  );
 }
 
 function providerDisplayName(
-  provider: Pick<Provider, 'id' | 'name'> | undefined,
+  provider: Pick<Provider, "id" | "name"> | undefined,
   fallback: string,
 ): string {
   return provider?.name?.trim() || provider?.id || fallback;
 }
 
-function buildProviderSwitchDialogCopy(t: TFunction<'chat'>, args: {
-  currentProvider?: Pick<Provider, 'id' | 'name'>;
-  targetProvider?: Pick<Provider, 'id' | 'name'>;
-  currentIntent?: ProviderExecutionIntent;
-  targetIntent?: ProviderExecutionIntent;
-  targetModel?: string;
-  targetProviderId?: string;
-}): SwitchDialogCopy {
+function buildProviderSwitchDialogCopy(
+  t: TFunction<"chat">,
+  args: {
+    currentProvider?: Pick<Provider, "id" | "name">;
+    targetProvider?: Pick<Provider, "id" | "name">;
+    currentIntent?: ProviderExecutionIntent;
+    targetIntent?: ProviderExecutionIntent;
+    targetModel?: string;
+    targetProviderId?: string;
+  },
+): SwitchDialogCopy {
   const currentIsCodex = isCodexSubscriptionIntent(args.currentIntent);
   const targetIsCodex = isCodexSubscriptionIntent(args.targetIntent);
   const currentProviderName = currentIsCodex
-    ? t('shell.providerSwitch.codexSubscription')
-    : providerDisplayName(args.currentProvider, t('shell.providerSwitch.currentProviderFallback'));
+    ? t("shell.providerSwitch.codexSubscription")
+    : providerDisplayName(
+        args.currentProvider,
+        t("shell.providerSwitch.currentProviderFallback"),
+      );
   const targetProviderName = targetIsCodex
-    ? t('shell.providerSwitch.codexSubscription')
-    : providerDisplayName(args.targetProvider, args.targetProviderId ?? t('shell.providerSwitch.targetProviderFallback'));
+    ? t("shell.providerSwitch.codexSubscription")
+    : providerDisplayName(
+        args.targetProvider,
+        args.targetProviderId ??
+          t("shell.providerSwitch.targetProviderFallback"),
+      );
 
   if (targetIsCodex && !currentIsCodex) {
     return {
-      title: t('shell.providerSwitch.codexTarget.title'),
-      message: t('shell.providerSwitch.codexTarget.message'),
-      confirmText: t('shell.providerSwitch.codexTarget.confirm'),
+      title: t("shell.providerSwitch.codexTarget.title"),
+      message: t("shell.providerSwitch.codexTarget.message"),
+      confirmText: t("shell.providerSwitch.codexTarget.confirm"),
     };
   }
 
   if (currentIsCodex && !targetIsCodex) {
     return {
-      title: t('shell.providerSwitch.newSessionTitle'),
-      message: t('shell.providerSwitch.codexCurrent.message'),
-      confirmText: t('shell.providerSwitch.createNewSession'),
+      title: t("shell.providerSwitch.newSessionTitle"),
+      message: t("shell.providerSwitch.codexCurrent.message"),
+      confirmText: t("shell.providerSwitch.createNewSession"),
     };
   }
 
-  if (isRuntimeBackedIntent(args.currentIntent) || isRuntimeBackedIntent(args.targetIntent)) {
+  if (
+    isRuntimeBackedIntent(args.currentIntent) ||
+    isRuntimeBackedIntent(args.targetIntent)
+  ) {
     return {
-      title: t('shell.providerSwitch.newSessionTitle'),
-      message: t('shell.providerSwitch.runtimeBacked.message'),
-      confirmText: t('shell.providerSwitch.createNewSession'),
+      title: t("shell.providerSwitch.newSessionTitle"),
+      message: t("shell.providerSwitch.runtimeBacked.message"),
+      confirmText: t("shell.providerSwitch.createNewSession"),
     };
   }
 
-  const sameProvider = !!args.currentProvider?.id
-    && args.currentProvider.id === (args.targetProvider?.id ?? args.targetProviderId);
+  const sameProvider =
+    !!args.currentProvider?.id &&
+    args.currentProvider.id ===
+      (args.targetProvider?.id ?? args.targetProviderId);
   if (sameProvider) {
-    const targetModel = args.targetModel ?? t('shell.providerSwitch.targetModelFallback');
+    const targetModel =
+      args.targetModel ?? t("shell.providerSwitch.targetModelFallback");
     return {
-      title: t('shell.providerSwitch.newSessionTitle'),
-      message: t('shell.providerSwitch.sameProvider.message', { targetModel }),
-      confirmText: t('shell.providerSwitch.createNewSession'),
+      title: t("shell.providerSwitch.newSessionTitle"),
+      message: t("shell.providerSwitch.sameProvider.message", { targetModel }),
+      confirmText: t("shell.providerSwitch.createNewSession"),
     };
   }
 
   return {
-    title: t('shell.providerSwitch.newSessionTitle'),
-    message: t('shell.providerSwitch.crossProvider.message', { currentProviderName, targetProviderName }),
-    confirmText: t('shell.providerSwitch.createNewSession'),
+    title: t("shell.providerSwitch.newSessionTitle"),
+    message: t("shell.providerSwitch.crossProvider.message", {
+      currentProviderName,
+      targetProviderName,
+    }),
+    confirmText: t("shell.providerSwitch.createNewSession"),
   };
 }
 
-function coerceExternalRuntimeModelForUi(model: string | undefined, runtime: RuntimeType): string | undefined {
-  return runtime === 'builtin' ? model : coerceModelForRuntime(model, runtime);
+function coerceExternalRuntimeModelForUi(
+  model: string | undefined,
+  runtime: RuntimeType,
+): string | undefined {
+  return runtime === "builtin" ? model : coerceModelForRuntime(model, runtime);
 }
 
-function coerceExternalRuntimePermissionForUi(mode: string | undefined, runtime: RuntimeType): string | undefined {
-  return runtime === 'builtin' ? mode : coercePermissionModeForRuntime(mode, runtime);
+function coerceExternalRuntimePermissionForUi(
+  mode: string | undefined,
+  runtime: RuntimeType,
+): string | undefined {
+  return runtime === "builtin"
+    ? mode
+    : coercePermissionModeForRuntime(mode, runtime);
 }
 
 function coerceInitialMessageRuntimePermission(
@@ -325,21 +465,32 @@ function coerceInitialMessageRuntimePermission(
 ): string | undefined {
   const identity = initialMessage.providerExecutionIdentity;
   if (identity) {
-    return runtimeBackedProviderPermissionMode(identity, initialMessage.permissionMode);
+    return runtimeBackedProviderPermissionMode(
+      identity,
+      initialMessage.permissionMode,
+    );
   }
-  return coerceExternalRuntimePermissionForUi(initialMessage.permissionMode, runtime);
+  return coerceExternalRuntimePermissionForUi(
+    initialMessage.permissionMode,
+    runtime,
+  );
 }
 
-function coerceReasoningEffortForUi(effort: string | undefined, runtime: RuntimeType): string | undefined {
+function coerceReasoningEffortForUi(
+  effort: string | undefined,
+  runtime: RuntimeType,
+): string | undefined {
   return coerceReasoningEffortForRuntime(effort, runtime);
 }
 
 function toProviderHistoryEnv(
-  provider: Pick<Provider, 'id' | 'type' | 'config' | 'apiProtocol'> | undefined,
+  provider:
+    | Pick<Provider, "id" | "type" | "config" | "apiProtocol">
+    | undefined,
   model?: string,
 ): ProviderHistoryEnv | undefined {
   if (!provider) return model ? { model } : undefined;
-  if (provider.type === 'subscription') {
+  if (provider.type === "subscription") {
     return {
       providerId: provider.id,
       model,
@@ -364,23 +515,31 @@ const SessionTitleEditor = forwardRef<
   SessionTitleEditorHandle,
   { title: string; onRename: (newTitle: string) => void }
 >(function SessionTitleEditor({ title, onRename }, ref) {
-  const { t } = useTranslation('chat');
+  const { t } = useTranslation("chat");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { setDraft(title); }, [title]);
-  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
+  useEffect(() => {
+    setDraft(title);
+  }, [title]);
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
 
-  useImperativeHandle(ref, () => ({
-    openRename: () => setEditing(true),
-  }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      openRename: () => setEditing(true),
+    }),
+    [],
+  );
 
   const commit = () => {
     const trimmed = draft.trim();
     setEditing(false);
     if (trimmed && trimmed !== title) {
-      track('session_title_edit', {});
+      track("session_title_edit", {});
       onRename(trimmed);
     }
   };
@@ -392,18 +551,21 @@ const SessionTitleEditor = forwardRef<
           ref={inputRef}
           className="w-full rounded border border-[var(--line)] bg-[var(--paper-inset)] px-1.5 py-0.5 text-sm font-medium text-[var(--ink)] outline-none focus:border-[var(--accent)]"
           value={draft}
-          onChange={e => setDraft(e.target.value)}
+          onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
-          onKeyDown={e => {
-            if (e.key === 'Enter') inputRef.current?.blur();
-            if (e.key === 'Escape') { setDraft(title); setEditing(false); }
+          onKeyDown={(e) => {
+            if (e.key === "Enter") inputRef.current?.blur();
+            if (e.key === "Escape") {
+              setDraft(title);
+              setEditing(false);
+            }
           }}
         />
       ) : (
         <span
           className="block truncate cursor-pointer px-1.5 py-0.5 text-sm font-medium text-[var(--ink-subtle)] hover:text-[var(--ink)] transition-colors"
           onClick={() => setEditing(true)}
-          title={t('shell.sessionTitle.renameTitle')}
+          title={t("shell.sessionTitle.renameTitle")}
         >
           {title}
         </span>
@@ -417,7 +579,10 @@ interface ChatProps {
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Called when user selects a different session from history - uses Session singleton logic */
-  onSwitchSession?: (sessionId: string, historyEntrySource?: HistoryEntrySource) => void;
+  onSwitchSession?: (
+    sessionId: string,
+    historyEntrySource?: HistoryEntrySource,
+  ) => void;
   /** Called when user opens a history session in a NEW tab (vs. switching the current one) */
   onOpenSessionInNewTab?: (sessionId: string, title: string) => void;
   /** Initial message from Launcher for auto-send on workspace open */
@@ -436,18 +601,40 @@ interface ChatProps {
   /** Called when user renames the session */
   onRenameSession?: (newTitle: string) => void;
   /** Called when user forks session at a specific assistant message — App creates new tab */
-  onForkSession?: (newSessionId: string, agentDir: string, title: string, initialMessage?: string) => Promise<boolean>;
+  onForkSession?: (
+    newSessionId: string,
+    agentDir: string,
+    title: string,
+    initialMessage?: string,
+  ) => Promise<boolean>;
   /** Runtime-only request from App/floating-ball to open a file preview once. */
   pendingFilePreview?: FilePreviewIntent;
   onFilePreviewIntentConsumed?: (intentId: string) => void;
   sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
 
-function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is SessionGoal {
+function isCurrentSessionGoal(
+  goal: SessionGoal | null | undefined,
+): goal is SessionGoal {
   return Boolean(goal);
 }
 
-export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({
+  onBack,
+  onNewSession,
+  onSwitchSession,
+  onOpenSessionInNewTab,
+  initialMessage,
+  onInitialMessageConsumed,
+  sidecarConfigDisposition,
+  onSidecarConfigAdopted,
+  sessionTitle,
+  onRenameSession,
+  onForkSession,
+  pendingFilePreview,
+  onFilePreviewIntentConsumed,
+  sessionNotificationBadgeCounts,
+}: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -503,9 +690,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   } = useTabState();
   const isActive = useTabActive();
   const toast = useToast();
-  const { t } = useTranslation('chat');
-  const { t: tTask, i18n } = useTranslation('task');
-  const taskLocale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
+  const { t } = useTranslation("chat");
+  const { t: tTask, i18n } = useTranslation("task");
+  const taskLocale = isSupportedLocale(i18n.language) ? i18n.language : "zh-CN";
   const tRef = useRef(t);
   tRef.current = t;
 
@@ -518,61 +705,115 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const fileService = useWorkspaceFileService(agentDir);
 
   // Get config to find current project provider
-  const { config, projects, providers, patchProject, apiKeys, providerVerifyStatus, refreshProviderData, refreshConfig } = useConfig();
-  const currentProject = projects.find((p) => workspacePathsEqual(p.path, agentDir));
+  const {
+    config,
+    projects,
+    providers,
+    patchProject,
+    apiKeys,
+    providerVerifyStatus,
+    isLoading: isConfigLoading,
+    refreshProviderData,
+    refreshConfig,
+  } = useConfig();
+  const currentProject = projects.find((p) =>
+    workspacePathsEqual(p.path, agentDir),
+  );
   // AgentConfig is source of truth for AI settings, Project is fallback for non-agent workspaces
-  const currentAgent = currentProject?.agentId ? getAgentById(config, currentProject.agentId) : undefined;
+  const currentAgent = currentProject?.agentId
+    ? getAgentById(config, currentProject.agentId)
+    : undefined;
   // Local provider state: snapshot from AgentConfig (priority) or Project at creation.
   // Prevents cross-tab pollution when another tab patches the shared project.
-  const [selectedProviderId, setSelectedProviderId] = useState<string | undefined>(
-    currentAgent?.providerId ?? currentProject?.providerId ?? config.defaultProviderId ?? undefined
+  const [selectedProviderId, setSelectedProviderId] = useState<
+    string | undefined
+  >(
+    currentAgent?.providerId ??
+      currentProject?.providerId ??
+      config.defaultProviderId ??
+      undefined,
   );
   const sessionSnapshotOwnsConfig = !!sessionMeta?.configSnapshotAt;
-  const waitingForExistingSessionMeta = !!sessionId && !isPendingSessionId(sessionId) && !sessionMeta;
-  const sessionSnapshotRuntime = (sessionMeta?.runtime as RuntimeType | undefined) ?? 'builtin';
-  const sessionSnapshotIsManagedProvider = sessionSnapshotOwnsConfig
-    && isManagedProviderSessionSnapshot(sessionMeta);
-  const sessionSnapshotUsesProviderPicker = sessionSnapshotOwnsConfig
-    && shouldSessionSnapshotUseProviderPicker({
+  const waitingForExistingSessionMeta =
+    !!sessionId && !isPendingSessionId(sessionId) && !sessionMeta;
+  const sessionSnapshotRuntime =
+    (sessionMeta?.runtime as RuntimeType | undefined) ?? "builtin";
+  const sessionSnapshotIsManagedProvider =
+    sessionSnapshotOwnsConfig && isManagedProviderSessionSnapshot(sessionMeta);
+  const sessionSnapshotUsesProviderPicker =
+    sessionSnapshotOwnsConfig &&
+    shouldSessionSnapshotUseProviderPicker({
       session: sessionMeta,
       runtime: sessionSnapshotRuntime,
     });
-  const concreteSessionProviderRoute = isConcreteProviderRoute(sessionMeta?.providerRoute)
+  const concreteSessionProviderRoute = isConcreteProviderRoute(
+    sessionMeta?.providerRoute,
+  )
     ? sessionMeta.providerRoute
     : undefined;
   const sessionSnapshotProviderId = sessionSnapshotUsesProviderPicker
-    ? (sessionSnapshotIsManagedProvider
-      ? (sessionMeta ? managedProviderSnapshotProviderId(sessionMeta) : undefined)
-      : (concreteSessionProviderRoute?.providerId ?? resolveLegacyBuiltinSnapshotProviderId({
-        snapshotProviderId: sessionMeta?.providerId,
-        snapshotModel: sessionMeta?.model,
-        selectedProviderId,
-        providers,
-        apiKeys,
-        providerVerifyStatus,
-      })))
+    ? sessionSnapshotIsManagedProvider
+      ? sessionMeta
+        ? managedProviderSnapshotProviderId(sessionMeta)
+        : undefined
+      : (concreteSessionProviderRoute?.providerId ??
+        resolveLegacyBuiltinSnapshotProviderId({
+          snapshotProviderId: sessionMeta?.providerId,
+          snapshotModel: sessionMeta?.model,
+          selectedProviderId,
+          providers,
+          apiKeys,
+          providerVerifyStatus,
+        }))
     : undefined;
   const effectiveSelectedProviderId = sessionSnapshotUsesProviderPicker
     ? sessionSnapshotProviderId
     : selectedProviderId;
-  const selectedProviderExact = effectiveSelectedProviderId ? providers.find(p => p.id === effectiveSelectedProviderId) : undefined;
+  const selectedProviderExact = effectiveSelectedProviderId
+    ? providers.find((p) => p.id === effectiveSelectedProviderId)
+    : undefined;
   const selectedProviderAvailable = selectedProviderExact
-    ? (
-      isRuntimeBackedProvider(selectedProviderExact)
-        ? isProviderAvailable(selectedProviderExact, apiKeys, providerVerifyStatus)
-        : sessionSnapshotOwnsConfig && selectedProviderExact.type === 'subscription'
-        ? hasProviderRouteCredential(selectedProviderExact, { apiKeys, verifyStatus: providerVerifyStatus })
-        : isProviderAvailable(selectedProviderExact, apiKeys, providerVerifyStatus)
-    )
+    ? isRuntimeBackedProvider(selectedProviderExact)
+      ? isProviderAvailable(
+          selectedProviderExact,
+          apiKeys,
+          providerVerifyStatus,
+        )
+      : sessionSnapshotOwnsConfig &&
+          selectedProviderExact.type === "subscription"
+        ? hasProviderRouteCredential(selectedProviderExact, {
+            apiKeys,
+            verifyStatus: providerVerifyStatus,
+          })
+        : isProviderAvailable(
+            selectedProviderExact,
+            apiKeys,
+            providerVerifyStatus,
+          )
     : false;
-  const availableProviderIdsForInput = useMemo(() => providers
-    .filter(provider => isRuntimeBackedProvider(provider)
-      ? isProviderAvailable(provider, apiKeys, providerVerifyStatus)
-      : provider.type === 'subscription'
-        ? provider.enabled !== false && hasProviderRouteCredential(provider, { apiKeys, verifyStatus: providerVerifyStatus })
-        : isProviderAvailable(provider, apiKeys, providerVerifyStatus))
-    .map(provider => provider.id), [providers, apiKeys, providerVerifyStatus]);
-  const fallbackProvider = resolveProvider(effectiveSelectedProviderId, providers, apiKeys, providerVerifyStatus);
+  const availableProviderIdsForInput = useMemo(
+    () =>
+      providers
+        .filter((provider) =>
+          isRuntimeBackedProvider(provider)
+            ? isProviderAvailable(provider, apiKeys, providerVerifyStatus)
+            : provider.type === "subscription"
+              ? provider.enabled !== false &&
+                hasProviderRouteCredential(provider, {
+                  apiKeys,
+                  verifyStatus: providerVerifyStatus,
+                })
+              : isProviderAvailable(provider, apiKeys, providerVerifyStatus),
+        )
+        .map((provider) => provider.id),
+    [providers, apiKeys, providerVerifyStatus],
+  );
+  const fallbackProvider = resolveProvider(
+    effectiveSelectedProviderId,
+    providers,
+    apiKeys,
+    providerVerifyStatus,
+  );
   const currentProvider = resolveCurrentProviderForSession({
     sessionSnapshotOwnsConfig,
     selectedProviderId: effectiveSelectedProviderId,
@@ -583,16 +824,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const currentProviderForHistory = sessionSnapshotOwnsConfig
     ? selectedProviderExact
     : currentProvider;
-  const builtinSnapshotProviderHistoryUnknown = sessionSnapshotOwnsConfig
-    && sessionSnapshotRuntime === 'builtin'
-    && !!sessionMeta?.model
-    && !currentProviderForHistory;
-  const builtinSnapshotProviderSelectionIncomplete = sessionSnapshotOwnsConfig
-    && sessionSnapshotRuntime === 'builtin'
-    && !!sessionMeta?.model
-    && !effectiveSelectedProviderId;
-  const currentProviderAvailableForInput = builtinSnapshotProviderSelectionIncomplete
-    || (!!currentProvider && availableProviderIdsForInput.includes(currentProvider.id));
+  const builtinSnapshotProviderHistoryUnknown =
+    sessionSnapshotOwnsConfig &&
+    sessionSnapshotRuntime === "builtin" &&
+    !!sessionMeta?.model &&
+    !currentProviderForHistory;
+  const builtinSnapshotProviderSelectionIncomplete =
+    sessionSnapshotOwnsConfig &&
+    sessionSnapshotRuntime === "builtin" &&
+    !!sessionMeta?.model &&
+    !effectiveSelectedProviderId;
+  const currentProviderAvailableForInput =
+    builtinSnapshotProviderSelectionIncomplete ||
+    (!!currentProvider &&
+      availableProviderIdsForInput.includes(currentProvider.id));
 
   // PERFORMANCE: Ref-stabilize object deps used in handleSendMessage
   // Prevents useCallback from creating new references when these objects change,
@@ -609,8 +854,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   /** Build providerEnv for a given provider, including modelAliases for sub-agent model resolution */
   const buildProviderEnv = useCallback((provider: typeof currentProvider) => {
-    if (!provider || provider.type === 'subscription') return undefined;
-    const aliases = getEffectiveModelAliases(provider, configRef.current.providerModelAliases);
+    if (!provider || provider.type === "subscription") return undefined;
+    const aliases = getEffectiveModelAliases(
+      provider,
+      configRef.current.providerModelAliases,
+    );
     return {
       providerId: provider.id,
       providerName: provider.name,
@@ -633,39 +881,53 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Imperative handle for the inline title editor — lets the SessionMenuButton's
   // "重命名" item invoke the same flow as clicking the title.
   const titleEditorRef = useRef<SessionTitleEditorHandle>(null);
-  const [workspaceLayoutMetrics, setWorkspaceLayoutMetrics] = useState(readWorkspaceLayoutMetrics);
-  const isNarrowLayout = workspaceLayoutMetrics.viewportWidthPx < workspaceLayoutMetrics.contentMinWidthPx;
+  const [workspaceLayoutMetrics, setWorkspaceLayoutMetrics] = useState(
+    readWorkspaceLayoutMetrics,
+  );
+  const isNarrowLayout =
+    workspaceLayoutMetrics.viewportWidthPx <
+    workspaceLayoutMetrics.contentMinWidthPx;
   // If workspace would render as an overlay at startup, keep it hidden so it
   // does not block the chat before the user explicitly opens it.
-  const [showWorkspace, setShowWorkspace] = useState(shouldShowWorkspaceByDefault);
+  const [showWorkspace, setShowWorkspace] = useState(
+    shouldShowWorkspaceByDefault,
+  );
   const [showWorkspaceConfig, setShowWorkspaceConfig] = useState(false); // Workspace config panel
   // State to trigger workspace refresh
   const [workspaceRefreshTrigger, setWorkspaceRefreshTrigger] = useState(0);
-  const [introductionRefreshTrigger, setIntroductionRefreshTrigger] = useState(0);
-  const workspaceChangeSignal = useWorkspaceChangeSignal(agentDir || null, fileService.isAvailable);
+  const [introductionRefreshTrigger, setIntroductionRefreshTrigger] =
+    useState(0);
+  const workspaceChangeSignal = useWorkspaceChangeSignal(
+    agentDir || null,
+    fileService.isAvailable,
+  );
   // Introduction overlay: INTRODUCTION.md content for empty session welcome.
   // Workspace-scoped, not session-scoped: sidecar/session id transitions must not
   // unmount and replay the welcome page while a fresh workspace is booting.
-  const readIntroductionContent = useCallback(async (path: string) => {
-    if (!fileService.isAvailable) return null;
-    try {
-      const preview = await fileService.readPreview({ path });
-      return preview.content;
-    } catch (err) {
-      if (isIntroductionAbsentError(err)) return null;
-      throw err;
-    }
-  }, [fileService]);
+  const readIntroductionContent = useCallback(
+    async (path: string) => {
+      if (!fileService.isAvailable) return null;
+      try {
+        const preview = await fileService.readPreview({ path });
+        return preview.content;
+      } catch (err) {
+        if (isIntroductionAbsentError(err)) return null;
+        throw err;
+      }
+    },
+    [fileService],
+  );
   const introductionContent = useIntroductionContent(
     agentDir,
     introductionRefreshTrigger + workspaceChangeSignal,
     readIntroductionContent,
   );
   useEffect(() => {
-    const updateLayoutMetrics = () => setWorkspaceLayoutMetrics(readWorkspaceLayoutMetrics());
+    const updateLayoutMetrics = () =>
+      setWorkspaceLayoutMetrics(readWorkspaceLayoutMetrics());
     updateLayoutMetrics();
-    window.addEventListener('resize', updateLayoutMetrics);
-    return () => window.removeEventListener('resize', updateLayoutMetrics);
+    window.addEventListener("resize", updateLayoutMetrics);
+    return () => window.removeEventListener("resize", updateLayoutMetrics);
   }, []);
 
   // Split view: right-side file preview panel (experimental).
@@ -675,15 +937,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const isSplitViewEnabled = config.experimentalSplitView ?? true;
   const [splitFile, setSplitFile] = useState<SplitPreviewFile | null>(null);
   // Clear split panel when feature is turned off (prevents stale split state)
-  useEffect(() => { if (!isSplitViewEnabled) setSplitFile(null); }, [isSplitViewEnabled]);
+  useEffect(() => {
+    if (!isSplitViewEnabled) setSplitFile(null);
+  }, [isSplitViewEnabled]);
   const [splitRatio, setSplitRatio] = useState(0.5); // 0-1, left panel fraction
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
-  const [isSplitWidthTransitioning, setIsSplitWidthTransitioning] = useState(false);
+  const [isSplitWidthTransitioning, setIsSplitWidthTransitioning] =
+    useState(false);
   const isDraggingSplitRef = useRef(false);
   const splitRatioRef = useRef(splitRatio);
   splitRatioRef.current = splitRatio;
   const isWindowsPlatform = useMemo(
-    () => typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win'),
+    () =>
+      typeof navigator !== "undefined" &&
+      navigator.platform.toLowerCase().includes("win"),
     [],
   );
   // Store drag listeners in refs so unmount cleanup can remove them
@@ -703,27 +970,36 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Clicking terminal icon sets true; clicking terminal × sets false.
   const [terminalPinned, setTerminalPinned] = useState(false);
   // Which view is active in the right panel: 'file', 'terminal', or 'browser'
-  const [splitActiveView, setSplitActiveView] = useState<'file' | 'terminal' | 'browser'>('file');
+  const [splitActiveView, setSplitActiveView] = useState<
+    "file" | "terminal" | "browser"
+  >("file");
 
   // ── Embedded browser state ──
   const [browserUrl, setBrowserUrl] = useState<string | null>(null);
   const [browserAlive, setBrowserAlive] = useState(false);
   // When browser is previewing a local file, store its metadata for editor toggle
-  const [browserSourceFile, setBrowserSourceFile] = useState<{ name: string; content: string; size: number; path: string } | null>(null);
+  const [browserSourceFile, setBrowserSourceFile] = useState<{
+    name: string;
+    content: string;
+    size: number;
+    path: string;
+  } | null>(null);
   // Live URL surfaced from BrowserPanel (Rust `browser:url-changed`). Drives
   // the split-view tab label; `browserUrl` is the seed URL only and never
   // updates after navigation.
-  const [browserCurrentUrl, setBrowserCurrentUrl] = useState<string>('');
+  const [browserCurrentUrl, setBrowserCurrentUrl] = useState<string>("");
   const handleBrowserUrlChange = useCallback((u: string) => {
     setBrowserCurrentUrl(u);
   }, []);
 
   // Derived: is the right split panel visible?
-  const splitPanelVisible = splitFile !== null
-    || (terminalPinned && (terminalAlive || splitActiveView === 'terminal'))
-    || (browserUrl !== null);
+  const splitPanelVisible =
+    splitFile !== null ||
+    (terminalPinned && (terminalAlive || splitActiveView === "terminal")) ||
+    browserUrl !== null;
   // Should the terminal component stay mounted? (for xterm.js state preservation)
-  const terminalMounted = terminalAlive || (terminalPinned && splitActiveView === 'terminal');
+  const terminalMounted =
+    terminalAlive || (terminalPinned && splitActiveView === "terminal");
 
   const splitWidthTransitionTimerRef = useRef<number | null>(null);
   const startSplitWidthTransitionSuspension = useCallback(() => {
@@ -737,11 +1013,14 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       splitWidthTransitionTimerRef.current = null;
     }, 320);
   }, [isWindowsPlatform]);
-  useEffect(() => () => {
-    if (splitWidthTransitionTimerRef.current !== null) {
-      window.clearTimeout(splitWidthTransitionTimerRef.current);
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (splitWidthTransitionTimerRef.current !== null) {
+        window.clearTimeout(splitWidthTransitionTimerRef.current);
+      }
+    },
+    [],
+  );
   const startBrowserSplitTransitionIfNeeded = useCallback(() => {
     if (!splitPanelVisible) startSplitWidthTransitionSuspension();
   }, [splitPanelVisible, startSplitWidthTransitionSuspension]);
@@ -753,60 +1032,72 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     contentMinWidthPx: workspaceLayoutMetrics.contentMinWidthPx,
     sidebarMinWidthPx: workspaceLayoutMetrics.sidebarMinWidthPx,
   });
-  const shouldUseWorkspaceOverlay = workspacePanelMode === 'overlay';
+  const shouldUseWorkspaceOverlay = workspacePanelMode === "overlay";
 
   // Cmd+W: split panel visible → always close the active view first (no focus detection).
   // Simpler mental model: Cmd+W closes from right to left, outside to inside.
   // Split panel acts as a buffer — absorbs Cmd+W before it reaches the tab.
   useCloseLayer(() => {
     if (!splitPanelVisible) return false;
-    if (splitActiveView === 'file' && splitFile) {
+    if (splitActiveView === "file" && splitFile) {
       setSplitFile(null);
-      if (browserUrl) setSplitActiveView('browser');
-      else if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
+      if (browserUrl) setSplitActiveView("browser");
+      else if (terminalPinned && terminalAlive) setSplitActiveView("terminal");
       return true;
     }
-    if (splitActiveView === 'terminal' && terminalPinned) {
+    if (splitActiveView === "terminal" && terminalPinned) {
       setTerminalPinned(false);
-      if (browserUrl) setSplitActiveView('browser');
-      else if (splitFile) setSplitActiveView('file');
+      if (browserUrl) setSplitActiveView("browser");
+      else if (splitFile) setSplitActiveView("file");
       return true;
     }
-    if (splitActiveView === 'browser' && browserUrl) {
+    if (splitActiveView === "browser" && browserUrl) {
       setBrowserUrl(null);
       setBrowserAlive(false);
       setBrowserSourceFile(null);
-      setBrowserCurrentUrl('');
-      if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-      else if (splitFile) setSplitActiveView('file');
+      setBrowserCurrentUrl("");
+      if (terminalPinned && terminalAlive) setSplitActiveView("terminal");
+      else if (splitFile) setSplitActiveView("file");
       return true;
     }
     return false;
   }, 0);
 
   // Fullscreen preview triggered from split panel's "全屏预览" button
-  const [fullscreenPreviewFile, setFullscreenPreviewFile] = useState<SplitPreviewFile | null>(null);
+  const [fullscreenPreviewFile, setFullscreenPreviewFile] =
+    useState<SplitPreviewFile | null>(null);
 
-  const handleSplitFilePreview = useCallback((file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
-    const ext = file.name.toLowerCase().split('.').pop();
-    const isLocalFile = file.sourceScope === 'local';
-    if ((ext === 'html' || ext === 'htm') && isSplitViewEnabled && !file.focusTarget) {
-      // HTML files → open in embedded browser for live preview
-      // Store file metadata so browser toolbar can offer "Edit Source" toggle
-      setBrowserSourceFile(isLocalFile ? null : file);
-      // Workspace files are relative to agentDir; local file links already carry
-      // an absolute path.
-      const sep = agentDir?.includes('\\') ? '\\' : '/';
-      const absPath = isLocalFile ? (file.localPath ?? file.path) : (agentDir ? `${agentDir}${sep}${file.path}` : file.path);
-      startBrowserSplitTransitionIfNeeded();
-      setBrowserUrl(absPath);
-      setSplitActiveView('browser');
-    } else {
-      setSplitFile({ ...file, initialEditMode: options?.initialEditMode });
-      setSplitActiveView('file');
-    }
-    // Keep workspace open — user can dismiss it manually
-  }, [isSplitViewEnabled, agentDir, startBrowserSplitTransitionIfNeeded]);
+  const handleSplitFilePreview = useCallback(
+    (file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
+      const ext = file.name.toLowerCase().split(".").pop();
+      const isLocalFile = file.sourceScope === "local";
+      if (
+        (ext === "html" || ext === "htm") &&
+        isSplitViewEnabled &&
+        !file.focusTarget
+      ) {
+        // HTML files → open in embedded browser for live preview
+        // Store file metadata so browser toolbar can offer "Edit Source" toggle
+        setBrowserSourceFile(isLocalFile ? null : file);
+        // Workspace files are relative to agentDir; local file links already carry
+        // an absolute path.
+        const sep = agentDir?.includes("\\") ? "\\" : "/";
+        const absPath = isLocalFile
+          ? (file.localPath ?? file.path)
+          : agentDir
+            ? `${agentDir}${sep}${file.path}`
+            : file.path;
+        startBrowserSplitTransitionIfNeeded();
+        setBrowserUrl(absPath);
+        setSplitActiveView("browser");
+      } else {
+        setSplitFile({ ...file, initialEditMode: options?.initialEditMode });
+        setSplitActiveView("file");
+      }
+      // Keep workspace open — user can dismiss it manually
+    },
+    [isSplitViewEnabled, agentDir, startBrowserSplitTransitionIfNeeded],
+  );
 
   useEffect(() => {
     if (!pendingFilePreview) return;
@@ -820,7 +1111,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const openIntentPreview = async () => {
       try {
         if (!fileService.isAvailable) {
-          toastRef.current.error(t('shell.toasts.previewWorkspaceUnavailable'));
+          toastRef.current.error(t("shell.toasts.previewWorkspaceUnavailable"));
           return;
         }
         const fileName = intent.path.split(/[/\\]/).pop() ?? intent.path;
@@ -830,7 +1121,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         if (richDocKind) {
           file = {
             name: fileName,
-            content: '',
+            content: "",
             size: 0,
             path: intent.path,
             richDocKind,
@@ -846,7 +1137,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             initialLineNumber: intent.initialLineNumber,
           };
         } else {
-          toastRef.current.info(t('shell.toasts.previewUnsupportedType'));
+          toastRef.current.info(t("shell.toasts.previewUnsupportedType"));
           return;
         }
 
@@ -858,8 +1149,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         }
       } catch (err) {
         if (!cancelled) {
-          console.error('[Chat] Failed to open pending file preview:', err);
-          toastRef.current.error(t('shell.toasts.previewOpenFailed'));
+          console.error("[Chat] Failed to open pending file preview:", err);
+          toastRef.current.error(t("shell.toasts.previewOpenFailed"));
         }
       } finally {
         if (!cancelled) consume();
@@ -883,16 +1174,19 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Open terminal in split panel (called from DirectoryPanel header button)
   const handleOpenTerminal = useCallback(() => {
     setTerminalPinned(true);
-    setSplitActiveView('terminal');
+    setSplitActiveView("terminal");
     // If terminal was already created, just switch view; otherwise TerminalPanel will create it
   }, []);
 
   // Open a URL in the embedded browser panel
-  const handleOpenInBrowserPanel = useCallback((url: string) => {
-    startBrowserSplitTransitionIfNeeded();
-    setBrowserUrl(url);
-    setSplitActiveView('browser');
-  }, [startBrowserSplitTransitionIfNeeded]);
+  const handleOpenInBrowserPanel = useCallback(
+    (url: string) => {
+      startBrowserSplitTransitionIfNeeded();
+      setBrowserUrl(url);
+      setSplitActiveView("browser");
+    },
+    [startBrowserSplitTransitionIfNeeded],
+  );
 
   // Open empty browser from toolbar button.
   // First click → create blank webview (BROWSER_BLANK_URL is a data: URL, not
@@ -901,7 +1195,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const handleOpenBrowser = useCallback(() => {
     startBrowserSplitTransitionIfNeeded();
     setBrowserUrl((prev) => prev ?? BROWSER_BLANK_URL);
-    setSplitActiveView('browser');
+    setSplitActiveView("browser");
   }, [startBrowserSplitTransitionIfNeeded]);
 
   const handleBrowserCreated = useCallback(() => setBrowserAlive(true), []);
@@ -909,15 +1203,15 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     setBrowserAlive(false);
     setBrowserUrl(null);
     setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
+    setBrowserCurrentUrl("");
   }, []);
   const handleBrowserClose = useCallback(() => {
     setBrowserUrl(null);
     setBrowserAlive(false);
     setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-    if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-    else if (splitFile) setSplitActiveView('file');
+    setBrowserCurrentUrl("");
+    if (terminalPinned && terminalAlive) setSplitActiveView("terminal");
+    else if (splitFile) setSplitActiveView("file");
   }, [terminalPinned, terminalAlive, splitFile]);
 
   // Switch from browser preview to editor for a local HTML file.
@@ -925,14 +1219,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // (browserSourceFile holds the initial snapshot which may be stale).
   const handleBrowserSwitchToEditor = useCallback(async () => {
     if (!browserSourceFile || !agentDir) return;
-    setSplitActiveView('file');
+    setSplitActiveView("file");
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const sep = agentDir.includes('\\') ? '\\' : '/';
+      const { invoke } = await import("@tauri-apps/api/core");
+      const sep = agentDir.includes("\\") ? "\\" : "/";
       const absPath = `${agentDir}${sep}${browserSourceFile.path}`;
-      const fresh = await invoke<string | null>('cmd_read_workspace_file', { path: absPath });
+      const fresh = await invoke<string | null>("cmd_read_workspace_file", {
+        path: absPath,
+      });
       if (fresh !== null) {
-        const updated = { ...browserSourceFile, content: fresh, size: new Blob([fresh]).size };
+        const updated = {
+          ...browserSourceFile,
+          content: fresh,
+          size: new Blob([fresh]).size,
+        };
         setBrowserSourceFile(updated);
         setSplitFile(updated);
       } else {
@@ -947,18 +1247,21 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Reloads webview so it reflects any edits saved to disk.
   const handleEditorSwitchToBrowser = useCallback(() => {
     if (!browserUrl) return;
-    setSplitActiveView('browser');
+    setSplitActiveView("browser");
     // Give auto-save a moment to flush, then reload the webview
     setTimeout(() => {
-      import('@tauri-apps/api/core').then(({ invoke: inv }) => {
-        inv('cmd_browser_reload', { tabId }).catch(() => {});
+      import("@tauri-apps/api/core").then(({ invoke: inv }) => {
+        inv("cmd_browser_reload", { tabId }).catch(() => {});
       });
     }, 300);
   }, [browserUrl, tabId]);
 
   // Stable context value for BrowserPanelContext (only provided when split view is available)
   const browserPanelCtx = useMemo(
-    () => (isSplitViewEnabled && !isNarrowLayout ? { openUrl: handleOpenInBrowserPanel } : null),
+    () =>
+      isSplitViewEnabled && !isNarrowLayout
+        ? { openUrl: handleOpenInBrowserPanel }
+        : null,
     [isSplitViewEnabled, isNarrowLayout, handleOpenInBrowserPanel],
   );
 
@@ -972,12 +1275,13 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const handler = (e: Event) => {
       if (!(e instanceof CustomEvent)) return;
       const url = (e.detail as { url?: unknown } | null)?.url;
-      if (typeof url !== 'string' || !url) return;
+      if (typeof url !== "string" || !url) return;
       e.preventDefault();
       browserPanelCtx.openUrl(url);
     };
     window.addEventListener(CUSTOM_EVENTS.OPEN_IN_BROWSER_PANEL, handler);
-    return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_IN_BROWSER_PANEL, handler);
+    return () =>
+      window.removeEventListener(CUSTOM_EVENTS.OPEN_IN_BROWSER_PANEL, handler);
   }, [isActive, browserPanelCtx]);
 
   // Cleanup terminal PTY on unmount (Tab close)
@@ -986,8 +1290,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       const id = terminalIdRef.current;
       if (id) {
         // Fire-and-forget: Rust will clean up the PTY
-        import('@tauri-apps/api/core').then(({ invoke }) => {
-          invoke('cmd_terminal_close', { terminalId: id }).catch(() => {});
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("cmd_terminal_close", { terminalId: id }).catch(() => {});
         });
       }
     };
@@ -999,12 +1303,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     setIsDraggingSplit(true);
     const startX = e.clientX;
     const startRatio = splitRatioRef.current;
-    const containerWidth = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect().width;
+    const containerWidth = (
+      e.currentTarget.parentElement as HTMLElement
+    ).getBoundingClientRect().width;
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!isDraggingSplitRef.current) return;
       const dx = ev.clientX - startX;
-      const newRatio = Math.max(0.35, Math.min(0.65, startRatio + dx / containerWidth));
+      const newRatio = Math.max(
+        0.35,
+        Math.min(0.65, startRatio + dx / containerWidth),
+      );
       setSplitRatio(newRatio);
     };
     const onMouseUp = () => {
@@ -1012,77 +1321,91 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       setIsDraggingSplit(false);
       dragMoveRef.current = null;
       dragUpRef.current = null;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
     };
     dragMoveRef.current = onMouseMove;
     dragUpRef.current = onMouseUp;
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
   }, []); // stable — uses ref for splitRatio
 
   // Cleanup drag listeners on unmount (prevents leak if component unmounts mid-drag)
   useEffect(() => {
     return () => {
-      if (dragMoveRef.current) document.removeEventListener('mousemove', dragMoveRef.current);
-      if (dragUpRef.current) document.removeEventListener('mouseup', dragUpRef.current);
+      if (dragMoveRef.current)
+        document.removeEventListener("mousemove", dragMoveRef.current);
+      if (dragUpRef.current)
+        document.removeEventListener("mouseup", dragUpRef.current);
       isDraggingSplitRef.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
     };
   }, []);
 
   const [workspaceRefreshKey, _setWorkspaceRefreshKey] = useState(0); // Key to trigger workspace refresh
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    (currentAgent?.permissionMode as PermissionMode | undefined) ?? currentProject?.permissionMode ?? 'auto'
+    (currentAgent?.permissionMode as PermissionMode | undefined) ??
+      currentProject?.permissionMode ??
+      "auto",
   );
   const [selectedModel, setSelectedModel] = useState<string | undefined>(
-    currentAgent?.model ?? currentProject?.model ?? currentProvider?.primaryModel
+    currentAgent?.model ??
+      currentProject?.model ??
+      currentProvider?.primaryModel,
   );
   const currentProviderExecutionIntent = useMemo(
-    () => sessionMeta?.providerExecutionIdentity
-      ?? buildProviderExecutionIntent(currentProviderForHistory, selectedModel),
+    () =>
+      sessionMeta?.providerExecutionIdentity ??
+      buildProviderExecutionIntent(currentProviderForHistory, selectedModel),
     [
       sessionMeta?.providerExecutionIdentity,
       currentProviderForHistory,
       selectedModel,
     ],
   );
-  const currentRuntimeSource = sessionMeta?.runtimeSource
-    ?? sessionRuntimeSource
-    ?? (currentProviderExecutionIntent?.kind === 'runtime-backed-provider'
+  const currentRuntimeSource =
+    sessionMeta?.runtimeSource ??
+    sessionRuntimeSource ??
+    (currentProviderExecutionIntent?.kind === "runtime-backed-provider"
       ? currentProviderExecutionIntent.runtimeSource
       : undefined);
-  const managedProviderRuntimeActive = currentRuntimeSource === 'managed-provider';
+  const managedProviderRuntimeActive =
+    currentRuntimeSource === "managed-provider";
   // #324 — 推理强度 setting ('default' | level). ONE state for both runtimes
   // (the storage location splits on isExternalRuntime at persist time, like
   // model). Lifecycle mirrors selectedModel: seeded from agent, restored from
   // session snapshot, live-pushed to the sidecar via /api/reasoning-effort/set.
   const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
-    const rc = currentAgent?.runtimeConfig as { reasoningEffort?: string } | undefined;
-    const fromAgent = currentAgent?.runtime && currentAgent.runtime !== 'builtin'
-      ? rc?.reasoningEffort
-      : currentAgent?.reasoningEffort;
-    return fromAgent ?? 'default';
+    const rc = currentAgent?.runtimeConfig as
+      | { reasoningEffort?: string }
+      | undefined;
+    const fromAgent =
+      currentAgent?.runtime && currentAgent.runtime !== "builtin"
+        ? rc?.reasoningEffort
+        : currentAgent?.reasoningEffort;
+    return fromAgent ?? "default";
   });
   // Cron task state
   const [showCronSettings, setShowCronSettings] = useState(false);
-  const [cronPrompt, setCronPrompt] = useState('');
+  const [cronPrompt, setCronPrompt] = useState("");
   // Preset applied when opening the cron modal via a slash command (e.g.
   // `/goal`). Wins over `cronState.config` only for a fresh open (no running
   // task); cleared on open-via-定时-button / close / confirm so it never leaks.
-  const [cronOpenPreset, setCronOpenPreset] = useState<CronInitialConfig | null>(null);
-  const [goalDraftConfig, setGoalDraftConfig] = useState<SessionGoalDraftConfig | null>(null);
+  const [cronOpenPreset, setCronOpenPreset] =
+    useState<CronInitialConfig | null>(null);
+  const [goalDraftConfig, setGoalDraftConfig] =
+    useState<SessionGoalDraftConfig | null>(null);
   const goalDraftConfigRef = useRef<SessionGoalDraftConfig | null>(null);
   goalDraftConfigRef.current = goalDraftConfig;
   const [cronCardTask, setCronCardTask] = useState<CronTask | null>(null);
   const [cronDetailTask, setCronDetailTask] = useState<CronTask | null>(null);
   const [goalEditOpen, setGoalEditOpen] = useState(false);
-  const [goalEditDraft, setGoalEditDraft] = useState('');
+  const [goalEditDraft, setGoalEditDraft] = useState("");
   const [goalEditSubmitting, setGoalEditSubmitting] = useState(false);
   const [goalCancelConfirmOpen, setGoalCancelConfirmOpen] = useState(false);
   const [stoppedCronRecovery, setStoppedCronRecovery] = useState<{
@@ -1109,7 +1432,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const [rewindTarget, setRewindTarget] = useState<{
     messageId: string;
     content: string;
-    attachments?: import('@/types/chat').MessageAttachment[];
+    attachments?: import("@/types/chat").MessageAttachment[];
   } | null>(null);
   const [rewindStatus, setRewindStatus] = useState<string | null>(null);
 
@@ -1131,7 +1454,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // re-pushes back to the mount effect. (codex review: dual MCP-push race.)
   const launcherOwnsInitialMcpRef = useRef(hadInitialMessage.current);
   const launcherOwnsInitialOfficialToolsRef = useRef(hadInitialMessage.current);
-  const [launcherMcpFallbackRevision, setLauncherMcpFallbackRevision] = useState(0);
+  const [launcherMcpFallbackRevision, setLauncherMcpFallbackRevision] =
+    useState(0);
   const projectSyncedRef = useRef(false);
 
   // Ref for input focus
@@ -1147,7 +1471,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // panel (if collapsed) mounts DirectoryPanel; the declarative request prop is
   // consumed there (its reveal helper polls for node meta, so it waits out the
   // initial tree load — no ref-timing race).
-  const [treeExternalReveal, setTreeExternalReveal] = useState<{ id: number; path: string } | null>(null);
+  const [treeExternalReveal, setTreeExternalReveal] = useState<{
+    id: number;
+    path: string;
+  } | null>(null);
   const treeExternalRevealIdRef = useRef(0);
   const handleRevealInTree = useCallback((path: string) => {
     setShowWorkspace(true);
@@ -1191,8 +1518,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // every config write waits; the single post-ensure resolver decides push|adopt.
   const configDispositionRef = useRef(sidecarConfigDisposition);
   configDispositionRef.current = sidecarConfigDisposition;
-  const configPending = sidecarConfigDisposition === 'pending';
-  const isAdopt = sidecarConfigDisposition === 'adopt';
+  const configPending = sidecarConfigDisposition === "pending";
+  const isAdopt = sidecarConfigDisposition === "adopt";
 
   // Sessions whose live sidecar config has been adopted (disposition 'adopt' flow).
   // Snapshot sync uses this as a sticky guard: even after the disposition resolves
@@ -1212,23 +1539,56 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const directoryPanelContainerRef = useRef<HTMLDivElement>(null);
 
   // Enabled sub-agents for sidebar display
-  const [enabledAgents, setEnabledAgents] = useState<Record<string, { description: string; prompt?: string; model?: string; scope?: 'user' | 'project'; folderName?: string }> | undefined>();
+  const [enabledAgents, setEnabledAgents] = useState<
+    | Record<
+        string,
+        {
+          description: string;
+          prompt?: string;
+          model?: string;
+          scope?: "user" | "project";
+          folderName?: string;
+        }
+      >
+    | undefined
+  >();
   // Enabled skills/commands for sidebar display
-  const [enabledSkills, setEnabledSkills] = useState<Array<{ name: string; description: string; scope?: 'user' | 'project'; folderName?: string }>>([]);
-  const [enabledCommands, setEnabledCommands] = useState<Array<{ name: string; description: string; scope?: 'user' | 'project'; fileName?: string }>>([]);
-  const [globalSkillFolderNames, setGlobalSkillFolderNames] = useState<Set<string>>(new Set());
+  const [enabledSkills, setEnabledSkills] = useState<
+    Array<{
+      name: string;
+      description: string;
+      scope?: "user" | "project";
+      folderName?: string;
+    }>
+  >([]);
+  const [enabledCommands, setEnabledCommands] = useState<
+    Array<{
+      name: string;
+      description: string;
+      scope?: "user" | "project";
+      fileName?: string;
+    }>
+  >([]);
+  const [globalSkillFolderNames, setGlobalSkillFolderNames] = useState<
+    Set<string>
+  >(new Set());
   // Initial tab for workspace config panel (set when opening from capabilities panel)
-  const [workspaceConfigInitialTab, setWorkspaceConfigInitialTab] = useState<WorkspaceTab | undefined>();
+  const [workspaceConfigInitialTab, setWorkspaceConfigInitialTab] = useState<
+    WorkspaceTab | undefined
+  >();
   // Initial item selection — when set, WorkspaceConfigPanel opens already showing that item's detail.
-  const [workspaceConfigInitialSelect, setWorkspaceConfigInitialSelect] = useState<CapabilityInitialSelect | undefined>();
+  const [workspaceConfigInitialSelect, setWorkspaceConfigInitialSelect] =
+    useState<CapabilityInitialSelect | undefined>();
 
   // Agent Runtime detection (v0.1.59)
-  const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
-    'builtin': { installed: true },
-    'claude-code': { installed: false },
-    'codex': { installed: false },
-    'gemini': { installed: false },
-  });
+  const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>(
+    {
+      builtin: { installed: true },
+      "claude-code": { installed: false },
+      codex: { installed: false },
+      gemini: { installed: false },
+    },
+  );
   // Gate: when multiAgentRuntime is off, treat everything as builtin regardless of agent config.
   // This gate is applied at the definition of currentRuntime itself so ALL downstream
   // derivations (runtimePermissionModes, runtimeModels, etc.) are automatically safe.
@@ -1236,84 +1596,107 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
-  const currentAgentRuntimeConfig = currentAgent?.runtimeConfig as RuntimeConfig | undefined;
+  const currentAgentRuntimeConfig = currentAgent?.runtimeConfig as
+    | RuntimeConfig
+    | undefined;
   const agentUsesManagedCodexProvider =
-    currentAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    || currentAgentRuntimeConfig?.source === 'managed-provider';
+    currentAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID ||
+    currentAgentRuntimeConfig?.source === "managed-provider";
   const agentRuntime: RuntimeType = agentUsesManagedCodexProvider
-    ? 'builtin'
+    ? "builtin"
     : multiAgentRuntimeEnabled
-    ? ((currentAgent?.runtime as RuntimeType) || 'builtin')
-    : 'builtin';
+      ? (currentAgent?.runtime as RuntimeType) || "builtin"
+      : "builtin";
   // v0.1.69: session is self-contained — its frozen runtime is authoritative for
   // both display and message routing within this tab. Falls back to agentRuntime
   // only before the session has loaded (sessionRuntime===null) or for newly-created
   // sessions before TabProvider syncs metadata. Changing agent.runtime in another
   // tab does NOT change an existing session's display: the session's Sidecar was
   // spawned with its frozen runtime and the backend routes by sessionId.
-  const currentRuntime: RuntimeType = (sessionRuntime as RuntimeType | null) ?? agentRuntime;
-  const isExternalRuntime = currentRuntime !== 'builtin';
-  const handleDiagnoseAgentError = useCallback((message: string) => {
-    launchSupportDiagnostics({
-      source: 'agent_error',
-      message,
-      terminalReason: lastTerminalReason,
-      sessionId: sessionIdRef.current,
-      workspacePath: agentDir,
-      runtime: currentRuntime,
-    });
-  }, [agentDir, currentRuntime, lastTerminalReason]);
-  const handleDiagnoseTerminalReason = useCallback((reason: string) => {
-    launchSupportDiagnostics({
-      source: 'terminal_reason',
-      terminalReason: reason,
-      sessionId: sessionIdRef.current,
-      workspacePath: agentDir,
-      runtime: currentRuntime,
-    });
-  }, [agentDir, currentRuntime]);
-  const handleDiagnoseRuntimeDiagnostics = useCallback((diagnostics: RuntimeDiagnostics) => {
-    launchSupportDiagnostics({
-      source: 'runtime_diagnostics',
-      runtimeDiagnostics: diagnostics,
-      sessionId: sessionIdRef.current,
-      workspacePath: agentDir,
-      runtime: currentRuntime,
-    });
-  }, [agentDir, currentRuntime]);
+  const currentRuntime: RuntimeType =
+    (sessionRuntime as RuntimeType | null) ?? agentRuntime;
+  const isExternalRuntime = currentRuntime !== "builtin";
+  const handleDiagnoseAgentError = useCallback(
+    (message: string) => {
+      launchSupportDiagnostics({
+        source: "agent_error",
+        message,
+        terminalReason: lastTerminalReason,
+        sessionId: sessionIdRef.current,
+        workspacePath: agentDir,
+        runtime: currentRuntime,
+      });
+    },
+    [agentDir, currentRuntime, lastTerminalReason],
+  );
+  const handleDiagnoseTerminalReason = useCallback(
+    (reason: string) => {
+      launchSupportDiagnostics({
+        source: "terminal_reason",
+        terminalReason: reason,
+        sessionId: sessionIdRef.current,
+        workspacePath: agentDir,
+        runtime: currentRuntime,
+      });
+    },
+    [agentDir, currentRuntime],
+  );
+  const handleDiagnoseRuntimeDiagnostics = useCallback(
+    (diagnostics: RuntimeDiagnostics) => {
+      launchSupportDiagnostics({
+        source: "runtime_diagnostics",
+        runtimeDiagnostics: diagnostics,
+        sessionId: sessionIdRef.current,
+        workspacePath: agentDir,
+        runtime: currentRuntime,
+      });
+    },
+    [agentDir, currentRuntime],
+  );
   const inputChromeRuntime = projectInputChromeRuntime({
     currentRuntime,
     managedProviderRuntimeActive,
   });
-  const inputUsesExternalRuntimeControls = shouldUseExternalRuntimeInputControls({
-    currentRuntime,
-    managedProviderRuntimeActive,
-  });
+  const inputUsesExternalRuntimeControls =
+    shouldUseExternalRuntimeInputControls({
+      currentRuntime,
+      managedProviderRuntimeActive,
+    });
   const showLegacyRuntimeSelector = multiAgentRuntimeEnabled;
   const visibleSdkSlashCommands = useMemo(
-    () => inputUsesExternalRuntimeControls ? [] : sdkSlashCommands,
+    () => (inputUsesExternalRuntimeControls ? [] : sdkSlashCommands),
     [inputUsesExternalRuntimeControls, sdkSlashCommands],
   );
 
   // Detect installed runtimes once on mount
   useEffect(() => {
     let cancelled = false;
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke<Record<string, { installed: boolean; version?: string; path?: string }>>('cmd_detect_runtimes')
-        .then(detections => { if (!cancelled) setRuntimeDetections(detections as RuntimeDetections); })
-        .catch(() => { /* detection failure is non-fatal */ });
+    import("@tauri-apps/api/core").then(({ invoke }) => {
+      invoke<
+        Record<string, { installed: boolean; version?: string; path?: string }>
+      >("cmd_detect_runtimes")
+        .then((detections) => {
+          if (!cancelled) setRuntimeDetections(detections as RuntimeDetections);
+        })
+        .catch(() => {
+          /* detection failure is non-fatal */
+        });
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const [runtimeModel, setRuntimeModel] = useState<string | undefined>(
-    (currentAgent?.runtimeConfig as { model?: string } | undefined)?.model
+    (currentAgent?.runtimeConfig as { model?: string } | undefined)?.model,
   );
   const [runtimePermissionMode, setRuntimePermissionMode] = useState<string>(
     coerceExternalRuntimePermissionForUi(
-      (currentAgent?.runtimeConfig as { permissionMode?: string } | undefined)?.permissionMode,
+      (currentAgent?.runtimeConfig as { permissionMode?: string } | undefined)
+        ?.permissionMode,
       currentRuntime,
-    )
-    || getDefaultRuntimePermissionMode(currentRuntime) || 'default'
+    ) ||
+      getDefaultRuntimePermissionMode(currentRuntime) ||
+      "default",
   );
 
   // Sync runtimePermissionMode + runtimeModel when currentRuntime transitions.
@@ -1333,30 +1716,48 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // selections made via the dropdown are never overwritten.
   useEffect(() => {
     if (!isExternalRuntime) return;
-    const cfg = currentAgent?.runtimeConfig as { permissionMode?: string; model?: string } | undefined;
+    const cfg = currentAgent?.runtimeConfig as
+      | { permissionMode?: string; model?: string }
+      | undefined;
     const saved = cfg?.permissionMode;
-    const effective = coerceExternalRuntimePermissionForUi(saved, currentRuntime)
-      ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default');
+    const effective =
+      coerceExternalRuntimePermissionForUi(saved, currentRuntime) ??
+      (getDefaultRuntimePermissionMode(currentRuntime) || "default");
     setRuntimePermissionMode(effective);
-    setRuntimeModel(coerceExternalRuntimeModelForUi(cfg?.model, currentRuntime));
+    setRuntimeModel(
+      coerceExternalRuntimeModelForUi(cfg?.model, currentRuntime),
+    );
     // #324 — re-seed effort on runtime transition. RUNTIME_CONFIG_PER_RUNTIME_FIELDS
     // scrubs reasoningEffort on agent runtime change, so a leftover value from a
     // different runtime can't be read here; absent = 'default'.
-    setReasoningEffort(coerceReasoningEffortForUi((cfg as { reasoningEffort?: string } | undefined)?.reasoningEffort, currentRuntime) ?? 'default');
+    setReasoningEffort(
+      coerceReasoningEffortForUi(
+        (cfg as { reasoningEffort?: string } | undefined)?.reasoningEffort,
+        currentRuntime,
+      ) ?? "default",
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only re-sync on runtime transitions, not on every currentAgent.runtimeConfig edit
   }, [currentRuntime, isExternalRuntime]);
 
   // Runtime-specific models and permission modes
-  const runtimePermissionModes = currentRuntime === 'claude-code' ? CC_PERMISSION_MODES
-    : currentRuntime === 'codex' ? CODEX_PERMISSION_MODES
-    : currentRuntime === 'gemini' ? GEMINI_PERMISSION_MODES
-    : undefined;
+  const runtimePermissionModes =
+    currentRuntime === "claude-code"
+      ? CC_PERMISSION_MODES
+      : currentRuntime === "codex"
+        ? CODEX_PERMISSION_MODES
+        : currentRuntime === "gemini"
+          ? GEMINI_PERMISSION_MODES
+          : undefined;
 
   // Codex + Gemini models are dynamic (fetched from the CLI); CC models are static
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
   const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
-    if ((!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) || currentRuntime !== 'codex') return;
+    if (
+      (!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) ||
+      currentRuntime !== "codex"
+    )
+      return;
     let cancelled = false;
     // AbortController so a tab-close (effect cleanup) silences the
     // proxyFetch "Sidecar gone" warning that would otherwise fire when
@@ -1365,21 +1766,36 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // post-hoc filter in proxyFetch turns the rejection into a silent
     // AbortError instead of a noisy lifecycle log line.
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=codex', { signal: controller.signal }).then((res: unknown) => {
-      const data = res as { models?: typeof CC_MODELS } | undefined;
-      if (!cancelled && data?.models?.length) setCodexModels(data.models);
-    }).catch(() => {});
-    return () => { cancelled = true; controller.abort(); };
-  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, apiGet]);
+    apiGet("/api/runtime/models?type=codex", { signal: controller.signal })
+      .then((res: unknown) => {
+        const data = res as { models?: typeof CC_MODELS } | undefined;
+        if (!cancelled && data?.models?.length) setCodexModels(data.models);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    multiAgentRuntimeEnabled,
+    managedProviderRuntimeActive,
+    currentRuntime,
+    apiGet,
+  ]);
   useEffect(() => {
-    if (!multiAgentRuntimeEnabled || currentRuntime !== 'gemini') return;
+    if (!multiAgentRuntimeEnabled || currentRuntime !== "gemini") return;
     let cancelled = false;
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=gemini', { signal: controller.signal }).then((res: unknown) => {
-      const data = res as { models?: typeof CC_MODELS } | undefined;
-      if (!cancelled && data?.models?.length) setGeminiModels(data.models);
-    }).catch(() => {});
-    return () => { cancelled = true; controller.abort(); };
+    apiGet("/api/runtime/models?type=gemini", { signal: controller.signal })
+      .then((res: unknown) => {
+        const data = res as { models?: typeof CC_MODELS } | undefined;
+        if (!cancelled && data?.models?.length) setGeminiModels(data.models);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
   }, [multiAgentRuntimeEnabled, currentRuntime, apiGet]);
 
   // ─── External runtime pre-warm (v0.1.68) ───
@@ -1401,12 +1817,12 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const prewarmedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) return;
-    if (currentRuntime !== 'gemini' && currentRuntime !== 'codex') return;
+    if (currentRuntime !== "gemini" && currentRuntime !== "codex") return;
     if (!isActive || !isConnected || !sessionId) return;
     // Only a 'push' tab prewarms the sidecar with ITS config (model/permission).
     // 'pending' waits for the post-ensure resolver; 'adopt' must not override the
     // live sidecar's config. (External-runtime sibling of the MCP/model push gates.)
-    if (configDispositionRef.current !== 'push') return;
+    if (configDispositionRef.current !== "push") return;
     // Cross-runtime sessions are opened in read-only mode until the user
     // confirms a fresh session — don't pre-warm those (the confirmation flow
     // resets sessionId, which retriggers this effect). Mirrors the
@@ -1434,44 +1850,66 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // port. The actual prewarm subprocess startup is fire-and-forget — if
     // the tab closes mid-prewarm we don't care about the result anyway.
     const controller = new AbortController();
-    apiPost('/api/runtime/prewarm', {
-      sessionId,
-      model: effectiveModel,  // may be undefined — runtime falls back to its default
-      permissionMode: effectivePermissionMode,
-    }, { signal: controller.signal }).then((res) => {
-      // Backend returns { success: true, prewarmed: false, reason: '...' } when
-      // the endpoint short-circuits (already-active/starting, runtime mismatch,
-      // non-persistent runtime). In those cases the subprocess is NOT warm, so
-      // clear the ref to allow a retry when conditions change (e.g., sessionRuntime
-      // populates later and matches currentRuntime).
-      const data = res as { prewarmed?: boolean } | undefined;
-      if (data && data.prewarmed === false) {
-        prewarmedKeyRef.current = null;
-      }
-    }).catch((err: unknown) => {
-      // Aborted (tab close, dep change) is the expected silent path.
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        prewarmedKeyRef.current = null; // allow re-fire if effect re-runs
-        return;
-      }
-      // Pre-warm failure is non-fatal — the first user message path still
-      // starts the runtime normally (just without the latency optimization).
-      console.debug('[prewarm] request failed (non-fatal):', err);
-      prewarmedKeyRef.current = null; // allow a later retry
-    });
-    return () => { controller.abort(); };
+    apiPost(
+      "/api/runtime/prewarm",
+      {
+        sessionId,
+        model: effectiveModel, // may be undefined — runtime falls back to its default
+        permissionMode: effectivePermissionMode,
+      },
+      { signal: controller.signal },
+    )
+      .then((res) => {
+        // Backend returns { success: true, prewarmed: false, reason: '...' } when
+        // the endpoint short-circuits (already-active/starting, runtime mismatch,
+        // non-persistent runtime). In those cases the subprocess is NOT warm, so
+        // clear the ref to allow a retry when conditions change (e.g., sessionRuntime
+        // populates later and matches currentRuntime).
+        const data = res as { prewarmed?: boolean } | undefined;
+        if (data && data.prewarmed === false) {
+          prewarmedKeyRef.current = null;
+        }
+      })
+      .catch((err: unknown) => {
+        // Aborted (tab close, dep change) is the expected silent path.
+        if (err instanceof DOMException && err.name === "AbortError") {
+          prewarmedKeyRef.current = null; // allow re-fire if effect re-runs
+          return;
+        }
+        // Pre-warm failure is non-fatal — the first user message path still
+        // starts the runtime normally (just without the latency optimization).
+        console.debug("[prewarm] request failed (non-fatal):", err);
+        prewarmedKeyRef.current = null; // allow a later retry
+      });
+    return () => {
+      controller.abort();
+    };
     // Intentionally omit effectiveModel/effectivePermissionMode from deps —
     // config changes kill the pre-warmed process via setExternalModel/
     // setExternalPermissionMode, and the next user message will resume with
     // the new settings. Re-firing pre-warm on every keystroke-driven option
     // change would thrash the subprocess.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, isActive, isConnected, sessionId, sessionRuntime, apiPost, configPending]);
+  }, [
+    multiAgentRuntimeEnabled,
+    managedProviderRuntimeActive,
+    currentRuntime,
+    isActive,
+    isConnected,
+    sessionId,
+    sessionRuntime,
+    apiPost,
+    configPending,
+  ]);
 
-  const runtimeModels = currentRuntime === 'claude-code' ? CC_MODELS
-    : currentRuntime === 'codex' ? codexModels
-    : currentRuntime === 'gemini' ? geminiModels
-    : undefined;
+  const runtimeModels =
+    currentRuntime === "claude-code"
+      ? CC_MODELS
+      : currentRuntime === "codex"
+        ? codexModels
+        : currentRuntime === "gemini"
+          ? geminiModels
+          : undefined;
 
   // Effective model/permission based on runtime.
   // For external runtimes: if user hasn't explicitly selected a model (runtimeModel=undefined),
@@ -1480,12 +1918,15 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     ? coerceExternalRuntimeModelForUi(runtimeModel, currentRuntime)
     : undefined;
   const effectiveModel = isExternalRuntime
-    ? (effectiveRuntimeModel ?? runtimeModels?.find(m => m.isDefault)?.value)
+    ? (effectiveRuntimeModel ?? runtimeModels?.find((m) => m.isDefault)?.value)
     : selectedModel;
   const effectiveRuntimePermissionMode = isExternalRuntime
-    ? (coerceExternalRuntimePermissionForUi(runtimePermissionMode, currentRuntime)
-      ?? getDefaultRuntimePermissionMode(currentRuntime)
-      ?? 'default')
+    ? (coerceExternalRuntimePermissionForUi(
+        runtimePermissionMode,
+        currentRuntime,
+      ) ??
+      getDefaultRuntimePermissionMode(currentRuntime) ??
+      "default")
     : undefined;
   // #244: the `permissionMode` useState initializer runs while useConfig() is
   // still loading, and the one-time project-sync effect that corrects it fires
@@ -1500,9 +1941,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // effect is skipped, so trusting state here preserves the launcher's explicit
   // choice instead of overriding it with the agent default).
   const permissionStateAuthoritative =
-    projectSyncedRef.current || hadInitialMessage.current || sessionSnapshotOwnsConfig;
+    projectSyncedRef.current ||
+    hadInitialMessage.current ||
+    sessionSnapshotOwnsConfig;
   const effectivePermissionMode = isExternalRuntime
-    ? effectiveRuntimePermissionMode as PermissionMode
+    ? (effectiveRuntimePermissionMode as PermissionMode)
     : resolveBuiltinPermissionMode({
         projectSynced: permissionStateAuthoritative,
         statePermissionMode: permissionMode,
@@ -1513,49 +1956,73 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   const buildCronRuntimeConfig = useCallback((): RuntimeConfig | undefined => {
     if (!isExternalRuntime) return undefined;
-    const base = { ...((currentAgent?.runtimeConfig as RuntimeConfig | undefined) ?? {}) };
-    if (currentProviderExecutionIntent?.kind === 'runtime-backed-provider') {
+    const base = {
+      ...((currentAgent?.runtimeConfig as RuntimeConfig | undefined) ?? {}),
+    };
+    if (currentProviderExecutionIntent?.kind === "runtime-backed-provider") {
       base.source = currentProviderExecutionIntent.runtimeSource;
       base.model = currentProviderExecutionIntent.model;
     }
-    const persistedModel = coerceExternalRuntimeModelForUi(base.model, currentRuntime);
+    const persistedModel = coerceExternalRuntimeModelForUi(
+      base.model,
+      currentRuntime,
+    );
     if (persistedModel) {
       base.model = persistedModel;
     } else {
       delete base.model;
     }
-    const selectedRuntimeModel = coerceExternalRuntimeModelForUi(runtimeModel, currentRuntime);
+    const selectedRuntimeModel = coerceExternalRuntimeModelForUi(
+      runtimeModel,
+      currentRuntime,
+    );
     if (selectedRuntimeModel !== undefined) {
       base.model = selectedRuntimeModel;
     }
-    const persistedPermission = coerceExternalRuntimePermissionForUi(base.permissionMode, currentRuntime);
+    const persistedPermission = coerceExternalRuntimePermissionForUi(
+      base.permissionMode,
+      currentRuntime,
+    );
     if (persistedPermission) {
       base.permissionMode = persistedPermission;
     } else {
       delete base.permissionMode;
     }
-    const selectedPermission = effectiveRuntimePermissionMode ?? getDefaultRuntimePermissionMode(currentRuntime);
-    if (persistedPermission !== undefined || selectedPermission !== getDefaultRuntimePermissionMode(currentRuntime)) {
+    const selectedPermission =
+      effectiveRuntimePermissionMode ??
+      getDefaultRuntimePermissionMode(currentRuntime);
+    if (
+      persistedPermission !== undefined ||
+      selectedPermission !== getDefaultRuntimePermissionMode(currentRuntime)
+    ) {
       base.permissionMode = selectedPermission;
     }
     return Object.keys(base).length > 0 ? base : undefined;
-  }, [isExternalRuntime, currentAgent?.runtimeConfig, currentProviderExecutionIntent, runtimeModel, effectiveRuntimePermissionMode, currentRuntime]);
+  }, [
+    isExternalRuntime,
+    currentAgent?.runtimeConfig,
+    currentProviderExecutionIntent,
+    runtimeModel,
+    effectiveRuntimePermissionMode,
+    currentRuntime,
+  ]);
 
-  const buildCronExecutionOverrides = useCallback((args: {
-    providerId?: string;
-    model?: string;
-  }) => projectTaskExecutionOverrides({
-    providers,
-    runtime: currentRuntime,
-    providerId: args.providerId,
-    model: args.model,
-    runtimeConfig: buildCronRuntimeConfig(),
-  }), [providers, currentRuntime, buildCronRuntimeConfig]);
+  const buildCronExecutionOverrides = useCallback(
+    (args: { providerId?: string; model?: string }) =>
+      projectTaskExecutionOverrides({
+        providers,
+        runtime: currentRuntime,
+        providerId: args.providerId,
+        model: args.model,
+        runtimeConfig: buildCronRuntimeConfig(),
+      }),
+    [providers, currentRuntime, buildCronRuntimeConfig],
+  );
 
   // Callback to refresh workspace (exposed to SimpleChatInput)
   const triggerWorkspaceRefresh = useCallback(() => {
-    setWorkspaceRefreshTrigger(prev => prev + 1);
-    setIntroductionRefreshTrigger(prev => prev + 1);
+    setWorkspaceRefreshTrigger((prev) => prev + 1);
+    setIntroductionRefreshTrigger((prev) => prev + 1);
   }, []);
 
   // Stable callbacks for DirectoryPanel → AgentCapabilitiesPanel
@@ -1567,13 +2034,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     chatInputRef.current?.insertSlashCommand(command);
   }, []);
 
-  const handleOpenSettings = useCallback((initialSelect?: CapabilityInitialSelect) => {
-    // All three kinds (skill/command/agent) live under the 'skills' tab in the
-    // project workspace — that tab renders SkillsCommandsList AND WorkspaceAgentsList.
-    setWorkspaceConfigInitialTab('skills');
-    setWorkspaceConfigInitialSelect(initialSelect);
-    setShowWorkspaceConfig(true);
-  }, []);
+  const handleOpenSettings = useCallback(
+    (initialSelect?: CapabilityInitialSelect) => {
+      // All three kinds (skill/command/agent) live under the 'skills' tab in the
+      // project workspace — that tab renders SkillsCommandsList AND WorkspaceAgentsList.
+      setWorkspaceConfigInitialTab("skills");
+      setWorkspaceConfigInitialSelect(initialSelect);
+      setShowWorkspaceConfig(true);
+    },
+    [],
+  );
 
   // Auto-send initial message from Launcher
   const initialMessageConsumedRef = useRef(false);
@@ -1584,21 +2054,30 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     if (!identity) return true;
     if (currentRuntime !== identity.runtime) return false;
     return currentRuntimeSource === identity.runtimeSource;
-  }, [initialMessage?.providerExecutionIdentity, currentRuntime, currentRuntimeSource]);
+  }, [
+    initialMessage?.providerExecutionIdentity,
+    currentRuntime,
+    currentRuntimeSource,
+  ]);
 
   useEffect(() => {
     if (!initialMessage) return;
     // Wait for SSE connection (sidecar reachable) instead of non-pending sessionId.
     // The sessionId upgrades from pending only after the first message is processed,
     // but the first message IS the auto-send — so checking isPendingSessionId would deadlock.
-    if (!shouldAutoSendInitialMessage({
-      hasInitialMessage: true,
-      alreadyConsumed: initialMessageConsumedRef.current,
-      hasSessionId: !!sessionId,
-      isConnected,
-      isActive,
-      runtimeReady: initialMessageRuntimeReady,
-    })) return;
+    if (
+      !shouldAutoSendInitialMessage({
+        hasInitialMessage: true,
+        alreadyConsumed: initialMessageConsumedRef.current,
+        hasSessionId: !!sessionId,
+        isConnected,
+        isActive,
+        runtimeReady: initialMessageRuntimeReady,
+        providerCatalogReady:
+          !initialMessage.builtinSelection || !isConfigLoading,
+      })
+    )
+      return;
 
     const launchMessage = initialMessage;
     initialMessageConsumedRef.current = true;
@@ -1616,32 +2095,57 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const initialRuntimePermission = isExternalRuntime
       ? coerceInitialMessageRuntimePermission(launchMessage, currentRuntime)
       : undefined;
-    const effectivePermission = (isExternalRuntime
-      ? (initialRuntimePermission
-        ?? effectiveRuntimePermissionMode
-        ?? getDefaultRuntimePermissionMode(currentRuntime)
-        ?? 'default')
-      : (launchMessage.permissionMode ?? resolveBuiltinPermissionMode({
-          projectSynced: false,
-          statePermissionMode: permissionMode,
-          agentPermissionMode: currentAgent?.permissionMode as string | undefined,
-          projectPermissionMode: currentProject?.permissionMode,
-          defaultPermissionMode: config.defaultPermissionMode,
-        }))) as PermissionMode;
+    const effectivePermission = (
+      isExternalRuntime
+        ? (initialRuntimePermission ??
+          effectiveRuntimePermissionMode ??
+          getDefaultRuntimePermissionMode(currentRuntime) ??
+          "default")
+        : (launchMessage.permissionMode ??
+          resolveBuiltinPermissionMode({
+            projectSynced: false,
+            statePermissionMode: permissionMode,
+            agentPermissionMode: currentAgent?.permissionMode as
+              | string
+              | undefined,
+            projectPermissionMode: currentProject?.permissionMode,
+            defaultPermissionMode: config.defaultPermissionMode,
+          }))
+    ) as PermissionMode;
     const effectiveModel = isExternalRuntime
-      ? (coerceExternalRuntimeModelForUi(launchMessage.runtimeModel, currentRuntime)
-        ?? effectiveRuntimeModel
-        ?? runtimeModels?.find(m => m.isDefault)?.value)
+      ? (coerceExternalRuntimeModelForUi(
+          launchMessage.runtimeModel,
+          currentRuntime,
+        ) ??
+        effectiveRuntimeModel ??
+        runtimeModels?.find((m) => m.isDefault)?.value)
       : (builtinSel?.model ?? selectedModel);
-    const provider = builtinSel
-      ? providers.find(p => p.id === builtinSel.providerId) ?? currentProvider
-      : currentProvider;
+    const provider = resolveInitialMessageProvider({
+      explicitProviderId: builtinSel?.providerId,
+      providers,
+      currentProvider,
+    });
     const providerRoute = buildBuiltinProviderRoute(provider, effectiveModel);
     const providerEnv = providerRoute ? undefined : buildProviderEnv(provider);
 
     const autoSend = async () => {
       try {
-        // 1. Sync MCP configuration. autoSend is the authoritative INITIAL MCP
+        if (!isExternalRuntime && builtinSel && !provider) {
+          throw new Error(
+            `Initial message provider "${builtinSel.providerId}" is unavailable.`,
+          );
+        }
+
+        // 1. Configure host-owned workbench tools before the MCP fingerprint is
+        // rebuilt. The sidecar validates the toolset id and binds it to this
+        // session; the renderer never sends file contents or write authority.
+        if (launchMessage.workbenchToolset) {
+          await apiPost("/api/workbench-agent/configure", {
+            toolset: launchMessage.workbenchToolset,
+          });
+        }
+
+        // 1a. Sync MCP configuration. autoSend is the authoritative INITIAL MCP
         // pusher for launcher-handoff tabs (the mount MCP effect skips its initial
         // push for these — see launcherOwnsInitialMcpRef). Push only when the
         // launcher enabled ≥1 server; disable-all (`[]`) / undefined need no push:
@@ -1649,14 +2153,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         // agent-session.ts), so an absent push already yields no MCP — and pushing
         // `[]` after the sidecar pre-warmed with `null` could trip a fingerprint
         // diff → abort/restart for no benefit.
-        if (launchMessage.mcpEnabledServers?.length) {
+        if (
+          launchMessage.mcpEnabledServers?.length ||
+          launchMessage.workbenchToolset
+        ) {
           const allServers = await getAllMcpServers();
           syncMcpServerNames(allServers);
           const globalEnabled = await getEnabledMcpServerIds();
-          const effective = allServers.filter(s =>
-            globalEnabled.includes(s.id) && launchMessage.mcpEnabledServers!.includes(s.id)
+          const selectedServerIds = launchMessage.mcpEnabledServers ?? [];
+          const effective = allServers.filter(
+            (server) =>
+              globalEnabled.includes(server.id) &&
+              selectedServerIds.includes(server.id),
           );
-          await apiPost('/api/mcp/set', { servers: effective });
+          await apiPost("/api/mcp/set", { servers: effective });
         }
         // Hand later config-change MCP pushes back to the mount effect now that
         // autoSend has applied the launcher's initial selection.
@@ -1668,14 +2178,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         // first pre-warm. Symmetric with MCP above.
         if (launchMessage.enabledPluginIds) {
           setWorkspaceEnabledPlugins(launchMessage.enabledPluginIds);
-          await apiPost('/api/cc-plugin/session-enable', {
+          await apiPost("/api/cc-plugin/session-enable", {
             enabledIds: launchMessage.enabledPluginIds,
           });
         }
 
         if (launchMessage.enabledOfficialToolIds !== undefined) {
-          setWorkspaceOfficialToolEnabled(normalizeOfficialToolIds(launchMessage.enabledOfficialToolIds));
-          await apiPost('/api/official-tools/session-enable', {
+          setWorkspaceOfficialToolEnabled(
+            normalizeOfficialToolIds(launchMessage.enabledOfficialToolIds),
+          );
+          await apiPost("/api/official-tools/session-enable", {
             enabledIds: launchMessage.enabledOfficialToolIds,
           });
         }
@@ -1687,12 +2199,14 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           // while builtin uses permissionMode. Set the correct one based on runtime.
           if (isExternalRuntime) {
             setRuntimePermissionMode(
-              initialRuntimePermission
-              ?? getDefaultRuntimePermissionMode(currentRuntime)
-              ?? 'default',
+              initialRuntimePermission ??
+                getDefaultRuntimePermissionMode(currentRuntime) ??
+                "default",
             );
             const providerPermission = launchMessage.providerExecutionIdentity
-              ? managedCodexRuntimePermissionToProviderPermission(launchMessage.permissionMode)
+              ? managedCodexRuntimePermissionToProviderPermission(
+                  launchMessage.permissionMode,
+                )
               : undefined;
             if (providerPermission) {
               setPermissionMode(providerPermission);
@@ -1708,7 +2222,12 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         }
         if (isExternalRuntime) {
           if (launchMessage.runtimeModel) {
-            setRuntimeModel(coerceExternalRuntimeModelForUi(launchMessage.runtimeModel, currentRuntime));
+            setRuntimeModel(
+              coerceExternalRuntimeModelForUi(
+                launchMessage.runtimeModel,
+                currentRuntime,
+              ),
+            );
           }
         } else if (builtinSel) {
           // Apply the paired (provider, model) atomically — type system guarantees both present.
@@ -1722,10 +2241,13 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         // for external runtimes push it explicitly (no payload channel).
         if (launchMessage.reasoningEffort) {
           const launchReasoningEffort = isExternalRuntime
-            ? (coerceReasoningEffortForUi(launchMessage.reasoningEffort, currentRuntime) ?? 'default')
+            ? (coerceReasoningEffortForUi(
+                launchMessage.reasoningEffort,
+                currentRuntime,
+              ) ?? "default")
             : launchMessage.reasoningEffort;
           setReasoningEffort(launchReasoningEffort);
-          if (configDispositionRef.current === 'pending') {
+          if (configDispositionRef.current === "pending") {
             deferredEffortPushRef.current = launchReasoningEffort;
           } else {
             pushReasoningEffort(launchReasoningEffort);
@@ -1742,7 +2264,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         //     user had typed in the chat input and clicked send with cron enabled.
         if (launchMessage.cron) {
           const cronExecution = buildCronExecutionOverrides({
-            providerId: !isExternalRuntime && provider ? provider.id : undefined,
+            providerId:
+              !isExternalRuntime && provider ? provider.id : undefined,
             model: effectiveModel,
           });
           const cronPermissionMode = coerceRuntimeBirthPermissionMode(
@@ -1775,7 +2298,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             mcpEnabledServers: launchMessage.mcpEnabledServers,
           });
           const startedKind = await startScheduledTask(launchMessage.text);
-          if (startedKind === 'goal') {
+          if (startedKind === "goal") {
             await sendMessage(
               launchMessage.text,
               launchMessage.images,
@@ -1783,7 +2306,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               effectiveModel,
               isExternalRuntime || providerRoute ? undefined : providerEnv,
               undefined,
-              isExternalRuntime ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
+              isExternalRuntime
+                ? undefined
+                : (launchMessage.reasoningEffort ?? reasoningEffort),
               isExternalRuntime ? undefined : providerRoute,
             );
           }
@@ -1799,7 +2324,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             // launch value directly — the setReasoningEffort above isn't
             // visible in this closure (same-render state), and the first
             // message must already carry the launcher's choice.
-            isExternalRuntime ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
+            isExternalRuntime
+              ? undefined
+              : (launchMessage.reasoningEffort ?? reasoningEffort),
             isExternalRuntime ? undefined : providerRoute,
           );
         }
@@ -1813,7 +2340,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         //    for the AI to actually start (sessionState='running' or streaming).
         onInitialMessageConsumedRef.current?.();
       } catch (err) {
-        console.error('[Chat] Auto-send failed:', err);
+        console.error("[Chat] Auto-send failed:", err);
         if (launcherOwnsInitialMcpRef.current) {
           launcherOwnsInitialMcpRef.current = false;
           setLauncherMcpFallbackRevision((revision) => revision + 1);
@@ -1830,7 +2357,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           }
           if (launchMessage.cron) {
             const cronExecution = buildCronExecutionOverrides({
-              providerId: !isExternalRuntime && provider ? provider.id : undefined,
+              providerId:
+                !isExternalRuntime && provider ? provider.id : undefined,
               model: effectiveModel,
             });
             const cronPermissionMode = coerceRuntimeBirthPermissionMode(
@@ -1857,15 +2385,22 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           }
         } catch (restoreErr) {
           // Restore is best-effort; don't double-fail the user.
-          console.warn('[Chat] failed to restore launcher draft:', restoreErr);
+          console.warn("[Chat] failed to restore launcher draft:", restoreErr);
         }
         onInitialMessageConsumedRef.current?.();
-        toast.error(tRef.current('shell.toasts.autoSendRestoredDraft'));
+        toast.error(tRef.current("shell.toasts.autoSendRestoredDraft"));
       }
     };
     void autoSend();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMessage, isActive, sessionId, isConnected, initialMessageRuntimeReady]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    initialMessage,
+    isActive,
+    sessionId,
+    isConnected,
+    initialMessageRuntimeReady,
+    isConfigLoading,
+  ]);
 
   // Close startup overlay as soon as the backend has acknowledged the request
   // — either by transitioning to 'starting' (subprocess launched, system_init
@@ -1882,19 +2417,25 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   useEffect(() => {
     if (!showStartupOverlay) return;
     if (
-      sessionState === 'running'
-      || sessionState === 'starting'
-      || streamingMessage
-      || agentError
+      sessionState === "running" ||
+      sessionState === "starting" ||
+      streamingMessage ||
+      agentError ||
       // Workspace-card / no-auto-send entry: there is no turn to wait for, so the
       // chat is "ready" the moment the session connects (SSE up). The
       // initialMessage path keeps waiting for the turn (conditions above) so the
       // overlay doesn't flash an empty chat before the auto-sent message lands.
-      || (isConnected && !hadInitialMessage.current)
+      (isConnected && !hadInitialMessage.current)
     ) {
       setShowStartupOverlay(false);
     }
-  }, [showStartupOverlay, sessionState, streamingMessage, agentError, isConnected]);
+  }, [
+    showStartupOverlay,
+    sessionState,
+    streamingMessage,
+    agentError,
+    isConnected,
+  ]);
 
   // Safety timeout (30s) — covers prewarm failures / unresponsive backend.
   // Prevents the overlay from sticking forever if neither sessionState nor
@@ -1919,9 +2460,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     updateSessionId: updateCronTaskSessionId,
   } = useCronTask({
     workspacePath: agentDir,
-    sessionId: sessionId ?? '',
+    sessionId: sessionId ?? "",
     onComplete: (task, reason) => {
-      console.log('[Chat] Cron task completed:', task.id, reason);
+      console.log("[Chat] Cron task completed:", task.id, reason);
     },
     onExecutionComplete: async (task, success) => {
       // Called when a single execution completes (task may still be running)
@@ -1929,7 +2470,15 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       // Use internalSessionId when available, falling back to sessionId.
       // Both point to our internal message storage key (Sidecar session ID).
       const effectiveSessionId = task.internalSessionId || task.sessionId;
-      console.log('[Chat] Cron execution complete, refreshing session:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
+      console.log(
+        "[Chat] Cron execution complete, refreshing session:",
+        task.id,
+        task.executionCount,
+        "effectiveSessionId:",
+        effectiveSessionId,
+        "success:",
+        success,
+      );
       setIsLoading(false);
       // Only refresh session on successful execution.
       // On timeout (success=false), the original streaming task may still be running
@@ -1941,20 +2490,25 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   });
 
   const materializeGoalOwner = useCallback(async () => {
-    if (!sessionId) throw new Error('Goal requires a session identity.');
-    if (!isPendingSessionId(sessionId)) return { sessionId, workspacePath: agentDir };
-    if (!agentDir) throw new Error('Cannot materialize Goal without workspace path.');
+    if (!sessionId) throw new Error("Goal requires a session identity.");
+    if (!isPendingSessionId(sessionId))
+      return { sessionId, workspacePath: agentDir };
+    if (!agentDir)
+      throw new Error("Cannot materialize Goal without workspace path.");
 
     const result = await materializePendingSessionConfig({
       pendingSessionId: sessionId,
       workspacePath: agentDir,
       snapshotPatch: {},
       transport: {
-        postCurrent: (body) => apiPost('/api/session/materialize', body),
+        postCurrent: (body) => apiPost("/api/session/materialize", body),
       },
     });
-    const adopted = await adoptMigratedSession(result.sessionId, { sidecarAlreadyMigrated: true });
-    if (!adopted) throw new Error(`Failed to adopt Goal session ${result.sessionId}.`);
+    const adopted = await adoptMigratedSession(result.sessionId, {
+      sidecarAlreadyMigrated: true,
+    });
+    if (!adopted)
+      throw new Error(`Failed to adopt Goal session ${result.sessionId}.`);
     setSessionMeta(result.metadata);
     return { sessionId: result.sessionId, workspacePath: agentDir };
   }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
@@ -1968,7 +2522,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     cancelPendingStart: cancelPendingGoalStart,
   } = useSessionGoal({
     workspacePath: agentDir,
-    sessionId: sessionId ?? '',
+    sessionId: sessionId ?? "",
     materializeOwner: materializeGoalOwner,
   });
 
@@ -1977,26 +2531,34 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   cronStateRef.current = cronState;
   const sessionGoalStateRef = useRef(sessionGoalState);
   sessionGoalStateRef.current = sessionGoalState;
-  const startScheduledTask = useCallback(async (prompt: string): Promise<'goal' | 'cron' | null> => {
-    const goalConfig = goalDraftConfigRef.current;
-    if (goalConfig) {
-      const goal = await startGoal({ ...goalConfig, taskKind: 'goal' }, prompt);
-      setGoalDraftConfig(null);
-      return goal ? 'goal' : null;
-    }
-    const config = cronStateRef.current.config;
-    if (!config) throw new Error('[Chat] Scheduled task draft is missing');
-    if (config.taskKind === 'goal') {
-      const goal = await startGoal({ ...config, taskKind: 'goal' }, prompt);
-      disableCronMode();
-      return goal ? 'goal' : null;
-    }
-    await startCronTask(prompt);
-    return 'cron';
-  }, [disableCronMode, startCronTask, startGoal]);
-  const activeCurrentSessionCronTask = cronState.task?.status === 'running' && cronState.task.runMode !== 'new_session'
-    ? cronState.task
-    : null;
+  const startScheduledTask = useCallback(
+    async (prompt: string): Promise<"goal" | "cron" | null> => {
+      const goalConfig = goalDraftConfigRef.current;
+      if (goalConfig) {
+        const goal = await startGoal(
+          { ...goalConfig, taskKind: "goal" },
+          prompt,
+        );
+        setGoalDraftConfig(null);
+        return goal ? "goal" : null;
+      }
+      const config = cronStateRef.current.config;
+      if (!config) throw new Error("[Chat] Scheduled task draft is missing");
+      if (config.taskKind === "goal") {
+        const goal = await startGoal({ ...config, taskKind: "goal" }, prompt);
+        disableCronMode();
+        return goal ? "goal" : null;
+      }
+      await startCronTask(prompt);
+      return "cron";
+    },
+    [disableCronMode, startCronTask, startGoal],
+  );
+  const activeCurrentSessionCronTask =
+    cronState.task?.status === "running" &&
+    cronState.task.runMode !== "new_session"
+      ? cronState.task
+      : null;
   const [sessionDeleteProtected, setSessionDeleteProtected] = useState(false);
   useEffect(() => {
     let canceled = false;
@@ -2010,7 +2572,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     void sessionHasPersistentOwners(sessionId).then((protectedByOwner) => {
       if (!canceled) setSessionDeleteProtected(protectedByOwner);
     });
-    return () => { canceled = true; };
+    return () => {
+      canceled = true;
+    };
   }, [
     sessionId,
     cronState.task?.status,
@@ -2018,13 +2582,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     sessionGoalState.goal?.status,
   ]);
   const composerConfigLockedReason = activeCurrentSessionCronTask
-      ? t('shell.toasts.composerLockedByCron')
+    ? t("shell.toasts.composerLockedByCron")
     : undefined;
   const showPinnedProviderUnavailableToast = useCallback(() => {
-    toastRef.current.error(t('shell.toasts.providerUnavailable', { providerId: effectiveSelectedProviderId }));
+    toastRef.current.error(
+      t("shell.toasts.providerUnavailable", {
+        providerId: effectiveSelectedProviderId,
+      }),
+    );
   }, [effectiveSelectedProviderId, t]);
   const showSnapshotProviderIncompleteToast = useCallback(() => {
-    toastRef.current.warning(t('shell.toasts.snapshotProviderIncomplete'));
+    toastRef.current.warning(t("shell.toasts.snapshotProviderIncomplete"));
   }, [t]);
   const guardCronConfigMutation = useCallback(() => {
     if (!composerConfigLockedReason) return false;
@@ -2032,9 +2600,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     return true;
   }, [composerConfigLockedReason]);
   const stoppedCronTaskForInput = useMemo(
-    () => stoppedCronRecovery?.task && stoppedCronRecovery.sessionId === sessionId
-      ? { ...stoppedCronRecovery.task, status: 'stopped' as const }
-      : null,
+    () =>
+      stoppedCronRecovery?.task && stoppedCronRecovery.sessionId === sessionId
+        ? { ...stoppedCronRecovery.task, status: "stopped" as const }
+        : null,
     [stoppedCronRecovery, sessionId],
   );
 
@@ -2058,10 +2627,13 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
     // If task has empty or pending sessionId but we now have a real sessionId, update the task
     // Use ref to prevent duplicate updates for the same sessionId
-    const taskNeedsUpdate = task.sessionId === '' || isPendingSessionId(task.sessionId);
+    const taskNeedsUpdate =
+      task.sessionId === "" || isPendingSessionId(task.sessionId);
     if (taskNeedsUpdate && sessionIdSyncedRef.current !== sessionId) {
       sessionIdSyncedRef.current = sessionId;
-      console.log(`[Chat] Syncing cron task sessionId: taskId=${task.id}, oldSessionId=${task.sessionId}, newSessionId=${sessionId}`);
+      console.log(
+        `[Chat] Syncing cron task sessionId: taskId=${task.id}, oldSessionId=${task.sessionId}, newSessionId=${sessionId}`,
+      );
       void updateCronTaskSessionId(sessionId);
     }
   }, [cronState.task, sessionId, updateCronTaskSessionId]);
@@ -2076,25 +2648,31 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   });
 
   // Handle Tauri file drop on chat area (copy to myagents_files + insert reference)
-  const handleTauriChatDrop = useCallback(async (paths: string[]) => {
-    if (isDebugMode()) {
-      console.log('[Chat] Tauri drop on chat area:', paths);
-    }
-    // Use the SimpleChatInput's method to process file paths
-    await chatInputRef.current?.processDroppedFilePaths?.(paths);
-    // Refresh workspace to show new files
-    triggerWorkspaceRefresh();
-  }, [triggerWorkspaceRefresh]);
+  const handleTauriChatDrop = useCallback(
+    async (paths: string[]) => {
+      if (isDebugMode()) {
+        console.log("[Chat] Tauri drop on chat area:", paths);
+      }
+      // Use the SimpleChatInput's method to process file paths
+      await chatInputRef.current?.processDroppedFilePaths?.(paths);
+      // Refresh workspace to show new files
+      triggerWorkspaceRefresh();
+    },
+    [triggerWorkspaceRefresh],
+  );
 
   // Handle Tauri file drop on directory panel. Forward the drop position so
   // the panel resolves the target folder from the tree row under the pointer
   // (instead of the current selection — see DirectoryPanelHandle.handleFileDrop).
-  const handleTauriDirectoryDrop = useCallback(async (paths: string[], position?: { x: number; y: number }) => {
-    if (isDebugMode()) {
-      console.log('[Chat] Tauri drop on directory panel:', paths, position);
-    }
-    await directoryPanelRef.current?.handleFileDrop(paths, position);
-  }, []);
+  const handleTauriDirectoryDrop = useCallback(
+    async (paths: string[], position?: { x: number; y: number }) => {
+      if (isDebugMode()) {
+        console.log("[Chat] Tauri drop on directory panel:", paths, position);
+      }
+      await directoryPanelRef.current?.handleFileDrop(paths, position);
+    },
+    [],
+  );
 
   // Use refs to avoid recreating onDrop callback when handlers change
   const handleTauriChatDropRef = useRef(handleTauriChatDrop);
@@ -2104,7 +2682,12 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     handleTauriDirectoryDropRef.current = handleTauriDirectoryDrop;
   }, [handleTauriChatDrop, handleTauriDirectoryDrop]);
 
-  const { isDragging: isTauriDragging, activeZoneId, registerZone, unregisterZone } = useTauriFileDrop({
+  const {
+    isDragging: isTauriDragging,
+    activeZoneId,
+    registerZone,
+    unregisterZone,
+  } = useTauriFileDrop({
     // Tauri drag events are window-global and fire on every mounted hook instance.
     // Without this gate, a single Finder drop (or image drag) lands in ALL open tabs'
     // attachment/workspace state because every hidden tab's zone still matches the
@@ -2114,11 +2697,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     enabled: isActive,
     onDrop: (paths, zoneId, position) => {
       if (isDebugMode()) {
-        console.log('[Chat] Tauri drop event - zoneId:', zoneId, 'paths:', paths);
+        console.log(
+          "[Chat] Tauri drop event - zoneId:",
+          zoneId,
+          "paths:",
+          paths,
+        );
       }
-      if (zoneId === 'chat-content') {
+      if (zoneId === "chat-content") {
         void handleTauriChatDropRef.current(paths);
-      } else if (zoneId === 'directory-panel') {
+      } else if (zoneId === "directory-panel") {
         void handleTauriDirectoryDropRef.current(paths, position);
       } else {
         // Default: drop to chat area
@@ -2132,14 +2720,18 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     if (!isTauriEnvironment()) return;
 
     // Register chat content drop zone (empty callback - handled in global onDrop)
-    registerZone('chat-content', chatContentRef.current, () => {});
+    registerZone("chat-content", chatContentRef.current, () => {});
 
     // Register directory panel drop zone (empty callback - handled in global onDrop)
-    registerZone('directory-panel', directoryPanelContainerRef.current, () => {});
+    registerZone(
+      "directory-panel",
+      directoryPanelContainerRef.current,
+      () => {},
+    );
 
     return () => {
-      unregisterZone('chat-content');
-      unregisterZone('directory-panel');
+      unregisterZone("chat-content");
+      unregisterZone("directory-panel");
     };
   }, [registerZone, unregisterZone]);
 
@@ -2150,33 +2742,49 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const [mcpServers, setMcpServers] = useState<McpServerDefinition[]>([]);
   const [globalMcpEnabled, setGlobalMcpEnabled] = useState<string[]>([]);
   const [workspaceMcpEnabled, setWorkspaceMcpEnabled] = useState<string[]>(
-    currentAgent?.mcpEnabledServers ?? currentProject?.mcpEnabledServers ?? []
+    currentAgent?.mcpEnabledServers ?? currentProject?.mcpEnabledServers ?? [],
   );
 
   // PRD 0.2.17 — Claude plugin per-workspace enable state. Init from Agent
   // (preferred) or Project. Layer 1 (global visibility) is applied later
   // when computing the dropdown candidate list.
-  const [workspaceEnabledPlugins, setWorkspaceEnabledPlugins] = useState<string[]>(
-    currentAgent?.enabledPluginIds ?? currentProject?.enabledPluginIds ?? []
-  );
-  const [workspaceOfficialToolEnabled, setWorkspaceOfficialToolEnabled] = useState<OfficialToolId[]>(
-    normalizeOfficialToolIds(currentAgent?.enabledOfficialToolIds ?? currentProject?.enabledOfficialToolIds ?? [])
-  );
+  const [workspaceEnabledPlugins, setWorkspaceEnabledPlugins] = useState<
+    string[]
+  >(currentAgent?.enabledPluginIds ?? currentProject?.enabledPluginIds ?? []);
+  const [workspaceOfficialToolEnabled, setWorkspaceOfficialToolEnabled] =
+    useState<OfficialToolId[]>(
+      normalizeOfficialToolIds(
+        currentAgent?.enabledOfficialToolIds ??
+          currentProject?.enabledOfficialToolIds ??
+          [],
+      ),
+    );
   const globalOfficialToolEnabled = useMemo(
     () => normalizeOfficialToolIds(config.enabledOfficialToolIds ?? []),
     [config.enabledOfficialToolIds],
   );
   const imageUnderstandingConfiguredForInput = useMemo(() => {
-    if (!isImageUnderstandingToolConfigured(config.officialToolSettings)) return false;
+    if (!isImageUnderstandingToolConfigured(config.officialToolSettings))
+      return false;
     const selection = config.officialToolSettings?.imageUnderstanding;
-    const provider = providers.find(item => item.id === selection?.providerId);
+    const provider = providers.find(
+      (item) => item.id === selection?.providerId,
+    );
     if (!provider || isRuntimeBackedProvider(provider)) return false;
-    if (!isProviderAvailable(provider, apiKeys, providerVerifyStatus)) return false;
-    const model = provider.models.find(item => item.model === selection?.model);
-    return Array.isArray(model?.inputModalities) && model.inputModalities.includes('image');
+    if (!isProviderAvailable(provider, apiKeys, providerVerifyStatus))
+      return false;
+    const model = provider.models.find(
+      (item) => item.model === selection?.model,
+    );
+    return (
+      Array.isArray(model?.inputModalities) &&
+      model.inputModalities.includes("image")
+    );
   }, [apiKeys, config.officialToolSettings, providerVerifyStatus, providers]);
   const officialToolNeedsConfig = useMemo(
-    () => ({ [IMAGE_UNDERSTANDING_TOOL_ID]: !imageUnderstandingConfiguredForInput }),
+    () => ({
+      [IMAGE_UNDERSTANDING_TOOL_ID]: !imageUnderstandingConfiguredForInput,
+    }),
     [imageUnderstandingConfiguredForInput],
   );
 
@@ -2211,8 +2819,14 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       try {
         const task = await getSessionCronTask(sessionId);
 
-        if (task && task.status === 'running') {
-          console.log('[Chat] Restoring cron task UI for session:', sessionId, task.id, 'to tab:', tabId);
+        if (task && task.status === "running") {
+          console.log(
+            "[Chat] Restoring cron task UI for session:",
+            sessionId,
+            task.id,
+            "to tab:",
+            tabId,
+          );
 
           // Restore UI state only. The Rust Task scheduler owns recovery.
           restoreCronTask(task);
@@ -2225,11 +2839,21 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           const executing = await isTaskExecuting(task.id);
           if (executing) {
             if (sessionIdRef.current !== sessionId) return;
-            console.log('[Chat] Cron task is currently executing, marking for loading state');
+            console.log(
+              "[Chat] Cron task is currently executing, marking for loading state",
+            );
             pendingCronLoadingRef.current = true;
-            setCronExecutionState(task.id, true, (task.executionCount ?? 0) + 1);
+            setCronExecutionState(
+              task.id,
+              true,
+              (task.executionCount ?? 0) + 1,
+            );
           }
-        } else if (cronState.task && cronState.task.sessionId && cronState.task.sessionId !== sessionId) {
+        } else if (
+          cronState.task &&
+          cronState.task.sessionId &&
+          cronState.task.sessionId !== sessionId
+        ) {
           // Current cron state is for a different session - clear FRONTEND state only
           // This happens when user switches from a cron-task session to a regular session
           // Note: Only clear if cronState.task.sessionId is NOT empty (empty means task was just created)
@@ -2242,23 +2866,44 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           //
           // EXCEPTION: Don't clear if this is a pending -> real session ID upgrade (same cron task!)
           // This happens when SDK creates the real session after first message
-          const isSessionUpgrade = isPendingSessionId(cronState.task.sessionId) && !isPendingSessionId(sessionId);
+          const isSessionUpgrade =
+            isPendingSessionId(cronState.task.sessionId) &&
+            !isPendingSessionId(sessionId);
           if (isSessionUpgrade) {
-            console.log('[Chat] Session ID upgraded from pending to real, keeping cron state:', cronState.task.sessionId, '->', sessionId);
+            console.log(
+              "[Chat] Session ID upgraded from pending to real, keeping cron state:",
+              cronState.task.sessionId,
+              "->",
+              sessionId,
+            );
           } else {
-            console.log('[Chat] Clearing frontend cron state (session changed from', cronState.task.sessionId, 'to', sessionId, ')');
+            console.log(
+              "[Chat] Clearing frontend cron state (session changed from",
+              cronState.task.sessionId,
+              "to",
+              sessionId,
+              ")",
+            );
             disableCronMode();
           }
         }
 
         cronLoadedSessionRef.current = sessionId;
       } catch (error) {
-        console.error('[Chat] Failed to load cron task state:', error);
+        console.error("[Chat] Failed to load cron task state:", error);
       }
     };
 
     void loadCronTaskState();
-  }, [sessionId, tabId, restoreCronTask, disableCronMode, cronState.task, setIsLoading, setCronExecutionState]);
+  }, [
+    sessionId,
+    tabId,
+    restoreCronTask,
+    disableCronMode,
+    cronState.task,
+    setIsLoading,
+    setCronExecutionState,
+  ]);
 
   // Set loading state after TabProvider's loadSession completes (for cron task executing scenario)
   // This effect watches for messages reference changes, which indicates loadSession has completed
@@ -2266,7 +2911,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   useEffect(() => {
     // Only proceed if we have pending cron loading and messages array has changed
     if (pendingCronLoadingRef.current && messages !== prevMessagesRef.current) {
-      console.log('[Chat] loadSession completed, setting loading state for cron execution');
+      console.log(
+        "[Chat] loadSession completed, setting loading state for cron execution",
+      );
       setIsLoading(true);
       pendingCronLoadingRef.current = false;
     }
@@ -2286,9 +2933,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         syncMcpServerNames(servers);
         setGlobalMcpEnabled(enabledIds);
 
-        if (configDispositionRef.current !== 'push') {
+        if (configDispositionRef.current !== "push") {
           if (isDebugMode()) {
-            console.log('[Chat] Skipping MCP push (joined existing sidecar)');
+            console.log("[Chat] Skipping MCP push (joined existing sidecar)");
           }
           return;
         }
@@ -2318,19 +2965,22 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         // This ensures the Agent SDK has correct MCP config (including empty = no MCP)
         // Without this, backend currentMcpServers stays null and falls back to file config
         const workspaceEnabled = workspaceMcpEnabled;
-        const effectiveServers = servers.filter(s =>
-          enabledIds.includes(s.id) && workspaceEnabled.includes(s.id)
+        const effectiveServers = servers.filter(
+          (s) => enabledIds.includes(s.id) && workspaceEnabled.includes(s.id),
         );
 
         // Always call /api/mcp/set, even with empty array
         // Empty array means "user explicitly disabled all MCP"
         // null (not calling) means "use file config fallback" - which we don't want
-        await apiPost('/api/mcp/set', { servers: effectiveServers });
+        await apiPost("/api/mcp/set", { servers: effectiveServers });
         if (isDebugMode()) {
-          console.log('[Chat] Initial MCP sync:', effectiveServers.map(s => s.id).join(', ') || 'none');
+          console.log(
+            "[Chat] Initial MCP sync:",
+            effectiveServers.map((s) => s.id).join(", ") || "none",
+          );
         }
       } catch (err) {
-        console.error('[Chat] Failed to load MCP config:', err);
+        console.error("[Chat] Failed to load MCP config:", err);
       }
     };
     loadMcpConfig();
@@ -2361,15 +3011,15 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   useEffect(() => {
     const syncOfficialTools = async () => {
-      if (configDispositionRef.current !== 'push') return;
+      if (configDispositionRef.current !== "push") return;
       if (!isConnected || isSessionLoading) return;
       if (launcherOwnsInitialOfficialToolsRef.current) return;
       try {
-        await apiPost('/api/official-tools/session-enable', {
+        await apiPost("/api/official-tools/session-enable", {
           enabledIds: workspaceOfficialToolEnabled,
         });
       } catch (err) {
-        console.error('[Chat] Failed to sync official tools:', err);
+        console.error("[Chat] Failed to sync official tools:", err);
       }
     };
     void syncOfficialTools();
@@ -2386,30 +3036,47 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Load enabled agents and sync to backend
   const loadAndSyncAgents = useCallback(async () => {
     try {
-      const response = await apiGet<{ success: boolean; agents: Record<string, { description: string; prompt: string; model?: string; scope?: 'user' | 'project'; folderName?: string }> }>('/api/agents/enabled');
+      const response = await apiGet<{
+        success: boolean;
+        agents: Record<
+          string,
+          {
+            description: string;
+            prompt: string;
+            model?: string;
+            scope?: "user" | "project";
+            folderName?: string;
+          }
+        >;
+      }>("/api/agents/enabled");
       if (response.success && response.agents) {
         setEnabledAgents(response.agents);
         // Skip push when joining existing sidecar to avoid overwriting session config
-        if (configDispositionRef.current !== 'push') {
+        if (configDispositionRef.current !== "push") {
           if (isDebugMode()) {
-            console.log('[Chat] Skipping agents push (joined existing sidecar)');
+            console.log(
+              "[Chat] Skipping agents push (joined existing sidecar)",
+            );
           }
           return;
         }
         // Sync to backend for SDK injection
-        await apiPost('/api/agents/set', { agents: response.agents });
+        await apiPost("/api/agents/set", { agents: response.agents });
         if (isDebugMode()) {
-          console.log('[Chat] Agents synced:', Object.keys(response.agents).join(', ') || 'none');
+          console.log(
+            "[Chat] Agents synced:",
+            Object.keys(response.agents).join(", ") || "none",
+          );
         }
       }
     } catch (err) {
-      console.error('[Chat] Failed to load agents:', err);
+      console.error("[Chat] Failed to load agents:", err);
     }
-  // configPending is an INTENTIONAL re-trigger dep (not referenced in the body — the
-  // gate reads configDispositionRef.current): changing the callback identity when the
-  // disposition resolves makes the calling effect re-run loadAndSyncAgents, so a
-  // 'pending'→'push' history open pushes agents even if it skipped during pending.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // configPending is an INTENTIONAL re-trigger dep (not referenced in the body — the
+    // gate reads configDispositionRef.current): changing the callback identity when the
+    // disposition resolves makes the calling effect re-run loadAndSyncAgents, so a
+    // 'pending'→'push' history open pushes agents even if it skipped during pending.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiGet, apiPost, configPending]);
 
   // Load skills/commands for sidebar display.
@@ -2420,12 +3087,32 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     try {
       const response = await fileService.listSlashCommands();
       if (response.success && response.commands) {
-        setEnabledSkills(response.commands.filter(c => c.source === 'skill').map(c => ({ name: c.name, description: c.description, scope: c.scope, folderName: c.folderName })));
-        setEnabledCommands(response.commands.filter(c => c.source === 'custom').map(c => ({ name: c.name, description: c.description, scope: c.scope, fileName: c.fileName })));
-        setGlobalSkillFolderNames(new Set(response.globalSkillFolderNames || []));
+        setEnabledSkills(
+          response.commands
+            .filter((c) => c.source === "skill")
+            .map((c) => ({
+              name: c.name,
+              description: c.description,
+              scope: c.scope,
+              folderName: c.folderName,
+            })),
+        );
+        setEnabledCommands(
+          response.commands
+            .filter((c) => c.source === "custom")
+            .map((c) => ({
+              name: c.name,
+              description: c.description,
+              scope: c.scope,
+              fileName: c.fileName,
+            })),
+        );
+        setGlobalSkillFolderNames(
+          new Set(response.globalSkillFolderNames || []),
+        );
       }
     } catch (err) {
-      console.error('[Chat] Failed to load skills/commands:', err);
+      console.error("[Chat] Failed to load skills/commands:", err);
     }
   }, [fileService]);
 
@@ -2433,20 +3120,26 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const loadSkillsAndCommandsRef = useRef(loadSkillsAndCommands);
   loadSkillsAndCommandsRef.current = loadSkillsAndCommands;
 
-  const handleSyncSkillToGlobal = useCallback(async (folderName: string) => {
-    try {
-      const res = await apiPost<{ success: boolean; error?: string }>('/api/skill/copy-to-global', { folderName });
-      if (res.success) {
-        toastRef.current.success(t('shell.toasts.skillSyncedToGlobal'));
-        loadSkillsAndCommandsRef.current();
-      } else {
-        toastRef.current.error(res.error || t('shell.toasts.syncFailed'));
+  const handleSyncSkillToGlobal = useCallback(
+    async (folderName: string) => {
+      try {
+        const res = await apiPost<{ success: boolean; error?: string }>(
+          "/api/skill/copy-to-global",
+          { folderName },
+        );
+        if (res.success) {
+          toastRef.current.success(t("shell.toasts.skillSyncedToGlobal"));
+          loadSkillsAndCommandsRef.current();
+        } else {
+          toastRef.current.error(res.error || t("shell.toasts.syncFailed"));
+        }
+      } catch (err) {
+        console.error("[Chat] Sync skill to global failed:", err);
+        toastRef.current.error(t("shell.toasts.syncFailedRetry"));
       }
-    } catch (err) {
-      console.error('[Chat] Sync skill to global failed:', err);
-      toastRef.current.error(t('shell.toasts.syncFailedRetry'));
-    }
-  }, [apiPost, t]);
+    },
+    [apiPost, t],
+  );
 
   // Load capabilities on mount and when workspace config changes (e.g. skill copied, settings saved)
   useEffect(() => {
@@ -2464,9 +3157,15 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   useEffect(() => {
     if (sessionMeta?.configSnapshotAt) return;
-    const next = currentAgent?.enabledOfficialToolIds ?? currentProject?.enabledOfficialToolIds;
+    const next =
+      currentAgent?.enabledOfficialToolIds ??
+      currentProject?.enabledOfficialToolIds;
     if (next) setWorkspaceOfficialToolEnabled(normalizeOfficialToolIds(next));
-  }, [currentAgent?.enabledOfficialToolIds, currentProject?.enabledOfficialToolIds, sessionMeta?.configSnapshotAt]);
+  }, [
+    currentAgent?.enabledOfficialToolIds,
+    currentProject?.enabledOfficialToolIds,
+    sessionMeta?.configSnapshotAt,
+  ]);
 
   // v0.1.69 — owned (Desktop/Cron) sessions lock config via SessionMetadata snapshot
   // (configSnapshotAt stamped at creation per `snapshotForOwnedSession`). Tab-level UI
@@ -2505,34 +3204,43 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
    * don't rubber-band back to the old value on the next render. Safe no-op if there
    * is no current sessionId (new-tab pre-create race).
    */
-  const patchSnapshot = useCallback(async (patch: Parameters<typeof patchSessionMetadata>[1]) => {
-    if (!sessionId) return;
-    if (isPendingSessionId(sessionId)) {
-      if (!agentDir) {
-        throw new Error('Cannot materialize pending session without workspace path.');
-      }
+  const patchSnapshot = useCallback(
+    async (patch: Parameters<typeof patchSessionMetadata>[1]) => {
+      if (!sessionId) return;
+      if (isPendingSessionId(sessionId)) {
+        if (!agentDir) {
+          throw new Error(
+            "Cannot materialize pending session without workspace path.",
+          );
+        }
 
-      const result = await materializePendingSessionConfig({
-        pendingSessionId: sessionId,
-        workspacePath: agentDir,
-        snapshotPatch: patch,
-        transport: {
-          postCurrent: (body) => apiPost('/api/session/materialize', body),
-        },
-      });
-      const adopted = await adoptMigratedSession(result.sessionId, { sidecarAlreadyMigrated: true });
-      if (!adopted) {
-        throw new Error(`Failed to adopt materialized session ${result.sessionId}.`);
+        const result = await materializePendingSessionConfig({
+          pendingSessionId: sessionId,
+          workspacePath: agentDir,
+          snapshotPatch: patch,
+          transport: {
+            postCurrent: (body) => apiPost("/api/session/materialize", body),
+          },
+        });
+        const adopted = await adoptMigratedSession(result.sessionId, {
+          sidecarAlreadyMigrated: true,
+        });
+        if (!adopted) {
+          throw new Error(
+            `Failed to adopt materialized session ${result.sessionId}.`,
+          );
+        }
+        setSessionMeta(result.metadata);
+        return;
       }
-      setSessionMeta(result.metadata);
-      return;
-    }
-    const updated = await patchSessionMetadata(sessionId, patch);
-    if (!updated) {
-      throw new Error(`Session ${sessionId} not found.`);
-    }
-    setSessionMeta(updated);
-  }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+      const updated = await patchSessionMetadata(sessionId, patch);
+      if (!updated) {
+        throw new Error(`Session ${sessionId} not found.`);
+      }
+      setSessionMeta(updated);
+    },
+    [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta],
+  );
 
   // Persist a Tab-UI config change to session snapshot (owned) + project + agent.
   // See PRD v0.1.69 §4.3 rule 2. Toasts on persistence failure without rolling
@@ -2546,92 +3254,106 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // `isExternalRuntime` (writing to `agent.runtimeConfig` for external runtimes
   // instead of `agent.permissionMode` / `agent.model`) — fixing a long-standing
   // bug where Chat's path sent external-runtime permission to the wrong field.
-  const persistTabConfigChange = useCallback(async (patch: {
-    builtinSelection?: BuiltinModelSelection;
-    builtinProviderEnvPolicy?: BuiltinProviderEnvPolicy;
-    runtimeBackedProviderSelection?: RuntimeBackedProviderIdentity;
-    providerId?: string;
-    /** Builtin model. Use `runtimeModel` instead for external runtimes. */
-    model?: string | null;
-    /** External runtime model. Routed to `agent.runtimeConfig.model`. */
-    runtimeModel?: string | null;
-    permissionMode?: PermissionMode | string;
-    /** #324 — 推理强度 setting ('default' | level). The helper routes it to
-     *  `agent.reasoningEffort` (builtin) / `agent.runtimeConfig.reasoningEffort`
-     *  (external) + the session snapshot. */
-    reasoningEffort?: string;
-    mcpEnabledServers?: string[];
-    enabledPluginIds?: string[];
-    enabledOfficialToolIds?: OfficialToolId[];
-  }) => {
-    if (!currentProject) return false;
-    const result = await persistInputOptionChange({
-      workspaceId: currentProject.id,
-      agentId: currentProject.agentId ?? null,
+  const persistTabConfigChange = useCallback(
+    async (patch: {
+      builtinSelection?: BuiltinModelSelection;
+      builtinProviderEnvPolicy?: BuiltinProviderEnvPolicy;
+      runtimeBackedProviderSelection?: RuntimeBackedProviderIdentity;
+      providerId?: string;
+      /** Builtin model. Use `runtimeModel` instead for external runtimes. */
+      model?: string | null;
+      /** External runtime model. Routed to `agent.runtimeConfig.model`. */
+      runtimeModel?: string | null;
+      permissionMode?: PermissionMode | string;
+      /** #324 — 推理强度 setting ('default' | level). The helper routes it to
+       *  `agent.reasoningEffort` (builtin) / `agent.runtimeConfig.reasoningEffort`
+       *  (external) + the session snapshot. */
+      reasoningEffort?: string;
+      mcpEnabledServers?: string[];
+      enabledPluginIds?: string[];
+      enabledOfficialToolIds?: OfficialToolId[];
+    }) => {
+      if (!currentProject) return false;
+      const result = await persistInputOptionChange({
+        workspaceId: currentProject.id,
+        agentId: currentProject.agentId ?? null,
+        isExternalRuntime,
+        currentRuntimeConfig: currentAgent?.runtimeConfig,
+        currentProviderId:
+          currentAgent?.providerId ?? currentProject.providerId,
+        fields: {
+          builtinSelection: patch.builtinSelection,
+          builtinProviderEnvPolicy: patch.builtinProviderEnvPolicy,
+          runtimeBackedProviderSelection: patch.runtimeBackedProviderSelection,
+          providerId: patch.providerId,
+          builtinModel: patch.model,
+          runtimeModel: patch.runtimeModel,
+          permissionMode: patch.permissionMode,
+          reasoningEffort: patch.reasoningEffort,
+          mcpEnabledServers: patch.mcpEnabledServers,
+          enabledPluginIds: patch.enabledPluginIds,
+          enabledOfficialToolIds: patch.enabledOfficialToolIds,
+        },
+        patchProject,
+        patchAgentConfig,
+        // v0.2.39: desktop Tab user intent always snapshots first; the helper is
+        // still wired with a policy hook so future non-Tab surfaces cannot drift.
+        patchSnapshot: skipSnapshotWrite ? undefined : patchSnapshot,
+        snapshotWriteMode: skipSnapshotWrite ? "disabled" : "required",
+        // Cross-review: Chat's MCP toggle previously did its own
+        // `apiPost('/api/mcp/set')` AFTER the helper, leaving the helper's
+        // `pushMcpToSidecar` plumbing dead-code. Wire it through so the
+        // "single source of truth" promise is real.
+        pushMcpToSidecar: async (servers) => {
+          // Defer the live-sidecar push while the disposition is unresolved (instant
+          // flip pre-ensure) — pushing now could stomp a sidecar that resolves to
+          // 'adopt'. The disk dual-write (patchProject/patchSnapshot) still happens, so
+          // on 'push' the mount effect re-pushes the effective set on resolve, and on
+          // 'adopt' the user's choice is persisted for future sessions. Post-resolution
+          // (push OR adopt) a user toggle is explicit intent and DOES reach the sidecar.
+          if (configDispositionRef.current === "pending") return;
+          await apiPost("/api/mcp/set", { servers });
+        },
+        getAllMcpServers,
+        getGlobalMcpEnabled: getEnabledMcpServerIds,
+        // PRD 0.2.17 — push plugin selection to the running sidecar so the
+        // SDK options for the next pre-warm pick up the change immediately,
+        // mirroring the MCP push above.
+        pushPluginsToSidecar: async (enabledIds) => {
+          if (configDispositionRef.current === "pending") return; // defer while unresolved; disk write still happens
+          await apiPost("/api/cc-plugin/session-enable", { enabledIds });
+        },
+        pushOfficialToolsToSidecar: async (enabledIds) => {
+          if (configDispositionRef.current === "pending") return;
+          await apiPost("/api/official-tools/session-enable", { enabledIds });
+        },
+        pushRuntimeConfigToSidecar: async (runtimeConfig) => {
+          if (configDispositionRef.current === "pending") return; // defer while unresolved; disk write still happens
+          await apiPost("/api/runtime/config", {
+            runtime: currentRuntime,
+            runtimeConfig,
+          });
+        },
+      });
+      if (!result.ok) {
+        console.error("[chat] tab config dual-write failed:", result.errors);
+        toastRef.current.warning(t("shell.toasts.configPartiallySaved"));
+      }
+      return !result.snapshotWriteFailed;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
+    },
+    [
+      skipSnapshotWrite,
+      currentProject?.id,
+      currentProject?.agentId,
       isExternalRuntime,
-      currentRuntimeConfig: currentAgent?.runtimeConfig,
-      currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
-      fields: {
-        builtinSelection: patch.builtinSelection,
-        builtinProviderEnvPolicy: patch.builtinProviderEnvPolicy,
-        runtimeBackedProviderSelection: patch.runtimeBackedProviderSelection,
-        providerId: patch.providerId,
-        builtinModel: patch.model,
-        runtimeModel: patch.runtimeModel,
-        permissionMode: patch.permissionMode,
-        reasoningEffort: patch.reasoningEffort,
-        mcpEnabledServers: patch.mcpEnabledServers,
-        enabledPluginIds: patch.enabledPluginIds,
-        enabledOfficialToolIds: patch.enabledOfficialToolIds,
-      },
+      currentRuntime,
+      currentAgent?.runtimeConfig,
+      patchSnapshot,
       patchProject,
-      patchAgentConfig,
-      // v0.2.39: desktop Tab user intent always snapshots first; the helper is
-      // still wired with a policy hook so future non-Tab surfaces cannot drift.
-      patchSnapshot: skipSnapshotWrite ? undefined : patchSnapshot,
-      snapshotWriteMode: skipSnapshotWrite ? 'disabled' : 'required',
-      // Cross-review: Chat's MCP toggle previously did its own
-      // `apiPost('/api/mcp/set')` AFTER the helper, leaving the helper's
-      // `pushMcpToSidecar` plumbing dead-code. Wire it through so the
-      // "single source of truth" promise is real.
-      pushMcpToSidecar: async (servers) => {
-        // Defer the live-sidecar push while the disposition is unresolved (instant
-        // flip pre-ensure) — pushing now could stomp a sidecar that resolves to
-        // 'adopt'. The disk dual-write (patchProject/patchSnapshot) still happens, so
-        // on 'push' the mount effect re-pushes the effective set on resolve, and on
-        // 'adopt' the user's choice is persisted for future sessions. Post-resolution
-        // (push OR adopt) a user toggle is explicit intent and DOES reach the sidecar.
-        if (configDispositionRef.current === 'pending') return;
-        await apiPost('/api/mcp/set', { servers });
-      },
-      getAllMcpServers,
-      getGlobalMcpEnabled: getEnabledMcpServerIds,
-      // PRD 0.2.17 — push plugin selection to the running sidecar so the
-      // SDK options for the next pre-warm pick up the change immediately,
-      // mirroring the MCP push above.
-      pushPluginsToSidecar: async (enabledIds) => {
-        if (configDispositionRef.current === 'pending') return; // defer while unresolved; disk write still happens
-        await apiPost('/api/cc-plugin/session-enable', { enabledIds });
-      },
-      pushOfficialToolsToSidecar: async (enabledIds) => {
-        if (configDispositionRef.current === 'pending') return;
-        await apiPost('/api/official-tools/session-enable', { enabledIds });
-      },
-      pushRuntimeConfigToSidecar: async (runtimeConfig) => {
-        if (configDispositionRef.current === 'pending') return; // defer while unresolved; disk write still happens
-        await apiPost('/api/runtime/config', {
-          runtime: currentRuntime,
-          runtimeConfig,
-        });
-      },
-    });
-    if (!result.ok) {
-      console.error('[chat] tab config dual-write failed:', result.errors);
-      toastRef.current.warning(t('shell.toasts.configPartiallySaved'));
-    }
-    return !result.snapshotWriteFailed;
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
-  }, [skipSnapshotWrite, currentProject?.id, currentProject?.agentId, isExternalRuntime, currentRuntime, currentAgent?.runtimeConfig, patchSnapshot, patchProject, t]);
+      t,
+    ],
+  );
 
   // Handle workspace MCP toggle — Tab UI edits dual-write:
   // (1) session snapshot so THIS session uses the new tool set immediately (owned sessions only
@@ -2639,54 +3361,73 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // (2) project + agent so FUTURE new sessions inherit the user's latest choice (PRD
   //     v0.1.69 §4.3 rule 2: "写 Session + 向上写 Agent"). For unlocked/IM this is also
   //     the live-follow source, so the single write covers both roles.
-  const handleWorkspaceMcpToggle = useCallback(async (serverId: string, enabled: boolean) => {
-    if (guardCronConfigMutation()) return;
-    const newEnabled = enabled
-      ? [...workspaceMcpEnabled, serverId]
-      : workspaceMcpEnabled.filter(id => id !== serverId);
+  const handleWorkspaceMcpToggle = useCallback(
+    async (serverId: string, enabled: boolean) => {
+      if (guardCronConfigMutation()) return;
+      const newEnabled = enabled
+        ? [...workspaceMcpEnabled, serverId]
+        : workspaceMcpEnabled.filter((id) => id !== serverId);
 
-    setWorkspaceMcpEnabled(newEnabled);
+      setWorkspaceMcpEnabled(newEnabled);
 
-    // PRD 0.2.7: persistTabConfigChange now also handles the sidecar push
-    // (via the helper's `pushMcpToSidecar` callback) so this site is just a
-    // single delegate call — disk dual-write + live MCP swap on the running
-    // session in one transaction. Pre-PRD-0.2.7 the duplicate `apiPost`
-    // here ran AFTER persist and left the helper's plumbing as dead code.
-    const persisted = await persistTabConfigChange({ mcpEnabledServers: newEnabled });
-    if (!persisted) {
-      setWorkspaceMcpEnabled(workspaceMcpEnabled);
-    }
-  }, [workspaceMcpEnabled, persistTabConfigChange, guardCronConfigMutation]);
+      // PRD 0.2.7: persistTabConfigChange now also handles the sidecar push
+      // (via the helper's `pushMcpToSidecar` callback) so this site is just a
+      // single delegate call — disk dual-write + live MCP swap on the running
+      // session in one transaction. Pre-PRD-0.2.7 the duplicate `apiPost`
+      // here ran AFTER persist and left the helper's plumbing as dead code.
+      const persisted = await persistTabConfigChange({
+        mcpEnabledServers: newEnabled,
+      });
+      if (!persisted) {
+        setWorkspaceMcpEnabled(workspaceMcpEnabled);
+      }
+    },
+    [workspaceMcpEnabled, persistTabConfigChange, guardCronConfigMutation],
+  );
 
   // PRD 0.2.17 — Claude plugin per-workspace toggle. Mirrors MCP exactly:
   // optimistic local update + dual-write via persistTabConfigChange (which
   // also pushes /api/cc-plugin/session-enable to the running sidecar so
   // the SDK options pick up the new plugin set on next pre-warm).
-  const handleWorkspacePluginToggle = useCallback(async (pluginId: string, enabled: boolean) => {
-    if (guardCronConfigMutation()) return;
-    const newEnabled = enabled
-      ? [...workspaceEnabledPlugins, pluginId]
-      : workspaceEnabledPlugins.filter(id => id !== pluginId);
-    setWorkspaceEnabledPlugins(newEnabled);
-    const persisted = await persistTabConfigChange({ enabledPluginIds: newEnabled });
-    if (!persisted) {
-      setWorkspaceEnabledPlugins(workspaceEnabledPlugins);
-    }
-  }, [workspaceEnabledPlugins, persistTabConfigChange, guardCronConfigMutation]);
+  const handleWorkspacePluginToggle = useCallback(
+    async (pluginId: string, enabled: boolean) => {
+      if (guardCronConfigMutation()) return;
+      const newEnabled = enabled
+        ? [...workspaceEnabledPlugins, pluginId]
+        : workspaceEnabledPlugins.filter((id) => id !== pluginId);
+      setWorkspaceEnabledPlugins(newEnabled);
+      const persisted = await persistTabConfigChange({
+        enabledPluginIds: newEnabled,
+      });
+      if (!persisted) {
+        setWorkspaceEnabledPlugins(workspaceEnabledPlugins);
+      }
+    },
+    [workspaceEnabledPlugins, persistTabConfigChange, guardCronConfigMutation],
+  );
 
-  const handleWorkspaceOfficialToolToggle = useCallback(async (toolId: OfficialToolId, enabled: boolean) => {
-    if (guardCronConfigMutation()) return;
-    const newEnabled = normalizeOfficialToolIds(
-      enabled
-        ? [...workspaceOfficialToolEnabled, toolId]
-        : workspaceOfficialToolEnabled.filter(id => id !== toolId),
-    );
-    setWorkspaceOfficialToolEnabled(newEnabled);
-    const persisted = await persistTabConfigChange({ enabledOfficialToolIds: newEnabled });
-    if (!persisted) {
-      setWorkspaceOfficialToolEnabled(workspaceOfficialToolEnabled);
-    }
-  }, [workspaceOfficialToolEnabled, persistTabConfigChange, guardCronConfigMutation]);
+  const handleWorkspaceOfficialToolToggle = useCallback(
+    async (toolId: OfficialToolId, enabled: boolean) => {
+      if (guardCronConfigMutation()) return;
+      const newEnabled = normalizeOfficialToolIds(
+        enabled
+          ? [...workspaceOfficialToolEnabled, toolId]
+          : workspaceOfficialToolEnabled.filter((id) => id !== toolId),
+      );
+      setWorkspaceOfficialToolEnabled(newEnabled);
+      const persisted = await persistTabConfigChange({
+        enabledOfficialToolIds: newEnabled,
+      });
+      if (!persisted) {
+        setWorkspaceOfficialToolEnabled(workspaceOfficialToolEnabled);
+      }
+    },
+    [
+      workspaceOfficialToolEnabled,
+      persistTabConfigChange,
+      guardCronConfigMutation,
+    ],
+  );
 
   // Sync selectedModel when provider changes (skip initial mount to preserve project-stored model)
   const providerInitRef = useRef(true);
@@ -2705,15 +3446,26 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // provider. Resetting unconditionally on every `currentProvider.id` change
     // stomped a still-valid pinned model on the apiKeys-load availability flip
     // (unavailable→available), discarding the user's per-session model choice.
-    if (!shouldResetModelOnProviderChange({
-      providerType: currentProvider?.type,
-      providerModels: currentProvider?.models?.map(m => m.model),
-      selectedModel,
-    })) return;
+    if (
+      !shouldResetModelOnProviderChange({
+        providerType: currentProvider?.type,
+        providerModels: currentProvider?.models?.map((m) => m.model),
+        selectedModel,
+      })
+    )
+      return;
     if (currentProvider?.primaryModel) {
       setSelectedModel(currentProvider.primaryModel);
     }
-  }, [currentProvider?.id, currentProvider?.primaryModel, currentProvider?.models, currentProvider?.type, selectedModel, pinnedProviderUnavailable, sessionSnapshotOwnsConfig]);
+  }, [
+    currentProvider?.id,
+    currentProvider?.primaryModel,
+    currentProvider?.models,
+    currentProvider?.type,
+    selectedModel,
+    pinnedProviderUnavailable,
+    sessionSnapshotOwnsConfig,
+  ]);
 
   // One-time sync: apply project-stored settings after useConfig finishes async load.
   // useState initializers run with currentProject=undefined (useConfig loads asynchronously),
@@ -2724,7 +3476,13 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // While 'pending' (instant flip pre-ensure), wait WITHOUT marking
     // projectSyncedRef — so this re-runs once the disposition resolves (configPending
     // is in deps). On 'adopt' the model seed below is gated to 'push' so adoption owns it.
-    if (!currentProject || projectSyncedRef.current || hadInitialMessage.current || configPending) return;
+    if (
+      !currentProject ||
+      projectSyncedRef.current ||
+      hadInitialMessage.current ||
+      configPending
+    )
+      return;
     if (waitingForExistingSessionMeta) return;
     if (sessionSnapshotOwnsConfig) {
       projectSyncedRef.current = true;
@@ -2732,7 +3490,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     }
     projectSyncedRef.current = true;
     // AgentConfig is source of truth, Project is fallback for non-agent workspaces
-    const effectivePermission = (currentAgent?.permissionMode as PermissionMode | undefined) ?? currentProject.permissionMode ?? config.defaultPermissionMode;
+    const effectivePermission =
+      (currentAgent?.permissionMode as PermissionMode | undefined) ??
+      currentProject.permissionMode ??
+      config.defaultPermissionMode;
     setPermissionMode(effectivePermission);
     // Runtime-specific permission mode sync is handled by the `[currentRuntime, isExternalRuntime]`
     // effect higher up, which validates the persisted value against the current runtime's mode
@@ -2742,23 +3503,30 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // Sync provider (useState initializer runs when currentProject is still undefined).
     // Re-arm providerInitRef to suppress the deferred provider-change effect (fires next render)
     // that would otherwise override the project-stored model with provider's primaryModel.
-    const effectiveProvider = currentAgent?.providerId ?? currentProject.providerId;
+    const effectiveProvider =
+      currentAgent?.providerId ?? currentProject.providerId;
     if (effectiveProvider) {
       setSelectedProviderId(effectiveProvider);
       providerInitRef.current = true;
     }
     // Skip model override when joining existing sidecar — adoption effect will set the correct model
     const effectiveModel = currentAgent?.model ?? currentProject.model;
-    if (effectiveModel && configDispositionRef.current === 'push') {
+    if (effectiveModel && configDispositionRef.current === "push") {
       setSelectedModel(effectiveModel);
     }
     // #324 — same gating as model: builtin effort seeds from the agent default.
     // (External runtime seeding lives in the runtime-transition effect above.)
-    if (!isExternalRuntime && configDispositionRef.current === 'push') {
-      setReasoningEffort(currentAgent?.reasoningEffort ?? 'default');
+    if (!isExternalRuntime && configDispositionRef.current === "push") {
+      setReasoningEffort(currentAgent?.reasoningEffort ?? "default");
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time sync when project first loads
-  }, [currentProject?.id, configPending, sessionId, sessionMeta, sessionSnapshotOwnsConfig]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time sync when project first loads
+  }, [
+    currentProject?.id,
+    configPending,
+    sessionId,
+    sessionMeta,
+    sessionSnapshotOwnsConfig,
+  ]);
 
   // v0.1.69: session snapshot → local state (session-first per D7 Option C).
   // Also handles T11 reset-on-session-switch: when switching to an unlocked / IM session
@@ -2766,30 +3534,38 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // previously-loaded locked session doesn't bleed across. Runs on session load AND after
   // PATCH /sessions/:id. React bails on setState when target === current, so no render loop.
   useEffect(() => {
-    if (!sessionMeta) return;  // Not loaded yet — keep mount-time defaults
-    if (configDispositionRef.current !== 'push') return;  // Adoption effect handles it
+    if (!sessionMeta) return; // Not loaded yet — keep mount-time defaults
+    if (configDispositionRef.current !== "push") return; // Adoption effect handles it
     // Sticky guard: adoption may have already completed and cleared the flag
     // BEFORE this sessionMeta dispatch arrived (loadSession sets sessionMeta after
     // /api/session/config returns). Re-applying persisted snapshot here would
     // overwrite the just-adopted live sidecar config.
-    if (adoptedSessionRef.current && adoptedSessionRef.current === sessionMeta.id) return;
+    if (
+      adoptedSessionRef.current &&
+      adoptedSessionRef.current === sessionMeta.id
+    )
+      return;
     // Field-by-field merge remains for unlocked / live-follow sessions. Owned
     // sessions are source-owned by SessionMetadata: falling back to the current
     // Agent during the async metadata window reintroduces cross-session config
     // stomp (#395/#396).
-    const snapshotRuntime = (sessionMeta.runtime as RuntimeType | undefined) ?? agentRuntime;
-    const snapshotIsExternal = snapshotRuntime !== 'builtin';
-    const snapshotIsManagedProvider = snapshotIsExternal
-      && isManagedProviderSessionSnapshot(sessionMeta);
+    const snapshotRuntime =
+      (sessionMeta.runtime as RuntimeType | undefined) ?? agentRuntime;
+    const snapshotIsExternal = snapshotRuntime !== "builtin";
+    const snapshotIsManagedProvider =
+      snapshotIsExternal && isManagedProviderSessionSnapshot(sessionMeta);
     const snapshotUsesProviderPicker = shouldSessionSnapshotUseProviderPicker({
       session: sessionMeta,
       runtime: snapshotRuntime,
     });
     const snapshotOwnsConfig = Boolean(sessionMeta.configSnapshotAt);
-    const fallbackModel = snapshotIsExternal && !snapshotIsManagedProvider
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.model
-      : currentAgent?.model;
-    const rawModel = snapshotOwnsConfig ? sessionMeta.model : (sessionMeta.model ?? fallbackModel);
+    const fallbackModel =
+      snapshotIsExternal && !snapshotIsManagedProvider
+        ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.model
+        : currentAgent?.model;
+    const rawModel = snapshotOwnsConfig
+      ? sessionMeta.model
+      : (sessionMeta.model ?? fallbackModel);
     const runtimeModelValue = snapshotIsExternal
       ? coerceExternalRuntimeModelForUi(rawModel, snapshotRuntime)
       : rawModel;
@@ -2797,24 +3573,27 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       ? managedProviderSnapshotModel(sessionMeta, rawModel)
       : rawModel;
     const fallbackMode = snapshotIsExternal
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.permissionMode
+      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)
+          ?.permissionMode
       : (currentAgent?.permissionMode as string | undefined);
-    const rawMode = snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode);
+    const rawMode = snapshotOwnsConfig
+      ? sessionMeta.permissionMode
+      : (sessionMeta.permissionMode ?? fallbackMode);
     const runtimePermissionValue = snapshotIsExternal
       ? coerceExternalRuntimePermissionForUi(rawMode, snapshotRuntime)
       : rawMode;
     const providerPermissionValue = snapshotIsManagedProvider
       ? managedCodexRuntimePermissionToProviderPermission(
-        runtimePermissionValue ?? getDefaultRuntimePermissionMode(snapshotRuntime),
-      )
+          runtimePermissionValue ??
+            getDefaultRuntimePermissionMode(snapshotRuntime),
+        )
       : rawMode;
     const providerId = snapshotOwnsConfig
-      ? (snapshotIsManagedProvider
+      ? snapshotIsManagedProvider
         ? managedProviderSnapshotProviderId(sessionMeta)
-        : (
-          isConcreteProviderRoute(sessionMeta.providerRoute)
-            ? sessionMeta.providerRoute.providerId
-            : resolveLegacyBuiltinSnapshotProviderId({
+        : isConcreteProviderRoute(sessionMeta.providerRoute)
+          ? sessionMeta.providerRoute.providerId
+          : resolveLegacyBuiltinSnapshotProviderId({
               snapshotProviderId: sessionMeta.providerId,
               snapshotModel: sessionMeta.model,
               selectedProviderId,
@@ -2822,15 +3601,24 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               apiKeys,
               providerVerifyStatus,
             })
-        ))
       : (sessionMeta.providerId ?? currentAgent?.providerId);
-    const mcp = snapshotOwnsConfig ? sessionMeta.mcpEnabledServers : (sessionMeta.mcpEnabledServers ?? currentAgent?.mcpEnabledServers);
+    const mcp = snapshotOwnsConfig
+      ? sessionMeta.mcpEnabledServers
+      : (sessionMeta.mcpEnabledServers ?? currentAgent?.mcpEnabledServers);
     const plugins = snapshotOwnsConfig
       ? (sessionMeta.enabledPluginIds ?? [])
-      : (sessionMeta.enabledPluginIds ?? currentAgent?.enabledPluginIds ?? currentProject?.enabledPluginIds ?? []);
+      : (sessionMeta.enabledPluginIds ??
+        currentAgent?.enabledPluginIds ??
+        currentProject?.enabledPluginIds ??
+        []);
     const officialTools = snapshotOwnsConfig
       ? (sessionMeta.enabledOfficialToolIds ?? [])
-      : normalizeOfficialToolIds(sessionMeta.enabledOfficialToolIds ?? currentAgent?.enabledOfficialToolIds ?? currentProject?.enabledOfficialToolIds ?? []);
+      : normalizeOfficialToolIds(
+          sessionMeta.enabledOfficialToolIds ??
+            currentAgent?.enabledOfficialToolIds ??
+            currentProject?.enabledOfficialToolIds ??
+            [],
+        );
     // #324 — snapshot effort wins over agent default; a persisted 'default'
     // is meaningful (session explicitly reverted) and flows through as-is.
     // UNCONDITIONAL set (`?? 'default'`, unlike model's `if (model)`): effort's
@@ -2838,44 +3626,67 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // field must reset the picker — keeping the previous session's value here
     // is a cross-session leak (cross-review Critical).
     const fallbackEffort = snapshotIsExternal
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.reasoningEffort
+      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)
+          ?.reasoningEffort
       : currentAgent?.reasoningEffort;
-    const snapEffort = snapshotOwnsConfig ? sessionMeta.reasoningEffort : (sessionMeta.reasoningEffort ?? fallbackEffort);
+    const snapEffort = snapshotOwnsConfig
+      ? sessionMeta.reasoningEffort
+      : (sessionMeta.reasoningEffort ?? fallbackEffort);
     if (snapshotOwnsConfig) {
       projectSyncedRef.current = true;
     }
     if (snapshotIsExternal) {
       setRuntimeModel(runtimeModelValue);
     }
-    if (snapshotUsesProviderPicker && (snapshotOwnsConfig || providerModelValue)) {
+    if (
+      snapshotUsesProviderPicker &&
+      (snapshotOwnsConfig || providerModelValue)
+    ) {
       setSelectedModel(providerModelValue);
     }
     setReasoningEffort(
       (snapshotIsExternal
         ? coerceReasoningEffortForUi(snapEffort, snapshotRuntime)
-        : snapEffort)
-      ?? 'default',
+        : snapEffort) ?? "default",
     );
     if (snapshotIsExternal) {
-      setRuntimePermissionMode(runtimePermissionValue ?? getDefaultRuntimePermissionMode(snapshotRuntime) ?? 'default');
+      setRuntimePermissionMode(
+        runtimePermissionValue ??
+          getDefaultRuntimePermissionMode(snapshotRuntime) ??
+          "default",
+      );
     }
-    if (snapshotUsesProviderPicker && (snapshotOwnsConfig || providerPermissionValue)) {
-      setPermissionMode((providerPermissionValue as PermissionMode | undefined) ?? 'auto');
+    if (
+      snapshotUsesProviderPicker &&
+      (snapshotOwnsConfig || providerPermissionValue)
+    ) {
+      setPermissionMode(
+        (providerPermissionValue as PermissionMode | undefined) ?? "auto",
+      );
     }
     if (snapshotUsesProviderPicker && providerId) {
       setSelectedProviderId(providerId);
-    } else if (!snapshotIsExternal && snapshotOwnsConfig && providers.length > 0) {
+    } else if (
+      !snapshotIsExternal &&
+      snapshotOwnsConfig &&
+      providers.length > 0
+    ) {
       setSelectedProviderId(undefined);
     }
     if (mcp) setWorkspaceMcpEnabled(mcp);
     setWorkspaceEnabledPlugins(plugins);
     setWorkspaceOfficialToolEnabled(normalizeOfficialToolIds(officialTools));
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- currentAgent derived from config, listening to its identity would re-fire on unrelated agent changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- currentAgent derived from config, listening to its identity would re-fire on unrelated agent changes
   }, [sessionMeta, configPending, selectedProviderId, providers]);
 
   // 若 selectedModel 不在当前 provider 的 models 中（如模型已被删除），回退到 primaryModel 并更新项目
   useEffect(() => {
-    if (!currentProject || !currentProvider || configDispositionRef.current !== 'push') return;
+    if (
+      !currentProject ||
+      !currentProvider ||
+      configDispositionRef.current !== "push"
+    )
+      return;
     if (waitingForExistingSessionMeta) return;
     if (sessionSnapshotOwnsConfig) return;
     // #300: `currentProvider` here is the fallback provider, NOT the session's
@@ -2884,8 +3695,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // primaryModel AND persist it to project/agent, permanently corrupting the
     // user's choice. Leave it; the send guard surfaces the unavailability instead.
     if (pinnedProviderUnavailable) return;
-    if (currentProvider.type === 'subscription' && !isRuntimeBackedProvider(currentProvider)) return;
-    if (!Array.isArray(currentProvider.models) || currentProvider.models.length === 0) return;
+    if (
+      currentProvider.type === "subscription" &&
+      !isRuntimeBackedProvider(currentProvider)
+    )
+      return;
+    if (
+      !Array.isArray(currentProvider.models) ||
+      currentProvider.models.length === 0
+    )
+      return;
     if (!selectedModel) return;
     const modelIds = currentProvider.models.map((m) => m.model);
     if (modelIds.includes(selectedModel)) return;
@@ -2897,8 +3716,19 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         void patchAgentConfig(currentProject.agentId, { model: fallback });
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to specific sub-properties, not full object refs
-  }, [currentProject?.id, currentProvider?.id, currentProvider?.models, currentProvider?.primaryModel, selectedModel, patchProject, pinnedProviderUnavailable, configPending, sessionSnapshotOwnsConfig, waitingForExistingSessionMeta]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to specific sub-properties, not full object refs
+  }, [
+    currentProject?.id,
+    currentProvider?.id,
+    currentProvider?.models,
+    currentProvider?.primaryModel,
+    selectedModel,
+    patchProject,
+    pinnedProviderUnavailable,
+    configPending,
+    sessionSnapshotOwnsConfig,
+    waitingForExistingSessionMeta,
+  ]);
 
   // Unified model-push effect — single source of truth for `/api/model/set`.
   //
@@ -2948,7 +3778,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // pre-warm would init with self-resolved disk values instead of the
     // user-selected model). Trade-off chosen: optimize for the common
     // case; if the cross-tab race becomes a real reported issue, revisit.
-    const runtimeResolved = sessionRuntime !== null || currentAgent !== undefined;
+    const runtimeResolved =
+      sessionRuntime !== null || currentAgent !== undefined;
     if (!runtimeResolved) return;
     // IM Bot / cross-session join — adoption effect mirrors sidecar config
     // back into our state; we must NOT overwrite the live sidecar's model.
@@ -2961,7 +3792,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // user's own state changes (selectedModel/runtimeModel/permission). After
     // adoption clears the flag, the user's later edits SHOULD reach the
     // sidecar — applying a sticky guard here would silently swallow them.
-    if (configDispositionRef.current !== 'push') return;
+    if (configDispositionRef.current !== "push") return;
     // Existing-session restore: wait for REST metadata before pushing model
     // state. The local picker may still contain Agent defaults until
     // `sessionMeta` hydrates; pushing in that window overwrites the session's
@@ -2982,13 +3813,25 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     if (lastPushedModelKeyRef.current === dedupeKey) return;
     lastPushedModelKeyRef.current = dedupeKey;
 
-    apiPost('/api/model/set', { model: modelToPush }).catch(err => {
-      console.error('[Chat] sync model failed:', err);
+    apiPost("/api/model/set", { model: modelToPush }).catch((err) => {
+      console.error("[Chat] sync model failed:", err);
       lastPushedModelKeyRef.current = null; // allow retry
     });
-  }, [isConnected, sessionRuntime, currentAgent, isExternalRuntime,
-      runtimeModel, selectedModel, sessionId, apiPost, configPending, isSessionLoading,
-      sessionSnapshotOwnsConfig, sessionMeta?.model, currentRuntime]);
+  }, [
+    isConnected,
+    sessionRuntime,
+    currentAgent,
+    isExternalRuntime,
+    runtimeModel,
+    selectedModel,
+    sessionId,
+    apiPost,
+    configPending,
+    isSessionLoading,
+    sessionSnapshotOwnsConfig,
+    sessionMeta?.model,
+    currentRuntime,
+  ]);
 
   // #324 — NO mount-time effort-push effect, deliberately diverging from the
   // model-push effect above. The sidecar self-resolves effort at boot from the
@@ -3014,7 +3857,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // ownership for a session whose live config we never actually read.
     const adoptingSessionId = sessionId;
     const isCurrentAdoption = () =>
-      adoptingSessionId === sessionIdRef.current && configDispositionRef.current === 'adopt';
+      adoptingSessionId === sessionIdRef.current &&
+      configDispositionRef.current === "adopt";
 
     const adoptConfig = async () => {
       try {
@@ -3027,14 +3871,14 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           permissionMode?: string | null;
           providerId?: string | null;
           reasoningEffort?: string | null;
-        }>('/api/session/config');
+        }>("/api/session/config");
         if (config.success) {
           if (!isCurrentAdoption()) return;
           // Server now always returns `runtime`; the `?? currentRuntime` is a
           // backward-compat hedge for older sidecars that pre-date the field.
           // Keep the fallback so a stale-binary sidecar doesn't crash adoption.
           const sidecarRuntime = config.runtime ?? currentRuntime;
-          const sidecarIsExternal = sidecarRuntime !== 'builtin';
+          const sidecarIsExternal = sidecarRuntime !== "builtin";
 
           if (config.model) {
             if (sidecarIsExternal) {
@@ -3050,7 +3894,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               setPermissionMode(config.permissionMode as PermissionMode);
             }
           }
-          const adoptedProviderId = resolveAdoptedBuiltinProviderId(sidecarIsExternal, config.providerId);
+          const adoptedProviderId = resolveAdoptedBuiltinProviderId(
+            sidecarIsExternal,
+            config.providerId,
+          );
           if (adoptedProviderId !== undefined) {
             setSelectedProviderId(adoptedProviderId);
           }
@@ -3058,7 +3905,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             setWorkspaceMcpEnabled(config.mcpServerIds);
           }
           if (Array.isArray(config.enabledOfficialToolIds)) {
-            setWorkspaceOfficialToolEnabled(normalizeOfficialToolIds(config.enabledOfficialToolIds));
+            setWorkspaceOfficialToolEnabled(
+              normalizeOfficialToolIds(config.enabledOfficialToolIds),
+            );
           }
           // #324 — server returns 'default' when unset, so truthiness works.
           if (config.reasoningEffort) {
@@ -3067,7 +3916,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           if (adoptingSessionId) {
             adoptedSessionRef.current = adoptingSessionId;
           }
-          console.log('[Chat] Adopted sidecar config:', {
+          console.log("[Chat] Adopted sidecar config:", {
             runtime: sidecarRuntime,
             model: config.model,
             providerId: config.providerId,
@@ -3077,7 +3926,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           });
         }
       } catch (err) {
-        console.error('[Chat] Failed to read sidecar config:', err);
+        console.error("[Chat] Failed to read sidecar config:", err);
       } finally {
         // Clear the flag whether adoption succeeded or failed
         if (isCurrentAdoption()) {
@@ -3116,7 +3965,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     onRowLayoutChanged,
   } = chatScrollController;
   const handleInputOverlayHeightChange = useCallback((height: number) => {
-    setInputOverlayHeight(prev => Math.abs(prev - height) < 1 ? prev : Math.ceil(height));
+    setInputOverlayHeight((prev) =>
+      Math.abs(prev - height) < 1 ? prev : Math.ceil(height),
+    );
   }, []);
 
   // ── In-page text finder (Cmd/Ctrl+F) ──
@@ -3134,9 +3985,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const handleLoadOlderMessages = useCallback(() => {
     void loadOlderMessages({
       beforePrepend: () => {
-        const anchor = captureAnchor('prepend-older');
+        const anchor = captureAnchor("prepend-older");
         if (anchor) {
-          restoreAnchorAfterNextCommit(anchor, { behavior: 'auto' });
+          restoreAnchorAfterNextCommit(anchor, { behavior: "auto" });
         }
       },
     });
@@ -3145,7 +3996,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   chatSearchSetQueryRef.current = chatSearch.setQuery;
   const closeChatSearch = useCallback(() => {
     setChatSearchOpen(false);
-    chatSearchSetQueryRef.current('');
+    chatSearchSetQueryRef.current("");
   }, []);
   // Esc / Cmd+W closes the panel first. z-index 100 sits between the split
   // panel (0) and overlay layers (200+), matching the DESIGN.md layer system.
@@ -3165,16 +4016,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     if (!isActive) return;
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) return;
-      if (event.key.toLowerCase() !== 'f') return;
+      if (event.key.toLowerCase() !== "f") return;
       event.preventDefault();
       if (!isHighlightApiSupported()) {
-        toast.error(t('shell.toasts.searchUnsupported'));
+        toast.error(t("shell.toasts.searchUnsupported"));
         return;
       }
       setChatSearchOpen(true);
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, [isActive, toast, t]);
   // When the tab becomes inactive, close the panel so a) the global
   // CSS.highlights registry doesn't retain stale Range objects from this tab,
@@ -3215,9 +4066,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         setGlobalMcpEnabled(enabledIds);
 
         // Skip MCP push when still in the adoption window (joined existing sidecar)
-        if (configDispositionRef.current !== 'push') {
+        if (configDispositionRef.current !== "push") {
           if (isDebugMode()) {
-            console.log('[Chat] Skipping MCP push on tab activate (joined existing sidecar)');
+            console.log(
+              "[Chat] Skipping MCP push on tab activate (joined existing sidecar)",
+            );
           }
           return;
         }
@@ -3225,20 +4078,21 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
         // 3. Sync effective MCP servers to backend for next message
         const workspaceEnabled = workspaceMcpEnabled;
-        const effectiveServers = servers.filter(s =>
-          enabledIds.includes(s.id) && workspaceEnabled.includes(s.id)
+        const effectiveServers = servers.filter(
+          (s) => enabledIds.includes(s.id) && workspaceEnabled.includes(s.id),
         );
-        await apiPost('/api/mcp/set', { servers: effectiveServers });
+        await apiPost("/api/mcp/set", { servers: effectiveServers });
 
         if (isDebugMode()) {
-          console.log('[Chat] Config synced on tab activate:', {
+          console.log("[Chat] Config synced on tab activate:", {
             providers: providers.length,
             mcpServers: servers.length,
-            effectiveMcp: effectiveServers.map(s => s.id).join(', ') || 'none',
+            effectiveMcp:
+              effectiveServers.map((s) => s.id).join(", ") || "none",
           });
         }
       } catch (err) {
-        console.error('[Chat] Failed to sync config on tab activate:', err);
+        console.error("[Chat] Failed to sync config on tab activate:", err);
       }
     };
 
@@ -3249,18 +4103,31 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     loadSkillsAndCommands();
 
     // 5. Refresh file tree
-    setWorkspaceRefreshTrigger(prev => prev + 1);
+    setWorkspaceRefreshTrigger((prev) => prev + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- providers.length is only used for debug logging
-  }, [isActive, refreshProviderData, workspaceMcpEnabled, isSessionLoading, apiPost]);
+  }, [
+    isActive,
+    refreshProviderData,
+    workspaceMcpEnabled,
+    isSessionLoading,
+    apiPost,
+  ]);
 
   // Listen for skill copy events to refresh DirectoryPanel (file tree shows .claude/skills/)
   // Note: WorkspaceConfigPanel has its own event listener for internalRefreshKey
   useEffect(() => {
     const handleSkillCopied = () => {
-      setWorkspaceRefreshTrigger(k => k + 1);
+      setWorkspaceRefreshTrigger((k) => k + 1);
     };
-    window.addEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
-    return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
+    window.addEventListener(
+      CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT,
+      handleSkillCopied,
+    );
+    return () =>
+      window.removeEventListener(
+        CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT,
+        handleSkillCopied,
+      );
   }, []);
 
   // Workspace refresh on sidecar reconnect (mid-session crash recovery, Rust
@@ -3274,190 +4141,222 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const wasConnected = prevIsConnectedRef.current;
     prevIsConnectedRef.current = isConnected;
     if (!wasConnected && isConnected) {
-      setWorkspaceRefreshTrigger(k => k + 1);
+      setWorkspaceRefreshTrigger((k) => k + 1);
     }
   }, [isConnected]);
 
   // Handle provider change with analytics tracking.
   // targetModel: when provided, use this model instead of the provider's primaryModel
   // (avoids useEffect race when user picks a specific model from a different provider).
-  const handleProviderChange = useCallback(async (providerId: string, targetModel?: string) => {
-    if (guardCronConfigMutation()) return;
-    // Skip if selecting the same provider (compare against local state, not shared project)
-    if (effectiveSelectedProviderId === providerId) {
-      // Provider unchanged but caller passed a specific model — treat as model change.
-      // Same dual-write policy as handleModelChange (PRD §4.3 rule 2).
-      if (targetModel) {
-        if (targetModel === selectedModel) return;
-        const currentProviderHistoryEnv = currentProviderForHistory
-          ? toProviderHistoryEnv(currentProviderForHistory, selectedModel)
-          : undefined;
-        const nextIntent = buildProviderExecutionIntent(currentProviderForHistory, targetModel);
-        const canResumeProviderHistory = canResumeProviderHistoryForSwitch({
-          currentIntent: currentProviderExecutionIntent,
-          nextIntent,
-          currentProviderEnv: currentProviderHistoryEnv,
-          nextProviderEnv: currentProviderForHistory
-            ? toProviderHistoryEnv(currentProviderForHistory, targetModel)
-            : undefined,
-          legacyCurrentProviderUnknown: builtinSnapshotProviderHistoryUnknown,
-        });
-        if (!canResumeProviderHistory && (messagesRef.current.length > 0 || isRuntimeBackedIntent(currentProviderExecutionIntent) || isRuntimeBackedIntent(nextIntent))) {
-          setPendingProviderSwitch({ providerId, model: targetModel });
-          return;
+  const handleProviderChange = useCallback(
+    async (providerId: string, targetModel?: string) => {
+      if (guardCronConfigMutation()) return;
+      // Skip if selecting the same provider (compare against local state, not shared project)
+      if (effectiveSelectedProviderId === providerId) {
+        // Provider unchanged but caller passed a specific model — treat as model change.
+        // Same dual-write policy as handleModelChange (PRD §4.3 rule 2).
+        if (targetModel) {
+          if (targetModel === selectedModel) return;
+          const currentProviderHistoryEnv = currentProviderForHistory
+            ? toProviderHistoryEnv(currentProviderForHistory, selectedModel)
+            : undefined;
+          const nextIntent = buildProviderExecutionIntent(
+            currentProviderForHistory,
+            targetModel,
+          );
+          const canResumeProviderHistory = canResumeProviderHistoryForSwitch({
+            currentIntent: currentProviderExecutionIntent,
+            nextIntent,
+            currentProviderEnv: currentProviderHistoryEnv,
+            nextProviderEnv: currentProviderForHistory
+              ? toProviderHistoryEnv(currentProviderForHistory, targetModel)
+              : undefined,
+            legacyCurrentProviderUnknown: builtinSnapshotProviderHistoryUnknown,
+          });
+          if (
+            !canResumeProviderHistory &&
+            (messagesRef.current.length > 0 ||
+              isRuntimeBackedIntent(currentProviderExecutionIntent) ||
+              isRuntimeBackedIntent(nextIntent))
+          ) {
+            setPendingProviderSwitch({ providerId, model: targetModel });
+            return;
+          }
+          const persisted = await persistTabConfigChange({
+            ...(nextIntent?.kind === "runtime-backed-provider"
+              ? { runtimeBackedProviderSelection: nextIntent }
+              : {
+                  builtinSelection: { providerId, model: targetModel },
+                  builtinProviderEnvPolicy: "preserve-provider-env" as const,
+                }),
+            permissionMode: effectivePermissionMode,
+          });
+          if (!persisted) return;
+          setSelectedModel(targetModel);
+          if (nextIntent?.kind === "runtime-backed-provider") {
+            setRuntimeModel(nextIntent.model);
+          }
         }
-        const persisted = await persistTabConfigChange({
-          ...(nextIntent?.kind === 'runtime-backed-provider'
-            ? { runtimeBackedProviderSelection: nextIntent }
-            : {
-                builtinSelection: { providerId, model: targetModel },
-                builtinProviderEnvPolicy: 'preserve-provider-env' as const,
-              }),
-          permissionMode: effectivePermissionMode,
-        });
-        if (!persisted) return;
-        setSelectedModel(targetModel);
-        if (nextIntent?.kind === 'runtime-backed-provider') {
+        return;
+      }
+
+      // Track provider_switch event
+      track("provider_switch", { provider_id: providerId });
+
+      const newProvider = providers.find((p) => p.id === providerId);
+      const model = targetModel ?? newProvider?.primaryModel;
+      const nextIntent = buildProviderExecutionIntent(newProvider, model);
+      const canResumeProviderHistory = canResumeProviderHistoryForSwitch({
+        currentIntent: currentProviderExecutionIntent,
+        nextIntent,
+        currentProviderEnv: currentProviderForHistory
+          ? toProviderHistoryEnv(currentProviderForHistory, selectedModel)
+          : undefined,
+        nextProviderEnv: toProviderHistoryEnv(newProvider, model),
+        legacyCurrentProviderUnknown: builtinSnapshotProviderHistoryUnknown,
+      });
+
+      // Existing SDK transcripts only need a new tab when crossing provider-history
+      // families. Ordinary third-party providers share a portable protocol family;
+      // entries in providerHistory's isolated set intentionally do not.
+      if (
+        !canResumeProviderHistory &&
+        (messagesRef.current.length > 0 ||
+          isRuntimeBackedIntent(currentProviderExecutionIntent) ||
+          isRuntimeBackedIntent(nextIntent))
+      ) {
+        setPendingProviderSwitch({ providerId, model });
+        return; // Don't update state — dialog will handle it
+      }
+
+      // Write back: owned session snapshots this choice locally so the current session
+      // keeps using it; agent/project always gets written so FUTURE new sessions inherit
+      // the user's latest preference (PRD v0.1.69 §4.3 rule 2 dual-write).
+      if (!model) return;
+      const persisted = await persistTabConfigChange({
+        ...(nextIntent?.kind === "runtime-backed-provider"
+          ? { runtimeBackedProviderSelection: nextIntent }
+          : {
+              builtinSelection: { providerId, model },
+              builtinProviderEnvPolicy: "clear-stale-provider-env" as const,
+            }),
+        permissionMode: effectivePermissionMode,
+      });
+      if (!persisted) return;
+
+      // Update local state only after the snapshot write succeeds. The model-push
+      // effect is state-driven, so this prevents pushing a model that failed to
+      // persist as the session authority.
+      setSelectedProviderId(providerId);
+      if (model) {
+        setSelectedModel(model);
+        if (nextIntent?.kind === "runtime-backed-provider") {
           setRuntimeModel(nextIntent.model);
         }
       }
-      return;
-    }
 
-    // Track provider_switch event
-    track('provider_switch', { provider_id: providerId });
+      // Suppress the deferred provider-change useEffect — we've already set the correct model
+      providerInitRef.current = true;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; messagesRef avoids dep on messages array
+    },
+    [
+      effectiveSelectedProviderId,
+      selectedModel,
+      providers,
+      currentProviderForHistory?.id,
+      currentProviderForHistory?.type,
+      currentProviderForHistory?.config.baseUrl,
+      currentProviderForHistory?.apiProtocol,
+      currentProviderExecutionIntent,
+      builtinSnapshotProviderHistoryUnknown,
+      effectivePermissionMode,
+      persistTabConfigChange,
+      guardCronConfigMutation,
+    ],
+  );
 
-    const newProvider = providers.find(p => p.id === providerId);
-    const model = targetModel ?? newProvider?.primaryModel;
-    const nextIntent = buildProviderExecutionIntent(newProvider, model);
-    const canResumeProviderHistory = canResumeProviderHistoryForSwitch({
-      currentIntent: currentProviderExecutionIntent,
-      nextIntent,
-      currentProviderEnv: currentProviderForHistory
-        ? toProviderHistoryEnv(currentProviderForHistory, selectedModel)
-        : undefined,
-      nextProviderEnv: toProviderHistoryEnv(newProvider, model),
-      legacyCurrentProviderUnknown: builtinSnapshotProviderHistoryUnknown,
-    });
-
-    // Existing SDK transcripts only need a new tab when crossing provider-history
-    // families. Ordinary third-party providers share a portable protocol family;
-    // entries in providerHistory's isolated set intentionally do not.
-    if (!canResumeProviderHistory && (messagesRef.current.length > 0 || isRuntimeBackedIntent(currentProviderExecutionIntent) || isRuntimeBackedIntent(nextIntent))) {
-      setPendingProviderSwitch({ providerId, model });
-      return;  // Don't update state — dialog will handle it
-    }
-
-    // Write back: owned session snapshots this choice locally so the current session
-    // keeps using it; agent/project always gets written so FUTURE new sessions inherit
-    // the user's latest preference (PRD v0.1.69 §4.3 rule 2 dual-write).
-    if (!model) return;
-    const persisted = await persistTabConfigChange({
-      ...(nextIntent?.kind === 'runtime-backed-provider'
-        ? { runtimeBackedProviderSelection: nextIntent }
-        : {
-            builtinSelection: { providerId, model },
-            builtinProviderEnvPolicy: 'clear-stale-provider-env' as const,
-          }),
-      permissionMode: effectivePermissionMode,
-    });
-    if (!persisted) return;
-
-    // Update local state only after the snapshot write succeeds. The model-push
-    // effect is state-driven, so this prevents pushing a model that failed to
-    // persist as the session authority.
-    setSelectedProviderId(providerId);
-    if (model) {
-      setSelectedModel(model);
-      if (nextIntent?.kind === 'runtime-backed-provider') {
-        setRuntimeModel(nextIntent.model);
-      }
-    }
-
-    // Suppress the deferred provider-change useEffect — we've already set the correct model
-    providerInitRef.current = true;
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; messagesRef avoids dep on messages array
-  }, [
-    effectiveSelectedProviderId,
-    selectedModel,
-    providers,
-    currentProviderForHistory?.id,
-    currentProviderForHistory?.type,
-    currentProviderForHistory?.config.baseUrl,
-    currentProviderForHistory?.apiProtocol,
-    currentProviderExecutionIntent,
-    builtinSnapshotProviderHistoryUnknown,
-    effectivePermissionMode,
-    persistTabConfigChange,
-    guardCronConfigMutation,
-  ]);
-
-  const handleBuiltinModelSelect = useCallback(async (selection: BuiltinModelSelection) => {
-    await handleProviderChange(selection.providerId, selection.model);
-  }, [handleProviderChange]);
+  const handleBuiltinModelSelect = useCallback(
+    async (selection: BuiltinModelSelection) => {
+      await handleProviderChange(selection.providerId, selection.model);
+    },
+    [handleProviderChange],
+  );
 
   // Handle model change with analytics tracking.
   // Dual-write per PRD v0.1.69 §4.3 rule 2 "写 Session + 向上写 Agent": owned sessions
   // snapshot the new model locally so this session persists the choice; project + agent
   // also get written so FUTURE new sessions / Bots / Crons inherit the latest preference.
-  const handleModelChange = useCallback(async (model: string) => {
-    if (guardCronConfigMutation()) return;
-    // Skip if selecting the same model
-    if (selectedModel === model) {
-      return;
-    }
+  const handleModelChange = useCallback(
+    async (model: string) => {
+      if (guardCronConfigMutation()) return;
+      // Skip if selecting the same model
+      if (selectedModel === model) {
+        return;
+      }
 
-    // Track model_switch event
-    track('model_switch', { model });
+      // Track model_switch event
+      track("model_switch", { model });
 
-    const nextIntent = buildProviderExecutionIntent(currentProviderForHistory, model);
-    const canResumeProviderHistory = canResumeProviderHistoryForSwitch({
-      currentIntent: currentProviderExecutionIntent,
-      nextIntent,
-      currentProviderEnv: currentProviderForHistory
-        ? toProviderHistoryEnv(currentProviderForHistory, selectedModel)
-        : undefined,
-      nextProviderEnv: currentProviderForHistory
-        ? toProviderHistoryEnv(currentProviderForHistory, model)
-        : undefined,
-      legacyCurrentProviderUnknown: builtinSnapshotProviderHistoryUnknown,
-    });
-    const currentProviderId = effectiveSelectedProviderId ?? currentProvider?.id;
-    if (!canResumeProviderHistory && (messagesRef.current.length > 0 || isRuntimeBackedIntent(currentProviderExecutionIntent) || isRuntimeBackedIntent(nextIntent)) && currentProviderId) {
-      setPendingProviderSwitch({ providerId: currentProviderId, model });
-      return;
-    }
+      const nextIntent = buildProviderExecutionIntent(
+        currentProviderForHistory,
+        model,
+      );
+      const canResumeProviderHistory = canResumeProviderHistoryForSwitch({
+        currentIntent: currentProviderExecutionIntent,
+        nextIntent,
+        currentProviderEnv: currentProviderForHistory
+          ? toProviderHistoryEnv(currentProviderForHistory, selectedModel)
+          : undefined,
+        nextProviderEnv: currentProviderForHistory
+          ? toProviderHistoryEnv(currentProviderForHistory, model)
+          : undefined,
+        legacyCurrentProviderUnknown: builtinSnapshotProviderHistoryUnknown,
+      });
+      const currentProviderId =
+        effectiveSelectedProviderId ?? currentProvider?.id;
+      if (
+        !canResumeProviderHistory &&
+        (messagesRef.current.length > 0 ||
+          isRuntimeBackedIntent(currentProviderExecutionIntent) ||
+          isRuntimeBackedIntent(nextIntent)) &&
+        currentProviderId
+      ) {
+        setPendingProviderSwitch({ providerId: currentProviderId, model });
+        return;
+      }
 
-    if (!currentProviderId) return;
-    const persisted = await persistTabConfigChange({
-      ...(nextIntent?.kind === 'runtime-backed-provider'
-        ? { runtimeBackedProviderSelection: nextIntent }
-        : {
-            builtinSelection: { providerId: currentProviderId, model },
-            builtinProviderEnvPolicy: 'preserve-provider-env' as const,
-          }),
-      permissionMode: effectivePermissionMode,
-    });
-    if (!persisted) return;
-    setSelectedModel(model);
-    if (nextIntent?.kind === 'runtime-backed-provider') {
-      setRuntimeModel(nextIntent.model);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; currentProvider fields cover toProviderHistoryEnv inputs
-  }, [
-    selectedModel,
-    currentProviderForHistory?.id,
-    currentProviderForHistory?.type,
-    currentProviderForHistory?.config.baseUrl,
-    currentProviderForHistory?.apiProtocol,
-    currentProviderExecutionIntent,
-    effectiveSelectedProviderId,
-    currentProvider?.id,
-    builtinSnapshotProviderHistoryUnknown,
-    effectivePermissionMode,
-    persistTabConfigChange,
-    guardCronConfigMutation,
-  ]);
+      if (!currentProviderId) return;
+      const persisted = await persistTabConfigChange({
+        ...(nextIntent?.kind === "runtime-backed-provider"
+          ? { runtimeBackedProviderSelection: nextIntent }
+          : {
+              builtinSelection: { providerId: currentProviderId, model },
+              builtinProviderEnvPolicy: "preserve-provider-env" as const,
+            }),
+        permissionMode: effectivePermissionMode,
+      });
+      if (!persisted) return;
+      setSelectedModel(model);
+      if (nextIntent?.kind === "runtime-backed-provider") {
+        setRuntimeModel(nextIntent.model);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; currentProvider fields cover toProviderHistoryEnv inputs
+    },
+    [
+      selectedModel,
+      currentProviderForHistory?.id,
+      currentProviderForHistory?.type,
+      currentProviderForHistory?.config.baseUrl,
+      currentProviderForHistory?.apiProtocol,
+      currentProviderExecutionIntent,
+      effectiveSelectedProviderId,
+      currentProvider?.id,
+      builtinSnapshotProviderHistoryUnknown,
+      effectivePermissionMode,
+      persistTabConfigChange,
+      guardCronConfigMutation,
+    ],
+  );
 
   // External-runtime model change. Same dual-write policy as builtin
   // `handleModelChange`, routed through `runtimeModel` so the helper writes
@@ -3465,13 +4364,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // chat would only call `setRuntimeModel` (UI state), so the user's choice
   // was lost on next session — matching launcher's persist behavior closes
   // that gap.
-  const handleRuntimeModelChange = useCallback(async (model: string) => {
-    if (guardCronConfigMutation()) return;
-    if (runtimeModel === model) return;
-    const persisted = await persistTabConfigChange({ runtimeModel: model });
-    if (!persisted) return;
-    setRuntimeModel(model);
-  }, [runtimeModel, persistTabConfigChange, guardCronConfigMutation]);
+  const handleRuntimeModelChange = useCallback(
+    async (model: string) => {
+      if (guardCronConfigMutation()) return;
+      if (runtimeModel === model) return;
+      const persisted = await persistTabConfigChange({ runtimeModel: model });
+      if (!persisted) return;
+      setRuntimeModel(model);
+    },
+    [runtimeModel, persistTabConfigChange, guardCronConfigMutation],
+  );
 
   // #324 — reasoning effort change. Same dual-write policy as handleModelChange
   // (snapshot + agent; live sidecar apply rides the effort-push effect, and the
@@ -3483,11 +4385,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // push endpoint — dropping the pending-window push would silently lose the
   // user's choice for the live external process (cross-review Critical).
   const deferredEffortPushRef = useRef<string | null>(null);
-  const pushReasoningEffort = useCallback((effort: string) => {
-    apiPost('/api/reasoning-effort/set', { effort }).catch(err => {
-      console.error('[Chat] push reasoning effort failed (send payload will correct at next message):', err);
-    });
-  }, [apiPost]);
+  const pushReasoningEffort = useCallback(
+    (effort: string) => {
+      apiPost("/api/reasoning-effort/set", { effort }).catch((err) => {
+        console.error(
+          "[Chat] push reasoning effort failed (send payload will correct at next message):",
+          err,
+        );
+      });
+    },
+    [apiPost],
+  );
   useEffect(() => {
     if (configPending) return;
     const deferred = deferredEffortPushRef.current;
@@ -3496,23 +4404,33 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     pushReasoningEffort(deferred);
   }, [configPending, pushReasoningEffort]);
 
-  const handleReasoningEffortChange = useCallback(async (effort: string) => {
-    if (guardCronConfigMutation()) return;
-    if (reasoningEffort === effort) return;
-    track('reasoning_effort_switch', { effort });
-    const persisted = await persistTabConfigChange({ reasoningEffort: effort });
-    if (!persisted) return;
-    setReasoningEffort(effort);
-    // Live push on explicit user intent only (see the no-mount-push note by
-    // the model-push effect). defer-while-pending: while the sidecar
-    // disposition is unresolved we queue the push (flushed by the effect
-    // above); push/adopt both push immediately — user intent.
-    if (configDispositionRef.current === 'pending') {
-      deferredEffortPushRef.current = effort;
-    } else {
-      pushReasoningEffort(effort);
-    }
-  }, [reasoningEffort, persistTabConfigChange, pushReasoningEffort, guardCronConfigMutation]);
+  const handleReasoningEffortChange = useCallback(
+    async (effort: string) => {
+      if (guardCronConfigMutation()) return;
+      if (reasoningEffort === effort) return;
+      track("reasoning_effort_switch", { effort });
+      const persisted = await persistTabConfigChange({
+        reasoningEffort: effort,
+      });
+      if (!persisted) return;
+      setReasoningEffort(effort);
+      // Live push on explicit user intent only (see the no-mount-push note by
+      // the model-push effect). defer-while-pending: while the sidecar
+      // disposition is unresolved we queue the push (flushed by the effect
+      // above); push/adopt both push immediately — user intent.
+      if (configDispositionRef.current === "pending") {
+        deferredEffortPushRef.current = effort;
+      } else {
+        pushReasoningEffort(effort);
+      }
+    },
+    [
+      reasoningEffort,
+      persistTabConfigChange,
+      pushReasoningEffort,
+      guardCronConfigMutation,
+    ],
+  );
 
   // #324 — clamp effort on provider-protocol change. An OpenAI-only level
   // (e.g. 'minimal') left selected after switching to an Anthropic-protocol
@@ -3521,58 +4439,74 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // 'default' (persisted + pushed via the handler) so UI and wire agree.
   useEffect(() => {
     if (isExternalRuntime || !currentProvider) return;
-    if (configDispositionRef.current !== 'push') return;
-    if (reasoningEffort === 'default') return;
+    if (configDispositionRef.current !== "push") return;
+    if (reasoningEffort === "default") return;
     const choices = reasoningEffortChoices(
-      'builtin',
+      "builtin",
       currentProvider.apiProtocol,
       currentProvider.id,
       selectedModel,
     );
     if (choices && !choices.includes(reasoningEffort)) {
-      void handleReasoningEffortChange('default');
+      void handleReasoningEffortChange("default");
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed to protocol-relevant provider fields
-  }, [isExternalRuntime, currentProvider?.id, currentProvider?.apiProtocol, selectedModel, reasoningEffort, handleReasoningEffortChange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed to protocol-relevant provider fields
+  }, [
+    isExternalRuntime,
+    currentProvider?.id,
+    currentProvider?.apiProtocol,
+    selectedModel,
+    reasoningEffort,
+    handleReasoningEffortChange,
+  ]);
 
   // Handle permission mode change — same dual-write policy as handleModelChange.
-  const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
-    // Lock in the user's explicit choice: mark the project as synced so
-    // `effectivePermissionMode` (#244) trusts `permissionMode` from here on
-    // instead of re-deriving from config — even if the one-time project-sync
-    // effect hasn't fired yet (user toggled before config finished loading).
-    const persisted = await persistTabConfigChange({ permissionMode: mode });
-    if (!persisted) return;
-    projectSyncedRef.current = true;
-    if (isExternalRuntime) {
-      setRuntimePermissionMode(mode);
-    } else {
+  const handlePermissionModeChange = useCallback(
+    async (mode: PermissionMode) => {
+      // Lock in the user's explicit choice: mark the project as synced so
+      // `effectivePermissionMode` (#244) trusts `permissionMode` from here on
+      // instead of re-deriving from config — even if the one-time project-sync
+      // effect hasn't fired yet (user toggled before config finished loading).
+      const persisted = await persistTabConfigChange({ permissionMode: mode });
+      if (!persisted) return;
+      projectSyncedRef.current = true;
+      if (isExternalRuntime) {
+        setRuntimePermissionMode(mode);
+      } else {
+        setPermissionMode(mode);
+      }
+    },
+    [isExternalRuntime, persistTabConfigChange],
+  );
+
+  const handleInputPermissionModeChange = useCallback(
+    async (mode: PermissionMode) => {
+      if (guardCronConfigMutation()) return;
+      if (!managedProviderRuntimeActive) {
+        await handlePermissionModeChange(mode);
+        return;
+      }
+
+      const runtimeMode =
+        managedCodexProviderPermissionToRuntimePermission(mode) ??
+        coerceRuntimeBirthPermissionMode(mode, currentRuntime) ??
+        getDefaultRuntimePermissionMode(currentRuntime);
+      const persisted = await persistTabConfigChange({
+        permissionMode: runtimeMode,
+      });
+      if (!persisted) return;
+      projectSyncedRef.current = true;
       setPermissionMode(mode);
-    }
-  }, [isExternalRuntime, persistTabConfigChange]);
-
-  const handleInputPermissionModeChange = useCallback(async (mode: PermissionMode) => {
-    if (guardCronConfigMutation()) return;
-    if (!managedProviderRuntimeActive) {
-      await handlePermissionModeChange(mode);
-      return;
-    }
-
-    const runtimeMode = managedCodexProviderPermissionToRuntimePermission(mode)
-      ?? coerceRuntimeBirthPermissionMode(mode, currentRuntime)
-      ?? getDefaultRuntimePermissionMode(currentRuntime);
-    const persisted = await persistTabConfigChange({ permissionMode: runtimeMode });
-    if (!persisted) return;
-    projectSyncedRef.current = true;
-    setPermissionMode(mode);
-    setRuntimePermissionMode(runtimeMode);
-  }, [
-    managedProviderRuntimeActive,
-    handlePermissionModeChange,
-    currentRuntime,
-    persistTabConfigChange,
-    guardCronConfigMutation,
-  ]);
+      setRuntimePermissionMode(runtimeMode);
+    },
+    [
+      managedProviderRuntimeActive,
+      handlePermissionModeChange,
+      currentRuntime,
+      persistTabConfigChange,
+      guardCronConfigMutation,
+    ],
+  );
 
   const inputChromePermissionMode = managedProviderRuntimeActive
     ? permissionMode
@@ -3603,154 +4537,206 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // PERFORMANCE: text is now passed from SimpleChatInput (which manages its own state)
   // This avoids re-rendering Chat on every keystroke.
   // Returns false to signal SimpleChatInput NOT to clear the input (e.g., on rejection).
-  const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[]): Promise<boolean | void> => {
-    // Must have content and not be in stopping state
-    if ((!text && (!images || images.length === 0)) || sessionState === 'stopping') {
-      return false;
-    }
+  const handleSendMessage = useCallback(
+    async (
+      text: string,
+      images?: ImageAttachment[],
+    ): Promise<boolean | void> => {
+      // Must have content and not be in stopping state
+      if (
+        (!text && (!images || images.length === 0)) ||
+        sessionState === "stopping"
+      ) {
+        return false;
+      }
 
-    // Cross-runtime guard: session was created by external runtime (Codex/CC) but
-    // current runtime is builtin. Show confirm dialog instead of sending directly.
-    if (isCrossRuntimeSession) {
-      setPendingCrossRuntimeMessage({ text, images: images ?? [] });
-      return false;  // Signal SimpleChatInput NOT to clear the input
-    }
+      // Cross-runtime guard: session was created by external runtime (Codex/CC) but
+      // current runtime is builtin. Show confirm dialog instead of sending directly.
+      if (isCrossRuntimeSession) {
+        setPendingCrossRuntimeMessage({ text, images: images ?? [] });
+        return false; // Signal SimpleChatInput NOT to clear the input
+      }
 
-    // #300: the session pinned a provider that is no longer available (missing
-    // API key / disabled / deleted). resolveProvider would silently fall back to a
-    // DIFFERENT provider and bill it (the reported 402 from the very provider the
-    // user switched away from). Refuse to send and tell the user how to fix it,
-    // instead of routing to the wrong provider and resetting their model.
-    if (pinnedProviderUnavailable) {
-      showPinnedProviderUnavailableToast();
-      return false;
-    }
-    if (builtinSnapshotProviderSelectionIncomplete) {
-      showSnapshotProviderIncompleteToast();
-      return false;
-    }
-    if (!isExternalRuntime && isRuntimeBackedProvider(currentProviderRef.current)) {
-      toastRef.current.warning(t('shell.toasts.codexSubscriptionNeedsSession'));
-      return false;
-    }
+      // #300: the session pinned a provider that is no longer available (missing
+      // API key / disabled / deleted). resolveProvider would silently fall back to a
+      // DIFFERENT provider and bill it (the reported 402 from the very provider the
+      // user switched away from). Refuse to send and tell the user how to fix it,
+      // instead of routing to the wrong provider and resetting their model.
+      if (pinnedProviderUnavailable) {
+        showPinnedProviderUnavailableToast();
+        return false;
+      }
+      if (builtinSnapshotProviderSelectionIncomplete) {
+        showSnapshotProviderIncompleteToast();
+        return false;
+      }
+      if (
+        !isExternalRuntime &&
+        isRuntimeBackedProvider(currentProviderRef.current)
+      ) {
+        toastRef.current.warning(
+          t("shell.toasts.codexSubscriptionNeedsSession"),
+        );
+        return false;
+      }
 
-    // Queue limit: max 5 queued messages.
-    // (issue #174) 'starting' is also busy — SDK subprocess is launching but
-    // hasn't sent system_init yet. Including it prevents the queue cap from
-    // being bypassed while the user keeps typing during the startup window.
-    const isAiBusy = isLoading || sessionState === 'running' || sessionState === 'starting';
-    if (isAiBusy && queuedMessages.length >= 5) {
-      toastRef.current.warning(t('shell.toasts.queueLimit'));
-      return false;
-    }
+      // Queue limit: max 5 queued messages.
+      // (issue #174) 'starting' is also busy — SDK subprocess is launching but
+      // hasn't sent system_init yet. Including it prevents the queue cap from
+      // being bypassed while the user keeps typing during the startup window.
+      const isAiBusy =
+        isLoading || sessionState === "running" || sessionState === "starting";
+      if (isAiBusy && queuedMessages.length >= 5) {
+        toastRef.current.warning(t("shell.toasts.queueLimit"));
+        return false;
+      }
 
-    // Scroll to bottom immediately so user sees their query
-    // This also re-enables auto-scroll if user had scrolled up
-    scrollToBottom();
+      // Scroll to bottom immediately so user sees their query
+      // This also re-enables auto-scroll if user had scrolled up
+      scrollToBottom();
 
-    const pendingGoalStart = goalDraftConfigRef.current !== null
-      || (cronStateRef.current.isEnabled
-        && !cronStateRef.current.task
-        && cronStateRef.current.config?.taskKind === 'goal');
+      const pendingGoalStart =
+        goalDraftConfigRef.current !== null ||
+        (cronStateRef.current.isEnabled &&
+          !cronStateRef.current.task &&
+          cronStateRef.current.config?.taskKind === "goal");
 
-    // Goal creation is a fast state mutation, not an AI turn. Keep the global
-    // loading surface idle until the original query is sent through /chat/send.
-    if (!isAiBusy && !pendingGoalStart) {
-      setIsLoading(true);
-    }
+      // Goal creation is a fast state mutation, not an AI turn. Keep the global
+      // loading surface idle until the original query is sent through /chat/send.
+      if (!isAiBusy && !pendingGoalStart) {
+        setIsLoading(true);
+      }
 
-    // Note: User message is added by SSE replay from backend
-    // TabProvider.sendMessage passes attachments which will be merged with the replay message
+      // Note: User message is added by SSE replay from backend
+      // TabProvider.sendMessage passes attachments which will be merged with the replay message
 
-    try {
-      // Build provider env from current provider config (read from refs for stability)
-      // For subscription type, don't send providerEnv (use SDK's default auth)
-      const providerRoute = buildBuiltinProviderRoute(currentProviderRef.current, effectiveModel);
-      const providerEnv = providerRoute ? undefined : buildProviderEnv(currentProviderRef.current);
+      try {
+        // Build provider env from current provider config (read from refs for stability)
+        // For subscription type, don't send providerEnv (use SDK's default auth)
+        const providerRoute = buildBuiltinProviderRoute(
+          currentProviderRef.current,
+          effectiveModel,
+        );
+        const providerEnv = providerRoute
+          ? undefined
+          : buildProviderEnv(currentProviderRef.current);
 
-      // If cron mode is enabled and task hasn't started yet, start the task
-      const cron = cronStateRef.current;
-      if (goalDraftConfigRef.current) {
-        const startedKind = await startScheduledTask(text);
-        if (startedKind !== 'goal') return;
-        if (!isAiBusy) setIsLoading(true);
-      } else if (cron.isEnabled && !cron.task && cron.config) {
-        setStoppedCronRecovery(null);
-        if (cron.config.taskKind === 'cron' && cron.config.executionTarget === 'new_task') {
-          // ── New standalone task: create independently, show card in chat ──
-          try {
-            const sessionId = `cron-standalone-${crypto.randomUUID()}`;
-            const cronExecution = projectTaskExecutionOverrides({
-              providers,
-              runtime: cron.config.runtime,
-              providerId: cron.config.providerId,
-              model: cron.config.model,
-              runtimeConfig: cron.config.runtimeConfig,
-            });
-            const cronPermissionMode = coerceRuntimeBirthPermissionMode(
-              cron.config.permissionMode,
-              cronExecution.runtime ?? currentRuntime,
-            );
-            const task = await createCronTask({
-              workspacePath: agentDir,
-              sessionId,
-              prompt: text,
-              intervalMinutes: cron.config.intervalMinutes,
-              endConditions: cron.config.endConditions,
-              runMode: 'new_session',
-              notifyEnabled: cron.config.notifyEnabled,
-              model: cronExecution.model,
-              permissionMode: cronPermissionMode,
-              providerId: cronExecution.providerId,
-              runtime: cronExecution.runtime,
-              runtimeConfig: cronExecution.runtimeConfig,
-              schedule: cron.config.schedule,
-              delivery: cron.config.delivery,
-            });
-            await startCronTaskIpc(task.id);
-            setCronCardTask(task);
-            disableCronMode();
-            setIsLoading(false);
-            toastRef.current?.success(t('shell.toasts.cronTaskCreated'));
-          } catch (err) {
-            disableCronMode();
-            setIsLoading(false);
-            toastRef.current?.error(t('shell.toasts.createFailedWithError', { error: err instanceof Error ? err.message : String(err) }));
+        // If cron mode is enabled and task hasn't started yet, start the task
+        const cron = cronStateRef.current;
+        if (goalDraftConfigRef.current) {
+          const startedKind = await startScheduledTask(text);
+          if (startedKind !== "goal") return;
+          if (!isAiBusy) setIsLoading(true);
+        } else if (cron.isEnabled && !cron.task && cron.config) {
+          setStoppedCronRecovery(null);
+          if (
+            cron.config.taskKind === "cron" &&
+            cron.config.executionTarget === "new_task"
+          ) {
+            // ── New standalone task: create independently, show card in chat ──
+            try {
+              const sessionId = `cron-standalone-${crypto.randomUUID()}`;
+              const cronExecution = projectTaskExecutionOverrides({
+                providers,
+                runtime: cron.config.runtime,
+                providerId: cron.config.providerId,
+                model: cron.config.model,
+                runtimeConfig: cron.config.runtimeConfig,
+              });
+              const cronPermissionMode = coerceRuntimeBirthPermissionMode(
+                cron.config.permissionMode,
+                cronExecution.runtime ?? currentRuntime,
+              );
+              const task = await createCronTask({
+                workspacePath: agentDir,
+                sessionId,
+                prompt: text,
+                intervalMinutes: cron.config.intervalMinutes,
+                endConditions: cron.config.endConditions,
+                runMode: "new_session",
+                notifyEnabled: cron.config.notifyEnabled,
+                model: cronExecution.model,
+                permissionMode: cronPermissionMode,
+                providerId: cronExecution.providerId,
+                runtime: cronExecution.runtime,
+                runtimeConfig: cronExecution.runtimeConfig,
+                schedule: cron.config.schedule,
+                delivery: cron.config.delivery,
+              });
+              await startCronTaskIpc(task.id);
+              setCronCardTask(task);
+              disableCronMode();
+              setIsLoading(false);
+              toastRef.current?.success(t("shell.toasts.cronTaskCreated"));
+            } catch (err) {
+              disableCronMode();
+              setIsLoading(false);
+              toastRef.current?.error(
+                t("shell.toasts.createFailedWithError", {
+                  error: err instanceof Error ? err.message : String(err),
+                }),
+              );
+            }
+            return;
           }
-          return;
+          // ── Current session: legacy cron behavior ──
+          const startedKind = await startScheduledTask(text);
+          if (startedKind !== "goal") return;
+          if (!isAiBusy) setIsLoading(true);
+          // A Goal is Session state. Its first user query still follows the
+          // ordinary chat path so the visible tail produces the normal bubble
+          // and all streaming blocks arrive live.
         }
-        // ── Current session: legacy cron behavior ──
-        const startedKind = await startScheduledTask(text);
-        if (startedKind !== 'goal') return;
-        if (!isAiBusy) setIsLoading(true);
-        // A Goal is Session state. Its first user query still follows the
-        // ordinary chat path so the visible tail produces the normal bubble
-        // and all streaming blocks arrive live.
-      }
 
-      // sendMessage is fire-and-forget (returns true immediately for optimistic UI).
-      // Error handling is done inside sendMessage's .then()/.catch() in TabProvider.
-      // Use effective model/permission (runtime-aware) — not the builtin values
-      await sendMessage(text, images, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
-        // #324 — builtin only: external runtimes apply effort via /api/reasoning-effort/set
-        isExternalRuntime ? undefined : reasoningEffort,
-        isExternalRuntime ? undefined : providerRoute);
-    } catch (error) {
-      const errorMessage = {
-        id: `error-${crypto.randomUUID()}`,
-        role: 'assistant' as const,
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
-        timestamp: new Date()
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-      // Reset both isLoading and sessionState to ensure UI recovers
-      if (!isAiBusy) {
-        setIsLoading(false);
-        setSessionState('idle');
+        // sendMessage is fire-and-forget (returns true immediately for optimistic UI).
+        // Error handling is done inside sendMessage's .then()/.catch() in TabProvider.
+        // Use effective model/permission (runtime-aware) — not the builtin values
+        await sendMessage(
+          text,
+          images,
+          effectivePermissionMode,
+          effectiveModel,
+          isExternalRuntime ? undefined : providerEnv,
+          undefined,
+          // #324 — builtin only: external runtimes apply effort via /api/reasoning-effort/set
+          isExternalRuntime ? undefined : reasoningEffort,
+          isExternalRuntime ? undefined : providerRoute,
+        );
+      } catch (error) {
+        const errorMessage = {
+          id: `error-${crypto.randomUUID()}`,
+          role: "assistant" as const,
+          content: `Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        // Reset both isLoading and sessionState to ensure UI recovers
+        if (!isAiBusy) {
+          setIsLoading(false);
+          setSessionState("idle");
+        }
       }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
-  }, [sessionState, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
+    },
+    [
+      sessionState,
+      isLoading,
+      queuedMessages.length,
+      startScheduledTask,
+      sendMessage,
+      effectivePermissionMode,
+      effectiveModel,
+      reasoningEffort,
+      isExternalRuntime,
+      isCrossRuntimeSession,
+      scrollToBottom,
+      pinnedProviderUnavailable,
+      builtinSnapshotProviderSelectionIncomplete,
+      showPinnedProviderUnavailableToast,
+      showSnapshotProviderIncompleteToast,
+      t,
+    ],
+  );
 
   // Ref-stabilize handleSendMessage for handleRetry (avoids frequent re-creation)
   const handleSendMessageRef = useRef(handleSendMessage);
@@ -3762,48 +4748,59 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const handleRequestInitFromSettings = useCallback(() => {
     setShowWorkspaceConfig(false);
     setWorkspaceConfigInitialTab(undefined);
-    void handleSendMessageRef.current('/init');
+    void handleSendMessageRef.current("/init");
   }, []);
 
   // Cancel a queued message and restore its text (and images if any) to the input box
-  const handleCancelQueued = useCallback(async (queueId: string) => {
-    // Snapshot the queued message info before it's removed (for image restore)
-    const queuedMsg = queuedMessages.find(q => q.queueId === queueId);
-    const cancelledText = await cancelQueuedMessage(queueId);
-    if (cancelledText) {
-      chatInputRef.current?.setValue(cancelledText);
-      // Restore images if the queued message had them
-      // Note: We only have preview data URLs (not File blobs) to avoid memory leaks,
-      // so we reconstruct ImageAttachment with a minimal placeholder File.
-      if (queuedMsg?.images && queuedMsg.images.length > 0) {
-        const restoredImages: ImageAttachment[] = queuedMsg.images.map(img => ({
-          id: img.id,
-          file: new File([], img.name, { type: img.mimeType || 'application/octet-stream' }), // Placeholder — original blob is gone
-          preview: img.preview,
-          source: img.source,
-          name: img.name,
-          mimeType: img.mimeType,
-          sizeBytes: img.sizeBytes,
-          relativePath: img.relativePath,
-        }));
-        chatInputRef.current?.setImages(restoredImages);
+  const handleCancelQueued = useCallback(
+    async (queueId: string) => {
+      // Snapshot the queued message info before it's removed (for image restore)
+      const queuedMsg = queuedMessages.find((q) => q.queueId === queueId);
+      const cancelledText = await cancelQueuedMessage(queueId);
+      if (cancelledText) {
+        chatInputRef.current?.setValue(cancelledText);
+        // Restore images if the queued message had them
+        // Note: We only have preview data URLs (not File blobs) to avoid memory leaks,
+        // so we reconstruct ImageAttachment with a minimal placeholder File.
+        if (queuedMsg?.images && queuedMsg.images.length > 0) {
+          const restoredImages: ImageAttachment[] = queuedMsg.images.map(
+            (img) => ({
+              id: img.id,
+              file: new File([], img.name, {
+                type: img.mimeType || "application/octet-stream",
+              }), // Placeholder — original blob is gone
+              preview: img.preview,
+              source: img.source,
+              name: img.name,
+              mimeType: img.mimeType,
+              sizeBytes: img.sizeBytes,
+              relativePath: img.relativePath,
+            }),
+          );
+          chatInputRef.current?.setImages(restoredImages);
+        }
       }
-    }
-  }, [cancelQueuedMessage, queuedMessages]);
+    },
+    [cancelQueuedMessage, queuedMessages],
+  );
 
   // Force-execute a queued message (interrupt current AI response)
-  const handleForceExecuteQueued = useCallback(async (queueId: string) => {
-    await forceExecuteQueuedMessage(queueId);
-  }, [forceExecuteQueuedMessage]);
+  const handleForceExecuteQueued = useCallback(
+    async (queueId: string) => {
+      await forceExecuteQueuedMessage(queueId);
+    },
+    [forceExecuteQueuedMessage],
+  );
 
   // Stable callbacks for SimpleChatInput (extracted from inline arrows to enable memo)
   const handleStop = useCallback(async () => {
     try {
       const goal = sessionGoalStateRef.current.goal;
-      const pendingGoalDraft = !goal
-        && sessionGoalStateRef.current.isStarting
-        && (goalDraftConfigRef.current !== null
-          || cronStateRef.current.config?.taskKind === 'goal');
+      const pendingGoalDraft =
+        !goal &&
+        sessionGoalStateRef.current.isStarting &&
+        (goalDraftConfigRef.current !== null ||
+          cronStateRef.current.config?.taskKind === "goal");
       if (pendingGoalDraft) {
         // The first Goal create may still be round-tripping through Rust, so
         // there is no Goal snapshot to pause yet. Treat the red Stop button as
@@ -3814,15 +4811,22 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         return;
       }
       const stopped = await stopResponse();
-      if (stopped.success && stopped.alreadyStopped && goal?.status === 'active') {
+      if (
+        stopped.success &&
+        stopped.alreadyStopped &&
+        goal?.status === "active"
+      ) {
         await pauseGoal();
       }
     } catch (error) {
-      console.error('[Chat] Failed to stop message:', error);
+      console.error("[Chat] Failed to stop message:", error);
     }
   }, [cancelPendingGoalStart, disableCronMode, pauseGoal, stopResponse]);
 
-  const handleOpenAgentSettings = useCallback(() => setShowWorkspaceConfig(true), []);
+  const handleOpenAgentSettings = useCallback(
+    () => setShowWorkspaceConfig(true),
+    [],
+  );
 
   // Provider switch on non-empty builtin history: keep the current tab unchanged,
   // save the new provider as workspace default, and open a fresh session in a new tab.
@@ -3832,13 +4836,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   } | null>(null);
 
   // Runtime change — show confirm dialog, then open new Tab (v0.1.59)
-  const [pendingRuntimeChange, setPendingRuntimeChange] = useState<RuntimeType | null>(null);
+  const [pendingRuntimeChange, setPendingRuntimeChange] =
+    useState<RuntimeType | null>(null);
 
   const providerSwitchDialogCopy = useMemo(() => {
     if (!pendingProviderSwitch) return null;
-    const targetProvider = providers.find(p => p.id === pendingProviderSwitch.providerId);
-    const targetModel = pendingProviderSwitch.model ?? targetProvider?.primaryModel;
-    const targetIntent = buildProviderExecutionIntent(targetProvider, targetModel);
+    const targetProvider = providers.find(
+      (p) => p.id === pendingProviderSwitch.providerId,
+    );
+    const targetModel =
+      pendingProviderSwitch.model ?? targetProvider?.primaryModel;
+    const targetIntent = buildProviderExecutionIntent(
+      targetProvider,
+      targetModel,
+    );
     return buildProviderSwitchDialogCopy(t, {
       currentProvider: currentProviderForHistory ?? currentProvider,
       targetProvider,
@@ -3856,40 +4867,51 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     t,
   ]);
 
-  const handleRuntimeChange = useCallback((runtime: RuntimeType) => {
-    if (guardCronConfigMutation()) return;
-    if (!currentAgent || runtime === currentRuntime) return;
-    setPendingRuntimeChange(runtime);
-  }, [currentAgent, currentRuntime, guardCronConfigMutation]);
+  const handleRuntimeChange = useCallback(
+    (runtime: RuntimeType) => {
+      if (guardCronConfigMutation()) return;
+      if (!currentAgent || runtime === currentRuntime) return;
+      setPendingRuntimeChange(runtime);
+    },
+    [currentAgent, currentRuntime, guardCronConfigMutation],
+  );
 
-  const transferBindingToForkedSession = useCallback(async (channel: ChannelSurface, targetSessionId: string) => {
-    if (!agentDir) {
-      throw new Error('Missing workspace path for channel binding transfer');
-    }
-    const { handoverSessionToChannel } = await import('@/api/sessionHandoverClient');
-    const result = await handoverSessionToChannel({
-      sessionId: targetSessionId,
-      agentId: channel.agentId,
-      channelId: channel.channelId,
-      sessionKey: channel.sessionKey,
-      workspacePath: agentDir,
-    });
-    if (!result.ok) {
-      throw new Error('Channel binding transfer failed');
-    }
-    if (!result.notified) {
-      toastRef.current.warning(t('shell.toasts.channelNotificationFailed'));
-    }
-  }, [agentDir, t]);
+  const transferBindingToForkedSession = useCallback(
+    async (channel: ChannelSurface, targetSessionId: string) => {
+      if (!agentDir) {
+        throw new Error("Missing workspace path for channel binding transfer");
+      }
+      const { handoverSessionToChannel } = await import(
+        "@/api/sessionHandoverClient"
+      );
+      const result = await handoverSessionToChannel({
+        sessionId: targetSessionId,
+        agentId: channel.agentId,
+        channelId: channel.channelId,
+        sessionKey: channel.sessionKey,
+        workspacePath: agentDir,
+      });
+      if (!result.ok) {
+        throw new Error("Channel binding transfer failed");
+      }
+      if (!result.notified) {
+        toastRef.current.warning(t("shell.toasts.channelNotificationFailed"));
+      }
+    },
+    [agentDir, t],
+  );
 
-  const deleteUnopenedForkSession = useCallback(async (targetSessionId: string) => {
-    try {
-      const { deleteSession } = await import('@/api/sessionClient');
-      await deleteSession(targetSessionId);
-    } catch (err) {
-      console.warn('[chat] Failed to delete unopened fork session:', err);
-    }
-  }, []);
+  const deleteUnopenedForkSession = useCallback(
+    async (targetSessionId: string) => {
+      try {
+        const { deleteSession } = await import("@/api/sessionClient");
+        await deleteSession(targetSessionId);
+      } catch (err) {
+        console.warn("[chat] Failed to delete unopened fork session:", err);
+      }
+    },
+    [],
+  );
 
   const confirmRuntimeChange = useCallback(async () => {
     if (guardCronConfigMutation()) {
@@ -3925,11 +4947,13 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const boundChannel = channelSurfaceRef.current;
     let session: { id: string } | undefined;
     try {
-      const { createSession } = await import('@/api/sessionClient');
-      session = await createSession(agentDir, runtime, { origin: DESKTOP_SESSION_FORK_ORIGIN });
+      const { createSession } = await import("@/api/sessionClient");
+      session = await createSession(agentDir, runtime, {
+        origin: DESKTOP_SESSION_FORK_ORIGIN,
+      });
     } catch (err) {
-      console.error('[chat] Failed to create session for runtime fork:', err);
-      toastRef.current.error(t('shell.toasts.runtimeSwitchCreateFailed'));
+      console.error("[chat] Failed to create session for runtime fork:", err);
+      toastRef.current.error(t("shell.toasts.runtimeSwitchCreateFailed"));
       return;
     }
     // Fork metadata succeeded — now persist workspace default before opening
@@ -3946,53 +4970,87 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     let agentTemplateUpdated = false;
     if (currentAgent.id) {
       try {
-        await patchAgentConfig(currentAgent.id, buildRuntimeChangePatch(currentAgent.runtimeConfig, runtime));
+        await patchAgentConfig(
+          currentAgent.id,
+          buildRuntimeChangePatch(currentAgent.runtimeConfig, runtime),
+        );
         agentTemplateUpdated = true;
       } catch (err) {
-        console.warn('[chat] Runtime fork succeeded but agent template update failed:', err);
+        console.warn(
+          "[chat] Runtime fork succeeded but agent template update failed:",
+          err,
+        );
         if (boundChannel) {
           await deleteUnopenedForkSession(session.id);
-          toastRef.current.error(t('shell.toasts.runtimeSwitchDefaultUpdateFailed'));
+          toastRef.current.error(
+            t("shell.toasts.runtimeSwitchDefaultUpdateFailed"),
+          );
           return;
         }
-        toastRef.current.warning(t('shell.toasts.runtimeSwitchDefaultUpdateWarning'));
+        toastRef.current.warning(
+          t("shell.toasts.runtimeSwitchDefaultUpdateWarning"),
+        );
       }
     }
     const runtimeLabel = getRuntimeDisplayLabel(runtime);
-    const opened = await onForkSession(session.id, agentDir, `${runtimeLabel} Session`);
+    const opened = await onForkSession(
+      session.id,
+      agentDir,
+      `${runtimeLabel} Session`,
+    );
     if (!opened) {
       await deleteUnopenedForkSession(session.id);
       if (agentTemplateUpdated) {
         try {
           await patchAgentConfig(currentAgent.id, {
-            runtime: currentAgent.runtime ?? 'builtin',
+            runtime: currentAgent.runtime ?? "builtin",
             runtimeConfig: currentAgent.runtimeConfig,
           });
         } catch (rollbackErr) {
-          console.warn('[chat] Runtime rollback after fork tab open failure also failed:', rollbackErr);
+          console.warn(
+            "[chat] Runtime rollback after fork tab open failure also failed:",
+            rollbackErr,
+          );
         }
       }
-      toastRef.current.error(t('shell.toasts.runtimeSwitchTabOpenFailed'));
+      toastRef.current.error(t("shell.toasts.runtimeSwitchTabOpenFailed"));
       return;
     }
     if (boundChannel && session) {
       try {
         await transferBindingToForkedSession(boundChannel, session.id);
       } catch (err) {
-        console.error('[chat] Runtime fork channel binding transfer failed:', err);
+        console.error(
+          "[chat] Runtime fork channel binding transfer failed:",
+          err,
+        );
         try {
           await patchAgentConfig(currentAgent.id, {
-            runtime: currentAgent.runtime ?? 'builtin',
+            runtime: currentAgent.runtime ?? "builtin",
             runtimeConfig: currentAgent.runtimeConfig,
           });
         } catch (rollbackErr) {
-          console.warn('[chat] Runtime rollback after failed channel transfer also failed:', rollbackErr);
+          console.warn(
+            "[chat] Runtime rollback after failed channel transfer also failed:",
+            rollbackErr,
+          );
         }
-        toastRef.current.error(t('shell.toasts.runtimeSwitchChannelTransferFailed'));
+        toastRef.current.error(
+          t("shell.toasts.runtimeSwitchChannelTransferFailed"),
+        );
         return;
       }
     }
-  }, [pendingRuntimeChange, currentAgent, onForkSession, agentDir, transferBindingToForkedSession, deleteUnopenedForkSession, guardCronConfigMutation, t]);
+  }, [
+    pendingRuntimeChange,
+    currentAgent,
+    onForkSession,
+    agentDir,
+    transferBindingToForkedSession,
+    deleteUnopenedForkSession,
+    guardCronConfigMutation,
+    t,
+  ]);
 
   // Provider/model history-boundary confirm: create a fresh session in a new
   // tab so the old transcript is not reused across incompatible provider
@@ -4010,17 +5068,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const boundChannel = channelSurfaceRef.current;
 
     let forkTabOpened = false;
-    const newProvider = providers.find(p => p.id === pending.providerId);
+    const newProvider = providers.find((p) => p.id === pending.providerId);
     const targetModel = pending.model ?? newProvider?.primaryModel;
     const targetIntent = buildProviderExecutionIntent(newProvider, targetModel);
 
     if (!newProvider || !targetModel || !targetIntent) {
-      toastRef.current.error(t('shell.toasts.providerSwitchTargetUnavailable'));
+      toastRef.current.error(t("shell.toasts.providerSwitchTargetUnavailable"));
       return;
     }
 
     try {
-      const { createSession } = await import('@/api/sessionClient');
+      const { createSession } = await import("@/api/sessionClient");
       const birth = buildProviderSwitchSessionBirth({
         targetIntent,
         providerId: pending.providerId,
@@ -4031,19 +5089,18 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         enabledPluginIds: workspaceEnabledPlugins,
         enabledOfficialToolIds: workspaceOfficialToolEnabled,
       });
-      const session = await createSession(
-        agentDir,
-        birth.runtime,
-        { ...birth.opts, origin: DESKTOP_SESSION_FORK_ORIGIN },
-      );
+      const session = await createSession(agentDir, birth.runtime, {
+        ...birth.opts,
+        origin: DESKTOP_SESSION_FORK_ORIGIN,
+      });
       const opened = await onForkSession(
         session.id,
         agentDir,
-        `${newProvider?.name ?? 'Claude'} 会话`,
+        `${newProvider?.name ?? "Claude"} 会话`,
       );
       if (!opened) {
         await deleteUnopenedForkSession(session.id);
-        throw new Error('Fork tab failed to open');
+        throw new Error("Fork tab failed to open");
       }
       forkTabOpened = true;
       if (currentProject) {
@@ -4051,69 +5108,124 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           workspaceId: currentProject.id,
           agentId: currentProject.agentId,
           isExternalRuntime: false,
-          currentRuntimeConfig: currentAgent?.runtimeConfig as RuntimeConfig | undefined,
-          currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
+          currentRuntimeConfig: currentAgent?.runtimeConfig as
+            | RuntimeConfig
+            | undefined,
+          currentProviderId:
+            currentAgent?.providerId ?? currentProject.providerId,
           fields: {
-            ...(targetIntent.kind === 'runtime-backed-provider'
+            ...(targetIntent.kind === "runtime-backed-provider"
               ? { runtimeBackedProviderSelection: targetIntent }
-              : { builtinSelection: { providerId: pending.providerId, model: targetModel } }),
-            permissionMode: targetIntent.kind === 'runtime-backed-provider'
-              ? runtimeBackedProviderPermissionMode(targetIntent, inputChromePermissionMode)
-              : inputChromePermissionMode,
+              : {
+                  builtinSelection: {
+                    providerId: pending.providerId,
+                    model: targetModel,
+                  },
+                }),
+            permissionMode:
+              targetIntent.kind === "runtime-backed-provider"
+                ? runtimeBackedProviderPermissionMode(
+                    targetIntent,
+                    inputChromePermissionMode,
+                  )
+                : inputChromePermissionMode,
           },
-          snapshotWriteMode: 'disabled',
+          snapshotWriteMode: "disabled",
           patchProject,
           patchAgentConfig,
         });
         if (!defaultWriteResult.ok) {
-          console.error('[chat] Provider switch default write failed:', defaultWriteResult.errors);
-          toastRef.current.warning(t('shell.toasts.providerSwitchDefaultSaveFailed'));
+          console.error(
+            "[chat] Provider switch default write failed:",
+            defaultWriteResult.errors,
+          );
+          toastRef.current.warning(
+            t("shell.toasts.providerSwitchDefaultSaveFailed"),
+          );
         }
         try {
           await refreshConfig();
         } catch (refreshErr) {
-          console.warn('[chat] Provider switch config refresh failed:', refreshErr);
+          console.warn(
+            "[chat] Provider switch config refresh failed:",
+            refreshErr,
+          );
         }
       }
       if (boundChannel) {
         await transferBindingToForkedSession(boundChannel, session.id);
       }
     } catch (err) {
-      console.error('[chat] Failed to create cross-provider session:', err);
+      console.error("[chat] Failed to create cross-provider session:", err);
       toastRef.current.error(
         forkTabOpened
-          ? t('shell.toasts.providerSwitchChannelTransferFailed')
-          : t('shell.toasts.createNewSessionFailed'),
+          ? t("shell.toasts.providerSwitchChannelTransferFailed")
+          : t("shell.toasts.createNewSessionFailed"),
       );
     }
-  }, [pendingProviderSwitch, agentDir, onForkSession, providers, transferBindingToForkedSession, deleteUnopenedForkSession, inputChromePermissionMode, reasoningEffort, workspaceMcpEnabled, workspaceEnabledPlugins, workspaceOfficialToolEnabled, currentProject, currentAgent, patchProject, refreshConfig, guardCronConfigMutation, t]);
+  }, [
+    pendingProviderSwitch,
+    agentDir,
+    onForkSession,
+    providers,
+    transferBindingToForkedSession,
+    deleteUnopenedForkSession,
+    inputChromePermissionMode,
+    reasoningEffort,
+    workspaceMcpEnabled,
+    workspaceEnabledPlugins,
+    workspaceOfficialToolEnabled,
+    currentProject,
+    currentAgent,
+    patchProject,
+    refreshConfig,
+    guardCronConfigMutation,
+    t,
+  ]);
 
   // Cross-runtime confirm: create new session in new tab and send the pending message
   const confirmCrossRuntimeSend = useCallback(async () => {
     const pending = pendingCrossRuntimeMessage;
     if (!pending || !agentDir || !onForkSession) return;
     try {
-      const { createSession } = await import('@/api/sessionClient');
+      const { createSession } = await import("@/api/sessionClient");
       // Pass currentRuntime so the new session has matching runtime metadata,
       // preventing infinite cross-runtime detection loop.
-      const session = await createSession(agentDir, currentRuntime, { origin: DESKTOP_SESSION_FORK_ORIGIN });
-      setPendingCrossRuntimeMessage(null);  // Clear only after success
+      const session = await createSession(agentDir, currentRuntime, {
+        origin: DESKTOP_SESSION_FORK_ORIGIN,
+      });
+      setPendingCrossRuntimeMessage(null); // Clear only after success
       // Open new tab with the pending message as initialMessage
       if (pending.images.length > 0) {
-        toastRef.current.warning(t('shell.toasts.imagesNotTransferred'));
+        toastRef.current.warning(t("shell.toasts.imagesNotTransferred"));
       }
-      const opened = await onForkSession(session.id, agentDir, pending.text.slice(0, 40) || t('shell.toasts.newSession'), pending.text);
+      const opened = await onForkSession(
+        session.id,
+        agentDir,
+        pending.text.slice(0, 40) || t("shell.toasts.newSession"),
+        pending.text,
+      );
       if (!opened) {
         await deleteUnopenedForkSession(session.id);
       }
     } catch (err) {
-      setPendingCrossRuntimeMessage(null);  // Clear on error too (dialog dismissed)
-      console.error('[chat] Failed to create cross-runtime session:', err);
-      toastRef.current.error(t('shell.toasts.createNewSessionFailed'));
+      setPendingCrossRuntimeMessage(null); // Clear on error too (dialog dismissed)
+      console.error("[chat] Failed to create cross-runtime session:", err);
+      toastRef.current.error(t("shell.toasts.createNewSessionFailed"));
     }
-  }, [pendingCrossRuntimeMessage, agentDir, onForkSession, currentRuntime, deleteUnopenedForkSession, t]);
+  }, [
+    pendingCrossRuntimeMessage,
+    agentDir,
+    onForkSession,
+    currentRuntime,
+    deleteUnopenedForkSession,
+    t,
+  ]);
 
-  const handleCollapseWorkspace = useCallback(() => setShowWorkspace(false), []);
+  const handleCollapseWorkspace = useCallback(
+    () => setShowWorkspace(false),
+    [],
+  );
   // Issue #231: snapshot the current input value at the moment the user opens
   // the cron-settings modal, instead of keeping `cronPrompt` continuously in
   // sync with every keystroke (the prior `onInputChange={setCronPrompt}` wiring
@@ -4122,7 +5234,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const handleOpenCronSettings = useCallback(() => {
     if (guardCronConfigMutation()) return;
     setStoppedCronRecovery(null);
-    setCronPrompt(chatInputRef.current?.getCurrentValue() ?? '');
+    setCronPrompt(chatInputRef.current?.getCurrentValue() ?? "");
     setCronOpenPreset(null); // 定时 button = no slash preset
     setShowCronSettings(true);
   }, [guardCronConfigMutation]);
@@ -4138,13 +5250,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   }, [cancelPendingGoalStart]);
 
   const handleGoalDraftSettings = useCallback(() => {
-    setCronPrompt(chatInputRef.current?.getCurrentValue() ?? '');
+    setCronPrompt(chatInputRef.current?.getCurrentValue() ?? "");
     const draft = goalDraftConfigRef.current;
-    setCronOpenPreset(draft ? {
-      ...GOAL_SLASH_PRESET,
-      endConditions: draft.endConditions,
-      notifyEnabled: draft.notifyEnabled,
-    } : GOAL_SLASH_PRESET);
+    setCronOpenPreset(
+      draft
+        ? {
+            ...GOAL_SLASH_PRESET,
+            endConditions: draft.endConditions,
+            notifyEnabled: draft.notifyEnabled,
+          }
+        : GOAL_SLASH_PRESET,
+    );
     setShowCronSettings(true);
   }, []);
 
@@ -4152,9 +5268,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // the shared settings modal preset to Goal mode; the objective is entered in
   // the input after confirming.
   const handleSlashAction = useCallback((name: string) => {
-    if (name === 'goal' || name === 'loop') {
+    if (name === "goal" || name === "loop") {
       setStoppedCronRecovery(null);
-      setCronPrompt(''); // task is entered after confirm, not snapshotted here
+      setCronPrompt(""); // task is entered after confirm, not snapshotted here
       setCronOpenPreset(GOAL_SLASH_PRESET);
       setShowCronSettings(true);
     }
@@ -4169,14 +5285,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       setStoppedCronRecovery({
         prompt: promptToRecover,
         task: result.task,
-        sessionId: stopSessionId ?? '',
+        sessionId: stopSessionId ?? "",
       });
     }
   }, [stopCronTask]);
 
   const handleGoalCancelOpen = useCallback(() => {
     const currentGoal = sessionGoalStateRef.current.goal;
-    if (isCurrentSessionGoal(currentGoal) && !isTerminalGoalStatus(currentGoal.status)) {
+    if (
+      isCurrentSessionGoal(currentGoal) &&
+      !isTerminalGoalStatus(currentGoal.status)
+    ) {
       setGoalCancelConfirmOpen(true);
     }
   }, []);
@@ -4184,9 +5303,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const handleGoalCancelConfirm = useCallback(async () => {
     const stopSessionId = sessionIdRef.current;
     try {
-      const result = await cancelGoal('Canceled by user');
+      const result = await cancelGoal("Canceled by user");
       if (!result) {
-        toastRef.current.error(tTask('cron.statusBar.cancelGoalFailed'));
+        toastRef.current.error(tTask("cron.statusBar.cancelGoalFailed"));
         return;
       }
       if (sessionIdRef.current !== stopSessionId) return;
@@ -4198,7 +5317,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   const handleGoalEditOpen = useCallback(() => {
     const goal = sessionGoalStateRef.current.goal;
-    if (!isCurrentSessionGoal(goal) || isTerminalGoalStatus(goal.status)) return;
+    if (!isCurrentSessionGoal(goal) || isTerminalGoalStatus(goal.status))
+      return;
     setGoalEditDraft(goal.objective);
     setGoalEditOpen(true);
   }, []);
@@ -4206,30 +5326,33 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const handleGoalEditSubmit = useCallback(async () => {
     const objective = goalEditDraft.trim();
     if (!objective) {
-      toastRef.current.warning(t('goalEdit.empty'));
+      toastRef.current.warning(t("goalEdit.empty"));
       return;
     }
     const beforeGoal = sessionGoalStateRef.current.goal;
-    if (!isCurrentSessionGoal(beforeGoal) || isTerminalGoalStatus(beforeGoal.status)) {
+    if (
+      !isCurrentSessionGoal(beforeGoal) ||
+      isTerminalGoalStatus(beforeGoal.status)
+    ) {
       setGoalEditOpen(false);
       return;
     }
     setGoalEditSubmitting(true);
     try {
       const result = await apiPost<{ success: boolean; error?: string }>(
-        '/api/goal/objective',
+        "/api/goal/objective",
         { objective, sessionId: beforeGoal.sessionId },
       );
       if (!result.success) {
-        console.error('[Chat] Goal objective update rejected:', result.error);
-        toastRef.current.error(t('goalEdit.updateFailed'));
+        console.error("[Chat] Goal objective update rejected:", result.error);
+        toastRef.current.error(t("goalEdit.updateFailed"));
         return;
       }
       setGoalEditOpen(false);
-      toastRef.current.success(t('goalEdit.updated'));
+      toastRef.current.success(t("goalEdit.updated"));
     } catch (error) {
-      console.error('[Chat] Failed to update Goal objective:', error);
-      toastRef.current.error(t('goalEdit.updateFailed'));
+      console.error("[Chat] Failed to update Goal objective:", error);
+      toastRef.current.error(t("goalEdit.updateFailed"));
     } finally {
       setGoalEditSubmitting(false);
     }
@@ -4237,8 +5360,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   const handleCronDismissStopped = useCallback(() => {
     if (stoppedCronRecovery?.prompt) {
-      const currentValue = chatInputRef.current?.getCurrentValue() ?? '';
-      const nextValue = appendCronPromptToDraft(currentValue, stoppedCronRecovery.prompt);
+      const currentValue = chatInputRef.current?.getCurrentValue() ?? "";
+      const nextValue = appendCronPromptToDraft(
+        currentValue,
+        stoppedCronRecovery.prompt,
+      );
       chatInputRef.current?.setValue(nextValue);
       chatInputRef.current?.focus();
     }
@@ -4250,51 +5376,66 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   }, [dismissGoal]);
 
   const handleCancelQueuedVoid = useCallback(
-    (queueId: string) => { void handleCancelQueued(queueId); },
-    [handleCancelQueued]
+    (queueId: string) => {
+      void handleCancelQueued(queueId);
+    },
+    [handleCancelQueued],
   );
 
   const handleForceExecuteQueuedVoid = useCallback(
-    (queueId: string) => { void handleForceExecuteQueued(queueId); },
-    [handleForceExecuteQueued]
+    (queueId: string) => {
+      void handleForceExecuteQueued(queueId);
+    },
+    [handleForceExecuteQueued],
   );
 
   // Format selected text as Markdown blockquote
-  const formatQuote = useCallback((text: string) =>
-    text.split('\n').map(line => `> ${line}`).join('\n'),
-  []);
+  const formatQuote = useCallback(
+    (text: string) =>
+      text
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n"),
+    [],
+  );
 
   // Quote selected text — append blockquote + placeholder for user to type over
-  const handleQuoteSelection = useCallback((selectedText: string) => {
-    const currentValue = inputRef.current?.value ?? '';
-    // Only prepend \n when there's existing content (so the quote starts on a new line)
-    const prefix = currentValue ? '\n' : '';
-    const quote = `${prefix}${formatQuote(selectedText)}\n${t('shell.selection.quotePrompt')}`;
-    const appended = currentValue + quote;
-    chatInputRef.current?.setValue(appended);
-    // Move cursor to end + scroll textarea to bottom so user sees the appended quote
-    setTimeout(() => {
-      const textarea = inputRef.current;
-      if (textarea) {
-        textarea.setSelectionRange(appended.length, appended.length);
-        textarea.scrollTop = textarea.scrollHeight;
-        textarea.focus();
-      }
-    }, 0);
-  }, [inputRef, formatQuote, t]);
+  const handleQuoteSelection = useCallback(
+    (selectedText: string) => {
+      const currentValue = inputRef.current?.value ?? "";
+      // Only prepend \n when there's existing content (so the quote starts on a new line)
+      const prefix = currentValue ? "\n" : "";
+      const quote = `${prefix}${formatQuote(selectedText)}\n${t("shell.selection.quotePrompt")}`;
+      const appended = currentValue + quote;
+      chatInputRef.current?.setValue(appended);
+      // Move cursor to end + scroll textarea to bottom so user sees the appended quote
+      setTimeout(() => {
+        const textarea = inputRef.current;
+        if (textarea) {
+          textarea.setSelectionRange(appended.length, appended.length);
+          textarea.scrollTop = textarea.scrollHeight;
+          textarea.focus();
+        }
+      }, 0);
+    },
+    [inputRef, formatQuote, t],
+  );
 
   // Elaborate = quote + placeholder + "深入讲讲" then auto-send
-  const handleElaborateSelection = useCallback((selectedText: string) => {
-    const prompt = `${formatQuote(selectedText)}\n${t('shell.selection.elaboratePrompt')}`;
-    void handleSendMessageRef.current(prompt);
-  }, [formatQuote, t]);
+  const handleElaborateSelection = useCallback(
+    (selectedText: string) => {
+      const prompt = `${formatQuote(selectedText)}\n${t("shell.selection.elaboratePrompt")}`;
+      void handleSendMessageRef.current(prompt);
+    },
+    [formatQuote, t],
+  );
 
   // File preview「引用文件」: append `@<path> ` to chat input. Token-format matches existing
   // `@file` mention (server's fallback-path collector treats literal `@path` as a file
   // reference). Path normalised to POSIX so Windows backslashes don't reach the model —
   // the @-mention parser and downstream tools both expect forward-slash paths.
   const handleQuoteFile = useCallback((path: string) => {
-    const posix = path.replace(/\\/g, '/');
+    const posix = path.replace(/\\/g, "/");
     chatInputRef.current?.appendReferenceToken(`@${posix}`);
   }, []);
 
@@ -4303,24 +5444,38 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // the line range from prompt context (Claude is heavily exposed to GitHub permalinks in
   // training data, so the convention reads naturally). Single-line selections collapse to
   // `#L7` to match GitHub's convention. Path normalised to POSIX (Windows safety).
-  const handleQuoteFileSelection = useCallback((path: string, startLine: number, endLine: number) => {
-    const posix = path.replace(/\\/g, '/');
-    const range = startLine === endLine ? `L${startLine}` : `L${startLine}-L${endLine}`;
-    chatInputRef.current?.appendReferenceToken(`@${posix}#${range}`);
-  }, []);
+  const handleQuoteFileSelection = useCallback(
+    (path: string, startLine: number, endLine: number) => {
+      const posix = path.replace(/\\/g, "/");
+      const range =
+        startLine === endLine ? `L${startLine}` : `L${startLine}-L${endLine}`;
+      chatInputRef.current?.appendReferenceToken(`@${posix}#${range}`);
+    },
+    [],
+  );
 
   // Navigate to a specific query message (used by QueryNavigator).
   // ChatScrollController owns virtualized message navigation.
-  const handleNavigateToQuery = useCallback((messageId: string) => {
-    scrollToMessage(messageId, { behavior: 'smooth', align: 'start', pauseMs: 2000 });
-  }, [scrollToMessage]);
+  const handleNavigateToQuery = useCallback(
+    (messageId: string) => {
+      scrollToMessage(messageId, {
+        behavior: "smooth",
+        align: "start",
+        pauseMs: 2000,
+      });
+    },
+    [scrollToMessage],
+  );
 
   // PRD 0.2.17 Agent Status Panel — 点击 SubAgent 行跳转到对话流中对应 TaskTool。
   // ChatScrollController owns host-message resolution and the two-stage
   // virtual-row mount + precise DOM scroll.
-  const handleJumpToTool = useCallback((toolId: string) => {
-    scrollToTool(toolId);
-  }, [scrollToTool]);
+  const handleJumpToTool = useCallback(
+    (toolId: string) => {
+      scrollToTool(toolId);
+    },
+    [scrollToTool],
+  );
 
   // PRD 0.2.17 / v0.2.19 — AgentStatusPanel 通过 slot 注入 SimpleChatInput，
   // 与 QueuedMessagesPanel 同居一个 flex 行（避免两者撞 z-20 / 同 Y 重叠）。
@@ -4329,11 +5484,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // 稳定，SimpleChatInput 的 React.memo 不再被打穿，输入框在 AI 流式输出时不会
   // 每 token 重渲染。AgentStatusPanel 内部仍随 commit 重渲染，其 DOM 仅在
   // 派生 todos/subagents 变化时才改，成本由 React 协调器吸收。
-  const supportsAgentStatusPanel = currentRuntime === 'builtin' || currentRuntime === 'codex';
+  const supportsAgentStatusPanel =
+    currentRuntime === "builtin" || currentRuntime === "codex";
   const agentStatusSlot = useMemo(
-    () => !supportsAgentStatusPanel
-      ? undefined
-      : (
+    () =>
+      !supportsAgentStatusPanel ? undefined : (
         <AgentStatusPanel
           containerRef={chatContentRef}
           onJumpToTool={handleJumpToTool}
@@ -4353,12 +5508,35 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       showSnapshotProviderIncompleteToast();
       return;
     }
-    const providerRoute = buildBuiltinProviderRoute(currentProviderRef.current, effectiveModel);
-    const providerEnv = providerRoute ? undefined : buildProviderEnv(currentProviderRef.current);
-    void sendMessage('/compact', undefined, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
+    const providerRoute = buildBuiltinProviderRoute(
+      currentProviderRef.current,
+      effectiveModel,
+    );
+    const providerEnv = providerRoute
+      ? undefined
+      : buildProviderEnv(currentProviderRef.current);
+    void sendMessage(
+      "/compact",
+      undefined,
+      effectivePermissionMode,
+      effectiveModel,
+      isExternalRuntime ? undefined : providerEnv,
+      undefined,
       isExternalRuntime ? undefined : reasoningEffort,
-      isExternalRuntime ? undefined : providerRoute);
-  }, [sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, buildProviderEnv, builtinSnapshotProviderSelectionIncomplete, pinnedProviderUnavailable, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast]);
+      isExternalRuntime ? undefined : providerRoute,
+    );
+  }, [
+    sendMessage,
+    effectivePermissionMode,
+    effectiveModel,
+    reasoningEffort,
+    isExternalRuntime,
+    buildProviderEnv,
+    builtinSnapshotProviderSelectionIncomplete,
+    pinnedProviderUnavailable,
+    showPinnedProviderUnavailableToast,
+    showSnapshotProviderIncompleteToast,
+  ]);
 
   // PRD 0.2.32 — context 用量指示器 slot。自取数（内部 useTabState 订阅 contextUsage），
   // 数据不经 SimpleChatInput props；useMemo 让 slot identity 在流式期间稳定，不打穿
@@ -4366,7 +5544,12 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const contextIndicatorSlot = useMemo(
     // key on sessionId → remount on session switch resets local open/timer state
     // (review #W3). sessionId is stable during streaming, so the memo still holds.
-    () => <ContextUsageIndicator key={sessionId ?? 'none'} onCompact={handleCompactContext} />,
+    () => (
+      <ContextUsageIndicator
+        key={sessionId ?? "none"}
+        onCompact={handleCompactContext}
+      />
+    ),
     [handleCompactContext, sessionId],
   );
 
@@ -4378,20 +5561,27 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // sidecar's /api/cc-plugin/list and lives only on PluginListItem, not the bare
   // PluginEntry in AppConfig — undefined here; the chat submenu hides it.)
   const globallyVisiblePlugins = useMemo(
-    () => (config.plugins ?? [])
-      .filter(p => config.enabledPlugins?.[p.id] === true)
-      .map(p => ({ id: p.id, name: p.name, description: p.description })),
+    () =>
+      (config.plugins ?? [])
+        .filter((p) => config.enabledPlugins?.[p.id] === true)
+        .map((p) => ({ id: p.id, name: p.name, description: p.description })),
     [config.plugins, config.enabledPlugins],
   );
 
   // Stable callbacks for MessageList (extracted from inline arrows to enable memo)
-  const handlePermissionDecision = useCallback((requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => {
-    return respondPermission(decision, requestId);
-  }, [respondPermission]);
+  const handlePermissionDecision = useCallback(
+    (requestId: string, decision: "deny" | "allow_once" | "always_allow") => {
+      return respondPermission(decision, requestId);
+    },
+    [respondPermission],
+  );
 
-  const handleAskUserQuestionSubmit = useCallback((_requestId: string, answers: Record<string, string>) => {
-    void respondAskUserQuestion(answers);
-  }, [respondAskUserQuestion]);
+  const handleAskUserQuestionSubmit = useCallback(
+    (_requestId: string, answers: Record<string, string>) => {
+      void respondAskUserQuestion(answers);
+    },
+    [respondAskUserQuestion],
+  );
 
   const handleAskUserQuestionCancel = useCallback(() => {
     void respondAskUserQuestion(null);
@@ -4399,14 +5589,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   const handleExitPlanModeApprove = useCallback(async () => {
     const ok = await respondExitPlanMode(true);
-    if (!ok) toastRef.current.error(t('shell.toasts.submitFailedRetry'));
+    if (!ok) toastRef.current.error(t("shell.toasts.submitFailedRetry"));
     // Mode restore is handled by the useEffect below reacting to resolved='approved'
   }, [respondExitPlanMode, t]);
 
-  const handleExitPlanModeReject = useCallback(async (feedback?: string) => {
-    const ok = await respondExitPlanMode(false, feedback);
-    if (!ok) toastRef.current.error(t('shell.toasts.submitFailedRetry'));
-  }, [respondExitPlanMode, t]);
+  const handleExitPlanModeReject = useCallback(
+    async (feedback?: string) => {
+      const ok = await respondExitPlanMode(false, feedback);
+      if (!ok) toastRef.current.error(t("shell.toasts.submitFailedRetry"));
+    },
+    [respondExitPlanMode, t],
+  );
 
   const handleDismissSystemNotice = useCallback(() => {
     setSystemNotice(null);
@@ -4415,14 +5608,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // React to plan mode changes: auto-approved by SDK, or user-approved via card
   // Single source of truth for permission mode switch during plan mode
   useEffect(() => {
-    if (pendingEnterPlanMode?.resolved === 'approved' && permissionMode !== 'plan') {
+    if (
+      pendingEnterPlanMode?.resolved === "approved" &&
+      permissionMode !== "plan"
+    ) {
       prePlanPermissionModeRef.current = permissionMode;
-      setPermissionMode('plan');
+      setPermissionMode("plan");
     }
   }, [pendingEnterPlanMode?.resolved, pendingEnterPlanMode?.requestId]); // eslint-disable-line react-hooks/exhaustive-deps -- read permissionMode without dep to avoid loop
 
   useEffect(() => {
-    if (pendingExitPlanMode?.resolved === 'approved' && prePlanPermissionModeRef.current) {
+    if (
+      pendingExitPlanMode?.resolved === "approved" &&
+      prePlanPermissionModeRef.current
+    ) {
       setPermissionMode(prePlanPermissionModeRef.current);
       prePlanPermissionModeRef.current = null;
     }
@@ -4445,18 +5644,18 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         setPermissionMode(mode);
       }
     };
-    window.addEventListener('permission-mode-sync', handler);
-    return () => window.removeEventListener('permission-mode-sync', handler);
+    window.addEventListener("permission-mode-sync", handler);
+    return () => window.removeEventListener("permission-mode-sync", handler);
   }, [tabId]); // stable — reads permissionMode via ref
 
   // Stable callback for time rewind — uses ref for messages to keep reference stable
   const handleRewind = useCallback((messageId: string) => {
     const msgs = messagesRef.current;
-    const msg = msgs.find(m => m.id === messageId);
+    const msg = msgs.find((m) => m.id === messageId);
     if (!msg) return;
     setRewindTarget({
       messageId,
-      content: typeof msg.content === 'string' ? msg.content : '',
+      content: typeof msg.content === "string" ? msg.content : "",
       attachments: msg.attachments,
     });
   }, []); // [] — 通过 ref 读取 messages，引用永远稳定
@@ -4474,22 +5673,22 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // scroll clamping (messages removed → scrollHeight shrinks → scrollTop adjusts).
     pauseAutoScroll(500);
     setRewindTarget(null);
-    setMessages(prev => {
-      const idx = prev.findIndex(m => m.id === messageId);
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === messageId);
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
     if (content) {
       chatInputRef.current?.setValue(content);
     }
-    const imageAttachments = attachments?.filter(a =>
-      a.isImage || a.mimeType?.startsWith('image/')
+    const imageAttachments = attachments?.filter(
+      (a) => a.isImage || a.mimeType?.startsWith("image/"),
     );
     if (imageAttachments?.length) {
-      const restoredImages: ImageAttachment[] = imageAttachments.map(a => ({
+      const restoredImages: ImageAttachment[] = imageAttachments.map((a) => ({
         id: a.id,
         file: new File([], a.name, { type: a.mimeType }),
-        preview: a.previewUrl || '',
-        source: a.relativePath || a.savedPath ? 'attachment_ref' : undefined,
+        preview: a.previewUrl || "",
+        source: a.relativePath || a.savedPath ? "attachment_ref" : undefined,
         name: a.name,
         mimeType: a.mimeType,
         sizeBytes: a.size,
@@ -4500,27 +5699,31 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
     // 2. 后端回溯（rewindPromise 会阻塞 enqueueUserMessage 防止竞态）
     //    成功：丢弃快照；失败：从快照回滚 UI
-    track('session_rewind', {});
+    track("session_rewind", {});
     setIsLoading(true);
-    setRewindStatus('rewinding');
-    apiPost('/chat/rewind', { userMessageId: messageId })
-      .then(res => {
+    setRewindStatus("rewinding");
+    apiPost("/chat/rewind", { userMessageId: messageId })
+      .then((res) => {
         const r = res as { success?: boolean; error?: string } | undefined;
         if (r && !r.success) {
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
-          chatInputRef.current?.setValue('');
+          chatInputRef.current?.setValue("");
           chatInputRef.current?.setImages([]);
-          toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
+          toastRef.current.error(
+            t("shell.toasts.rewindFailedWithError", {
+              error: r.error || t("shell.toasts.unknownError"),
+            }),
+          );
         }
       })
-      .catch(err => {
+      .catch((err) => {
         // 网络错误或异常 → 回滚 UI
-        console.error('[Chat] Rewind failed:', err);
+        console.error("[Chat] Rewind failed:", err);
         setMessages(snapshot);
-        chatInputRef.current?.setValue('');
+        chatInputRef.current?.setValue("");
         chatInputRef.current?.setImages([]);
-        toastRef.current.error(t('shell.toasts.rewindFailedRetry'));
+        toastRef.current.error(t("shell.toasts.rewindFailedRetry"));
       })
       .finally(() => {
         setRewindStatus(null);
@@ -4540,88 +5743,119 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // into an additional app error. Instead we POST /chat/external-retry which
   // truncates the failed user turn from allSessionMessages and persists the
   // truncation; the auto-resend below then becomes the new user turn.
-  const performRetryFromUserMessage = useCallback((userMsg: typeof messagesRef.current[number]) => {
-    const content = typeof userMsg.content === 'string' ? userMsg.content : '';
-    const attachments = userMsg.attachments;
-    const userMessageId = userMsg.id;
-    const retryEndpoint = isExternalRuntime ? '/chat/external-retry' : '/chat/rewind';
+  const performRetryFromUserMessage = useCallback(
+    (userMsg: (typeof messagesRef.current)[number]) => {
+      const content =
+        typeof userMsg.content === "string" ? userMsg.content : "";
+      const attachments = userMsg.attachments;
+      const userMessageId = userMsg.id;
+      const retryEndpoint = isExternalRuntime
+        ? "/chat/external-retry"
+        : "/chat/rewind";
 
-    // 快照：后端失败时回滚（与 handleRewindConfirm 一致）
-    const snapshot = messagesRef.current.slice();
+      // 快照：后端失败时回滚（与 handleRewindConfirm 一致）
+      const snapshot = messagesRef.current.slice();
 
-    // 1. Optimistic UI: truncate to before user message
-    pauseAutoScroll(500);
-    setMessages(prev => {
-      const idx = prev.findIndex(m => m.id === userMessageId);
-      return idx >= 0 ? prev.slice(0, idx) : prev;
-    });
-
-    // 2. Rewind + auto-resend
-    let resendFired = false;
-    setIsLoading(true);
-    setRewindStatus('rewinding');
-    apiPost(retryEndpoint, { userMessageId })
-      .then(res => {
-        const r = res as { success?: boolean; error?: string } | undefined;
-        if (r && !r.success) {
-          setMessages(snapshot);
-          toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
-          return;
-        }
-        // Rewind succeeded → auto-resend the original message
-        track('message_retry', {});
-        resendFired = true;
-        const imageAttachments = attachments?.filter(a =>
-          a.isImage || a.mimeType?.startsWith('image/')
-        ).map(a => ({
-          id: a.id,
-          file: new File([], a.name, { type: a.mimeType }),
-          preview: a.previewUrl || '',
-          source: a.relativePath || a.savedPath ? 'attachment_ref' as const : undefined,
-          name: a.name,
-          mimeType: a.mimeType,
-          sizeBytes: a.size,
-          relativePath: a.relativePath || a.savedPath,
-        }));
-        handleSendMessageRef.current(content, imageAttachments?.length ? imageAttachments : undefined);
-      })
-      .catch(err => {
-        console.error('[Chat] Retry failed:', err);
-        setMessages(snapshot);
-        toastRef.current.error(t('shell.toasts.retryFailed'));
-      })
-      .finally(() => {
-        setRewindStatus(null);
-        // Only clear loading on error — successful resend manages its own loading state
-        if (!resendFired) {
-          setIsLoading(false);
-        }
+      // 1. Optimistic UI: truncate to before user message
+      pauseAutoScroll(500);
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === userMessageId);
+        return idx >= 0 ? prev.slice(0, idx) : prev;
       });
-  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t]); // all stable — refs handle the rest
+
+      // 2. Rewind + auto-resend
+      let resendFired = false;
+      setIsLoading(true);
+      setRewindStatus("rewinding");
+      apiPost(retryEndpoint, { userMessageId })
+        .then((res) => {
+          const r = res as { success?: boolean; error?: string } | undefined;
+          if (r && !r.success) {
+            setMessages(snapshot);
+            toastRef.current.error(
+              t("shell.toasts.retryFailedWithError", {
+                error: r.error || t("shell.toasts.unknownError"),
+              }),
+            );
+            return;
+          }
+          // Rewind succeeded → auto-resend the original message
+          track("message_retry", {});
+          resendFired = true;
+          const imageAttachments = attachments
+            ?.filter((a) => a.isImage || a.mimeType?.startsWith("image/"))
+            .map((a) => ({
+              id: a.id,
+              file: new File([], a.name, { type: a.mimeType }),
+              preview: a.previewUrl || "",
+              source:
+                a.relativePath || a.savedPath
+                  ? ("attachment_ref" as const)
+                  : undefined,
+              name: a.name,
+              mimeType: a.mimeType,
+              sizeBytes: a.size,
+              relativePath: a.relativePath || a.savedPath,
+            }));
+          handleSendMessageRef.current(
+            content,
+            imageAttachments?.length ? imageAttachments : undefined,
+          );
+        })
+        .catch((err) => {
+          console.error("[Chat] Retry failed:", err);
+          setMessages(snapshot);
+          toastRef.current.error(t("shell.toasts.retryFailed"));
+        })
+        .finally(() => {
+          setRewindStatus(null);
+          // Only clear loading on error — successful resend manages its own loading state
+          if (!resendFired) {
+            setIsLoading(false);
+          }
+        });
+    },
+    [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t],
+  ); // all stable — refs handle the rest
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
-  const handleRetry = useCallback((assistantMessageId: string) => {
-    const msgs = messagesRef.current;
-    const aIdx = msgs.findIndex(m => m.id === assistantMessageId);
-    if (aIdx < 0) return;
+  const handleRetry = useCallback(
+    (assistantMessageId: string) => {
+      const msgs = messagesRef.current;
+      const aIdx = msgs.findIndex((m) => m.id === assistantMessageId);
+      if (aIdx < 0) return;
 
-    // Find the nearest real user message before this assistant message
-    // (skip synthetic task-notification messages which are injected as role='user')
-    let userMsg: typeof msgs[number] | null = null;
-    for (let i = aIdx - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user' && !msgs[i].id.startsWith('task-notification-')) { userMsg = msgs[i]; break; }
-    }
-    if (!userMsg) return;
-    performRetryFromUserMessage(userMsg);
-  }, [performRetryFromUserMessage]);
+      // Find the nearest real user message before this assistant message
+      // (skip synthetic task-notification messages which are injected as role='user')
+      let userMsg: (typeof msgs)[number] | null = null;
+      for (let i = aIdx - 1; i >= 0; i--) {
+        if (
+          msgs[i].role === "user" &&
+          !msgs[i].id.startsWith("task-notification-")
+        ) {
+          userMsg = msgs[i];
+          break;
+        }
+      }
+      if (!userMsg) return;
+      performRetryFromUserMessage(userMsg);
+    },
+    [performRetryFromUserMessage],
+  );
 
   // Banner-level retry: find the last real user message in the session and rewind+resend it.
   // Used by the agentError banner's 「重新发送」 button (issue #183).
   const handleRetryLastUserMessage = useCallback(() => {
     const msgs = messagesRef.current;
-    let userMsg: typeof msgs[number] | null = null;
+    let userMsg: (typeof msgs)[number] | null = null;
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user' && !msgs[i].id.startsWith('task-notification-')) { userMsg = msgs[i]; break; }
+      if (
+        msgs[i].role === "user" &&
+        !msgs[i].id.startsWith("task-notification-")
+      ) {
+        userMsg = msgs[i];
+        break;
+      }
     }
     if (!userMsg) return;
     setAgentError(null);
@@ -4638,49 +5872,73 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const messageId = forkTarget;
     setForkTarget(null);
 
-    track('session_fork', {});
-    apiPost('/sessions/fork', { messageId })
-      .then(async res => {
-        const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string } | undefined;
+    track("session_fork", {});
+    apiPost("/sessions/fork", { messageId })
+      .then(async (res) => {
+        const r = res as
+          | {
+              success?: boolean;
+              newSessionId?: string;
+              agentDir?: string;
+              title?: string;
+              error?: string;
+            }
+          | undefined;
         if (r?.success && r.newSessionId && r.agentDir) {
           if (!onForkSession) {
             await deleteUnopenedForkSession(r.newSessionId);
-            toastRef.current.error(t('shell.toasts.forkOpenFailed'));
+            toastRef.current.error(t("shell.toasts.forkOpenFailed"));
             return;
           }
-          const opened = await onForkSession(r.newSessionId, r.agentDir, r.title || 'Fork');
+          const opened = await onForkSession(
+            r.newSessionId,
+            r.agentDir,
+            r.title || "Fork",
+          );
           if (!opened) {
             await deleteUnopenedForkSession(r.newSessionId);
-            toastRef.current.error(t('shell.toasts.forkOpenFailed'));
+            toastRef.current.error(t("shell.toasts.forkOpenFailed"));
           }
         } else {
-          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error: r?.error || t('shell.toasts.unknownError') }));
+          toastRef.current.error(
+            t("shell.toasts.forkFailedWithError", {
+              error: r?.error || t("shell.toasts.unknownError"),
+            }),
+          );
         }
       })
-      .catch(err => {
-        console.error('[Chat] Fork failed:', err);
-        toastRef.current.error(t('shell.toasts.forkFailed'));
+      .catch((err) => {
+        console.error("[Chat] Fork failed:", err);
+        toastRef.current.error(t("shell.toasts.forkFailed"));
       });
   }, [forkTarget, apiPost, onForkSession, deleteUnopenedForkSession, t]);
 
   // Handler for selecting a session from history dropdown
-  const handleSelectSession = useCallback((id: string, historyEntrySource: HistoryEntrySource = 'chat_dropdown') => {
-    // PRD 0.2.19 cross-review fix (B3): explicitly stamp session_switch with the
-    // TARGET session id, not the source. Without this, Active Context auto-inject
-    // attaches the pre-switch session id (still the "source") because the switch
-    // hasn't completed yet, making the event semantics "from→to" backwards.
-    track('session_switch', { session_id: id, legacy_compat: true });
-    if (onSwitchSession) {
-      onSwitchSession(id, historyEntrySource);
-    } else {
-      if (cronStateRef.current.task?.status === 'running'
-        || (sessionGoalStateRef.current.goal && !isTerminalGoalStatus(sessionGoalStateRef.current.goal.status))) {
-        console.log('[Chat] Cannot switch session while a scheduled session surface is running (no onSwitchSession handler)');
-        return;
+  const handleSelectSession = useCallback(
+    (id: string, historyEntrySource: HistoryEntrySource = "chat_dropdown") => {
+      // PRD 0.2.19 cross-review fix (B3): explicitly stamp session_switch with the
+      // TARGET session id, not the source. Without this, Active Context auto-inject
+      // attaches the pre-switch session id (still the "source") because the switch
+      // hasn't completed yet, making the event semantics "from→to" backwards.
+      track("session_switch", { session_id: id, legacy_compat: true });
+      if (onSwitchSession) {
+        onSwitchSession(id, historyEntrySource);
+      } else {
+        if (
+          cronStateRef.current.task?.status === "running" ||
+          (sessionGoalStateRef.current.goal &&
+            !isTerminalGoalStatus(sessionGoalStateRef.current.goal.status))
+        ) {
+          console.log(
+            "[Chat] Cannot switch session while a scheduled session surface is running (no onSwitchSession handler)",
+          );
+          return;
+        }
+        void loadSession(id);
       }
-      void loadSession(id);
-    }
-  }, [onSwitchSession, loadSession]);
+    },
+    [onSwitchSession, loadSession],
+  );
 
   // Surface tags (PRD 0.2.14): pull agent status snapshot for the channel pill.
   // Single 5s polling instance per Chat tab — SessionHistoryDropdown maintains
@@ -4700,7 +5958,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const status = agentStatuses[currentAgent.id];
     if (!status) return out;
     for (const ch of status.channels) {
-      if (ch.status !== 'online') continue;
+      if (ch.status !== "online") continue;
       const base = {
         agentId: status.agentId,
         agentName: status.agentName,
@@ -4715,7 +5973,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       if (ch.activeSessions.length === 0) {
         out.push({
           ...base,
-          disabledReason: t('shell.handover.noActiveSessions'),
+          disabledReason: t("shell.handover.noActiveSessions"),
         });
         continue;
       }
@@ -4733,29 +5991,34 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     return out;
   }, [currentAgent, agentStatuses, t]);
 
-/**
+  /**
    * Migrate the current channel binding to a new session id, then reset the
    * tab onto the new session. Pulled out of `handleNewSession` so the
    * SessionMenuButton's "新会话（保留绑定）" submenu item can drive the
    * exact same flow without re-running the unbound fallback paths.
    */
-  const newSessionKeepingBinding = useCallback(async (
-    options: { allowPlainResetFallback?: boolean } = {},
-  ): Promise<boolean> => {
-    const allowPlainResetFallback = options.allowPlainResetFallback ?? true;
-    const boundChannel = surfaces.channel;
-    if (!boundChannel || !sessionId) return false;
-    const { migrateChannelToNewSession } = await import('@/api/sessionHandoverClient');
-    return await transitionChannelBoundSession({
-      sessionId,
-      boundChannel,
-      migrateChannelToNewSession,
-      adoptMigratedSession,
-      resetSession,
-      reportError: (message) => toastRef.current.error(message),
-      allowPlainResetFallback,
-    });
-  }, [surfaces.channel, sessionId, resetSession, adoptMigratedSession]);
+  const newSessionKeepingBinding = useCallback(
+    async (
+      options: { allowPlainResetFallback?: boolean } = {},
+    ): Promise<boolean> => {
+      const allowPlainResetFallback = options.allowPlainResetFallback ?? true;
+      const boundChannel = surfaces.channel;
+      if (!boundChannel || !sessionId) return false;
+      const { migrateChannelToNewSession } = await import(
+        "@/api/sessionHandoverClient"
+      );
+      return await transitionChannelBoundSession({
+        sessionId,
+        boundChannel,
+        migrateChannelToNewSession,
+        adoptMigratedSession,
+        resetSession,
+        reportError: (message) => toastRef.current.error(message),
+        allowPlainResetFallback,
+      });
+    },
+    [surfaces.channel, sessionId, resetSession, adoptMigratedSession],
+  );
 
   const showIntroductionOverlay = shouldShowIntroductionOverlay({
     content: introductionContent,
@@ -4787,289 +6050,359 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     }
 
     // Fallback: AI is idle, reset session within existing Sidecar
-    console.log('[Chat] Starting new session...');
+    console.log("[Chat] Starting new session...");
     const success = await resetSession();
     if (success) {
-      console.log('[Chat] New session started');
+      console.log("[Chat] New session started");
     } else {
-      console.error('[Chat] Failed to start new session');
+      console.error("[Chat] Failed to start new session");
     }
     return success;
-  }, [onNewSession, resetSession, surfaces.channel, sessionId, newSessionKeepingBinding]);
+  }, [
+    onNewSession,
+    resetSession,
+    surfaces.channel,
+    sessionId,
+    newSessionKeepingBinding,
+  ]);
 
-  const prepareCurrentSessionForDelete = useCallback(async (): Promise<boolean> => {
-    if (surfaces.channel && sessionId) {
-      return await newSessionKeepingBinding({ allowPlainResetFallback: false });
-    }
-    return await handleNewSession();
-  }, [handleNewSession, newSessionKeepingBinding, surfaces.channel, sessionId]);
+  const prepareCurrentSessionForDelete =
+    useCallback(async (): Promise<boolean> => {
+      if (surfaces.channel && sessionId) {
+        return await newSessionKeepingBinding({
+          allowPlainResetFallback: false,
+        });
+      }
+      return await handleNewSession();
+    }, [
+      handleNewSession,
+      newSessionKeepingBinding,
+      surfaces.channel,
+      sessionId,
+    ]);
 
   return (
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
-        className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? 'transition-[width] duration-300 ease-in-out' : ''}`}
-        style={{ width: splitPanelVisible ? `${splitRatio * 100}%` : '100%' }}
+        className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? "transition-[width] duration-300 ease-in-out" : ""}`}
+        style={{ width: splitPanelVisible ? `${splitRatio * 100}%` : "100%" }}
       >
-      <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${showWorkspace && !shouldUseWorkspaceOverlay ? 'border-r border-[var(--line-subtle)]' : ''}`}>
-        {/* Compact header - single row */}
-        <div className="relative z-10 flex h-12 flex-shrink-0 items-center justify-between bg-[var(--paper-elevated)] px-4 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
-          <div className="flex min-w-0 items-center gap-2">
-            {onBack && (
-              <button
-                type="button"
-                onClick={onBack}
-                className="flex-shrink-0 rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                title={t('shell.header.backToProjects')}
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            )}
-            {/* Project name */}
-            {agentDir && (
-              <span className="flex flex-shrink-0 items-center gap-1.5 text-sm font-medium text-[var(--ink)]">
-                <WorkspaceIcon icon={currentProject?.icon} size={16} />
-                {agentDir.split(/[/\\]/).filter(Boolean).pop()}
-              </span>
-            )}
-            {/* Session title — click to rename */}
-            {sessionTitle && sessionTitle !== 'New Tab' && sessionTitle !== 'New Chat' && (
-              <>
-                <span className="flex-shrink-0 text-[var(--ink-subtle)]">/</span>
-                <SessionTitleEditor
-                  ref={titleEditorRef}
-                  title={sessionTitle}
-                  onRename={(newTitle) => onRenameSession?.(newTitle)}
-                />
-              </>
-            )}
-            {/* Surface tags (channel/cron/floating-ball pill) — display-only since the menu owns actions */}
-            <SessionSurfaceTags
-              channel={surfaces.channel}
-              cron={surfaces.cron}
-              floatingBall={!!sessionId && resolveFloatingBallBoundSession(config) === sessionId}
-            />
-            {/* Session ⋯ menu — rename/favorite/export/stats/bot binding/delete */}
-            {sessionId && agentDir && (
-              <SessionMenuButton
-                sessionId={sessionId}
-                sessionTitle={sessionTitle ?? t('shell.currentChatFallback')}
-                workspacePath={agentDir}
-                boundChannel={surfaces.channel}
-                availableChannels={availableHandoverChannels}
-                schedulerProtected={sessionDeleteProtected}
-                favorite={!!sessionMeta?.favorite}
-                // The inline editor only mounts once a session has a real
-                // title (see the `sessionTitle && sessionTitle !== 'New Tab' …`
-                // gate above). Mirror that condition here so the menu's
-                // 重命名 row reflects whether the editor exists to open.
-                canRename={!!sessionTitle && sessionTitle !== 'New Tab' && sessionTitle !== 'New Chat'}
-                // `/context` is a builtin SDK slash command — external runtimes
-                // (Claude Code CLI / Codex / Gemini) don't share this surface,
-                // so we omit the callback and let the menu hide the row entirely.
-                onShowContext={isExternalRuntime ? undefined : () => { void handleSendMessageRef.current('/context'); }}
-                onOpenRename={() => titleEditorRef.current?.openRename()}
-                onFavoriteChanged={(_, updated) => { if (updated) setSessionMeta(updated); }}
-                prepareCurrentSessionForDelete={prepareCurrentSessionForDelete}
-              />
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {/* New Session button - before History */}
-            <button
-              type="button"
-              onClick={handleNewSession}
-              className="flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              title={t('shell.header.newChat')}
-            >
-              <Plus className="h-3.5 w-3.5 flex-shrink-0" />
-              {!splitFile && <span>{t('shell.header.newChatShort')}</span>}
-            </button>
-            {/* History button */}
-            <button
-              ref={historyBtnRef}
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setShowHistory((prev) => !prev)}
-              className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${showHistory
-                ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                }`}
-            >
-              <History className="h-3.5 w-3.5 flex-shrink-0" />
-              {!splitFile && <span>{t('shell.header.history')}</span>}
-            </button>
-            <SessionHistoryDropdown
-              agentDir={agentDir}
-              currentSessionId={sessionId}
-              onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
-              onOpenInNewTab={onOpenSessionInNewTab}
-              prepareCurrentSessionForDelete={prepareCurrentSessionForDelete}
-              isOpen={showHistory}
-              onClose={() => setShowHistory(false)}
-              triggerRef={historyBtnRef}
-              sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
-            />
-            {/* Dev-only buttons - controlled by config.showDevTools */}
-            {config.showDevTools && (
-              <>
+        <div
+          className={`flex min-w-0 flex-1 flex-col overflow-hidden ${showWorkspace && !shouldUseWorkspaceOverlay ? "border-r border-[var(--line-subtle)]" : ""}`}
+        >
+          {/* Compact header - single row */}
+          <div className="relative z-10 flex h-12 flex-shrink-0 items-center justify-between bg-[var(--paper-elevated)] px-4 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
+            <div className="flex min-w-0 items-center gap-2">
+              {onBack && (
                 <button
                   type="button"
-                  onClick={() => setShowLogs((prev) => !prev)}
-                  className={`rounded-lg px-2.5 py-1 text-sm font-medium transition-colors ${showLogs
-                    ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                    }`}
+                  onClick={onBack}
+                  className="flex-shrink-0 rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  title={t("shell.header.backToProjects")}
                 >
-                  Logs
+                  <ArrowLeft className="h-4 w-4" />
                 </button>
-                </>
-            )}
-            {/* Workspace toggle button - always visible when workspace is hidden */}
-            {!showWorkspace && (
+              )}
+              {/* Project name */}
+              {agentDir && (
+                <span className="flex flex-shrink-0 items-center gap-1.5 text-sm font-medium text-[var(--ink)]">
+                  <WorkspaceIcon icon={currentProject?.icon} size={16} />
+                  {agentDir.split(/[/\\]/).filter(Boolean).pop()}
+                </span>
+              )}
+              {/* Session title — click to rename */}
+              {sessionTitle &&
+                sessionTitle !== "New Tab" &&
+                sessionTitle !== "New Chat" && (
+                  <>
+                    <span className="flex-shrink-0 text-[var(--ink-subtle)]">
+                      /
+                    </span>
+                    <SessionTitleEditor
+                      ref={titleEditorRef}
+                      title={sessionTitle}
+                      onRename={(newTitle) => onRenameSession?.(newTitle)}
+                    />
+                  </>
+                )}
+              {/* Surface tags (channel/cron/floating-ball pill) — display-only since the menu owns actions */}
+              <SessionSurfaceTags
+                channel={surfaces.channel}
+                cron={surfaces.cron}
+                floatingBall={
+                  !!sessionId &&
+                  resolveFloatingBallBoundSession(config) === sessionId
+                }
+              />
+              {/* Session ⋯ menu — rename/favorite/export/stats/bot binding/delete */}
+              {sessionId && agentDir && (
+                <SessionMenuButton
+                  sessionId={sessionId}
+                  sessionTitle={sessionTitle ?? t("shell.currentChatFallback")}
+                  workspacePath={agentDir}
+                  boundChannel={surfaces.channel}
+                  availableChannels={availableHandoverChannels}
+                  schedulerProtected={sessionDeleteProtected}
+                  favorite={!!sessionMeta?.favorite}
+                  // The inline editor only mounts once a session has a real
+                  // title (see the `sessionTitle && sessionTitle !== 'New Tab' …`
+                  // gate above). Mirror that condition here so the menu's
+                  // 重命名 row reflects whether the editor exists to open.
+                  canRename={
+                    !!sessionTitle &&
+                    sessionTitle !== "New Tab" &&
+                    sessionTitle !== "New Chat"
+                  }
+                  // `/context` is a builtin SDK slash command — external runtimes
+                  // (Claude Code CLI / Codex / Gemini) don't share this surface,
+                  // so we omit the callback and let the menu hide the row entirely.
+                  onShowContext={
+                    isExternalRuntime
+                      ? undefined
+                      : () => {
+                          void handleSendMessageRef.current("/context");
+                        }
+                  }
+                  onOpenRename={() => titleEditorRef.current?.openRename()}
+                  onFavoriteChanged={(_, updated) => {
+                    if (updated) setSessionMeta(updated);
+                  }}
+                  prepareCurrentSessionForDelete={
+                    prepareCurrentSessionForDelete
+                  }
+                />
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              {/* New Session button - before History */}
               <button
                 type="button"
-                onClick={() => setShowWorkspace(true)}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                title={t('shell.header.expandWorkspace')}
+                onClick={handleNewSession}
+                className="flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                title={t("shell.header.newChat")}
               >
-                <PanelRightOpen className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5 flex-shrink-0" />
+                {!splitFile && <span>{t("shell.header.newChatShort")}</span>}
               </button>
-            )}
+              {/* History button */}
+              <button
+                ref={historyBtnRef}
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setShowHistory((prev) => !prev)}
+                className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${
+                  showHistory
+                    ? "bg-[var(--paper-inset)] text-[var(--ink)]"
+                    : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                }`}
+              >
+                <History className="h-3.5 w-3.5 flex-shrink-0" />
+                {!splitFile && <span>{t("shell.header.history")}</span>}
+              </button>
+              <SessionHistoryDropdown
+                agentDir={agentDir}
+                currentSessionId={sessionId}
+                onSelectSession={(id) =>
+                  handleSelectSession(id, "chat_dropdown")
+                }
+                onOpenInNewTab={onOpenSessionInNewTab}
+                prepareCurrentSessionForDelete={prepareCurrentSessionForDelete}
+                isOpen={showHistory}
+                onClose={() => setShowHistory(false)}
+                triggerRef={historyBtnRef}
+                sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
+              />
+              {/* Dev-only buttons - controlled by config.showDevTools */}
+              {config.showDevTools && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowLogs((prev) => !prev)}
+                    className={`rounded-lg px-2.5 py-1 text-sm font-medium transition-colors ${
+                      showLogs
+                        ? "bg-[var(--paper-inset)] text-[var(--ink)]"
+                        : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                    }`}
+                  >
+                    Logs
+                  </button>
+                </>
+              )}
+              {/* Workspace toggle button - always visible when workspace is hidden */}
+              {!showWorkspace && (
+                <button
+                  type="button"
+                  onClick={() => setShowWorkspace(true)}
+                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  title={t("shell.header.expandWorkspace")}
+                >
+                  <PanelRightOpen className="h-4 w-4" />
+                </button>
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* Content area with relative positioning for floating input */}
-        <div
-          ref={chatContentRef}
-          className="relative flex flex-1 flex-col overflow-hidden"
-          {...dragHandlers}
-        >
-          {/* In-page text finder — Cmd/Ctrl+F */}
-          {chatSearchOpen && (
-            <ChatSearchPanel controller={chatSearch} onClose={closeChatSearch} />
-          )}
-          {/* Drop zone overlay for file drag */}
-          <DropZoneOverlay
-            isVisible={isAnyDragActive && (!isTauriDragging || activeZoneId === 'chat-content' || activeZoneId === null)}
-            message={t('shell.dropZone.message')}
-            subtitle={t('shell.dropZone.subtitle')}
-          />
+          {/* Content area with relative positioning for floating input */}
+          <div
+            ref={chatContentRef}
+            className="relative flex flex-1 flex-col overflow-hidden"
+            {...dragHandlers}
+          >
+            {/* In-page text finder — Cmd/Ctrl+F */}
+            {chatSearchOpen && (
+              <ChatSearchPanel
+                controller={chatSearch}
+                onClose={closeChatSearch}
+              />
+            )}
+            {/* Drop zone overlay for file drag */}
+            <DropZoneOverlay
+              isVisible={
+                isAnyDragActive &&
+                (!isTauriDragging ||
+                  activeZoneId === "chat-content" ||
+                  activeZoneId === null)
+              }
+              message={t("shell.dropZone.message")}
+              subtitle={t("shell.dropZone.subtitle")}
+            />
 
-          {/* Unified boot overlay — same component App renders as the lazy-Chat
+            {/* Unified boot overlay — same component App renders as the lazy-Chat
               Suspense fallback, so the chunk-load → mount handoff is seamless: ONE
               continuous "AI 启动中" state from the Launcher→Chat flip through the
               sidecar boot. Pass `show` (not a conditional render) so the overlay
               self-manages a soft fade-out on dismiss, revealing the chat underneath. */}
-          <ChatBootOverlay show={showStartupOverlay} />
+            <ChatBootOverlay show={showStartupOverlay} />
 
-          {/* SDK 0.2.91+ terminal_reason banner. For error-severity reasons that
+            {/* SDK 0.2.91+ terminal_reason banner. For error-severity reasons that
               already surface via agentError (image_error / model_error), suppress
               this banner to avoid double-stacking ~80px of banner region. agentError
               carries the richer provider-level message; the reason banner's info
               would just duplicate it. notice/info-severity reasons (max_turns,
               prompt_too_long, etc.) still render alongside agentError since they
               carry actionable signals agentError doesn't. */}
-          <TerminalReasonBanner
-            reason={agentError ? null : lastTerminalReason}
-            onDismiss={() => setLastTerminalReason(null)}
-            onNewSession={handleNewSession}
-            onDiagnose={handleDiagnoseTerminalReason}
-          />
+            <TerminalReasonBanner
+              reason={agentError ? null : lastTerminalReason}
+              onDismiss={() => setLastTerminalReason(null)}
+              onNewSession={handleNewSession}
+              onDiagnose={handleDiagnoseTerminalReason}
+            />
 
-          {/* Issue #194 — external-runtime self-diagnostic banner. Only renders
+            {/* Issue #194 — external-runtime self-diagnostic banner. Only renders
               when the runtime reports something actionable (auth/app/MCP
               failures). Healthy runtimes don't draw attention here. */}
-          <RuntimeDiagnosticsBanner
-            diagnostics={runtimeDiagnostics}
-            onDiagnose={handleDiagnoseRuntimeDiagnostics}
-          />
+            <RuntimeDiagnosticsBanner
+              diagnostics={runtimeDiagnostics}
+              onDiagnose={handleDiagnoseRuntimeDiagnostics}
+            />
 
-          {agentError && (() => {
-            // Find the last real user message — drives both the oversized-image
-            // rewind hint and the banner-level "重新发送" button (issue #183).
-            const msgs = messagesRef.current;
-            let lastUserMsg: typeof msgs[number] | null = null;
-            for (let i = msgs.length - 1; i >= 0; i--) {
-              if (msgs[i].role === 'user' && !msgs[i].id.startsWith('task-notification-')) { lastUserMsg = msgs[i]; break; }
-            }
-            const canRetry = !!lastUserMsg && !isLoading;
-            return (
-            <div className="relative z-10 flex-shrink-0 border-b border-[var(--line)] bg-[var(--paper-inset)] px-4 py-2 text-xs text-[var(--ink)]">
-              <div className="mx-auto flex max-w-3xl items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-[var(--accent)]" />
-                <div className="flex-1">
-                  <span className="font-semibold text-[var(--ink)]">{t('shell.agentError.title')}</span>
-                  <span className="text-[var(--ink-muted)]">{agentError}</span>
-                  {/* Oversized image hint: detect API 400 about image dimensions and offer rewind.
+            {agentError &&
+              (() => {
+                // Find the last real user message — drives both the oversized-image
+                // rewind hint and the banner-level "重新发送" button (issue #183).
+                const msgs = messagesRef.current;
+                let lastUserMsg: (typeof msgs)[number] | null = null;
+                for (let i = msgs.length - 1; i >= 0; i--) {
+                  if (
+                    msgs[i].role === "user" &&
+                    !msgs[i].id.startsWith("task-notification-")
+                  ) {
+                    lastUserMsg = msgs[i];
+                    break;
+                  }
+                }
+                const canRetry = !!lastUserMsg && !isLoading;
+                return (
+                  <div className="relative z-10 flex-shrink-0 border-b border-[var(--line)] bg-[var(--paper-inset)] px-4 py-2 text-xs text-[var(--ink)]">
+                    <div className="mx-auto flex max-w-3xl items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-[var(--accent)]" />
+                      <div className="flex-1">
+                        <span className="font-semibold text-[var(--ink)]">
+                          {t("shell.agentError.title")}
+                        </span>
+                        <span className="text-[var(--ink-muted)]">
+                          {agentError}
+                        </span>
+                        {/* Oversized image hint: detect API 400 about image dimensions and offer rewind.
                       Pattern synced with backend (agent-session.ts shouldResetSessionAfterError).
                       Known API error: "...image dimensions exceed max allowed size: 8000 pixels" */}
-                  {lastUserMsg && /image.*exceed.*max allowed size/i.test(agentError) && (
-                    <div className="mt-1">
-                      <span className="text-[var(--ink-muted)]">{t('shell.agentError.imageTooLargePrefix')}</span>
-                      <button
-                        type="button"
-                        onClick={() => { setAgentError(null); handleRewind(lastUserMsg!.id); }}
-                        className="text-[var(--accent)] underline underline-offset-2 hover:text-[var(--accent-hover)]"
-                      >
-                        {t('shell.agentError.rewindAction')}
-                      </button>
+                        {lastUserMsg &&
+                          /image.*exceed.*max allowed size/i.test(
+                            agentError,
+                          ) && (
+                            <div className="mt-1">
+                              <span className="text-[var(--ink-muted)]">
+                                {t("shell.agentError.imageTooLargePrefix")}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAgentError(null);
+                                  handleRewind(lastUserMsg!.id);
+                                }}
+                                className="text-[var(--accent)] underline underline-offset-2 hover:text-[var(--accent-hover)]"
+                              >
+                                {t("shell.agentError.rewindAction")}
+                              </button>
+                            </div>
+                          )}
+                      </div>
+                      <div className="flex flex-shrink-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleDiagnoseAgentError(agentError)}
+                          className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
+                          title={t("shell.diagnostics.askHelper")}
+                          aria-label={t("shell.diagnostics.askHelper")}
+                        >
+                          <Bot className="h-3.5 w-3.5" />
+                        </button>
+                        {canRetry && (
+                          <button
+                            type="button"
+                            onClick={handleRetryLastUserMessage}
+                            className="flex items-center gap-1 rounded-md px-2 py-0.5 text-sm font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            {t("shell.agentError.resend")}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setAgentError(null)}
+                          className="flex-shrink-0 rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-muted)]"
+                          title={t("shell.common.close")}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
-                  )}
-                </div>
-                <div className="flex flex-shrink-0 items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => handleDiagnoseAgentError(agentError)}
-                    className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
-                    title={t('shell.diagnostics.askHelper')}
-                    aria-label={t('shell.diagnostics.askHelper')}
-                  >
-                    <Bot className="h-3.5 w-3.5" />
-                  </button>
-                  {canRetry && (
-                    <button
-                      type="button"
-                      onClick={handleRetryLastUserMessage}
-                      className="flex items-center gap-1 rounded-md px-2 py-0.5 text-sm font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
-                    >
-                      <RotateCcw className="h-3 w-3" />
-                      {t('shell.agentError.resend')}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setAgentError(null)}
-                    className="flex-shrink-0 rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink-muted)]"
-                    title={t('shell.common.close')}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            </div>
-            );
-          })()}
-          {/* Unified Logs Panel - fullscreen modal displaying logs */}
-          <UnifiedLogsPanel
-            sseLogs={unifiedLogs}
-            isVisible={showLogs}
-            onClose={() => setShowLogs(false)}
-            onClearAll={clearUnifiedLogs}
-          />
+                  </div>
+                );
+              })()}
+            {/* Unified Logs Panel - fullscreen modal displaying logs */}
+            <UnifiedLogsPanel
+              sseLogs={unifiedLogs}
+              isVisible={showLogs}
+              onClose={() => setShowLogs(false)}
+              onClearAll={clearUnifiedLogs}
+            />
 
-          {/* Query Navigator — floating right-side panel for quick session navigation */}
-          <QueryNavigator
-            historyMessages={historyMessages}
-            streamingMessage={streamingMessage}
-            scrollContainerRef={scrollerRef as React.RefObject<HTMLDivElement | null>}
-            pauseAutoScroll={pauseAutoScroll}
-            onNavigateToQuery={handleNavigateToQuery}
-          />
+            {/* Query Navigator — floating right-side panel for quick session navigation */}
+            <QueryNavigator
+              historyMessages={historyMessages}
+              streamingMessage={streamingMessage}
+              scrollContainerRef={
+                scrollerRef as React.RefObject<HTMLDivElement | null>
+              }
+              pauseAutoScroll={pauseAutoScroll}
+              onNavigateToQuery={handleNavigateToQuery}
+            />
 
-          {/* Message list with max-width */}
-          <BrowserPanelContext.Provider value={browserPanelCtx}>
-          {/*
+            {/* Message list with max-width */}
+            <BrowserPanelContext.Provider value={browserPanelCtx}>
+              {/*
             FileActionProvider.refreshTrigger intentionally excludes
             toolCompleteCount. toolCompleteCount bumps when AI file-modifying
             tools complete, and workspace filesystem changes also arrive via
@@ -5084,79 +6417,96 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             (workspaceRefreshTrigger — drag-drop, tab activate, save-config
             callbacks) still clear the cache.
           */}
-          <FileActionProvider
-            workspacePath={agentDir}
-            onInsertReference={handleInsertReference}
-            refreshTrigger={workspaceRefreshTrigger}
-            onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
-            onQuoteFile={handleQuoteFile}
-            onQuoteSelection={handleQuoteFileSelection}
-            onRevealInTree={handleRevealInTree}
-          >
-            <MessageList
-              historyMessages={historyMessages}
-              streamingMessage={streamingMessage}
-              firstItemIndex={chatScrollModel.firstItemIndex}
-              heightEstimateSeed={chatScrollModel.heightEstimateSeed}
-              layoutByMessageId={chatScrollModel.layoutByMessageId}
-              onLoadOlder={handleLoadOlderMessages}
-              isLoading={isLoading}
-              isSessionLoading={isSessionLoading}
-              sessionId={sessionId}
-              isActive={isActive}
-              virtuosoRef={virtuosoRef}
-              onScrollerRef={attachScroller}
-              followEnabledRef={followEnabledRef}
-              scrollToBottom={scrollToBottom}
-              handleAtBottomChange={handleAtBottomChange}
-              onRowLayoutChanged={onRowLayoutChanged}
-              pendingPermission={pendingPermission}
-              onPermissionDecision={handlePermissionDecision}
-              pendingAskUserQuestion={pendingAskUserQuestion}
-              onAskUserQuestionSubmit={handleAskUserQuestionSubmit}
-              onAskUserQuestionCancel={handleAskUserQuestionCancel}
-              pendingExitPlanMode={pendingExitPlanMode}
-              onExitPlanModeApprove={handleExitPlanModeApprove}
-              onExitPlanModeReject={handleExitPlanModeReject}
-              systemStatus={rewindStatus || systemStatus}
-              systemNotice={systemNotice}
-              onDismissSystemNotice={handleDismissSystemNotice}
-              isStreaming={isLoading || sessionState === 'running' || sessionState === 'starting'}
-              sessionState={sessionState}
-              onRewind={isExternalRuntime ? undefined : handleRewind}
-              onRetry={handleRetry}
-              onFork={isExternalRuntime ? undefined : handleFork}
-              bottomSpacerPx={inputOverlayHeight}
+              <FileActionProvider
+                workspacePath={agentDir}
+                onInsertReference={handleInsertReference}
+                refreshTrigger={workspaceRefreshTrigger}
+                onFilePreviewExternal={
+                  isSplitViewEnabled && !isNarrowLayout
+                    ? handleSplitFilePreview
+                    : undefined
+                }
+                onQuoteFile={handleQuoteFile}
+                onQuoteSelection={handleQuoteFileSelection}
+                onRevealInTree={handleRevealInTree}
+              >
+                <MessageList
+                  historyMessages={historyMessages}
+                  streamingMessage={streamingMessage}
+                  firstItemIndex={chatScrollModel.firstItemIndex}
+                  heightEstimateSeed={chatScrollModel.heightEstimateSeed}
+                  layoutByMessageId={chatScrollModel.layoutByMessageId}
+                  onLoadOlder={handleLoadOlderMessages}
+                  isLoading={isLoading}
+                  isSessionLoading={isSessionLoading}
+                  sessionId={sessionId}
+                  isActive={isActive}
+                  virtuosoRef={virtuosoRef}
+                  onScrollerRef={attachScroller}
+                  followEnabledRef={followEnabledRef}
+                  scrollToBottom={scrollToBottom}
+                  handleAtBottomChange={handleAtBottomChange}
+                  onRowLayoutChanged={onRowLayoutChanged}
+                  pendingPermission={pendingPermission}
+                  onPermissionDecision={handlePermissionDecision}
+                  pendingAskUserQuestion={pendingAskUserQuestion}
+                  onAskUserQuestionSubmit={handleAskUserQuestionSubmit}
+                  onAskUserQuestionCancel={handleAskUserQuestionCancel}
+                  pendingExitPlanMode={pendingExitPlanMode}
+                  onExitPlanModeApprove={handleExitPlanModeApprove}
+                  onExitPlanModeReject={handleExitPlanModeReject}
+                  systemStatus={rewindStatus || systemStatus}
+                  systemNotice={systemNotice}
+                  onDismissSystemNotice={handleDismissSystemNotice}
+                  isStreaming={
+                    isLoading ||
+                    sessionState === "running" ||
+                    sessionState === "starting"
+                  }
+                  sessionState={sessionState}
+                  onRewind={isExternalRuntime ? undefined : handleRewind}
+                  onRetry={handleRetry}
+                  onFork={isExternalRuntime ? undefined : handleFork}
+                  bottomSpacerPx={inputOverlayHeight}
+                />
+
+                {/* Introduction overlay — shown in empty sessions when INTRODUCTION.md exists */}
+                {showIntroductionOverlay && introductionContent && (
+                  <Suspense fallback={null}>
+                    <LazyIntroductionOverlay content={introductionContent} />
+                  </Suspense>
+                )}
+
+                {/* Inline cron task card — shown in message flow after creating a "新开对话" task */}
+                {cronCardTask && (
+                  <div className="mx-auto w-full max-w-3xl px-4 py-2">
+                    <CronTaskCard
+                      taskId={cronCardTask.id}
+                      name={
+                        cronCardTask.name || cronCardTask.prompt.slice(0, 20)
+                      }
+                      scheduleDesc={formatCronScheduleDescription(
+                        cronCardTask,
+                        tTask,
+                        taskLocale,
+                      )}
+                      onOpenDetail={(task) => {
+                        setCronDetailTask(task);
+                        setCronCardTask(null);
+                      }}
+                    />
+                  </div>
+                )}
+              </FileActionProvider>
+            </BrowserPanelContext.Provider>
+
+            {/* Text selection floating menu for quoting AI text */}
+            <SelectionCommentMenu
+              onQuote={handleQuoteSelection}
+              onElaborate={handleElaborateSelection}
             />
 
-            {/* Introduction overlay — shown in empty sessions when INTRODUCTION.md exists */}
-            {showIntroductionOverlay && introductionContent && (
-              <Suspense fallback={null}>
-                <LazyIntroductionOverlay content={introductionContent} />
-              </Suspense>
-            )}
-
-            {/* Inline cron task card — shown in message flow after creating a "新开对话" task */}
-            {cronCardTask && (
-              <div className="mx-auto w-full max-w-3xl px-4 py-2">
-                <CronTaskCard
-                  taskId={cronCardTask.id}
-                  name={cronCardTask.name || cronCardTask.prompt.slice(0, 20)}
-                  scheduleDesc={formatCronScheduleDescription(cronCardTask, tTask, taskLocale)}
-                  onOpenDetail={task => { setCronDetailTask(task); setCronCardTask(null); }}
-                />
-              </div>
-            )}
-          </FileActionProvider>
-          </BrowserPanelContext.Provider>
-
-          {/* Text selection floating menu for quoting AI text */}
-          <SelectionCommentMenu
-            onQuote={handleQuoteSelection}
-            onElaborate={handleElaborateSelection}
-          />
-
-          {/* Floating input with integrated cron task components.
+            {/* Floating input with integrated cron task components.
               PRD 0.2.17 — AgentStatusPanel (Todo + SubAgent 聚合) 现在作为 slot
               传给 SimpleChatInput，与 QueuedMessagesPanel 同居一个 flex 行，避
               免两者用各自的 absolute 定位在输入框上方同 Y 抢同一片右上角导致
@@ -5166,146 +6516,194 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               undefined，避免它们若未来 emit 出 `tool.name === 'Task'` 的归一化
               事件意外触发面板（PRD D15）。onJumpToTool 由 Chat 实现是因为
               具体滚动由 ChatScrollController 统一处理。 */}
-          <SimpleChatInput
-            ref={chatInputRef}
-            onSend={handleSendMessage}
-            onStop={handleStop}
-            active={isActive}
-            isLoading={isLoading || sessionState === 'running' || sessionState === 'starting'}
-            sessionState={sessionState}
-            systemStatus={systemStatus}
-            agentDir={agentDir}
-            workspacePath={agentDir}
-            sessionId={sessionId}
-            sdkSlashCommands={visibleSdkSlashCommands}
-            provider={currentProvider}
-            providers={providers}
-            providerAvailable={currentProviderAvailableForInput}
-            availableProviderIds={availableProviderIdsForInput}
-            providerUnavailableMessage={builtinSnapshotProviderSelectionIncomplete
-              ? t('shell.toasts.reselectModelFirst')
-              : undefined}
-            onProviderChange={handleProviderChange}
-            selectedModel={inputUsesExternalRuntimeControls ? runtimeModel : selectedModel}
-            onBuiltinModelSelect={inputUsesExternalRuntimeControls ? undefined : handleBuiltinModelSelect}
-            onModelChange={inputUsesExternalRuntimeControls ? handleRuntimeModelChange : handleModelChange}
-            reasoningEffort={reasoningEffort}
-            onReasoningEffortChange={handleReasoningEffortChange}
-            contextIndicator={contextIndicatorSlot}
-            permissionMode={inputChromePermissionMode}
-            onPermissionModeChange={handleInputPermissionModeChange}
-            apiKeys={apiKeys}
-            providerVerifyStatus={providerVerifyStatus}
-            inputRef={inputRef}
-            workspaceMcpEnabled={workspaceMcpEnabled}
-            globalMcpEnabled={globalMcpEnabled}
-            mcpServers={mcpServers}
-            onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
-            officialTools={OFFICIAL_TOOLS}
-            workspaceOfficialToolEnabled={workspaceOfficialToolEnabled}
-            globalOfficialToolEnabled={globalOfficialToolEnabled}
-            officialToolNeedsConfig={officialToolNeedsConfig}
-            onWorkspaceOfficialToolToggle={handleWorkspaceOfficialToolToggle}
-            // PRD 0.2.17 — Claude plugins. globallyVisiblePlugins is the
-            // Layer 1 (Settings 开关 ON) candidate list; workspaceEnabledPlugins
-            // is the Layer 2 actually-enabled subset for this workspace.
-            globallyVisiblePlugins={globallyVisiblePlugins}
-            workspaceEnabledPlugins={workspaceEnabledPlugins}
-            onWorkspacePluginToggle={handleWorkspacePluginToggle}
-            onRefreshProviders={refreshProviderData}
-            onOpenAgentSettings={handleOpenAgentSettings}
-            onWorkspaceRefresh={triggerWorkspaceRefresh}
-            // Cron task props - the non-blocking status bar is rendered inside SimpleChatInput.
-            cronModeEnabled={cronState.isEnabled}
-            cronConfig={cronState.config}
-            goalDraftActive={goalDraftConfig !== null}
-            cronTask={cronState.task}
-            sessionGoal={sessionGoalState.goal}
-            stoppedCronTask={stoppedCronTaskForInput}
-            cronIsExecuting={cronState.isExecuting}
-            cronExecutionNumber={cronState.executionNumber}
-            goalIsExecuting={sessionGoalState.isExecuting}
-            goalExecutionNumber={sessionGoalState.executionNumber}
-            composerConfigLockedReason={composerConfigLockedReason}
-            onCronButtonClick={handleOpenCronSettings}
-            onCronSettings={handleOpenCronSettings}
-            onCronCancel={handleCronDraftCancel}
-            onGoalDraftSettings={handleGoalDraftSettings}
-            onGoalDraftCancel={handleGoalDraftCancel}
-            onCronStop={handleCronStop}
-            onCronDismissStopped={handleCronDismissStopped}
-            onGoalEdit={handleGoalEditOpen}
-            onGoalResume={() => { void resumeGoal(); }}
-            onGoalCancel={handleGoalCancelOpen}
-            onGoalDismiss={handleGoalDismiss}
-            onSlashAction={handleSlashAction}
-            runtime={inputChromeRuntime}
-            runtimeDetections={showLegacyRuntimeSelector ? runtimeDetections : undefined}
-            onRuntimeChange={showLegacyRuntimeSelector ? handleRuntimeChange : undefined}
-            runtimeModels={inputUsesExternalRuntimeControls ? runtimeModels : undefined}
-            runtimePermissionModes={inputUsesExternalRuntimeControls ? runtimePermissionModes : undefined}
-            queuedMessages={queuedMessages}
-            onCancelQueued={handleCancelQueuedVoid}
-            onForceExecuteQueued={handleForceExecuteQueuedVoid}
-            agentStatusSlot={agentStatusSlot}
-            onOverlayHeightChange={handleInputOverlayHeightChange}
-          />
-        </div>
-      </div>
-
-      {/* Workspace panel — single instance, container style switches between side panel and overlay */}
-      {showWorkspace && (
-        <>
-          {/* Click-away layer for overlay mode */}
-          {shouldUseWorkspaceOverlay && (
-            <div
-              className="absolute inset-0 z-40"
-              onClick={handleCollapseWorkspace}
-            />
-          )}
-          <div
-            ref={directoryPanelContainerRef}
-            className={shouldUseWorkspaceOverlay
-              ? 'absolute bottom-0 right-0 top-0 z-50 flex w-[340px] max-w-[85%] flex-col border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg'
-              : 'flex w-1/4 flex-col'
-            }
-            style={shouldUseWorkspaceOverlay ? undefined : { minWidth: 'var(--sidebar-min-width)' }}
-          >
-            <DirectoryPanel
-              ref={directoryPanelRef}
+            <SimpleChatInput
+              ref={chatInputRef}
+              onSend={handleSendMessage}
+              onStop={handleStop}
+              active={isActive}
+              isLoading={
+                isLoading ||
+                sessionState === "running" ||
+                sessionState === "starting"
+              }
+              sessionState={sessionState}
+              systemStatus={systemStatus}
               agentDir={agentDir}
-              projectIcon={currentProject?.icon}
-              projectDisplayName={currentProject?.displayName}
+              workspacePath={agentDir}
+              sessionId={sessionId}
+              sdkSlashCommands={visibleSdkSlashCommands}
               provider={currentProvider}
               providers={providers}
+              providerAvailable={currentProviderAvailableForInput}
+              availableProviderIds={availableProviderIdsForInput}
+              providerUnavailableMessage={
+                builtinSnapshotProviderSelectionIncomplete
+                  ? t("shell.toasts.reselectModelFirst")
+                  : undefined
+              }
               onProviderChange={handleProviderChange}
-              onCollapse={handleCollapseWorkspace}
-              onOpenConfig={handleOpenAgentSettings}
-              refreshTrigger={toolCompleteCount + workspaceRefreshTrigger}
-              persistedTreeStateRef={workspaceTreeStateRef}
-              isTauriDragActive={isTauriDragging && activeZoneId === 'directory-panel'}
-              onInsertReference={handleInsertReference}
-              onQuoteFile={handleQuoteFile}
-              onQuoteSelection={handleQuoteFileSelection}
-              externalRevealRequest={treeExternalReveal}
-              onExternalRevealHandled={handleExternalRevealHandled}
-              enabledAgents={enabledAgents}
-              enabledSkills={enabledSkills}
-              enabledCommands={enabledCommands}
-              globalSkillFolderNames={globalSkillFolderNames}
-              onInsertSlashCommand={handleInsertSlashCommand}
-              onOpenSettings={handleOpenSettings}
-              onSyncSkillToGlobal={handleSyncSkillToGlobal}
-              onRefreshAll={triggerWorkspaceRefresh}
-              onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
-              onOpenTerminal={isSplitViewEnabled && !isNarrowLayout ? handleOpenTerminal : undefined}
-              terminalAlive={terminalAlive}
-              onOpenBrowser={isSplitViewEnabled && !isNarrowLayout ? handleOpenBrowser : undefined}
+              selectedModel={
+                inputUsesExternalRuntimeControls ? runtimeModel : selectedModel
+              }
+              onBuiltinModelSelect={
+                inputUsesExternalRuntimeControls
+                  ? undefined
+                  : handleBuiltinModelSelect
+              }
+              onModelChange={
+                inputUsesExternalRuntimeControls
+                  ? handleRuntimeModelChange
+                  : handleModelChange
+              }
+              reasoningEffort={reasoningEffort}
+              onReasoningEffortChange={handleReasoningEffortChange}
+              contextIndicator={contextIndicatorSlot}
+              permissionMode={inputChromePermissionMode}
+              onPermissionModeChange={handleInputPermissionModeChange}
+              apiKeys={apiKeys}
+              providerVerifyStatus={providerVerifyStatus}
+              inputRef={inputRef}
+              workspaceMcpEnabled={workspaceMcpEnabled}
+              globalMcpEnabled={globalMcpEnabled}
+              mcpServers={mcpServers}
+              onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
+              officialTools={OFFICIAL_TOOLS}
+              workspaceOfficialToolEnabled={workspaceOfficialToolEnabled}
+              globalOfficialToolEnabled={globalOfficialToolEnabled}
+              officialToolNeedsConfig={officialToolNeedsConfig}
+              onWorkspaceOfficialToolToggle={handleWorkspaceOfficialToolToggle}
+              // PRD 0.2.17 — Claude plugins. globallyVisiblePlugins is the
+              // Layer 1 (Settings 开关 ON) candidate list; workspaceEnabledPlugins
+              // is the Layer 2 actually-enabled subset for this workspace.
+              globallyVisiblePlugins={globallyVisiblePlugins}
+              workspaceEnabledPlugins={workspaceEnabledPlugins}
+              onWorkspacePluginToggle={handleWorkspacePluginToggle}
+              onRefreshProviders={refreshProviderData}
+              onOpenAgentSettings={handleOpenAgentSettings}
+              onWorkspaceRefresh={triggerWorkspaceRefresh}
+              // Cron task props - the non-blocking status bar is rendered inside SimpleChatInput.
+              cronModeEnabled={cronState.isEnabled}
+              cronConfig={cronState.config}
+              goalDraftActive={goalDraftConfig !== null}
+              cronTask={cronState.task}
+              sessionGoal={sessionGoalState.goal}
+              stoppedCronTask={stoppedCronTaskForInput}
+              cronIsExecuting={cronState.isExecuting}
+              cronExecutionNumber={cronState.executionNumber}
+              goalIsExecuting={sessionGoalState.isExecuting}
+              goalExecutionNumber={sessionGoalState.executionNumber}
+              composerConfigLockedReason={composerConfigLockedReason}
+              onCronButtonClick={handleOpenCronSettings}
+              onCronSettings={handleOpenCronSettings}
+              onCronCancel={handleCronDraftCancel}
+              onGoalDraftSettings={handleGoalDraftSettings}
+              onGoalDraftCancel={handleGoalDraftCancel}
+              onCronStop={handleCronStop}
+              onCronDismissStopped={handleCronDismissStopped}
+              onGoalEdit={handleGoalEditOpen}
+              onGoalResume={() => {
+                void resumeGoal();
+              }}
+              onGoalCancel={handleGoalCancelOpen}
+              onGoalDismiss={handleGoalDismiss}
+              onSlashAction={handleSlashAction}
+              runtime={inputChromeRuntime}
+              runtimeDetections={
+                showLegacyRuntimeSelector ? runtimeDetections : undefined
+              }
+              onRuntimeChange={
+                showLegacyRuntimeSelector ? handleRuntimeChange : undefined
+              }
+              runtimeModels={
+                inputUsesExternalRuntimeControls ? runtimeModels : undefined
+              }
+              runtimePermissionModes={
+                inputUsesExternalRuntimeControls
+                  ? runtimePermissionModes
+                  : undefined
+              }
+              queuedMessages={queuedMessages}
+              onCancelQueued={handleCancelQueuedVoid}
+              onForceExecuteQueued={handleForceExecuteQueuedVoid}
+              agentStatusSlot={agentStatusSlot}
+              onOverlayHeightChange={handleInputOverlayHeightChange}
             />
           </div>
-        </>
-      )}
-      </div>{/* End left-side wrapper */}
+        </div>
+
+        {/* Workspace panel — single instance, container style switches between side panel and overlay */}
+        {showWorkspace && (
+          <>
+            {/* Click-away layer for overlay mode */}
+            {shouldUseWorkspaceOverlay && (
+              <div
+                className="absolute inset-0 z-40"
+                onClick={handleCollapseWorkspace}
+              />
+            )}
+            <div
+              ref={directoryPanelContainerRef}
+              className={
+                shouldUseWorkspaceOverlay
+                  ? "absolute bottom-0 right-0 top-0 z-50 flex w-[340px] max-w-[85%] flex-col border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg"
+                  : "flex w-1/4 flex-col"
+              }
+              style={
+                shouldUseWorkspaceOverlay
+                  ? undefined
+                  : { minWidth: "var(--sidebar-min-width)" }
+              }
+            >
+              <DirectoryPanel
+                ref={directoryPanelRef}
+                agentDir={agentDir}
+                projectIcon={currentProject?.icon}
+                projectDisplayName={currentProject?.displayName}
+                provider={currentProvider}
+                providers={providers}
+                onProviderChange={handleProviderChange}
+                onCollapse={handleCollapseWorkspace}
+                onOpenConfig={handleOpenAgentSettings}
+                refreshTrigger={toolCompleteCount + workspaceRefreshTrigger}
+                persistedTreeStateRef={workspaceTreeStateRef}
+                isTauriDragActive={
+                  isTauriDragging && activeZoneId === "directory-panel"
+                }
+                onInsertReference={handleInsertReference}
+                onQuoteFile={handleQuoteFile}
+                onQuoteSelection={handleQuoteFileSelection}
+                externalRevealRequest={treeExternalReveal}
+                onExternalRevealHandled={handleExternalRevealHandled}
+                enabledAgents={enabledAgents}
+                enabledSkills={enabledSkills}
+                enabledCommands={enabledCommands}
+                globalSkillFolderNames={globalSkillFolderNames}
+                onInsertSlashCommand={handleInsertSlashCommand}
+                onOpenSettings={handleOpenSettings}
+                onSyncSkillToGlobal={handleSyncSkillToGlobal}
+                onRefreshAll={triggerWorkspaceRefresh}
+                onFilePreviewExternal={
+                  isSplitViewEnabled && !isNarrowLayout
+                    ? handleSplitFilePreview
+                    : undefined
+                }
+                onOpenTerminal={
+                  isSplitViewEnabled && !isNarrowLayout
+                    ? handleOpenTerminal
+                    : undefined
+                }
+                terminalAlive={terminalAlive}
+                onOpenBrowser={
+                  isSplitViewEnabled && !isNarrowLayout
+                    ? handleOpenBrowser
+                    : undefined
+                }
+              />
+            </div>
+          </>
+        )}
+      </div>
+      {/* End left-side wrapper */}
 
       {/* Split view: draggable divider + right panel.
           Rendered when panel is visible OR terminal is alive (to preserve xterm.js state).
@@ -5314,17 +6712,23 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         <>
           {/* Draggable divider — hidden when panel is not visible */}
           <div
-            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible ? 'hidden' : ''}`}
+            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible ? "hidden" : ""}`}
             onMouseDown={handleSplitDividerMouseDown}
           >
             <div className="h-8 w-0.5 rounded-full bg-[var(--ink-subtle)]" />
           </div>
           {/* Right panel — single flex-1 container for tab bar + file + terminal.
               Uses `hidden` when panel is not visible but terminal is alive in background. */}
-          <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? 'hidden' : ''}`}>
+          <div
+            className={`flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? "hidden" : ""}`}
+          >
             {/* Tab switcher — only when 2+ views are active */}
             {(() => {
-              const activeViews = [splitFile, terminalPinned && terminalAlive, browserUrl].filter(Boolean).length;
+              const activeViews = [
+                splitFile,
+                terminalPinned && terminalAlive,
+                browserUrl,
+              ].filter(Boolean).length;
               return activeViews >= 2;
             })() && (
               <div className="flex h-9 flex-shrink-0 items-center gap-0.5 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-2">
@@ -5332,28 +6736,33 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                 {splitFile && (
                   <button
                     type="button"
-                    onClick={() => setSplitActiveView('file')}
+                    onClick={() => setSplitActiveView("file")}
                     className={`group relative flex items-center gap-1 rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
-                      splitActiveView === 'file'
-                        ? 'text-[var(--ink)]'
-                        : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                      splitActiveView === "file"
+                        ? "text-[var(--ink)]"
+                        : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
                     }`}
                   >
-                    <span className="max-w-[120px] truncate">{splitFile.name}</span>
+                    <span className="max-w-[120px] truncate">
+                      {splitFile.name}
+                    </span>
                     <span
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         setSplitFile(null);
-                        if (browserUrl) setSplitActiveView('browser');
-                        else if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
+                        if (browserUrl) setSplitActiveView("browser");
+                        else if (terminalPinned && terminalAlive)
+                          setSplitActiveView("terminal");
                       }}
                       className="ml-0.5 flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--paper-inset)] group-hover:opacity-100"
-                      title={t('shell.split.closeFile')}
+                      title={t("shell.split.closeFile")}
                     >
-                      <span className="text-sm leading-none text-[var(--ink-muted)]">×</span>
+                      <span className="text-sm leading-none text-[var(--ink-muted)]">
+                        ×
+                      </span>
                     </span>
-                    {splitActiveView === 'file' && (
+                    {splitActiveView === "file" && (
                       <div className="absolute inset-x-1 -bottom-[5px] h-[2px] rounded-full bg-[var(--accent-warm)]" />
                     )}
                   </button>
@@ -5362,29 +6771,31 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                 {terminalPinned && terminalAlive && (
                   <button
                     type="button"
-                    onClick={() => setSplitActiveView('terminal')}
+                    onClick={() => setSplitActiveView("terminal")}
                     className={`group relative flex items-center gap-1 rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
-                      splitActiveView === 'terminal'
-                        ? 'text-[var(--ink)]'
-                        : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                      splitActiveView === "terminal"
+                        ? "text-[var(--ink)]"
+                        : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
                     }`}
                   >
                     <TerminalSquare className="h-3 w-3" />
-                    {t('shell.split.terminal')}
+                    {t("shell.split.terminal")}
                     <span
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         setTerminalPinned(false);
-                        if (browserUrl) setSplitActiveView('browser');
-                        else if (splitFile) setSplitActiveView('file');
+                        if (browserUrl) setSplitActiveView("browser");
+                        else if (splitFile) setSplitActiveView("file");
                       }}
                       className="ml-0.5 flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--paper-inset)] group-hover:opacity-100"
-                      title={t('shell.split.hideTerminal')}
+                      title={t("shell.split.hideTerminal")}
                     >
-                      <span className="text-sm leading-none text-[var(--ink-muted)]">×</span>
+                      <span className="text-sm leading-none text-[var(--ink-muted)]">
+                        ×
+                      </span>
                     </span>
-                    {splitActiveView === 'terminal' && (
+                    {splitActiveView === "terminal" && (
                       <div className="absolute inset-x-1 -bottom-[5px] h-[2px] rounded-full bg-[var(--accent-warm)]" />
                     )}
                   </button>
@@ -5393,11 +6804,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                 {browserUrl && (
                   <button
                     type="button"
-                    onClick={() => setSplitActiveView('browser')}
+                    onClick={() => setSplitActiveView("browser")}
                     className={`group relative flex items-center gap-1 rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
-                      splitActiveView === 'browser'
-                        ? 'text-[var(--ink)]'
-                        : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                      splitActiveView === "browser"
+                        ? "text-[var(--ink)]"
+                        : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
                     }`}
                   >
                     <Globe className="h-3 w-3" />
@@ -5410,9 +6821,12 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                             // BROWSER_BLANK_URL even after the user navigates.
                             const liveUrl = browserCurrentUrl || browserUrl;
                             try {
-                              return new URL(liveUrl).hostname || t('shell.split.newTab');
+                              return (
+                                new URL(liveUrl).hostname ||
+                                t("shell.split.newTab")
+                              );
                             } catch {
-                              return t('shell.split.browser');
+                              return t("shell.split.browser");
                             }
                           })()}
                     </span>
@@ -5423,16 +6837,19 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                         setBrowserUrl(null);
                         setBrowserAlive(false);
                         setBrowserSourceFile(null);
-                        setBrowserCurrentUrl('');
-                        if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-                        else if (splitFile) setSplitActiveView('file');
+                        setBrowserCurrentUrl("");
+                        if (terminalPinned && terminalAlive)
+                          setSplitActiveView("terminal");
+                        else if (splitFile) setSplitActiveView("file");
                       }}
                       className="ml-0.5 flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--paper-inset)] group-hover:opacity-100"
-                      title={t('shell.split.closeBrowser')}
+                      title={t("shell.split.closeBrowser")}
                     >
-                      <span className="text-sm leading-none text-[var(--ink-muted)]">×</span>
+                      <span className="text-sm leading-none text-[var(--ink-muted)]">
+                        ×
+                      </span>
                     </span>
-                    {splitActiveView === 'browser' && (
+                    {splitActiveView === "browser" && (
                       <div className="absolute inset-x-1 -bottom-[5px] h-[2px] rounded-full bg-[var(--accent-warm)]" />
                     )}
                   </button>
@@ -5442,8 +6859,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
             {/* File preview view */}
             {splitFile && (
-              <div className={`flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--paper-elevated)] ${splitActiveView !== 'file' ? 'hidden' : ''}`}>
-                <Suspense fallback={<div className="flex h-full items-center justify-center text-[var(--ink-muted)]"><Loader2 className="h-5 w-5 animate-spin" /></div>}>
+              <div
+                className={`flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--paper-elevated)] ${splitActiveView !== "file" ? "hidden" : ""}`}
+              >
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center text-[var(--ink-muted)]">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    </div>
+                  }
+                >
                   <FilePreviewModal
                     name={splitFile.name}
                     content={splitFile.content}
@@ -5451,33 +6876,60 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                     path={splitFile.path}
                     localPath={splitFile.localPath}
                     richDocKind={splitFile.richDocKind}
-                    workspacePath={splitFile.sourceScope === 'local' ? null : agentDir}
+                    workspacePath={
+                      splitFile.sourceScope === "local" ? null : agentDir
+                    }
                     initialEditMode={splitFile.initialEditMode}
                     initialLineNumber={splitFile.initialLineNumber}
                     focusTarget={splitFile.focusTarget}
                     externalRefreshSignal={toolCompleteCount}
                     onExternalContentUpdated={(updated) => {
-                      setSplitFile(prev => prev && prev.path === updated.path
-                        ? { ...prev, name: updated.name, content: updated.content, size: updated.size, initialEditMode: undefined }
-                        : prev);
+                      setSplitFile((prev) =>
+                        prev && prev.path === updated.path
+                          ? {
+                              ...prev,
+                              name: updated.name,
+                              content: updated.content,
+                              size: updated.size,
+                              initialEditMode: undefined,
+                            }
+                          : prev,
+                      );
                     }}
                     onClose={() => {
                       setSplitFile(null);
-                      if (browserUrl) setSplitActiveView('browser');
-                      else if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
+                      if (browserUrl) setSplitActiveView("browser");
+                      else if (terminalPinned && terminalAlive)
+                        setSplitActiveView("terminal");
                     }}
-                    onSaved={() => setWorkspaceRefreshTrigger(prev => prev + 1)}
+                    onSaved={() =>
+                      setWorkspaceRefreshTrigger((prev) => prev + 1)
+                    }
                     onRenamed={(newPath, newName) => {
-                      setSplitFile(prev => prev ? { ...prev, path: newPath, name: newName, initialEditMode: undefined } : prev);
-                      setWorkspaceRefreshTrigger(prev => prev + 1);
+                      setSplitFile((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              path: newPath,
+                              name: newName,
+                              initialEditMode: undefined,
+                            }
+                          : prev,
+                      );
+                      setWorkspaceRefreshTrigger((prev) => prev + 1);
                     }}
                     embedded
                     onFullscreen={(currentContent) => {
-                      const file = currentContent !== undefined ? { ...splitFile!, content: currentContent } : splitFile!;
+                      const file =
+                        currentContent !== undefined
+                          ? { ...splitFile!, content: currentContent }
+                          : splitFile!;
                       setSplitFile(null);
                       setFullscreenPreviewFile(file);
                     }}
-                    onSwitchToBrowser={browserUrl ? handleEditorSwitchToBrowser : undefined}
+                    onSwitchToBrowser={
+                      browserUrl ? handleEditorSwitchToBrowser : undefined
+                    }
                     onQuoteFile={handleQuoteFile}
                     onRevealInTree={handleRevealInTree}
                     onQuoteSelection={handleQuoteFileSelection}
@@ -5489,24 +6941,35 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             {/* Terminal — INSIDE the right panel div (same flex column).
                 Stays mounted while alive, uses `hidden` when not the active view. */}
             {terminalMounted && (
-              <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${splitActiveView !== 'terminal' ? 'hidden' : ''}`}>
+              <div
+                className={`flex min-w-0 flex-1 flex-col overflow-hidden ${splitActiveView !== "terminal" ? "hidden" : ""}`}
+              >
                 {/* Terminal header — only when tab switcher is NOT showing (single view) */}
-                {[splitFile, terminalPinned && terminalAlive, browserUrl].filter(Boolean).length < 2 && (
+                {[
+                  splitFile,
+                  terminalPinned && terminalAlive,
+                  browserUrl,
+                ].filter(Boolean).length < 2 && (
                   <div className="flex h-9 flex-shrink-0 items-center justify-between bg-[var(--paper)] px-3">
                     <div className="flex items-center gap-1.5">
                       <TerminalSquare className="h-3.5 w-3.5 text-[var(--ink)]" />
-                      <span className="text-sm font-medium text-[var(--ink)]">{t('shell.split.terminal')}</span>
+                      <span className="text-sm font-medium text-[var(--ink)]">
+                        {t("shell.split.terminal")}
+                      </span>
                       <span className="text-xs text-[var(--ink-muted)]">
-                        {agentDir ? `~/${agentDir.split(/[/\\]/).pop()}` : ''}
+                        {agentDir ? `~/${agentDir.split(/[/\\]/).pop()}` : ""}
                       </span>
                     </div>
-                    <Tip label={t('shell.split.hideTerminal')} position="bottom">
+                    <Tip
+                      label={t("shell.split.hideTerminal")}
+                      position="bottom"
+                    >
                       <button
                         type="button"
                         onClick={() => {
                           setTerminalPinned(false);
-                          if (browserUrl) setSplitActiveView('browser');
-                          else if (splitFile) setSplitActiveView('file');
+                          if (browserUrl) setSplitActiveView("browser");
+                          else if (splitFile) setSplitActiveView("file");
                         }}
                         className="flex h-5 w-5 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                       >
@@ -5515,12 +6978,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                     </Tip>
                   </div>
                 )}
-                <Suspense fallback={<div className="flex h-full items-center justify-center bg-[var(--paper)]"><Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" /></div>}>
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center bg-[var(--paper)]">
+                      <Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
+                    </div>
+                  }
+                >
                   <LazyTerminalPanel
                     workspacePath={agentDir}
                     terminalId={terminalId}
                     sessionId={sessionId}
-                    isVisible={splitPanelVisible && splitActiveView === 'terminal'}
+                    isVisible={
+                      splitPanelVisible && splitActiveView === "terminal"
+                    }
                     onTerminalCreated={(id) => {
                       setTerminalId(id);
                       setTerminalAlive(true);
@@ -5531,9 +7002,13 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                       setTerminalPinned(false);
                       setTerminalId(null);
                       if (deadId) {
-                        import('@tauri-apps/api/core').then(({ invoke: inv }) => {
-                          inv('cmd_terminal_close', { terminalId: deadId }).catch(() => {});
-                        });
+                        import("@tauri-apps/api/core").then(
+                          ({ invoke: inv }) => {
+                            inv("cmd_terminal_close", {
+                              terminalId: deadId,
+                            }).catch(() => {});
+                          },
+                        );
                       }
                     }}
                   />
@@ -5543,12 +7018,24 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
             {/* Browser — embedded Tauri child Webview */}
             {browserUrl && (
-              <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${splitActiveView !== 'browser' ? 'hidden' : ''}`}>
-                <Suspense fallback={<div className="flex h-full items-center justify-center bg-[var(--paper)]"><Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" /></div>}>
+              <div
+                className={`flex min-w-0 flex-1 flex-col overflow-hidden ${splitActiveView !== "browser" ? "hidden" : ""}`}
+              >
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center bg-[var(--paper)]">
+                      <Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]" />
+                    </div>
+                  }
+                >
                   <LazyBrowserPanel
                     tabId={tabId}
                     url={browserUrl}
-                    isVisible={isActive && splitPanelVisible && splitActiveView === 'browser'}
+                    isVisible={
+                      isActive &&
+                      splitPanelVisible &&
+                      splitActiveView === "browser"
+                    }
                     isDraggingSplit={isDraggingSplit}
                     isSplitTransitioning={isSplitWidthTransitioning}
                     browserAlive={browserAlive}
@@ -5577,21 +7064,40 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             path={fullscreenPreviewFile.path}
             localPath={fullscreenPreviewFile.localPath}
             richDocKind={fullscreenPreviewFile.richDocKind}
-            workspacePath={fullscreenPreviewFile.sourceScope === 'local' ? null : agentDir}
+            workspacePath={
+              fullscreenPreviewFile.sourceScope === "local" ? null : agentDir
+            }
             initialEditMode={fullscreenPreviewFile.initialEditMode}
             initialLineNumber={fullscreenPreviewFile.initialLineNumber}
             focusTarget={fullscreenPreviewFile.focusTarget}
             externalRefreshSignal={toolCompleteCount}
             onExternalContentUpdated={(updated) => {
-              setFullscreenPreviewFile(prev => prev && prev.path === updated.path
-                ? { ...prev, name: updated.name, content: updated.content, size: updated.size, initialEditMode: undefined }
-                : prev);
+              setFullscreenPreviewFile((prev) =>
+                prev && prev.path === updated.path
+                  ? {
+                      ...prev,
+                      name: updated.name,
+                      content: updated.content,
+                      size: updated.size,
+                      initialEditMode: undefined,
+                    }
+                  : prev,
+              );
             }}
             onClose={() => setFullscreenPreviewFile(null)}
-            onSaved={() => setWorkspaceRefreshTrigger(prev => prev + 1)}
+            onSaved={() => setWorkspaceRefreshTrigger((prev) => prev + 1)}
             onRenamed={(newPath, newName) => {
-              setFullscreenPreviewFile(prev => prev ? { ...prev, path: newPath, name: newName, initialEditMode: undefined } : prev);
-              setWorkspaceRefreshTrigger(prev => prev + 1);
+              setFullscreenPreviewFile((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      path: newPath,
+                      name: newName,
+                      initialEditMode: undefined,
+                    }
+                  : prev,
+              );
+              setWorkspaceRefreshTrigger((prev) => prev + 1);
             }}
             onQuoteFile={handleQuoteFile}
             onRevealInTree={handleRevealInTree}
@@ -5609,8 +7115,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             setWorkspaceConfigInitialTab(undefined);
             setWorkspaceConfigInitialSelect(undefined);
             // Refresh capabilities data in case settings were changed
-            setWorkspaceRefreshTrigger(prev => prev + 1);
-            setIntroductionRefreshTrigger(prev => prev + 1);
+            setWorkspaceRefreshTrigger((prev) => prev + 1);
+            setIntroductionRefreshTrigger((prev) => prev + 1);
           }}
           refreshKey={workspaceRefreshKey}
           initialTab={workspaceConfigInitialTab}
@@ -5622,45 +7128,55 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       {/* Cross-Runtime Session Confirm Dialog */}
       {pendingCrossRuntimeMessage && (
         <ConfirmDialog
-          title={t('shell.dialogs.crossRuntime.title')}
-          message={t('shell.dialogs.crossRuntime.message', {
-            sessionRuntime: getRuntimeDisplayLabel(sessionRuntime as RuntimeType | undefined),
+          title={t("shell.dialogs.crossRuntime.title")}
+          message={t("shell.dialogs.crossRuntime.message", {
+            sessionRuntime: getRuntimeDisplayLabel(
+              sessionRuntime as RuntimeType | undefined,
+            ),
             currentRuntime: getRuntimeDisplayLabel(currentRuntime),
           })}
-          confirmText={t('shell.dialogs.crossRuntime.confirm')}
-          cancelText={t('shell.common.cancel')}
+          confirmText={t("shell.dialogs.crossRuntime.confirm")}
+          cancelText={t("shell.common.cancel")}
           onConfirm={confirmCrossRuntimeSend}
           onCancel={() => setPendingCrossRuntimeMessage(null)}
         />
       )}
 
       {/* Runtime Switch Confirm Dialog (v0.1.59) */}
-      {pendingRuntimeChange && (() => {
-        const label = getRuntimeDisplayLabel(pendingRuntimeChange);
-        return (
-          <ConfirmDialog
-            title={t('shell.dialogs.runtimeSwitch.title')}
-            message={
-              t('shell.dialogs.runtimeSwitch.message', {
+      {pendingRuntimeChange &&
+        (() => {
+          const label = getRuntimeDisplayLabel(pendingRuntimeChange);
+          return (
+            <ConfirmDialog
+              title={t("shell.dialogs.runtimeSwitch.title")}
+              message={t("shell.dialogs.runtimeSwitch.message", {
                 currentRuntime: getRuntimeDisplayLabel(currentRuntime),
                 targetRuntime: label,
-              })
-            }
-            confirmText={t('shell.dialogs.runtimeSwitch.confirm')}
-            cancelText={t('shell.common.cancel')}
-            onConfirm={confirmRuntimeChange}
-            onCancel={() => setPendingRuntimeChange(null)}
-          />
-        );
-      })()}
+              })}
+              confirmText={t("shell.dialogs.runtimeSwitch.confirm")}
+              cancelText={t("shell.common.cancel")}
+              onConfirm={confirmRuntimeChange}
+              onCancel={() => setPendingRuntimeChange(null)}
+            />
+          );
+        })()}
 
       {/* Provider / Model History-Boundary Confirm Dialog */}
       {pendingProviderSwitch && (
         <ConfirmDialog
-          title={providerSwitchDialogCopy?.title ?? t('shell.providerSwitch.newSessionTitle')}
-          message={providerSwitchDialogCopy?.message ?? t('shell.providerSwitch.defaultMessage')}
-          confirmText={providerSwitchDialogCopy?.confirmText ?? t('shell.providerSwitch.createNewSession')}
-          cancelText={t('shell.common.cancel')}
+          title={
+            providerSwitchDialogCopy?.title ??
+            t("shell.providerSwitch.newSessionTitle")
+          }
+          message={
+            providerSwitchDialogCopy?.message ??
+            t("shell.providerSwitch.defaultMessage")
+          }
+          confirmText={
+            providerSwitchDialogCopy?.confirmText ??
+            t("shell.providerSwitch.createNewSession")
+          }
+          cancelText={t("shell.common.cancel")}
           onConfirm={confirmProviderSwitch}
           onCancel={() => setPendingProviderSwitch(null)}
         />
@@ -5669,10 +7185,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       {/* Time Rewind Confirm Dialog */}
       {rewindTarget && (
         <ConfirmDialog
-          title={t('shell.dialogs.rewind.title')}
-          message={t('shell.dialogs.rewind.message')}
-          confirmText={t('shell.dialogs.rewind.confirm')}
-          cancelText={t('shell.common.cancel')}
+          title={t("shell.dialogs.rewind.title")}
+          message={t("shell.dialogs.rewind.message")}
+          confirmText={t("shell.dialogs.rewind.confirm")}
+          cancelText={t("shell.common.cancel")}
           confirmVariant="danger"
           onConfirm={handleRewindConfirm}
           onCancel={() => setRewindTarget(null)}
@@ -5682,10 +7198,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       {/* Fork Session Confirm Dialog */}
       {forkTarget && (
         <ConfirmDialog
-          title={t('shell.dialogs.fork.title')}
-          message={t('shell.dialogs.fork.message')}
-          confirmText={t('shell.dialogs.fork.confirm')}
-          cancelText={t('shell.common.cancel')}
+          title={t("shell.dialogs.fork.title")}
+          message={t("shell.dialogs.fork.message")}
+          confirmText={t("shell.dialogs.fork.confirm")}
+          cancelText={t("shell.common.cancel")}
           confirmVariant="primary"
           onConfirm={handleForkConfirm}
           onCancel={() => setForkTarget(null)}
@@ -5694,10 +7210,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
       {goalCancelConfirmOpen && (
         <ConfirmDialog
-          title={tTask('cron.statusBar.cancelGoalConfirmTitle')}
-          message={tTask('cron.statusBar.cancelGoalConfirmMessage')}
-          confirmText={tTask('cron.statusBar.cancelGoalButton')}
-          cancelText={tTask('cron.settingsModal.cancel')}
+          title={tTask("cron.statusBar.cancelGoalConfirmTitle")}
+          message={tTask("cron.statusBar.cancelGoalConfirmMessage")}
+          confirmText={tTask("cron.statusBar.cancelGoalButton")}
+          cancelText={tTask("cron.settingsModal.cancel")}
           confirmVariant="danger"
           onConfirm={handleGoalCancelConfirm}
           onCancel={() => setGoalCancelConfirmOpen(false)}
@@ -5706,14 +7222,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
       {goalEditOpen && (
         <OverlayBackdrop
-          onClose={goalEditSubmitting ? undefined : () => setGoalEditOpen(false)}
+          onClose={
+            goalEditSubmitting ? undefined : () => setGoalEditOpen(false)
+          }
           className="z-[200] px-4"
         >
           <div className="flex w-full max-w-lg flex-col rounded-2xl bg-[var(--paper-elevated)] shadow-xl">
             <div className="flex items-center justify-between border-b border-[var(--line)] px-6 py-4">
               <div className="min-w-0">
-                <h2 className="text-base font-semibold text-[var(--ink)]">{t('goalEdit.title')}</h2>
-                <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">{t('goalEdit.subtitle')}</p>
+                <h2 className="text-base font-semibold text-[var(--ink)]">
+                  {t("goalEdit.title")}
+                </h2>
+                <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
+                  {t("goalEdit.subtitle")}
+                </p>
               </div>
               <button
                 type="button"
@@ -5729,7 +7251,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                 value={goalEditDraft}
                 onChange={(event) => setGoalEditDraft(event.target.value)}
                 className="min-h-32 w-full resize-y rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 text-sm leading-relaxed text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
-                placeholder={t('goalEdit.placeholder')}
+                placeholder={t("goalEdit.placeholder")}
                 autoFocus
               />
             </div>
@@ -5740,7 +7262,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                 disabled={goalEditSubmitting}
                 className="rounded-lg px-4 py-2 text-sm font-medium text-[var(--ink-muted)] transition hover:bg-[var(--paper-inset)] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {t('shell.common.cancel')}
+                {t("shell.common.cancel")}
               </button>
               <button
                 type="button"
@@ -5748,7 +7270,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                 disabled={goalEditSubmitting || !goalEditDraft.trim()}
                 className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {goalEditSubmitting ? t('goalEdit.updating') : t('goalEdit.update')}
+                {goalEditSubmitting
+                  ? t("goalEdit.updating")
+                  : t("goalEdit.update")}
               </button>
             </div>
           </div>
@@ -5758,32 +7282,44 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       {/* Cron Task Settings Modal */}
       <CronTaskSettingsModal
         isOpen={showCronSettings}
-        onClose={() => { setShowCronSettings(false); setCronOpenPreset(null); }}
+        onClose={() => {
+          setShowCronSettings(false);
+          setCronOpenPreset(null);
+        }}
         initialPrompt={cronPrompt}
         // Editing a RUNNING task always wins (cronState.task). Otherwise a slash
         // preset (e.g. /goal) applies — including over an armed-but-unsent
         // config, so /goal reliably forces Goal mode. Plain 定时-button opens
         // (no preset) fall back to cronState.config either way.
-        initialConfig={cronOpenPreset?.taskKind === 'goal'
-          ? cronOpenPreset
-          : (cronState.task ? cronState.config : (cronOpenPreset ?? cronState.config))}
+        initialConfig={
+          cronOpenPreset?.taskKind === "goal"
+            ? cronOpenPreset
+            : cronState.task
+              ? cronState.config
+              : (cronOpenPreset ?? cronState.config)
+        }
         workspacePath={agentDir}
         onConfirm={async (config: CronSettingsResult) => {
-          if (composerConfigLockedReason && config.taskKind !== 'goal') {
+          if (composerConfigLockedReason && config.taskKind !== "goal") {
             toastRef.current.warning(composerConfigLockedReason, 3500);
             setShowCronSettings(false);
             setCronOpenPreset(null);
             return;
           }
           const cronExecution = buildCronExecutionOverrides({
-            providerId: !isExternalRuntime && currentProvider ? currentProvider.id : undefined,
+            providerId:
+              !isExternalRuntime && currentProvider
+                ? currentProvider.id
+                : undefined,
             model: isExternalRuntime ? undefined : selectedModel,
           });
           const enrichedConfig = {
             ...config,
             model: cronExecution.model,
             permissionMode: isExternalRuntime
-              ? (config.taskKind === 'goal' ? effectiveRuntimePermissionMode : undefined)
+              ? config.taskKind === "goal"
+                ? effectiveRuntimePermissionMode
+                : undefined
               : permissionMode,
             providerId: cronExecution.providerId,
             runtime: cronExecution.runtime,
@@ -5791,11 +7327,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             executionTarget: config.executionTarget,
           };
 
-          if (config.taskKind === 'goal') {
+          if (config.taskKind === "goal") {
             if (!cronState.task) disableCronMode();
             setGoalDraftConfig({
-              taskKind: 'goal',
-              prompt: '',
+              taskKind: "goal",
+              prompt: "",
               endConditions: config.endConditions,
               notifyEnabled: config.notifyEnabled,
               permissionMode: enrichedConfig.permissionMode,
@@ -5810,13 +7346,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             }
           }
 
-          if (config.taskKind === 'cron') {
-            track('cron_enable', {
+          if (config.taskKind === "cron") {
+            track("cron_enable", {
               interval_minutes: config.intervalMinutes,
               run_mode: config.runMode,
               execution_target: config.executionTarget,
               has_time_limit: !!config.endConditions.deadline,
-              has_count_limit: !!(config.endConditions.maxExecutions && config.endConditions.maxExecutions > 0),
+              has_count_limit: !!(
+                config.endConditions.maxExecutions &&
+                config.endConditions.maxExecutions > 0
+              ),
               notify_enabled: config.notifyEnabled,
             });
           }
@@ -5831,27 +7370,27 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           task={cronDetailTask}
           onClose={() => setCronDetailTask(null)}
           onDelete={async (taskId) => {
-            const { deleteCronTask } = await import('@/api/cronTaskClient');
+            const { deleteCronTask } = await import("@/api/cronTaskClient");
             await deleteCronTask(taskId);
             setCronDetailTask(null);
-            toastRef.current?.success(t('shell.toasts.taskDeleted'));
+            toastRef.current?.success(t("shell.toasts.taskDeleted"));
           }}
           onResume={async (taskId) => {
             await startCronTaskIpc(taskId);
-            const { getCronTask } = await import('@/api/cronTaskClient');
+            const { getCronTask } = await import("@/api/cronTaskClient");
             const updated = await getCronTask(taskId);
             setCronDetailTask(updated);
-            toastRef.current?.success(t('shell.toasts.taskResumed'));
+            toastRef.current?.success(t("shell.toasts.taskResumed"));
           }}
           onStop={async (taskId) => {
-            const { stopCronTask } = await import('@/api/cronTaskClient');
+            const { stopCronTask } = await import("@/api/cronTaskClient");
             await stopCronTask(taskId);
-            const { getCronTask } = await import('@/api/cronTaskClient');
+            const { getCronTask } = await import("@/api/cronTaskClient");
             const updated = await getCronTask(taskId);
             setCronDetailTask(updated);
-            toastRef.current?.success(t('shell.toasts.taskStopped'));
+            toastRef.current?.success(t("shell.toasts.taskStopped"));
           }}
-          onOpenSession={(id) => handleSelectSession(id, 'task_run_history')}
+          onOpenSession={(id) => handleSelectSession(id, "task_run_history")}
         />
       )}
     </div>

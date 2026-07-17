@@ -287,6 +287,8 @@ export default memo(function TabBar({
                                         ? t('tabs.taskCenter')
                                         : tab.view === 'space'
                                           ? t('tabs.team')
+                                          : tab.view === 'workbench'
+                                            ? t('tabs.workbench')
                                           : t('tabs.launcher');
                                 const isActive = tab.id === activeTabId;
                                 return (
