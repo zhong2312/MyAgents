@@ -1,0 +1,171 @@
+- generic [ref=e3]:
+  - navigation "小说工作台原型导航" [ref=e4]:
+    - generic [ref=e8]:
+      - button "世界架构" [ref=e9] [cursor=pointer]
+      - button "模板配置" [ref=e15] [cursor=pointer]
+      - button "提示词管理" [ref=e20] [cursor=pointer]
+    - generic "项目已连接" [ref=e25]
+  - generic [ref=e26]:
+    - generic [ref=e28]:
+      - complementary "空间层级" [ref=e88]:
+        - generic [ref=e89]:
+          - textbox "搜索空间节点" [ref=e94]
+          - button "折叠空间树" [ref=e95] [cursor=pointer]
+          - button "AI 生成下级空间" [ref=e99] [cursor=pointer]
+          - button "新增子节点" [ref=e103] [cursor=pointer]
+        - generic [ref=e105]: 每个节点必须关联层级类型
+        - tree [ref=e109]:
+          - treeitem [ref=e110]:
+            - generic [ref=e111]:
+              - button "收起烬海编年史世界根"
+              - button "烬海编年史世界根 · 世界根" [ref=e112] [cursor=pointer]:
+                - generic [ref=e118]: 烬海编年史世界根
+                - generic [ref=e119]: 世界根
+        - generic [ref=e120]:
+          - button "新增根节点" [ref=e121] [cursor=pointer]
+          - generic [ref=e123]: 1 个节点
+      - region "当前节点设定" [ref=e29]:
+        - button "烬海编年史世界根 世界根 · 1 个设定页面" [ref=e38] [cursor=pointer]:
+          - strong [ref=e39]: 烬海编年史世界根
+          - generic [ref=e40]: 世界根 · 1 个设定页面
+        - generic [ref=e41]:
+          - textbox "搜索当前节点设定" [ref=e46]
+          - button "按名称排序设定" [ref=e47] [cursor=pointer]
+          - button "新增自定义设定" [ref=e52] [cursor=pointer]
+        - button "宇宙总览 世界 · 虚拟页面 未填写" [ref=e57] [cursor=pointer]:
+          - generic [ref=e64]:
+            - strong [ref=e65]: 宇宙总览
+            - generic [ref=e66]: 世界 · 虚拟页面
+          - generic [ref=e67]: 未填写
+        - generic [ref=e68]: 模板只提供起点，不限制幻想设定
+      - article [ref=e72]:
+        - generic [ref=e73]:
+          - tab "内容" [selected] [ref=e77] [cursor=pointer]
+          - tab "词条 0" [ref=e78] [cursor=pointer]:
+            - text: 词条
+            - generic [ref=e79]: "0"
+          - button "AI 写作" [ref=e124] [cursor=pointer]
+          - generic [ref=e80]: 已保存
+        - generic [ref=e129]:
+          - toolbar [ref=e130]:
+            - generic [ref=e131]:
+              - radiogroup [ref=e132]:
+                - radio "撤销" [disabled]
+              - radiogroup [ref=e133]:
+                - radio "重做" [disabled]
+            - separator [ref=e134]
+            - combobox "段落类型" [ref=e136] [cursor=pointer]
+            - separator [ref=e140]
+            - generic [ref=e141]:
+              - radiogroup [ref=e142]:
+                - radio "加粗" [ref=e143] [cursor=pointer]
+              - radiogroup [ref=e147]:
+                - radio "斜体" [ref=e148] [cursor=pointer]
+              - radiogroup [ref=e152]:
+                - radio "下划线" [ref=e153] [cursor=pointer]
+            - separator [ref=e157]
+            - radiogroup "toggle group" [ref=e159]:
+              - radio "无序列表" [ref=e160] [cursor=pointer]
+              - radio "有序列表" [ref=e164] [cursor=pointer]
+              - radio "任务列表" [ref=e168] [cursor=pointer]
+            - separator [ref=e172]
+            - button "插入链接" [ref=e173] [cursor=pointer]
+            - button "插入表格" [ref=e177] [cursor=pointer]
+            - radiogroup "toggle group" [ref=e183]:
+              - radio "可视化" [checked] [ref=e184] [cursor=pointer]
+              - radio "源码" [ref=e191] [cursor=pointer]
+          - textbox "宇宙总览 Markdown 可视化编辑器" [ref=e201]:
+            - heading "宇宙总览" [level=1] [ref=e202]
+            - blockquote [ref=e203]:
+              - paragraph [ref=e204]: 用一句话定义这个宇宙在故事中的独特位置。
+            - heading "核心特征" [level=2] [ref=e205]
+            - list [ref=e206]:
+              - listitem [ref=e207]
+            - heading "空间边界" [level=2] [ref=e208]
+            - heading "叙事用途" [level=2] [ref=e209]
+            - paragraph [ref=e210]
+    - button "AI 创建世界" [ref=e84] [cursor=pointer]
+    - dialog "世界架构 Agent" [ref=e211]:
+      - generic [ref=e212]:
+        - generic [ref=e213]:
+          - generic [ref=e218]:
+            - heading "世界架构 Agent" [level=1] [ref=e219]
+            - generic [ref=e220]: MyAgents 完整对话 · 烬海编年史
+          - generic [ref=e221]:
+            - generic [ref=e222]: Agent Session
+            - generic [ref=e224]: Claude Sonnet
+          - button "最小化为运行小窗" [ref=e225] [cursor=pointer]
+          - button "关闭 Agent 对话" [ref=e227] [cursor=pointer]
+        - generic [ref=e231]:
+          - complementary [ref=e232]:
+            - generic [ref=e233]: 当前任务
+            - generic [ref=e234]:
+              - strong [ref=e235]: 创建世界架构
+              - generic [ref=e236]: 一句话到完整提案
+            - generic [ref=e237]: 已授权工具
+            - generic [ref=e238]:
+              - generic [ref=e239]: 读取项目上下文
+              - generic [ref=e242]: 校验领域变更
+              - generic [ref=e245]: 提交待审阅提案
+            - generic [ref=e248]: Agent 不能直接修改小说文件，正式变更只会在审批后写入。
+          - generic [ref=e252]:
+            - main [ref=e253]:
+              - generic [ref=e254]:
+                - generic [ref=e260]:
+                  - generic [ref=e261]:
+                    - generic [ref=e262]: 已加载 Skill · 小说世界架构
+                    - generic [ref=e263]: 工具权限已隔离
+                  - paragraph [ref=e264]: 用一句话描述你想写的世界。我会通过小说工作台工具读取现有设定，再逐步确认尺度、空间结构、规则和关键设定。
+                - generic [ref=e273]: 一个被永夜潮汐锁定的双星世界，旧神文明沉在海底，故事从边境港城开始。
+                - generic [ref=e279]:
+                  - generic [ref=e280]:
+                    - generic [ref=e281]: novel_world_get_context
+                    - generic [ref=e284]: 读取 6 个来源 · 未修改文件
+                  - paragraph [ref=e285]: 我识别到这是一个以星球文明为主体、双星结构影响自然规则的世界。海底旧神文明适合作为历史与力量体系，不必先升级成宇宙级空间节点。
+                  - generic [ref=e286]:
+                    - generic [ref=e287]: 第 1 个关键决定
+                    - heading "故事主要可到达的空间范围是什么？" [level=2] [ref=e288]
+                    - generic [ref=e289]:
+                      - button "边境港城及周边" [ref=e290] [cursor=pointer]
+                      - button "完整星球（推荐）" [ref=e291] [cursor=pointer]
+                      - button "整个恒星系" [ref=e292] [cursor=pointer]
+                - generic [ref=e301]:
+                  - generic [ref=e302]:
+                    - generic [ref=e303]: novel_world_submit_proposal
+                    - generic [ref=e306]: 提案已写入审阅区 · 正式文件未变化
+                  - paragraph [ref=e307]: 我已经生成第一版方案，并通过小说工作台的 Schema 与引用闭合校验。
+                  - generic [ref=e308]:
+                    - generic [ref=e309]:
+                      - strong [ref=e312]: 世界架构提案
+                      - generic [ref=e313]: 校验通过
+                    - generic [ref=e317]:
+                      - generic [ref=e318]:
+                        - strong [ref=e319]: "12"
+                        - text: 新增
+                      - generic [ref=e320]:
+                        - strong [ref=e321]: "3"
+                        - text: 修改
+                      - generic [ref=e322]:
+                        - strong [ref=e323]: "0"
+                        - text: 冲突
+                    - generic [ref=e324]:
+                      - button [ref=e325] [cursor=pointer]:
+                        - generic [ref=e329]:
+                          - strong [ref=e330]: meta.json
+                          - text: +1 层级类型 · +2 模板
+                      - button [ref=e333] [cursor=pointer]:
+                        - generic [ref=e337]:
+                          - strong [ref=e338]: spatial-tree.json
+                          - text: +9 空间节点
+                      - button [ref=e341] [cursor=pointer]:
+                        - generic [ref=e345]:
+                          - strong [ref=e346]: 潮汐法则.md
+                          - text: 新建设定页面
+                    - generic [ref=e349]:
+                      - button "继续调整" [ref=e350] [cursor=pointer]
+                      - button "审阅提案" [ref=e351] [cursor=pointer]
+            - generic [ref=e265]:
+              - generic [ref=e266]:
+                - textbox "例如：一个被永夜潮汐锁定的双星世界，故事从边境港城开始" [ref=e267]: 一个被永夜潮汐锁定的双星世界，旧神文明沉在海底，故事从边境港城开始。
+                - button "发送" [ref=e268] [cursor=pointer]
+              - generic [ref=e272]: MyAgents Agent Session · 仅可调用当前工作台授权的业务工具

@@ -15,11 +15,13 @@ import {
   FileJson,
   FileText,
   GitCompareArrows,
+  History,
   LayoutTemplate,
   Loader2,
   Minus,
   Network,
   Play,
+  Plus,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -38,7 +40,7 @@ import {
   type ReactNode,
 } from "react";
 
-import type { WorkbenchStorage } from "@/workbench-sdk";
+import { DraggableDialogFrame, type WorkbenchStorage } from "@/workbench-sdk";
 
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
 import PromptManager from "./PromptManager";
@@ -134,23 +136,36 @@ function AgentMessage({ children }: { readonly children: ReactNode }) {
   );
 }
 
+interface PrototypeConversationState {
+  readonly concept: string;
+  readonly started: boolean;
+  readonly planReady: boolean;
+}
+
+const EMPTY_CONVERSATION: PrototypeConversationState = {
+  concept: "",
+  started: false,
+  planReady: false,
+};
+
 function FullAgentConversation({
   mode,
   onClose,
   onMinimize,
   onReview,
-  sourceLabel,
+  conversation,
+  onConversationChange,
 }: {
   readonly mode: Exclude<AiPrototypeMode, "prompts">;
   readonly onClose: () => void;
   readonly onMinimize: () => void;
   readonly onReview: () => void;
-  readonly sourceLabel?: string;
+  readonly conversation: PrototypeConversationState;
+  readonly onConversationChange: (next: PrototypeConversationState) => void;
 }) {
   const isTemplateMode = mode === "meta";
-  const [concept, setConcept] = useState(sourceLabel ?? "");
-  const [started, setStarted] = useState(Boolean(sourceLabel));
-  const [planReady, setPlanReady] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const { concept, started, planReady } = conversation;
   const title = isTemplateMode ? "模板配置 Agent" : "世界架构 Agent";
   const intro = isTemplateMode
     ? "告诉我这套模板主要服务什么世界层级或创作目标。我会通过小说工作台工具读取当前配置，并逐步补齐层级类型、模板和关联关系。"
@@ -173,17 +188,13 @@ function FullAgentConversation({
   }, [onMinimize]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm max-sm:p-0"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onMinimize();
-      }}
-    >
-      <section className="flex h-[min(880px,calc(100vh-2rem))] w-[min(1180px,calc(100vw-2rem))] min-h-0 flex-col overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper)] text-[var(--ink)] shadow-2xl max-sm:h-full max-sm:w-full max-sm:rounded-none max-sm:border-0">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4">
+    <DraggableDialogFrame
+      ariaLabel={title}
+      overlayClassName="z-50"
+      className="h-[min(720px,calc(100vh-4rem))] w-[min(1040px,calc(100vw-4rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+      headerClassName="flex h-14 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4"
+      header={
+        <>
           <span className="flex h-8 w-8 items-center justify-center rounded-md bg-[var(--accent-warm)] text-white">
             <Bot className="h-4 w-4" />
           </span>
@@ -202,250 +213,301 @@ function FullAgentConversation({
               Claude Sonnet
             </span>
           </div>
+          <IconButton
+            label="新对话"
+            onClick={() => {
+              onConversationChange(EMPTY_CONVERSATION);
+              setShowHistory(false);
+            }}
+          >
+            <Plus className="h-4 w-4" />
+          </IconButton>
+          <IconButton
+            label="历史对话"
+            onClick={() => setShowHistory((current) => !current)}
+          >
+            <History className="h-4 w-4" />
+          </IconButton>
           <IconButton label="最小化为运行小窗" onClick={onMinimize}>
             <Minus className="h-4 w-4" />
           </IconButton>
           <IconButton label="关闭 Agent 对话" onClick={onClose}>
             <X className="h-4 w-4" />
           </IconButton>
-        </header>
+        </>
+      }
+    >
+      {showHistory && (
+        <div className="flex shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-inset)] px-4 py-2">
+          <History className="h-4 w-4 text-[var(--accent-cool)]" />
+          <button
+            type="button"
+            onClick={() => setShowHistory(false)}
+            className="min-w-0 flex-1 text-left"
+          >
+            <strong className="block truncate text-xs font-medium">
+              上次对话（默认）
+            </strong>
+            <span className="block truncate text-xs text-[var(--ink-muted)]">
+              {started
+                ? isTemplateMode
+                  ? "模板配置 Agent 会话"
+                  : "世界架构 Agent 会话"
+                : "尚未发送消息"}
+            </span>
+          </button>
+          <span className="flex items-center gap-1 text-xs text-[var(--success)]">
+            <Check className="h-3.5 w-3.5" /> 当前
+          </span>
+        </div>
+      )}
 
-        <div className="flex min-h-0 flex-1">
-          <aside className="hidden w-48 shrink-0 border-r border-[var(--line)] bg-[var(--paper-elevated)] p-3 lg:flex lg:flex-col">
-            <div className="text-xs font-semibold text-[var(--ink-muted)]">
-              当前任务
-            </div>
-            <div className="mt-3 border-l-2 border-[var(--accent-warm)] pl-3">
-              <strong className="block text-xs">
-                {isTemplateMode ? "完善模板配置" : "创建世界架构"}
-              </strong>
-              <span className="mt-1 block text-xs leading-5 text-[var(--ink-muted)]">
-                {isTemplateMode ? "元配置与默认模板" : "一句话到完整提案"}
-              </span>
-            </div>
-            <div className="mt-6 text-xs font-semibold text-[var(--ink-muted)]">
-              已授权工具
-            </div>
-            <div className="mt-2 space-y-1.5 text-xs text-[var(--ink-muted)]">
-              {["读取项目上下文", "校验领域变更", "提交待审阅提案"].map(
-                (label) => (
-                  <div key={label} className="flex items-center gap-2 py-1">
-                    <Wrench className="h-3.5 w-3.5 text-[var(--accent-cool)]" />
-                    {label}
+      <div className="flex min-h-0 flex-1">
+        <aside className="hidden w-48 shrink-0 border-r border-[var(--line)] bg-[var(--paper-elevated)] p-3 lg:flex lg:flex-col">
+          <div className="text-xs font-semibold text-[var(--ink-muted)]">
+            当前任务
+          </div>
+          <div className="mt-3 border-l-2 border-[var(--accent-warm)] pl-3">
+            <strong className="block text-xs">
+              {isTemplateMode ? "完善模板配置" : "创建世界架构"}
+            </strong>
+            <span className="mt-1 block text-xs leading-5 text-[var(--ink-muted)]">
+              {isTemplateMode ? "元配置与默认模板" : "一句话到完整提案"}
+            </span>
+          </div>
+          <div className="mt-6 text-xs font-semibold text-[var(--ink-muted)]">
+            已授权工具
+          </div>
+          <div className="mt-2 space-y-1.5 text-xs text-[var(--ink-muted)]">
+            {["读取项目上下文", "校验领域变更", "提交待审阅提案"].map(
+              (label) => (
+                <div key={label} className="flex items-center gap-2 py-1">
+                  <Wrench className="h-3.5 w-3.5 text-[var(--accent-cool)]" />
+                  {label}
+                </div>
+              ),
+            )}
+          </div>
+          <div className="mt-auto rounded-md border border-[var(--line)] bg-[var(--paper)] p-2.5 text-xs leading-5 text-[var(--ink-muted)]">
+            <ShieldCheck className="mb-1 h-4 w-4 text-[var(--success)]" />
+            Agent 不能直接修改小说文件，正式变更只会在审批后写入。
+          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <main className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-3xl space-y-7 px-6 py-7 max-sm:px-4">
+              <AgentMessage>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--ink-muted)]">
+                  <span>
+                    已加载 Skill ·{" "}
+                    {isTemplateMode ? "设定模板配置" : "小说世界架构"}
+                  </span>
+                  <span className="rounded bg-[var(--success-bg)] px-1.5 py-0.5 text-[var(--success)]">
+                    工具权限已隔离
+                  </span>
+                </div>
+                <p className="mt-1">{intro}</p>
+              </AgentMessage>
+
+              {started && (
+                <>
+                  <div className="ml-auto max-w-2xl rounded-md bg-[var(--accent-warm-subtle)] px-4 py-3 text-sm leading-6">
+                    {userMessage}
                   </div>
-                ),
-              )}
-            </div>
-            <div className="mt-auto rounded-md border border-[var(--line)] bg-[var(--paper)] p-2.5 text-xs leading-5 text-[var(--ink-muted)]">
-              <ShieldCheck className="mb-1 h-4 w-4 text-[var(--success)]" />
-              Agent 不能直接修改小说文件，正式变更只会在审批后写入。
-            </div>
-          </aside>
-
-          <div className="flex min-w-0 flex-1 flex-col">
-            <main className="min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto max-w-3xl space-y-7 px-6 py-7 max-sm:px-4">
-                <AgentMessage>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--ink-muted)]">
-                    <span>
-                      已加载 Skill ·{" "}
-                      {isTemplateMode ? "设定模板配置" : "小说世界架构"}
-                    </span>
-                    <span className="rounded bg-[var(--success-bg)] px-1.5 py-0.5 text-[var(--success)]">
-                      工具权限已隔离
-                    </span>
-                  </div>
-                  <p className="mt-1">{intro}</p>
-                </AgentMessage>
-
-                {started && (
-                  <>
-                    <div className="ml-auto max-w-2xl rounded-md bg-[var(--accent-warm-subtle)] px-4 py-3 text-sm leading-6">
-                      {userMessage}
-                    </div>
-                    <AgentMessage>
-                      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--ink-muted)]">
-                        <span className="flex items-center gap-1.5 rounded border border-[var(--line)] px-2 py-1">
-                          <Check className="h-3 w-3 text-[var(--success)]" />
-                          novel_world_get_context
-                        </span>
-                        <span>读取 6 个来源 · 未修改文件</span>
-                      </div>
-                      <p>
-                        {isTemplateMode
-                          ? "当前项目已经有宇宙、星球和聚落模板，但恒星系与城市层级之间缺少稳定的默认页面组合。我建议先确定这次补全的覆盖范围。"
-                          : "我识别到这是一个以星球文明为主体、双星结构影响自然规则的世界。海底旧神文明适合作为历史与力量体系，不必先升级成宇宙级空间节点。"}
-                      </p>
-                      <div className="mt-4 border-l-2 border-[var(--accent-warm)] pl-4">
-                        <div className="text-xs font-medium text-[var(--accent-warm)]">
-                          第 1 个关键决定
-                        </div>
-                        <h2 className="mt-1 text-sm font-semibold">
-                          {isTemplateMode
-                            ? "哪些层级需要成为这次配置的默认骨架？"
-                            : "故事主要可到达的空间范围是什么？"}
-                        </h2>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {(isTemplateMode
-                            ? [
-                                "恒星系与行星",
-                                "恒星系、行星、港城（推荐）",
-                                "完整宇宙层级",
-                              ]
-                            : [
-                                "边境港城及周边",
-                                "完整星球（推荐）",
-                                "整个恒星系",
-                              ]
-                          ).map((choice, index) => (
-                            <button
-                              key={choice}
-                              type="button"
-                              className={`rounded-md border px-3 py-2 text-xs ${
-                                index === 1
-                                  ? "border-[var(--accent-cool)] bg-[var(--accent-cool-subtle)] text-[var(--ink)]"
-                                  : "border-[var(--line)] hover:bg-[var(--hover-bg)]"
-                              }`}
-                            >
-                              {choice}
-                            </button>
-                          ))}
-                        </div>
-                        {!planReady && (
-                          <button
-                            type="button"
-                            onClick={() => setPlanReady(true)}
-                            className="mt-4 flex h-9 items-center gap-2 rounded-md bg-[var(--accent-warm)] px-3 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)]"
-                          >
-                            {isTemplateMode
-                              ? "生成模板配置提案"
-                              : "生成世界架构提案"}
-                            <ArrowRight className="h-4 w-4" />
-                          </button>
-                        )}
-                      </div>
-                    </AgentMessage>
-                  </>
-                )}
-
-                {planReady && (
                   <AgentMessage>
                     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--ink-muted)]">
                       <span className="flex items-center gap-1.5 rounded border border-[var(--line)] px-2 py-1">
                         <Check className="h-3 w-3 text-[var(--success)]" />
-                        novel_world_submit_proposal
+                        novel_world_get_context
                       </span>
-                      <span>提案已写入审阅区 · 正式文件未变化</span>
+                      <span>读取 6 个来源 · 未修改文件</span>
                     </div>
                     <p>
-                      我已经生成第一版方案，并通过小说工作台的 Schema
-                      与引用闭合校验。
+                      {isTemplateMode
+                        ? "当前项目已经有宇宙、星球和聚落模板，但恒星系与城市层级之间缺少稳定的默认页面组合。我建议先确定这次补全的覆盖范围。"
+                        : "我识别到这是一个以星球文明为主体、双星结构影响自然规则的世界。海底旧神文明适合作为历史与力量体系，不必先升级成宇宙级空间节点。"}
                     </p>
-                    <div className="mt-4 overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)]">
-                      <header className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-3">
-                        <FileDiff className="h-4 w-4 text-[var(--accent-cool)]" />
-                        <strong className="text-sm">
-                          {isTemplateMode ? "模板配置提案" : "世界架构提案"}
-                        </strong>
-                        <span className="ml-auto flex items-center gap-1 text-xs text-[var(--success)]">
-                          <ShieldCheck className="h-3.5 w-3.5" /> 校验通过
-                        </span>
-                      </header>
-                      <div className="grid grid-cols-3 divide-x divide-[var(--line-subtle)] text-center">
-                        {[
-                          [isTemplateMode ? "6" : "12", "新增"],
-                          [isTemplateMode ? "2" : "3", "修改"],
-                          ["0", "冲突"],
-                        ].map(([value, label]) => (
-                          <div key={label} className="py-3">
-                            <strong className="block text-base">{value}</strong>
-                            <span className="text-xs text-[var(--ink-muted)]">
-                              {label}
-                            </span>
-                          </div>
-                        ))}
+                    <div className="mt-4 border-l-2 border-[var(--accent-warm)] pl-4">
+                      <div className="text-xs font-medium text-[var(--accent-warm)]">
+                        第 1 个关键决定
                       </div>
-                      <div className="divide-y divide-[var(--line-subtle)] border-t border-[var(--line)]">
+                      <h2 className="mt-1 text-sm font-semibold">
+                        {isTemplateMode
+                          ? "哪些层级需要成为这次配置的默认骨架？"
+                          : "故事主要可到达的空间范围是什么？"}
+                      </h2>
+                      <div className="mt-3 flex flex-wrap gap-2">
                         {(isTemplateMode
                           ? [
-                              ["meta.json", "+1 层级类型 · +2 模板"],
-                              ["恒星系模板", "补齐核心内容与默认词条"],
-                              ["类型模板关联", "+4 默认关联"],
+                              "恒星系与行星",
+                              "恒星系、行星、港城（推荐）",
+                              "完整宇宙层级",
                             ]
-                          : [
-                              ["meta.json", "+1 层级类型 · +2 模板"],
-                              ["spatial-tree.json", "+9 空间节点"],
-                              ["潮汐法则.md", "新建设定页面"],
-                            ]
-                        ).map(([file, detail]) => (
+                          : ["边境港城及周边", "完整星球（推荐）", "整个恒星系"]
+                        ).map((choice, index) => (
                           <button
+                            key={choice}
                             type="button"
-                            key={file}
-                            onClick={onReview}
-                            className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover-bg)]"
+                            className={`rounded-md border px-3 py-2 text-xs ${
+                              index === 1
+                                ? "border-[var(--accent-cool)] bg-[var(--accent-cool-subtle)] text-[var(--ink)]"
+                                : "border-[var(--line)] hover:bg-[var(--hover-bg)]"
+                            }`}
                           >
-                            <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
-                            <span className="min-w-0 flex-1">
-                              <strong className="block truncate text-sm font-medium">
-                                {file}
-                              </strong>
-                              <span className="text-xs text-[var(--ink-muted)]">
-                                {detail}
-                              </span>
-                            </span>
-                            <ChevronRight className="h-4 w-4 text-[var(--ink-subtle)]" />
+                            {choice}
                           </button>
                         ))}
                       </div>
-                      <footer className="flex justify-end gap-2 border-t border-[var(--line)] px-4 py-3">
+                      {!planReady && (
                         <button
                           type="button"
-                          className="h-8 rounded-md border border-[var(--line)] px-3 text-xs hover:bg-[var(--hover-bg)]"
+                          onClick={() =>
+                            onConversationChange({
+                              ...conversation,
+                              planReady: true,
+                            })
+                          }
+                          className="mt-4 flex h-9 items-center gap-2 rounded-md bg-[var(--accent-warm)] px-3 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)]"
                         >
-                          继续调整
+                          {isTemplateMode
+                            ? "生成模板配置提案"
+                            : "生成世界架构提案"}
+                          <ArrowRight className="h-4 w-4" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={onReview}
-                          className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-cool)] px-3 text-xs font-medium text-white hover:bg-[var(--accent-cool-hover)]"
-                        >
-                          <GitCompareArrows className="h-3.5 w-3.5" /> 审阅提案
-                        </button>
-                      </footer>
+                      )}
                     </div>
                   </AgentMessage>
-                )}
-              </div>
-            </main>
+                </>
+              )}
 
-            <footer className="shrink-0 border-t border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-3">
-              <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-md border border-[var(--line-strong)] bg-[var(--paper)] p-2 shadow-sm">
-                <textarea
-                  rows={2}
-                  value={concept}
-                  onChange={(event) => setConcept(event.target.value)}
-                  placeholder={placeholder}
-                  className="min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-sm leading-5 outline-none"
-                />
-                <button
-                  type="button"
-                  aria-label="发送"
-                  title="发送"
-                  disabled={!concept.trim()}
-                  onClick={() => setStarted(true)}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--accent-warm)] text-white hover:bg-[var(--accent-warm-hover)] disabled:opacity-40"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="mx-auto mt-1.5 max-w-3xl text-center text-xs text-[var(--ink-subtle)]">
-                MyAgents Agent Session · 仅可调用当前工作台授权的业务工具
-              </div>
-            </footer>
-          </div>
+              {planReady && (
+                <AgentMessage>
+                  <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--ink-muted)]">
+                    <span className="flex items-center gap-1.5 rounded border border-[var(--line)] px-2 py-1">
+                      <Check className="h-3 w-3 text-[var(--success)]" />
+                      novel_world_submit_proposal
+                    </span>
+                    <span>提案已写入审阅区 · 正式文件未变化</span>
+                  </div>
+                  <p>
+                    我已经生成第一版方案，并通过小说工作台的 Schema
+                    与引用闭合校验。
+                  </p>
+                  <div className="mt-4 overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)]">
+                    <header className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-3">
+                      <FileDiff className="h-4 w-4 text-[var(--accent-cool)]" />
+                      <strong className="text-sm">
+                        {isTemplateMode ? "模板配置提案" : "世界架构提案"}
+                      </strong>
+                      <span className="ml-auto flex items-center gap-1 text-xs text-[var(--success)]">
+                        <ShieldCheck className="h-3.5 w-3.5" /> 校验通过
+                      </span>
+                    </header>
+                    <div className="grid grid-cols-3 divide-x divide-[var(--line-subtle)] text-center">
+                      {[
+                        [isTemplateMode ? "6" : "12", "新增"],
+                        [isTemplateMode ? "2" : "3", "修改"],
+                        ["0", "冲突"],
+                      ].map(([value, label]) => (
+                        <div key={label} className="py-3">
+                          <strong className="block text-base">{value}</strong>
+                          <span className="text-xs text-[var(--ink-muted)]">
+                            {label}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="divide-y divide-[var(--line-subtle)] border-t border-[var(--line)]">
+                      {(isTemplateMode
+                        ? [
+                            ["meta.json", "+1 层级类型 · +2 模板"],
+                            ["恒星系模板", "补齐核心内容与默认词条"],
+                            ["类型模板关联", "+4 默认关联"],
+                          ]
+                        : [
+                            ["meta.json", "+1 层级类型 · +2 模板"],
+                            ["spatial-tree.json", "+9 空间节点"],
+                            ["潮汐法则.md", "新建设定页面"],
+                          ]
+                      ).map(([file, detail]) => (
+                        <button
+                          type="button"
+                          key={file}
+                          onClick={onReview}
+                          className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover-bg)]"
+                        >
+                          <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
+                          <span className="min-w-0 flex-1">
+                            <strong className="block truncate text-sm font-medium">
+                              {file}
+                            </strong>
+                            <span className="text-xs text-[var(--ink-muted)]">
+                              {detail}
+                            </span>
+                          </span>
+                          <ChevronRight className="h-4 w-4 text-[var(--ink-subtle)]" />
+                        </button>
+                      ))}
+                    </div>
+                    <footer className="flex justify-end gap-2 border-t border-[var(--line)] px-4 py-3">
+                      <button
+                        type="button"
+                        className="h-8 rounded-md border border-[var(--line)] px-3 text-xs hover:bg-[var(--hover-bg)]"
+                      >
+                        继续调整
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onReview}
+                        className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-cool)] px-3 text-xs font-medium text-white hover:bg-[var(--accent-cool-hover)]"
+                      >
+                        <GitCompareArrows className="h-3.5 w-3.5" /> 审阅提案
+                      </button>
+                    </footer>
+                  </div>
+                </AgentMessage>
+              )}
+            </div>
+          </main>
+
+          <footer className="shrink-0 border-t border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-3">
+            <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-md border border-[var(--line-strong)] bg-[var(--paper)] p-2 shadow-sm">
+              <textarea
+                rows={2}
+                value={concept}
+                onChange={(event) =>
+                  onConversationChange({
+                    ...conversation,
+                    concept: event.target.value,
+                  })
+                }
+                placeholder={placeholder}
+                className="min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-1 text-sm leading-5 outline-none"
+              />
+              <button
+                type="button"
+                aria-label="发送"
+                title="发送"
+                disabled={!concept.trim()}
+                onClick={() =>
+                  onConversationChange({
+                    ...conversation,
+                    started: true,
+                  })
+                }
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--accent-warm)] text-white hover:bg-[var(--accent-warm-hover)] disabled:opacity-40"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mx-auto mt-1.5 max-w-3xl text-center text-xs text-[var(--ink-subtle)]">
+              MyAgents Agent Session · 仅可调用当前工作台授权的业务工具
+            </div>
+          </footer>
         </div>
-      </section>
-    </div>
+      </div>
+    </DraggableDialogFrame>
   );
 }
 
@@ -607,79 +669,80 @@ function ProposalReviewPrototype({
   };
 
   return (
-    <section
-      role="dialog"
-      aria-modal="true"
-      aria-label="世界架构提案审批"
-      className="fixed inset-0 z-[60] flex min-h-0 flex-col bg-[var(--paper)] text-[var(--ink)]"
+    <DraggableDialogFrame
+      ariaLabel="世界架构提案审批"
+      overlayClassName="z-[60]"
+      className="h-[min(760px,calc(100vh-3rem))] w-[min(1180px,calc(100vw-3rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+      headerClassName="flex min-h-14 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 max-sm:flex-wrap max-sm:py-2"
+      header={
+        <>
+          <button
+            type="button"
+            aria-label="返回 Agent 对话"
+            title="返回 Agent 对话"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
+            <GitCompareArrows className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold">
+              {mode === "meta" ? "模板配置提案" : "世界架构提案"}
+            </h1>
+            <p className="truncate text-xs text-[var(--ink-muted)]">
+              proposal-ember-sea-v1 · {changes.length} 项变更
+            </p>
+          </div>
+          <div className="ml-auto flex items-center gap-1 rounded-md bg-[var(--paper-inset)] p-1 max-sm:order-2 max-sm:ml-0">
+            <button
+              type="button"
+              aria-pressed={sideBySide}
+              onClick={() => setSideBySide(true)}
+              className={`flex h-7 items-center gap-1 rounded px-2 text-xs ${
+                sideBySide
+                  ? "bg-[var(--paper-elevated)] shadow-sm"
+                  : "text-[var(--ink-muted)]"
+              }`}
+            >
+              <Columns2 className="h-3.5 w-3.5" /> 并排
+            </button>
+            <button
+              type="button"
+              aria-pressed={!sideBySide}
+              onClick={() => setSideBySide(false)}
+              className={`flex h-7 items-center gap-1 rounded px-2 text-xs ${
+                !sideBySide
+                  ? "bg-[var(--paper-elevated)] shadow-sm"
+                  : "text-[var(--ink-muted)]"
+              }`}
+            >
+              <AlignJustify className="h-3.5 w-3.5" /> 行内
+            </button>
+          </div>
+          <button
+            type="button"
+            aria-label="重新校验提案"
+            title="重新校验提案"
+            onClick={() => setMessage("提案快照与正式文件一致，可以继续审批。")}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            aria-label="关闭审批"
+            title="关闭审批"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </>
+      }
     >
-      <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 max-sm:flex-wrap max-sm:py-2">
-        <button
-          type="button"
-          aria-label="返回 Agent 对话"
-          title="返回 Agent 对话"
-          onClick={onClose}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <span className="flex h-8 w-8 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
-          <GitCompareArrows className="h-4 w-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-semibold">
-            {mode === "meta" ? "模板配置提案" : "世界架构提案"}
-          </h1>
-          <p className="truncate text-xs text-[var(--ink-muted)]">
-            proposal-ember-sea-v1 · {changes.length} 项变更
-          </p>
-        </div>
-        <div className="ml-auto flex items-center gap-1 rounded-md bg-[var(--paper-inset)] p-1 max-sm:order-2 max-sm:ml-0">
-          <button
-            type="button"
-            aria-pressed={sideBySide}
-            onClick={() => setSideBySide(true)}
-            className={`flex h-7 items-center gap-1 rounded px-2 text-xs ${
-              sideBySide
-                ? "bg-[var(--paper-elevated)] shadow-sm"
-                : "text-[var(--ink-muted)]"
-            }`}
-          >
-            <Columns2 className="h-3.5 w-3.5" /> 并排
-          </button>
-          <button
-            type="button"
-            aria-pressed={!sideBySide}
-            onClick={() => setSideBySide(false)}
-            className={`flex h-7 items-center gap-1 rounded px-2 text-xs ${
-              !sideBySide
-                ? "bg-[var(--paper-elevated)] shadow-sm"
-                : "text-[var(--ink-muted)]"
-            }`}
-          >
-            <AlignJustify className="h-3.5 w-3.5" /> 行内
-          </button>
-        </div>
-        <button
-          type="button"
-          aria-label="重新校验提案"
-          title="重新校验提案"
-          onClick={() => setMessage("提案快照与正式文件一致，可以继续审批。")}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-        >
-          <RefreshCw className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          aria-label="关闭审批"
-          title="关闭审批"
-          onClick={onClose}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </header>
-
       {message && (
         <div className="flex shrink-0 items-center gap-2 border-b border-[var(--line)] bg-[var(--success-bg)] px-4 py-2 text-xs text-[var(--success)]">
           <CheckCircle2 className="h-3.5 w-3.5" />
@@ -856,7 +919,7 @@ function ProposalReviewPrototype({
           )}
         </main>
       </div>
-    </section>
+    </DraggableDialogFrame>
   );
 }
 
@@ -1010,15 +1073,36 @@ export default function AiWorldDesignPrototype({
   mode,
   onNavigate,
 }: AiWorldDesignPrototypeProps) {
+  const conversationMode = mode === "meta" ? "meta" : "library";
+  const [conversations, setConversations] = useState<
+    Record<"library" | "meta", PrototypeConversationState>
+  >(() => ({
+    library: { ...EMPTY_CONVERSATION },
+    meta: { ...EMPTY_CONVERSATION },
+  }));
   const [fullConversation, setFullConversation] = useState<string | null>(null);
   const [miniTarget, setMiniTarget] = useState<NovelAiAssistTarget | null>(
     null,
   );
   const [isReviewOpen, setIsReviewOpen] = useState(false);
-  const floatingLabel = mode === "meta" ? "AI 配置模板" : "AI 创建世界";
+  const agentLabel = mode === "meta" ? "AI 配置模板" : "AI 创建世界";
+  const pageLabel =
+    mode === "meta"
+      ? "模板配置"
+      : mode === "prompts"
+        ? "提示词管理"
+        : "世界架构";
 
   const openAssist = async (target: NovelAiAssistTarget) => {
     if (target.kind === "world") {
+      setConversations((current) => ({
+        ...current,
+        [conversationMode]: {
+          concept: target.label,
+          started: true,
+          planReady: current[conversationMode].planReady,
+        },
+      }));
       setFullConversation(target.label);
       return null;
     }
@@ -1029,72 +1113,113 @@ export default function AiWorldDesignPrototype({
   return (
     <div className="flex h-screen min-h-0 overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
       <PrototypeNavigation mode={mode} onNavigate={onNavigate} />
-      <div className="relative min-w-0 flex-1">
-        {mode === "prompts" ? (
-          <PromptManager
-            storage={storage}
-            projectGenres={["玄幻", "东方玄幻"]}
-            isActive
-          />
-        ) : (
-          <SettingLibrary
-            storage={storage}
-            projectTitle="烬海编年史"
-            mode={mode}
-            onNavigate={onNavigate}
-            onAiAssist={openAssist}
-          />
-        )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--line)] px-5">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-3">
+              <h1 className="truncate text-base font-semibold">{pageLabel}</h1>
+              {mode !== "prompts" && (
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="审阅提案"
+                    title="审阅提案"
+                    onClick={() => setIsReviewOpen(true)}
+                    className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium hover:bg-[var(--hover-bg)]"
+                  >
+                    <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
+                    <span className="max-lg:hidden">审阅提案</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={agentLabel}
+                    title={agentLabel}
+                    onClick={() => setFullConversation(agentLabel)}
+                    className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)]"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    <span className="max-lg:hidden">{agentLabel}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            <p className="truncate text-xs text-[var(--ink-muted)]">
+              F:\\workspace\\MyAgents-test\\小说\\烬海编年史
+            </p>
+          </div>
+          <div className="ml-4 rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-medium text-[var(--ink-muted)] max-md:hidden">
+            烬海编年史
+          </div>
+        </header>
 
-        {mode !== "prompts" && !miniTarget && (
-          <button
-            type="button"
-            onClick={() => setFullConversation(floatingLabel)}
-            className="absolute bottom-5 right-5 z-30 flex h-10 items-center gap-2 rounded-md bg-[var(--accent-warm)] px-4 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-[var(--accent-warm-hover)]"
-          >
-            <Sparkles className="h-4 w-4" /> {floatingLabel}
-          </button>
-        )}
+        <div className="relative min-h-0 flex-1">
+          {mode === "prompts" ? (
+            <PromptManager
+              storage={storage}
+              projectGenres={["玄幻", "东方玄幻"]}
+              isActive
+            />
+          ) : (
+            <SettingLibrary
+              storage={storage}
+              projectTitle="烬海编年史"
+              mode={mode}
+              onAiAssist={openAssist}
+            />
+          )}
 
-        {miniTarget && (
-          <AgentRunMiniWindow
-            key={miniTarget.label}
-            target={miniTarget}
-            onClose={() => setMiniTarget(null)}
-            onExpand={() => {
-              setFullConversation(miniTarget.label);
-              setMiniTarget(null);
-            }}
-          />
-        )}
+          {miniTarget && (
+            <AgentRunMiniWindow
+              key={miniTarget.label}
+              target={miniTarget}
+              onClose={() => setMiniTarget(null)}
+              onExpand={() => {
+                setConversations((current) => ({
+                  ...current,
+                  [conversationMode]: {
+                    concept: miniTarget.label,
+                    started: true,
+                    planReady: current[conversationMode].planReady,
+                  },
+                }));
+                setFullConversation(miniTarget.label);
+                setMiniTarget(null);
+              }}
+            />
+          )}
 
-        {fullConversation !== null && mode !== "prompts" && (
-          <FullAgentConversation
-            mode={mode}
-            sourceLabel={
-              fullConversation === floatingLabel ? undefined : fullConversation
-            }
-            onClose={() => setFullConversation(null)}
-            onMinimize={() => {
-              setFullConversation(null);
-              setMiniTarget({
-                kind: "world",
-                label:
-                  mode === "meta"
-                    ? "模板配置 Agent 会话"
-                    : "世界架构 Agent 会话",
-              });
-            }}
-            onReview={() => setIsReviewOpen(true)}
-          />
-        )}
+          {fullConversation !== null && mode !== "prompts" && (
+            <FullAgentConversation
+              mode={mode}
+              conversation={conversations[conversationMode]}
+              onConversationChange={(next) =>
+                setConversations((current) => ({
+                  ...current,
+                  [conversationMode]: next,
+                }))
+              }
+              onClose={() => setFullConversation(null)}
+              onMinimize={() => {
+                setFullConversation(null);
+                setMiniTarget({
+                  kind: "world",
+                  label:
+                    mode === "meta"
+                      ? "模板配置 Agent 会话"
+                      : "世界架构 Agent 会话",
+                });
+              }}
+              onReview={() => setIsReviewOpen(true)}
+            />
+          )}
 
-        {isReviewOpen && mode !== "prompts" && (
-          <ProposalReviewPrototype
-            mode={mode}
-            onClose={() => setIsReviewOpen(false)}
-          />
-        )}
+          {isReviewOpen && mode !== "prompts" && (
+            <ProposalReviewPrototype
+              mode={mode}
+              onClose={() => setIsReviewOpen(false)}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

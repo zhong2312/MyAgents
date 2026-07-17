@@ -1,4 +1,9 @@
-import { DiffEditor, loader, type Monaco } from "@monaco-editor/react";
+import {
+  DiffEditor,
+  loader,
+  type Monaco,
+  type MonacoDiffEditor,
+} from "@monaco-editor/react";
 import { Loader2 } from "lucide-react";
 import * as monaco from "monaco-editor";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
@@ -6,7 +11,7 @@ import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 
 import "monaco-editor/min/vs/editor/editor.main.css";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 if (
   typeof self !== "undefined" &&
@@ -69,6 +74,7 @@ export default function DiffViewer({
   renderSideBySide = true,
   className = "",
 }: DiffViewerProps) {
+  const modelsRef = useRef<ReturnType<MonacoDiffEditor["getModel"]>>(null);
   const [isDark, setIsDark] = useState(() =>
     typeof document === "undefined"
       ? false
@@ -85,6 +91,24 @@ export default function DiffViewer({
   const beforeMount = useCallback((monacoInstance: Monaco) => {
     defineThemes(monacoInstance);
   }, []);
+  const handleMount = useCallback((editor: MonacoDiffEditor) => {
+    modelsRef.current = editor.getModel();
+  }, []);
+
+  useEffect(
+    () => () => {
+      const models = modelsRef.current;
+      modelsRef.current = null;
+      if (!models) return;
+      // @monaco-editor/react otherwise disposes models before the diff widget
+      // clears them. Let the child unmount first, then release our kept models.
+      window.setTimeout(() => {
+        if (!models.original.isDisposed()) models.original.dispose();
+        if (!models.modified.isDisposed()) models.modified.dispose();
+      }, 0);
+    },
+    [],
+  );
 
   return (
     <div
@@ -98,6 +122,9 @@ export default function DiffViewer({
         language={language}
         theme={isDark ? DARK_THEME : LIGHT_THEME}
         beforeMount={beforeMount}
+        onMount={handleMount}
+        keepCurrentOriginalModel
+        keepCurrentModifiedModel
         loading={
           <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
             <Loader2 className="h-4 w-4 animate-spin" /> 正在载入差异

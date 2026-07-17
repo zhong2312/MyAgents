@@ -43,6 +43,7 @@ import {
 import { getFolderName } from "@/types/tab";
 import { workbenchRegistry } from "@/workbench-registry";
 import type { WorkbenchRegistry } from "./registry";
+import { WorkbenchHeaderActionsProvider } from "./WorkbenchHeaderActions";
 import { useWorkbenchStorage } from "@/workbench-host/useWorkbenchStorage";
 
 interface WorkbenchShellProps {
@@ -162,6 +163,8 @@ export default function WorkbenchShell({
   const [isNavigationCollapsed, setIsNavigationCollapsed] = useState(
     () => definition?.shell?.defaultNavigationCollapsed ?? false,
   );
+  const [headerActionsTarget, setHeaderActionsTarget] =
+    useState<HTMLElement | null>(null);
   const routeIds = useMemo(
     () => new Set(manifest?.navigation.map((item) => item.id) ?? []),
     [manifest],
@@ -367,11 +370,17 @@ export default function WorkbenchShell({
 
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--line)] px-5">
-          <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold text-[var(--ink)]">
-              {navigation.find((item) => item.id === route)?.label ??
-                manifest.name}
-            </h1>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-3">
+              <h1 className="truncate text-base font-semibold text-[var(--ink)]">
+                {navigation.find((item) => item.id === route)?.label ??
+                  manifest.name}
+              </h1>
+              <span
+                ref={setHeaderActionsTarget}
+                className="flex shrink-0 items-center gap-2"
+              />
+            </div>
             <p
               className="truncate text-xs text-[var(--ink-muted)] max-md:hidden"
               title={workspacePath}
@@ -396,7 +405,9 @@ export default function WorkbenchShell({
             )}
           >
             <Suspense fallback={<LoadingState />}>
-              <Renderer context={context} />
+              <WorkbenchHeaderActionsProvider target={headerActionsTarget}>
+                <Renderer context={context} />
+              </WorkbenchHeaderActionsProvider>
             </Suspense>
           </WorkbenchModuleBoundary>
         </main>

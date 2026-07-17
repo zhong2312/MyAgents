@@ -77,7 +77,6 @@ interface SettingLibraryProps {
   readonly storage: WorkbenchStorage;
   readonly projectTitle: string;
   readonly mode: "library" | "meta";
-  readonly onNavigate: (route: string) => void;
   readonly onAiAssist?: (
     target: NovelAiAssistTarget,
     localContext?: unknown,
@@ -332,7 +331,6 @@ export default function SettingLibrary({
   storage,
   projectTitle,
   mode,
-  onNavigate,
   onAiAssist,
 }: SettingLibraryProps) {
   const repository = useMemo(
@@ -372,6 +370,8 @@ export default function SettingLibrary({
   const draftRef = useRef(draft);
   const pageRef = useRef(page);
   const libraryRef = useRef(library);
+  const metaSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const metaSaveCountRef = useRef(0);
 
   useEffect(() => {
     dirtyRef.current = isDirty;
@@ -529,19 +529,33 @@ export default function SettingLibrary({
     setSettingsDrawer(false);
   };
 
-  const saveMeta = async (meta: SettingLibraryMeta) => {
-    if (!libraryRef.current) return;
-    setIsSaving(true);
-    setError(null);
-    try {
-      const next = await repository.saveMeta(libraryRef.current, meta);
-      setLibrary(next);
-    } catch (cause) {
-      setError(toError(cause));
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const saveMeta = useCallback(
+    async (meta: SettingLibraryMeta) => {
+      if (!libraryRef.current) return;
+      metaSaveCountRef.current += 1;
+      setIsSaving(true);
+      setError(null);
+
+      const operation = metaSaveQueueRef.current.then(async () => {
+        const activeLibrary = libraryRef.current;
+        if (!activeLibrary) return;
+        const next = await repository.saveMeta(activeLibrary, meta);
+        libraryRef.current = next;
+        setLibrary(next);
+      });
+      metaSaveQueueRef.current = operation.catch(() => undefined);
+
+      try {
+        await operation;
+      } catch (cause) {
+        setError(toError(cause));
+      } finally {
+        metaSaveCountRef.current -= 1;
+        if (metaSaveCountRef.current === 0) setIsSaving(false);
+      }
+    },
+    [repository],
+  );
 
   const openNodeDialog = (asRoot: boolean) => {
     if (!library || !currentNode) return;
@@ -783,7 +797,6 @@ export default function SettingLibrary({
         isSaving={isSaving}
         error={error}
         onSave={saveMeta}
-        onBack={() => onNavigate("lore")}
         onAiAssist={onAiAssist}
       />
     );

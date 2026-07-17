@@ -63,6 +63,11 @@ import LinkContextMenuProvider from "@/components/LinkContextMenuProvider";
 import TabBar from "@/components/TabBar";
 import TabProvider from "@/context/TabProvider";
 import WorkbenchAgentSurfaceHost from "@/workbench-host/WorkbenchAgentSurfaceHost";
+import {
+  clearWorkbenchAgentConversation,
+  loadWorkbenchAgentConversation,
+  saveWorkbenchAgentConversation,
+} from "@/workbench-host/agentConversationBinding";
 import type { AdoptMigratedSessionOptions } from "@/context/TabContext";
 import { useToast } from "@/components/Toast";
 import { useUpdater } from "@/hooks/useUpdater";
@@ -217,6 +222,31 @@ function getChromeTabs(tabs: readonly Tab[]): Tab[] {
 
 function getChromeTabCount(tabs: readonly Tab[]): number {
   return getChromeTabs(tabs).length;
+}
+
+async function configureWorkbenchAgentToolset(
+  sessionId: string,
+  toolset: WorkbenchAgentSessionRequest["toolset"],
+): Promise<void> {
+  if (!toolset) return;
+  const port = await getSessionPort(sessionId);
+  if (port === null) {
+    throw new Error("Agent 会话尚未就绪，无法加载工作台工具");
+  }
+  const response = await proxyFetch(
+    `http://127.0.0.1:${port}/api/workbench-agent/configure`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolset }),
+    },
+  );
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(payload.error ?? "工作台工具加载失败");
+  }
 }
 
 // ============================================================
@@ -755,6 +785,52 @@ export default function App() {
 
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+
+  const configuredWorkbenchToolsetsRef = useRef(new Map<string, string>());
+  useEffect(() => {
+    const liveSurfaceIds = new Set<string>();
+    for (const tab of tabs) {
+      const surface = tab.workbenchAgentSurface;
+      if (!surface || !tab.sessionId) continue;
+      liveSurfaceIds.add(tab.id);
+      if (!isPendingSessionId(tab.sessionId)) {
+        saveWorkbenchAgentConversation(
+          surface.workbenchId,
+          surface.workspacePath,
+          surface.conversationKey,
+          tab.sessionId,
+        );
+      }
+
+      if (!surface.toolset) continue;
+      const configurationKey = `${tab.sessionId}:${JSON.stringify(surface.toolset)}`;
+      if (
+        configuredWorkbenchToolsetsRef.current.get(tab.id) === configurationKey
+      ) {
+        continue;
+      }
+      configuredWorkbenchToolsetsRef.current.set(tab.id, configurationKey);
+      void configureWorkbenchAgentToolset(tab.sessionId, surface.toolset).catch(
+        (error) => {
+          if (
+            configuredWorkbenchToolsetsRef.current.get(tab.id) ===
+            configurationKey
+          ) {
+            configuredWorkbenchToolsetsRef.current.delete(tab.id);
+          }
+          console.error(
+            `[App] Failed to configure workbench tools for session ${tab.sessionId}:`,
+            error,
+          );
+        },
+      );
+    }
+    for (const tabId of configuredWorkbenchToolsetsRef.current.keys()) {
+      if (!liveSurfaceIds.has(tabId)) {
+        configuredWorkbenchToolsetsRef.current.delete(tabId);
+      }
+    }
+  }, [tabs]);
 
   const syncRendererCorrelationForTab = useCallback(
     (
@@ -4342,9 +4418,7 @@ export default function App() {
         !!currentConfig.multiAgentRuntime,
       );
       if (effectiveRuntime !== "builtin") {
-        throw new Error(
-          "工作台一次性 AI 生成当前仅支持 MyAgents 内置运行时",
-        );
+        throw new Error("工作台一次性 AI 生成当前仅支持 MyAgents 内置运行时");
       }
       const selection = resolveBuiltinSelection(
         { agent: workspaceAgent, workspace: project },
@@ -4359,9 +4433,7 @@ export default function App() {
         );
       }
       if (isRuntimeBackedProvider(selection.provider)) {
-        throw new Error(
-          "工作台一次性 AI 生成暂不支持运行时托管的模型服务",
-        );
+        throw new Error("工作台一次性 AI 生成暂不支持运行时托管的模型服务");
       }
       const serverUrl = await getGlobalServerUrl();
       const response = await proxyFetch(`${serverUrl}/api/workbench-ai/run`, {
@@ -4405,6 +4477,7 @@ export default function App() {
       }
       const conversationKey =
         request.conversationKey ?? request.promptId ?? request.title;
+      let resumeSession: { id: string } | null = null;
       if (presentation === "dialog") {
         const existing = tabsRef.current.find(
           (tab) =>
@@ -4424,6 +4497,9 @@ export default function App() {
                     workbenchAgentSurface: {
                       ...tab.workbenchAgentSurface,
                       presentation: tab.id === existing.id ? "dialog" : "dock",
+                      ...(tab.id === existing.id
+                        ? { sourceTabId, toolset: request.toolset }
+                        : {}),
                     },
                   }
                 : tab,
@@ -4431,6 +4507,36 @@ export default function App() {
           );
           setActiveTabId(sourceTabId);
           return;
+        }
+
+        const boundSessionId = loadWorkbenchAgentConversation(
+          workbenchId,
+          workspacePath,
+          conversationKey,
+        );
+        if (boundSessionId) {
+          const openBoundSession = tabsRef.current.find(
+            (tab) =>
+              tab.sessionId === boundSessionId &&
+              workspacePathsEqual(tab.agentDir, workspacePath),
+          );
+          if (openBoundSession) {
+            resumeSession = { id: boundSessionId };
+          } else {
+            const sessions = await getSessions(project.path);
+            const storedSession = sessions.find(
+              (session) => session.id === boundSessionId,
+            );
+            if (storedSession) {
+              resumeSession = { id: storedSession.id };
+            } else {
+              clearWorkbenchAgentConversation(
+                workbenchId,
+                workspacePath,
+                conversationKey,
+              );
+            }
+          }
         }
       }
 
@@ -4459,46 +4565,49 @@ export default function App() {
           "受控工作台工具当前仅支持 MyAgents 内置运行时，请先切换该项目的运行时",
         );
       }
-      const initialMessage: InitialMessage = { text: request.initialMessage };
-      if (request.toolset) {
-        initialMessage.workbenchToolset = request.toolset;
-      }
+      let initialMessage: InitialMessage | undefined;
+      if (!resumeSession) {
+        initialMessage = { text: request.initialMessage };
+        if (request.toolset) {
+          initialMessage.workbenchToolset = request.toolset;
+        }
 
-      if (effectiveRuntime === "builtin") {
-        const selection = resolveBuiltinSelection(
-          { agent: workspaceAgent, workspace: project },
-          currentConfig,
-          appProvidersRef.current,
-          appApiKeysRef.current,
-          appProviderVerifyStatusRef.current,
-        );
-        if (!selection) {
-          throw new Error(
-            "当前没有可用的模型服务，请先配置 API Key 或登录订阅账号",
+        if (effectiveRuntime === "builtin") {
+          const selection = resolveBuiltinSelection(
+            { agent: workspaceAgent, workspace: project },
+            currentConfig,
+            appProvidersRef.current,
+            appApiKeysRef.current,
+            appProviderVerifyStatusRef.current,
           );
-        }
+          if (!selection) {
+            throw new Error(
+              "当前没有可用的模型服务，请先配置 API Key 或登录订阅账号",
+            );
+          }
 
-        const providerIntent = isRuntimeBackedProvider(selection.provider)
-          ? toProviderExecutionIntent(selection.provider, selection.model)
-          : undefined;
-        if (providerIntent?.kind === "runtime-backed-provider") {
-          initialMessage.providerExecutionIdentity = providerIntent;
-          initialMessage.runtimeModel = providerIntent.model;
+          const providerIntent = isRuntimeBackedProvider(selection.provider)
+            ? toProviderExecutionIntent(selection.provider, selection.model)
+            : undefined;
+          if (providerIntent?.kind === "runtime-backed-provider") {
+            initialMessage.providerExecutionIdentity = providerIntent;
+            initialMessage.runtimeModel = providerIntent.model;
+          } else {
+            initialMessage.builtinSelection = {
+              providerId: selection.provider.id,
+              model: selection.model,
+            };
+          }
+          initialMessage.permissionMode = resolveInitialPermissionMode({
+            project,
+            agent: workspaceAgent,
+            defaultPermissionMode: currentConfig.defaultPermissionMode,
+          });
         } else {
-          initialMessage.builtinSelection = {
-            providerId: selection.provider.id,
-            model: selection.model,
-          };
+          initialMessage.runtimeModel =
+            normalizeStringSetting(workspaceAgent?.runtimeConfig?.model) ??
+            normalizeStringSetting(workspaceAgent?.model);
         }
-        initialMessage.permissionMode = resolveInitialPermissionMode({
-          project,
-          agent: workspaceAgent,
-          defaultPermissionMode: currentConfig.defaultPermissionMode,
-        });
-      } else {
-        initialMessage.runtimeModel =
-          normalizeStringSetting(workspaceAgent?.runtimeConfig?.model) ??
-          normalizeStringSetting(workspaceAgent?.model);
       }
 
       const newTab: Tab = {
@@ -4511,24 +4620,51 @@ export default function App() {
                 workbenchId,
                 workspacePath,
                 conversationKey,
+                toolset: request.toolset,
               },
             }
           : {}),
       };
       openLaunchTabNow(newTab);
       try {
-        const launch = handleLaunchProject(project, undefined, initialMessage, {
-          surface: "agent_card",
-          entryIntent: "send_message",
-        });
+        const launch = handleLaunchProject(
+          project,
+          resumeSession?.id,
+          initialMessage,
+          resumeSession
+            ? { historyEntrySource: "launcher_overlay" }
+            : {
+                surface: "agent_card",
+                entryIntent: "send_message",
+              },
+        );
         if (presentation === "dialog") {
           setActiveTabId(sourceTabId);
         }
         await launch;
-        setTabs((current) =>
-          current.map((tab) =>
-            tab.id === newTab.id
-              ? { ...tab, title: request.title }
+        setTabs((current) => {
+          const targetTabId = resumeSession
+            ? (current.find((tab) => tab.sessionId === resumeSession.id)?.id ??
+              newTab.id)
+            : newTab.id;
+          return current.map((tab) =>
+            tab.id === targetTabId
+              ? {
+                  ...tab,
+                  title: request.title,
+                  ...(presentation === "dialog"
+                    ? {
+                        workbenchAgentSurface: {
+                          presentation: "dialog" as const,
+                          sourceTabId,
+                          workbenchId,
+                          workspacePath,
+                          conversationKey,
+                          toolset: request.toolset,
+                        },
+                      }
+                    : {}),
+                }
               : presentation === "dialog" && tab.workbenchAgentSurface
                 ? {
                     ...tab,
@@ -4538,8 +4674,8 @@ export default function App() {
                     },
                   }
                 : tab,
-          ),
-        );
+          );
+        });
       } finally {
         removeUnusedPrecreatedLaunchTab(newTab.id);
         if (

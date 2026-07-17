@@ -29,6 +29,7 @@ import {
 
 import {
   CompactAiRunWindow,
+  WorkbenchHeaderActions,
   WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
   WORKBENCH_AI_RUN_REQUEST_VERSION,
   type WorkbenchRendererProps,
@@ -96,15 +97,16 @@ function WorldAgentButton({
       type="button"
       onClick={onClick}
       disabled={disabled || isLaunching}
+      aria-label={isLaunching ? "正在启动 Agent" : label}
       title={disabled ? "MyAgents Agent Session 当前不可用" : title}
-      className="flex h-10 items-center gap-2 rounded-md bg-[var(--accent-warm)] px-4 text-sm font-semibold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
+      className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
     >
       {isLaunching ? (
         <Loader2 className="h-4 w-4 animate-spin" />
       ) : (
         <Sparkles className="h-4 w-4" />
       )}
-      {isLaunching ? "正在启动" : label}
+      <span className="max-lg:hidden">{isLaunching ? "正在启动" : label}</span>
     </button>
   );
 }
@@ -1069,29 +1071,13 @@ export default function NovelWorkbenchRenderer({
       break;
     case "lore":
       content = (
-        <div className="relative h-full min-h-0">
+        <div className="h-full min-h-0">
           <SettingLibrary
             storage={context.storage}
             projectTitle={project.metadata.title}
             mode="library"
-            onNavigate={context.navigate}
             onAiAssist={runAiAssist}
           />
-          <div className="absolute bottom-5 right-5 z-30 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsProposalReviewOpen(true)}
-              className="flex h-10 items-center gap-2 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-3 text-sm font-medium shadow-lg hover:bg-[var(--hover-bg)]"
-            >
-              <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
-              审阅提案
-            </button>
-            <WorldAgentButton
-              disabled={!context.agentSessions.isAvailable}
-              isLaunching={isWorldAgentLaunching}
-              onClick={() => void launchWorldAgent("world")}
-            />
-          </div>
           {isProposalReviewOpen && (
             <WorldProposalReview
               storage={context.storage}
@@ -1104,31 +1090,13 @@ export default function NovelWorkbenchRenderer({
       break;
     case "lore-config":
       content = (
-        <div className="relative h-full min-h-0">
+        <div className="h-full min-h-0">
           <SettingLibrary
             storage={context.storage}
             projectTitle={project.metadata.title}
             mode="meta"
-            onNavigate={context.navigate}
             onAiAssist={runAiAssist}
           />
-          <div className="absolute bottom-5 right-5 z-30 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsProposalReviewOpen(true)}
-              className="flex h-10 items-center gap-2 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-3 text-sm font-medium shadow-lg hover:bg-[var(--hover-bg)]"
-            >
-              <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
-              审阅提案
-            </button>
-            <WorldAgentButton
-              disabled={!context.agentSessions.isAvailable}
-              isLaunching={isWorldAgentLaunching}
-              label="AI 配置模板"
-              title="打开模板配置 Agent"
-              onClick={() => void launchWorldAgent("template")}
-            />
-          </div>
           {isProposalReviewOpen && (
             <WorldProposalReview
               storage={context.storage}
@@ -1189,6 +1157,37 @@ export default function NovelWorkbenchRenderer({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
+      {(context.route === "lore" || context.route === "lore-config") && (
+        <WorkbenchHeaderActions>
+          <button
+            type="button"
+            aria-label="审阅提案"
+            title="审阅 Agent 提交的世界设定变更"
+            onClick={() => setIsProposalReviewOpen(true)}
+            className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium transition-colors hover:bg-[var(--hover-bg)]"
+          >
+            <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
+            <span className="max-lg:hidden">审阅提案</span>
+          </button>
+          <WorldAgentButton
+            disabled={!context.agentSessions.isAvailable}
+            isLaunching={isWorldAgentLaunching}
+            label={
+              context.route === "lore-config" ? "AI 配置模板" : "AI 创建世界"
+            }
+            title={
+              context.route === "lore-config"
+                ? "打开模板配置 Agent"
+                : "打开世界架构 Agent"
+            }
+            onClick={() =>
+              void launchWorldAgent(
+                context.route === "lore-config" ? "template" : "world",
+              )
+            }
+          />
+        </WorkbenchHeaderActions>
+      )}
       {!isImmersiveRoute && (
         <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--line-subtle)] px-5 text-xs text-[var(--ink-muted)]">
           <div className="flex min-w-0 items-center gap-2">

@@ -8,9 +8,9 @@ import {
 } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 
-import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import type { Tab } from "@/types/tab";
+import DraggableDialogFrame from "@/workbench-sdk/DraggableDialogFrame";
 
 interface WorkbenchAgentSurfaceHostProps {
   readonly surfaces: readonly Tab[];
@@ -71,17 +71,14 @@ export default function WorkbenchAgentSurfaceHost({
   return (
     <>
       {dialog && (
-        <OverlayBackdrop
-          className="z-[210] p-4 max-sm:p-0"
-          onClose={() => onMinimize(dialog.id)}
-        >
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-label={dialog.title}
-            className="flex h-[min(900px,calc(100vh-2rem))] w-[min(1280px,calc(100vw-2rem))] min-h-0 flex-col overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper)] shadow-2xl max-sm:h-full max-sm:w-full max-sm:rounded-none max-sm:border-0"
-          >
-            <header className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-[var(--ink)]">
+        <DraggableDialogFrame
+          key={dialog.id}
+          ariaLabel={dialog.title}
+          overlayClassName="z-[210]"
+          className="h-[min(720px,calc(100vh-4rem))] w-[min(1040px,calc(100vw-4rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+          headerClassName="flex h-11 items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-3"
+          header={
+            <>
               <span className="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--accent-warm)] text-white">
                 <Bot className="h-3.5 w-3.5" />
               </span>
@@ -118,19 +115,20 @@ export default function WorkbenchAgentSurfaceHost({
               >
                 <X className="h-4 w-4" />
               </button>
-            </header>
-            <div className="relative min-h-0 flex-1">
-              {dialog.view === "chat" ? (
-                renderSurface(dialog, true)
-              ) : (
-                <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  正在启动 Agent 会话
-                </div>
-              )}
-            </div>
-          </section>
-        </OverlayBackdrop>
+            </>
+          }
+        >
+          <div className="relative min-h-0 flex-1">
+            {dialog.view === "chat" ? (
+              renderSurface(dialog, true)
+            ) : (
+              <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在启动 Agent 会话
+              </div>
+            )}
+          </div>
+        </DraggableDialogFrame>
       )}
 
       {surfaces

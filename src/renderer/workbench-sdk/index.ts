@@ -10,6 +10,11 @@ export {
   ProposalReviewSurface,
   type ProposalReviewSurfaceProps,
 } from "./ProposalReviewSurface";
+export {
+  default as DraggableDialogFrame,
+  type DraggableDialogFrameProps,
+} from "./DraggableDialogFrame";
+export { default as WorkbenchHeaderActions } from "./WorkbenchHeaderActions";
 export type { PopoverPlacement, PopoverProps, SelectOption } from "./ui";
 export type { RegisteredWorkbench, WorkbenchRegistry } from "./registry";
 export type {

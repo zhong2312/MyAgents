@@ -1,24 +1,20 @@
 import {
   Archive,
   ArrowDown,
-  ArrowLeft,
   ArrowUp,
-  Check,
   Copy,
   Eye,
   FileCode2,
   History,
   ListTree,
-  Loader2,
   Plus,
-  Save,
   Search,
   ShieldCheck,
   Sparkles,
   Tags,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -39,7 +35,6 @@ interface SettingLibraryMetaProps {
   readonly isSaving: boolean;
   readonly error: string | null;
   readonly onSave: (meta: SettingLibraryMeta) => Promise<void>;
-  readonly onBack: () => void;
   readonly onAiAssist?: (
     target: NovelAiAssistTarget,
     localContext?: unknown,
@@ -168,7 +163,6 @@ export default function SettingLibraryMeta({
   isSaving,
   error,
   onSave,
-  onBack,
   onAiAssist,
 }: SettingLibraryMetaProps) {
   const [tab, setTab] = useState<MetaTab>("types");
@@ -191,6 +185,28 @@ export default function SettingLibraryMeta({
     () => JSON.stringify(draft) !== JSON.stringify(library.meta),
     [draft, library.meta],
   );
+  const draftRef = useRef(draft);
+  const dirtyRef = useRef(dirty);
+  const onSaveRef = useRef(onSave);
+
+  useEffect(() => {
+    draftRef.current = draft;
+    dirtyRef.current = dirty;
+    onSaveRef.current = onSave;
+  }, [dirty, draft, onSave]);
+
+  useEffect(() => {
+    if (!dirty || isSaving) return;
+    const timer = window.setTimeout(() => void onSave(draft), 900);
+    return () => window.clearTimeout(timer);
+  }, [dirty, draft, isSaving, onSave]);
+
+  useEffect(
+    () => () => {
+      if (dirtyRef.current) void onSaveRef.current(draftRef.current);
+    },
+    [],
+  );
   const selectedType =
     draft.levelTypes.find((type) => type.id === selectedTypeId) ??
     draft.levelTypes[0];
@@ -201,8 +217,6 @@ export default function SettingLibraryMeta({
   const groups = [
     ...new Set(draft.settingTemplates.map((item) => item.group)),
   ].sort((left, right) => left.localeCompare(right, "zh-CN"));
-
-  const save = () => onSave(draft);
 
   const createType = () => {
     const id = uniqueId("type");
@@ -245,54 +259,6 @@ export default function SettingLibraryMeta({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
-      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b border-[var(--line)] px-5 py-3">
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label="返回世界架构"
-          title="返回世界架构"
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <div>
-          <div className="text-xs text-[var(--ink-muted)]">项目级元配置</div>
-          <h1 className="text-base font-semibold">设定模板配置</h1>
-        </div>
-        <div className="ml-auto hidden items-center gap-2 text-xs text-[var(--success)] lg:flex">
-          <ShieldCheck className="h-4 w-4" />{" "}
-          配置变化不会删除正文或覆盖已填写内容
-        </div>
-        {onAiAssist && (
-          <button
-            type="button"
-            onClick={() =>
-              onAiAssist(
-                { kind: "world", label: "AI 完善模板配置" },
-                { metaDraft: draft },
-              )
-            }
-            className="ml-2 flex h-9 items-center gap-1.5 rounded-md border border-[var(--accent-cool)] bg-[var(--accent-cool-subtle)] px-3 text-sm font-medium text-[var(--accent-cool)]"
-          >
-            <Sparkles className="h-4 w-4" /> AI 完善配置
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={!dirty || isSaving}
-          className="ml-2 flex h-9 items-center gap-1.5 rounded-md bg-[var(--button-primary-bg)] px-3 text-sm font-medium text-[var(--button-primary-text)] disabled:opacity-45"
-        >
-          {isSaving ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : dirty ? (
-            <Save className="h-4 w-4" />
-          ) : (
-            <Check className="h-4 w-4" />
-          )}
-          {isSaving ? "保存中" : dirty ? "保存配置" : "已保存"}
-        </button>
-      </header>
       {error && (
         <div className="border-b border-[var(--line)] bg-[var(--error-bg)] px-5 py-2 text-xs text-[var(--error)]">
           {error}

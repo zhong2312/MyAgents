@@ -313,9 +313,7 @@ describe("NovelWorkbenchRenderer storage loop", () => {
       />,
     );
 
-    expect(
-      await screen.findByRole("heading", { name: "设定模板配置" }),
-    ).toBeInTheDocument();
+    await screen.findByRole("button", { name: /层级类型/ });
     expect(screen.getByRole("button", { current: "page" })).toHaveTextContent(
       "层级类型",
     );

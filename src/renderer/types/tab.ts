@@ -21,6 +21,7 @@ export interface WorkbenchAgentSurfaceState {
   readonly workbenchId: string;
   readonly workspacePath: string;
   readonly conversationKey: string;
+  readonly toolset?: WorkbenchAgentToolsetRequest;
 }
 
 /** Cron settings drafted in the launcher input. Sent forward via
