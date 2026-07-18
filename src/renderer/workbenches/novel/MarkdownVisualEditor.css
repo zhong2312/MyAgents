@@ -4,7 +4,7 @@
   --baseBgSubtle: var(--paper-inset);
   --baseBg: var(--paper-inset);
   --baseBgHover: var(--hover-bg);
-  --baseBgActive: var(--accent-cool-subtle);
+  --baseBgActive: var(--line);
   --baseLine: var(--line-subtle);
   --baseBorder: var(--line);
   --baseBorderHover: var(--ink-subtle);
@@ -54,6 +54,7 @@
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  background: #fcfcfc;
 }
 
 .novel-markdown-content {
@@ -62,6 +63,7 @@
   max-width: 56rem;
   margin: 0 auto;
   padding: 2.5rem 3.5rem 5rem;
+  background: #fcfcfc;
   color: var(--ink);
   font-size: 1rem;
   line-height: 2;
@@ -136,28 +138,78 @@
   text-underline-offset: 0.2em;
 }
 
-.novel-markdown-content table {
+.novel-markdown-content table:not(:has([data-tool-cell="true"])) {
   width: 100%;
   margin: 1.25rem 0;
   border-collapse: collapse;
+  color: var(--ink);
 }
 
-.novel-markdown-content th,
-.novel-markdown-content td {
+.novel-markdown-content table:not(:has([data-tool-cell="true"])) th,
+.novel-markdown-content table:not(:has([data-tool-cell="true"])) td {
   border: 1px solid var(--line);
   padding: 0.5rem 0.625rem;
   text-align: left;
   vertical-align: top;
 }
 
-.novel-markdown-content th {
+.novel-markdown-content table:not(:has([data-tool-cell="true"])) th {
   background: var(--paper-inset);
   font-weight: 600;
 }
 
+/* MDXEditor adds tool cells around editable tables for row/column actions.
+   Keep those controls outside the normal Markdown table treatment so their
+   spacing and fixed control columns remain stable. */
+.novel-markdown-content table:has([data-tool-cell="true"]) {
+  width: 100%;
+  margin: 1.25rem 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--ink);
+  background: var(--paper-elevated);
+}
+
+.novel-markdown-content table:has([data-tool-cell="true"]) th,
+.novel-markdown-content table:has([data-tool-cell="true"]) td {
+  border: 0;
+  padding: 0;
+  text-align: left;
+  vertical-align: top;
+  background: transparent;
+}
+
+.novel-markdown-content table:has([data-tool-cell="true"]) > tbody > tr > td:not([data-tool-cell="true"]),
+.novel-markdown-content table:has([data-tool-cell="true"]) > tbody > tr > th:not([data-tool-cell="true"]) {
+  min-height: 2.25rem;
+  border: 1px solid var(--line-subtle);
+  padding: 0.5rem 0.625rem;
+  background: var(--paper-elevated);
+}
+
+.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] {
+  border: 0;
+  padding: 0;
+  color: var(--ink-muted);
+  background: var(--paper);
+}
+
+.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] button {
+  min-height: 2rem;
+  color: var(--ink-muted);
+  opacity: 0.55;
+}
+
+.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] button:hover,
+.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] button:focus-visible {
+  color: var(--ink);
+  opacity: 1;
+}
+
 .novel-markdown-editor .cm-editor {
   min-height: 100%;
-  background: var(--paper);
+  background: #fcfcfc;
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.875rem;

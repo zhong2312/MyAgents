@@ -64,7 +64,7 @@ async function streamUploadToFile(file: File, destination: string): Promise<void
 }
 import { basename, dirname, isAbsolute, join, relative, resolve, extname, sep } from 'path';
 import { homedir } from 'os';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { fetchWithGeneralProxy } from './utils/cancellation';
 import { startOAuthMaintenanceForSidecarRole } from './mcp-oauth';
@@ -754,6 +754,7 @@ import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../shared/types/
 import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution';
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
+import { parseSessionHistoryGroupPath } from '../shared/session-history';
 import {
   isSystemMaintenanceSession,
   normalizeSystemMaintenanceKind,
@@ -802,6 +803,7 @@ function getCommandDownloadInfo(command: string): { runtimeName?: string; downlo
 }
 
 type SendMessagePayload = {
+  requestId?: string;
   text?: string;
   images?: ImagePayload[];
   sessionId?: string;
@@ -836,6 +838,47 @@ type SendMessagePayload = {
     modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
   } | 'subscription';
 };
+
+type ChatSendResponseBody = {
+  success: boolean;
+  error?: string;
+  queued?: boolean;
+  queueId?: string;
+  isInFlight?: boolean;
+  deliveryMode?: string;
+  canCancel?: boolean;
+  canForceExecute?: boolean;
+};
+
+type ChatSendRouteResult = {
+  body: ChatSendResponseBody;
+  status: number;
+};
+
+type ChatSendRequestCacheEntry = {
+  fingerprint: string;
+  promise: Promise<ChatSendRouteResult>;
+  settledAt?: number;
+};
+
+const CHAT_SEND_REQUEST_CACHE_TTL_MS = 5 * 60 * 1000;
+const CHAT_SEND_REQUEST_CACHE_MAX_ENTRIES = 512;
+const chatSendRequestCache = new Map<string, ChatSendRequestCacheEntry>();
+
+function pruneChatSendRequestCache(now = Date.now()): void {
+  for (const [requestId, entry] of chatSendRequestCache) {
+    if (entry.settledAt !== undefined && now - entry.settledAt >= CHAT_SEND_REQUEST_CACHE_TTL_MS) {
+      chatSendRequestCache.delete(requestId);
+    }
+  }
+  while (chatSendRequestCache.size >= CHAT_SEND_REQUEST_CACHE_MAX_ENTRIES) {
+    const settledEntry = [...chatSendRequestCache.entries()]
+      .find(([, entry]) => entry.settledAt !== undefined);
+    const oldestEntry = settledEntry ?? chatSendRequestCache.entries().next().value;
+    if (!oldestEntry) break;
+    chatSendRequestCache.delete(oldestEntry[0]);
+  }
+}
 
 function desktopScenarioForAnalyticsSource(
   source: TurnAnalyticsSource | undefined,
@@ -2683,7 +2726,15 @@ async function main() {
           return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
         }
         const text = payload?.text?.trim() ?? '';
-        let images = payload?.images ?? [];
+        const images = payload?.images ?? [];
+        const rawRequestId = (payload as { requestId?: unknown }).requestId;
+        const requestId = typeof rawRequestId === 'string' ? rawRequestId.trim() : undefined;
+        if (
+          rawRequestId !== undefined
+          && (!requestId || requestId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(requestId))
+        ) {
+          return jsonResponse({ success: false, error: 'Invalid requestId.' }, 400);
+        }
         const clientSessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : undefined;
         const runtimeSessionId = getRuntimeSessionIdForRequest();
         const permissionMode = payload?.permissionMode ?? 'auto';
@@ -2710,52 +2761,90 @@ async function main() {
         if (!text && images.length === 0) {
           return jsonResponse({ success: false, error: 'Message must have text or images.' }, 400);
         }
-        try {
-          images = rehomeImagePayloadsForSession(clientSessionId, runtimeSessionId, images) ?? images;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return jsonResponse({ success: false, error: message }, 400);
+
+        const executeSend = async (): Promise<ChatSendRouteResult> => {
+          let sendImages = images;
+          try {
+            sendImages = rehomeImagePayloadsForSession(clientSessionId, runtimeSessionId, sendImages) ?? sendImages;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { body: { success: false, error: message }, status: 400 };
+          }
+
+          try {
+            const engine = getSessionEngine();
+            const providerLabel = typeof providerEnv === 'object' ? providerEnv?.baseUrl ?? 'anthropic' : (providerEnv ?? 'anthropic');
+            const runtimeLabel = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
+            console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${sendImages.length} mode=${permissionMode} model=${model ?? 'default'} baseUrl=${providerLabel}`);
+            const result = await goalOrchestrator.sendDesktopMessage(engine, {
+              text,
+              images: sendImages,
+              permissionMode,
+              backgroundAgentPermissionMode: payload?.backgroundAgentPermissionMode,
+              model: model ?? undefined,
+              providerRoute,
+              providerEnv,
+              reasoningEffort,
+              sessionId: runtimeSessionId,
+              workspacePath: agentDir,
+              scenario: interactionScenario,
+              analyticsSource,
+              analyticsOrigin,
+              birthOrigin,
+            });
+            if (result.error) {
+              return { body: { success: false, error: result.error }, status: result.status ?? 500 };
+            }
+            return {
+              body: {
+                success: true,
+                queued: result.queued,
+                ...(result.queueId ? { queueId: result.queueId } : {}),
+                ...(result.isInFlight !== undefined ? { isInFlight: result.isInFlight } : {}),
+                ...(result.deliveryMode ? { deliveryMode: result.deliveryMode } : {}),
+                ...(result.canCancel !== undefined ? { canCancel: result.canCancel } : {}),
+                ...(result.canForceExecute !== undefined ? { canForceExecute: result.canForceExecute } : {}),
+              },
+              status: 200,
+            };
+          } catch (error) {
+            return {
+              body: { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
+              status: 500,
+            };
+          }
+        };
+
+        if (!requestId) {
+          const result = await executeSend();
+          return jsonResponse(result.body, result.status);
         }
 
-        try {
-          const engine = getSessionEngine();
-          const providerLabel = typeof providerEnv === 'object' ? providerEnv?.baseUrl ?? 'anthropic' : (providerEnv ?? 'anthropic');
-          const runtimeLabel = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
-          console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode} model=${model ?? 'default'} baseUrl=${providerLabel}`);
-          const result = await goalOrchestrator.sendDesktopMessage(engine, {
-            text,
-            images,
-            permissionMode,
-            backgroundAgentPermissionMode: payload?.backgroundAgentPermissionMode,
-            model: model ?? undefined,
-            providerRoute,
-            providerEnv,
-            reasoningEffort,
-            sessionId: runtimeSessionId,
-            workspacePath: agentDir,
-            scenario: interactionScenario,
-            analyticsSource,
-            analyticsOrigin,
-            birthOrigin,
-          });
-          if (result.error) {
-            return jsonResponse({ success: false, error: result.error }, result.status ?? 500);
+        const fingerprint = createHash('sha256')
+          .update(JSON.stringify({ ...payload, requestId: undefined }))
+          .digest('hex');
+        const cached = chatSendRequestCache.get(requestId);
+        if (cached) {
+          if (cached.fingerprint !== fingerprint) {
+            return jsonResponse({ success: false, error: 'requestId was reused with a different payload.' }, 409);
           }
-          return jsonResponse({
-            success: true,
-            queued: result.queued,
-            ...(result.queueId ? { queueId: result.queueId } : {}),
-            ...(result.isInFlight !== undefined ? { isInFlight: result.isInFlight } : {}),
-            ...(result.deliveryMode ? { deliveryMode: result.deliveryMode } : {}),
-            ...(result.canCancel !== undefined ? { canCancel: result.canCancel } : {}),
-            ...(result.canForceExecute !== undefined ? { canForceExecute: result.canForceExecute } : {}),
-          });
-        } catch (error) {
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
-            500
-          );
+          console.log(`[chat] deduplicated retry requestId=${requestId}`);
+          const result = await cached.promise;
+          return jsonResponse(result.body, result.status);
         }
+
+        pruneChatSendRequestCache();
+        const entry: ChatSendRequestCacheEntry = {
+          fingerprint,
+          promise: executeSend(),
+        };
+        chatSendRequestCache.set(requestId, entry);
+        const markSettled = () => {
+          entry.settledAt = Date.now();
+        };
+        void entry.promise.then(markSettled, markSettled);
+        const result = await entry.promise;
+        return jsonResponse(result.body, result.status);
       }
 
       if (pathname === '/chat/stop' && request.method === 'POST') {
@@ -3851,6 +3940,7 @@ async function main() {
           providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
           providerEnvJson?: string | null;
           origin?: SessionOrigin | null;
+          historyGroupPath?: string[] | null;
         }
 
         let payload: PatchPayload;
@@ -3920,6 +4010,20 @@ async function main() {
                 return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
               }
               updates.origin = nextOrigin;
+            }
+          }
+          if (payload.historyGroupPath !== undefined) {
+            try {
+              updates.historyGroupPath = parseSessionHistoryGroupPath(
+                payload.historyGroupPath,
+              );
+            } catch (error) {
+              return jsonResponse({
+                success: false,
+                error: error instanceof Error
+                  ? error.message
+                  : 'Invalid historyGroupPath.',
+              }, 400);
             }
           }
 

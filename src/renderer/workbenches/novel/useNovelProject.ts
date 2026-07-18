@@ -20,6 +20,7 @@ export interface NovelProjectController {
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
   readonly isCreatingChapter: boolean;
+  saveKnowledgeGraphEnabled(enabled: boolean): Promise<void>;
   reload(): Promise<LoadedNovelProject | null>;
   createChapter(): Promise<string>;
   renameChapter(chapterId: string, title: string): Promise<void>;
@@ -155,12 +156,25 @@ export function useNovelProject(
       : current);
   }, [repository]);
 
+  const saveKnowledgeGraphEnabled = useCallback(async (enabled: boolean) => {
+    if (!project) throw new Error('小说项目尚未加载');
+    const updated = await repository.saveKnowledgeGraphEnabled(project, enabled);
+    setProject((current) => current
+      ? Object.freeze({
+          ...current,
+          metadata: updated.metadata,
+          metadataContent: updated.metadataContent,
+        })
+      : current);
+  }, [project, repository]);
+
   return Object.freeze({
     project,
     error,
     isLoading,
     isRefreshing,
     isCreatingChapter,
+    saveKnowledgeGraphEnabled,
     reload,
     createChapter,
     renameChapter,

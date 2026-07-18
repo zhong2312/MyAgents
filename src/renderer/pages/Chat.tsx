@@ -93,6 +93,7 @@ import {
   useIntroductionContent,
 } from "@/hooks/useIntroductionContent";
 import { resolveAdoptedBuiltinProviderId } from "@/utils/sessionConfigAdoption";
+import { withTransientSidecarRetry } from "@/api/apiFetch";
 import {
   getSessionCronTask,
   isTaskExecuting,
@@ -2126,9 +2127,22 @@ export default function Chat({
       currentProvider,
     });
     const providerRoute = buildBuiltinProviderRoute(provider, effectiveModel);
-    const providerEnv = providerRoute ? undefined : buildProviderEnv(provider);
+    // Always build concrete env when possible. sendMessage may still use
+    // providerRoute (server materializes credentials), but pre-warm setup and
+    // fallback send both need the explicit env object.
+    const providerEnv = buildProviderEnv(provider);
 
     const autoSend = async () => {
+      const postWithRetry = async <T,>(
+        path: string,
+        body?: unknown,
+      ): Promise<T> =>
+        withTransientSidecarRetry(() => apiPost<T>(path, body), {
+          attempts: 10,
+          baseDelayMs: 150,
+          maxDelayMs: 1500,
+        });
+
       try {
         if (!isExternalRuntime && builtinSel && !provider) {
           throw new Error(
@@ -2136,11 +2150,61 @@ export default function Chat({
           );
         }
 
+        // 0. Pin provider/model on the session BEFORE workbench tools / MCP set.
+        // MCP set and workbench toolset configuration can trigger SDK pre-warm.
+        // If we pre-warm without providerEnv, the sidecar defaults to anthropic-sub
+        // even when the project is configured for a third-party provider (e.g.
+        // volcengine + deepseek). That mismatch makes the first auto-send fail.
+        if (isExternalRuntime) {
+          if (launchMessage.runtimeModel) {
+            setRuntimeModel(
+              coerceExternalRuntimeModelForUi(
+                launchMessage.runtimeModel,
+                currentRuntime,
+              ),
+            );
+          }
+        } else if (builtinSel) {
+          setSelectedProviderId(builtinSel.providerId);
+          setSelectedModel(builtinSel.model);
+          providerInitRef.current = true; // suppress deferred provider-change effect
+        }
+
+        // Provider/model pin is best-effort with retries. A transient connect
+        // blip must NOT restore the whole bootstrap prompt as a "failed draft"
+        // when chat/send can still carry providerRoute/providerEnv.
+        try {
+          if (!isExternalRuntime) {
+            if (providerEnv) {
+              if (!providerEnv.apiKey && provider?.type !== "subscription") {
+                throw new Error(
+                  `Provider "${builtinSel?.providerId ?? provider?.id ?? "unknown"}" is missing an API key.`,
+                );
+              }
+              await postWithRetry("/api/provider/set", {
+                providerEnv,
+              });
+            } else if (provider?.type === "subscription") {
+              await postWithRetry("/api/provider/set", {
+                providerEnv: null,
+              });
+            }
+          }
+          if (effectiveModel) {
+            await postWithRetry("/api/model/set", { model: effectiveModel });
+          }
+        } catch (error) {
+          console.warn(
+            "[Chat] Provider/model pin before auto-send failed; continuing with send payload:",
+            error,
+          );
+        }
+
         // 1. Configure host-owned workbench tools before the MCP fingerprint is
         // rebuilt. The sidecar validates the toolset id and binds it to this
         // session; the renderer never sends file contents or write authority.
         if (launchMessage.workbenchToolset) {
-          await apiPost("/api/workbench-agent/configure", {
+          await postWithRetry("/api/workbench-agent/configure", {
             toolset: launchMessage.workbenchToolset,
           });
         }
@@ -2166,7 +2230,7 @@ export default function Chat({
               globalEnabled.includes(server.id) &&
               selectedServerIds.includes(server.id),
           );
-          await apiPost("/api/mcp/set", { servers: effective });
+          await postWithRetry("/api/mcp/set", { servers: effective });
         }
         // Hand later config-change MCP pushes back to the mount effect now that
         // autoSend has applied the launcher's initial selection.
@@ -2219,21 +2283,6 @@ export default function Chat({
             // skipped on initialMessage tabs).
             projectSyncedRef.current = true;
           }
-        }
-        if (isExternalRuntime) {
-          if (launchMessage.runtimeModel) {
-            setRuntimeModel(
-              coerceExternalRuntimeModelForUi(
-                launchMessage.runtimeModel,
-                currentRuntime,
-              ),
-            );
-          }
-        } else if (builtinSel) {
-          // Apply the paired (provider, model) atomically — type system guarantees both present.
-          setSelectedProviderId(builtinSel.providerId);
-          setSelectedModel(builtinSel.model);
-          providerInitRef.current = true; // suppress deferred provider-change effect
         }
         // #324 — launcher hand-carry (don't rely on the async agent-config
         // write having landed before this tab seeded from currentAgent).
@@ -2304,12 +2353,15 @@ export default function Chat({
               launchMessage.images,
               effectivePermission,
               effectiveModel,
-              isExternalRuntime || providerRoute ? undefined : providerEnv,
+              // Prefer explicit env (carries apiKey) over route-only materialization.
+              isExternalRuntime ? undefined : providerEnv,
               undefined,
               isExternalRuntime
                 ? undefined
                 : (launchMessage.reasoningEffort ?? reasoningEffort),
-              isExternalRuntime ? undefined : providerRoute,
+              isExternalRuntime || providerEnv
+                ? undefined
+                : providerRoute,
             );
           }
         } else {
@@ -2319,7 +2371,8 @@ export default function Chat({
             launchMessage.images,
             effectivePermission,
             effectiveModel,
-            isExternalRuntime || providerRoute ? undefined : providerEnv,
+            // Prefer explicit env (carries apiKey) over route-only materialization.
+            isExternalRuntime ? undefined : providerEnv,
             undefined,
             // launch value directly — the setReasoningEffort above isn't
             // visible in this closure (same-render state), and the first
@@ -2327,7 +2380,9 @@ export default function Chat({
             isExternalRuntime
               ? undefined
               : (launchMessage.reasoningEffort ?? reasoningEffort),
-            isExternalRuntime ? undefined : providerRoute,
+            isExternalRuntime || providerEnv
+              ? undefined
+              : providerRoute,
           );
         }
 
@@ -3033,6 +3088,14 @@ export default function Chat({
     config?.officialToolSettings,
   ]);
 
+  const isChatMountedRef = useRef(true);
+  useEffect(() => {
+    isChatMountedRef.current = true;
+    return () => {
+      isChatMountedRef.current = false;
+    };
+  }, []);
+
   // Load enabled agents and sync to backend
   const loadAndSyncAgents = useCallback(async () => {
     try {
@@ -3070,6 +3133,7 @@ export default function Chat({
         }
       }
     } catch (err) {
+      if (!isChatMountedRef.current) return;
       console.error("[Chat] Failed to load agents:", err);
     }
     // configPending is an INTENTIONAL re-trigger dep (not referenced in the body — the
@@ -6657,6 +6721,10 @@ export default function Chat({
                 agentDir={agentDir}
                 projectIcon={currentProject?.icon}
                 projectDisplayName={currentProject?.displayName}
+                currentSessionId={sessionId}
+                onSelectSession={(id) =>
+                  handleSelectSession(id, "workspace_history")
+                }
                 provider={currentProvider}
                 providers={providers}
                 onProviderChange={handleProviderChange}

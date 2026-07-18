@@ -1018,6 +1018,7 @@ export async function updateSessionMetadata(
         | 'cronTaskId'
         | 'source'
         | 'origin'
+        | 'historyGroupPath'
         | 'favorite'
         | 'lastMessagePreview'
         | 'titleSource'

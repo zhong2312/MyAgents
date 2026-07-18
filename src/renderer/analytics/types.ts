@@ -127,6 +127,7 @@ export type HistoryEntrySource =
   | 'launcher_overlay'
   | 'chat_dropdown'
   | 'chat_dropdown_new_tab'
+  | 'workspace_history'
   | 'settings_helper_history'
   | 'task_run_history';
 

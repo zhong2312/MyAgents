@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
@@ -43,6 +43,30 @@ fn next_generation() -> u64 {
 const SSE_READ_TIMEOUT_SECS: u64 = 60;
 const HTTP_PROXY_TIMEOUT_SECS: u64 = 120;
 const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 = 360;
+
+// Renderer API traffic is high-frequency. Rebuilding reqwest::Client for every
+// loopback request discards its connection pool and can exhaust Windows'
+// dynamic TCP ports during long-running desktop sessions.
+static LOOPBACK_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn loopback_http_client() -> Result<reqwest::Client, String> {
+    if let Some(client) = LOOPBACK_HTTP_CLIENT.get() {
+        return Ok(client.clone());
+    }
+
+    let client = crate::local_http::builder()
+        .tcp_nodelay(true)
+        .http1_only()
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .pool_max_idle_per_host(4)
+        .build()
+        .map_err(|error| format!("[proxy] Failed to create loopback client: {}", error))?;
+    let _ = LOOPBACK_HTTP_CLIENT.set(client);
+    Ok(LOOPBACK_HTTP_CLIENT
+        .get()
+        .expect("loopback HTTP client must be initialized")
+        .clone())
+}
 
 /// Endpoints that need the long-timeout budget. Keep this list short — most
 /// sidecar work should finish in seconds, not minutes.
@@ -639,19 +663,15 @@ pub async fn proxy_http_request(
         || url_path.ends_with("/sessions");
     let start = std::time::Instant::now();
 
-    // Build client with configurable timeout
-    // Enable tcp_nodelay to disable Nagle's algorithm for faster response times
-    // Force HTTP/1.1 for compatibility with Bun server (HTTP/2 may cause connection issues on Windows)
-    // Use short-lived connection pool to balance performance and stability
+    // Reuse one loopback client so Sidecar requests share a connection pool.
+    // Request-specific timeouts are applied below because skill installation
+    // has a longer budget than ordinary API calls.
     let timeout_secs = proxy_timeout_for(url_path);
-    // Shared tuning for both the loopback and external client. tcp_nodelay +
-    // http1_only mirror the SSE-compat settings; the short-lived pool balances
-    // perf and stability.
+    // External traffic remains proxy-config aware and is low-frequency.
     let tune = |b: reqwest::ClientBuilder| {
-        b.timeout(std::time::Duration::from_secs(timeout_secs))
-            .tcp_nodelay(true)
+        b.tcp_nodelay(true)
             .http1_only() // Force HTTP/1.1 for SSE compatibility
-            .pool_idle_timeout(std::time::Duration::from_secs(5))
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
             .pool_max_idle_per_host(2)
     };
     // Loopback (the Sidecar) MUST bypass the system proxy — Clash/V2Ray would
@@ -659,8 +679,7 @@ pub async fn proxy_http_request(
     // proxy config / system-proxy discovery — otherwise telemetry is silently
     // dropped for proxy-dependent users. See `request_target_is_loopback`.
     let client = if request_target_is_loopback(&request.url) {
-        tune(crate::local_http::builder()).build().map_err(|e| {
-            let err = format!("[proxy] Failed to create client: {}", e);
+        loopback_http_client().map_err(|err| {
             logger::error(&app, &err);
             err
         })?
@@ -686,6 +705,7 @@ pub async fn proxy_http_request(
             return Err(err);
         }
     };
+    req_builder = req_builder.timeout(std::time::Duration::from_secs(timeout_secs));
 
     // Add headers
     if let Some(headers) = request.headers {

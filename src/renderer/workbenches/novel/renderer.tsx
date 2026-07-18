@@ -28,10 +28,9 @@ import {
 } from "react";
 
 import {
-  CompactAiRunWindow,
+  subscribeWorkbenchHostAction,
   WorkbenchHeaderActions,
   WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
-  WORKBENCH_AI_RUN_REQUEST_VERSION,
   type WorkbenchRendererProps,
 } from "@/workbench-sdk";
 
@@ -45,8 +44,13 @@ import {
 } from "./promptLibraryResolver";
 import type { LoadedNovelChapter, LoadedNovelProject } from "./repository";
 import SettingLibrary from "./SettingLibrary";
+import KnowledgeBase from "./KnowledgeBase";
+import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
-import { createNovelSettingLibraryRepository } from "./settingLibraryRepository";
+import {
+  createNovelSettingLibraryRepository,
+  type LoadedSettingLibrary,
+} from "./settingLibraryRepository";
 import WorldMapPrototype from "./WorldMapPrototype";
 import WorldProposalReview from "./WorldProposalReview";
 import { buildWorldProposalAgentInstructions } from "./worldProposalSchema";
@@ -77,6 +81,99 @@ function SectionLabel({ children }: { children: ReactNode }) {
       {children}
     </h2>
   );
+}
+
+const AI_CONTEXT_TEXT_LIMIT = 24_000;
+
+function clipAiContextText(
+  value: string,
+  limit = AI_CONTEXT_TEXT_LIMIT,
+): string {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}\n\n[内容已截断，请基于已有部分生成候选]`;
+}
+
+function withoutCurrentDraft(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy.currentDraft;
+  return copy;
+}
+
+function buildAiSettingLibraryContext(
+  library: LoadedSettingLibrary,
+  target: NovelAiAssistTarget,
+): {
+  readonly schemaVersion: LoadedSettingLibrary["meta"]["schemaVersion"];
+  readonly levelTypes: readonly unknown[];
+  readonly settingTemplates: readonly unknown[];
+  readonly profiles: LoadedSettingLibrary["meta"]["profiles"];
+  spatialTree: unknown;
+  settings: unknown;
+} {
+  const targetSetting =
+    target.kind === "setting-page"
+      ? library.settingsIndex.settings.find(
+          (item) =>
+            item.nodeId === target.nodeId && item.id === target.settingId,
+        )
+      : undefined;
+  const targetTemplateId =
+    target.kind === "setting-page"
+      ? (targetSetting?.templateId ??
+        target.settingId.replace(`page-${target.nodeId}-`, ""))
+      : target.kind === "setting-template"
+        ? target.entityId
+        : undefined;
+
+  return {
+    schemaVersion: library.meta.schemaVersion,
+    levelTypes: library.meta.levelTypes.map((levelType) => ({
+      ...levelType,
+      description: clipAiContextText(levelType.description, 600),
+    })),
+    settingTemplates: library.meta.settingTemplates.map((template) => {
+      const relevant = template.id === targetTemplateId;
+      return relevant
+        ? {
+            ...template,
+            description: clipAiContextText(template.description, 800),
+            skeleton: clipAiContextText(template.skeleton, 4_000),
+            agentGuide: clipAiContextText(template.agentGuide, 3_000),
+          }
+        : {
+            id: template.id,
+            name: template.name,
+            group: template.group,
+            description: clipAiContextText(template.description, 300),
+            version: template.version,
+            source: template.source,
+            ...(template.archived ? { archived: true } : {}),
+          };
+    }),
+    profiles: library.meta.profiles,
+    spatialTree: library.spatialTree.nodes.map((node) => ({
+      id: node.id,
+      parentId: node.parentId,
+      name: node.name,
+      typeId: node.typeId,
+      order: node.order,
+    })),
+    settings: library.settingsIndex.settings.map((setting) =>
+      setting.id === targetSetting?.id
+        ? setting
+        : {
+            id: setting.id,
+            nodeId: setting.nodeId,
+            templateId: setting.templateId,
+            name: setting.name,
+            group: setting.group,
+            status: setting.status,
+          },
+    ),
+  };
 }
 
 function WorldAgentButton({
@@ -841,13 +938,22 @@ export default function NovelWorkbenchRenderer({
   const [operationError, setOperationError] = useState<string | null>(null);
   const [isWorldAgentLaunching, setIsWorldAgentLaunching] = useState(false);
   const [isProposalReviewOpen, setIsProposalReviewOpen] = useState(false);
-  const [aiRun, setAiRun] = useState<{
-    readonly target: NovelAiAssistTarget;
-    readonly status: "preparing" | "running" | "ready" | "error";
-    readonly output?: string;
-    readonly error?: string;
-  } | null>(null);
+  const [knowledgeSourceFocus, setKnowledgeSourceFocus] =
+    useState<KnowledgeSourceRef | null>(null);
   const project = controller.project;
+
+  useEffect(
+    () =>
+      subscribeWorkbenchHostAction(
+        {
+          workbenchId: context.manifest.id,
+          workspacePath: context.workspacePath,
+          action: "open-proposal-review",
+        },
+        () => setIsProposalReviewOpen(true),
+      ),
+    [context.manifest.id, context.workspacePath],
+  );
 
   const selectedChapter = useMemo(() => {
     if (!project?.chapters.length) return undefined;
@@ -882,6 +988,25 @@ export default function NovelWorkbenchRenderer({
   const openChapter = (chapterId: string) => {
     setSelectedChapterId(chapterId);
     context.navigate("manuscript");
+  };
+
+  const openKnowledgeSource = (source: KnowledgeSourceRef) => {
+    setKnowledgeSourceFocus(source);
+    if (source.path.startsWith("manuscript/")) {
+      const match = /^manuscript\/chapters\/(\d{6})\.md$/u.exec(source.path);
+      if (match) setSelectedChapterId(`chapter-${match[1]}`);
+      context.navigate("manuscript");
+    } else if (source.path.startsWith("outline/")) {
+      context.navigate("outline");
+    } else if (source.path.startsWith("timeline/")) {
+      context.navigate("timeline");
+    } else if (source.path.startsWith("research/")) {
+      context.navigate("research");
+    } else if (source.path === "world/setting-library/meta.json") {
+      context.navigate("lore-config");
+    } else {
+      context.navigate("lore");
+    }
   };
 
   const launchWorldAgent = async (mode: "world" | "template") => {
@@ -970,6 +1095,9 @@ export default function NovelWorkbenchRenderer({
         conversationKey: isTemplateMode
           ? "novel.world.template-config"
           : "novel.world.architecture",
+        historyGroupPath: isTemplateMode
+          ? ["设定模板", "模板配置"]
+          : ["世界架构", "创建世界"],
         toolset: {
           id: "novel-world",
           context: {
@@ -990,11 +1118,11 @@ export default function NovelWorkbenchRenderer({
     target: NovelAiAssistTarget,
     localContext?: unknown,
   ): Promise<string | null> => {
-    if (!context.aiRuns.isAvailable) {
-      setOperationError("MyAgents 一次性 AI 生成接口当前不可用");
+    if (!context.agentSessions.isAvailable) {
+      setOperationError("MyAgents Agent Session 当前不可用");
       return null;
     }
-    setAiRun({ target, status: "preparing" });
+    setOperationError(null);
     try {
       const library = await createNovelSettingLibraryRepository(
         context.storage,
@@ -1005,12 +1133,14 @@ export default function NovelWorkbenchRenderer({
           (item) =>
             item.nodeId === target.nodeId && item.id === target.settingId,
         );
-        if (setting) {
-          currentPage = {
-            path: setting.pagePath,
-            content: (await context.storage.readText(setting.pagePath)).content,
-          };
-        }
+        currentPage = {
+          path:
+            setting?.pagePath ??
+            `world/setting-library/pages/${target.nodeId}/${target.settingId}.md`,
+          content: setting
+            ? (await context.storage.readText(setting.pagePath)).content
+            : "",
+        };
       }
       const injectedContext = {
         project: {
@@ -1018,32 +1148,75 @@ export default function NovelWorkbenchRenderer({
           genres: project.metadata.genres,
         },
         target,
-        world: {
-          meta: library.meta,
-          spatialTree: library.spatialTree,
-          settings: library.settingsIndex,
-        },
-        currentPage,
-        localContext,
+        world: buildAiSettingLibraryContext(library, target),
+        currentPage: currentPage
+          ? {
+              path: currentPage.path,
+              content: clipAiContextText(
+                (() => {
+                  if (
+                    localContext &&
+                    typeof localContext === "object" &&
+                    !Array.isArray(localContext) &&
+                    typeof (localContext as Record<string, unknown>)
+                      .currentDraft === "string"
+                  ) {
+                    return (localContext as Record<string, string>)
+                      .currentDraft;
+                  }
+                  return currentPage.content;
+                })(),
+              ),
+            }
+          : null,
+        localContext: withoutCurrentDraft(localContext),
       };
-      setAiRun({ target, status: "running" });
-      const result = await context.aiRuns.run({
-        version: WORKBENCH_AI_RUN_REQUEST_VERSION,
-        label: target.label,
-        systemPrompt:
-          "你是小说工作台的字段生成助手。只生成当前目标可直接使用的候选内容，不修改文件，不扩展到无关设定。若目标是结构化实体，输出严格 JSON；若目标是设定页，输出 Markdown 正文。不要使用 Markdown 代码围栏，也不要附加解释。",
-        prompt: `请为下列目标生成一个候选结果。\n\n${JSON.stringify(injectedContext, null, 2)}`,
+      const targetKey =
+        target.kind === "setting-page" || target.kind === "spatial-children"
+          ? `${target.kind}:${target.nodeId}${
+              target.kind === "setting-page" ? `:${target.settingId}` : ""
+            }`
+          : target.kind === "world"
+            ? "world"
+            : `${target.kind}:${target.entityId}`;
+      const initialMessage = `## 小说工作台单项 AI 任务
+
+作者已点击“AI 写作”，请直接为当前目标生成可审批候选，不要再次询问是否开始。
+
+目标：${target.label}
+
+必要上下文：
+${JSON.stringify(injectedContext, null, 2)}
+
+执行规则：
+1. 只处理当前目标以及保证 settings.json 引用闭合所必需的关联文件，不扩展无关设定。
+2. 现有文件使用 modify；虚拟设定页尚未落盘时，同时创建页面、词条文件并修改 settings.json 登记引用。
+3. 生成完成后必须先调用 novel_world_validate_changes，再调用 novel_world_submit_proposal。
+4. 不得直接修改正式文件。提交成功后简要说明结果，并提示作者在小说工作台审阅提案。`;
+      await context.agentSessions.open({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `${target.label} · AI 写作`,
+        promptId: "novel.ai-assist",
+        initialMessage,
+        presentation: "dock",
+        conversationKey: `novel.ai-assist:${targetKey}`,
+        forceNew: true,
+        historyGroupPath: ["世界架构", target.label],
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "assist",
+            promptId: "novel.ai-assist",
+            promptVersion: "1.0.0",
+            targetKind: target.kind,
+            targetKey,
+          },
+        },
       });
-      setAiRun({ target, status: "ready", output: result.output });
-      return result.output;
     } catch (cause) {
-      setAiRun({
-        target,
-        status: "error",
-        error: cause instanceof Error ? cause.message : String(cause),
-      });
-      return null;
+      setOperationError(cause instanceof Error ? cause.message : String(cause));
     }
+    return null;
   };
 
   let content: ReactNode;
@@ -1077,6 +1250,7 @@ export default function NovelWorkbenchRenderer({
             projectTitle={project.metadata.title}
             mode="library"
             onAiAssist={runAiAssist}
+            focusSource={knowledgeSourceFocus}
           />
           {isProposalReviewOpen && (
             <WorldProposalReview
@@ -1105,6 +1279,17 @@ export default function NovelWorkbenchRenderer({
             />
           )}
         </div>
+      );
+      break;
+    case "knowledge":
+      content = (
+        <KnowledgeBase
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          enabled={project.metadata.knowledgeGraph.enabled}
+          onToggle={controller.saveKnowledgeGraphEnabled}
+          onOpenSource={openKnowledgeSource}
+        />
       );
       break;
     case "map":
@@ -1151,6 +1336,7 @@ export default function NovelWorkbenchRenderer({
   const isImmersiveRoute = [
     "lore",
     "lore-config",
+    "knowledge",
     "map",
     "ai-prompts",
   ].includes(context.route);
@@ -1232,21 +1418,6 @@ export default function NovelWorkbenchRenderer({
           />
         )}
       </div>
-      {aiRun && (
-        <CompactAiRunWindow
-          label={aiRun.target.label}
-          status={aiRun.status}
-          output={aiRun.output}
-          error={aiRun.error}
-          onRetry={() => void runAiAssist(aiRun.target)}
-          onExpand={() =>
-            void launchWorldAgent(
-              context.route === "lore-config" ? "template" : "world",
-            )
-          }
-          onClose={() => setAiRun(null)}
-        />
-      )}
     </div>
   );
 }

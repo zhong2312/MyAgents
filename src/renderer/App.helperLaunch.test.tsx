@@ -53,6 +53,13 @@ const mocks = vi.hoisted(() => {
       createdAt: "2026-06-27T00:00:00.000Z",
       lastActiveAt: "2026-06-27T00:00:00.000Z",
     })),
+    getSessions: vi.fn(async () => [] as Array<Record<string, unknown>>),
+    toast: {
+      error: vi.fn(),
+      success: vi.fn(),
+      warning: vi.fn(),
+      info: vi.fn(),
+    },
     startGlobalSidecar: vi.fn(async () => undefined),
     initGlobalSidecarReadyPromise: vi.fn(),
     markGlobalSidecarReady: vi.fn(),
@@ -128,6 +135,7 @@ vi.mock("@/api/cronTaskClient", () => ({
 
 vi.mock("@/api/sessionClient", () => ({
   createSession: mocks.createSession,
+  getSessions: mocks.getSessions,
   updateSession: vi.fn(async () => undefined),
 }));
 
@@ -203,12 +211,7 @@ vi.mock("@/workbench-sdk/WorkbenchShell", () => ({
 }));
 
 vi.mock("@/components/Toast", () => ({
-  useToast: () => ({
-    error: vi.fn(),
-    success: vi.fn(),
-    warning: vi.fn(),
-    info: vi.fn(),
-  }),
+  useToast: () => mocks.toast,
 }));
 
 vi.mock("@/hooks/useUpdater", () => ({
@@ -330,6 +333,7 @@ import App from "./App";
 describe("App helper launch", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     mocks.chatProps.length = 0;
     mocks.launcherProps.length = 0;
     mocks.workbenchShellProps.length = 0;
@@ -338,6 +342,7 @@ describe("App helper launch", () => {
     mocks.agent.reasoningEffort = undefined;
     mocks.agent.runtimeConfig = undefined;
     mocks.multiAgentRuntime = false;
+    mocks.getSessions.mockResolvedValue([]);
     mocks.resolveBuiltinSelection.mockReturnValue({
       provider: mocks.provider,
       model: "mimo-v2.5-pro",
@@ -386,9 +391,29 @@ describe("App helper launch", () => {
           title: string;
           initialMessage: string;
           promptId?: string;
+          presentation?: "tab" | "dialog";
+          conversationKey?: string;
+          forceNew?: boolean;
+          toolset?: { id: string; context?: Record<string, string> };
         },
       ) => Promise<void>;
     };
+  }
+
+  async function openNovelWorkbench() {
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(CUSTOM_EVENTS.OPEN_WORKBENCH, {
+          detail: {
+            workbenchId: "io.myagents.novel",
+            workspacePath: mocks.project.path,
+          },
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(mocks.workbenchShellProps.length).toBeGreaterThan(0),
+    );
   }
 
   it("prepares a managed Codex provider session when opening an empty Launcher workspace", async () => {
@@ -510,20 +535,7 @@ describe("App helper launch", () => {
 
   it("freezes an available provider selection for workbench Agent auto-send", async () => {
     render(<App />);
-
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent(CUSTOM_EVENTS.OPEN_WORKBENCH, {
-          detail: {
-            workbenchId: "io.myagents.novel",
-            workspacePath: mocks.project.path,
-          },
-        }),
-      );
-    });
-    await waitFor(() =>
-      expect(mocks.workbenchShellProps.length).toBeGreaterThan(0),
-    );
+    await openNovelWorkbench();
 
     await act(async () => {
       await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
@@ -563,20 +575,7 @@ describe("App helper launch", () => {
   it("does not start a workbench Agent session without an available provider", async () => {
     mocks.resolveBuiltinSelection.mockReturnValue(undefined);
     render(<App />);
-
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent(CUSTOM_EVENTS.OPEN_WORKBENCH, {
-          detail: {
-            workbenchId: "io.myagents.novel",
-            workspacePath: mocks.project.path,
-          },
-        }),
-      );
-    });
-    await waitFor(() =>
-      expect(mocks.workbenchShellProps.length).toBeGreaterThan(0),
-    );
+    await openNovelWorkbench();
 
     await expect(
       latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
@@ -586,6 +585,141 @@ describe("App helper launch", () => {
       }),
     ).rejects.toThrow("当前没有可用的模型服务");
     expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it("reopens an existing dialog surface without launching a second session", async () => {
+    render(<App />);
+    await openNovelWorkbench();
+
+    await act(async () => {
+      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
+        version: 1,
+        title: "世界架构向导",
+        initialMessage: "创建小说世界",
+        promptId: "novel.world.guide",
+        presentation: "dialog",
+        conversationKey: "novel.world.architecture",
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(1),
+    );
+
+    await act(async () => {
+      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
+        version: 1,
+        title: "世界架构向导",
+        initialMessage: "第二次不应该再发",
+        promptId: "novel.world.guide",
+        presentation: "dialog",
+        conversationKey: "novel.world.architecture",
+      });
+    });
+
+    // Focus path must not start another sidecar or re-bootstrap a new message.
+    expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.chatProps.some((props) => {
+        const initialMessage = props.initialMessage as
+          | { text?: string }
+          | undefined;
+        return initialMessage?.text === "第二次不应该再发";
+      }),
+    ).toBe(false);
+    expect(mocks.toast.info).toHaveBeenCalledWith("已回到上次对话");
+  });
+
+  it("recreates an empty bound dialog session and re-sends initialMessage", async () => {
+    window.localStorage.clear();
+    mocks.getSessions.mockResolvedValue([
+      {
+        id: "empty-bound-session",
+        agentDir: mocks.project.path,
+        title: "空会话",
+        createdAt: "2026-06-27T00:00:00.000Z",
+        lastActiveAt: "2026-06-27T00:00:00.000Z",
+        stats: { turnCount: 0, totalInputTokens: 0, totalOutputTokens: 0 },
+      },
+    ]);
+    window.localStorage.setItem(
+      [
+        "myagents.workbench.agent-conversation.v1",
+        encodeURIComponent("io.myagents.novel"),
+        encodeURIComponent(mocks.project.path),
+        encodeURIComponent("novel.world.architecture"),
+      ].join(":"),
+      "empty-bound-session",
+    );
+
+    render(<App />);
+    await openNovelWorkbench();
+
+    await act(async () => {
+      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
+        version: 1,
+        title: "世界架构向导",
+        initialMessage: "重建后的开场",
+        promptId: "novel.world.guide",
+        presentation: "dialog",
+        conversationKey: "novel.world.architecture",
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        mocks.chatProps.some((props) => {
+          const initialMessage = props.initialMessage as
+            | { text?: string }
+            | undefined;
+          return initialMessage?.text === "重建后的开场";
+        }),
+      ).toBe(true);
+    });
+    expect(mocks.ensureSessionSidecar).toHaveBeenCalled();
+  });
+
+  it("forceNew ignores an existing dialog surface and starts a fresh session", async () => {
+    render(<App />);
+    await openNovelWorkbench();
+
+    await act(async () => {
+      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
+        version: 1,
+        title: "世界架构向导",
+        initialMessage: "第一次开场",
+        promptId: "novel.world.guide",
+        presentation: "dialog",
+        conversationKey: "novel.world.architecture",
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(1),
+    );
+
+    await act(async () => {
+      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
+        version: 1,
+        title: "世界架构向导",
+        initialMessage: "强制新开场",
+        promptId: "novel.world.guide",
+        presentation: "dialog",
+        conversationKey: "novel.world.architecture",
+        forceNew: true,
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      mocks.chatProps.some((props) => {
+        const initialMessage = props.initialMessage as
+          | { text?: string }
+          | undefined;
+        return initialMessage?.text === "强制新开场";
+      }),
+    ).toBe(true);
   });
 
   it("commits the helper tab before launching so the active tab is renderable", async () => {

@@ -62,6 +62,8 @@ export interface SessionMetadata {
     source?: string;
     /** Stable product/statistics origin. This is the session birth fact; legacy `source` is channel metadata. */
     origin?: SessionOrigin;
+    /** Optional project-local history grouping. Missing means project root. */
+    historyGroupPath?: string[];
     /** User-pinned to the 收藏 filter view. Only `true` is persisted; absent
      *  has identical meaning to false. */
     favorite?: boolean;
@@ -286,6 +288,7 @@ export async function updateSession(
         providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
         providerEnvJson?: string | null;
         origin?: SessionOrigin | null;
+        historyGroupPath?: string[] | null;
     }
 ): Promise<SessionMetadata | null> {
     // #305: throw on HTTP / JSON failure instead of returning null.

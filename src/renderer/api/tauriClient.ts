@@ -815,21 +815,28 @@ export async function getTabServerUrl(tabId: string): Promise<string> {
         let lastError: unknown;
         // One initial attempt + retries per the backoff schedule.
         for (let attempt = 0; attempt <= TAB_SERVER_URL_RETRY_DELAYS_MS.length; attempt++) {
+            if (attempt > 0 && tabServerUrlPending.get(tabId) !== ref.poll) {
+                throw new Error(`No running sidecar for tab ${tabId}: lookup cancelled`);
+            }
             try {
                 const url = await invoke<string>('cmd_get_tab_server_url', { tabId });
                 // Commit only if we are still the authoritative poll. A stop /
                 // reset during the IPC means the tab either died (url now dead
                 // port) or restarted on a new port (url possibly OK but a new
                 // poll should decide, not us).
-                if (tabServerUrlPending.get(tabId) === ref.poll) {
-                    tabServerUrls.set(tabId, url);
+                if (tabServerUrlPending.get(tabId) !== ref.poll) {
+                    throw new Error(`No running sidecar for tab ${tabId}: lookup cancelled`);
                 }
+                tabServerUrls.set(tabId, url);
                 if (attempt > 0) {
                     console.debug(`[tauriClient] Sidecar for tab ${tabId} ready after ${attempt} retry(ies)`);
                 }
                 return url;
             } catch (error) {
                 lastError = error;
+                if (tabServerUrlPending.get(tabId) !== ref.poll) {
+                    throw new Error(`No running sidecar for tab ${tabId}: lookup cancelled`);
+                }
                 const delay = TAB_SERVER_URL_RETRY_DELAYS_MS[attempt];
                 if (delay === undefined) break;
                 await new Promise((resolve) => setTimeout(resolve, delay));
@@ -1088,6 +1095,11 @@ export function resetTabServerUrlCache(tabId: string): void {
  */
 export function updateGlobalServerUrl(url: string): void {
     tabServerUrls.set('__global__', url);
+}
+
+/** Drop a stale Global Sidecar URL after a transport-level failure. */
+export function resetGlobalServerUrlCache(): void {
+    tabServerUrls.delete('__global__');
 }
 
 // ============= Session Activation API =============

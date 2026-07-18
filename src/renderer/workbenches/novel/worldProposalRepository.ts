@@ -11,6 +11,8 @@ import {
   parseSettingLibraryMeta,
   parseSettingLibrarySettingsIndex,
   parseSettingLibrarySpatialTree,
+  serializeSettingLibraryFile,
+  type SettingInstance,
 } from "./settingLibrarySchema";
 import {
   parseWorldProposalManifest,
@@ -31,6 +33,8 @@ export interface LoadedWorldProposalChange extends WorldProposalChange {
   readonly conflict: boolean;
   readonly loadError: string | null;
   readonly inferred: boolean;
+  /** Generated in memory to repair a legacy proposal that omitted settings.json. */
+  readonly generated: boolean;
 }
 
 export interface LoadedWorldProposal {
@@ -59,6 +63,7 @@ export type WorldProposalStatus =
 export interface NovelWorldProposalRepository {
   list(): Promise<WorldProposalListResult>;
   load(proposalId: string): Promise<LoadedWorldProposal>;
+  deleteProposals(proposalIds: readonly string[]): Promise<void>;
   apply(
     proposalId: string,
     changeIds: readonly string[],
@@ -68,6 +73,10 @@ export interface NovelWorldProposalRepository {
     proposalId: string,
     changeIds: readonly string[],
   ): Promise<LoadedWorldProposal>;
+  delete(
+    proposalId: string,
+    changeIds: readonly string[],
+  ): Promise<LoadedWorldProposal | null>;
 }
 
 function errorMessage(error: unknown): string {
@@ -82,10 +91,7 @@ async function readOptionalText(
   return info?.exists ? (await storage.readText(path)).content : null;
 }
 
-function snapshotRoot(
-  proposalId: string,
-  side: "before" | "after",
-): string {
+function snapshotRoot(proposalId: string, side: "before" | "after"): string {
   return `${WORLD_PROPOSALS_DIRECTORY}/${proposalId}/${side}`;
 }
 
@@ -115,11 +121,7 @@ async function readProposalSnapshot(
   side: "before" | "after",
   targetPath: string,
 ): Promise<string> {
-  const canonicalPath = worldProposalSnapshotPath(
-    proposalId,
-    side,
-    targetPath,
-  );
+  const canonicalPath = worldProposalSnapshotPath(proposalId, side, targetPath);
   const legacyPath = worldProposalLegacySnapshotPath(
     proposalId,
     side,
@@ -148,21 +150,13 @@ async function readOptionalProposalSnapshot(
   targetPath: string,
 ): Promise<string | null> {
   try {
-    return await readProposalSnapshot(
-      storage,
-      proposalId,
-      side,
-      targetPath,
-    );
+    return await readProposalSnapshot(storage, proposalId, side, targetPath);
   } catch {
     return null;
   }
 }
 
-function discoveredChangeId(
-  targetPath: string,
-  usedIds: Set<string>,
-): string {
+function discoveredChangeId(targetPath: string, usedIds: Set<string>): string {
   let hash = 0x811c9dc5;
   for (const character of targetPath) {
     hash ^= character.charCodeAt(0);
@@ -200,12 +194,7 @@ async function discoverUnlistedChanges(
   for (const targetPath of [...targets].sort()) {
     if (declaredTargets.has(targetPath)) continue;
     const [beforeContent, currentContent] = await Promise.all([
-      readOptionalProposalSnapshot(
-        storage,
-        proposalId,
-        "before",
-        targetPath,
-      ),
+      readOptionalProposalSnapshot(storage, proposalId, "before", targetPath),
       readOptionalText(storage, targetPath),
     ]);
     discovered.push({
@@ -296,6 +285,168 @@ function isMaterializedSettingPath(path: string): boolean {
     path.startsWith("world/setting-library/pages/") ||
     path.startsWith("world/setting-library/entries/")
   );
+}
+
+interface GeneratedSettingsIndexChange {
+  readonly change: WorldProposalChange;
+  readonly beforeContent: string;
+  readonly afterContent: string;
+}
+
+function inferMissingSettingsIndexChange(
+  library: LoadedSettingLibrary,
+  changes: readonly WorldProposalChange[],
+): GeneratedSettingsIndexChange | null {
+  if (
+    changes.some(
+      (change) => change.targetPath === SETTING_LIBRARY_PATHS.settings,
+    )
+  ) {
+    return null;
+  }
+
+  const referencedPaths = new Set(
+    library.settingsIndex.settings.flatMap((setting) => [
+      setting.pagePath,
+      setting.entriesPath,
+    ]),
+  );
+  const pendingByTarget = new Map(
+    changes
+      .filter((change) => change.status === "pending")
+      .map((change) => [change.targetPath, change] as const),
+  );
+  const orphanTargets = [...pendingByTarget.keys()].filter(
+    (path) => isMaterializedSettingPath(path) && !referencedPaths.has(path),
+  );
+  if (orphanTargets.length === 0) return null;
+
+  const pairedTargets = new Set<string>();
+  const inferredInstances: SettingInstance[] = [];
+  const existingSettingIds = new Set(
+    library.settingsIndex.settings.map((setting) => setting.id),
+  );
+  for (const pagePath of orphanTargets.filter((path) =>
+    path.startsWith("world/setting-library/pages/"),
+  )) {
+    const match =
+      /^world\/setting-library\/pages\/([a-z0-9-]+)\/([a-z0-9-]+)\.md$/.exec(
+        pagePath,
+      );
+    if (!match) return null;
+    const [, nodeId, settingId] = match;
+    const entriesPath = `world/setting-library/entries/${nodeId}/${settingId}.json`;
+    if (!pendingByTarget.has(entriesPath)) return null;
+
+    const node = library.spatialTree.nodes.find((item) => item.id === nodeId);
+    const settingPrefix = `page-${nodeId}-`;
+    const templateId = settingId.startsWith(settingPrefix)
+      ? settingId.slice(settingPrefix.length)
+      : "";
+    const template = library.meta.settingTemplates.find(
+      (item) => item.id === templateId,
+    );
+    if (!node || !template || existingSettingIds.has(settingId)) return null;
+
+    inferredInstances.push({
+      id: settingId,
+      nodeId,
+      templateId: template.id,
+      name: template.name,
+      group: template.group,
+      status: "draft",
+      pagePath,
+      entriesPath,
+    });
+    existingSettingIds.add(settingId);
+    pairedTargets.add(pagePath);
+    pairedTargets.add(entriesPath);
+  }
+
+  if (
+    inferredInstances.length === 0 ||
+    orphanTargets.some((path) => !pairedTargets.has(path))
+  ) {
+    return null;
+  }
+
+  const usedIds = new Set(changes.map((change) => change.id));
+  const afterContent = serializeSettingLibraryFile({
+    ...library.settingsIndex,
+    settings: [...library.settingsIndex.settings, ...inferredInstances],
+  });
+  parseSettingLibrarySettingsIndex(afterContent);
+  return {
+    change: {
+      id: discoveredChangeId(SETTING_LIBRARY_PATHS.settings, usedIds),
+      targetPath: SETTING_LIBRARY_PATHS.settings,
+      operation: "modify",
+      summary: `自动补齐 ${inferredInstances.length} 个页面的设定索引`,
+      status: "pending",
+    },
+    beforeContent: library.settingsIndexContent,
+    afterContent,
+  };
+}
+
+async function persistGeneratedProposalSnapshots(
+  storage: WorkbenchStorage,
+  proposalId: string,
+  changes: readonly LoadedWorldProposalChange[],
+): Promise<void> {
+  for (const change of changes.filter((item) => item.generated)) {
+    const snapshots = [
+      ...(change.operation === "modify"
+        ? ([
+            {
+              path: worldProposalSnapshotPath(
+                proposalId,
+                "before",
+                change.targetPath,
+              ),
+              content: change.beforeContent,
+            },
+          ] as const)
+        : []),
+      {
+        path: worldProposalSnapshotPath(proposalId, "after", change.targetPath),
+        content: change.afterContent,
+      },
+    ];
+    for (const snapshot of snapshots) {
+      const existing = await readOptionalText(storage, snapshot.path);
+      if (existing === null) {
+        await storage.createText(snapshot.path, snapshot.content, {
+          createParents: true,
+        });
+      } else if (existing !== snapshot.content) {
+        throw new Error(`自动补录快照已发生变化：${snapshot.path}`);
+      }
+    }
+  }
+}
+
+async function removeProposalChangeSnapshots(
+  storage: WorkbenchStorage,
+  proposalId: string,
+  changes: readonly LoadedWorldProposalChange[],
+): Promise<void> {
+  const paths = new Set<string>();
+  for (const change of changes) {
+    for (const side of ["before", "after"] as const) {
+      if (side === "before" && change.operation === "create") continue;
+      paths.add(worldProposalSnapshotPath(proposalId, side, change.targetPath));
+      paths.add(
+        worldProposalLegacySnapshotPath(proposalId, side, change.targetPath),
+      );
+    }
+  }
+  for (const path of paths) {
+    const [info] = await storage.stat([path]);
+    if (info?.exists) {
+      await storage.remove(path, { permanent: true });
+    }
+  }
 }
 
 async function validateMaterializedSettingFiles(
@@ -411,12 +562,34 @@ export function createNovelWorldProposalRepository(
       proposalId,
       parsedManifest,
     );
+    const declaredAndDiscoveredChanges = [
+      ...parsedManifest.changes,
+      ...discoveredChanges,
+    ];
+    const generatedSettingsChange =
+      !declaredAndDiscoveredChanges.some(
+        (change) => change.targetPath === SETTING_LIBRARY_PATHS.settings,
+      ) &&
+      declaredAndDiscoveredChanges.some((change) =>
+        isMaterializedSettingPath(change.targetPath),
+      )
+        ? inferMissingSettingsIndexChange(
+            await loadPersistedSettingLibrary(storage),
+            declaredAndDiscoveredChanges,
+          )
+        : null;
     const inferredIds = new Set(
-      discoveredChanges.map((change) => change.id),
+      [
+        ...discoveredChanges,
+        ...(generatedSettingsChange ? [generatedSettingsChange.change] : []),
+      ].map((change) => change.id),
     );
     const manifest: WorldProposalManifest = {
       ...parsedManifest,
-      changes: [...parsedManifest.changes, ...discoveredChanges],
+      changes: [
+        ...declaredAndDiscoveredChanges,
+        ...(generatedSettingsChange ? [generatedSettingsChange.change] : []),
+      ],
     };
     const changes = await Promise.all(
       manifest.changes.map(
@@ -425,6 +598,20 @@ export function createNovelWorldProposalRepository(
             storage,
             change.targetPath,
           );
+          if (change.id === generatedSettingsChange?.change.id) {
+            return {
+              ...change,
+              beforeContent: generatedSettingsChange.beforeContent,
+              afterContent: generatedSettingsChange.afterContent,
+              currentContent,
+              conflict:
+                change.status === "pending" &&
+                currentContent !== generatedSettingsChange.beforeContent,
+              loadError: null,
+              inferred: true,
+              generated: true,
+            };
+          }
           try {
             const beforeContent =
               change.operation === "modify"
@@ -454,6 +641,7 @@ export function createNovelWorldProposalRepository(
               conflict,
               loadError: null,
               inferred: inferredIds.has(change.id),
+              generated: false,
             };
           } catch (error) {
             return {
@@ -464,6 +652,7 @@ export function createNovelWorldProposalRepository(
               conflict: false,
               loadError: errorMessage(error),
               inferred: inferredIds.has(change.id),
+              generated: false,
             };
           }
         },
@@ -518,6 +707,26 @@ export function createNovelWorldProposalRepository(
 
     load,
 
+    async deleteProposals(proposalIds) {
+      const selectedIds = [...new Set(proposalIds)];
+      if (selectedIds.length === 0) throw new Error("请至少选择一份待删除提案");
+      for (const proposalId of selectedIds) {
+        if (
+          !proposalId ||
+          proposalId === "." ||
+          proposalId === ".." ||
+          /[\\/\u0000-\u001f\u007f]/.test(proposalId)
+        ) {
+          throw new Error(`提案 ID 非法：${proposalId}`);
+        }
+      }
+      for (const proposalId of selectedIds) {
+        await storage.remove(`${WORLD_PROPOSALS_DIRECTORY}/${proposalId}`, {
+          permanent: true,
+        });
+      }
+    },
+
     async apply(proposalId, changeIds, projectTitle) {
       const selectedIds = new Set(changeIds);
       if (selectedIds.size === 0) throw new Error("请至少选择一个待应用变更");
@@ -537,8 +746,8 @@ export function createNovelWorldProposalRepository(
           unavailable.loadError
             ? unavailable.loadError
             : unavailable.conflict
-            ? `目标文件已变化，无法应用：${unavailable.targetPath}`
-            : `变更已处理，无法再次应用：${unavailable.id}`,
+              ? `目标文件已变化，无法应用：${unavailable.targetPath}`
+              : `变更已处理，无法再次应用：${unavailable.id}`,
         );
       }
 
@@ -554,6 +763,11 @@ export function createNovelWorldProposalRepository(
 
       const applied: LoadedWorldProposalChange[] = [];
       try {
+        await persistGeneratedProposalSnapshots(
+          storage,
+          proposalId,
+          proposal.changes,
+        );
         for (const change of selected) {
           if (change.operation === "create") {
             await storage.createText(change.targetPath, change.afterContent, {
@@ -611,6 +825,11 @@ export function createNovelWorldProposalRepository(
       if (selected.some((change) => change.status !== "pending")) {
         throw new Error("已处理的变更不能再次拒绝");
       }
+      await persistGeneratedProposalSnapshots(
+        storage,
+        proposalId,
+        proposal.changes,
+      );
       const nextManifest = updateManifestChanges(
         proposal.manifest,
         selectedIds,
@@ -621,6 +840,47 @@ export function createNovelWorldProposalRepository(
         serializeWorldProposalManifest(nextManifest),
         { expectedContent: proposal.manifestContent },
       );
+      return load(proposalId);
+    },
+
+    async delete(proposalId, changeIds) {
+      const selectedIds = new Set(changeIds);
+      if (selectedIds.size === 0) throw new Error("请至少选择一个待删除变更");
+      const proposal = await load(proposalId);
+      const selected = proposal.changes.filter((change) =>
+        selectedIds.has(change.id),
+      );
+      if (selected.length !== selectedIds.size) {
+        throw new Error("选择中包含不存在的提案变更");
+      }
+      if (selected.some((change) => change.status !== "pending")) {
+        throw new Error("只能删除尚未处理的提案变更");
+      }
+
+      if (selected.length === proposal.changes.length) {
+        await storage.remove(`${WORLD_PROPOSALS_DIRECTORY}/${proposalId}`, {
+          permanent: true,
+        });
+        return null;
+      }
+
+      await persistGeneratedProposalSnapshots(
+        storage,
+        proposalId,
+        proposal.changes,
+      );
+      const nextManifest: WorldProposalManifest = {
+        ...proposal.manifest,
+        changes: proposal.manifest.changes.filter(
+          (change) => !selectedIds.has(change.id),
+        ),
+      };
+      await storage.writeText(
+        proposal.manifestPath,
+        serializeWorldProposalManifest(nextManifest),
+        { expectedContent: proposal.manifestContent },
+      );
+      await removeProposalChangeSnapshots(storage, proposalId, selected);
       return load(proposalId);
     },
   };

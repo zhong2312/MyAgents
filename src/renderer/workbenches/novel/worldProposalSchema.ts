@@ -169,7 +169,7 @@ export function buildWorldProposalAgentInstructions(): string {
 
 1. 使用 \`novel_world_get_context\` 读取当前世界架构；不要猜测现有层级、模板或路径。
 2. 通过对话逐步确认作者选择。未获得作者明确确认前，不得提交提案。
-3. 生成完整变更后，先调用 \`novel_world_validate_changes\`。校验失败时修正变更并重新校验。
+3. 生成完整变更后，先调用 \`novel_world_validate_changes\`。新增任何页面或词条文件时，必须在同一提案的 \`settings.json\` 变更中登记对应的 \`pagePath\` 与 \`entriesPath\`；校验失败时修正变更并重新校验。
 4. 仅在校验通过后调用 \`novel_world_submit_proposal\`。该工具只创建待审批快照，不修改正式设定。
 5. 提交成功后说明变更数量，并请作者在小说工作台点击“审阅提案”逐项审批。
 

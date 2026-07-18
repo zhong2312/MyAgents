@@ -27,6 +27,8 @@ export interface DirectoryPanelProps {
   agentDir: string;
   projectIcon?: string;
   projectDisplayName?: string;
+  currentSessionId?: string | null;
+  onSelectSession?: (sessionId: string) => void;
   provider?: Provider | null;
   providers?: Provider[];
   onProviderChange?: (providerId: string, targetModel?: string) => void;

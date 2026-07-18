@@ -22,6 +22,8 @@ export interface SerializedAttachmentPayload {
 }
 
 export interface SendMessagePayload {
+  /** Stable identity used to deduplicate retries of one desktop send. */
+  requestId?: string;
   text: string;
   attachments?: SerializedAttachmentPayload[];
   /** Model ID to use for this message (e.g., 'claude-sonnet-4-6') */

@@ -426,7 +426,10 @@
     },
     "history": {
       "title": "History",
+      "workspaceTitle": "Chat history",
       "loading": "Loading...",
+      "loadFailed": "Could not load. Click to retry.",
+      "refresh": "Refresh chat history",
       "empty": "No history yet",
       "current": "Current",
       "turnCount": "{{count}} turn(s)",

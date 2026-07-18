@@ -108,7 +108,8 @@ export async function handleSessionConfigRoute(
           400,
         );
       }
-      if (getSessionEngine().kind !== "builtin") {
+      const engine = getSessionEngine();
+      if (engine.kind !== "builtin") {
         return jsonResponse(
           {
             success: false,
@@ -118,7 +119,24 @@ export async function handleSessionConfigRoute(
           400,
         );
       }
-      const context = configureNovelWorkbenchRequest(payload.toolset.context);
+      const activeSession = engine.getCurrentSessionContext();
+      const workspace = activeSession.workspacePath?.trim();
+      if (!workspace) {
+        return jsonResponse(
+          {
+            success: false,
+            error: "Agent session has no workspace path.",
+          },
+          409,
+        );
+      }
+      const context = configureNovelWorkbenchRequest(
+        payload.toolset.context,
+        {
+          sessionId: activeSession.sessionId ?? "default",
+          workspace,
+        },
+      );
       return jsonResponse({
         success: true,
         toolsetId: payload.toolset.id,

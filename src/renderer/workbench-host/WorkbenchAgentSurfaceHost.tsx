@@ -2,22 +2,30 @@ import {
   Bot,
   CheckCircle2,
   ExternalLink,
+  GitCompareArrows,
   Loader2,
+  Maximize2,
   Minus,
+  Minimize2,
+  RotateCcw,
   X,
 } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import type { Tab } from "@/types/tab";
 import DraggableDialogFrame from "@/workbench-sdk/DraggableDialogFrame";
 
 interface WorkbenchAgentSurfaceHostProps {
   readonly surfaces: readonly Tab[];
+  readonly activeSourceTabId: string | null;
   readonly renderSurface: (tab: Tab, isActive: boolean) => ReactNode;
   readonly onMinimize: (tabId: string) => void;
   readonly onRestore: (tabId: string) => void;
   readonly onExpandToTab: (tabId: string) => void;
+  readonly onReview: (tabId: string) => void;
+  readonly onRestart: (tabId: string) => void;
   readonly onClose: (tabId: string) => void;
 }
 
@@ -41,29 +49,55 @@ function SurfaceStatus({ tab }: { readonly tab: Tab }) {
 
 export default function WorkbenchAgentSurfaceHost({
   surfaces,
+  activeSourceTabId,
   renderSurface,
   onMinimize,
   onRestore,
   onExpandToTab,
+  onReview,
+  onRestart,
   onClose,
 }: WorkbenchAgentSurfaceHostProps) {
+  const [pendingRestart, setPendingRestart] = useState<Tab | null>(null);
+  const [maximizedDialogId, setMaximizedDialogId] = useState<string | null>(
+    null,
+  );
+
+  const visibleSurfaces = useMemo(
+    () =>
+      surfaces.filter(
+        (tab) => tab.workbenchAgentSurface?.sourceTabId === activeSourceTabId,
+      ),
+    [activeSourceTabId, surfaces],
+  );
+
   const dialog = useMemo(
     () =>
-      [...surfaces]
+      [...visibleSurfaces]
         .reverse()
         .find((tab) => tab.workbenchAgentSurface?.presentation === "dialog"),
-    [surfaces],
+    [visibleSurfaces],
   );
   const docked = useMemo(
     () =>
-      surfaces.filter(
+      visibleSurfaces.filter(
         (tab) => tab.workbenchAgentSurface?.presentation === "dock",
       ),
-    [surfaces],
+    [visibleSurfaces],
   );
 
+  const visiblePendingRestart =
+    pendingRestart?.workbenchAgentSurface?.sourceTabId === activeSourceTabId
+      ? pendingRestart
+      : null;
+
   useCloseLayer(() => {
+    if (visiblePendingRestart) {
+      setPendingRestart(null);
+      return true;
+    }
     if (!dialog) return false;
+    setMaximizedDialogId(null);
     onMinimize(dialog.id);
     return true;
   }, 210);
@@ -74,8 +108,10 @@ export default function WorkbenchAgentSurfaceHost({
         <DraggableDialogFrame
           key={dialog.id}
           ariaLabel={dialog.title}
+          maximized={maximizedDialogId === dialog.id}
+          positioning="container"
           overlayClassName="z-[210]"
-          className="h-[min(720px,calc(100vh-4rem))] w-[min(1040px,calc(100vw-4rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+          className="h-[min(720px,calc(100vh-4rem))] max-h-[calc(100%-1.5rem)] w-[min(1040px,calc(100vw-4rem))] max-w-[calc(100%-1.5rem)] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
           headerClassName="flex h-11 items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-3"
           header={
             <>
@@ -88,11 +124,46 @@ export default function WorkbenchAgentSurfaceHost({
                 </strong>
               </div>
               <SurfaceStatus tab={dialog} />
+              {dialog.workbenchAgentSurface?.bootstrap && (
+                <button
+                  type="button"
+                  aria-label="重新开始 Agent 会话"
+                  title="重新开始"
+                  onClick={() => setPendingRestart(dialog)}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                </button>
+              )}
+              <button
+                type="button"
+                aria-label={
+                  maximizedDialogId === dialog.id
+                    ? "还原 Agent 窗口"
+                    : "全屏显示 Agent 窗口"
+                }
+                title={maximizedDialogId === dialog.id ? "还原窗口" : "全屏"}
+                onClick={() =>
+                  setMaximizedDialogId((current) =>
+                    current === dialog.id ? null : dialog.id,
+                  )
+                }
+                className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+              >
+                {maximizedDialogId === dialog.id ? (
+                  <Minimize2 className="h-4 w-4" />
+                ) : (
+                  <Maximize2 className="h-4 w-4" />
+                )}
+              </button>
               <button
                 type="button"
                 aria-label="最小化 Agent 会话"
                 title="最小化"
-                onClick={() => onMinimize(dialog.id)}
+                onClick={() => {
+                  setMaximizedDialogId(null);
+                  onMinimize(dialog.id);
+                }}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               >
                 <Minus className="h-4 w-4" />
@@ -101,16 +172,22 @@ export default function WorkbenchAgentSurfaceHost({
                 type="button"
                 aria-label="在页签中打开 Agent 会话"
                 title="转为页签"
-                onClick={() => onExpandToTab(dialog.id)}
+                onClick={() => {
+                  setMaximizedDialogId(null);
+                  onExpandToTab(dialog.id);
+                }}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               >
                 <ExternalLink className="h-4 w-4" />
               </button>
               <button
                 type="button"
-                aria-label="关闭 Agent 会话"
-                title="关闭"
-                onClick={() => onClose(dialog.id)}
+                aria-label="关闭 Agent 窗口"
+                title="关闭窗口"
+                onClick={() => {
+                  setMaximizedDialogId(null);
+                  onClose(dialog.id);
+                }}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               >
                 <X className="h-4 w-4" />
@@ -137,16 +214,21 @@ export default function WorkbenchAgentSurfaceHost({
           <div
             key={`mounted-${tab.id}`}
             aria-hidden="true"
-            className="pointer-events-none fixed -left-[10000px] top-0 h-px w-px overflow-hidden opacity-0"
+            className="pointer-events-none absolute -left-[10000px] top-0 h-px w-px overflow-hidden opacity-0"
           >
-            {tab.view === "chat" ? renderSurface(tab, false) : null}
+            {tab.view === "chat"
+              ? renderSurface(
+                  tab,
+                  Boolean(tab.initialMessage) || tab.isGenerating === true,
+                )
+              : null}
           </div>
         ))}
 
       {docked.length > 0 && (
         <aside
           aria-label="Agent 运行窗口"
-          className="fixed bottom-5 right-5 z-[190] flex w-96 max-w-[calc(100vw-2rem)] flex-col gap-2"
+          className="absolute bottom-5 right-5 z-[190] flex w-96 max-w-[calc(100%-2rem)] flex-col gap-2"
         >
           {docked.map((tab) => (
             <section
@@ -167,6 +249,28 @@ export default function WorkbenchAgentSurfaceHost({
                   </strong>
                   <SurfaceStatus tab={tab} />
                 </button>
+                {tab.workbenchAgentSurface?.bootstrap && (
+                  <button
+                    type="button"
+                    aria-label={`重新开始 ${tab.title}`}
+                    title="重新开始"
+                    onClick={() => setPendingRestart(tab)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                )}
+                {tab.workbenchAgentSurface?.toolset?.id === "novel-world" && (
+                  <button
+                    type="button"
+                    aria-label={`审阅 ${tab.title} 提案`}
+                    title="审阅提案"
+                    onClick={() => onReview(tab.id)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  >
+                    <GitCompareArrows className="h-4 w-4" />
+                  </button>
+                )}
                 <button
                   type="button"
                   aria-label={`展开 ${tab.title}`}
@@ -178,8 +282,8 @@ export default function WorkbenchAgentSurfaceHost({
                 </button>
                 <button
                   type="button"
-                  aria-label={`关闭 ${tab.title}`}
-                  title="关闭"
+                  aria-label={`关闭 ${tab.title}窗口`}
+                  title="关闭窗口"
                   onClick={() => onClose(tab.id)}
                   className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
@@ -189,6 +293,26 @@ export default function WorkbenchAgentSurfaceHost({
             </section>
           ))}
         </aside>
+      )}
+
+      {visiblePendingRestart && (
+        <ConfirmDialog
+          title="重新开始对话"
+          message={
+            visiblePendingRestart.isGenerating
+              ? "当前对话仍在生成中。重新开始会结束当前任务并开启新会话，是否继续？"
+              : "重新开始会开启新的对话，当前对话不会自动继续。是否继续？"
+          }
+          confirmText="重新开始"
+          cancelText="取消"
+          confirmVariant="danger"
+          onConfirm={() => {
+            const tabId = visiblePendingRestart.id;
+            setPendingRestart(null);
+            onRestart(tabId);
+          }}
+          onCancel={() => setPendingRestart(null)}
+        />
       )}
     </>
   );

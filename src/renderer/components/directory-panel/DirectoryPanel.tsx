@@ -91,6 +91,7 @@ import {
 } from './pathDisplay';
 import { useDirectorySearch } from './hooks/useDirectorySearch';
 import AgentCapabilitiesPanel from "../AgentCapabilitiesPanel";
+import WorkspaceSessionHistory from "./WorkspaceSessionHistory";
 import WorkspaceIcon from "../launcher/WorkspaceIcon";
 import { useWorkspaceTreeModel } from "../workspace-tree/useWorkspaceTreeModel";
 import {
@@ -142,6 +143,8 @@ const DirectoryPanel = memo(
       agentDir,
       projectIcon,
       projectDisplayName,
+      currentSessionId,
+      onSelectSession,
       provider: _provider,
       providers: _providers = [],
       onProviderChange: _onProviderChange,
@@ -3370,6 +3373,13 @@ const DirectoryPanel = memo(
                   </>
                 )}
               </div>
+
+              <WorkspaceSessionHistory
+                key={agentDir}
+                agentDir={agentDir}
+                currentSessionId={currentSessionId}
+                onSelectSession={onSelectSession}
+              />
 
               {/* Vertical drag divider — tree ↔ capabilities
                 Outer div: invisible hit area (py-1.5 = 12px), cursor hint

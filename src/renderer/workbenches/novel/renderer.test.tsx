@@ -290,7 +290,13 @@ describe("NovelWorkbenchRenderer storage loop", () => {
           version: 1,
           title: "世界架构向导 · 测试小说",
           promptId: "novel.world.guide",
+          presentation: "dialog",
+          conversationKey: "novel.world.architecture",
           initialMessage: expect.stringContaining("资深的世界设计师"),
+          toolset: expect.objectContaining({
+            id: "novel-world",
+            context: expect.objectContaining({ mode: "world" }),
+          }),
         }),
       );
     });
@@ -301,7 +307,7 @@ describe("NovelWorkbenchRenderer storage loop", () => {
       "受控写回协议",
     );
     expect(openAgentSession.mock.calls[0]?.[0].initialMessage).toContain(
-      "world/setting-library/proposals/<proposal-id>/",
+      "novel_world_submit_proposal",
     );
   });
 

@@ -4,6 +4,16 @@ import { normalizeWorkbenchStoragePath } from "@/workbench-sdk";
 
 export const NOVEL_SCHEMA_VERSION = 1 as const;
 
+export const novelKnowledgeGraphSettingsSchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
+
+export type NovelKnowledgeGraphSettings = z.infer<
+  typeof novelKnowledgeGraphSettingsSchema
+>;
+
 const rawNovelMetadataSchema = z
   .object({
     schemaVersion: z.literal(NOVEL_SCHEMA_VERSION),
@@ -16,6 +26,7 @@ const rawNovelMetadataSchema = z
     form: z.enum(["blank", "long", "short"]).optional(),
     status: z.enum(["planning", "writing", "completed", "paused"]),
     language: z.string().trim().min(1),
+    knowledgeGraph: novelKnowledgeGraphSettingsSchema.optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -45,6 +56,7 @@ export const novelMetadataSchema = rawNovelMetadataSchema.transform(
     ...metadata,
     genres: metadata.genres ?? [metadata.genre!],
     targetWordCount: metadata.targetWordCount ?? null,
+    knowledgeGraph: metadata.knowledgeGraph ?? { enabled: false },
   }),
 );
 

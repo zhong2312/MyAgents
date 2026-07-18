@@ -68,8 +68,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // All API endpoints under /api/ (excludes source files like /api/*.ts)
-      '^/api/(?!.*\\.(ts|tsx|js|jsx)$)': {
+      // All API endpoints under /api/. Exclude source modules both with and
+      // without Vite HMR query strings (for example apiFetch.ts?t=...).
+      '^/api/(?!.*\\.(ts|tsx|js|jsx)(?:\\?|$))': {
         target: 'http://localhost:3000',
         changeOrigin: true,
         rewrite: (path) => path, // Keep path as-is

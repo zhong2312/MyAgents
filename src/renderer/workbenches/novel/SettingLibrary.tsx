@@ -50,6 +50,7 @@ import {
 import MarkdownVisualEditor from "./MarkdownVisualEditor";
 import SettingLibraryMetaEditor from "./SettingLibraryMeta";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
+import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import {
   createNovelSettingLibraryRepository,
   getNodeSettingReferences,
@@ -81,6 +82,7 @@ interface SettingLibraryProps {
     target: NovelAiAssistTarget,
     localContext?: unknown,
   ) => Promise<string | null>;
+  readonly focusSource?: KnowledgeSourceRef | null;
 }
 
 const LEVEL_ICONS: Readonly<Record<string, LucideIcon>> = {
@@ -332,6 +334,7 @@ export default function SettingLibrary({
   projectTitle,
   mode,
   onAiAssist,
+  focusSource,
 }: SettingLibraryProps) {
   const repository = useMemo(
     () => createNovelSettingLibraryRepository(storage),
@@ -407,6 +410,18 @@ export default function SettingLibrary({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!focusSource || !library || mode !== "library") return;
+    const reference = library.settingsIndex.settings.find(
+      (item) =>
+        item.pagePath === focusSource.path || item.entriesPath === focusSource.path,
+    );
+    if (!reference) return;
+    setSelectedNodeId(reference.nodeId);
+    setSelectedReferenceId(settingReferenceId({ kind: "instance", instance: reference }));
+    setEditorView(reference.entriesPath === focusSource.path ? "entries" : "content");
+  }, [focusSource, library, mode]);
 
   const currentNode = library?.spatialTree.nodes.find(
     (node) => node.id === selectedNodeId,

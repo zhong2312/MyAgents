@@ -76,6 +76,24 @@ pub fn ensure_session_sidecar<R: Runtime>(
 /// flagged the prior unbounded self-recursion).
 const MAX_ENSURE_ATTEMPTS: u32 = 8;
 
+fn sidecar_generation_is_alive(
+    manager: &ManagedSidecarManager,
+    session_id: &str,
+    generation: u64,
+) -> bool {
+    let Ok(mut guard) = manager.lock() else {
+        return true;
+    };
+    if guard.current_generation(session_id) != generation {
+        return false;
+    }
+    guard
+        .sidecars
+        .get_mut(session_id)
+        .map(|sidecar| matches!(sidecar.process.try_wait(), Ok(None)))
+        .unwrap_or(false)
+}
+
 pub fn ensure_session_sidecar_with_runtime_override<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
@@ -388,7 +406,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 .detail("starting", wait_for_starting),
         );
         let http_healthy = if wait_for_starting {
-            wait_for_readiness(port, 30).is_ok()
+            let readiness_alive = || sidecar_generation_is_alive(manager, session_id, pre_gen);
+            wait_for_readiness(port, 30, Some(&readiness_alive)).is_ok()
         } else {
             // Verify HTTP server is actually responsive (not just process alive)
             check_sidecar_http_health(port)
@@ -906,7 +925,9 @@ fn create_new_session_sidecar<R: Runtime>(
             // to wait for /health/ready as well. 30s timeout matches existing
             // long-running migration / SDK init budgets.
             let readiness_started = trace_start();
-            if let Err(e) = wait_for_readiness(port, 30) {
+            let readiness_alive =
+                || sidecar_generation_is_alive(manager, session_id, sidecar_generation);
+            if let Err(e) = wait_for_readiness(port, 30, Some(&readiness_alive)) {
                 ulog_error!(
                     "[sidecar] Session {} /health/ready failed: {}",
                     session_id,

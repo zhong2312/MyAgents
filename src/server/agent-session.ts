@@ -7859,6 +7859,14 @@ export async function initializeAgent(
         configSetProviderEnv(resolved.providerEnv);
         configSetModel(resolved.model);
         configSetReasoningEffort(normalizeReasoningEffort(resolved.reasoningEffort));
+        configSetSessionEnabledPluginIds(
+          initMeta?.enabledPluginIds ? [...initMeta.enabledPluginIds] : [],
+        );
+        configSetSessionEnabledOfficialToolIds(
+          initMeta?.enabledOfficialToolIds
+            ? [...initMeta.enabledOfficialToolIds]
+            : [],
+        );
         console.log(`[agent] restored owned session config: model=${resolved.model ?? 'default'}, provider=${resolved.providerEnv?.baseUrl ?? 'subscription/none'}, effort=${configState.currentReasoningEffort ?? 'default'}`);
         if (resolved.providerEnv) ensureActiveSessionBridgeRegistered();
       } else if (!configState.currentProviderEnv && resolved.providerEnv) {

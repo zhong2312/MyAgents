@@ -11,10 +11,20 @@ export {
   type ProposalReviewSurfaceProps,
 } from "./ProposalReviewSurface";
 export {
+  default as ConfirmDialog,
+  type ConfirmDialogProps,
+} from "./ConfirmDialog";
+export {
   default as DraggableDialogFrame,
   type DraggableDialogFrameProps,
 } from "./DraggableDialogFrame";
 export { default as WorkbenchHeaderActions } from "./WorkbenchHeaderActions";
+export {
+  dispatchWorkbenchHostAction,
+  subscribeWorkbenchHostAction,
+  type WorkbenchHostActionDetail,
+  type WorkbenchHostActionFilter,
+} from "./hostActions";
 export type { PopoverPlacement, PopoverProps, SelectOption } from "./ui";
 export type { RegisteredWorkbench, WorkbenchRegistry } from "./registry";
 export type {

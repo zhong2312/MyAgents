@@ -27,6 +27,7 @@ const novelWorkbenchDefinition = defineWorkbench(
         icon: "layout-template",
         order: 45,
       },
+      { id: "knowledge", label: "知识库", icon: "database-search", order: 47 },
       { id: "map", label: "世界地图", icon: "map", order: 50 },
       { id: "timeline", label: "时间线", icon: "clock-3", order: 60 },
       { id: "research", label: "资料", icon: "library", order: 70 },

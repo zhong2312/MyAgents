@@ -18,7 +18,9 @@ import {
   History,
   LayoutTemplate,
   Loader2,
+  Maximize2,
   Minus,
+  Minimize2,
   Network,
   Play,
   Plus,
@@ -165,6 +167,7 @@ function FullAgentConversation({
 }) {
   const isTemplateMode = mode === "meta";
   const [showHistory, setShowHistory] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const { concept, started, planReady } = conversation;
   const title = isTemplateMode ? "模板配置 Agent" : "世界架构 Agent";
   const intro = isTemplateMode
@@ -190,6 +193,7 @@ function FullAgentConversation({
   return (
     <DraggableDialogFrame
       ariaLabel={title}
+      maximized={maximized}
       overlayClassName="z-50"
       className="h-[min(720px,calc(100vh-4rem))] w-[min(1040px,calc(100vw-4rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
       headerClassName="flex h-14 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4"
@@ -228,10 +232,32 @@ function FullAgentConversation({
           >
             <History className="h-4 w-4" />
           </IconButton>
-          <IconButton label="最小化为运行小窗" onClick={onMinimize}>
+          <IconButton
+            label={maximized ? "还原 Agent 窗口" : "全屏显示 Agent 窗口"}
+            onClick={() => setMaximized((current) => !current)}
+          >
+            {maximized ? (
+              <Minimize2 className="h-4 w-4" />
+            ) : (
+              <Maximize2 className="h-4 w-4" />
+            )}
+          </IconButton>
+          <IconButton
+            label="最小化为运行小窗"
+            onClick={() => {
+              setMaximized(false);
+              onMinimize();
+            }}
+          >
             <Minus className="h-4 w-4" />
           </IconButton>
-          <IconButton label="关闭 Agent 对话" onClick={onClose}>
+          <IconButton
+            label="关闭 Agent 对话"
+            onClick={() => {
+              setMaximized(false);
+              onClose();
+            }}
+          >
             <X className="h-4 w-4" />
           </IconButton>
         </>
@@ -637,6 +663,7 @@ function ProposalReviewPrototype({
     () => new Set(),
   );
   const [sideBySide, setSideBySide] = useState(true);
+  const [maximized, setMaximized] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const activeChange =
     changes.find((change) => change.id === activeId) ?? changes[0];
@@ -671,6 +698,7 @@ function ProposalReviewPrototype({
   return (
     <DraggableDialogFrame
       ariaLabel="世界架构提案审批"
+      maximized={maximized}
       overlayClassName="z-[60]"
       className="h-[min(760px,calc(100vh-3rem))] w-[min(1180px,calc(100vw-3rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
       headerClassName="flex min-h-14 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 max-sm:flex-wrap max-sm:py-2"
@@ -730,6 +758,19 @@ function ProposalReviewPrototype({
             className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
           >
             <RefreshCw className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            aria-label={maximized ? "还原提案窗口" : "全屏显示提案窗口"}
+            title={maximized ? "还原窗口" : "全屏"}
+            onClick={() => setMaximized((current) => !current)}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+          >
+            {maximized ? (
+              <Minimize2 className="h-4 w-4" />
+            ) : (
+              <Maximize2 className="h-4 w-4" />
+            )}
           </button>
           <button
             type="button"
@@ -1116,39 +1157,39 @@ export default function AiWorldDesignPrototype({
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--line)] px-5">
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-3">
-              <h1 className="truncate text-base font-semibold">{pageLabel}</h1>
-              {mode !== "prompts" && (
-                <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    aria-label="审阅提案"
-                    title="审阅提案"
-                    onClick={() => setIsReviewOpen(true)}
-                    className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium hover:bg-[var(--hover-bg)]"
-                  >
-                    <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
-                    <span className="max-lg:hidden">审阅提案</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={agentLabel}
-                    title={agentLabel}
-                    onClick={() => setFullConversation(agentLabel)}
-                    className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)]"
-                  >
-                    <Sparkles className="h-4 w-4" />
-                    <span className="max-lg:hidden">{agentLabel}</span>
-                  </button>
-                </div>
-              )}
-            </div>
+            <h1 className="truncate text-base font-semibold">{pageLabel}</h1>
             <p className="truncate text-xs text-[var(--ink-muted)]">
               F:\\workspace\\MyAgents-test\\小说\\烬海编年史
             </p>
           </div>
-          <div className="ml-4 rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-medium text-[var(--ink-muted)] max-md:hidden">
-            烬海编年史
+          <div className="ml-4 flex shrink-0 items-center gap-2">
+            <div className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-medium text-[var(--ink-muted)] max-md:hidden">
+              烬海编年史
+            </div>
+            {mode !== "prompts" && (
+              <>
+                <button
+                  type="button"
+                  aria-label="审阅提案"
+                  title="审阅提案"
+                  onClick={() => setIsReviewOpen(true)}
+                  className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium hover:bg-[var(--hover-bg)]"
+                >
+                  <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
+                  <span className="max-lg:hidden">审阅提案</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={agentLabel}
+                  title={agentLabel}
+                  onClick={() => setFullConversation(agentLabel)}
+                  className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)]"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span className="max-lg:hidden">{agentLabel}</span>
+                </button>
+              </>
+            )}
           </div>
         </header>
 

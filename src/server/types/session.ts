@@ -42,6 +42,8 @@ export interface SessionMetadata {
     source?: SessionSource;
     /** Stable product/statistics origin. This is the session birth fact; legacy `source` is channel metadata. */
     origin?: SessionOrigin;
+    /** Optional project-local history grouping. Missing means project root. */
+    historyGroupPath?: string[];
     /** User-pinned to the 收藏 filter view in TaskCenterOverlay /
      *  SessionHistoryDropdown. Only `true` is persisted; absent/false has
      *  identical semantics, so the on-disk size cost is zero for the common

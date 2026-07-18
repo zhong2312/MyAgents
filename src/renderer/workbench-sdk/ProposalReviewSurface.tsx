@@ -3,10 +3,12 @@ import {
   AlignJustify,
   Columns2,
   GitCompareArrows,
+  Maximize2,
+  Minimize2,
   RefreshCw,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import DraggableDialogFrame from "./DraggableDialogFrame";
 
@@ -22,7 +24,7 @@ export interface ProposalReviewSurfaceProps {
   readonly onClose: () => void;
 }
 
-/** Global workbench approval frame; domain adapters own proposal loading/apply. */
+/** Project-tab approval frame; domain adapters own proposal loading/apply. */
 export function ProposalReviewSurface({
   title,
   subtitle,
@@ -34,11 +36,15 @@ export function ProposalReviewSurface({
   onRefresh,
   onClose,
 }: ProposalReviewSurfaceProps) {
+  const [maximized, setMaximized] = useState(false);
+
   return (
     <DraggableDialogFrame
       ariaLabel={title}
+      maximized={maximized}
+      positioning="container"
       overlayClassName="z-[220]"
-      className="h-[min(760px,calc(100vh-3rem))] w-[min(1180px,calc(100vw-3rem))] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+      className="h-[min(760px,calc(100vh-3rem))] max-h-[calc(100%-1.5rem)] w-[min(1180px,calc(100vw-3rem))] max-w-[calc(100%-1.5rem)] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
       headerClassName="flex min-h-14 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 max-sm:flex-wrap max-sm:py-2"
       header={
         <>
@@ -89,6 +95,19 @@ export function ProposalReviewSurface({
             <RefreshCw
               className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
             />
+          </button>
+          <button
+            type="button"
+            aria-label={maximized ? "还原提案窗口" : "全屏显示提案窗口"}
+            title={maximized ? "还原窗口" : "全屏"}
+            onClick={() => setMaximized((current) => !current)}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+          >
+            {maximized ? (
+              <Minimize2 className="h-4 w-4" />
+            ) : (
+              <Maximize2 className="h-4 w-4" />
+            )}
           </button>
           <button
             type="button"

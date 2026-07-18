@@ -349,6 +349,12 @@ export interface ProviderModelPair {
  *
  * Returns undefined when no provider in the system is available — caller decides UX.
  */
+function providerHasModel(provider: Provider, modelId: string | undefined): boolean {
+    if (!modelId) return false;
+    if (provider.primaryModel === modelId) return true;
+    return provider.models?.some((entry) => entry.model === modelId) ?? false;
+}
+
 export function resolveBuiltinSelection(
     ctx: { agent?: AgentConfig; workspace?: Project },
     config: AppConfig,
@@ -356,6 +362,7 @@ export function resolveBuiltinSelection(
     apiKeys: Record<string, string>,
     verifyStatus: Record<string, ProviderVerifyStatus>,
 ): ProviderModelPair | undefined {
+    const desiredModel = ctx.agent?.model ?? ctx.workspace?.model;
     const candidates = [
         ctx.agent?.providerId,
         ctx.workspace?.providerId,
@@ -369,6 +376,18 @@ export function resolveBuiltinSelection(
             provider = p;
             break;
         }
+    }
+    // Preferred provider may be disabled / missing a key (e.g. project pinned to
+    // volcengine-api while only volcengine has credentials). Prefer another
+    // available provider that can actually serve the desired model before falling
+    // through to an arbitrary first-available (which may be a subscription with
+    // no API-compatible model).
+    if (!provider && desiredModel) {
+        provider = providers.find(
+            (candidate) =>
+                isProviderAvailable(candidate, apiKeys, verifyStatus) &&
+                providerHasModel(candidate, desiredModel),
+        );
     }
     provider ??= getFirstAvailableProvider(providers, apiKeys, verifyStatus);
     if (!provider) return undefined;

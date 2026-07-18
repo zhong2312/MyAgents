@@ -14,6 +14,7 @@ import {
   Clapperboard,
   Clock3,
   Code2,
+  Database,
   FileText,
   FolderOpen,
   Library,
@@ -115,6 +116,7 @@ const NAV_ICONS = {
   boxes: Boxes,
   settings: Settings,
   "code-2": Code2,
+  "database-search": Database,
 } as const;
 
 function FailureState({ title, detail }: { title: string; detail: string }) {
@@ -371,16 +373,10 @@ export default function WorkbenchShell({
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--line)] px-5">
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-3">
-              <h1 className="truncate text-base font-semibold text-[var(--ink)]">
-                {navigation.find((item) => item.id === route)?.label ??
-                  manifest.name}
-              </h1>
-              <span
-                ref={setHeaderActionsTarget}
-                className="flex shrink-0 items-center gap-2"
-              />
-            </div>
+            <h1 className="truncate text-base font-semibold text-[var(--ink)]">
+              {navigation.find((item) => item.id === route)?.label ??
+                manifest.name}
+            </h1>
             <p
               className="truncate text-xs text-[var(--ink-muted)] max-md:hidden"
               title={workspacePath}
@@ -388,9 +384,15 @@ export default function WorkbenchShell({
               {workspacePath}
             </p>
           </div>
-          <div className="ml-4 flex items-center gap-1.5 rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-medium text-[var(--ink-muted)] max-md:hidden">
-            <FolderOpen className="h-3.5 w-3.5" />
-            <span>{workspaceName}</span>
+          <div className="ml-4 flex shrink-0 items-center gap-2">
+            <div className="flex items-center gap-1.5 rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-medium text-[var(--ink-muted)] max-md:hidden">
+              <FolderOpen className="h-3.5 w-3.5" />
+              <span>{workspaceName}</span>
+            </div>
+            <span
+              ref={setHeaderActionsTarget}
+              className="flex shrink-0 items-center gap-2"
+            />
           </div>
         </header>
 

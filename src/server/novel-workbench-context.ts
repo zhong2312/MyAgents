@@ -1,6 +1,6 @@
 export const NOVEL_WORKBENCH_MCP_ID = "novel-workbench" as const;
 
-export type NovelWorkbenchMode = "world" | "template";
+export type NovelWorkbenchMode = "world" | "template" | "assist";
 
 export interface NovelWorkbenchContext {
   readonly mode: NovelWorkbenchMode;
@@ -10,10 +10,16 @@ export interface NovelWorkbenchContext {
   readonly workspace?: string;
 }
 
+export interface NovelWorkbenchRuntimeBinding {
+  readonly sessionId: string;
+  readonly workspace: string;
+}
+
 let context: NovelWorkbenchContext | null = null;
 
 export function configureNovelWorkbenchRequest(
   value: unknown,
+  runtime: NovelWorkbenchRuntimeBinding,
 ): NovelWorkbenchContext {
   if (!value || typeof value !== "object") {
     throw new Error("toolset.context is required");
@@ -22,8 +28,8 @@ export function configureNovelWorkbenchRequest(
   const mode = input.mode;
   const promptId = input.promptId;
   const promptVersion = input.promptVersion;
-  if (mode !== "world" && mode !== "template") {
-    throw new Error("toolset.context.mode must be world or template");
+  if (mode !== "world" && mode !== "template" && mode !== "assist") {
+    throw new Error("toolset.context.mode must be world, template or assist");
   }
   if (typeof promptId !== "string" || !promptId.trim()) {
     throw new Error("toolset.context.promptId is required");
@@ -38,6 +44,7 @@ export function configureNovelWorkbenchRequest(
     mode,
     promptId: promptId.trim(),
     promptVersion,
+    ...runtime,
   };
   return context;
 }

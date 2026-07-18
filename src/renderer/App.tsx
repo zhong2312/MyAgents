@@ -68,6 +68,7 @@ import {
   loadWorkbenchAgentConversation,
   saveWorkbenchAgentConversation,
 } from "@/workbench-host/agentConversationBinding";
+import { isEmptyOrBrokenSession } from "@/workbench-host/workbenchAgentSessionPolicy";
 import type { AdoptMigratedSessionOptions } from "@/context/TabContext";
 import { useToast } from "@/components/Toast";
 import { useUpdater } from "@/hooks/useUpdater";
@@ -120,6 +121,8 @@ import type {
   WorkbenchAiRunResult,
   WorkbenchAgentSessionRequest,
 } from "../shared/workbench-sdk";
+import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION } from "../shared/workbench-sdk";
+import { dispatchWorkbenchHostAction } from "@/workbench-sdk";
 import { createWorkbenchTab, isSameWorkbenchTab } from "@/workbench-sdk/tab";
 import { workbenchRegistry } from "@/workbench-registry";
 import {
@@ -186,6 +189,7 @@ import {
   createPendingSessionId,
   isPendingSessionId,
 } from "../shared/constants";
+import { parseSessionHistoryGroupPath } from "../shared/session-history";
 import {
   normalizeOfficialToolIds,
   type OfficialToolId,
@@ -227,26 +231,51 @@ function getChromeTabCount(tabs: readonly Tab[]): number {
 async function configureWorkbenchAgentToolset(
   sessionId: string,
   toolset: WorkbenchAgentSessionRequest["toolset"],
+  isCurrent: () => boolean,
 ): Promise<void> {
   if (!toolset) return;
-  const port = await getSessionPort(sessionId);
-  if (port === null) {
-    throw new Error("Agent 会话尚未就绪，无法加载工作台工具");
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (!isCurrent()) return;
+    try {
+      const port = await getSessionPort(sessionId);
+      if (!isCurrent()) return;
+      if (port === null) {
+        throw new Error("Agent 会话尚未就绪，无法加载工作台工具");
+      }
+      const response = await proxyFetch(
+        `http://127.0.0.1:${port}/api/workbench-agent/configure`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ toolset }),
+        },
+      );
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(payload.error ?? "工作台工具加载失败");
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      const msg = error instanceof Error ? error.message : String(error);
+      const transient =
+        msg.includes("尚未就绪") ||
+        msg.includes("error sending request") ||
+        msg.includes("Connection refused") ||
+        msg.includes("Connection reset") ||
+        msg.includes("ECONNREFUSED");
+      if (!transient || attempt === 7) break;
+      await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+    }
   }
-  const response = await proxyFetch(
-    `http://127.0.0.1:${port}/api/workbench-agent/configure`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ toolset }),
-    },
-  );
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as {
-      error?: string;
-    };
-    throw new Error(payload.error ?? "工作台工具加载失败");
-  }
+  if (!isCurrent()) return;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("工作台工具加载失败");
 }
 
 // ============================================================
@@ -787,10 +816,74 @@ export default function App() {
   activeTabIdRef.current = activeTabId;
 
   const configuredWorkbenchToolsetsRef = useRef(new Map<string, string>());
+  const persistedWorkbenchHistoryGroupsRef = useRef(new Map<string, string>());
   useEffect(() => {
     const liveSurfaceIds = new Set<string>();
+    const liveHistoryGroupTabIds = new Set<string>();
     for (const tab of tabs) {
       const surface = tab.workbenchAgentSurface;
+      const historyGroupPath =
+        tab.sessionHistoryGroupPath ?? surface?.historyGroupPath;
+      if (
+        historyGroupPath &&
+        tab.sessionId &&
+        !isPendingSessionId(tab.sessionId)
+      ) {
+        const sessionId = tab.sessionId;
+        const groupKey = `${sessionId}:${JSON.stringify(historyGroupPath)}`;
+        liveHistoryGroupTabIds.add(tab.id);
+        if (
+          persistedWorkbenchHistoryGroupsRef.current.get(tab.id) !== groupKey
+        ) {
+          persistedWorkbenchHistoryGroupsRef.current.set(tab.id, groupKey);
+          const isCurrent = () =>
+            persistedWorkbenchHistoryGroupsRef.current.get(tab.id) === groupKey;
+          void (async () => {
+            let lastError: unknown;
+            for (let attempt = 0; attempt < 8; attempt += 1) {
+              if (!isCurrent()) return null;
+              try {
+                const updated = await updateSession(sessionId, {
+                  historyGroupPath: [...historyGroupPath],
+                });
+                if (updated) return updated;
+                lastError = new Error("Session metadata is not ready");
+              } catch (error) {
+                lastError = error;
+              }
+              await new Promise((resolve) =>
+                window.setTimeout(resolve, 200 * (attempt + 1)),
+              );
+            }
+            throw lastError instanceof Error
+              ? lastError
+              : new Error("Failed to persist Session history group");
+          })()
+            .then((updated) => {
+              if (!updated || !isCurrent()) return;
+              setTabs((current) =>
+                current.map((item) =>
+                  item.id === tab.id &&
+                  item.sessionId === sessionId &&
+                  item.sessionHistoryGroupPath
+                    ? { ...item, sessionHistoryGroupPath: undefined }
+                    : item,
+                ),
+              );
+              window.dispatchEvent(
+                new CustomEvent(CUSTOM_EVENTS.SESSION_HISTORY_CHANGED),
+              );
+            })
+            .catch((error) => {
+              if (!isCurrent()) return;
+              persistedWorkbenchHistoryGroupsRef.current.delete(tab.id);
+              console.error(
+                `[App] Failed to persist history group for session ${sessionId}:`,
+                error,
+              );
+            });
+        }
+      }
       if (!surface || !tab.sessionId) continue;
       liveSurfaceIds.add(tab.id);
       if (!isPendingSessionId(tab.sessionId)) {
@@ -810,24 +903,29 @@ export default function App() {
         continue;
       }
       configuredWorkbenchToolsetsRef.current.set(tab.id, configurationKey);
-      void configureWorkbenchAgentToolset(tab.sessionId, surface.toolset).catch(
-        (error) => {
-          if (
-            configuredWorkbenchToolsetsRef.current.get(tab.id) ===
-            configurationKey
-          ) {
-            configuredWorkbenchToolsetsRef.current.delete(tab.id);
-          }
-          console.error(
-            `[App] Failed to configure workbench tools for session ${tab.sessionId}:`,
-            error,
-          );
-        },
-      );
+      const isCurrent = () =>
+        configuredWorkbenchToolsetsRef.current.get(tab.id) === configurationKey;
+      void configureWorkbenchAgentToolset(
+        tab.sessionId,
+        surface.toolset,
+        isCurrent,
+      ).catch((error) => {
+        if (!isCurrent()) return;
+        configuredWorkbenchToolsetsRef.current.delete(tab.id);
+        console.error(
+          `[App] Failed to configure workbench tools for session ${tab.sessionId}:`,
+          error,
+        );
+      });
     }
     for (const tabId of configuredWorkbenchToolsetsRef.current.keys()) {
       if (!liveSurfaceIds.has(tabId)) {
         configuredWorkbenchToolsetsRef.current.delete(tabId);
+      }
+    }
+    for (const tabId of persistedWorkbenchHistoryGroupsRef.current.keys()) {
+      if (!liveHistoryGroupTabIds.has(tabId)) {
+        persistedWorkbenchHistoryGroupsRef.current.delete(tabId);
       }
     }
   }, [tabs]);
@@ -2056,28 +2154,33 @@ export default function App() {
     (tabId: string) => {
       const currentTabs = tabsRef.current;
       const target = currentTabs.find((tab) => tab.id === tabId);
-      if (!target || !isWorkbenchAgentSurfaceTab(target)) {
+      const targetSurface = target?.workbenchAgentSurface;
+      if (!target || !targetSurface) {
         setActiveTabId(tabId);
         return;
       }
 
+      const sourceTabId = targetSurface.sourceTabId;
       setTabs((items) =>
-        items.map((tab) =>
-          tab.workbenchAgentSurface
-            ? {
-                ...tab,
-                hasUnread: tab.id === tabId ? false : tab.hasUnread,
-                workbenchAgentSurface: {
-                  ...tab.workbenchAgentSurface,
-                  presentation: tab.id === tabId ? "dialog" : "dock",
-                },
-              }
-            : tab,
-        ),
+        items.map((tab) => {
+          const surface = tab.workbenchAgentSurface;
+          if (!surface) return tab;
+          if (tab.id !== tabId && surface.sourceTabId !== sourceTabId) {
+            return tab;
+          }
+          return {
+            ...tab,
+            hasUnread: tab.id === tabId ? false : tab.hasUnread,
+            workbenchAgentSurface: {
+              ...surface,
+              presentation: tab.id === tabId ? "dialog" : "dock",
+            },
+          };
+        }),
       );
       const sourceTab = currentTabs.find(
         (tab) =>
-          tab.id === target.workbenchAgentSurface?.sourceTabId &&
+          tab.id === targetSurface.sourceTabId &&
           !isWorkbenchAgentSurfaceTab(tab),
       );
       const currentActive = currentTabs.find(
@@ -2806,13 +2909,25 @@ export default function App() {
         setLoadingTabs((prev) => ({ ...prev, [targetTabId]: false }));
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error("[App] Failed to start:", errorMsg);
 
         // PRD 0.2.19 review fix (H3): clear pending surface on launch failure so
         // a later unrelated session_new doesn't inherit a stale surface from this
         // failed attempt. Cover both candidate tabIds (Scenario 3 retarget case).
         clearPendingSessionBirth(targetTabId);
         if (targetTabId !== activeTabId) clearPendingSessionBirth(activeTabId);
+
+        // Closing an Agent dialog while its Sidecar is still starting is an
+        // intentional cancellation. The Tauri ensure command may finish after
+        // the tab owner has already released and stopped that process; do not
+        // turn the expected lifecycle result into a launch error/toast.
+        if (!tabsRef.current.some((tab) => tab.id === targetTabId)) {
+          console.debug(
+            `[App] Launch cancelled because tab ${targetTabId} was closed`,
+          );
+          return;
+        }
+
+        console.error("[App] Failed to start:", errorMsg);
 
         // Surface the error on the tab the user is actually looking at — when
         // the stale jump-to-tab fallthrough rerouted us to `plan.tabId`, the
@@ -4463,6 +4578,10 @@ export default function App() {
   const handleOpenWorkbenchAgentSession = useCallback(
     async (workspacePath: string, request: WorkbenchAgentSessionRequest) => {
       const presentation = request.presentation ?? "tab";
+      const isSurfacePresentation =
+        presentation === "dialog" || presentation === "dock";
+      const surfacePresentation =
+        presentation === "dock" ? ("dock" as const) : ("dialog" as const);
       const sourceTabId = activeTabIdRef.current;
       const sourceTab = tabsRef.current.find((tab) => tab.id === sourceTabId);
       const workbenchId = sourceTab?.workbench?.workbenchId;
@@ -4477,64 +4596,162 @@ export default function App() {
       }
       const conversationKey =
         request.conversationKey ?? request.promptId ?? request.title;
-      let resumeSession: { id: string } | null = null;
-      if (presentation === "dialog") {
-        const existing = tabsRef.current.find(
-          (tab) =>
-            tab.workbenchAgentSurface?.workbenchId === workbenchId &&
-            tab.workbenchAgentSurface.conversationKey === conversationKey &&
-            workspacePathsEqual(
-              tab.workbenchAgentSurface.workspacePath,
-              workspacePath,
-            ),
-        );
-        if (existing) {
-          setTabs((current) =>
-            current.map((tab) =>
-              tab.workbenchAgentSurface
-                ? {
-                    ...tab,
-                    workbenchAgentSurface: {
-                      ...tab.workbenchAgentSurface,
-                      presentation: tab.id === existing.id ? "dialog" : "dock",
-                      ...(tab.id === existing.id
-                        ? { sourceTabId, toolset: request.toolset }
-                        : {}),
-                    },
-                  }
-                : tab,
-            ),
-          );
-          setActiveTabId(sourceTabId);
-          return;
-        }
+      const historyGroupPath = parseSessionHistoryGroupPath(
+        request.historyGroupPath,
+      );
+      const surfaceBootstrap = {
+        title: request.title,
+        initialMessage: request.initialMessage,
+        ...(request.promptId ? { promptId: request.promptId } : {}),
+        ...(historyGroupPath ? { historyGroupPath } : {}),
+      };
 
-        const boundSessionId = loadWorkbenchAgentConversation(
-          workbenchId,
+      const matchesConversation = (tab: Tab): boolean =>
+        tab.workbenchAgentSurface?.workbenchId === workbenchId &&
+        tab.workbenchAgentSurface.conversationKey === conversationKey &&
+        workspacePathsEqual(
+          tab.workbenchAgentSurface.workspacePath,
           workspacePath,
-          conversationKey,
         );
-        if (boundSessionId) {
-          const openBoundSession = tabsRef.current.find(
-            (tab) =>
-              tab.sessionId === boundSessionId &&
-              workspacePathsEqual(tab.agentDir, workspacePath),
+
+      const focusExistingSurface = (existingId: string) => {
+        setTabs((current) =>
+          current.map((tab) =>
+            tab.workbenchAgentSurface
+              ? {
+                  ...tab,
+                  hasUnread: tab.id === existingId ? false : tab.hasUnread,
+                  ...(tab.id === existingId && historyGroupPath
+                    ? { sessionHistoryGroupPath: historyGroupPath }
+                    : {}),
+                  workbenchAgentSurface: {
+                    ...tab.workbenchAgentSurface,
+                    presentation:
+                      tab.id === existingId
+                        ? surfacePresentation
+                        : presentation === "dialog" &&
+                            tab.workbenchAgentSurface.sourceTabId ===
+                              sourceTabId
+                          ? "dock"
+                          : tab.workbenchAgentSurface.presentation,
+                    ...(tab.id === existingId
+                      ? {
+                          sourceTabId,
+                          toolset: request.toolset,
+                          bootstrap: surfaceBootstrap,
+                          ...(historyGroupPath ? { historyGroupPath } : {}),
+                        }
+                      : {}),
+                  },
+                }
+              : tab,
+          ),
+        );
+        setActiveTabId(sourceTabId);
+      };
+
+      const closeConversationSurfaces = () => {
+        const toClose = tabsRef.current.filter(matchesConversation);
+        if (toClose.length === 0) return;
+        const closeIds = new Set(toClose.map((tab) => tab.id));
+        const nextTabs = tabsRef.current.filter((tab) => !closeIds.has(tab.id));
+        tabsRef.current = nextTabs;
+        flushSync(() => {
+          setTabs(nextTabs);
+        });
+        // Resource cleanup only — UI already dropped these surfaces.
+        for (const tab of toClose) {
+          const tabSessionId = tab.sessionId;
+          const tabAgentDir = tab.agentDir;
+          const tabId = tab.id;
+          void (async () => {
+            try {
+              if (tabSessionId) {
+                await startBackgroundCompletion(tabSessionId).catch(
+                  () => undefined,
+                );
+              }
+              await stopSseProxy(tabId);
+              if (tabSessionId) {
+                await releaseTabSession(tabSessionId, tabId).catch(
+                  () => undefined,
+                );
+              } else if (tabAgentDir) {
+                void stopTabSidecar(tabId);
+              }
+            } catch (error) {
+              console.error(
+                `[App] Failed to clean up workbench agent surface ${tabId}:`,
+                error,
+              );
+            }
+          })();
+        }
+      };
+
+      let resumeSession: { id: string } | null = null;
+      if (isSurfacePresentation) {
+        if (request.forceNew) {
+          clearWorkbenchAgentConversation(
+            workbenchId,
+            workspacePath,
+            conversationKey,
           );
-          if (openBoundSession) {
-            resumeSession = { id: boundSessionId };
-          } else {
+          closeConversationSurfaces();
+        } else {
+          const existing = tabsRef.current.find(matchesConversation);
+          if (existing) {
+            if (existing.isGenerating) {
+              focusExistingSurface(existing.id);
+              toastRef.current.info("对话进行中，已为你打开");
+              return;
+            }
+
+            let shouldRecreate = false;
+            if (existing.sessionId && !isPendingSessionId(existing.sessionId)) {
+              const sessions = await getSessions(project.path);
+              const meta = sessions.find(
+                (session) => session.id === existing.sessionId,
+              );
+              // Only recreate when metadata is present and empty. Missing
+              // metadata can mean the session index has not caught up yet.
+              shouldRecreate = Boolean(meta) && isEmptyOrBrokenSession(meta);
+            }
+
+            if (!shouldRecreate) {
+              focusExistingSurface(existing.id);
+              toastRef.current.info("已回到上次对话");
+              return;
+            }
+
+            clearWorkbenchAgentConversation(
+              workbenchId,
+              workspacePath,
+              conversationKey,
+            );
+            closeConversationSurfaces();
+            toastRef.current.info("上次会话未启动成功，已重新开始");
+          }
+
+          const boundSessionId = loadWorkbenchAgentConversation(
+            workbenchId,
+            workspacePath,
+            conversationKey,
+          );
+          if (boundSessionId) {
             const sessions = await getSessions(project.path);
             const storedSession = sessions.find(
               (session) => session.id === boundSessionId,
             );
-            if (storedSession) {
-              resumeSession = { id: storedSession.id };
-            } else {
+            if (!storedSession || isEmptyOrBrokenSession(storedSession)) {
               clearWorkbenchAgentConversation(
                 workbenchId,
                 workspacePath,
                 conversationKey,
               );
+              closeConversationSurfaces();
+            } else {
+              resumeSession = { id: storedSession.id };
             }
           }
         }
@@ -4610,20 +4827,27 @@ export default function App() {
         }
       }
 
+      const agentSurface = isSurfacePresentation
+        ? {
+            ...(historyGroupPath
+              ? { sessionHistoryGroupPath: historyGroupPath }
+              : {}),
+            workbenchAgentSurface: {
+              presentation: surfacePresentation,
+              sourceTabId,
+              workbenchId,
+              workspacePath,
+              conversationKey,
+              ...(historyGroupPath ? { historyGroupPath } : {}),
+              toolset: request.toolset,
+              bootstrap: surfaceBootstrap,
+            },
+          }
+        : {};
+
       const newTab: Tab = {
         ...createNewTab(),
-        ...(presentation === "dialog"
-          ? {
-              workbenchAgentSurface: {
-                presentation: "dialog" as const,
-                sourceTabId,
-                workbenchId,
-                workspacePath,
-                conversationKey,
-                toolset: request.toolset,
-              },
-            }
-          : {}),
+        ...agentSurface,
       };
       openLaunchTabNow(newTab);
       try {
@@ -4638,7 +4862,7 @@ export default function App() {
                 entryIntent: "send_message",
               },
         );
-        if (presentation === "dialog") {
+        if (isSurfacePresentation) {
           setActiveTabId(sourceTabId);
         }
         await launch;
@@ -4652,20 +4876,26 @@ export default function App() {
               ? {
                   ...tab,
                   title: request.title,
-                  ...(presentation === "dialog"
+                  ...(historyGroupPath
+                    ? { sessionHistoryGroupPath: historyGroupPath }
+                    : {}),
+                  ...(isSurfacePresentation
                     ? {
                         workbenchAgentSurface: {
-                          presentation: "dialog" as const,
+                          presentation: surfacePresentation,
                           sourceTabId,
                           workbenchId,
                           workspacePath,
                           conversationKey,
+                          ...(historyGroupPath ? { historyGroupPath } : {}),
                           toolset: request.toolset,
+                          bootstrap: surfaceBootstrap,
                         },
                       }
                     : {}),
                 }
-              : presentation === "dialog" && tab.workbenchAgentSurface
+              : presentation === "dialog" &&
+                  tab.workbenchAgentSurface?.sourceTabId === sourceTabId
                 ? {
                     ...tab,
                     workbenchAgentSurface: {
@@ -4679,7 +4909,7 @@ export default function App() {
       } finally {
         removeUnusedPrecreatedLaunchTab(newTab.id);
         if (
-          presentation === "dialog" &&
+          isSurfacePresentation &&
           tabsRef.current.some((tab) => tab.id === sourceTabId)
         ) {
           setActiveTabId(sourceTabId);
@@ -5375,6 +5605,22 @@ export default function App() {
     );
   }, []);
 
+  const handleHideWorkbenchAgentSurface = useCallback((tabId: string) => {
+    setTabs((current) =>
+      current.map((tab) =>
+        tab.id === tabId && tab.workbenchAgentSurface
+          ? {
+              ...tab,
+              workbenchAgentSurface: {
+                ...tab.workbenchAgentSurface,
+                presentation: "hidden",
+              },
+            }
+          : tab,
+      ),
+    );
+  }, []);
+
   const handleExpandWorkbenchAgentSurface = useCallback(
     (tabId: string) => {
       setTabs((current) =>
@@ -5385,6 +5631,78 @@ export default function App() {
         ),
       );
       setActiveTabId(tabId);
+    },
+    [setActiveTabId],
+  );
+
+  const handleRestartWorkbenchAgentSurface = useCallback(
+    async (tabId: string) => {
+      const tab = tabsRef.current.find((item) => item.id === tabId);
+      const surface = tab?.workbenchAgentSurface;
+      if (!surface?.bootstrap) {
+        toastRef.current.warning(
+          "当前会话无法重新开始，请关闭后再次从工作台启动",
+        );
+        return;
+      }
+
+      const sourceTabId = surface.sourceTabId;
+      const restartRequest: WorkbenchAgentSessionRequest = {
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: surface.bootstrap.title,
+        initialMessage: surface.bootstrap.initialMessage,
+        presentation: "dialog",
+        conversationKey: surface.conversationKey,
+        forceNew: true,
+        ...(surface.bootstrap.promptId
+          ? { promptId: surface.bootstrap.promptId }
+          : {}),
+        ...(surface.bootstrap.historyGroupPath
+          ? { historyGroupPath: surface.bootstrap.historyGroupPath }
+          : {}),
+        ...(surface.toolset ? { toolset: surface.toolset } : {}),
+      };
+
+      clearWorkbenchAgentConversation(
+        surface.workbenchId,
+        surface.workspacePath,
+        surface.conversationKey,
+      );
+      performCloseTab(tabId);
+
+      if (tabsRef.current.some((item) => item.id === sourceTabId)) {
+        setActiveTabId(sourceTabId);
+      }
+
+      try {
+        await handleOpenWorkbenchAgentSession(
+          surface.workspacePath,
+          restartRequest,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        toastRef.current.error(message);
+      }
+    },
+    [handleOpenWorkbenchAgentSession, performCloseTab, setActiveTabId],
+  );
+
+  const handleReviewWorkbenchAgentSurface = useCallback(
+    (tabId: string) => {
+      const surface = tabsRef.current.find(
+        (tab) => tab.id === tabId,
+      )?.workbenchAgentSurface;
+      if (!surface) return;
+      if (tabsRef.current.some((tab) => tab.id === surface.sourceTabId)) {
+        setActiveTabId(surface.sourceTabId);
+      }
+      window.setTimeout(() => {
+        dispatchWorkbenchHostAction({
+          workbenchId: surface.workbenchId,
+          workspacePath: surface.workspacePath,
+          action: "open-proposal-review",
+        });
+      }, 0);
     },
     [setActiveTabId],
   );
@@ -5477,16 +5795,20 @@ export default function App() {
           {chromeTabs.map((tab) =>
             renderTabContent(tab, tab.id === activeTabId),
           )}
+          <WorkbenchAgentSurfaceHost
+            surfaces={agentSurfaceTabs}
+            activeSourceTabId={activeTabId}
+            renderSurface={renderTabContent}
+            onMinimize={handleMinimizeWorkbenchAgentSurface}
+            onRestore={selectTabOrRestoreAgentSurface}
+            onExpandToTab={handleExpandWorkbenchAgentSurface}
+            onReview={handleReviewWorkbenchAgentSurface}
+            onRestart={(tabId) => {
+              void handleRestartWorkbenchAgentSurface(tabId);
+            }}
+            onClose={handleHideWorkbenchAgentSurface}
+          />
         </div>
-
-        <WorkbenchAgentSurfaceHost
-          surfaces={agentSurfaceTabs}
-          renderSurface={renderTabContent}
-          onMinimize={handleMinimizeWorkbenchAgentSurface}
-          onRestore={selectTabOrRestoreAgentSurface}
-          onExpandToTab={handleExpandWorkbenchAgentSurface}
-          onClose={(tabId) => void closeTabWithConfirmation(tabId)}
-        />
 
         {/* Exit confirmation dialog for running cron tasks */}
         {exitConfirmState && (

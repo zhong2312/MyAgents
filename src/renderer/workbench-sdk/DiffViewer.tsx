@@ -74,6 +74,7 @@ export default function DiffViewer({
   renderSideBySide = true,
   className = "",
 }: DiffViewerProps) {
+  const editorRef = useRef<MonacoDiffEditor | null>(null);
   const modelsRef = useRef<ReturnType<MonacoDiffEditor["getModel"]>>(null);
   const [isDark, setIsDark] = useState(() =>
     typeof document === "undefined"
@@ -92,11 +93,20 @@ export default function DiffViewer({
     defineThemes(monacoInstance);
   }, []);
   const handleMount = useCallback((editor: MonacoDiffEditor) => {
+    editorRef.current = editor;
     modelsRef.current = editor.getModel();
   }, []);
 
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      renderSideBySide,
+      useInlineViewWhenSpaceIsLimited: false,
+    });
+  }, [renderSideBySide]);
+
   useEffect(
     () => () => {
+      editorRef.current = null;
       const models = modelsRef.current;
       modelsRef.current = null;
       if (!models) return;
@@ -134,6 +144,7 @@ export default function DiffViewer({
           readOnly: true,
           originalEditable: false,
           renderSideBySide,
+          useInlineViewWhenSpaceIsLimited: false,
           enableSplitViewResizing: true,
           automaticLayout: true,
           minimap: { enabled: false },

@@ -4,6 +4,7 @@ import "./MarkdownVisualEditor.css";
 import {
   BlockTypeSelect,
   BoldItalicUnderlineToggles,
+  CodeToggle,
   CreateLink,
   DiffSourceToggleWrapper,
   InsertTable,
@@ -12,6 +13,8 @@ import {
   type MDXEditorMethods,
   Separator,
   UndoRedo,
+  codeBlockPlugin,
+  codeMirrorPlugin,
   diffSourcePlugin,
   headingsPlugin,
   linkDialogPlugin,
@@ -95,6 +98,23 @@ export default function MarkdownVisualEditor({
   const plugins = useMemo(
     () => [
       headingsPlugin(),
+      codeBlockPlugin({ defaultCodeBlockLanguage: "text" }),
+      codeMirrorPlugin({
+        codeBlockLanguages: {
+          "": "纯文本",
+          text: "纯文本",
+          json: "JSON",
+          yaml: "YAML",
+          markdown: "Markdown",
+          javascript: "JavaScript",
+          typescript: "TypeScript",
+          jsx: "JavaScript (React)",
+          tsx: "TypeScript (React)",
+          html: "HTML",
+          css: "CSS",
+          bash: "Shell",
+        },
+      }),
       listsPlugin(),
       quotePlugin(),
       linkPlugin(),
@@ -111,6 +131,8 @@ export default function MarkdownVisualEditor({
             <BlockTypeSelect />
             <Separator />
             <BoldItalicUnderlineToggles />
+            <Separator />
+            <CodeToggle />
             <Separator />
             <ListsToggle options={["bullet", "number", "check"]} />
             <Separator />

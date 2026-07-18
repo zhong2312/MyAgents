@@ -653,11 +653,48 @@ pub fn run() {
                 log::LevelFilter::Info
             };
 
+            // `Builder::default()` includes the OS app-log directory by
+            // default. Portable test packages may deny access to that
+            // directory, which would make Tauri panic before the window is
+            // created. Probe the configured data directory first, then use a
+            // writable per-user temporary directory as fallback.
+            let preferred_log_dir = app_dirs::myagents_data_dir()
+                .map(|data_dir| data_dir.join("logs"))
+                .filter(|dir| {
+                    if std::fs::create_dir_all(dir).is_err() {
+                        return false;
+                    }
+                    let probe = dir.join(format!(".myagents-log-probe-{}", std::process::id()));
+                    match std::fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&probe)
+                    {
+                        Ok(file) => {
+                            drop(file);
+                            let _ = std::fs::remove_file(probe);
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                });
+            let tauri_log_dir = preferred_log_dir.unwrap_or_else(|| {
+                let dir = std::env::temp_dir().join("MyAgents").join("logs");
+                let _ = std::fs::create_dir_all(&dir);
+                dir
+            });
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log_level)
-                    .target(Target::new(TargetKind::Stdout))
-                    .target(Target::new(TargetKind::LogDir { file_name: None }))
+                    // Replace plugin defaults so the inaccessible OS app-log
+                    // target is not initialized on portable builds.
+                    .targets([
+                        Target::new(TargetKind::Stdout),
+                        Target::new(TargetKind::Folder {
+                            path: tauri_log_dir,
+                            file_name: Some("tauri.log".into()),
+                        }),
+                    ])
                     .build(),
             )?;
 
@@ -704,11 +741,26 @@ pub fn run() {
             // Order: must be BEFORE macos_arrow_filter::install_arrow_key_filter
             // because the filter looks up the WryWebView ObjC class which is
             // only registered after the first webview is constructed.
+            // Tauri's debug shell can be relaunched while a previous WebView2
+            // process is still shutting down. Sharing its profile then causes
+            // HRESULT 0x800700AA (resource in use) and no window is created.
+            // Give each debug process an isolated profile; release builds keep
+            // the persistent application data directory.
+            #[cfg(debug_assertions)]
+            let webview_data_dir = std::env::temp_dir()
+                .join("MyAgents")
+                .join(format!("webview2-debug-{}", std::process::id()));
+            #[cfg(not(debug_assertions))]
+            let webview_data_dir = app_dirs::myagents_data_dir()
+                .map(|data_dir| data_dir.join("webview2"))
+                .unwrap_or_else(|| std::env::temp_dir().join("MyAgents").join("webview2"));
+
             let main_window_builder = WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::default(),
             )
+            .data_directory(webview_data_dir)
             .title("MyAgents")
             .inner_size(1200.0, 800.0)
             .min_inner_size(800.0, 600.0)

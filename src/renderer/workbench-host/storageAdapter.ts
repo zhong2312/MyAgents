@@ -57,6 +57,9 @@ export type WorkbenchStorageWatchFactory = (
   listener: () => void,
 ) => Promise<WorkbenchStorageSubscription>;
 
+/** Matches the Rust workspace check-paths command's per-request limit. */
+const STAT_BATCH_SIZE = 200;
+
 function entryKind(type: HostTreeNode["type"]): WorkbenchStorageEntryKind {
   return type === "dir" ? "directory" : "file";
 }
@@ -99,9 +102,14 @@ export function createWorkbenchStorage(
       normalizeWorkbenchStoragePath(path, true),
     );
     const nonRoot = normalized.filter(Boolean);
-    const response = nonRoot.length
-      ? await host.checkPaths({ paths: nonRoot })
-      : { results: {} };
+    const results: Record<string, { exists: boolean; type: "file" | "dir" }> =
+      {};
+    for (let start = 0; start < nonRoot.length; start += STAT_BATCH_SIZE) {
+      const response = await host.checkPaths({
+        paths: nonRoot.slice(start, start + STAT_BATCH_SIZE),
+      });
+      Object.assign(results, response.results);
+    }
     return Object.freeze(
       normalized.map((path) => {
         if (!path)
@@ -110,7 +118,7 @@ export function createWorkbenchStorage(
             exists: true,
             kind: "directory" as const,
           });
-        const info = response.results[path];
+        const info = results[path];
         if (!info?.exists) return Object.freeze({ path, exists: false });
         return Object.freeze({
           path,

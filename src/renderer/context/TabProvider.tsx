@@ -71,6 +71,7 @@ import { i18n } from '@/i18n';
 import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
 import { getTabServerUrl, proxyFetch, isTauri, getSessionActivation, getSessionPort, ensureSessionSidecar, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
 import { fetchJsonLargeValueRef } from '@/api/largeValueRef';
+import { isTransientSidecarError, withTransientSidecarRetry } from '@/api/apiFetch';
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
 import { isExistingSessionSwitch, isResetSessionBirth, shouldDegradedLoad } from '@/utils/optionResolve';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
@@ -474,16 +475,28 @@ function createPostJson(tabId: string, sessionIdRef: React.MutableRefObject<stri
  * Uses Session-centric port lookup when sessionId is available
  */
 function createApiGetJson(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
-    return async <T,>(path: string, opts?: TabApiCallOptions): Promise<T> => {
-        const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
-            headers: tabCorrelationHeaders(tabId, sessionId),
-            signal: opts?.signal,
+    return <T,>(path: string, opts?: TabApiCallOptions): Promise<T> =>
+        withTransientSidecarRetry(async () => {
+            const sessionId = sessionIdRef.current;
+            try {
+                const baseUrl = await getBaseUrl(tabId, sessionId);
+                const url = `${baseUrl}${path}`;
+                const response = await proxyFetch(url, {
+                    headers: tabCorrelationHeaders(tabId, sessionId),
+                    signal: opts?.signal,
+                });
+                return handleApiResponse<T>(response);
+            } catch (error) {
+                if (isTransientSidecarError(error)) {
+                    resetTabServerUrlCache(tabId);
+                }
+                throw error;
+            }
+        }, {
+            attempts: 10,
+            baseDelayMs: 150,
+            maxDelayMs: 1500,
         });
-        return handleApiResponse<T>(response);
-    };
 }
 
 /**
@@ -3639,6 +3652,10 @@ export default function TabProvider({
             // Note: Log server URL is set once in App.tsx using global sidecar
             // Tab sidecars should not override it to avoid URL switching issues
         } catch (error) {
+            if (!isMountedRef.current || sseRef.current !== sse) {
+                await sse.disconnect();
+                return;
+            }
             if (sseRef.current === sse) {
                 sseRef.current = null;
                 connectedSseSessionIdRef.current = null;
@@ -3754,6 +3771,7 @@ export default function TabProvider({
                 clearTimeout(stopTimeoutRef.current);
                 stopTimeoutRef.current = null;
             }
+            resetTabServerUrlCache(tabId);
             // Sidecar stop is handled by App.tsx performCloseTab()
             // which properly checks for active cron tasks before stopping
         };
@@ -3861,6 +3879,9 @@ export default function TabProvider({
         // so enqueueUserMessage knows this is an intentional switch, not "I don't know".
         // IM/Task callers omit the field entirely (undefined = "keep current provider").
         const sendPayload = {
+            // Reused by transient retries so the Sidecar can return the first
+            // admission result without enqueueing the same user turn twice.
+            requestId: crypto.randomUUID(),
             text: trimmed,
             images: imageData,
             sessionId: sessionIdForSend,
@@ -3877,16 +3898,29 @@ export default function TabProvider({
             ...(providerRoute ? {} : { providerEnv: providerEnv ?? 'subscription' }),
         };
 
-        postJson<{
-            success: boolean;
-            error?: string;
-            queued?: boolean;
-            queueId?: string;
-            isInFlight?: boolean;
-            deliveryMode?: 'realtime' | 'turn';
-            canCancel?: boolean;
-            canForceExecute?: boolean;
-        }>('/chat/send', sendPayload).then((response) => {
+        withTransientSidecarRetry(async () => {
+            try {
+                return await postJson<{
+                    success: boolean;
+                    error?: string;
+                    queued?: boolean;
+                    queueId?: string;
+                    isInFlight?: boolean;
+                    deliveryMode?: 'realtime' | 'turn';
+                    canCancel?: boolean;
+                    canForceExecute?: boolean;
+                }>('/chat/send', sendPayload);
+            } catch (error) {
+                if (isTransientSidecarError(error)) {
+                    resetTabServerUrlCache(tabId);
+                }
+                throw error;
+            }
+        }, {
+            attempts: 10,
+            baseDelayMs: 150,
+            maxDelayMs: 1500,
+        }).then((response) => {
             if (response.success) {
                 trackTabEvent('message_send', {
                     runtime: analyticsMetaRef.current.runtime,

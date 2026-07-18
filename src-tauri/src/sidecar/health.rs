@@ -72,7 +72,11 @@ pub(super) fn wait_for_health(
 /// Tolerates older sidecar builds (no /health/ready) by treating a 404 as
 /// "ready" (best-effort backward compat — older sidecars used the bare /health
 /// as both signals).
-pub(super) fn wait_for_readiness(port: u16, timeout_secs: u64) -> Result<(), String> {
+pub(super) fn wait_for_readiness(
+    port: u16,
+    timeout_secs: u64,
+    alive_check: Option<&dyn Fn() -> bool>,
+) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{}/health/ready", port);
     let client = match crate::local_http::blocking_builder()
         .timeout(Duration::from_millis(2000))
@@ -85,6 +89,14 @@ pub(super) fn wait_for_readiness(port: u16, timeout_secs: u64) -> Result<(), Str
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     let mut last_phase: Option<String> = None;
     while std::time::Instant::now() < deadline {
+        if let Some(check) = alive_check {
+            if !check() {
+                return Err(format!(
+                    "Sidecar process exited during readiness check on port {}",
+                    port
+                ));
+            }
+        }
         match client.get(&url).send() {
             Ok(resp) => {
                 let status = resp.status();

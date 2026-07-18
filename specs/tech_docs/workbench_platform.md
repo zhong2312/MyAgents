@@ -130,6 +130,8 @@ Tauri 在目标目录同级创建随机暂存目录，完整写入全部内容�
 
 Workbench API 1.3 在 renderer context 中提供 `agentSessions`。大型领域任务调用 `agentSessions.open()`，只提交版本化请求、对话标题、初始消息和可选稳定提示词 ID。Shell 自动绑定当前 Workspace 路径并把请求交给 App 宿主。
 
+工作台 AI 入口可声明可选 `historyGroupPath`，用于把最终 MyAgents Session 挂到项目内最多两级的历史分组。宿主负责在 pending Session 获得真实 ID 后持久化该字段；工作台不得通过会话标题推断或直接修改 `sessions.json`。未声明分组的普通会话继续直接显示在项目根下。
+
 宿主负责查找已注册 Workspace、检查 Tab 上限、选择现有项目运行配置，并通过统一 `handleLaunchProject` 创建 MyAgents Chat Tab。具体工作台不得导入 Chat、TabProvider、Config Store、Sidecar 或模型接口，也不得自行维护消息列表和会话状态。
 
 对于携带初始消息的工作台会话，宿主必须在打开 Chat Tab 前通过统一 Provider 解析链确认执行配置。内置 Runtime 按 Agent → Workspace → 全局默认 → 首个可用 Provider 的顺序解析，并跳过已停用、缺少凭据或不可用的候选项；最终 Provider 与 Model 必须作为成对的 `builtinSelection` 随初始消息交给 Chat。Runtime-backed Provider 使用 `providerExecutionIdentity`，外部 Runtime 使用 `runtimeModel`。系统没有任何可用模型服务时应在 Sidecar 创建前失败，不得让 Chat 首次自动发送回落到未经校验的旧配置。

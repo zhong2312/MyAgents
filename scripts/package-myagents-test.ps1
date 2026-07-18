@@ -103,6 +103,89 @@ function Stop-TestPackageProcesses {
     }
 }
 
+function Get-ProcessCommandLines {
+    $commandLines = @{}
+    try {
+        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+            if ($process.ProcessId -and $process.CommandLine) {
+                $commandLines[[int]$process.ProcessId] = [string]$process.CommandLine
+            }
+        }
+    } catch {
+        # Some locked-down Windows environments deny WMI process inspection.
+        # Path-based ownership checks below remain safe in that case.
+    }
+    return $commandLines
+}
+
+function Stop-OldMyAgentsProcesses {
+    $ownedRoots = @(
+        [System.IO.Path]::GetFullPath($script:RepoRoot).TrimEnd('\') + '\',
+        [System.IO.Path]::GetFullPath($script:TargetRoot).TrimEnd('\') + '\',
+        [System.IO.Path]::GetFullPath($script:BuildToolsRoot).TrimEnd('\') + '\'
+    )
+    $commandLines = Get-ProcessCommandLines
+    $candidates = @(Get-Process -Name myagents, cargo, rustc, node, cuse -ErrorAction SilentlyContinue)
+    $owned = @($candidates | Where-Object {
+        $process = $_
+        $path = ''
+        try {
+            if ($process.Path) {
+                $path = [System.IO.Path]::GetFullPath($process.Path)
+            }
+        } catch {
+            $path = ''
+        }
+        $commandLine = if ($commandLines.ContainsKey($process.Id)) {
+            $commandLines[$process.Id]
+        } else {
+            ''
+        }
+        $pathOwned = $false
+        foreach ($root in $ownedRoots) {
+            if ($path -and $path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $pathOwned = $true
+                break
+            }
+        }
+        $commandOwned = $commandLine -and (
+            $commandLine.IndexOf($script:RepoRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine.IndexOf($script:TargetRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine.IndexOf('Start-MyAgents-Dev', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        )
+
+        # Cargo/rustc from the repository's isolated build toolchain are
+        # build-owned even when their command line is unavailable. Other
+        # Node processes are stopped only when their command line identifies
+        # this repository, so unrelated desktop applications are untouched.
+        ($pathOwned -or $commandOwned) -and (
+            $process.ProcessName -ne 'node' -or $commandOwned
+        )
+    })
+
+    if ($owned.Count -eq 0) {
+        Write-Info 'No old MyAgents build or test processes found.'
+        return
+    }
+
+    foreach ($process in @($owned | Where-Object ProcessName -eq 'myagents')) {
+        $null = $process.CloseMainWindow()
+    }
+    Start-Sleep -Milliseconds 500
+    foreach ($process in $owned) {
+        if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
+            Write-Info "Stopping old MyAgents process PID $($process.Id) ($($process.ProcessName))"
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Start-Sleep -Milliseconds 500
+
+    $remaining = @(Get-Process -Id @($owned.Id) -ErrorAction SilentlyContinue)
+    if ($remaining.Count -gt 0) {
+        throw 'Old MyAgents processes are still running.'
+    }
+}
+
 function Get-DirectoryFingerprint {
     param([string]$Path)
     $files = @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction Stop)
@@ -318,6 +401,8 @@ if (-not $SkipSmokeTest) {
 }
 
 Write-Step 'Stopping the long-term test package'
+Write-Step 'Checking for old MyAgents build processes'
+Stop-OldMyAgentsProcesses
 Stop-TestPackageProcesses
 
 $profilePath = Join-Path $script:TargetRoot 'profile'

@@ -21,6 +21,7 @@ interface SessionMetadata {
     cronTaskId?: string;
     runtime?: RuntimeType;      // 'builtin' | 'claude-code' | 'codex' | 'gemini'
     runtimeSessionId?: string;  // external runtime thread/session id（Codex threadId 等）
+    historyGroupPath?: string[]; // 项目内最多两级的可选历史分组；缺失 = 项目根
     // 分层 config snapshot 字段（owned session 冻结）
     model?: string;
     // #324 推理强度：存字面 'default' | level（'default' 是有意义的值——session

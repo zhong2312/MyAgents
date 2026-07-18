@@ -15,13 +15,24 @@ import type {
   WorkbenchTabTarget,
 } from "../../shared/workbench-sdk";
 
+export interface WorkbenchAgentSurfaceBootstrap {
+  readonly title: string;
+  readonly initialMessage: string;
+  readonly promptId?: string;
+  readonly historyGroupPath?: readonly string[];
+}
+
 export interface WorkbenchAgentSurfaceState {
-  readonly presentation: "dialog" | "dock";
+  /** dialog = project-tab window, dock = project-tab mini window, hidden = resident without chrome. */
+  readonly presentation: "dialog" | "dock" | "hidden";
   readonly sourceTabId: string;
   readonly workbenchId: string;
   readonly workspacePath: string;
   readonly conversationKey: string;
+  readonly historyGroupPath?: readonly string[];
   readonly toolset?: WorkbenchAgentToolsetRequest;
+  /** Snapshot used by host "重新开始" to recreate the same task conversation. */
+  readonly bootstrap?: WorkbenchAgentSurfaceBootstrap;
 }
 
 /** Cron settings drafted in the launcher input. Sent forward via
@@ -178,6 +189,11 @@ export interface Tab {
    * by the global workbench surface host instead of the tab strip.
    */
   workbenchAgentSurface?: WorkbenchAgentSurfaceState;
+  /**
+   * Runtime-only one-shot intent used to persist workbench history grouping
+   * after a pending Session receives its real id. Never serialized with tabs.
+   */
+  sessionHistoryGroupPath?: readonly string[];
 }
 
 export interface TabState {

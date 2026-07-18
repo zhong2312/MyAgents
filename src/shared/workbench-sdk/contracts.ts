@@ -12,7 +12,7 @@ export interface OpenWorkbenchRequest {
 
 export const WORKBENCH_AGENT_SESSION_REQUEST_VERSION = 1 as const;
 
-export type WorkbenchAgentSessionPresentation = "tab" | "dialog";
+export type WorkbenchAgentSessionPresentation = "tab" | "dialog" | "dock";
 
 export interface WorkbenchAgentToolsetRequest {
   /** Host-recognized toolset id. Unknown ids are rejected before the turn starts. */
@@ -41,6 +41,17 @@ export interface WorkbenchAgentSessionRequest {
   readonly presentation?: WorkbenchAgentSessionPresentation;
   /** Stable task identity used to restore an existing workbench conversation. */
   readonly conversationKey?: string;
+  /**
+   * Optional project-local history grouping. The host persists at most two
+   * levels on the resulting MyAgents Session; omitted sessions stay directly
+   * under the project.
+   */
+  readonly historyGroupPath?: readonly string[];
+  /**
+   * Force a brand-new conversation for this task key.
+   * Clears any live surface / local binding and always sends initialMessage.
+   */
+  readonly forceNew?: boolean;
   /** Business tools injected by the host for this controlled conversation. */
   readonly toolset?: WorkbenchAgentToolsetRequest;
 }

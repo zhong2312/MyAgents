@@ -79,6 +79,45 @@ describe('provider availability with enablement', () => {
         expect(selection?.model).toBe('beta-primary');
     });
 
+    it('falls back to an available provider that can serve the desired model', () => {
+        const providers = [
+            makeProvider('volcengine-api', 'api-primary'),
+            {
+                ...makeProvider('volcengine', 'deepseek-v4-flash-260425'),
+                models: [
+                    {
+                        model: 'deepseek-v4-flash-260425',
+                        modelName: 'deepseek-v4-flash',
+                        modelSeries: 'volcengine',
+                    },
+                ],
+            },
+            makeProvider('other', 'other-primary'),
+        ];
+        const selection = resolveBuiltinSelection(
+            {
+                agent: {
+                    id: 'agent-1',
+                    name: 'Novel',
+                    workspacePath: '/tmp/novel',
+                    providerId: 'volcengine-api',
+                    model: 'deepseek-v4-flash-260425',
+                } as never,
+            },
+            DEFAULT_CONFIG,
+            providers,
+            {
+                // Preferred provider has no key; sibling volcengine does.
+                volcengine: 'volc-key',
+                other: 'other-key',
+            },
+            {},
+        );
+
+        expect(selection?.provider.id).toBe('volcengine');
+        expect(selection?.model).toBe('deepseek-v4-flash-260425');
+    });
+
     it('requires runtime-backed providers to be ready and have discovered models', () => {
         expect(isProviderAvailable(
             MANAGED_CODEX_PROVIDER,

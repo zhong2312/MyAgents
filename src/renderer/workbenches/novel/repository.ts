@@ -29,6 +29,10 @@ export interface LoadedNovelProject {
 
 export interface NovelRepository {
   load(): Promise<LoadedNovelProject>;
+  saveKnowledgeGraphEnabled(
+    project: LoadedNovelProject,
+    enabled: boolean,
+  ): Promise<{ metadata: NovelMetadata; metadataContent: string }>;
   createChapter(project: LoadedNovelProject): Promise<NovelChapterRecord>;
   renameChapter(
     project: LoadedNovelProject,
@@ -82,6 +86,31 @@ export function createNovelRepository(storage: WorkbenchStorage): NovelRepositor
         chapterIndexContent: chapterIndexFile.content,
         chapters: Object.freeze(chapters),
         outlineContent: outlineFile.content,
+      });
+    },
+
+    async saveKnowledgeGraphEnabled(project, enabled) {
+      let raw: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(project.metadataContent);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("novel.json 必须是 JSON 对象");
+        }
+        raw = { ...(parsed as Record<string, unknown>) };
+      } catch (error) {
+        throw new Error(
+          `读取 novel.json 失败：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      raw.knowledgeGraph = { enabled };
+      raw.updatedAt = new Date().toISOString();
+      const metadataContent = `${JSON.stringify(raw, null, 2)}\n`;
+      await storage.writeText(NOVEL_METADATA_PATH, metadataContent, {
+        expectedContent: project.metadataContent,
+      });
+      return Object.freeze({
+        metadata: parseNovelMetadata(metadataContent),
+        metadataContent,
       });
     },
 

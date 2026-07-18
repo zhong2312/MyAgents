@@ -239,6 +239,7 @@ async function validateChanges(
   }
   const settingIds = new Set<string>();
   const materializedTemplates = new Set<string>();
+  const referencedSettingFiles = new Set<string>();
   for (const setting of settingItems!) {
     if (!setting || typeof setting !== "object") continue;
     const item = setting as Record<string, unknown>;
@@ -284,6 +285,7 @@ async function validateChanges(
         errors.push(message(error));
         continue;
       }
+      referencedSettingFiles.add(path);
       if (
         !prospective.has(path) &&
         (await readOptional(workspaceFile(workspace, path))) === null
@@ -291,6 +293,22 @@ async function validateChanges(
         errors.push(`设定 ${String(item.id)} 引用了不存在的文件：${path}`);
       }
     }
+  }
+  const orphanProposalFiles = [...prospective.keys()].filter(
+    (path) =>
+      (path.startsWith(`${LIBRARY_ROOT}/pages/`) ||
+        path.startsWith(`${LIBRARY_ROOT}/entries/`)) &&
+      !referencedSettingFiles.has(path),
+  );
+  if (orphanProposalFiles.length > 0) {
+    const preview = orphanProposalFiles.slice(0, 3).join("、");
+    const remainder =
+      orphanProposalFiles.length - Math.min(3, orphanProposalFiles.length);
+    errors.push(
+      `提案文件未被最终 settings.json 引用：${preview}${
+        remainder > 0 ? `（另有 ${remainder} 个）` : ""
+      }。请在同一提案中修改 settings.json，登记对应的 pagePath 和 entriesPath`,
+    );
   }
   return errors;
 }
