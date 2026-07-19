@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "narrative-studio-v1/index.html",
+  "entry": "narrative-studio-v1/index.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-19T14:58:32.312Z",
+  "updatedAt": "2026-07-19T14:58:32.312Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

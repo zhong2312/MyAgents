@@ -1,0 +1,365 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>MyAgents · 叙事设计工作台</title>
+  <style>html{width:312px!important;height:675px!important;overflow:hidden!important}body{width:390px!important;height:844px!important;transform:scale(.8);transform-origin:0 0}</style>
+  <style>
+    :root {
+      --bg:#faf6ee; --surface:#fffcf7; --surface-2:#f5eee5; --fg:#1c1612;
+      --muted:#6f6156; --border:#e8dccf; --accent:#c26d3a; --ok:#2e6f5e;
+      --danger:#a94438; --warning:#9a641e; --shadow:0 10px 28px rgba(55,35,20,.13);
+      --nav:72px; --structure:240px; --detail:320px;
+      --body:"Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;
+      --display:"Songti SC","STSong",serif; --mono:"Cascadia Mono",Consolas,monospace;
+    }
+    *{box-sizing:border-box;letter-spacing:0} html,body{height:100%;margin:0;overflow:hidden}
+    body{font:14px/1.55 var(--body);color:var(--fg);background:var(--bg)}
+    button,input,select,textarea{font:inherit;color:inherit} button{cursor:pointer}
+    button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 65%,white);outline-offset:1px}
+    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .icon{width:18px;height:18px;display:block;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    .app-shell{height:100%;display:grid;grid-template-columns:var(--nav) minmax(0,1fr);background:var(--surface)}
+    .workbench-navigation{background:#241c17;color:#e9ddd2;border-right:1px solid #3b2d25;display:flex;flex-direction:column;align-items:center;padding:14px 8px;gap:5px;z-index:40}
+    .brand-mark{width:44px;height:44px;display:grid;place-items:center;margin-bottom:10px;border:1px solid #624838;background:#34271f;color:#f2d7c6;font:700 18px var(--display);border-radius:7px}
+    .nav-button{width:56px;min-height:52px;border:0;border-radius:6px;background:transparent;color:#bdaea4;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;line-height:1.15}
+    .nav-button:hover{background:#33261f;color:#fff8f0}.nav-button.active{background:#4a3428;color:#fff;border:1px solid #6b4936}
+    .nav-spacer{flex:1}.workspace{min-width:0;display:grid;grid-template-rows:54px minmax(0,1fr);overflow:hidden}
+    .topbar{border-bottom:1px solid var(--border);background:var(--surface);display:flex;align-items:center;gap:12px;padding:0 16px;min-width:0}
+    .project-button{height:36px;display:flex;align-items:center;gap:8px;border:1px solid var(--border);background:var(--bg);border-radius:6px;padding:0 10px;min-width:0}
+    .project-button strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.project-button .icon{color:var(--accent)}
+    .top-context{font-size:12px;color:var(--muted);white-space:nowrap}.top-spacer{flex:1}
+    .save-state{display:flex;align-items:center;gap:6px;color:var(--ok);font-size:12px;white-space:nowrap}.save-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+    .top-icon,.icon-button{width:36px;height:36px;border:1px solid var(--border);border-radius:6px;background:var(--surface);display:grid;place-items:center;color:var(--muted)}
+    .top-icon:hover,.icon-button:hover{color:var(--fg);background:var(--surface-2)}
+    .screen{display:none;height:100%;min-height:0;background:var(--surface)}.screen.active{display:grid;grid-template-rows:51px minmax(0,1fr)}#screen-scheme.active{grid-template-rows:51px auto minmax(0,1fr)}
+    .screenbar{display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--border);background:var(--bg);min-width:0}
+    .screen-title{font:700 18px var(--display);white-space:nowrap}.scheme-chip{display:flex;align-items:center;gap:6px;color:var(--accent);font-size:12px;white-space:nowrap}
+    .view-tabs,.definition-tabs{display:flex;align-items:center;gap:2px;min-width:0;overflow:auto;scrollbar-width:none}
+    .view-tab,.definition-tab{height:34px;border:0;border-radius:5px;background:transparent;padding:0 10px;color:var(--muted);white-space:nowrap}
+    .view-tab:hover,.definition-tab:hover{background:var(--surface-2);color:var(--fg)}
+    .view-tab.active,.definition-tab.active{color:var(--fg);background:var(--surface);box-shadow:inset 0 -2px var(--accent)}
+    .searchbox{height:34px;width:180px;display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);padding:0 9px;color:var(--muted)}
+    .searchbox input{min-width:0;width:100%;border:0;outline:0;background:transparent}
+    .primary-button,.secondary-button,.danger-button{height:36px;border-radius:6px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid transparent;white-space:nowrap;font-weight:600}
+    .primary-button{background:var(--accent);color:white;box-shadow:0 4px 10px rgba(125,68,35,.22);border-color:#a6572d}
+    .primary-button:hover{background:#aa5c31}.secondary-button{background:var(--surface);border-color:var(--border);color:var(--fg)}
+    .secondary-button:hover{background:var(--surface-2)}.danger-button{background:#fff7f5;border-color:#dfb6ae;color:var(--danger)}
+    .count-badge,.status-badge,.source-badge{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border-radius:999px;font-size:12px;line-height:1.25;border:1px solid var(--border);background:var(--surface);white-space:nowrap}
+    .status-badge.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 28%,var(--border));background:color-mix(in srgb,var(--ok) 7%,white)}
+    .status-badge.warn{color:var(--warning);border-color:#dec69d;background:#fff9ee}.status-badge.error{color:var(--danger);border-color:#e1b9b2;background:#fff7f5}
+    .source-badge{color:var(--accent);background:#fff7ef;border-color:#e9c8b3}.count-badge{min-width:24px;justify-content:center;color:var(--muted);padding-inline:6px}
+    .mobile-steps{display:none}.triple{height:100%;min-height:0;display:grid;grid-template-columns:var(--structure) minmax(440px,1fr) var(--detail)}
+    .pane{min-width:0;min-height:0;overflow:auto;background:var(--surface)}.structure-pane{border-right:1px solid var(--border);background:var(--bg)}
+    .content-pane{border-right:1px solid var(--border);position:relative}.inspector{background:var(--surface)}
+    .pane-head{height:48px;padding:0 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;position:sticky;top:0;background:inherit;z-index:4}
+    .pane-head strong{font-size:14px}.pane-head .spacer{flex:1}.segmented{display:inline-flex;padding:2px;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
+    .segmented button{height:27px;border:0;border-radius:4px;background:transparent;padding:0 8px;color:var(--muted);font-size:12px}.segmented button.active{background:var(--surface-2);color:var(--fg)}
+    .tree{padding:8px}.tree-section{margin-bottom:4px}.tree-row{width:100%;min-height:35px;border:0;background:transparent;border-radius:5px;padding:5px 7px;display:flex;align-items:center;gap:7px;text-align:left;color:var(--muted)}
+    .tree-row:hover{background:var(--surface-2);color:var(--fg)}.tree-row.active{background:#f0e3d7;color:var(--fg)}.tree-row.level-1{padding-left:23px}.tree-row.level-2{padding-left:42px}
+    .tree-row .label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-row .count{margin-left:auto;font:11px var(--mono);color:var(--muted)}
+    .rotate{transform:rotate(-90deg)}.tree-row.collapsed + .tree-children{display:none}.tree-foot{padding:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)}
+    .view-panel{display:none;height:100%;min-height:0}.view-panel.active{display:flex;flex-direction:column}.canvas-toolbar{min-height:46px;padding:6px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;background:var(--surface)}
+    .canvas-toolbar strong{font-size:14px}.canvas-toolbar .spacer{flex:1}.helper{font-size:12px;color:var(--muted)}
+    .lane-scroll{min-height:0;overflow:auto;padding:14px;background:var(--surface)}.lane-board{min-width:760px;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--surface)}
+    .lane-axis,.lane-row{display:grid;grid-template-columns:116px repeat(8,minmax(82px,1fr));position:relative}.lane-axis{height:38px;background:var(--bg);border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)}
+    .axis-label,.axis-cell,.lane-label,.lane-cell{display:flex;align-items:center;padding:0 8px;border-right:1px solid var(--border)}.axis-cell{justify-content:center;padding:0 4px}.axis-cell:last-child,.lane-cell:last-child{border-right:0}
+    .lane-row{min-height:78px;border-bottom:1px solid var(--border)}.lane-row:last-child{border-bottom:0}.lane-label{font-weight:600;background:var(--bg);align-items:flex-start;padding-top:13px;z-index:2}
+    .lane-cell{min-height:78px;background:linear-gradient(to bottom,transparent 50%,color-mix(in srgb,var(--border) 42%,transparent) 50%,transparent calc(50% + 1px))}
+    .story-node{align-self:center;justify-self:stretch;margin:0 6px;min-height:36px;border:1px solid #d7b79f;background:#fff8f1;border-radius:5px;padding:6px 9px;z-index:2;text-align:left;display:flex;align-items:center;gap:6px;line-height:1.25}
+    .story-node:hover{border-color:var(--accent)}.story-node.selected{background:#f5dfd0;border-color:var(--accent);box-shadow:0 2px 7px rgba(99,54,28,.12)}.story-node.green{background:#f1f7f4;border-color:#afd0c6}.story-node.muted{background:var(--bg);border-color:var(--border)}
+    .story-node small{display:block;color:var(--muted);font-size:11px}.legend{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:14px;color:var(--muted);font-size:12px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:2px;background:var(--accent)}.legend span:nth-child(2) i{background:var(--ok)}
+    .table-wrap{min-height:0;overflow:auto}.data-table{width:100%;border-collapse:collapse;min-width:760px}.data-table th{position:sticky;top:0;background:var(--bg);z-index:2;text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
+    .data-table td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}.data-table tbody tr{cursor:pointer}.data-table tbody tr:hover,.data-table tbody tr.selected{background:#fff7ef}.chapter-no{font:600 12px var(--mono);color:var(--muted)}
+    .cell-title{font-weight:600}.cell-sub{display:block;color:var(--muted);font-size:12px;margin-top:2px}.progress{width:76px;height:6px;background:var(--border);border-radius:5px;overflow:hidden;margin-top:6px}.progress i{display:block;height:100%;background:var(--ok)}
+    .arc-board{padding:14px;overflow:auto}.arc-columns{display:grid;grid-template-columns:repeat(4,minmax(170px,1fr));min-width:760px;border:1px solid var(--border);border-radius:6px;overflow:hidden}.arc-column{border-right:1px solid var(--border);min-height:520px}.arc-column:last-child{border-right:0}.arc-head{padding:10px 12px;background:var(--bg);border-bottom:1px solid var(--border);font-weight:600}.arc-item{margin:10px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer}.arc-item:hover{border-color:var(--accent)}
+    .expectation-list,.validation-list{padding:0}.expectation-item,.validation-item{display:grid;grid-template-columns:110px minmax(220px,1fr) 120px 105px;gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer}.expectation-item:hover,.expectation-item.selected,.validation-item:hover{background:#fff8f1}
+    .expectation-track{display:flex;align-items:center;gap:0}.track-dot{width:9px;height:9px;border:2px solid var(--accent);border-radius:50%;background:var(--surface)}.track-dot.done{background:var(--accent)}.track-line{height:2px;width:38px;background:var(--border)}.track-line.done{background:var(--accent)}
+    .validation-item{grid-template-columns:90px minmax(260px,1fr) 140px 90px}.validation-summary{padding:14px;display:flex;gap:10px;border-bottom:1px solid var(--border);background:var(--bg)}
+    .outline-editor{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr)}.editor-toolbar{padding:7px 12px;border-bottom:1px solid var(--border);display:flex;gap:5px}.editor-toolbar button{width:32px;height:32px;border:1px solid var(--border);background:var(--surface);border-radius:5px;font-weight:700}.outline-editor textarea{resize:none;border:0;outline:0;padding:26px 9%;font:16px/1.85 var(--body);background:var(--surface);color:var(--fg)}
+    .inspector-body{padding:14px}.object-kicker{font-size:12px;color:var(--accent);font-weight:700}.object-title{font:700 20px/1.35 var(--display);margin:4px 0 6px;overflow-wrap:anywhere}.object-summary{color:var(--muted);margin:0 0 14px}.detail-section{padding:13px 0;border-top:1px solid var(--border)}.detail-section h3{font-size:12px;color:var(--muted);margin:0 0 9px;font-weight:700;text-transform:uppercase}.field-grid{display:grid;grid-template-columns:86px minmax(0,1fr);gap:8px 10px}.field-grid dt{color:var(--muted)}.field-grid dd{margin:0;overflow-wrap:anywhere}
+    .tag-list{display:flex;flex-wrap:wrap;gap:5px}.tag{display:inline-flex;align-items:center;max-width:100%;min-height:24px;padding:2px 7px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:12px;overflow-wrap:anywhere}.tag.accent{background:#fff5ec;border-color:#dfb99f;color:#9d4f27}
+    .relation-list{display:grid;gap:8px}.relation-row{padding:8px 9px;border:1px solid var(--border);border-radius:5px;background:var(--bg)}.relation-row strong{display:block;font-size:12px}.relation-row span{font-size:12px;color:var(--muted)}.relation-row.fact{border-color:#afd0c6;background:#f4f9f7}.origin-note{padding:9px;border:1px solid #e5cbb1;background:#fff9f1;border-radius:5px;font-size:12px;color:#72543d}
+    .filter-list{padding:8px}.filter-heading{padding:12px 8px 4px;color:var(--muted);font-size:11px;font-weight:700}.filter-row{width:100%;min-height:36px;border:0;background:transparent;border-radius:5px;padding:6px 8px;display:flex;align-items:center;gap:8px;text-align:left;color:var(--muted)}.filter-row:hover,.filter-row.active{background:var(--surface-2);color:var(--fg)}.filter-row .count-badge{margin-left:auto}
+    .inspiration-list{min-height:0;overflow:auto}.inspiration-row{width:100%;border:0;border-bottom:1px solid var(--border);background:var(--surface);padding:13px 14px;text-align:left;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 10px}.inspiration-row:hover,.inspiration-row.active{background:#fff8f1}.inspiration-title{font-weight:700;overflow-wrap:anywhere}.inspiration-preview{color:var(--muted);font-size:12px;grid-column:1/-1}.inspiration-meta{display:flex;gap:8px;color:var(--muted);font-size:11px}.adoption-record{padding:9px;border:1px solid #afd0c6;background:#f3f9f6;border-radius:5px;margin-bottom:7px}.adoption-record strong{display:block;font-size:12px;color:var(--ok)}.adoption-record span{font-size:12px;color:var(--muted)}
+    .layer-list{padding:8px}.layer-row{width:100%;min-height:51px;border:0;background:transparent;border-radius:6px;padding:7px 8px;display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;text-align:left;gap:7px}.layer-row:hover,.layer-row.active{background:var(--surface-2)}.layer-index{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:var(--surface);border:1px solid var(--border);font:11px var(--mono);color:var(--muted)}.layer-row.active .layer-index{background:var(--accent);border-color:var(--accent);color:white}.layer-name{font-weight:600}.layer-sub{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.switch{width:28px;height:16px;border-radius:9px;background:var(--ok);position:relative}.switch:after{content:"";position:absolute;width:12px;height:12px;right:2px;top:2px;border-radius:50%;background:white}
+    .definition-header{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}.definition-header .spacer{flex:1}.definition-content{min-height:0;overflow:auto}.definition-row{display:grid;grid-template-columns:minmax(130px,.8fr) minmax(170px,1.4fr) 120px 110px;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border);align-items:center}.definition-row.header{position:sticky;top:0;background:var(--bg);z-index:2;color:var(--muted);font-size:12px}.definition-name{font-weight:700}.definition-desc{color:var(--muted);font-size:12px}.override-mark{font-size:11px;color:var(--ok)}
+    .impact-list{display:grid;gap:7px}.impact-item{display:flex;gap:8px;align-items:flex-start;padding:8px;border:1px solid var(--border);border-radius:5px;background:var(--bg)}.impact-item .icon{width:16px;height:16px;color:var(--accent);margin-top:2px;flex:0 0 auto}.impact-item strong{display:block;font-size:12px}.impact-item span{color:var(--muted);font-size:11px}
+    .conflict-box{padding:10px;border:1px solid #dfb6ae;background:#fff7f5;border-radius:6px}.conflict-box strong{display:block;color:var(--danger);font-size:12px}.conflict-box p{margin:4px 0 0;color:var(--muted);font-size:12px}.preview-banner{display:none;min-height:42px;padding:8px 14px;background:#eef7f4;border-bottom:1px solid #b9d4cb;align-items:center;gap:8px;color:#24594c}.preview-banner.show{display:flex}.preview-banner strong{font-size:13px}.preview-banner span{font-size:12px}.preview-banner .spacer{flex:1}
+    dialog{border:0;border-radius:8px;padding:0;width:min(520px,calc(100vw - 28px));background:var(--surface);color:var(--fg);box-shadow:var(--shadow)}dialog::backdrop{background:rgba(28,22,18,.38)}
+    .dialog-head{padding:15px 17px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}.dialog-head h2{font:700 18px var(--display);margin:0}.dialog-head .spacer{flex:1}.dialog-body{padding:16px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.form-field{display:grid;gap:5px}.form-field.full{grid-column:1/-1}.form-field label{font-size:12px;color:var(--muted)}.form-field select,.form-field input{height:38px;border:1px solid var(--border);border-radius:6px;background:var(--surface);padding:0 9px;min-width:0}.relation-preview{margin-top:14px;padding:12px;border:1px dashed #cba88e;background:#fff9f2;border-radius:6px}.relation-preview strong{display:block;margin-bottom:6px}.relation-flow{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.relation-flow span{padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);font-size:12px}.dialog-actions{padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+    .toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);opacity:0;pointer-events:none;padding:10px 14px;border-radius:6px;background:#2c241f;color:white;box-shadow:var(--shadow);z-index:100;transition:.2s}.toast.show{opacity:1;transform:translate(-50%,0)}
+    .detail-toggle{display:none}.empty-state{min-height:320px;display:grid;place-items:center;text-align:center;color:var(--muted);padding:30px}.empty-state strong{display:block;color:var(--fg);font:700 18px var(--display);margin-bottom:5px}
+    @media(max-width:1120px) and (min-width:701px){:root{--structure:220px}.triple{grid-template-columns:var(--structure) minmax(0,1fr)}.inspector{display:none}.screen.show-inspector .inspector{display:block;position:fixed;right:0;top:54px;bottom:0;width:340px;z-index:32;box-shadow:var(--shadow);border-left:1px solid var(--border)}.detail-toggle{display:grid}.searchbox{width:145px}.screenbar{gap:7px}.scheme-chip{display:none}}
+    @media(min-width:0px){html,body{overflow:hidden}.app-shell{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) 64px}.workbench-navigation{grid-row:2;grid-column:1;flex-direction:row;padding:5px 8px;border-right:0;border-top:1px solid #3b2d25;overflow-x:auto;justify-content:space-around}.brand-mark,.nav-spacer,.workbench-navigation .nav-button[data-secondary]{display:none}.nav-button{min-width:58px;width:auto;height:52px;min-height:52px}.workspace{grid-row:1;grid-column:1;grid-template-rows:50px minmax(0,1fr)}.topbar{padding:0 9px;gap:7px}.top-context,.save-state span,.topbar .top-icon:nth-last-child(1){display:none}.project-button{max-width:210px}.screen.active{grid-template-rows:auto 42px minmax(0,1fr)}#screen-scheme.active{grid-template-rows:auto auto 42px minmax(0,1fr)}.screenbar{min-height:48px;padding:6px 9px;overflow-x:auto}.screen-title{font-size:16px}.screenbar .searchbox,.screenbar>.icon-button,.scheme-chip{display:none}.view-tabs{order:3;min-width:100%;flex-basis:100%}.screenbar{flex-wrap:wrap}.screenbar .primary-button{height:34px}.mobile-steps{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--border);background:var(--bg);padding:4px 8px;gap:4px}.mobile-step{height:32px;border:0;border-radius:5px;background:transparent;color:var(--muted)}.mobile-step.active{background:var(--surface);color:var(--fg);box-shadow:inset 0 -2px var(--accent)}.triple{display:block;height:100%}.pane{display:none!important;height:100%;border:0}.screen[data-mobile-panel="structure"] .structure-pane,.screen[data-mobile-panel="content"] .content-pane,.screen[data-mobile-panel="detail"] .inspector{display:block!important}.pane-head{height:44px}.searchbox.mobile{display:flex;width:100%}.canvas-toolbar{min-height:44px}.helper.hide-mobile{display:none}.lane-scroll{padding:9px}.expectation-item,.validation-item{grid-template-columns:86px minmax(190px,1fr);min-width:470px}.expectation-item>*:nth-child(n+3),.validation-item>*:nth-child(n+3){display:none}.definition-row{grid-template-columns:minmax(120px,.8fr) minmax(180px,1.4fr) 110px;min-width:520px}.definition-row>*:nth-child(4){display:none}.definition-header{padding:8px}.definition-tabs{width:100%}.preview-banner{font-size:12px}.form-grid{grid-template-columns:1fr}.form-field.full{grid-column:auto}.toast{bottom:80px;max-width:calc(100vw - 24px);white-space:normal}.outline-editor textarea{padding:18px 16px}.detail-toggle{display:none}}
+  </style>
+</head>
+<body>
+  <svg class="sr-only" aria-hidden="true"><defs>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V5H6.5A2.5 2.5 0 0 0 4 7.5z"/><path d="M4 7.5v12A2.5 2.5 0 0 0 6.5 22H20"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M6 16V8a3 3 0 0 1 3-3h6"/></symbol>
+    <symbol id="i-light" viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M8.3 15a7 7 0 1 1 7.4 0c-.9.7-1.4 1.6-1.5 3h-4.4c-.1-1.4-.6-2.3-1.5-3z"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5zM3 12l9 5 9-5M3 17l9 5 9-5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16M7 12h10M10 19h4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.4 2.2 18a2 2 0 0 0 1.8 3h16a2 2 0 0 0 1.8-3L13.7 3.4a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="m21 8-9 5-9-5 9-5zM3 8v8l9 5 9-5V8M12 13v8"/></symbol>
+  </defs></svg>
+
+  <div class="app-shell">
+    <nav class="workbench-navigation" data-od-id="workbench-navigation" aria-label="小说工作台主导航">
+      <div class="brand-mark" title="MyAgents">M</div>
+      <button class="nav-button" data-secondary title="素材库"><svg class="icon"><use href="#i-box"/></svg><span>素材</span></button>
+      <button class="nav-button active" data-screen="narrative" data-od-id="nav-narrative"><svg class="icon"><use href="#i-route"/></svg><span>叙事设计</span></button>
+      <button class="nav-button" data-screen="inspiration" data-od-id="nav-inspiration"><svg class="icon"><use href="#i-light"/></svg><span>灵感</span></button>
+      <button class="nav-button" data-screen="scheme" data-od-id="nav-scheme"><svg class="icon"><use href="#i-layers"/></svg><span>创作方案</span></button>
+      <div class="nav-spacer"></div>
+      <button class="nav-button" data-secondary title="小说工作台"><svg class="icon"><use href="#i-book"/></svg><span>工作台</span></button>
+    </nav>
+
+    <section class="workspace">
+      <header class="topbar" data-od-id="global-topbar">
+        <button class="project-button" id="project-button" title="查看当前创作方案">
+          <svg class="icon"><use href="#i-layers"/></svg><strong id="project-name">《仙途》</strong><span class="top-context" id="project-context">东方玄幻 · 连载长篇</span>
+        </button>
+        <span class="top-context" id="screen-context">叙事设计 / 第一卷</span>
+        <div class="top-spacer"></div>
+        <div class="save-state" id="save-state"><i class="save-dot"></i><span>已保存</span></div>
+        <button class="top-icon" title="全局搜索" aria-label="全局搜索"><svg class="icon"><use href="#i-search"/></svg></button>
+        <button class="top-icon" title="校验摘要" aria-label="校验摘要" data-screen="narrative" data-view-jump="validation"><svg class="icon"><use href="#i-alert"/></svg></button>
+      </header>
+
+      <main>
+        <section class="screen active" id="screen-narrative" data-mobile-panel="content" data-od-id="narrative-screen">
+          <div class="screenbar">
+            <span class="screen-title" data-od-id="narrative-heading">叙事设计</span>
+            <span class="scheme-chip"><svg class="icon"><use href="#i-layers"/></svg>术语来自《仙途》项目方案</span>
+            <div class="view-tabs" role="tablist" aria-label="叙事视图">
+              <button class="view-tab active" data-view="lines">线路</button><button class="view-tab" data-view="arcs">故事弧</button>
+              <button class="view-tab" data-view="chapters">章节计划</button><button class="view-tab" data-view="expectations">期待追踪</button>
+              <button class="view-tab" data-view="validation">验收</button><button class="view-tab" data-view="outline">自由大纲</button>
+            </div>
+            <div class="top-spacer"></div>
+            <label class="searchbox"><svg class="icon"><use href="#i-search"/></svg><input aria-label="搜索叙事对象" placeholder="搜索对象"></label>
+            <button class="icon-button" title="筛选" aria-label="筛选"><svg class="icon"><use href="#i-filter"/></svg></button>
+            <button class="icon-button detail-toggle" title="打开详情" aria-label="打开详情"><svg class="icon"><use href="#i-panel"/></svg></button>
+            <button class="primary-button" id="create-object"><svg class="icon"><use href="#i-plus"/></svg>新建</button>
+          </div>
+          <div class="mobile-steps"><button class="mobile-step" data-mobile="structure">结构</button><button class="mobile-step active" data-mobile="content">内容</button><button class="mobile-step" data-mobile="detail">详情</button></div>
+          <div class="triple">
+            <aside class="pane structure-pane" data-od-id="story-structure-pane">
+              <div class="pane-head"><strong>故事结构</strong><div class="spacer"></div><div class="segmented"><button class="active">结构</button><button>筛选</button></div></div>
+              <div class="tree">
+                <div class="tree-section">
+                  <button class="tree-row tree-toggle"><svg class="icon"><use href="#i-chevron"/></svg><span class="label">第一卷 · 丹火问道</span><span class="count">18</span></button>
+                  <div class="tree-children">
+                    <button class="tree-row level-1 active"><svg class="icon"><use href="#i-chevron"/></svg><span class="label">单元三 · 灰烬炉心</span><span class="count">6</span></button>
+                    <button class="tree-row level-2" data-chapter="39"><span class="label">章节组 37–39 · 入炉</span></button>
+                    <button class="tree-row level-2" data-chapter="42"><span class="label">章节组 40–44 · 丹成</span></button>
+                    <button class="tree-row level-2"><span class="label">章节组 45–48 · 余波</span></button>
+                  </div>
+                </div>
+                <div class="tree-section"><button class="tree-row tree-toggle collapsed"><svg class="icon"><use href="#i-chevron"/></svg><span class="label">第二卷 · 逆流东行</span><span class="count">22</span></button><div class="tree-children"></div></div>
+                <div class="tree-section"><button class="tree-row tree-toggle collapsed"><svg class="icon"><use href="#i-chevron"/></svg><span class="label">第三卷 · 天门旧约</span><span class="count">20</span></button><div class="tree-children"></div></div>
+              </div>
+              <div class="tree-foot">当前结构来自“长篇小说”配置；卷级验收由《仙途》项目规则追加。</div>
+            </aside>
+
+            <section class="pane content-pane" data-od-id="narrative-work-canvas">
+              <div class="view-panel active" data-panel="lines">
+                <div class="canvas-toolbar"><strong>线路泳道</strong><span class="helper">第一卷 · 第 37–48 章</span><div class="spacer"></div><span class="status-badge warn">2 个待兑现期待</span></div>
+                <div class="lane-scroll">
+                  <div class="lane-board">
+                    <div class="lane-axis"><div class="axis-label">线路 / 章节</div><div class="axis-cell">37</div><div class="axis-cell">38</div><div class="axis-cell">39</div><div class="axis-cell">40</div><div class="axis-cell">41</div><div class="axis-cell">42</div><div class="axis-cell">43</div><div class="axis-cell">44</div></div>
+                    <div class="lane-row"><div class="lane-label">主线</div><div class="lane-cell"></div><button class="story-node muted" style="grid-column:3/5">入炉试火</button><div class="lane-cell"></div><button class="story-node selected" data-object="dan-cheng" style="grid-column:6/8">丹成大道<small>奇则碰撞 · 2 期待</small></button><div class="lane-cell"></div><div class="lane-cell"></div></div>
+                    <div class="lane-row"><div class="lane-label">暗线</div><div class="lane-cell"></div><button class="story-node" data-object="sword-mark" style="grid-column:3/6">第二道剑痕<small>伏笔强化</small></button><div class="lane-cell"></div><div class="lane-cell"></div><button class="story-node muted" style="grid-column:8/10">灰袍来客</button></div>
+                    <div class="lane-row"><div class="lane-label">沈砚 · 人物线</div><button class="story-node green" style="grid-column:2/4">拒绝借火</button><div class="lane-cell"></div><div class="lane-cell"></div><button class="story-node green" style="grid-column:6/9">承认自身欲望<small>故事弧转变</small></button><div class="lane-cell"></div></div>
+                    <div class="lane-row"><div class="lane-label">师徒关系线</div><div class="lane-cell"></div><div class="lane-cell"></div><button class="story-node muted" style="grid-column:4/6">隐瞒丹方</button><div class="lane-cell"></div><button class="story-node green" style="grid-column:7/9">共同承担代价</button><div class="lane-cell"></div></div>
+                  </div>
+                </div>
+                <div class="legend"><span><i></i>计划节点</span><span><i></i>人物 / 关系变化</span><span>单击节点查看对象关系</span></div>
+              </div>
+
+              <div class="view-panel" data-panel="arcs">
+                <div class="canvas-toolbar"><strong>故事弧</strong><span class="helper">按状态变化组织</span><div class="spacer"></div><button class="secondary-button">按角色筛选</button></div>
+                <div class="arc-board"><div class="arc-columns">
+                  <div class="arc-column"><div class="arc-head">起点</div><div class="arc-item" data-object="shen-yan"><strong>沈砚：只求活命</strong><span class="cell-sub">角色：沈砚 · 第 1 章</span></div></div>
+                  <div class="arc-column"><div class="arc-head">发展</div><div class="arc-item"><strong>借宗门之火</strong><span class="cell-sub">目标与师命发生冲突</span></div></div>
+                  <div class="arc-column"><div class="arc-head">关键转变</div><div class="arc-item" data-object="dan-cheng"><strong>丹成大道</strong><span class="cell-sub">承认欲望，并承担代价</span></div></div>
+                  <div class="arc-column"><div class="arc-head">终点</div><div class="arc-item"><strong>自立丹道</strong><span class="cell-sub">计划于第一卷终点完成</span></div></div>
+                </div></div>
+              </div>
+
+              <div class="view-panel" data-panel="chapters">
+                <div class="canvas-toolbar"><strong>章节计划</strong><span class="source-badge">六项交付 · 来自《仙途》项目规则</span><div class="spacer"></div><span class="helper hide-mobile">点击章节查看交付详情</span></div>
+                <div class="table-wrap"><table class="data-table"><thead><tr><th>章节</th><th>章节目标</th><th>关键节拍</th><th>来源线路</th><th>期待</th><th>完成</th></tr></thead><tbody>
+                  <tr><td class="chapter-no">CH.40</td><td><span class="cell-title">封炉前夜</span><span class="cell-sub">迫使沈砚作出取舍</span></td><td>拒绝借火</td><td><span class="tag">人物线</span></td><td>强化 1</td><td>草拟<div class="progress"><i style="width:35%"></i></div></td></tr>
+                  <tr><td class="chapter-no">CH.41</td><td><span class="cell-title">灰烬回声</span><span class="cell-sub">揭示第二处异常</span></td><td>剑痕再现</td><td><span class="tag">暗线</span></td><td>强化 2</td><td>计划<div class="progress"><i style="width:18%"></i></div></td></tr>
+                  <tr class="selected" data-chapter="42"><td class="chapter-no">CH.42</td><td><span class="cell-title">丹成大道</span><span class="cell-sub">用规则冲突完成境界跃迁</span></td><td>奇则碰撞</td><td><span class="tag accent">主线</span> <span class="tag">人物线</span></td><td>建立 1 · 强化 1</td><td>草拟<div class="progress"><i style="width:52%"></i></div></td></tr>
+                  <tr><td class="chapter-no">CH.43</td><td><span class="cell-title">炉外来客</span><span class="cell-sub">让胜利立刻产生代价</span></td><td>灰袍叩门</td><td><span class="tag">暗线</span></td><td>建立 1</td><td>待写<div class="progress"><i style="width:8%"></i></div></td></tr>
+                </tbody></table></div>
+              </div>
+
+              <div class="view-panel" data-panel="expectations">
+                <div class="canvas-toolbar"><strong>期待追踪</strong><span class="helper">建立 → 强化 → 兑现 / 失效</span><div class="spacer"></div><button class="secondary-button">仅看待兑现</button></div>
+                <div class="expectation-list">
+                  <div class="expectation-item selected" data-object="sword-mark"><span class="source-badge">伏笔</span><div><strong>灰烬中的第二道剑痕</strong><span class="cell-sub">暗示火场中还有第二名持剑者</span></div><div class="expectation-track"><i class="track-dot done"></i><i class="track-line done"></i><i class="track-dot done"></i><i class="track-line"></i><i class="track-dot"></i></div><span class="status-badge warn">计划回收</span></div>
+                  <div class="expectation-item"><span class="tag">悬念</span><div><strong>师父为何隐瞒丹方</strong><span class="cell-sub">关联师徒关系线</span></div><div class="expectation-track"><i class="track-dot done"></i><i class="track-line"></i><i class="track-dot"></i><i class="track-line"></i><i class="track-dot"></i></div><span class="status-badge warn">待强化</span></div>
+                  <div class="expectation-item"><span class="tag">承诺</span><div><strong>逆火可以炼出无垢丹</strong><span class="cell-sub">关联主线：丹成大道</span></div><div class="expectation-track"><i class="track-dot done"></i><i class="track-line done"></i><i class="track-dot done"></i><i class="track-line done"></i><i class="track-dot done"></i></div><span class="status-badge ok">已兑现</span></div>
+                </div>
+              </div>
+
+              <div class="view-panel" data-panel="validation">
+                <div class="validation-summary"><span class="status-badge error">1 错误</span><span class="status-badge warn">2 警告</span><span class="status-badge ok">12 已通过</span><span class="helper">按规则来源分组</span></div>
+                <div class="validation-list">
+                  <div class="validation-item" data-object="reference-error"><span class="status-badge error">错误</span><div><strong>引用目标不存在：旧丹炉守卫</strong><span class="cell-sub">章节 41 的人物引用已失效</span></div><span class="source-badge">通用内核</span><button class="secondary-button">修复引用</button></div>
+                  <div class="validation-item" data-object="serial-warning"><span class="status-badge warn">警告</span><div><strong>连续 3 章没有形成新的推进</strong><span class="cell-sub">第 39–41 章的连载节奏可能偏缓</span></div><span class="source-badge">连载创作</span><button class="secondary-button">查看章节</button></div>
+                  <div class="validation-item" data-object="volume-check"><span class="status-badge warn">问题</span><div><strong>本卷的奇则碰撞缺少可见代价</strong><span class="cell-sub">“丹成大道”的结果维度尚未填完</span></div><span class="source-badge">《仙途》规则</span><button class="secondary-button">补充字段</button></div>
+                </div>
+              </div>
+
+              <div class="view-panel" data-panel="outline"><div class="outline-editor"><div class="editor-toolbar"><button title="标题">H</button><button title="加粗">B</button><button title="斜体"><em>I</em></button><button title="链接"><svg class="icon"><use href="#i-link"/></svg></button></div><textarea id="outline-text" aria-label="自由大纲 Markdown 编辑器"># 《仙途》第一卷自由大纲
+
+沈砚在丹火试炼中发现师父隐瞒的旧丹方。第 42 章让“逆火”与宗门丹律正面冲突，以一次有代价的丹成完成主线推进。
+
+## 待处理
+
+- 强化灰烬中的第二道剑痕
+- 补全丹成后的身体代价
+- 将灰袍来客关联到第二卷入口</textarea></div></div>
+            </section>
+            <aside class="pane inspector" data-od-id="object-detail-pane"><div class="pane-head"><strong>对象详情</strong><div class="spacer"></div><button class="icon-button close-detail" title="关闭详情" aria-label="关闭详情"><svg class="icon"><use href="#i-x"/></svg></button></div><div class="inspector-body" id="narrative-inspector"></div></aside>
+          </div>
+        </section>
+
+        <section class="screen" id="screen-inspiration" data-mobile-panel="content" data-od-id="inspiration-screen">
+          <div class="screenbar"><span class="screen-title">灵感</span><span class="scheme-chip"><svg class="icon"><use href="#i-link"/></svg>采用状态由关系自动推导</span><div class="top-spacer"></div><label class="searchbox"><svg class="icon"><use href="#i-search"/></svg><input id="inspiration-search" aria-label="搜索灵感" placeholder="搜索灵感"></label><button class="icon-button" title="筛选与排序"><svg class="icon"><use href="#i-filter"/></svg></button><button class="primary-button" id="new-inspiration"><svg class="icon"><use href="#i-plus"/></svg>记录灵感</button></div>
+          <div class="mobile-steps"><button class="mobile-step" data-mobile="structure">筛选</button><button class="mobile-step active" data-mobile="content">灵感</button><button class="mobile-step" data-mobile="detail">详情</button></div>
+          <div class="triple">
+            <aside class="pane structure-pane"><div class="pane-head"><strong>灵感库</strong></div><div class="filter-list">
+              <button class="filter-row active" data-filter="all">全部灵感<span class="count-badge">5</span></button><button class="filter-row" data-filter="inbox">收集箱<span class="count-badge">1</span></button><button class="filter-row" data-filter="pending">待整理<span class="count-badge" id="pending-count">3</span></button><button class="filter-row" data-filter="adopted">已采用<span class="count-badge" id="adopted-count">2</span></button><button class="filter-row" data-filter="unused">未采用<span class="count-badge">2</span></button><button class="filter-row" data-filter="archived">已归档<span class="count-badge">0</span></button>
+              <div class="filter-heading">标签</div><button class="filter-row"><span class="tag">意象</span><span class="count-badge">3</span></button><button class="filter-row"><span class="tag">修炼规则</span><span class="count-badge">2</span></button>
+              <div class="filter-heading">来源</div><button class="filter-row">MyAgents 想法<span class="count-badge">2</span></button><button class="filter-row">随手记录<span class="count-badge">3</span></button>
+            </div></aside>
+            <section class="pane content-pane"><div class="pane-head"><strong id="inspiration-list-title">全部灵感</strong><span class="count-badge" id="visible-count">5</span><div class="spacer"></div><div class="segmented"><button class="active">列表</button><button>看板</button></div></div>
+              <div class="inspiration-list" id="inspiration-list">
+                <button class="inspiration-row active" data-inspiration="root"><span class="inspiration-title">倒着生长的灵根</span><span class="status-badge warn" id="root-status">待整理</span><span class="inspiration-preview">灵根从结果反向汲取原因，每次突破都会失去一段既有因果。</span><span class="inspiration-meta">意象 · 修炼规则</span></button>
+                <button class="inspiration-row" data-inspiration="rain"><span class="inspiration-title">只有罪人听得见的雨声</span><span class="status-badge ok">已采用</span><span class="inspiration-preview">一场不落在街道上的雨，只在负罪者耳中变得越来越近。</span><span class="inspiration-meta">氛围 · 来自随手记录</span></button>
+                <button class="inspiration-row" data-inspiration="moon"><span class="inspiration-title">铜镜里的旧月</span><span class="status-badge warn">待整理</span><span class="inspiration-preview">镜中月相总比现实早一天，直到某夜突然倒退。</span><span class="inspiration-meta">意象 · 来自 MyAgents 想法</span></button>
+              </div>
+            </section>
+            <aside class="pane inspector"><div class="pane-head"><strong>灵感详情</strong><div class="spacer"></div><button class="icon-button close-detail" title="关闭详情"><svg class="icon"><use href="#i-x"/></svg></button></div><div class="inspector-body" id="inspiration-inspector"></div></aside>
+          </div>
+        </section>
+
+        <section class="screen" id="screen-scheme" data-mobile-panel="content" data-od-id="scheme-screen">
+          <div class="screenbar"><span class="screen-title">创作方案</span><span class="scheme-chip"><svg class="icon"><use href="#i-layers"/></svg>定义与视图，不执行项目代码</span><div class="top-spacer"></div><button class="secondary-button" id="mystery-preview">悬疑长篇预览</button><button class="primary-button" id="save-scheme"><svg class="icon"><use href="#i-check"/></svg>应用方案</button></div>
+          <div class="preview-banner" id="preview-banner"><svg class="icon"><use href="#i-alert"/></svg><strong>悬疑长篇临时预览</strong><span>仅替换术语与检查定义，不会写入正式配置</span><div class="spacer"></div><span class="status-badge ok">预览模式</span></div>
+          <div class="mobile-steps"><button class="mobile-step" data-mobile="structure">来源层</button><button class="mobile-step active" data-mobile="content">定义</button><button class="mobile-step" data-mobile="detail">影响</button></div>
+          <div class="triple">
+            <aside class="pane structure-pane"><div class="pane-head"><strong>方案层级</strong><div class="spacer"></div><span class="status-badge ok">6 层启用</span></div><div class="layer-list" id="layer-list"></div><div class="tree-foot">下层可以显式覆盖上层；重复的稳定定义会阻断应用。</div></aside>
+            <section class="pane content-pane"><div class="definition-header"><div class="definition-tabs" id="definition-tabs"><button class="definition-tab active" data-definition="terms">术语</button><button class="definition-tab" data-definition="objects">对象类型</button><button class="definition-tab" data-definition="fields">字段</button><button class="definition-tab" data-definition="relations">关系</button><button class="definition-tab" data-definition="checks">检查项</button><button class="definition-tab" data-definition="views">视图</button></div><div class="spacer"></div><span class="helper" id="definition-count">8 项定义</span></div><div class="definition-content" id="definition-content"></div></section>
+            <aside class="pane inspector"><div class="pane-head"><strong>影响预览</strong><div class="spacer"></div><button class="icon-button close-detail" title="关闭详情"><svg class="icon"><use href="#i-x"/></svg></button></div><div class="inspector-body" id="scheme-inspector"></div></aside>
+          </div>
+        </section>
+      </main>
+    </section>
+  </div>
+
+  <dialog id="adopt-dialog" aria-labelledby="adopt-title"><div class="dialog-head"><h2 id="adopt-title">采用为项目对象</h2><div class="spacer"></div><button class="icon-button" data-close-dialog title="关闭"><svg class="icon"><use href="#i-x"/></svg></button></div><div class="dialog-body"><div class="form-grid">
+    <div class="form-field"><label for="adopt-kind">对象类型</label><select id="adopt-kind"><option value="情境">情境</option><option value="场景">场景</option><option value="期待">期待</option><option value="世界设定">世界设定</option></select></div>
+    <div class="form-field"><label for="adopt-subtype">项目术语</label><select id="adopt-subtype"><option>奇则碰撞</option></select></div>
+    <div class="form-field full"><label for="adopt-target">关联对象</label><select id="adopt-target"><option>丹成大道 · 主线节点</option><option>第 42 章 · 丹成大道</option><option>第一卷 · 丹火问道</option></select></div>
+  </div><div class="relation-preview"><strong>将创建可追溯关系</strong><div class="relation-flow"><span>倒着生长的灵根</span><b>采用为 →</b><span id="preview-kind">情境 · 奇则碰撞</span><b>关联 →</b><span id="preview-target">丹成大道</span></div><p class="helper">确认后，“已采用”状态将由这条关系自动推导，无需额外勾选。</p></div></div><div class="dialog-actions"><button class="secondary-button" data-close-dialog>取消</button><button class="primary-button" id="confirm-adoption"><svg class="icon"><use href="#i-link"/></svg>确认采用</button></div></dialog>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script>
+    const state={screen:'narrative',view:'lines',selected:'dan-cheng',adoptions:[],mystery:false,definition:'terms',saveTimer:null};
+    const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+    const icon=(id)=>`<svg class="icon"><use href="#${id}"/></svg>`;
+    const toast=(text)=>{const el=$('#toast');el.textContent=text;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2200)};
+    function setSaving(){const el=$('#save-state');el.style.color='var(--warning)';el.innerHTML='<i class="save-dot"></i><span>保存中</span>';clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>{el.style.color='var(--ok)';el.innerHTML='<i class="save-dot"></i><span>已保存</span>'},800)}
+
+    function setScreen(name){
+      state.screen=name; $$('.screen').forEach(x=>x.classList.toggle('active',x.id===`screen-${name}`));
+      $$('.nav-button[data-screen]').forEach(x=>x.classList.toggle('active',x.dataset.screen===name));
+      const labels={narrative:'叙事设计 / 第一卷',inspiration:'灵感 / 全部灵感',scheme:'创作方案 / 定义解析'}; $('#screen-context').textContent=labels[name];
+      if(name!=='scheme'&&state.mystery)toggleMystery(false);
+    }
+    $$('[data-screen]').forEach(b=>b.addEventListener('click',()=>{setScreen(b.dataset.screen);if(b.dataset.viewJump)setView(b.dataset.viewJump)}));
+    $('#project-button').addEventListener('click',()=>setScreen('scheme'));
+
+    function setView(view){
+      state.view=view; $$('#screen-narrative .view-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
+      $$('#screen-narrative .view-panel').forEach(p=>p.classList.toggle('active',p.dataset.panel===view));
+      if(view==='chapters')selectNarrative('chapter-42');
+      if(view==='expectations')selectNarrative('sword-mark');
+      if(view==='validation')selectNarrative('validation-summary');
+    }
+    $$('#screen-narrative .view-tab').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));
+
+    const inspectorTemplates={
+      'dan-cheng':()=>`<div class="object-kicker">主线 · 叙事节点</div><h2 class="object-title">丹成大道</h2><p class="object-summary">沈砚让逆火与宗门丹律正面冲突，以一次有代价的丹成完成境界与选择的双重跃迁。</p><div class="tag-list"><span class="status-badge warn">计划中</span><span class="tag accent">奇则碰撞</span><span class="tag">第 42 章</span></div><section class="detail-section"><h3>字段</h3><dl class="field-grid"><dt>所属线路</dt><dd>主线</dd><dt>章节锚点</dt><dd>第 42 章</dd><dt>情境</dt><dd>逆火法则 × 宗门丹律</dd><dt>结果维度</dt><dd>境界提升；身体代价待补充</dd></dl></section><section class="detail-section"><h3>待兑现期待 · 2</h3><div class="tag-list"><button class="tag" data-jump-expectation>灰烬中的第二道剑痕</button><span class="tag">逆火可炼无垢丹</span></div></section><section class="detail-section"><h3>关系</h3><div class="relation-list"><div class="relation-row"><strong>计划锚点</strong><span>第 42 章 · 丹成大道（尚未写入时间线）</span></div><div class="relation-row fact"><strong>已发生的时间线事实</strong><span>第 37 章 · 沈砚已取得残缺丹方</span></div></div></section><section class="detail-section"><h3>来源灵感</h3><div id="node-inspiration-link"><span class="helper">尚未关联项目灵感</span></div></section>`,
+      'chapter-42':()=>`<div class="object-kicker">章节计划 · 第 42 章</div><h2 class="object-title">丹成大道</h2><p class="object-summary">本章承接主线与人物线，通过“奇则碰撞”交付一次有代价的推进。</p><div class="origin-note">以下六项交付来自《仙途》项目规则，不属于通用叙事内核。</div><section class="detail-section"><h3>章节六项交付</h3><dl class="field-grid"><dt>目标推进</dt><dd>丹成并突破封锁</dd><dt>信息增量</dt><dd>逆火会反噬因果</dd><dt>人物变化</dt><dd>承认自身欲望</dd><dt>情绪落点</dt><dd>胜利后的不安</dd><dt>期待动作</dt><dd>建立 1 · 强化 1</dd><dt>商业节点</dt><dd>章末灰袍叩门</dd></dl></section><section class="detail-section"><h3>来源线路</h3><div class="tag-list"><span class="tag accent">主线 · 丹成大道</span><span class="tag">沈砚人物线</span></div></section><section class="detail-section"><h3>关系</h3><div class="relation-list"><div class="relation-row"><strong>计划锚点</strong><span>主线节点 · 丹成大道</span></div><div class="relation-row fact"><strong>已发生的时间线事实</strong><span>当前正文尚未到达第 42 章</span></div></div></section>`,
+      'sword-mark':()=>`<div class="object-kicker">伏笔 · 待兑现期待</div><h2 class="object-title">灰烬中的第二道剑痕</h2><p class="object-summary">暗示火场中还有第二名持剑者，并把灰袍来客引向下一卷。</p><section class="detail-section"><h3>追踪阶段</h3><dl class="field-grid"><dt>埋设</dt><dd>第 17 章 · 清理火场</dd><dt>强化</dt><dd>第 41 章 · 灰烬回声</dd><dt>计划回收</dt><dd>第 58 章 · 旧约证人</dd><dt>状态</dt><dd><span class="status-badge warn">待兑现</span></dd></dl></section><section class="detail-section"><h3>关联</h3><div class="tag-list"><span class="tag">暗线</span><span class="tag">灰袍来客</span><span class="tag">第二卷入口</span></div></section><section class="detail-section"><h3>关系</h3><div class="relation-list"><div class="relation-row"><strong>计划锚点</strong><span>第 58 章 · 计划揭示持剑者身份</span></div><div class="relation-row fact"><strong>已发生的时间线事实</strong><span>第 17 章 · 第二道剑痕已被沈砚发现</span></div></div></section>`,
+      'validation-summary':()=>`<div class="object-kicker">验收摘要</div><h2 class="object-title">第一卷检查结果</h2><p class="object-summary">规则按来源分组；项目规则的问题不会被误报为内核错误。</p><section class="detail-section"><h3>当前结果</h3><dl class="field-grid"><dt>通用内核</dt><dd><span class="status-badge error">1 引用错误</span></dd><dt>连载创作</dt><dd><span class="status-badge warn">1 节奏警告</span></dd><dt>项目规则</dt><dd><span class="status-badge warn">1 卷级问题</span></dd></dl></section><section class="detail-section"><h3>豁免</h3><p class="helper">警告可手工豁免，但必须填写原因；错误不可豁免。</p><button class="secondary-button">查看豁免记录</button></section>`,
+      'reference-error':()=>issueTemplate('通用引用错误','引用目标不存在：旧丹炉守卫','通用内核','错误不可豁免。请选择新的角色对象，或移除第 41 章中的失效引用。'),
+      'serial-warning':()=>issueTemplate('连载节奏警告','连续 3 章没有形成新的推进','连载创作','可调整第 39–41 章的目标，或填写保留慢节奏的豁免原因。'),
+      'volume-check':()=>issueTemplate('卷级验收问题','奇则碰撞缺少可见代价','《仙途》项目规则','补全“丹成大道”的身体、关系或资源代价后即可通过。'),
+      'shen-yan':()=>`<div class="object-kicker">人物故事弧</div><h2 class="object-title">沈砚：从求生到自立</h2><p class="object-summary">人物变化通过四个状态节点与主线互相校验。</p><section class="detail-section"><h3>涉及角色</h3><span class="tag">沈砚</span></section>`
+    };
+    function issueTemplate(kind,title,source,copy){return `<div class="object-kicker">${kind}</div><h2 class="object-title">${title}</h2><p class="object-summary">${copy}</p><div class="tag-list"><span class="source-badge">${source}</span><span class="status-badge warn">待处理</span></div><section class="detail-section"><h3>关系</h3><div class="relation-list"><div class="relation-row"><strong>计划对象</strong><span>章节计划中的校验目标</span></div><div class="relation-row fact"><strong>已发生事实</strong><span>不会因修复计划而自动改写正文事实</span></div></div></section><section class="detail-section"><button class="primary-button">打开修复</button> <button class="secondary-button">填写豁免原因</button></section>`}
+    function selectNarrative(id){state.selected=id;$('#narrative-inspector').innerHTML=(inspectorTemplates[id]||inspectorTemplates['dan-cheng'])();syncAdoptionLinks();$$('[data-object]').forEach(x=>x.classList.toggle('selected',x.dataset.object===id));}
+    $('#screen-narrative').addEventListener('click',e=>{const obj=e.target.closest('[data-object]');if(obj)selectNarrative(obj.dataset.object);const ch=e.target.closest('[data-chapter="42"]');if(ch){setView('chapters');selectNarrative('chapter-42')}if(e.target.closest('[data-jump-expectation]')){setView('expectations');selectNarrative('sword-mark')}});
+    $$('.tree-toggle').forEach(b=>b.addEventListener('click',()=>{b.classList.toggle('collapsed');$('svg',b).classList.toggle('rotate')}));
+    $('#create-object').addEventListener('click',()=>toast('新建命令：可创建结构单元、线路、故事弧、节点或期待'));
+    $('#outline-text').addEventListener('input',setSaving);
+
+    function renderInspiration(){
+      const adopted=state.adoptions.length>0;$('#root-status').textContent=adopted?'已采用':'待整理';$('#root-status').className=`status-badge ${adopted?'ok':'warn'}`;
+      $('#adopted-count').textContent=adopted?'3':'2';$('#pending-count').textContent=adopted?'2':'3';
+      $('#inspiration-inspector').innerHTML=`<div class="object-kicker">灵感 · ${adopted?'已采用':'待整理'}</div><h2 class="object-title">倒着生长的灵根</h2><p class="object-summary">灵根从结果反向汲取原因，每次突破都会失去一段既有因果。</p><div class="tag-list"><span class="tag">意象</span><span class="tag">修炼规则</span><span class="status-badge ${adopted?'ok':'warn'}">${adopted?'关系已建立':'尚未采用'}</span></div><section class="detail-section"><h3>来源</h3><dl class="field-grid"><dt>临时来源</dt><dd>来自 MyAgents 想法</dd><dt>项目归属</dt><dd>已复制为《仙途》项目灵感</dd></dl><div class="origin-note">当前项目持有独立副本，不依赖全局 Thought 存储；原始想法删除也不会丢失。</div></section><section class="detail-section"><h3>采用记录 · ${state.adoptions.length}</h3><div id="adoption-records">${state.adoptions.length?state.adoptions.map(a=>`<div class="adoption-record"><strong>${a.kind} · ${a.subtype}</strong><span>关联 ${a.target} · 由 adopted-as 关系推导</span></div>`).join(''):'<span class="helper">采用后将在这里显示可追溯去向。</span>'}</div></section><section class="detail-section"><button class="primary-button" id="open-adopt">${adopted?'继续采用':'采用为'}</button>${adopted?'<p class="helper">同一灵感仍可继续采用为场景、期待或世界设定。</p>':''}</section>`;
+      $('#open-adopt').addEventListener('click',()=>$('#adopt-dialog').showModal());
+    }
+    renderInspiration();
+    const subtypeMap={情境:['奇则碰撞','通用情境'],场景:['章节场景','过场'],期待:['伏笔','悬念','承诺'],世界设定:['规则词条','地点词条']};
+    function updateAdoptPreview(){const kind=$('#adopt-kind').value,sub=$('#adopt-subtype');sub.innerHTML=subtypeMap[kind].map(x=>`<option>${x}</option>`).join('');$('#preview-kind').textContent=`${kind} · ${sub.value}`;$('#preview-target').textContent=$('#adopt-target').value.split(' · ')[0]}
+    $('#adopt-kind').addEventListener('change',updateAdoptPreview);$('#adopt-subtype').addEventListener('change',()=>$('#preview-kind').textContent=`${$('#adopt-kind').value} · ${$('#adopt-subtype').value}`);$('#adopt-target').addEventListener('change',()=>$('#preview-target').textContent=$('#adopt-target').value.split(' · ')[0]);
+    $$('[data-close-dialog]').forEach(b=>b.addEventListener('click',()=>$('#adopt-dialog').close()));
+    $('#confirm-adoption').addEventListener('click',()=>{const a={kind:$('#adopt-kind').value,subtype:$('#adopt-subtype').value,target:$('#adopt-target').value.split(' · ')[0]};state.adoptions.push(a);$('#adopt-dialog').close();renderInspiration();syncAdoptionLinks();setSaving();toast(`已采用为${a.kind}，状态已由关系自动更新`)});
+    function syncAdoptionLinks(){const el=$('#node-inspiration-link');if(el&&state.adoptions.length)el.innerHTML=state.adoptions.filter(a=>a.target==='丹成大道').map(a=>`<div class="adoption-record"><strong>倒着生长的灵根</strong><span>采用为 ${a.kind} · ${a.subtype}</span></div>`).join('')||'<span class="helper">尚未关联项目灵感</span>'}
+    $$('.filter-row[data-filter]').forEach(b=>b.addEventListener('click',()=>{$$('.filter-row[data-filter]').forEach(x=>x.classList.remove('active'));b.classList.add('active');const labels={all:'全部灵感',inbox:'收集箱',pending:'待整理',adopted:'已采用',unused:'未采用',archived:'已归档'};$('#inspiration-list-title').textContent=labels[b.dataset.filter];if(b.dataset.filter==='adopted'&&!state.adoptions.length){$('#visible-count').textContent='2';toast('“已采用”列表由采用关系实时投影')}else $('#visible-count').textContent=b.dataset.filter==='all'?'5':(b.dataset.filter==='pending'?$('#pending-count').textContent:$('#adopted-count').textContent)}));
+    $('#new-inspiration').addEventListener('click',()=>toast('已打开快速记录：支持片段、意象、问题、场景与研究触发点'));
+
+    const normalLayers=[['通用叙事内核','结构、线路、故事弧与期待'],['长篇小说','卷、章节组与长线状态'],['连载创作','连载节奏与发布检查'],['东方玄幻','修炼、宗门与规则词汇'],['《仙途》项目规则','副本、奇则碰撞、六项交付'],['作者本地调整','术语与显示密度覆盖']];
+    const mysteryLayers=[['通用叙事内核','结构、线路、故事弧与期待'],['长篇小说','部、案件组与长线状态'],['连载创作','连载节奏与发布检查'],['社会派悬疑','案件、线索与调查术语'],['悬疑项目规则','线索矩阵与公平性检查'],['作者本地调整','术语与显示密度覆盖']];
+    const definitions={
+      normal:{terms:[['卷','结构单元的项目显示名称','长篇小说','继承'],['单元 / 副本','卷内结构单元','《仙途》规则','显式覆盖'],['主线 / 暗线','叙事线路显示名称','《仙途》规则','显式覆盖'],['爽点','期待兑现后的情绪结果','《仙途》规则','新增'],['商业节点','连载章节的留存动作','《仙途》规则','新增'],['奇则碰撞','两条世界规则发生冲突的情境','《仙途》规则','新增'],['章节六项交付','章节验收术语集合','《仙途》规则','新增'],['伏笔','期待类型之一','东方玄幻','继承']],objects:[['卷','长篇结构单元','长篇小说','继承'],['叙事线路','主线、暗线与人物线','通用内核','继承'],['奇则碰撞','项目情境类型','《仙途》规则','新增']],fields:[['结果维度','节点造成的可见变化','通用内核','继承'],['身体代价','奇则碰撞的代价字段','《仙途》规则','新增'],['商业节点','章节交付字段','《仙途》规则','新增']],relations:[['采用为','灵感到项目对象的可追溯关系','通用内核','继承'],['锚定章节','计划对象到章节的关系','通用内核','继承'],['兑现期待','节点对期待的完成关系','通用内核','继承']],checks:[['引用完整性','阻断失效对象引用','通用内核','继承'],['连载推进密度','检查连续章节推进','连载创作','继承'],['卷级奇则验收','检查冲突、代价与结果','《仙途》规则','新增']],views:[['线路泳道','以结构为横轴查看线路','通用内核','继承'],['章节六项交付','章节计划扩展列','《仙途》规则','扩展'],['卷级验收','按项目规则分组结果','《仙途》规则','扩展']]},
+      mystery:{terms:[['部 / 案件','结构单元的项目显示名称','悬疑长篇','显式覆盖'],['调查线','围绕案件推进的叙事线路','悬疑长篇','显式覆盖'],['线索','可被发现、解释与验证的信息','悬疑项目规则','新增'],['谜团','需要建立并最终解答的期待','悬疑项目规则','新增'],['嫌疑人','调查关系中的人物角色','悬疑长篇','新增'],['证据链','线索之间的证明关系','悬疑项目规则','新增'],['线索矩阵','案件、线索与人物的交叉视图','悬疑项目规则','新增'],['公平性检查','验证读者能否获得必要信息','悬疑项目规则','新增']],objects:[['案件','悬疑项目的主要结构单元','悬疑长篇','显式覆盖'],['调查线','围绕证据推进的线路','悬疑长篇','显式覆盖'],['线索','可追踪的信息对象','悬疑项目规则','新增']],fields:[['发现时机','线索首次对读者可见的位置','悬疑项目规则','新增'],['解释状态','未知、误导或已验证','悬疑项目规则','新增'],['知情角色','当前掌握线索的人物','悬疑项目规则','新增']],relations:[['采用为','灵感到项目对象的可追溯关系','通用内核','继承'],['指向嫌疑人','线索与嫌疑人的假设关系','悬疑项目规则','新增'],['证明 / 反证','线索之间的论证关系','悬疑项目规则','新增']],checks:[['引用完整性','阻断失效对象引用','通用内核','继承'],['线索公平性','关键信息须先于解答出现','悬疑项目规则','新增'],['证据链闭合','结论必须有充分证据支撑','悬疑项目规则','新增']],views:[['调查线泳道','按案件阶段查看调查推进','悬疑长篇','显式覆盖'],['线索矩阵','交叉查看案件、人物与证据','悬疑项目规则','新增'],['公平性检查','按谜团查看信息暴露情况','悬疑项目规则','新增']]}
+    };
+    function renderLayers(){const rows=state.mystery?mysteryLayers:normalLayers;$('#layer-list').innerHTML=rows.map((r,i)=>`<button class="layer-row ${i===4?'active':''}" data-layer="${i}"><span class="layer-index">${i+1}</span><span><span class="layer-name">${r[0]}</span><span class="layer-sub">${r[1]}</span></span><i class="switch"></i></button>`).join('')}
+    function renderDefinitions(){const mode=state.mystery?'mystery':'normal',rows=definitions[mode][state.definition];$('#definition-count').textContent=`${rows.length} 项定义`;$('#definition-content').innerHTML=`<div class="definition-row header"><span>显示名称</span><span>含义</span><span>来源</span><span>解析方式</span></div>${rows.map(r=>`<div class="definition-row"><span class="definition-name">${r[0]}</span><span class="definition-desc">${r[1]}</span><span class="source-badge">${r[2]}</span><span class="override-mark">${r[3]}</span></div>`).join('')}${!state.mystery&&state.definition==='checks'?'<div style="padding:14px"><div class="conflict-box"><strong>阻断冲突 · 重复稳定定义</strong><p>“章节结果”在《仙途》规则中被直接重复声明。请改为显式覆盖并指明被覆盖项后再应用。</p></div></div>':''}`}
+    function renderSchemeInspector(){
+      if(state.mystery){$('#scheme-inspector').innerHTML=`<div class="object-kicker">临时影响预览</div><h2 class="object-title">悬疑长篇</h2><p class="object-summary">同一叙事工作面仅替换定义、术语、检查与视图，不创建另一套产品模块。</p><section class="detail-section"><h3>工作面变化</h3><div class="impact-list"><div class="impact-item">${icon('i-route')}<div><strong>叙事设计</strong><span>结构显示为案件，线路显示为调查线</span></div></div><div class="impact-item">${icon('i-light')}<div><strong>灵感</strong><span>可采用为线索、谜团或案件场景</span></div></div><div class="impact-item">${icon('i-check')}<div><strong>验收</strong><span>启用线索公平性与证据链闭合检查</span></div></div></div></section><section class="detail-section"><h3>正式数据</h3><p class="helper">预览只在内存中解析；退出后恢复正式方案，已有数据不会被迁移。</p></section>`}
+      else{$('#scheme-inspector').innerHTML=`<div class="object-kicker">来源层 · 5 / 6</div><h2 class="object-title">《仙途》项目规则</h2><p class="object-summary">为当前项目追加作者术语、字段、检查项与视图扩展。</p><div class="tag-list"><span class="status-badge ok">已启用</span><span class="source-badge">项目级</span></div><section class="detail-section"><h3>影响工作面</h3><div class="impact-list"><div class="impact-item">${icon('i-route')}<div><strong>叙事设计</strong><span>追加副本、奇则碰撞与卷级验收</span></div></div><div class="impact-item">${icon('i-book')}<div><strong>章节计划</strong><span>追加六项交付与商业节点字段</span></div></div><div class="impact-item">${icon('i-light')}<div><strong>灵感</strong><span>允许采用为项目情境类型</span></div></div></div></section><section class="detail-section"><h3>合法覆盖</h3><div class="relation-row fact"><strong>“结构单元”显示名 → “单元 / 副本”</strong><span>显式来源：《仙途》项目规则 · 被覆盖：东方玄幻 / 单元</span></div></section><section class="detail-section"><div class="conflict-box"><strong>1 个阻断冲突</strong><p>稳定定义“章节结果”被直接重复声明，应用方案前必须修复。</p></div></section>`}
+      }
+    }
+    function toggleMystery(force){state.mystery=typeof force==='boolean'?force:!state.mystery;$('#preview-banner').classList.toggle('show',state.mystery);$('#mystery-preview').textContent=state.mystery?'退出预览':'悬疑长篇预览';$('#project-name').textContent=state.mystery?'悬疑长篇 · 临时预览':'《仙途》';$('#project-context').textContent=state.mystery?'案件 · 调查线 · 公平性检查':'东方玄幻 · 连载长篇';renderLayers();renderDefinitions();renderSchemeInspector();}
+    $('#mystery-preview').addEventListener('click',()=>toggleMystery());
+    $$('#definition-tabs .definition-tab').forEach(b=>b.addEventListener('click',()=>{state.definition=b.dataset.definition;$$('#definition-tabs .definition-tab').forEach(x=>x.classList.toggle('active',x===b));renderDefinitions()}));
+    $('#save-scheme').addEventListener('click',()=>state.mystery?toast('临时预览不会写入正式配置'):toast('存在 1 个稳定定义冲突，方案应用已阻断'));
+
+    $$('.mobile-step').forEach(b=>b.addEventListener('click',()=>{const screen=b.closest('.screen');screen.dataset.mobilePanel=b.dataset.mobile;$$('.mobile-step',screen).forEach(x=>x.classList.toggle('active',x===b))}));
+    $$('.detail-toggle').forEach(b=>b.addEventListener('click',()=>b.closest('.screen').classList.add('show-inspector')));$$('.close-detail').forEach(b=>b.addEventListener('click',()=>b.closest('.screen').classList.remove('show-inspector')));
+    renderLayers();renderDefinitions();renderSchemeInspector();selectNarrative('dan-cheng');updateAdoptPreview();
+  </script>
+</body>
+</html>
+

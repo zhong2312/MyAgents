@@ -9,6 +9,7 @@ export const MODEL_SCENE_IDS = [
   "world.architecture",
   "world.template",
   "world.assist",
+  "powers.design",
   "items.profile",
   "items.description",
   "items.batch",
@@ -17,6 +18,12 @@ export const MODEL_SCENE_IDS = [
   "characters.soul",
   "characters.race",
   "characters.group",
+  "factions.organization",
+  "factions.relations",
+  "factions.resources",
+  "factions.rights",
+  "factions.history",
+  "factions.batch",
 ] as const;
 
 export type NovelModelSceneId = (typeof MODEL_SCENE_IDS)[number];
@@ -53,6 +60,13 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     execution: "agent",
   },
   {
+    id: "powers.design",
+    group: "力量体系",
+    label: "力量体系设计",
+    description: "AI 创建或完善题材中立的力量体系",
+    execution: "agent",
+  },
+  {
     id: "characters.design",
     group: "人物库",
     label: "角色设计",
@@ -85,6 +99,48 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     group: "人物库",
     label: "角色分组设计",
     description: "角色分组管理设计",
+    execution: "agent",
+  },
+  {
+    id: "factions.organization",
+    group: "势力组织",
+    label: "组织架构设计",
+    description: "宗门、王朝、商会与家族的内部层级",
+    execution: "agent",
+  },
+  {
+    id: "factions.relations",
+    group: "势力组织",
+    label: "势力关系设计",
+    description: "隶属、联盟、敌对、竞争与依附关系",
+    execution: "agent",
+  },
+  {
+    id: "factions.resources",
+    group: "势力组织",
+    label: "资源与产业设计",
+    description: "资源控制权、商路与争夺历史",
+    execution: "agent",
+  },
+  {
+    id: "factions.rights",
+    group: "势力组织",
+    label: "权限与法统设计",
+    description: "法统、名分、通行权与采购权",
+    execution: "agent",
+  },
+  {
+    id: "factions.history",
+    group: "势力组织",
+    label: "势力演化梳理",
+    description: "势力状态变化与时间线事件梳理",
+    execution: "agent",
+  },
+  {
+    id: "factions.batch",
+    group: "势力组织",
+    label: "势力批量设计",
+    description: "批量设计势力组织与叙事定位",
     execution: "agent",
   },
   {

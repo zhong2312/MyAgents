@@ -5,7 +5,9 @@ export type NovelWorkbenchMode =
   | "template"
   | "assist"
   | "items"
-  | "characters";
+  | "characters"
+  | "factions"
+  | "powers";
 
 export interface NovelWorkbenchContext {
   readonly mode: NovelWorkbenchMode;
@@ -38,10 +40,12 @@ export function configureNovelWorkbenchRequest(
     mode !== "template" &&
     mode !== "assist" &&
     mode !== "items" &&
-    mode !== "characters"
+    mode !== "characters" &&
+    mode !== "factions" &&
+    mode !== "powers"
   ) {
     throw new Error(
-      "toolset.context.mode must be world, template, assist, items or characters",
+      "toolset.context.mode must be world, template, assist, items, characters, factions or powers",
     );
   }
   if (typeof promptId !== "string" || !promptId.trim()) {

@@ -2144,6 +2144,26 @@ export default function Chat({
         });
 
       try {
+        if (launchMessage.configureWorkbenchToolsetOnly) {
+          if (!launchMessage.workbenchToolset) {
+            throw new Error("受控工作台会话缺少工具配置");
+          }
+          await postWithRetry("/api/workbench-agent/configure", {
+            toolset: launchMessage.workbenchToolset,
+          });
+          const allServers = await getAllMcpServers();
+          syncMcpServerNames(allServers);
+          const globalEnabled = await getEnabledMcpServerIds();
+          await postWithRetry("/api/mcp/set", {
+            servers: allServers.filter((server) =>
+              globalEnabled.includes(server.id),
+            ),
+          });
+          launcherOwnsInitialMcpRef.current = false;
+          onInitialMessageConsumedRef.current?.();
+          return;
+        }
+
         if (!isExternalRuntime && builtinSel && !provider) {
           throw new Error(
             `Initial message provider "${builtinSel.providerId}" is unavailable.`,
@@ -2359,9 +2379,7 @@ export default function Chat({
               isExternalRuntime
                 ? undefined
                 : (launchMessage.reasoningEffort ?? reasoningEffort),
-              isExternalRuntime || providerEnv
-                ? undefined
-                : providerRoute,
+              isExternalRuntime || providerEnv ? undefined : providerRoute,
             );
           }
         } else {
@@ -2380,9 +2398,7 @@ export default function Chat({
             isExternalRuntime
               ? undefined
               : (launchMessage.reasoningEffort ?? reasoningEffort),
-            isExternalRuntime || providerEnv
-              ? undefined
-              : providerRoute,
+            isExternalRuntime || providerEnv ? undefined : providerRoute,
           );
         }
 
@@ -6493,7 +6509,7 @@ export default function Chat({
                 onRevealInTree={handleRevealInTree}
               >
                 <MessageList
-              messages={chatScrollModel.data}
+                  messages={chatScrollModel.data}
                   streamingMessage={streamingMessage}
                   firstItemIndex={chatScrollModel.firstItemIndex}
                   heightEstimateSeed={chatScrollModel.heightEstimateSeed}

@@ -16,7 +16,8 @@ param(
     [string]$TargetRoot = 'F:\workspace\MyAgents-test',
     [string]$BuildToolsRoot = 'F:\workspace\.myagents-build-tools',
     [switch]$SkipSmokeTest,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$ReuseBuild
 )
 
 Set-StrictMode -Version Latest
@@ -35,6 +36,11 @@ $script:InfoBackupPath = Join-Path $script:TargetRoot 'PACKAGE-INFO.previous.jso
 function Write-Step {
     param([string]$Message)
     Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host "    $Message" -ForegroundColor DarkGray
 }
 
 function Assert-ExactPath {
@@ -410,20 +416,29 @@ $novelsPath = Join-Path $script:TargetRoot $script:NovelsDirectoryName
 $profileBefore = Get-DirectoryFingerprint $profilePath
 $novelsBefore = Get-DirectoryFingerprint $novelsPath
 
-Write-Step 'Building the Windows release'
-Initialize-BuildEnvironment
-$npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
-if (-not $npmCommand) {
-    $npmCommand = Get-Command npm -ErrorAction Stop
-}
-Push-Location $script:RepoRoot
-try {
-    & $npmCommand.Source run tauri:build -- --no-bundle --target x86_64-pc-windows-msvc
-    if ($LASTEXITCODE -ne 0) {
-        throw "Tauri release build failed with exit code $LASTEXITCODE."
+if ($ReuseBuild) {
+    Write-Step 'Reusing the completed Windows release'
+    foreach ($mapping in $fileMappings) {
+        if (-not (Test-Path -LiteralPath (Join-Path $script:RepoRoot $mapping.Source) -PathType Leaf)) {
+            throw "Missing completed release output: $($mapping.Source)"
+        }
     }
-} finally {
-    Pop-Location
+} else {
+    Write-Step 'Building the Windows release'
+    Initialize-BuildEnvironment
+    $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCommand) {
+        $npmCommand = Get-Command npm -ErrorAction Stop
+    }
+    Push-Location $script:RepoRoot
+    try {
+        & $npmCommand.Source run tauri:build -- --no-bundle --target x86_64-pc-windows-msvc
+        if ($LASTEXITCODE -ne 0) {
+            throw "Tauri release build failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Pop-Location
+    }
 }
 
 Write-Step 'Assembling app.new'

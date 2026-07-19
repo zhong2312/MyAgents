@@ -113,6 +113,8 @@ export interface InitialMessage {
   cron?: InitialMessageCron;
   /** Host-managed business tools for a controlled workbench conversation. */
   workbenchToolset?: WorkbenchAgentToolsetRequest;
+  /** Rebind a resumed controlled-workbench session without sending a message. */
+  configureWorkbenchToolsetOnly?: boolean;
 }
 
 /**

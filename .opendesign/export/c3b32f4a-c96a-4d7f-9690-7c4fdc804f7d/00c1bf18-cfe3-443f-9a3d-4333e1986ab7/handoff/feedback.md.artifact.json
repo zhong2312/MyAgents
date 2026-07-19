@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "markdown-document",
+  "title": "handoff/feedback.md",
+  "entry": "handoff/feedback.md",
+  "renderer": "markdown",
+  "status": "complete",
+  "exports": [
+    "md",
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-19T14:37:05.402Z",
+  "updatedAt": "2026-07-19T14:37:05.406Z",
+  "metadata": {
+    "inferred": true
+  }
+}

@@ -19,6 +19,7 @@
 
 import { MAX_TABS, type Tab } from "@/types/tab";
 import { isPendingSessionId } from "../../shared/constants";
+import type { WorkbenchAgentToolsetRequest } from "../../shared/workbench-sdk";
 
 const PERSIST_KEY = "myagents.openTabs.v1";
 const PERSIST_VERSION = 1 as const;
@@ -31,6 +32,8 @@ export interface PersistedTab {
   agentDir: string; // non-null (launcher tabs filtered out)
   sessionId: string; // real UUID (pending- filtered out)
   title: string;
+  /** Rebinds host-owned business tools before a restored conversation resumes. */
+  workbenchToolset?: WorkbenchAgentToolsetRequest;
 }
 
 export interface PersistedTabState {
@@ -47,7 +50,8 @@ function isRestorable(
 ): tab is Tab & { agentDir: string; sessionId: string } {
   return (
     tab.view === "chat" &&
-    tab.workbenchAgentSurface === undefined &&
+    (tab.workbenchAgentSurface === undefined ||
+      tab.workbenchAgentSurface.toolset !== undefined) &&
     typeof tab.agentDir === "string" &&
     tab.agentDir.length > 0 &&
     typeof tab.sessionId === "string" &&
@@ -84,11 +88,13 @@ export function serializeTabs(
     if (seenSessions.has(tab.sessionId) || seenIds.has(tab.id)) continue;
     seenSessions.add(tab.sessionId);
     seenIds.add(tab.id);
+    const workbenchToolset = tab.workbenchAgentSurface?.toolset;
     persisted.push({
       id: tab.id,
       agentDir: tab.agentDir,
       sessionId: tab.sessionId,
       title: tab.title,
+      ...(workbenchToolset ? { workbenchToolset } : {}),
     });
     if (persisted.length >= MAX_TABS) break;
   }
@@ -114,7 +120,30 @@ function isValidPersistedTab(value: unknown): value is PersistedTab {
     typeof t.sessionId === "string" &&
     t.sessionId.length > 0 &&
     !isPendingSessionId(t.sessionId) &&
-    typeof t.title === "string"
+    typeof t.title === "string" &&
+    (!Object.hasOwn(t, "workbenchToolset") ||
+      isWorkbenchToolsetRequest(t.workbenchToolset))
+  );
+}
+
+function isWorkbenchToolsetRequest(
+  value: unknown,
+): value is WorkbenchAgentToolsetRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const toolset = value as Record<string, unknown>;
+  if (typeof toolset.id !== "string" || !toolset.id.trim()) return false;
+  if (toolset.context === undefined) return true;
+  if (
+    !toolset.context ||
+    typeof toolset.context !== "object" ||
+    Array.isArray(toolset.context)
+  ) {
+    return false;
+  }
+  return Object.values(toolset.context).every(
+    (contextValue) => typeof contextValue === "string",
   );
 }
 
@@ -153,6 +182,9 @@ export function deserializeTabs(raw: string | null): PersistedTabState | null {
       agentDir: candidate.agentDir,
       sessionId: candidate.sessionId,
       title: candidate.title,
+      ...(candidate.workbenchToolset
+        ? { workbenchToolset: candidate.workbenchToolset }
+        : {}),
     });
     if (tabs.length >= MAX_TABS) break;
   }
@@ -213,6 +245,15 @@ export function hydratePersistedState(state: PersistedTabState): {
     // never read by a mounted chat. activateRestoredTab resolves it to push|adopt
     // (from result.isNew) before clearing restoreState on first activation.
     sidecarConfigDisposition: "pending",
+    ...(t.workbenchToolset
+      ? {
+          initialMessage: {
+            text: "",
+            workbenchToolset: t.workbenchToolset,
+            configureWorkbenchToolsetOnly: true,
+          },
+        }
+      : {}),
   }));
   return { tabs, activeTabId: state.activeTabId };
 }

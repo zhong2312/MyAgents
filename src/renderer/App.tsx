@@ -345,7 +345,9 @@ function resolveWorkbenchModelSelection(
       "场景绑定的供应商当前不可用，请前往“设置 / 模型场景”重新选择",
     );
   }
-  if (!provider.models.some((candidate) => candidate.model === override.model)) {
+  if (
+    !provider.models.some((candidate) => candidate.model === override.model)
+  ) {
     throw new Error(
       "场景绑定的模型当前不可用，请前往“设置 / 模型场景”重新选择",
     );
@@ -4875,6 +4877,15 @@ export default function App() {
             normalizeStringSetting(workspaceAgent?.runtimeConfig?.model) ??
             normalizeStringSetting(workspaceAgent?.model);
         }
+      } else if (request.toolset) {
+        // Resumed Agent sessions retain their conversation but not the sidecar's
+        // context-injected MCP. Hand Chat a setup-only intent so it rebinds the
+        // workbench toolset before the user continues the prior conversation.
+        initialMessage = {
+          text: "",
+          workbenchToolset: request.toolset,
+          configureWorkbenchToolsetOnly: true,
+        };
       }
 
       const agentSurface = isSurfacePresentation

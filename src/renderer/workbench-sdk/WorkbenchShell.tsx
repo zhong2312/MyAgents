@@ -22,14 +22,19 @@ import {
   Library,
   LayoutDashboard,
   LayoutTemplate,
+  Layers3,
+  Lightbulb,
   ListTree,
   Loader2,
   Map,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
+  Route,
+  Sparkles,
   Settings,
   Users,
+  Waypoints,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -119,6 +124,10 @@ const NAV_ICONS = {
   settings: Settings,
   "code-2": Code2,
   "database-search": Database,
+  route: Route,
+  lightbulb: Lightbulb,
+  "layers-3": Layers3,
+  waypoints: Waypoints,
 } as const;
 
 function FailureState({ title, detail }: { title: string; detail: string }) {
@@ -160,6 +169,7 @@ export default function WorkbenchShell({
 }: WorkbenchShellProps) {
   const { t } = useTranslation("app");
   const storage = useWorkbenchStorage(workspacePath);
+  const workspaceName = getFolderName(workspacePath);
   const registration = target ? registry.get(target.workbenchId) : undefined;
   const definition = registration?.definition;
   const manifest = definition?.manifest;
@@ -167,6 +177,8 @@ export default function WorkbenchShell({
   const [isNavigationCollapsed, setIsNavigationCollapsed] = useState(
     () => definition?.shell?.defaultNavigationCollapsed ?? false,
   );
+  const [isOpeningProjectAssistant, setIsOpeningProjectAssistant] =
+    useState(false);
   const routeIds = useMemo(
     () => new Set(manifest?.navigation.map((item) => item.id) ?? []),
     [manifest],
@@ -233,6 +245,32 @@ export default function WorkbenchShell({
     },
     [onRunAi, workspacePath],
   );
+  const openProjectAssistant = useCallback(async () => {
+    if (isOpeningProjectAssistant || !onOpenAgentSession) return;
+    const workbenchName = manifest?.name ?? "工作台";
+    const workbenchId = manifest?.id ?? "workbench";
+    setIsOpeningProjectAssistant(true);
+    try {
+      await openAgentSession({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `${workbenchName} · AI 助手`,
+        promptId: `${workbenchId}.assistant`,
+        initialMessage: `你正在协助作者处理“${workspaceName}”项目中的创作任务。先确认作者当前要推进的目标，再给出简洁、可执行的建议。`,
+        presentation: "dialog",
+        conversationKey: `${workbenchId}.assistant`,
+        historyGroupPath: [workbenchName, "AI 助手"],
+      });
+    } finally {
+      setIsOpeningProjectAssistant(false);
+    }
+  }, [
+    isOpeningProjectAssistant,
+    manifest?.id,
+    manifest?.name,
+    onOpenAgentSession,
+    openAgentSession,
+    workspaceName,
+  ]);
 
   if (!target) {
     return (
@@ -271,7 +309,6 @@ export default function WorkbenchShell({
     return <FailureState title={t("workbench.incompatible")} detail={detail} />;
   }
 
-  const workspaceName = getFolderName(workspacePath);
   const context = Object.freeze({
     manifest,
     workspacePath,
@@ -343,6 +380,30 @@ export default function WorkbenchShell({
                 </div>
               </div>
             )}
+            {!isNavigationCollapsed && (
+              <button
+                type="button"
+                onClick={() => void openProjectAssistant()}
+                disabled={!onOpenAgentSession || isOpeningProjectAssistant}
+                aria-label={
+                  isOpeningProjectAssistant
+                    ? "正在打开 AI 助手"
+                    : "打开 AI 助手"
+                }
+                title={
+                  onOpenAgentSession
+                    ? "打开 AI 助手"
+                    : "MyAgents Agent Session 当前不可用"
+                }
+                className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--accent-cool)] bg-[var(--accent-cool-subtle)] text-[var(--accent-cool)] transition-colors hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isOpeningProjectAssistant ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+              </button>
+            )}
           </div>
         </div>
 
@@ -366,7 +427,9 @@ export default function WorkbenchShell({
                   type="button"
                   aria-current={active ? "page" : undefined}
                   aria-expanded={
-                    hasChildren && !isNavigationCollapsed ? isExpanded : undefined
+                    hasChildren && !isNavigationCollapsed
+                      ? isExpanded
+                      : undefined
                   }
                   aria-label={item.label}
                   title={item.label}
@@ -381,7 +444,8 @@ export default function WorkbenchShell({
                   }`}
                   onClick={() => {
                     if (hasChildren) {
-                      if (isNavigationCollapsed) setIsNavigationCollapsed(false);
+                      if (isNavigationCollapsed)
+                        setIsNavigationCollapsed(false);
                       setExpandedNavigationParents((current) => {
                         const next = new Set(current);
                         if (next.has(item.id)) next.delete(item.id);
@@ -398,7 +462,9 @@ export default function WorkbenchShell({
                   />
                   {!isNavigationCollapsed && (
                     <>
-                      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {item.label}
+                      </span>
                       {hasChildren &&
                         (isExpanded ? (
                           <ChevronDown className="h-3.5 w-3.5 shrink-0" />

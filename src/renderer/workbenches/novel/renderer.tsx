@@ -48,9 +48,16 @@ import {
 import type { LoadedNovelChapter, LoadedNovelProject } from "./repository";
 import SettingLibrary from "./SettingLibrary";
 import ItemLibrary from "./ItemLibrary";
-import FactionLibrary from "./FactionLibrary";
+import FactionLibrary, { type FactionAiTarget } from "./FactionLibrary";
+import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
+import PowerSystemLibrary from "./PowerSystemLibrary";
+import PowerSystemProposalReview from "./PowerSystemProposalReview";
+import { buildPowerSystemProposalAgentInstructions } from "./powerSystemProposalSchema";
 import KnowledgeBase from "./KnowledgeBase";
 import TimelineLibrary from "./TimelineLibrary";
+import NarrativeStudio, {
+  type NarrativeStudioScreen,
+} from "./NarrativeStudio";
 import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
 import {
@@ -950,11 +957,18 @@ export default function NovelWorkbenchRenderer({
   const [isItemAgentLaunching, setIsItemAgentLaunching] = useState(false);
   const [isCharacterAgentLaunching, setIsCharacterAgentLaunching] =
     useState(false);
+  const [isPowerAgentLaunching, setIsPowerAgentLaunching] = useState(false);
+  const [factionAgentLaunchMode, setFactionAgentLaunchMode] = useState<
+    "single" | "batch" | null
+  >(null);
   const [isProposalReviewOpen, setIsProposalReviewOpen] = useState(false);
   const [isItemProposalReviewOpen, setIsItemProposalReviewOpen] =
     useState(false);
   const [isCharacterProposalReviewOpen, setIsCharacterProposalReviewOpen] =
     useState(false);
+  const [isPowerProposalReviewOpen, setIsPowerProposalReviewOpen] =
+    useState(false);
+  const [powerLibraryRevision, setPowerLibraryRevision] = useState(0);
   const [knowledgeSourceFocus, setKnowledgeSourceFocus] =
     useState<KnowledgeSourceRef | null>(null);
   const [factionWorldNodeFocusId, setFactionWorldNodeFocusId] = useState<
@@ -1256,6 +1270,188 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
     }
   };
 
+  const launchPowerSystemAgent = async () => {
+    if (isPowerAgentLaunching) return;
+    if (!context.agentSessions.isAvailable) {
+      setOperationError("MyAgents Agent Session 当前不可用");
+      return;
+    }
+    setOperationError(null);
+    setIsPowerAgentLaunching(true);
+    try {
+      const initialMessage = `## 小说工作台力量体系 AI 设计任务
+
+你正在协助作者创建或完善小说力量体系。力量体系是题材中立的机制模型，不是固定的修炼等级表。
+
+项目：${project.metadata.title}
+创作题材：${project.metadata.genres.join("、") || "未设置"}
+力量体系目录：world/power-systems/
+
+执行原则：
+1. 首先调用 novel_power_get_context，读取体系类型、体系索引、跨体系交互和已有体系摘要。
+2. 先确认本次是新建体系还是完善已有体系，并通过简洁对话确认叙事功能、力量来源、显式程度、量化方式、成长结构、代价、比较方式和例外边界；一次只追问影响结构的关键问题。
+3. 共用来源和规则的流派、能力或装备保留在同一体系；拥有独立来源与运行规则的力量拆成不同体系，再通过 interactions.json 记录交互。
+4. 只为实际存在的概念建立来源、资源、方式、能力、状态、规则、关系、维度与场景标尺。不得为了填满字段制造无叙事作用的设定，也不得生成永久总战力。
+5. 作者确认方案前只能讨论和读取，不能提交提案。确认后生成完整、可校验的文件变更。
+
+${buildPowerSystemProposalAgentInstructions()}`;
+      const modelSelection = await resolveSceneModelSelection("powers.design");
+      await context.agentSessions.open({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `力量体系设计 · ${project.metadata.title}`,
+        promptId: "novel.powers.design",
+        initialMessage,
+        presentation: "dialog",
+        conversationKey: "novel.powers.design",
+        forceNew: true,
+        historyGroupPath: ["力量体系", "体系设计"],
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "powers",
+            promptId: "novel.powers.design",
+            promptVersion: "1.0.0",
+          },
+        },
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsPowerAgentLaunching(false);
+    }
+  };
+
+  const launchFactionAgent = async (target: FactionAiTarget) => {
+    if (factionAgentLaunchMode) return;
+    if (!context.agentSessions.isAvailable) {
+      throw new Error("MyAgents Agent Session 当前不可用");
+    }
+    const scopeLabels: Record<FactionAiTarget["scope"], string> = {
+      organization: "组织架构设计",
+      relations: "势力关系设计",
+      resources: "资源与产业设计",
+      rights: "权限与法统设计",
+      history: "势力演化梳理",
+    };
+    const sceneIds: Record<FactionAiTarget["scope"], NovelModelSceneId> = {
+      organization: "factions.organization",
+      relations: "factions.relations",
+      resources: "factions.resources",
+      rights: "factions.rights",
+      history: "factions.history",
+    };
+    const focus = scopeLabels[target.scope];
+    setOperationError(null);
+    setFactionAgentLaunchMode("single");
+    try {
+      const initialMessage = `## 小说工作台势力组织 AI 设计任务
+
+你正在协助作者完善小说势力组织。当前目标是“${focus}”。
+
+项目：${project.metadata.title}
+创作题材：${project.metadata.genres.join("、") || "未设置"}
+当前势力 id：${target.targetFactionId ?? "未指定"}
+作者要求：${target.requirements || "先读取当前势力及直接关联势力，再给出可编辑的建议。"}
+
+执行边界：
+1. 只分析当前势力、它的直接关联势力、关联地盘、成员、资源与时间线事件；禁止对全库做 N×N 关系或冲突分析。
+2. 组织层级必须区分势力内部单元与对外独立势力：堂口、分支、官署、商号归入内部组织树；隶属、联盟、敌对、竞争、依附使用势力关系。
+3. 资源建议必须写清控制权等级、争夺方和变化原因；法统、名分、通行权、采购权等必须写明授予方、范围、条件和有效状态。
+4. 势力库只保存当前状态快照；历史事件应建议作者关联或补充到时间线，不能制造第二份相互矛盾的历史。
+5. 先在对话中给出分项、可编辑的建议，作者确认后由作者写入势力库；不得直接修改项目文件。`;
+      const modelSelection = await resolveSceneModelSelection(
+        sceneIds[target.scope],
+      );
+      await context.agentSessions.open({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `${focus} · ${project.metadata.title}`,
+        promptId: "novel.factions.assist",
+        initialMessage,
+        presentation: "dialog",
+        conversationKey: `novel.factions.assist:${target.scope}:${target.targetFactionId ?? "library"}`,
+        forceNew: true,
+        historyGroupPath: ["势力组织", focus],
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "factions",
+            promptId: "novel.factions.assist",
+            promptVersion: "1.0.0",
+            targetScope: target.scope,
+            targetFactionId: target.targetFactionId ?? "",
+          },
+        },
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+    } finally {
+      setFactionAgentLaunchMode(null);
+    }
+  };
+
+  const launchFactionBatchAgent = async () => {
+    if (factionAgentLaunchMode) return;
+    if (!context.agentSessions.isAvailable) {
+      throw new Error("MyAgents Agent Session 当前不可用");
+    }
+    setOperationError(null);
+    setFactionAgentLaunchMode("batch");
+    try {
+      const factionLibrary = await createNovelFactionLibraryRepository(
+        context.storage,
+      ).load();
+      const existingFactions = factionLibrary.library.factions.map(
+        (faction) => ({
+          id: faction.id,
+          name: faction.name,
+          type: faction.type,
+          status: faction.status,
+          summary: clipAiContextText(faction.summary, 500),
+        }),
+      );
+      const existingFactionContext = clipAiContextText(
+        JSON.stringify(existingFactions, null, 2),
+      );
+      const initialMessage = `## 小说工作台势力批量设计任务
+
+你正在协助作者批量设计小说势力组织。只能提供待作者审阅和录入的候选，绝对不能直接修改正式势力库文件。
+
+项目：${project.metadata.title}
+创作题材：${project.metadata.genres.join("、") || "未设置"}
+现有势力摘要：${existingFactionContext}
+
+执行协议：
+1. 先通过简洁对话确认本批需要新增或补充的势力类型、数量（1 至 10）、叙事阶段、地域范围和冲突方向；一次只追问影响结果的关键问题。
+2. 设计时必须避开现有势力与同批候选的名称、功能和资源控制重复；优先补足世界格局中的空位，而不是机械堆叠组织。
+3. 每个候选至少提供：名称、势力类型、当前状态、势力概要、核心目标、组织层级、关键成员类别、控制地盘或资源、对外关系、权限或名分，以及可接入时间线的演化钩子。
+4. 势力内部单元与独立势力关系必须区分：堂口、官署、分号、支脉属于组织层级；隶属、联盟、敌对、竞争、依附属于势力关系。禁止做全库 N×N 关系或冲突分析。
+5. 分批给出结构化候选卡，等作者确认后再说明应如何录入势力库；不得调用 Bash、Write、Edit 等工具修改正式项目文件。`;
+      const modelSelection = await resolveSceneModelSelection("factions.batch");
+      await context.agentSessions.open({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `势力批量设计 · ${project.metadata.title}`,
+        promptId: "novel.factions.batch",
+        initialMessage,
+        presentation: "dialog",
+        conversationKey: "novel.factions.batch",
+        forceNew: true,
+        historyGroupPath: ["势力组织", "批量设计"],
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "factions",
+            promptId: "novel.factions.batch",
+            promptVersion: "1.0.0",
+            targetScope: "batch",
+          },
+        },
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+    } finally {
+      setFactionAgentLaunchMode(null);
+    }
+  };
+
   const launchItemBatchAgent = async (preferredCategoryId?: string) => {
     if (isItemAgentLaunching) return;
     if (!context.agentSessions.isAvailable) {
@@ -1446,6 +1642,29 @@ ${JSON.stringify(injectedContext, null, 2)}
       </>
     ) : undefined;
 
+  const powerToolbarActions =
+    context.route === "powers" ? (
+      <>
+        <button
+          type="button"
+          aria-label="审阅力量体系提案"
+          title="审阅 Agent 提交的力量体系变更"
+          onClick={() => setIsPowerProposalReviewOpen(true)}
+          className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium transition-colors hover:bg-[var(--hover-bg)]"
+        >
+          <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
+          <span className="max-lg:hidden">审阅提案</span>
+        </button>
+        <WorldAgentButton
+          disabled={!context.agentSessions.isAvailable}
+          isLaunching={isPowerAgentLaunching}
+          label="AI 设计体系"
+          title="打开力量体系设计 Agent"
+          onClick={() => void launchPowerSystemAgent()}
+        />
+      </>
+    ) : undefined;
+
   let content: ReactNode;
   switch (context.route) {
     case "manuscript":
@@ -1462,13 +1681,37 @@ ${JSON.stringify(injectedContext, null, 2)}
       );
       break;
     case "outline":
+    case "inspiration":
+    case "creative-profile": {
+      const screen: NarrativeStudioScreen =
+        context.route === "inspiration"
+          ? "inspiration"
+          : context.route === "creative-profile"
+            ? "profile"
+            : "narrative";
       content = (
-        <OutlineEditor
-          content={project.outlineContent}
-          onSave={controller.saveOutline}
+        <NarrativeStudio
+          screen={screen}
+          storage={context.storage}
+          isActive={context.isActive}
+          projectTitle={project.metadata.title}
+          projectGenres={project.metadata.genres}
+          chapters={project.chapters}
+          outlineContent={project.outlineContent}
+          onSaveOutline={controller.saveOutline}
+          onNavigateScreen={(target) =>
+            context.navigate(
+              target === "narrative"
+                ? "outline"
+                : target === "inspiration"
+                  ? "inspiration"
+                  : "creative-profile",
+            )
+          }
         />
       );
       break;
+    }
     case "lore":
       content = (
         <div className="h-full min-h-0">
@@ -1550,7 +1793,40 @@ ${JSON.stringify(injectedContext, null, 2)}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
           onOpenWorldNode={openFactionWorldNode}
+          onOpenAiAgent={
+            context.agentSessions.isAvailable ? launchFactionAgent : undefined
+          }
+          isAiAgentLaunching={factionAgentLaunchMode === "single"}
+          onOpenBatchAgent={
+            context.agentSessions.isAvailable
+              ? launchFactionBatchAgent
+              : undefined
+          }
+          isBatchAgentLaunching={factionAgentLaunchMode === "batch"}
         />
+      );
+      break;
+    case "powers":
+      content = (
+        <div className="h-full min-h-0">
+          <PowerSystemLibrary
+            key={powerLibraryRevision}
+            storage={context.storage}
+            projectTitle={project.metadata.title}
+            isActive={context.isActive}
+            headerActions={powerToolbarActions}
+          />
+          {isPowerProposalReviewOpen && (
+            <PowerSystemProposalReview
+              storage={context.storage}
+              projectTitle={project.metadata.title}
+              onClose={() => {
+                setIsPowerProposalReviewOpen(false);
+                setPowerLibraryRevision((current) => current + 1);
+              }}
+            />
+          )}
+        </div>
       );
       break;
     case "characters":
@@ -1636,9 +1912,13 @@ ${JSON.stringify(injectedContext, null, 2)}
     "characters",
     "items",
     "factions",
+    "powers",
     "knowledge",
     "map",
     "timeline",
+    "outline",
+    "inspiration",
+    "creative-profile",
     "ai-prompts",
     "settings",
     "model-scenes",

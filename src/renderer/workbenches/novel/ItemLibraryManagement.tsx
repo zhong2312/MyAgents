@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowUp,
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   Folder,
@@ -132,7 +133,9 @@ export function ItemFieldEditorDialog({
       group,
       description: draft.description.trim(),
       options,
-      ...(draft.unit?.trim() ? { unit: draft.unit.trim() } : { unit: undefined }),
+      ...(draft.unit?.trim()
+        ? { unit: draft.unit.trim() }
+        : { unit: undefined }),
       ...(entityTypes.length ? { entityTypes } : { entityTypes: undefined }),
     });
   };
@@ -199,8 +202,9 @@ export function ItemFieldEditorDialog({
                   className="flex h-9 items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 text-xs text-[var(--ink-muted)]"
                 >
                   <span>
-                    {FIELD_TYPE_OPTIONS.find((option) => option.value === draft.type)
-                      ?.label ?? draft.type}
+                    {FIELD_TYPE_OPTIONS.find(
+                      (option) => option.value === draft.type,
+                    )?.label ?? draft.type}
                   </span>
                   <LockKeyhole className="h-3.5 w-3.5" />
                 </div>
@@ -282,8 +286,7 @@ export function ItemFieldEditorDialog({
           />
         </FieldLabel>
 
-        {(draft.type === "single-select" ||
-          draft.type === "multi-select") && (
+        {(draft.type === "single-select" || draft.type === "multi-select") && (
           <FieldLabel label="选项（每行一个）" className="mt-4">
             <textarea
               value={optionsText}
@@ -436,6 +439,18 @@ export default function ItemLibraryManagement({
   const [selectedCategoryId, setSelectedCategoryId] = useState(
     library.meta.categories[0]?.id ?? "",
   );
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
+    () =>
+      new Set(
+        library.meta.categories
+          .filter((category) =>
+            library.meta.categories.some(
+              (candidate) => candidate.parentId === category.id,
+            ),
+          )
+          .map((category) => category.id),
+      ),
+  );
   const [fieldEditor, setFieldEditor] = useState<{
     readonly definition: ItemFieldDefinition;
     readonly existingId: string | null;
@@ -482,7 +497,9 @@ export default function ItemLibraryManagement({
     setDraft((current) => ({
       ...current,
       categories: current.categories.map((category) =>
-        category.id === selectedCategory.id ? { ...category, ...patch } : category,
+        category.id === selectedCategory.id
+          ? { ...category, ...patch }
+          : category,
       ),
     }));
   };
@@ -540,6 +557,9 @@ export default function ItemLibraryManagement({
         },
       ],
     }));
+    if (parentId) {
+      setExpandedCategories((current) => new Set(current).add(parentId));
+    }
     setSelectedCategoryId(id);
   };
 
@@ -647,7 +667,8 @@ export default function ItemLibraryManagement({
           <div className="min-w-0">
             <h1 className="truncate text-sm font-semibold">分类与字段管理</h1>
             <p className="truncate text-xs text-[var(--ink-muted)]">
-              {library.index.items.length} 件物品 · {draft.categories.length} 个分类
+              {library.index.items.length} 件物品 · {draft.categories.length}{" "}
+              个分类
             </p>
           </div>
         </div>
@@ -675,9 +696,11 @@ export default function ItemLibraryManagement({
       )}
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-64 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--paper-inset)] max-md:w-52">
-          <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-3">
-            <span className="text-xs font-semibold text-[var(--ink-muted)]">分类树</span>
+        <aside className="flex w-64 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--paper-elevated)] max-md:w-52">
+          <div className="flex h-12 items-center justify-between border-b border-[var(--line)] px-3">
+            <span className="text-xs font-semibold text-[var(--ink-muted)]">
+              分类树
+            </span>
             <button
               type="button"
               onClick={() => createCategory(null)}
@@ -688,12 +711,21 @@ export default function ItemLibraryManagement({
               <FolderPlus className="h-4 w-4" />
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div className="min-h-0 flex-1 overflow-y-auto p-2" role="tree">
             <CategoryManagementTree
               meta={draft}
               parentId={null}
               selectedId={selectedCategory.id}
+              expanded={expandedCategories}
               counts={itemCountByCategory}
+              onToggle={(id) =>
+                setExpandedCategories((current) => {
+                  const next = new Set(current);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return next;
+                })
+              }
               onSelect={setSelectedCategoryId}
             />
           </div>
@@ -794,7 +826,9 @@ export default function ItemLibraryManagement({
                   }
                   ariaLabel="父分类"
                   className={
-                    selectedCategory.system ? "pointer-events-none opacity-60" : ""
+                    selectedCategory.system
+                      ? "pointer-events-none opacity-60"
+                      : ""
                   }
                 />
               </FieldLabel>
@@ -818,7 +852,10 @@ export default function ItemLibraryManagement({
                   className="item-library-input"
                 />
               </FieldLabel>
-              <FieldLabel label="分类说明" className="col-span-2 max-lg:col-span-1">
+              <FieldLabel
+                label="分类说明"
+                className="col-span-2 max-lg:col-span-1"
+              >
                 <textarea
                   value={selectedCategory.description}
                   onChange={(event) =>
@@ -835,7 +872,8 @@ export default function ItemLibraryManagement({
                 <div>
                   <h3 className="text-sm font-semibold">分类字段</h3>
                   <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-                    {ownedFields.length} 个本级字段 · {inheritedFields.length} 个继承字段
+                    {ownedFields.length} 个本级字段 · {inheritedFields.length}{" "}
+                    个继承字段
                   </p>
                 </div>
                 <button
@@ -890,10 +928,14 @@ export default function ItemLibraryManagement({
                             )?.label ?? field.type}
                           </span>
                           {field.required && (
-                            <span className="text-xs text-[var(--error)]">必填</span>
+                            <span className="text-xs text-[var(--error)]">
+                              必填
+                            </span>
                           )}
                           {field.archived && (
-                            <span className="text-xs text-[var(--ink-muted)]">已归档</span>
+                            <span className="text-xs text-[var(--ink-muted)]">
+                              已归档
+                            </span>
                           )}
                         </div>
                         <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
@@ -1017,53 +1059,90 @@ function CategoryManagementTree({
   meta,
   parentId,
   selectedId,
+  expanded,
   counts,
   depth = 0,
+  onToggle,
   onSelect,
 }: {
   readonly meta: ItemLibraryMeta;
   readonly parentId: string | null;
   readonly selectedId: string;
+  readonly expanded: ReadonlySet<string>;
   readonly counts: ReadonlyMap<string, number>;
   readonly depth?: number;
+  readonly onToggle: (id: string) => void;
   readonly onSelect: (id: string) => void;
 }) {
   const children = meta.categories
     .filter((category) => category.parentId === parentId)
     .sort((left, right) => left.order - right.order);
-  return children.map((category) => (
-    <div key={category.id}>
-      <button
-        type="button"
-        onClick={() => onSelect(category.id)}
-        style={{ paddingLeft: `${8 + depth * 14}px` }}
-        className={`group flex h-8 w-full items-center gap-1.5 rounded-md pr-2 text-left text-xs transition-colors ${
-          selectedId === category.id
-            ? "bg-[var(--selected-bg)] text-[var(--ink)]"
-            : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-        } ${category.archived ? "opacity-50" : ""}`}
+  return children.map((category) => {
+    const childCount = meta.categories.filter(
+      (candidate) => candidate.parentId === category.id,
+    ).length;
+    const isExpanded = expanded.has(category.id);
+    const selected = selectedId === category.id;
+    return (
+      <div
+        key={category.id}
+        role="treeitem"
+        aria-expanded={childCount ? isExpanded : undefined}
       >
-        <ChevronRight
-          className={`h-3 w-3 shrink-0 ${
-            meta.categories.some((item) => item.parentId === category.id)
-              ? "opacity-60"
-              : "opacity-0"
-          }`}
-        />
-        <Folder className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{category.name}</span>
-        <span className="text-xs text-[var(--ink-subtle)]">
-          {counts.get(category.id) ?? 0}
-        </span>
-      </button>
-      <CategoryManagementTree
-        meta={meta}
-        parentId={category.id}
-        selectedId={selectedId}
-        counts={counts}
-        depth={depth + 1}
-        onSelect={onSelect}
-      />
-    </div>
-  ));
+        <div
+          style={{ paddingLeft: `${Math.min(depth * 16 + 4, 68)}px` }}
+          className={`flex h-10 items-center gap-1 rounded-md pr-2 transition-colors ${
+            selected
+              ? "bg-[var(--accent-cool-subtle)] text-[var(--ink)] ring-1 ring-inset ring-[var(--accent-cool)]/30"
+              : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+          } ${category.archived ? "opacity-50" : ""}`}
+        >
+          <button
+            type="button"
+            onClick={() => childCount > 0 && onToggle(category.id)}
+            aria-label={
+              isExpanded ? `收起${category.name}` : `展开${category.name}`
+            }
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded ${
+              childCount ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          >
+            {isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelect(category.id)}
+            aria-label={`${category.name} · ${counts.get(category.id) ?? 0} 件物品`}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <Folder
+              className={`h-4 w-4 shrink-0 ${selected ? "text-[var(--accent-cool)]" : ""}`}
+            />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              {category.name}
+            </span>
+            <span className="shrink-0 rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)]">
+              {counts.get(category.id) ?? 0} 件
+            </span>
+          </button>
+        </div>
+        {childCount > 0 && isExpanded && (
+          <CategoryManagementTree
+            meta={meta}
+            parentId={category.id}
+            selectedId={selectedId}
+            expanded={expanded}
+            counts={counts}
+            depth={depth + 1}
+            onToggle={onToggle}
+            onSelect={onSelect}
+          />
+        )}
+      </div>
+    );
+  });
 }

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "previews/render-desktop.html",
+  "entry": "previews/render-desktop.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-19T15:10:05.658Z",
+  "updatedAt": "2026-07-19T15:10:05.658Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

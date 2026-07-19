@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "narrative-studio-v1/preview-mobile-frame.html",
+  "entry": "narrative-studio-v1/preview-mobile-frame.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-19T15:01:18.615Z",
+  "updatedAt": "2026-07-19T15:01:18.615Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

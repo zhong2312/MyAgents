@@ -10,6 +10,12 @@ import { createItemLibraryInitializationFiles } from "./itemLibraryRepository";
 import { createCharacterLibraryInitializationFiles } from "./characterLibraryRepository";
 import { createLocationLibraryInitializationFiles } from "./locationLibraryRepository";
 import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepository";
+import { createPowerSystemInitializationFiles } from "./powerSystemRepository";
+import { createNarrativeStudioInitializationFiles } from "./narrativeStudioRepository";
+import {
+  createEmptyFactionLibrary,
+  serializeFactionLibrary,
+} from "./factionLibrarySchema";
 
 export interface NovelProjectInitializationInput {
   readonly projectId: string;
@@ -24,6 +30,8 @@ const DIRECTORIES = [
   "outline/volumes",
   "outline/scenes",
   "story",
+  "inspiration",
+  "settings",
   "characters",
   "characters/proposals",
   "world/locations",
@@ -32,6 +40,9 @@ const DIRECTORIES = [
   "world/items/records",
   "world/items/pages",
   "world/items/proposals",
+  "world/power-systems/records",
+  "world/power-systems/pages",
+  "world/power-systems/proposals",
   "world/codex",
   "world/setting-library/pages",
   "world/setting-library/entries",
@@ -175,14 +186,23 @@ Thumbs.db
 ## 边界与例外
 `,
     },
+    ...createPowerSystemInitializationFiles(),
     { path: "world/rules.json", content: createIndex("rules") },
     ...createLocationLibraryInitializationFiles(),
-    { path: "world/factions/index.json", content: createIndex("factions") },
+    {
+      path: "world/factions/index.json",
+      content: serializeFactionLibrary(createEmptyFactionLibrary()),
+    },
     ...createItemLibraryInitializationFiles(),
     { path: "world/codex/index.json", content: createIndex("entries") },
     ...createSettingLibraryInitializationFiles(input.title),
     ...createPromptLibraryInitializationFiles(),
     ...createTimelineLibraryInitializationFiles(input.createdAt),
+    ...createNarrativeStudioInitializationFiles({
+      title: input.title,
+      genres: input.genres,
+      createdAt: input.createdAt,
+    }),
     { path: "research/index.json", content: createIndex("sources") },
     { path: "knowledge/entities.json", content: createIndex("entities") },
     { path: "knowledge/relations.json", content: createIndex("relations") },

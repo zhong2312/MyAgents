@@ -9,6 +9,16 @@ import {
   raceDefinitionSchema,
 } from "../../shared/novel-character-library-schema";
 import {
+  powerSystemIndexSchema,
+  powerSystemInteractionsSchema,
+  powerSystemMetaSchema,
+  powerSystemRecordSchema,
+  type PowerSystemIndex,
+  type PowerSystemInteractions,
+  type PowerSystemMeta,
+  type PowerSystemRecord,
+} from "../../shared/novel-power-system-schema";
+import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
   NOVEL_WORKBENCH_MCP_ID,
@@ -70,6 +80,11 @@ const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const CHARACTER_LIBRARY_ROOT = "characters";
 const CHARACTER_PROPOSAL_ROOT = `${CHARACTER_LIBRARY_ROOT}/proposals`;
 const MAX_CHARACTER_OPERATIONS = 40;
+const POWER_SYSTEM_ROOT = "world/power-systems";
+const POWER_SYSTEM_PROPOSAL_ROOT = `${POWER_SYSTEM_ROOT}/proposals`;
+const POWER_SYSTEM_TARGET_PATTERN =
+  /^world\/power-systems\/(?:meta\.json|index\.json|interactions\.json|records\/[a-z0-9-]+\.json|pages\/[a-z0-9-]+\.md)$/;
+const MAX_POWER_SYSTEM_CHANGES = 40;
 
 type CharacterProposalOperation = {
   candidateId: string;
@@ -196,9 +211,7 @@ function validateLocationIndex(
     }
     if (
       !Array.isArray(item.aliases) ||
-      item.aliases.some(
-        (alias) => typeof alias !== "string" || !alias.trim(),
-      )
+      item.aliases.some((alias) => typeof alias !== "string" || !alias.trim())
     ) {
       errors.push(`地点 ${String(id)} 的别名必须为非空字符串数组`);
     }
@@ -376,11 +389,7 @@ async function validateChanges(
     prospective.get(LOCATION_LIBRARY_PATH) ??
     (await readOptional(workspaceFile(workspace, LOCATION_LIBRARY_PATH)));
   if (locationContent !== null) {
-    const locations = parseJson(
-      LOCATION_LIBRARY_PATH,
-      locationContent,
-      errors,
-    );
+    const locations = parseJson(LOCATION_LIBRARY_PATH, locationContent, errors);
     if (locations !== null) validateLocationIndex(locations, nodeIds, errors);
   }
   const profileTypeIds = new Set<string>();
@@ -1293,6 +1302,392 @@ async function submitHandler(args: {
   }
 }
 
+function normalizePowerSystemTargetPath(value: string): string {
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!POWER_SYSTEM_TARGET_PATTERN.test(normalized)) {
+    throw new Error(`不允许的力量体系目标路径：${value}`);
+  }
+  return normalized;
+}
+
+function powerSystemProposalSnapshotRelativePath(targetPath: string): string {
+  return targetPath.slice(`${POWER_SYSTEM_ROOT}/`.length);
+}
+
+type SchemaResult<T> =
+  | { success: true; data: T }
+  | {
+      success: false;
+      error: {
+        issues: readonly { path: readonly PropertyKey[]; message: string }[];
+      };
+    };
+
+function parsePowerSystemSchema<T>(
+  path: string,
+  content: string,
+  schema: { safeParse(value: unknown): SchemaResult<T> },
+  errors: string[],
+): T | null {
+  const value = parseJson(path, content, errors);
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    errors.push(
+      ...parsed.error.issues.map(
+        (issue) =>
+          `${path} ${issue.path.map(String).join(".") || "$"}：${issue.message}`,
+      ),
+    );
+    return null;
+  }
+  return parsed.data;
+}
+
+async function validatePowerSystemChanges(
+  changes: ProposedChange[],
+): Promise<string[]> {
+  const { workspace } = requireWorkspace();
+  const errors: string[] = [];
+  if (changes.length === 0) return ["至少需要一项力量体系变更"];
+  if (changes.length > MAX_POWER_SYSTEM_CHANGES) {
+    return [`单次最多提交 ${MAX_POWER_SYSTEM_CHANGES} 项力量体系变更`];
+  }
+
+  const ids = new Set<string>();
+  const targets = new Set<string>();
+  const proposed = new Map<string, string>();
+  let totalBytes = 0;
+  for (const change of changes) {
+    let targetPath: string;
+    try {
+      targetPath = normalizePowerSystemTargetPath(change.targetPath);
+    } catch (error) {
+      errors.push(message(error));
+      continue;
+    }
+    if (!ID_PATTERN.test(change.id) || ids.has(change.id)) {
+      errors.push(`力量体系变更包含非法或重复 id：${change.id}`);
+    }
+    if (targets.has(targetPath)) {
+      errors.push(`同一提案不能重复修改：${targetPath}`);
+    }
+    ids.add(change.id);
+    targets.add(targetPath);
+    proposed.set(targetPath, change.content);
+    const bytes = Buffer.byteLength(change.content, "utf8");
+    totalBytes += bytes;
+    if (bytes > MAX_CHANGE_BYTES) {
+      errors.push(`${targetPath} 超过单文件大小限制`);
+    }
+    if (!change.summary.trim()) {
+      errors.push(`${targetPath} 缺少变更摘要`);
+    }
+    const current = await readOptional(workspaceFile(workspace, targetPath));
+    if (change.operation === "create" && current !== null) {
+      errors.push(`新增目标已存在：${targetPath}`);
+    }
+    if (change.operation === "modify" && current === null) {
+      errors.push(`修改目标不存在：${targetPath}`);
+    }
+  }
+  if (totalBytes > MAX_TOTAL_BYTES) {
+    errors.push("力量体系提案总大小超过限制");
+  }
+
+  const candidateContent = async (path: string): Promise<string | null> =>
+    proposed.has(path)
+      ? (proposed.get(path) ?? null)
+      : readOptional(workspaceFile(workspace, path));
+  const metaPath = `${POWER_SYSTEM_ROOT}/meta.json`;
+  const indexPath = `${POWER_SYSTEM_ROOT}/index.json`;
+  const interactionsPath = `${POWER_SYSTEM_ROOT}/interactions.json`;
+  const [metaContent, indexContent, interactionsContent] = await Promise.all([
+    candidateContent(metaPath),
+    candidateContent(indexPath),
+    candidateContent(interactionsPath),
+  ]);
+  if (metaContent === null) errors.push("力量体系库缺少 meta.json");
+  if (indexContent === null) errors.push("力量体系库缺少 index.json");
+  if (interactionsContent === null)
+    errors.push("力量体系库缺少 interactions.json");
+  if (
+    metaContent === null ||
+    indexContent === null ||
+    interactionsContent === null
+  ) {
+    return errors;
+  }
+
+  const meta = parsePowerSystemSchema<PowerSystemMeta>(
+    metaPath,
+    metaContent,
+    powerSystemMetaSchema,
+    errors,
+  );
+  const index = parsePowerSystemSchema<PowerSystemIndex>(
+    indexPath,
+    indexContent,
+    powerSystemIndexSchema,
+    errors,
+  );
+  const interactions = parsePowerSystemSchema<PowerSystemInteractions>(
+    interactionsPath,
+    interactionsContent,
+    powerSystemInteractionsSchema,
+    errors,
+  );
+  if (!meta || !index || !interactions) return errors;
+
+  const typeIds = new Set<string>();
+  for (const type of meta.systemTypes) {
+    if (typeIds.has(type.id)) errors.push(`力量体系类型 id 重复：${type.id}`);
+    typeIds.add(type.id);
+  }
+
+  const systemIds = new Set<string>();
+  const records = new Map<string, PowerSystemRecord>();
+  const graphTargets = new Map<string, Set<string>>();
+  for (const entry of index.systems) {
+    if (systemIds.has(entry.id)) {
+      errors.push(`力量体系索引 id 重复：${entry.id}`);
+      continue;
+    }
+    systemIds.add(entry.id);
+    if (!typeIds.has(entry.typeId)) {
+      errors.push(`力量体系“${entry.name}”引用了不存在的类型：${entry.typeId}`);
+    }
+    const expectedRecordPath = `${POWER_SYSTEM_ROOT}/records/${entry.id}.json`;
+    const expectedPagePath = `${POWER_SYSTEM_ROOT}/pages/${entry.id}.md`;
+    if (entry.recordPath !== expectedRecordPath) {
+      errors.push(`力量体系“${entry.name}”的记录路径与 id 不一致`);
+    }
+    if (entry.pagePath !== expectedPagePath) {
+      errors.push(`力量体系“${entry.name}”的说明路径与 id 不一致`);
+    }
+    const [recordContent, pageContent] = await Promise.all([
+      candidateContent(expectedRecordPath),
+      candidateContent(expectedPagePath),
+    ]);
+    if (recordContent === null) {
+      errors.push(`力量体系“${entry.name}”缺少结构化记录`);
+      continue;
+    }
+    if (pageContent === null) {
+      errors.push(`力量体系“${entry.name}”缺少说明页`);
+    }
+    const record = parsePowerSystemSchema<PowerSystemRecord>(
+      expectedRecordPath,
+      recordContent,
+      powerSystemRecordSchema,
+      errors,
+    );
+    if (!record) continue;
+    records.set(record.id, record);
+    if (record.id !== entry.id) {
+      errors.push(`力量体系索引与记录 id 不一致：${entry.id}`);
+    }
+    if (
+      record.name !== entry.name ||
+      record.typeId !== entry.typeId ||
+      record.status !== entry.status ||
+      record.summary !== entry.summary ||
+      record.updatedAt !== entry.updatedAt
+    ) {
+      errors.push(`力量体系“${entry.name}”的索引摘要与记录不一致`);
+    }
+    if (!typeIds.has(record.typeId)) {
+      errors.push(`力量体系“${record.name}”引用了不存在的类型`);
+    }
+    const targetsForSystem = new Set<string>([record.id]);
+    record.elements.forEach((item) => targetsForSystem.add(item.id));
+    record.tracks.forEach((track) => {
+      targetsForSystem.add(track.id);
+      track.states.forEach((state) => targetsForSystem.add(state.id));
+    });
+    record.rules.forEach((item) => targetsForSystem.add(item.id));
+    record.dimensions.forEach((item) => targetsForSystem.add(item.id));
+    graphTargets.set(record.id, targetsForSystem);
+  }
+
+  for (const path of proposed.keys()) {
+    const recordMatch =
+      /^world\/power-systems\/records\/([a-z0-9-]+)\.json$/.exec(path);
+    const pageMatch = /^world\/power-systems\/pages\/([a-z0-9-]+)\.md$/.exec(
+      path,
+    );
+    const referencedId = recordMatch?.[1] ?? pageMatch?.[1];
+    if (referencedId && !systemIds.has(referencedId)) {
+      errors.push(`提案文件未被最终 index.json 引用：${path}`);
+    }
+  }
+
+  for (const interaction of interactions.interactions) {
+    for (const reference of [interaction.left, interaction.right]) {
+      if (!systemIds.has(reference.systemId)) {
+        errors.push(
+          `跨体系交互“${interaction.name}”引用了不存在的体系：${reference.systemId}`,
+        );
+        continue;
+      }
+      if (!graphTargets.get(reference.systemId)?.has(reference.targetId)) {
+        errors.push(
+          `跨体系交互“${interaction.name}”引用了不存在的目标：${reference.targetId}`,
+        );
+      }
+      if (
+        reference.kind === "system" &&
+        reference.targetId !== reference.systemId
+      ) {
+        errors.push(`跨体系交互“${interaction.name}”的体系级引用不一致`);
+      }
+    }
+  }
+  return errors;
+}
+
+async function getPowerSystemContextHandler(args: {
+  systemId?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireWorkspace();
+    const files: Record<string, string | null> = {};
+    const corePaths = [
+      `${POWER_SYSTEM_ROOT}/meta.json`,
+      `${POWER_SYSTEM_ROOT}/index.json`,
+      `${POWER_SYSTEM_ROOT}/interactions.json`,
+    ];
+    for (const path of corePaths) {
+      files[path] = await readOptional(workspaceFile(workspace, path));
+    }
+    if (args.systemId) {
+      if (!ID_PATTERN.test(args.systemId)) {
+        throw new Error("systemId 只能使用小写字母、数字和连字符");
+      }
+      const recordPath = `${POWER_SYSTEM_ROOT}/records/${args.systemId}.json`;
+      const pagePath = `${POWER_SYSTEM_ROOT}/pages/${args.systemId}.md`;
+      files[recordPath] = await readOptional(
+        workspaceFile(workspace, recordPath),
+      );
+      files[pagePath] = await readOptional(workspaceFile(workspace, pagePath));
+    }
+    return result({ mode: context.mode, files });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validatePowerSystemHandler(args: {
+  changes: ProposedChange[];
+}): Promise<CallToolResult> {
+  try {
+    const errors = await validatePowerSystemChanges(args.changes);
+    return result({ valid: errors.length === 0, errors }, errors.length > 0);
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitPowerSystemHandler(args: {
+  proposalId?: string;
+  title: string;
+  description?: string;
+  changes: ProposedChange[];
+}): Promise<CallToolResult> {
+  let proposalDirectory = "";
+  let createdProposalDirectory = false;
+  try {
+    const { workspace, context } = requireWorkspace();
+    const errors = await validatePowerSystemChanges(args.changes);
+    if (errors.length > 0) return result({ submitted: false, errors }, true);
+    const proposalId =
+      args.proposalId?.trim() || `proposal-${randomUUID().slice(0, 8)}`;
+    if (!ID_PATTERN.test(proposalId)) {
+      throw new Error("proposalId 只能使用小写字母、数字和连字符");
+    }
+    const proposalsDirectory = workspaceFile(
+      workspace,
+      POWER_SYSTEM_PROPOSAL_ROOT,
+    );
+    proposalDirectory = workspaceFile(
+      workspace,
+      `${POWER_SYSTEM_PROPOSAL_ROOT}/${proposalId}`,
+    );
+    await fs.mkdir(proposalsDirectory, { recursive: true });
+    await fs.mkdir(proposalDirectory);
+    createdProposalDirectory = true;
+
+    const manifestChanges = [];
+    for (const change of args.changes) {
+      const targetPath = normalizePowerSystemTargetPath(change.targetPath);
+      const relativePath = powerSystemProposalSnapshotRelativePath(targetPath);
+      const afterPath = join(
+        proposalDirectory,
+        "after",
+        ...relativePath.split("/"),
+      );
+      await fs.mkdir(dirname(afterPath), { recursive: true });
+      await fs.writeFile(afterPath, change.content, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+      if (change.operation === "modify") {
+        const beforeContent = await fs.readFile(
+          workspaceFile(workspace, targetPath),
+          "utf8",
+        );
+        const beforePath = join(
+          proposalDirectory,
+          "before",
+          ...relativePath.split("/"),
+        );
+        await fs.mkdir(dirname(beforePath), { recursive: true });
+        await fs.writeFile(beforePath, beforeContent, {
+          encoding: "utf8",
+          flag: "wx",
+        });
+      }
+      manifestChanges.push({
+        id: change.id,
+        targetPath,
+        operation: change.operation,
+        summary: change.summary.trim(),
+        status: "pending",
+      });
+    }
+    const manifest = {
+      schemaVersion: 1,
+      proposalId,
+      title: args.title.trim(),
+      description: args.description?.trim() ?? "",
+      createdAt: new Date().toISOString(),
+      source: {
+        kind: "agent",
+        promptId: context.promptId,
+        promptVersion: context.promptVersion,
+      },
+      changes: manifestChanges,
+    };
+    await fs.writeFile(
+      join(proposalDirectory, "proposal.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    return result({
+      submitted: true,
+      proposalId,
+      changeCount: manifestChanges.length,
+      reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
+    });
+  } catch (error) {
+    if (createdProposalDirectory) {
+      await fs
+        .rm(proposalDirectory, { recursive: true, force: true })
+        .catch(() => {});
+    }
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
 export async function createNovelWorkbenchServer() {
   const { createSdkMcpServer, tool } = await import(
     "@anthropic-ai/claude-agent-sdk"
@@ -1354,6 +1749,31 @@ export async function createNovelWorkbenchServer() {
           changes: z.array(changeSchema).min(1).max(100),
         },
         submitHandler,
+      ),
+      tool(
+        "novel_power_get_context",
+        "读取力量体系库的类型、索引和跨体系交互；传 systemId 时同时返回该体系的结构化记录与说明页。",
+        { systemId: z.string().regex(ID_PATTERN).optional() },
+        getPowerSystemContextHandler,
+      ),
+      tool(
+        "novel_power_validate_changes",
+        "校验力量体系变更的文件范围、Schema、索引闭合、体系类型、关系、状态、标尺和跨体系引用。提交提案前必须调用。",
+        {
+          changes: z.array(changeSchema).min(1).max(MAX_POWER_SYSTEM_CHANGES),
+        },
+        validatePowerSystemHandler,
+      ),
+      tool(
+        "novel_power_submit_proposal",
+        "提交待审批的力量体系提案。该工具只写 proposals 快照，不会修改正式力量体系。",
+        {
+          proposalId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1),
+          description: z.string().optional(),
+          changes: z.array(changeSchema).min(1).max(MAX_POWER_SYSTEM_CHANGES),
+        },
+        submitPowerSystemHandler,
       ),
       tool(
         "novel_items_get_context",

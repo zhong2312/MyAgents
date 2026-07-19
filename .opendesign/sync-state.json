@@ -1,11 +1,11 @@
 {
   "protocolVersion": "1.0",
-  "lastPushAt": "2026-07-18T13:01:55.139731Z",
-  "lastPullAt": "2026-07-15T16:12:46.842Z",
-  "lastDirection": "push",
-  "exchangeHash": "b1d275d9f2191e028b39ab40b1d754dbf476a0e7fdb50dae73aa8d4b8eab45c7",
-  "openDesignProjectId": "myagents-5894",
-  "openDesignRunId": null,
-  "artifactEntry": "item-library-v1/index.html",
+  "lastPushAt": "2026-07-19T14:39:24.319Z",
+  "lastPullAt": "2026-07-19T15:44:31.496595Z",
+  "lastDirection": "pull",
+  "exchangeHash": "f82ae554387c1b269770e044a28cf7f804612253e6967c3fd333f4cf1a1a36c4",
+  "openDesignProjectId": "c3b32f4a-c96a-4d7f-9690-7c4fdc804f7d",
+  "openDesignRunId": "00c1bf18-cfe3-443f-9a3d-4333e1986ab7",
+  "artifactEntry": "narrative-studio-v1/index.html",
   "conflicts": []
 }

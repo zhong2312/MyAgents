@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "fileName": "narrative-studio-v1/index.html",
+  "entries": [
+    {
+      "id": "0eb3ab92-2aa4-4a85-8bed-00fc76bf3fd5",
+      "fileName": "narrative-studio-v1/index.html",
+      "version": 1,
+      "label": "Version 1",
+      "createdAt": 1784474379832,
+      "source": "ai",
+      "prompt": "You are already inside the target Open Design project. Do not call skills, bridge, MCP, other agents, or create a new project. Read handoff/feedback.md only. Make the smallest direct fix to the current narrative-studio-v1/index.html: remove the extra closing brace after renderSchemeInspector that causes Unexpected token function, and add a data favicon so the browser no longer requests favicon.ico. Preserve the current UI and all other files. Then run a local inline-script syntax check and report success. Do not redesign or regenerate the prototype.",
+      "size": 71673,
+      "mime": "text/html; charset=utf-8",
+      "kind": "html",
+      "contentPath": "0001-0eb3ab92-2aa4-4a85-8bed-00fc76bf3fd5.html",
+      "promptSource": "message"
+    }
+  ]
+}

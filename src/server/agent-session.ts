@@ -62,6 +62,7 @@ import {
 } from './tools/im-bridge-tools';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 import {
+  configureNovelWorkbenchRequest,
   getNovelWorkbenchContext,
   NOVEL_WORKBENCH_MCP_ID,
   novelWorkbenchMutationDenyMessage,
@@ -1725,6 +1726,39 @@ export function isTurnInFlight(): boolean {
   return isStreamingMessage;
 }
 
+function restoreLegacyNovelWorkbenchContext(
+  messages: unknown,
+  runtime: { sessionId: string; workspace: string },
+): void {
+  if (getNovelWorkbenchContext()) return;
+
+  const serialized = JSON.stringify(messages);
+  const restoredMode = serialized.includes(
+    'mcp__novel-workbench__novel_characters_',
+  )
+    ? 'characters'
+    : serialized.includes('mcp__novel-workbench__novel_items_')
+      ? 'items'
+      : serialized.includes('mcp__novel-workbench__novel_power_')
+        ? 'powers'
+        : serialized.includes('mcp__novel-workbench__novel_world_')
+          ? 'world'
+          : null;
+  if (!restoredMode) return;
+
+  configureNovelWorkbenchRequest(
+    {
+      mode: restoredMode,
+      promptId: `novel.${restoredMode}.restore`,
+      promptVersion: '1.0.0',
+    },
+    runtime,
+  );
+  console.log(
+    `[agent] restored legacy novel-workbench context: mode=${restoredMode}, session=${runtime.sessionId}`,
+  );
+}
+
 /** 当前正在流式传输的 assistant 消息 ID（未在流式传输时返回 null） */
 export function getStreamingAssistantId(): string | null {
   if (!isStreamingMessage || !isAssistantMessagePresent()) return null;
@@ -3227,7 +3261,7 @@ export function schedulePluginDeferredRestart(): void {
 
 export function forceReloadActiveSession(reason: RestartReason = 'mcp'): void {
   if (lifecycleState.query) {
-    if (lifecycleState.processing && !lifecycleState.preWarming) {
+    if (isTurnInFlight() && !lifecycleState.preWarming) {
       console.log(`[agent] reload requested during active turn → deferring restart (reason=${reason})`);
       scheduleDeferredRestart(reason);
     } else {
@@ -7802,6 +7836,10 @@ export async function initializeAgent(
 	  const sessionData = getSessionData(initialSessionId);
 	  if (sessionData?.messages?.length) {
 	    loadTranscriptFromSessionMessages(sessionData.messages);
+	    restoreLegacyNovelWorkbenchContext(sessionData.messages, {
+	      sessionId,
+	      workspace: agentDir,
+	    });
 	    console.log(`[agent] initializeAgent: loaded ${sessionData.messages.length} existing transcriptState.messages, transcriptState.messageSequence=${transcriptState.messageSequence}`);
 	  }
   }

@@ -13,33 +13,40 @@
     ]
   },
   "task": {
-    "id": "novel-item-library-v1",
-    "title": "支持分类继承与自定义字段的小说物品库",
-    "status": "design-in-progress"
+    "id": "novel-narrative-studio-v1",
+    "title": "面向所有小说类型的叙事设计与灵感工作面",
+    "status": "prototype-reviewed"
   },
   "openDesign": {
-    "projectId": "myagents-5894",
-    "conversationId": "2371b41a-9054-43a8-806a-a1be74f3d080",
-    "runId": "70aebc14-f99c-4ef5-ac0a-476fa1f11a21",
-    "entryFile": "item-library-v1/index.html",
-    "previewUrl": null,
-    "previousRunId": "b46d96eb-cee0-4be0-a832-f5f77e414429",
-    "previousEntryFile": "setting-library-v3/index.html"
+    "projectId": "c3b32f4a-c96a-4d7f-9690-7c4fdc804f7d",
+    "conversationId": "492b6dc1-cfed-4291-ac0f-f3a2792d161d",
+    "runId": "00c1bf18-cfe3-443f-9a3d-4333e1986ab7",
+    "entryFile": "narrative-studio-v1/index.html",
+    "previewUrl": "http://127.0.0.1:4177/narrative-studio-v1/index.html",
+    "previewFiles": [
+      "previews/narrative-desktop-final.png",
+      "previews/narrative-mobile-final.png"
+    ],
+    "previousProjectId": "myagents-5894",
+    "previousRunId": "70aebc14-f99c-4ef5-ac0a-476fa1f11a21",
+    "previousEntryFile": "item-library-v1/index.html"
   },
   "relevantFiles": [
     "Novel-Design.md",
     "src/renderer/workbenches/novel/index.ts",
     "src/renderer/workbenches/novel/renderer.tsx",
-    "src/renderer/workbenches/novel/projectInitialization.ts",
-    "src/renderer/workbenches/novel/SettingLibrary.tsx",
-    "src/renderer/workbenches/novel/SettingLibraryMeta.tsx"
+    "src/renderer/workbenches/novel/repository.ts",
+    "src/renderer/workbenches/novel/itemLibrarySchema.ts",
+    "src/renderer/workbenches/novel/timelineLibrarySchema.ts",
+    "src/shared/types/thought.ts"
   ],
   "constraints": [
-    "MyAgents 是产品需求、数据模型、路由和技术架构的事实源",
-    "Open Design 是设计迭代期间设计文件的事实源",
-    "物品库是小说工作台独立一级模块，不嵌入设定库、知识库或地图",
-    "分类和字段变更必须非破坏，已有值不得静默删除",
-    "事实源使用项目内 UTF-8 Markdown 与 JSON，文件 IO 复用 WorkbenchStorage",
-    "设计产物先快照和审查，不自动覆盖 src 下产品源码"
+    "小说工作台必须面向所有小说类型，仙途概念只能来自项目配置",
+    "通用内核、创作配置包、项目规则与作者调整必须分层",
+    "计划、实际事实、素材和派生视图必须保持不同 owner",
+    "灵感已采用状态必须由 adopted-as 关系推导",
+    "配置包只能声明定义和视图，不执行项目 JavaScript 或注入 React 组件",
+    "文件 IO 复用 WorkbenchStorage，产品源码只能由 Codex 审查后修改",
+    "本轮只生成 Open Design 快照，不覆盖 src 下产品源码"
   ]
 }

@@ -74,6 +74,15 @@ export const characterRecordSchema = z
     summary: textSchema,
     identities: z.array(trimmedTextSchema),
     age: textSchema,
+    // 兼容新增当前境界前已保存的角色记录。
+    currentRealm: textSchema.default(""),
+    // 修炼属性为可选设定，旧人物记录加载时补齐为空值。
+    realmProgressNodes: z.array(trimmedTextSchema).default([]),
+    baseLifespan: textSchema.default(""),
+    lifespanLoss: textSchema.default(""),
+    spiritRoot: textSchema.default(""),
+    daoBody: textSchema.default(""),
+    cultivationMethod: textSchema.default(""),
     gender: textSchema,
     raceId: characterLibraryIdSchema.or(z.literal("")),
     soulId: characterLibraryIdSchema.or(z.literal("")),

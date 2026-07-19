@@ -75,6 +75,7 @@ import type { ItemIndexEntry } from "./itemLibrarySchema";
 type RoleWeight = "main" | "secondary" | "npc" | "extra";
 type DetailTab =
   | "profile"
+  | "cultivation"
   | "inventory"
   | "soul"
   | "arc"
@@ -117,6 +118,13 @@ interface CharacterRecord {
   summary: string;
   identities: string[];
   age: string;
+  currentRealm: string;
+  realmProgressNodes: string[];
+  baseLifespan: string;
+  lifespanLoss: string;
+  spiritRoot: string;
+  daoBody: string;
+  cultivationMethod: string;
   gender: string;
   raceId: string;
   soulId: string;
@@ -542,6 +550,13 @@ const _SAMPLE_CHARACTERS: CharacterRecord[] = [
     summary: "旧朝遗孤，以一杆残枪追查北境兵变的真相。",
     identities: ["临川镖局挂名镖师", "前玄甲军校尉"],
     age: "二十七岁",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
     gender: "男",
     raceId: "human",
     soulId: "global-strategist",
@@ -644,6 +659,13 @@ const _SAMPLE_CHARACTERS: CharacterRecord[] = [
     summary: "司夜台最年轻的主簿，把情报当作可以精确计算的债。",
     identities: ["司夜台主簿", "谢氏旁支"],
     age: "二十四岁",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
     gender: "女",
     raceId: "human",
     soulId: "truth-seeker",
@@ -728,6 +750,13 @@ const _SAMPLE_CHARACTERS: CharacterRecord[] = [
     summary: "接管北境军权的年轻统帅，坚信稳定高于迟来的公正。",
     identities: ["定北侯世子", "羽林左卫统领"],
     age: "二十九岁",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
     gender: "男",
     raceId: "human",
     soulId: "global-strategist",
@@ -812,6 +841,13 @@ const _SAMPLE_CHARACTERS: CharacterRecord[] = [
     summary: "走遍三江码头的掮客，消息真假参半，人情从不赊账。",
     identities: ["漕帮账房", "私盐线掮客"],
     age: "三十一岁",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
     gender: "男",
     raceId: "human",
     soulId: "nimble-protector",
@@ -884,6 +920,13 @@ const _SAMPLE_CHARACTERS: CharacterRecord[] = [
     summary: "玄甲军旧医官，知道兵变当夜最后一道军令。",
     identities: ["药铺掌柜", "前玄甲军医官"],
     age: "五十六岁",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
     gender: "男",
     raceId: "human",
     soulId: "northern-watch",
@@ -956,6 +999,13 @@ const _SAMPLE_CHARACTERS: CharacterRecord[] = [
     summary: "码头抄号童子，见过那口无名棺第一次被搬上船。",
     identities: ["三江码头抄号童子"],
     age: "约十三岁",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
     gender: "男",
     raceId: "human",
     soulId: "",
@@ -1495,13 +1545,6 @@ function ProfileTab({
           onChange={(identities) => onChange({ identities })}
         />
         <ReadField
-          label="年龄"
-          value={character.age}
-          editing={editing}
-          multiline={false}
-          onChange={(age) => onChange({ age })}
-        />
-        <ReadField
           label="性别"
           value={character.gender}
           editing={editing}
@@ -1627,6 +1670,156 @@ function ProfileTab({
           value={character.signatureItem}
           editing={editing}
           onChange={(signatureItem) => onChange({ signatureItem })}
+        />
+      </section>
+    </div>
+  );
+}
+
+function RealmProgressNodesField({
+  values,
+  editing,
+  onChange,
+}: {
+  readonly values: readonly string[];
+  readonly editing: boolean;
+  readonly onChange: (values: string[]) => void;
+}) {
+  const visibleValues = values.filter((value) => value.trim());
+  return (
+    <div className="grid gap-1.5 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+      <span className="pt-1 text-xs font-medium text-[var(--ink-muted)]">
+        境内过程节点
+      </span>
+      {editing ? (
+        <div className="space-y-2">
+          {values.map((value, index) => (
+            <div key={index} className="flex items-center gap-2">
+              <input
+                value={value}
+                onChange={(event) => {
+                  const next = [...values];
+                  next[index] = event.target.value;
+                  onChange(next);
+                }}
+                placeholder={
+                  index === 0 ? "例如：筑基初期 · 稳固灵台" : "继续添加过程节点"
+                }
+                className="h-9 min-w-0 flex-1 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  onChange(values.filter((_, itemIndex) => itemIndex !== index))
+                }
+                aria-label={`删除过程节点 ${index + 1}`}
+                title="删除"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--ink-subtle)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => onChange([...values, ""])}
+            className="flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-[var(--accent-warm)] hover:bg-[var(--accent-warm-subtle)]"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            添加过程节点
+          </button>
+        </div>
+      ) : visibleValues.length > 0 ? (
+        <ol className="space-y-1.5 text-sm leading-6 text-[var(--ink-secondary)]">
+          {visibleValues.map((value, index) => (
+            <li key={`${value}-${index}`} className="flex items-start gap-2">
+              <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-warm)]" />
+              <span>{value}</span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <span className="text-sm leading-6 text-[var(--ink-secondary)]">
+          未填写
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CultivationTab({
+  character,
+  editing,
+  onChange,
+}: {
+  readonly character: CharacterRecord;
+  readonly editing: boolean;
+  readonly onChange: CharacterChangeHandler;
+}) {
+  return (
+    <div className="grid min-h-0 grid-cols-2 gap-x-8 gap-y-7 px-6 py-6 max-xl:grid-cols-1">
+      <section className="space-y-4">
+        <SectionTitle icon={Sparkles}>境界与过程</SectionTitle>
+        <ReadField
+          label="当前境界"
+          value={character.currentRealm}
+          editing={editing}
+          multiline={false}
+          onChange={(currentRealm) => onChange({ currentRealm })}
+        />
+        <RealmProgressNodesField
+          values={character.realmProgressNodes}
+          editing={editing}
+          onChange={(realmProgressNodes) => onChange({ realmProgressNodes })}
+        />
+      </section>
+
+      <section className="space-y-4">
+        <SectionTitle icon={Target}>寿元</SectionTitle>
+        <ReadField
+          label="基础寿元"
+          value={character.baseLifespan}
+          editing={editing}
+          multiline={false}
+          onChange={(baseLifespan) => onChange({ baseLifespan })}
+        />
+        <ReadField
+          label="当前年龄"
+          value={character.age}
+          editing={editing}
+          multiline={false}
+          onChange={(age) => onChange({ age })}
+        />
+        <ReadField
+          label="寿元损耗"
+          value={character.lifespanLoss}
+          editing={editing}
+          multiline={false}
+          onChange={(lifespanLoss) => onChange({ lifespanLoss })}
+        />
+      </section>
+
+      <section className="col-span-2 space-y-4 max-xl:col-span-1">
+        <SectionTitle icon={Dna}>根基与传承</SectionTitle>
+        <ReadField
+          label="灵根"
+          value={character.spiritRoot}
+          editing={editing}
+          multiline={false}
+          onChange={(spiritRoot) => onChange({ spiritRoot })}
+        />
+        <ReadField
+          label="道体"
+          value={character.daoBody}
+          editing={editing}
+          multiline={false}
+          onChange={(daoBody) => onChange({ daoBody })}
+        />
+        <ReadField
+          label="功法"
+          value={character.cultivationMethod}
+          editing={editing}
+          onChange={(cultivationMethod) => onChange({ cultivationMethod })}
         />
       </section>
     </div>
@@ -4292,6 +4485,9 @@ export default function CharacterLibraryPrototype({
               identities: character.identities
                 .map((identity) => identity.trim())
                 .filter(Boolean),
+              realmProgressNodes: character.realmProgressNodes
+                .map((node) => node.trim())
+                .filter(Boolean),
             }
           : character,
       ),
@@ -4461,6 +4657,13 @@ export default function CharacterLibraryPrototype({
       summary: "",
       identities: [],
       age: "",
+      currentRealm: "",
+      realmProgressNodes: [],
+      baseLifespan: "",
+      lifespanLoss: "",
+      spiritRoot: "",
+      daoBody: "",
+      cultivationMethod: "",
       gender: "",
       raceId: races[0]?.id ?? "",
       soulId: "",
@@ -5027,6 +5230,11 @@ export default function CharacterLibraryPrototype({
                         <span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
                           {selectedCharacter.alignment}
                         </span>
+                        {selectedCharacter.currentRealm && (
+                          <span className="rounded-full bg-[var(--accent-cool)]/10 px-2 py-0.5 text-xs font-medium text-[var(--accent-cool)]">
+                            {selectedCharacter.currentRealm}
+                          </span>
+                        )}
                       </>
                     )}
                     <span className="flex items-center gap-1 text-xs text-[var(--success)]">
@@ -5156,8 +5364,9 @@ export default function CharacterLibraryPrototype({
               {(
                 [
                   ["profile", "人物卡", UserRound],
+                  ["cultivation", "修炼", Sparkles],
                   ["inventory", "物品栏", Package],
-                  ["soul", "角色灵魂", Fingerprint],
+                  ["soul", "灵魂", Fingerprint],
                   ["arc", "角色弧", GitBranch],
                   ["relations", "关系", HeartHandshake],
                   ["appearances", "出场", BookOpen],
@@ -5198,6 +5407,13 @@ export default function CharacterLibraryPrototype({
                 editing={editing}
                 onChange={updateCharacter}
                 onManageRaces={() => setRaceDialog(true)}
+              />
+            )}
+            {detailTab === "cultivation" && (
+              <CultivationTab
+                character={selectedCharacter}
+                editing={editing}
+                onChange={updateCharacter}
               />
             )}
             {detailTab === "inventory" && (

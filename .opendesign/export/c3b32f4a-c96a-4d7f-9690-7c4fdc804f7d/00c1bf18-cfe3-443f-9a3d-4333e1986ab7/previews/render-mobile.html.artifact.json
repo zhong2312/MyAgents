@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "previews/render-mobile.html",
+  "entry": "previews/render-mobile.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-19T15:10:05.660Z",
+  "updatedAt": "2026-07-19T15:10:05.660Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

@@ -92,9 +92,7 @@ interface ItemLibraryProps {
   readonly projectTitle: string;
   readonly isActive: boolean;
   readonly onAiRun?: (request: ItemAiRunRequest) => Promise<string>;
-  readonly onOpenBatchAgent?: (
-    preferredCategoryId?: string,
-  ) => Promise<void>;
+  readonly onOpenBatchAgent?: (preferredCategoryId?: string) => Promise<void>;
   readonly isBatchAgentLaunching?: boolean;
   readonly proposalReviewOpen?: boolean;
   readonly onOpenProposalReview?: () => void;
@@ -144,7 +142,9 @@ function toError(error: unknown): string {
 }
 
 function statusLabel(status: ItemStatus): string {
-  return STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
+  return (
+    STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status
+  );
 }
 
 function statusTone(status: ItemStatus): string {
@@ -178,7 +178,10 @@ function descendantCategoryIds(
   return result;
 }
 
-function isSelectableCategory(meta: ItemLibraryMeta, categoryId: string): boolean {
+function isSelectableCategory(
+  meta: ItemLibraryMeta,
+  categoryId: string,
+): boolean {
   return meta.categories.some(
     (category) => category.id === categoryId && !category.archived,
   );
@@ -188,7 +191,8 @@ function createCategoryIdForSelection(
   meta: ItemLibraryMeta,
   preferredCategoryId: string,
 ): string {
-  if (isSelectableCategory(meta, preferredCategoryId)) return preferredCategoryId;
+  if (isSelectableCategory(meta, preferredCategoryId))
+    return preferredCategoryId;
   if (isSelectableCategory(meta, UNCATEGORIZED_ITEM_CATEGORY_ID)) {
     return UNCATEGORIZED_ITEM_CATEGORY_ID;
   }
@@ -518,7 +522,8 @@ export default function ItemLibrary({
       );
     });
     return [...result].sort((left, right) => {
-      if (sort === "name-asc") return left.name.localeCompare(right.name, "zh-CN");
+      if (sort === "name-asc")
+        return left.name.localeCompare(right.name, "zh-CN");
       if (sort === "status-asc") {
         return (
           left.status.localeCompare(right.status) ||
@@ -718,9 +723,9 @@ export default function ItemLibrary({
       ? "全部物品"
       : selectedCategory === "archived"
         ? "已归档"
-        : library.meta.categories.find(
+        : (library.meta.categories.find(
             (category) => category.id === selectedCategory,
-          )?.name ?? "全部物品";
+          )?.name ?? "全部物品");
   const categoryFields = recordDraft
     ? getEffectiveCategoryFields(library.meta, recordDraft.categoryId)
     : [];
@@ -758,9 +763,7 @@ export default function ItemLibrary({
           <button
             type="button"
             onClick={() => void launchBatchAgent()}
-            disabled={
-              !onOpenBatchAgent || isBatchAgentLaunching || isSaving
-            }
+            disabled={!onOpenBatchAgent || isBatchAgentLaunching || isSaving}
             aria-label="AI 批量生产物品"
             title={
               onOpenBatchAgent
@@ -806,12 +809,14 @@ export default function ItemLibrary({
 
       <div className="flex min-h-0 flex-1">
         <aside
-          className={`z-30 flex w-56 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--paper-inset)] max-lg:absolute max-lg:inset-y-0 max-lg:left-0 max-lg:shadow-xl ${
+          className={`z-30 flex w-56 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--paper-elevated)] max-lg:absolute max-lg:inset-y-0 max-lg:left-0 max-lg:shadow-xl ${
             categoryDrawer ? "max-lg:flex" : "max-lg:hidden"
           }`}
         >
-          <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-3">
-            <span className="text-xs font-semibold text-[var(--ink-muted)]">分类</span>
+          <div className="flex h-12 items-center justify-between border-b border-[var(--line)] px-3">
+            <span className="text-xs font-semibold text-[var(--ink-muted)]">
+              分类
+            </span>
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -839,8 +844,9 @@ export default function ItemLibrary({
               icon={PackageOpen}
               label="全部物品"
               count={
-                library.index.items.filter((entry) => entry.status !== "archived")
-                  .length
+                library.index.items.filter(
+                  (entry) => entry.status !== "archived",
+                ).length
               }
               onClick={() => {
                 setSelectedCategory("all");
@@ -852,8 +858,9 @@ export default function ItemLibrary({
               icon={Archive}
               label="已归档"
               count={
-                library.index.items.filter((entry) => entry.status === "archived")
-                  .length
+                library.index.items.filter(
+                  (entry) => entry.status === "archived",
+                ).length
               }
               onClick={() => {
                 setSelectedCategory("archived");
@@ -862,25 +869,27 @@ export default function ItemLibrary({
               }}
             />
             <div className="my-2 border-t border-[var(--line-subtle)]" />
-            <CategoryTree
-              meta={library.meta}
-              parentId={null}
-              selectedId={selectedCategory}
-              expanded={expandedCategories}
-              counts={categoryCounts}
-              onToggle={(id) =>
-                setExpandedCategories((current) => {
-                  const next = new Set(current);
-                  if (next.has(id)) next.delete(id);
-                  else next.add(id);
-                  return next;
-                })
-              }
-              onSelect={(id) => {
-                setSelectedCategory(id);
-                setCategoryDrawer(false);
-              }}
-            />
+            <div role="tree">
+              <CategoryTree
+                meta={library.meta}
+                parentId={null}
+                selectedId={selectedCategory}
+                expanded={expandedCategories}
+                counts={categoryCounts}
+                onToggle={(id) =>
+                  setExpandedCategories((current) => {
+                    const next = new Set(current);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return next;
+                  })
+                }
+                onSelect={(id) => {
+                  setSelectedCategory(id);
+                  setCategoryDrawer(false);
+                }}
+              />
+            </div>
           </div>
         </aside>
 
@@ -901,7 +910,9 @@ export default function ItemLibrary({
                 >
                   <PanelLeft className="h-4 w-4" />
                 </button>
-                <h2 className="truncate text-sm font-semibold">{activeCategory}</h2>
+                <h2 className="truncate text-sm font-semibold">
+                  {activeCategory}
+                </h2>
                 <span className="text-xs text-[var(--ink-muted)]">
                   {filteredItems.length}
                 </span>
@@ -979,7 +990,8 @@ export default function ItemLibrary({
                 const category = library.meta.categories.find(
                   (candidate) => candidate.id === entry.categoryId,
                 );
-                const CategoryIcon = CATEGORY_ICONS[category?.icon ?? ""] ?? Box;
+                const CategoryIcon =
+                  CATEGORY_ICONS[category?.icon ?? ""] ?? Box;
                 return (
                   <button
                     type="button"
@@ -1011,7 +1023,9 @@ export default function ItemLibrary({
                       {entry.tags.length > 0 && (
                         <span className="mt-1.5 flex min-w-0 items-center gap-1 text-xs text-[var(--ink-subtle)]">
                           <Tag className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{entry.tags.join(" · ")}</span>
+                          <span className="truncate">
+                            {entry.tags.join(" · ")}
+                          </span>
                         </span>
                       )}
                     </span>
@@ -1030,7 +1044,9 @@ export default function ItemLibrary({
           ) : !recordDraft || !item ? (
             <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
               <PackageOpen className="h-9 w-9 text-[var(--ink-subtle)]" />
-              <p className="mt-3 text-sm text-[var(--ink-muted)]">尚未选择物品</p>
+              <p className="mt-3 text-sm text-[var(--ink-muted)]">
+                尚未选择物品
+              </p>
               <button
                 type="button"
                 onClick={() => setListDrawer(true)}
@@ -1121,7 +1137,9 @@ export default function ItemLibrary({
                     <button
                       type="button"
                       onClick={() => void saveCurrent()}
-                      disabled={!isDirty || isSaving || !recordDraft.name.trim()}
+                      disabled={
+                        !isDirty || isSaving || !recordDraft.name.trim()
+                      }
                       aria-label="保存物品"
                       title="保存"
                       className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--line)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -1166,7 +1184,10 @@ export default function ItemLibrary({
                             value={recordDraft.categoryId}
                             options={categoryOptions}
                             onChange={(categoryId) =>
-                              markRecord((record) => ({ ...record, categoryId }))
+                              markRecord((record) => ({
+                                ...record,
+                                categoryId,
+                              }))
                             }
                             ariaLabel="主分类"
                             size="toolbar"
@@ -1214,7 +1235,10 @@ export default function ItemLibrary({
                             className="item-library-input"
                           />
                         </FieldLabel>
-                        <FieldLabel label="封面路径" className="col-span-2 max-lg:col-span-1">
+                        <FieldLabel
+                          label="封面路径"
+                          className="col-span-2 max-lg:col-span-1"
+                        >
                           <input
                             value={recordDraft.coverPath ?? ""}
                             onChange={(event) =>
@@ -1227,7 +1251,10 @@ export default function ItemLibrary({
                             className="item-library-input font-mono"
                           />
                         </FieldLabel>
-                        <FieldLabel label="摘要" className="col-span-2 max-lg:col-span-1">
+                        <FieldLabel
+                          label="摘要"
+                          className="col-span-2 max-lg:col-span-1"
+                        >
                           <textarea
                             value={recordDraft.summary}
                             onChange={(event) =>
@@ -1262,12 +1289,16 @@ export default function ItemLibrary({
                                 )?.name
                               }
                               value={
-                                recordDraft.values[field.id] ?? field.defaultValue
+                                recordDraft.values[field.id] ??
+                                field.defaultValue
                               }
                               onChange={(value) =>
                                 markRecord((record) => ({
                                   ...record,
-                                  values: { ...record.values, [field.id]: value },
+                                  values: {
+                                    ...record.values,
+                                    [field.id]: value,
+                                  },
                                 }))
                               }
                             />
@@ -1284,7 +1315,8 @@ export default function ItemLibrary({
                           type="button"
                           onClick={() => {
                             const maximumOrder = recordDraft.itemFields.reduce(
-                              (maximum, field) => Math.max(maximum, field.order),
+                              (maximum, field) =>
+                                Math.max(maximum, field.order),
                               0,
                             );
                             setItemFieldEditor({
@@ -1310,7 +1342,8 @@ export default function ItemLibrary({
                               key={field.id}
                               definition={field}
                               value={
-                                recordDraft.values[field.id] ?? field.defaultValue
+                                recordDraft.values[field.id] ??
+                                field.defaultValue
                               }
                               actions={
                                 <>
@@ -1350,7 +1383,10 @@ export default function ItemLibrary({
                               onChange={(value) =>
                                 markRecord((record) => ({
                                   ...record,
-                                  values: { ...record.values, [field.id]: value },
+                                  values: {
+                                    ...record.values,
+                                    [field.id]: value,
+                                  },
                                 }))
                               }
                             />
@@ -1373,8 +1409,7 @@ export default function ItemLibrary({
                             const definition =
                               library.meta.fields.find(
                                 (field) => field.id === fieldId,
-                              ) ??
-                              itemDefinition;
+                              ) ?? itemDefinition;
                             return definition ? (
                               <DefinitionField
                                 key={fieldId}
@@ -1418,7 +1453,11 @@ export default function ItemLibrary({
                                 }
                               />
                             ) : (
-                              <FieldLabel key={fieldId} label={fieldId} hint="未知字段定义">
+                              <FieldLabel
+                                key={fieldId}
+                                label={fieldId}
+                                hint="未知字段定义"
+                              >
                                 <input
                                   value={fieldValueLabel(value)}
                                   onChange={(event) =>
@@ -1526,7 +1565,8 @@ export default function ItemLibrary({
               for (const [fieldId, value] of Object.entries(
                 aiSuggestion.values,
               )) {
-                if (selectedKeys.has(`value:${fieldId}`)) values[fieldId] = value;
+                if (selectedKeys.has(`value:${fieldId}`))
+                  values[fieldId] = value;
               }
               return {
                 ...record,
@@ -1589,7 +1629,9 @@ function LibraryErrorState({
       <div className="max-w-md text-center">
         <CircleAlert className="mx-auto h-8 w-8 text-[var(--error)]" />
         <p className="mt-3 text-sm font-medium">物品库读取失败</p>
-        <p className="mt-1 break-words text-xs text-[var(--ink-muted)]">{error}</p>
+        <p className="mt-1 break-words text-xs text-[var(--ink-muted)]">
+          {error}
+        </p>
         <button
           type="button"
           onClick={onRetry}
@@ -1619,15 +1661,21 @@ function CategoryFilterButton({
     <button
       type="button"
       onClick={onClick}
-      className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
+      className={`flex h-10 w-full items-center gap-2 rounded-md px-3 text-left transition-colors ${
         active
-          ? "bg-[var(--selected-bg)] text-[var(--ink)]"
+          ? "bg-[var(--accent-cool-subtle)] text-[var(--ink)] ring-1 ring-inset ring-[var(--accent-cool)]/30"
           : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
       }`}
     >
-      <Icon className="h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      <span className="text-xs text-[var(--ink-subtle)]">{count}</span>
+      <Icon
+        className={`h-4 w-4 shrink-0 ${active ? "text-[var(--accent-cool)]" : ""}`}
+      />
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+        {label}
+      </span>
+      <span className="shrink-0 rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)]">
+        {count} 件
+      </span>
     </button>
   );
 }
@@ -1652,50 +1700,59 @@ function CategoryTree({
   readonly onSelect: (id: string) => void;
 }) {
   const children = meta.categories
-    .filter(
-      (category) => category.parentId === parentId && !category.archived,
-    )
+    .filter((category) => category.parentId === parentId && !category.archived)
     .sort((left, right) => left.order - right.order);
   return children.map((category) => {
     const childCount = meta.categories.filter(
-      (candidate) =>
-        candidate.parentId === category.id && !candidate.archived,
+      (candidate) => candidate.parentId === category.id && !candidate.archived,
     ).length;
     const Icon = CATEGORY_ICONS[category.icon] ?? Folder;
     const isExpanded = expanded.has(category.id);
+    const selected = selectedId === category.id;
     return (
-      <div key={category.id}>
+      <div
+        key={category.id}
+        role="treeitem"
+        aria-expanded={childCount ? isExpanded : undefined}
+      >
         <div
-          style={{ paddingLeft: `${depth * 13}px` }}
-          className={`group flex h-8 items-center rounded-md pr-2 text-xs transition-colors ${
-            selectedId === category.id
-              ? "bg-[var(--selected-bg)] text-[var(--ink)]"
+          style={{ paddingLeft: `${Math.min(depth * 16 + 4, 68)}px` }}
+          className={`flex h-10 items-center gap-1 rounded-md pr-2 transition-colors ${
+            selected
+              ? "bg-[var(--accent-cool-subtle)] text-[var(--ink)] ring-1 ring-inset ring-[var(--accent-cool)]/30"
               : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
           }`}
         >
           <button
             type="button"
             onClick={() => childCount > 0 && onToggle(category.id)}
-            disabled={childCount === 0}
-            aria-label={isExpanded ? "折叠分类" : "展开分类"}
-            title={isExpanded ? "折叠" : "展开"}
-            className="flex h-7 w-6 shrink-0 items-center justify-center disabled:opacity-0"
+            aria-label={
+              isExpanded ? `收起${category.name}` : `展开${category.name}`
+            }
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded ${
+              childCount ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
           >
             {isExpanded ? (
-              <ChevronDown className="h-3 w-3" />
+              <ChevronDown className="h-3.5 w-3.5" />
             ) : (
-              <ChevronRight className="h-3 w-3" />
+              <ChevronRight className="h-3.5 w-3.5" />
             )}
           </button>
           <button
             type="button"
             onClick={() => onSelect(category.id)}
-            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+            aria-label={`${category.name} · ${counts.get(category.id) ?? 0} 件物品`}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="min-w-0 flex-1 truncate">{category.name}</span>
-            <span className="text-xs text-[var(--ink-subtle)]">
-              {counts.get(category.id) ?? 0}
+            <Icon
+              className={`h-4 w-4 shrink-0 ${selected ? "text-[var(--accent-cool)]" : ""}`}
+            />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              {category.name}
+            </span>
+            <span className="shrink-0 rounded border border-[var(--line)] bg-[var(--paper-elevated)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)]">
+              {counts.get(category.id) ?? 0} 件
             </span>
           </button>
         </div>
@@ -1878,7 +1935,9 @@ function FieldValueEditor({
       <div className="relative">
         <input
           type="number"
-          value={typeof value === "number" || typeof value === "string" ? value : ""}
+          value={
+            typeof value === "number" || typeof value === "string" ? value : ""
+          }
           onChange={(event) =>
             onChange(
               event.target.value === "" ? "" : Number(event.target.value),
@@ -1901,7 +1960,10 @@ function FieldValueEditor({
         value={stringValue}
         options={[
           { value: "", label: "未选择" },
-          ...definition.options.map((option) => ({ value: option, label: option })),
+          ...definition.options.map((option) => ({
+            value: option,
+            label: option,
+          })),
         ]}
         onChange={onChange}
         ariaLabel={definition.label}
@@ -1950,7 +2012,9 @@ function FieldValueEditor({
         onClick={() => onChange(!checked)}
         className="flex h-9 w-full items-center justify-between rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 text-xs"
       >
-        <span className={checked ? "text-[var(--ink)]" : "text-[var(--ink-muted)]"}>
+        <span
+          className={checked ? "text-[var(--ink)]" : "text-[var(--ink-muted)]"}
+        >
           {checked ? "开启" : "关闭"}
         </span>
         <span
@@ -2023,7 +2087,8 @@ function CreateItemDialog({
       header={
         <div className="flex h-12 items-center justify-between px-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
-            <PackageOpen className="h-4 w-4 text-[var(--accent-warm)]" /> 新建物品
+            <PackageOpen className="h-4 w-4 text-[var(--accent-warm)]" />{" "}
+            新建物品
           </div>
           <button
             type="button"

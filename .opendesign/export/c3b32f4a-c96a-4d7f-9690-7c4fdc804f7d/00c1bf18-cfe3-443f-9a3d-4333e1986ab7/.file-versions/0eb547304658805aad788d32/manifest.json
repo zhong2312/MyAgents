@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "fileName": "index.html",
+  "entries": [
+    {
+      "id": "6b8ec696-0ee7-4752-b668-48ec60a63678",
+      "fileName": "index.html",
+      "version": 1,
+      "label": "Version 1",
+      "createdAt": 1784474697130,
+      "source": "manual",
+      "prompt": null,
+      "size": 401,
+      "mime": "text/html; charset=utf-8",
+      "kind": "html",
+      "contentPath": "0001-6b8ec696-0ee7-4752-b668-48ec60a63678.html",
+      "promptSource": "manual"
+    }
+  ]
+}

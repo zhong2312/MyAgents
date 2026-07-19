@@ -7,7 +7,11 @@ import type {
   SessionEngineSnapshotMaterializePatch,
 } from "../session-engine/types";
 import type { InteractionScenario } from "../system-prompt";
-import { configureNovelWorkbenchRequest } from "../novel-workbench-context";
+import {
+  configureNovelWorkbenchRequest,
+  getNovelWorkbenchContext,
+} from "../novel-workbench-context";
+import { forceReloadActiveSession } from "../agent-session";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -130,13 +134,23 @@ export async function handleSessionConfigRoute(
           409,
         );
       }
-      const context = configureNovelWorkbenchRequest(
-        payload.toolset.context,
-        {
-          sessionId: activeSession.sessionId ?? "default",
-          workspace,
-        },
-      );
+      const previousContext = getNovelWorkbenchContext();
+      const context = configureNovelWorkbenchRequest(payload.toolset.context, {
+        sessionId: activeSession.sessionId ?? "default",
+        workspace,
+      });
+      const contextChanged =
+        previousContext?.mode !== context.mode ||
+        previousContext?.promptId !== context.promptId ||
+        previousContext?.promptVersion !== context.promptVersion ||
+        previousContext?.sessionId !== context.sessionId ||
+        previousContext?.workspace !== context.workspace;
+      if (contextChanged) {
+        // A resumed session may still hold historical tool names while its
+        // freshly spawned SDK process has no context-injected MCP. Rebuild it
+        // after binding the new workbench context so its real tool list agrees.
+        forceReloadActiveSession("mcp");
+      }
       return jsonResponse({
         success: true,
         toolsetId: payload.toolset.id,

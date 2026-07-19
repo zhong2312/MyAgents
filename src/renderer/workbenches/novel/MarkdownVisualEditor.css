@@ -24,6 +24,9 @@
   --accentSolidHover: var(--accent-cool);
   --accentText: var(--accent-cool);
   --accentTextContrast: var(--ink);
+  --novel-table-surface: #fff;
+  --novel-table-tools: #f3f4f6;
+  --novel-table-tools-hover: #e5e7eb;
 
   display: flex;
   min-height: 0;
@@ -143,6 +146,7 @@
   margin: 1.25rem 0;
   border-collapse: collapse;
   color: var(--ink);
+  background: var(--novel-table-surface);
 }
 
 .novel-markdown-content table:not(:has([data-tool-cell="true"])) th,
@@ -151,10 +155,11 @@
   padding: 0.5rem 0.625rem;
   text-align: left;
   vertical-align: top;
+  background: var(--novel-table-surface);
 }
 
 .novel-markdown-content table:not(:has([data-tool-cell="true"])) th {
-  background: var(--paper-inset);
+  background: var(--novel-table-surface);
   font-weight: 600;
 }
 
@@ -168,7 +173,7 @@
   border-spacing: 0;
   table-layout: fixed;
   color: var(--ink);
-  background: var(--paper-elevated);
+  background: var(--novel-table-surface);
 }
 
 .novel-markdown-content table:has([data-tool-cell="true"]) th,
@@ -180,30 +185,55 @@
   background: transparent;
 }
 
-.novel-markdown-content table:has([data-tool-cell="true"]) > tbody > tr > td:not([data-tool-cell="true"]),
-.novel-markdown-content table:has([data-tool-cell="true"]) > tbody > tr > th:not([data-tool-cell="true"]) {
+.novel-markdown-content
+  table:has([data-tool-cell="true"])
+  > tbody
+  > tr
+  > td:not([data-tool-cell="true"]),
+.novel-markdown-content
+  table:has([data-tool-cell="true"])
+  > tbody
+  > tr
+  > th:not([data-tool-cell="true"]) {
   min-height: 2.25rem;
   border: 1px solid var(--line-subtle);
   padding: 0.5rem 0.625rem;
-  background: var(--paper-elevated);
+  background: var(--novel-table-surface);
 }
 
-.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] {
+.novel-markdown-content table:has([data-tool-cell="true"]) > thead > tr > th,
+.novel-markdown-content
+  table:has([data-tool-cell="true"])
+  > tbody
+  > tr
+  > [data-tool-cell="true"],
+.novel-markdown-content table:has([data-tool-cell="true"]) > tfoot > tr > th {
   border: 0;
   padding: 0;
   color: var(--ink-muted);
-  background: var(--paper);
+  background: var(--novel-table-tools);
 }
 
-.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] button {
+.novel-markdown-content
+  table:has([data-tool-cell="true"])
+  [data-tool-cell="true"]
+  button {
   min-height: 2rem;
   color: var(--ink-muted);
+  background: transparent;
   opacity: 0.55;
 }
 
-.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] button:hover,
-.novel-markdown-content table:has([data-tool-cell="true"]) [data-tool-cell="true"] button:focus-visible {
+.novel-markdown-content
+  table:has([data-tool-cell="true"])
+  [data-tool-cell="true"]
+  button:hover,
+.novel-markdown-content
+  table:has([data-tool-cell="true"])
+  [data-tool-cell="true"]
+  button:focus-visible {
   color: var(--ink);
+  background: var(--novel-table-tools-hover);
   opacity: 1;
 }
 

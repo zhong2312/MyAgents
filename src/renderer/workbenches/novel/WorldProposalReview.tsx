@@ -24,24 +24,80 @@ import {
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import {
-  createNovelWorldProposalRepository,
-  getWorldProposalStatus,
-  type LoadedWorldProposal,
-  type LoadedWorldProposalChange,
-  type WorldProposalLoadError,
-  type WorldProposalStatus,
-} from "./worldProposalRepository";
+import { createNovelWorldProposalRepository } from "./worldProposalRepository";
 
 const DiffViewer = lazy(() => import("@/workbench-sdk/DiffViewer"));
 
-interface WorldProposalReviewProps {
+type FileProposalStatus =
+  | "pending"
+  | "partially-applied"
+  | "applied"
+  | "rejected";
+
+interface FileProposalChange {
+  readonly id: string;
+  readonly targetPath: string;
+  readonly operation: "create" | "modify";
+  readonly summary: string;
+  readonly status: "pending" | "applied" | "rejected";
+  readonly beforeContent: string;
+  readonly afterContent: string;
+  readonly conflict: boolean;
+  readonly loadError: string | null;
+  readonly inferred?: boolean;
+}
+
+interface FileProposal {
+  readonly manifest: {
+    readonly proposalId: string;
+    readonly title: string;
+    readonly description: string;
+    readonly createdAt: string;
+    readonly changes: readonly {
+      readonly status: FileProposalChange["status"];
+    }[];
+  };
+  readonly changes: readonly FileProposalChange[];
+}
+
+interface FileProposalLoadError {
+  readonly proposalId: string;
+  readonly message: string;
+}
+
+export interface FileProposalRepository {
+  list(): Promise<{
+    readonly proposals: readonly FileProposal[];
+    readonly errors: readonly FileProposalLoadError[];
+  }>;
+  deleteProposals(proposalIds: readonly string[]): Promise<void>;
+  apply(
+    proposalId: string,
+    changeIds: readonly string[],
+    projectTitle: string,
+  ): Promise<FileProposal>;
+  reject(
+    proposalId: string,
+    changeIds: readonly string[],
+  ): Promise<FileProposal>;
+  delete(
+    proposalId: string,
+    changeIds: readonly string[],
+  ): Promise<FileProposal | null>;
+}
+
+export interface WorldProposalReviewProps {
   readonly storage: WorkbenchStorage;
   readonly projectTitle: string;
   readonly onClose: () => void;
+  readonly repositoryFactory?: (
+    storage: WorkbenchStorage,
+  ) => FileProposalRepository;
+  readonly reviewTitle?: string;
+  readonly proposalSubject?: string;
 }
 
-const STATUS_LABELS: Record<WorldProposalStatus, string> = {
+const STATUS_LABELS: Record<FileProposalStatus, string> = {
   pending: "待审阅",
   "partially-applied": "部分应用",
   applied: "已应用",
@@ -55,9 +111,9 @@ function languageForPath(path: string): string {
 }
 
 function replaceProposal(
-  proposals: readonly LoadedWorldProposal[],
-  next: LoadedWorldProposal,
-): readonly LoadedWorldProposal[] {
+  proposals: readonly FileProposal[],
+  next: FileProposal,
+): readonly FileProposal[] {
   return proposals.map((proposal) =>
     proposal.manifest.proposalId === next.manifest.proposalId ? next : proposal,
   );
@@ -67,11 +123,19 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function ChangeStatus({
-  change,
-}: {
-  readonly change: LoadedWorldProposalChange;
-}) {
+function getFileProposalStatus(
+  proposal: Pick<FileProposal, "manifest">,
+): FileProposalStatus {
+  const statuses = proposal.manifest.changes.map((change) => change.status);
+  if (statuses.every((status) => status === "applied")) return "applied";
+  if (statuses.every((status) => status === "rejected")) return "rejected";
+  if (statuses.some((status) => status === "applied")) {
+    return "partially-applied";
+  }
+  return "pending";
+}
+
+function ChangeStatus({ change }: { readonly change: FileProposalChange }) {
   if (change.loadError) {
     return <span className="text-[var(--error)]">快照缺失</span>;
   }
@@ -91,14 +155,15 @@ export default function WorldProposalReview({
   storage,
   projectTitle,
   onClose,
+  repositoryFactory = createNovelWorldProposalRepository,
+  reviewTitle = "世界架构提案",
+  proposalSubject = "世界架构",
 }: WorldProposalReviewProps) {
   const repository = useMemo(
-    () => createNovelWorldProposalRepository(storage),
-    [storage],
+    () => repositoryFactory(storage),
+    [repositoryFactory, storage],
   );
-  const [proposals, setProposals] = useState<readonly LoadedWorldProposal[]>(
-    [],
-  );
+  const [proposals, setProposals] = useState<readonly FileProposal[]>([]);
   const [selectedProposalId, setSelectedProposalId] = useState("");
   const [selectedProposalIds, setSelectedProposalIds] = useState<
     ReadonlySet<string>
@@ -108,7 +173,7 @@ export default function WorldProposalReview({
     () => new Set(),
   );
   const [proposalErrors, setProposalErrors] = useState<
-    readonly WorldProposalLoadError[]
+    readonly FileProposalLoadError[]
   >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [action, setAction] = useState<
@@ -224,7 +289,7 @@ export default function WorldProposalReview({
     pendingChangeIds.length > 0 &&
     pendingChangeIds.every((id) => selectedIds.has(id));
 
-  const toggleChange = (change: LoadedWorldProposalChange) => {
+  const toggleChange = (change: FileProposalChange) => {
     if (change.status !== "pending") return;
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -350,7 +415,7 @@ export default function WorldProposalReview({
   return (
     <>
       <ProposalReviewSurface
-        title="世界架构提案"
+        title={reviewTitle}
         subtitle={`${projectTitle} · ${proposals.length} 份提案`}
         sideBySide={sideBySide}
         isRefreshing={isLoading}
@@ -366,7 +431,7 @@ export default function WorldProposalReview({
         ) : !selectedProposal && proposalErrors.length === 0 ? (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center text-[var(--ink-muted)]">
             <GitCompareArrows className="h-7 w-7" />
-            <p className="mt-3 text-sm">暂无世界架构提案</p>
+            <p className="mt-3 text-sm">暂无{proposalSubject}提案</p>
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 max-md:flex-col">
@@ -407,7 +472,7 @@ export default function WorldProposalReview({
                     const active =
                       proposal.manifest.proposalId ===
                       selectedProposal?.manifest.proposalId;
-                    const status = getWorldProposalStatus(proposal);
+                    const status = getFileProposalStatus(proposal);
                     return (
                       <div
                         key={proposal.manifest.proposalId}
