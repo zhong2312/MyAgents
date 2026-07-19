@@ -22,6 +22,16 @@ export interface WorkbenchAgentToolsetRequest {
 }
 
 /**
+ * A project-owned model override selected by a workbench. The host remains
+ * responsible for verifying the provider, credentials and model membership
+ * immediately before execution.
+ */
+export interface WorkbenchModelSelection {
+  readonly providerId: string;
+  readonly model: string;
+}
+
+/**
  * A workbench-owned request to open a full MyAgents conversation.
  *
  * The workbench supplies domain context only. Provider selection, permissions,
@@ -54,6 +64,8 @@ export interface WorkbenchAgentSessionRequest {
   readonly forceNew?: boolean;
   /** Business tools injected by the host for this controlled conversation. */
   readonly toolset?: WorkbenchAgentToolsetRequest;
+  /** Optional project-scoped model override for this AI scene. */
+  readonly modelSelection?: WorkbenchModelSelection;
 }
 
 export const WORKBENCH_AI_RUN_REQUEST_VERSION = 1 as const;
@@ -63,6 +75,8 @@ export interface WorkbenchAiRunRequest {
   readonly label: string;
   readonly prompt: string;
   readonly systemPrompt?: string;
+  /** Optional project-scoped model override for this AI scene. */
+  readonly modelSelection?: WorkbenchModelSelection;
 }
 
 export interface WorkbenchAiRunResult {

@@ -1,0 +1,281 @@
+import type { WorkbenchStorage } from "@/workbench-sdk";
+
+import {
+  characterProposalManifestPath,
+  CHARACTER_PROPOSALS_DIRECTORY,
+  parseCharacterProposalManifest,
+  serializeCharacterProposalManifest,
+  type CharacterProposalManifest,
+  type CharacterProposalOperation,
+} from "./characterProposalSchema";
+import {
+  createNovelCharacterLibraryRepository,
+  type LoadedCharacterLibrary,
+} from "./characterLibraryRepository";
+import {
+  parseCharacterLibraryIndex,
+  parseCharacterLibraryMeta,
+  serializeCharacterLibraryFile,
+  type CharacterGroupDefinition,
+  type CharacterRecord,
+  type CharacterSoulDefinition,
+  type RaceDefinition,
+} from "./characterLibrarySchema";
+
+export interface LoadedCharacterProposal {
+  readonly manifest: CharacterProposalManifest;
+  readonly manifestPath: string;
+  readonly manifestContent: string;
+}
+
+export interface CharacterProposalLoadError {
+  readonly proposalId: string;
+  readonly message: string;
+}
+
+export interface CharacterProposalListResult {
+  readonly proposals: readonly LoadedCharacterProposal[];
+  readonly errors: readonly CharacterProposalLoadError[];
+}
+
+export interface NovelCharacterProposalRepository {
+  list(): Promise<CharacterProposalListResult>;
+  apply(
+    proposalId: string,
+    candidateIds: readonly string[],
+  ): Promise<LoadedCharacterProposal>;
+  reject(
+    proposalId: string,
+    candidateIds: readonly string[],
+  ): Promise<LoadedCharacterProposal>;
+  deleteProposals(proposalIds: readonly string[]): Promise<void>;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function parseMeta(value: unknown): LoadedCharacterLibrary["meta"] {
+  return parseCharacterLibraryMeta(serializeCharacterLibraryFile(value));
+}
+
+function parseIndex(value: unknown): LoadedCharacterLibrary["index"] {
+  return parseCharacterLibraryIndex(serializeCharacterLibraryFile(value));
+}
+
+function applyDefinition<T extends { id: string }>(
+  current: readonly T[],
+  operation: CharacterProposalOperation,
+): T[] {
+  const value = operation.value as unknown as T;
+  if (operation.action === "create") {
+    if (current.some((entry) => entry.id === value.id)) {
+      throw new Error(`候选要创建的 id 已存在：${value.id}`);
+    }
+    return [...current, value];
+  }
+  const targetId = operation.targetId;
+  if (!targetId) throw new Error("更新候选缺少 targetId");
+  let found = false;
+  const next = current.map((entry) => {
+    if (entry.id !== targetId) return entry;
+    found = true;
+    return { ...entry, ...value, id: targetId };
+  });
+  if (!found) throw new Error(`候选要更新的 id 不存在：${targetId}`);
+  return next;
+}
+
+function buildCandidateLibrary(
+  library: LoadedCharacterLibrary,
+  operations: readonly CharacterProposalOperation[],
+): {
+  readonly meta: LoadedCharacterLibrary["meta"];
+  readonly index: LoadedCharacterLibrary["index"];
+  readonly hasMetaChanges: boolean;
+  readonly hasCharacterChanges: boolean;
+} {
+  let races: readonly RaceDefinition[] = library.meta.races;
+  let groups: readonly CharacterGroupDefinition[] = library.meta.groups;
+  let souls: readonly CharacterSoulDefinition[] = library.meta.souls;
+  let characters: readonly CharacterRecord[] = library.index.characters;
+  let hasMetaChanges = false;
+  let hasCharacterChanges = false;
+
+  for (const operation of operations) {
+    if (operation.kind === "race") {
+      races = applyDefinition(races, operation);
+      hasMetaChanges = true;
+    } else if (operation.kind === "group") {
+      groups = applyDefinition(groups, operation);
+      hasMetaChanges = true;
+    } else if (operation.kind === "soul") {
+      souls = applyDefinition(souls, operation);
+      hasMetaChanges = true;
+    } else {
+      characters = applyDefinition(characters, operation);
+      hasCharacterChanges = true;
+    }
+  }
+
+  const meta = parseMeta({ ...library.meta, races, groups, souls });
+  const index = parseIndex({ ...library.index, characters });
+  return { meta, index, hasMetaChanges, hasCharacterChanges };
+}
+
+function updateOperations(
+  manifest: CharacterProposalManifest,
+  candidateIds: ReadonlySet<string>,
+  status: "applied" | "rejected",
+): CharacterProposalManifest {
+  return {
+    ...manifest,
+    operations: manifest.operations.map((operation) =>
+      candidateIds.has(operation.candidateId)
+        ? { ...operation, status }
+        : operation,
+    ),
+  };
+}
+
+async function writeManifest(
+  storage: WorkbenchStorage,
+  proposal: LoadedCharacterProposal,
+  manifest: CharacterProposalManifest,
+): Promise<LoadedCharacterProposal> {
+  const content = serializeCharacterProposalManifest(manifest);
+  const file = await storage.writeText(proposal.manifestPath, content, {
+    expectedContent: proposal.manifestContent,
+  });
+  return {
+    manifest: parseCharacterProposalManifest(
+      proposal.manifestPath,
+      file.content,
+    ),
+    manifestPath: proposal.manifestPath,
+    manifestContent: file.content,
+  };
+}
+
+export function createNovelCharacterProposalRepository(
+  storage: WorkbenchStorage,
+): NovelCharacterProposalRepository {
+  const characterRepository = createNovelCharacterLibraryRepository(storage);
+
+  const load = async (proposalId: string): Promise<LoadedCharacterProposal> => {
+    const manifestPath = characterProposalManifestPath(proposalId);
+    const file = await storage.readText(manifestPath);
+    const manifest = parseCharacterProposalManifest(manifestPath, file.content);
+    if (manifest.proposalId !== proposalId) {
+      throw new Error("角色提案目录与 proposalId 不一致");
+    }
+    return { manifest, manifestPath, manifestContent: file.content };
+  };
+
+  return {
+    async list() {
+      const [info] = await storage.stat([CHARACTER_PROPOSALS_DIRECTORY]);
+      if (!info?.exists) return { proposals: [], errors: [] };
+      if (info.kind !== "directory") throw new Error("角色提案路径不是目录");
+      const entries = await storage.list(CHARACTER_PROPOSALS_DIRECTORY);
+      const proposals: LoadedCharacterProposal[] = [];
+      const errors: CharacterProposalLoadError[] = [];
+      for (const entry of entries) {
+        if (entry.kind !== "directory") continue;
+        try {
+          proposals.push(await load(entry.name));
+        } catch (error) {
+          errors.push({ proposalId: entry.name, message: errorMessage(error) });
+        }
+      }
+      proposals.sort((left, right) =>
+        right.manifest.createdAt.localeCompare(left.manifest.createdAt),
+      );
+      return { proposals, errors };
+    },
+
+    async apply(proposalId, candidateIds) {
+      const proposal = await load(proposalId);
+      const selectedIds = new Set(candidateIds);
+      const operations = proposal.manifest.operations.filter(
+        (operation) =>
+          operation.status === "pending" &&
+          selectedIds.has(operation.candidateId),
+      );
+      if (operations.length === 0) throw new Error("没有可采纳的角色候选");
+
+      const library = await characterRepository.load();
+      const candidate = buildCandidateLibrary(library, operations);
+      let saved = library;
+      let metaSaved = false;
+      let charactersSaved = false;
+      try {
+        if (candidate.hasMetaChanges) {
+          saved = await characterRepository.saveMeta(saved, candidate.meta);
+          metaSaved = true;
+        }
+        if (candidate.hasCharacterChanges) {
+          saved = await characterRepository.saveCharacters(
+            saved,
+            candidate.index.characters,
+          );
+          charactersSaved = true;
+        }
+        return await writeManifest(
+          storage,
+          proposal,
+          updateOperations(
+            proposal.manifest,
+            new Set(operations.map((operation) => operation.candidateId)),
+            "applied",
+          ),
+        );
+      } catch (error) {
+        try {
+          if (charactersSaved) {
+            saved = await characterRepository.saveCharacters(
+              saved,
+              library.index.characters,
+            );
+          }
+          if (metaSaved) {
+            await characterRepository.saveMeta(saved, library.meta);
+          }
+        } catch (rollbackError) {
+          throw new Error(
+            `角色提案采纳失败，且人物库回滚失败：${errorMessage(error)}；${errorMessage(rollbackError)}`,
+          );
+        }
+        throw error;
+      }
+    },
+
+    async reject(proposalId, candidateIds) {
+      const proposal = await load(proposalId);
+      const selectedIds = new Set(candidateIds);
+      const pendingIds = new Set(
+        proposal.manifest.operations
+          .filter(
+            (operation) =>
+              operation.status === "pending" &&
+              selectedIds.has(operation.candidateId),
+          )
+          .map((operation) => operation.candidateId),
+      );
+      if (pendingIds.size === 0) throw new Error("没有可拒绝的角色候选");
+      return writeManifest(
+        storage,
+        proposal,
+        updateOperations(proposal.manifest, pendingIds, "rejected"),
+      );
+    },
+
+    async deleteProposals(proposalIds) {
+      for (const proposalId of new Set(proposalIds)) {
+        await storage.remove(`${CHARACTER_PROPOSALS_DIRECTORY}/${proposalId}`, {
+          permanent: true,
+        });
+      }
+    },
+  };
+}

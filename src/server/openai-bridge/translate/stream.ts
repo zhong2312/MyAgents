@@ -1,10 +1,30 @@
 // StreamTranslator: OpenAI stream chunks → Anthropic SSE events (state machine)
 
-import type { AnthropicStreamEvent, AnthropicResponse, AnthropicStopReason } from '../types/anthropic';
-import type { OpenAIStreamChunk, OpenAIStreamToolCall } from '../types/openai';
-import { translateStopReason } from './response';
-import { generateMessageId, generateToolUseId } from '../utils/id';
-import { emptyUsage, mergeUsage, toAnthropicUsage, type UsageSnapshot } from './usage';
+import type {
+  AnthropicStreamEvent,
+  AnthropicResponse,
+  AnthropicStopReason,
+} from "../types/anthropic";
+import type {
+  OpenAIStreamChunk,
+  OpenAIStreamToolCall,
+  OpenAIToolCall,
+} from "../types/openai";
+import { translateStopReason } from "./response";
+import { generateMessageId, generateToolUseId } from "../utils/id";
+import {
+  emptyUsage,
+  mergeUsage,
+  toAnthropicUsage,
+  type UsageSnapshot,
+} from "./usage";
+import {
+  DSML_PARSE_ERROR_TEXT,
+  excludeEquivalentToolCalls,
+  isDsmlToolCallsStart,
+  isPossibleDsmlToolCallsStart,
+  parseDsmlToolCalls,
+} from "./dsml";
 
 interface ToolCallBuffer {
   id: string;
@@ -16,13 +36,16 @@ export class StreamTranslator {
   private messageId: string;
   private requestModel: string;
   private contentIndex = 0;
-  private activeBlockType: 'text' | 'thinking' | 'tool_use' | null = null;
+  private activeBlockType: "text" | "thinking" | "tool_use" | null = null;
   private toolCallBuffers = new Map<number, ToolCallBuffer>();
   private usage: UsageSnapshot = emptyUsage();
   private hasEmittedStart = false;
   private hasFinished = false;
   private stopReason: AnthropicStopReason | null = null;
   private translateReasoning: boolean;
+  private contentMode: "pending" | "text" | "dsml" = "pending";
+  private bufferedContent = "";
+  private hasStandardToolCalls = false;
 
   constructor(requestModel: string, translateReasoning = true) {
     this.messageId = generateMessageId();
@@ -55,38 +78,25 @@ export class StreamTranslator {
 
     // Handle reasoning_content (thinking)
     if (this.translateReasoning && delta.reasoning_content) {
-      if (this.activeBlockType !== 'thinking') {
+      if (this.activeBlockType !== "thinking") {
         this.closeActiveBlock(events);
-        this.activeBlockType = 'thinking';
+        this.activeBlockType = "thinking";
         events.push({
-          type: 'content_block_start',
+          type: "content_block_start",
           index: this.contentIndex,
-          content_block: { type: 'thinking', thinking: '', signature: '' },
+          content_block: { type: "thinking", thinking: "", signature: "" },
         });
       }
       events.push({
-        type: 'content_block_delta',
+        type: "content_block_delta",
         index: this.contentIndex,
-        delta: { type: 'thinking_delta', thinking: delta.reasoning_content },
+        delta: { type: "thinking_delta", thinking: delta.reasoning_content },
       });
     }
 
     // Handle text content
     if (delta.content) {
-      if (this.activeBlockType !== 'text') {
-        this.closeActiveBlock(events);
-        this.activeBlockType = 'text';
-        events.push({
-          type: 'content_block_start',
-          index: this.contentIndex,
-          content_block: { type: 'text', text: '' },
-        });
-      }
-      events.push({
-        type: 'content_block_delta',
-        index: this.contentIndex,
-        delta: { type: 'text_delta', text: delta.content },
-      });
+      this.handleContentDelta(delta.content, events);
     }
 
     // Handle tool calls
@@ -113,26 +123,30 @@ export class StreamTranslator {
     return events;
   }
 
-  private handleToolCallDelta(tc: OpenAIStreamToolCall, events: AnthropicStreamEvent[]): void {
+  private handleToolCallDelta(
+    tc: OpenAIStreamToolCall,
+    events: AnthropicStreamEvent[],
+  ): void {
+    this.hasStandardToolCalls = true;
     const idx = tc.index;
 
     if (!this.toolCallBuffers.has(idx)) {
       // New tool call — close previous block, start new tool_use
       this.closeActiveBlock(events);
-      this.activeBlockType = 'tool_use';
+      this.activeBlockType = "tool_use";
 
       const id = tc.id || generateToolUseId();
-      const name = tc.function?.name || '';
-      this.toolCallBuffers.set(idx, { id, name, args: '' });
+      const name = tc.function?.name || "";
+      this.toolCallBuffers.set(idx, { id, name, args: "" });
 
       // IMPORTANT: thought_signature is intentionally NOT included on content_block_start.
       // The SDK stores these events in its session transcript and replays them on resume.
       // Including non-standard fields causes API rejection ("Extra inputs are not permitted").
       // The bridge handler caches thought_signatures separately. See: #68
       events.push({
-        type: 'content_block_start',
+        type: "content_block_start",
         index: this.contentIndex,
-        content_block: { type: 'tool_use', id, name, input: {} },
+        content_block: { type: "tool_use", id, name, input: {} },
       });
     }
 
@@ -141,9 +155,12 @@ export class StreamTranslator {
     if (tc.function?.arguments) {
       buffer.args += tc.function.arguments;
       events.push({
-        type: 'content_block_delta',
+        type: "content_block_delta",
         index: this.contentIndex,
-        delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
+        delta: {
+          type: "input_json_delta",
+          partial_json: tc.function.arguments,
+        },
       });
     }
   }
@@ -161,37 +178,159 @@ export class StreamTranslator {
     if (this.hasFinished || !this.hasEmittedStart) return [];
 
     const events: AnthropicStreamEvent[] = [];
+    this.flushBufferedContent(events);
     this.closeActiveBlock(events);
     this.hasFinished = true;
 
     events.push({
-      type: 'message_delta',
-      delta: { stop_reason: this.stopReason ?? 'end_turn', stop_sequence: null },
+      type: "message_delta",
+      delta: {
+        stop_reason: this.stopReason ?? "end_turn",
+        stop_sequence: null,
+      },
       usage: toAnthropicUsage(this.usage),
     });
-    events.push({ type: 'message_stop' });
+    events.push({ type: "message_stop" });
     return events;
   }
 
   private closeActiveBlock(events: AnthropicStreamEvent[]): void {
     if (this.activeBlockType !== null) {
-      events.push({ type: 'content_block_stop', index: this.contentIndex });
+      events.push({ type: "content_block_stop", index: this.contentIndex });
       this.contentIndex++;
       this.activeBlockType = null;
+    }
+  }
+
+  private handleContentDelta(
+    text: string,
+    events: AnthropicStreamEvent[],
+  ): void {
+    const incomingCandidate = text.trimStart();
+    if (this.contentMode !== "dsml") {
+      if (isPossibleDsmlToolCallsStart(incomingCandidate)) {
+        this.bufferedContent = text;
+        this.contentMode = "dsml";
+        return;
+      }
+      if (this.contentMode === "pending" && this.bufferedContent) {
+        const buffered = this.bufferedContent + text;
+        this.bufferedContent = "";
+        this.contentMode = "text";
+        this.emitTextDelta(buffered, events);
+        return;
+      }
+      this.contentMode = "text";
+      this.emitTextDelta(text, events);
+      return;
+    }
+
+    const bufferedCandidate = this.bufferedContent.trimStart();
+    if (isDsmlToolCallsStart(incomingCandidate)) {
+      // Some OpenAI-compatible providers stream the complete accumulated DSML
+      // snapshot in every delta instead of emitting only the new suffix. Keep
+      // the newest/longest snapshot; concatenating them corrupts the protocol
+      // into recursively repeated tool_calls blocks.
+      if (
+        !isDsmlToolCallsStart(bufferedCandidate) ||
+        incomingCandidate.length >= bufferedCandidate.length
+      ) {
+        this.bufferedContent = text;
+      }
+    } else {
+      this.bufferedContent += text;
+    }
+  }
+
+  private emitTextDelta(text: string, events: AnthropicStreamEvent[]): void {
+    if (!text) return;
+    if (this.activeBlockType !== "text") {
+      this.closeActiveBlock(events);
+      this.activeBlockType = "text";
+      events.push({
+        type: "content_block_start",
+        index: this.contentIndex,
+        content_block: { type: "text", text: "" },
+      });
+    }
+    events.push({
+      type: "content_block_delta",
+      index: this.contentIndex,
+      delta: { type: "text_delta", text },
+    });
+  }
+
+  private flushBufferedContent(events: AnthropicStreamEvent[]): void {
+    if (!this.bufferedContent) return;
+    const buffered = this.bufferedContent;
+    this.bufferedContent = "";
+    this.contentMode = "text";
+
+    const parsed = parseDsmlToolCalls(buffered);
+    if (parsed.kind === "not-dsml") {
+      this.emitTextDelta(buffered, events);
+      return;
+    }
+    if (parsed.kind === "malformed") {
+      console.warn(
+        "[bridge] Failed to parse streamed DSML tool calls:",
+        parsed.error,
+      );
+      this.emitTextDelta(DSML_PARSE_ERROR_TEXT, events);
+      if (!this.hasStandardToolCalls) this.stopReason = "end_turn";
+      return;
+    }
+    const standardToolCalls: OpenAIToolCall[] = [
+      ...this.toolCallBuffers.values(),
+    ].map((toolCall) => ({
+      id: toolCall.id,
+      type: "function",
+      function: { name: toolCall.name, arguments: toolCall.args },
+    }));
+    const dsmlToolCalls = excludeEquivalentToolCalls(
+      parsed.toolCalls,
+      standardToolCalls,
+    );
+    for (const toolCall of dsmlToolCalls) {
+      this.closeActiveBlock(events);
+      this.activeBlockType = "tool_use";
+      const id = toolCall.id || generateToolUseId();
+      events.push({
+        type: "content_block_start",
+        index: this.contentIndex,
+        content_block: {
+          type: "tool_use",
+          id,
+          name: toolCall.function.name,
+          input: {},
+        },
+      });
+      events.push({
+        type: "content_block_delta",
+        index: this.contentIndex,
+        delta: {
+          type: "input_json_delta",
+          partial_json: toolCall.function.arguments,
+        },
+      });
+      this.closeActiveBlock(events);
+    }
+    if (dsmlToolCalls.length > 0 || this.hasStandardToolCalls) {
+      this.stopReason = "tool_use";
     }
   }
 
   private makeMessageStart(): AnthropicStreamEvent {
     const message: AnthropicResponse = {
       id: this.messageId,
-      type: 'message',
-      role: 'assistant',
+      type: "message",
+      role: "assistant",
       content: [],
       model: this.requestModel,
       stop_reason: null,
       stop_sequence: null,
       usage: toAnthropicUsage(this.usage),
     };
-    return { type: 'message_start', message };
+    return { type: "message_start", message };
   }
 }

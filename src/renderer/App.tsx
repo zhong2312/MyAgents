@@ -101,7 +101,12 @@ const WorkbenchShell = lazy(() => import("@/workbench-sdk/WorkbenchShell"));
 /** Layout-compatible Suspense fallback for a lazy page chunk — same paper fill
  *  as the deferred-mount placeholder, so a chunk-load is never a jarring blank. */
 const PAGE_FALLBACK = <div className="h-full w-full bg-[var(--paper)]" />;
-import { isProjectVisibleToUser, type Project } from "@/config/types";
+import {
+  isProjectVisibleToUser,
+  type Project,
+  type Provider,
+  type ProviderVerifyStatus,
+} from "@/config/types";
 import {
   type Tab,
   type InitialMessage,
@@ -120,6 +125,7 @@ import type {
   WorkbenchAiRunRequest,
   WorkbenchAiRunResult,
   WorkbenchAgentSessionRequest,
+  WorkbenchModelSelection,
 } from "../shared/workbench-sdk";
 import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION } from "../shared/workbench-sdk";
 import { dispatchWorkbenchHostAction } from "@/workbench-sdk";
@@ -322,6 +328,29 @@ function resolveInitialPermissionMode(args: {
 function normalizeStringSetting(value: unknown): string | undefined {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed || undefined;
+}
+
+function resolveWorkbenchModelSelection(
+  override: WorkbenchModelSelection | undefined,
+  providers: readonly Provider[],
+  apiKeys: Record<string, string>,
+  verifyStatus: Record<string, ProviderVerifyStatus>,
+): { provider: Provider; model: string } | undefined {
+  if (!override) return undefined;
+  const provider = providers.find(
+    (candidate) => candidate.id === override.providerId,
+  );
+  if (!provider || !isProviderAvailable(provider, apiKeys, verifyStatus)) {
+    throw new Error(
+      "场景绑定的供应商当前不可用，请前往“设置 / 模型场景”重新选择",
+    );
+  }
+  if (!provider.models.some((candidate) => candidate.model === override.model)) {
+    throw new Error(
+      "场景绑定的模型当前不可用，请前往“设置 / 模型场景”重新选择",
+    );
+  }
+  return { provider, model: override.model };
 }
 
 function cloneStringArray(value: string[] | undefined): string[] | undefined {
@@ -4535,13 +4564,20 @@ export default function App() {
       if (effectiveRuntime !== "builtin") {
         throw new Error("工作台一次性 AI 生成当前仅支持 MyAgents 内置运行时");
       }
-      const selection = resolveBuiltinSelection(
-        { agent: workspaceAgent, workspace: project },
-        currentConfig,
-        appProvidersRef.current,
-        appApiKeysRef.current,
-        appProviderVerifyStatusRef.current,
-      );
+      const selection =
+        resolveWorkbenchModelSelection(
+          request.modelSelection,
+          appProvidersRef.current,
+          appApiKeysRef.current,
+          appProviderVerifyStatusRef.current,
+        ) ??
+        resolveBuiltinSelection(
+          { agent: workspaceAgent, workspace: project },
+          currentConfig,
+          appProvidersRef.current,
+          appApiKeysRef.current,
+          appProviderVerifyStatusRef.current,
+        );
       if (!selection) {
         throw new Error(
           "当前没有可用的模型服务，请先配置 API Key 或登录订阅账号",
@@ -4604,6 +4640,9 @@ export default function App() {
         initialMessage: request.initialMessage,
         ...(request.promptId ? { promptId: request.promptId } : {}),
         ...(historyGroupPath ? { historyGroupPath } : {}),
+        ...(request.modelSelection
+          ? { modelSelection: request.modelSelection }
+          : {}),
       };
 
       const matchesConversation = (tab: Tab): boolean =>
@@ -4782,6 +4821,15 @@ export default function App() {
           "受控工作台工具当前仅支持 MyAgents 内置运行时，请先切换该项目的运行时",
         );
       }
+      if (request.modelSelection && effectiveRuntime !== "builtin") {
+        throw new Error("场景模型绑定当前仅支持 MyAgents 内置运行时");
+      }
+      const sceneModelSelection = resolveWorkbenchModelSelection(
+        request.modelSelection,
+        appProvidersRef.current,
+        appApiKeysRef.current,
+        appProviderVerifyStatusRef.current,
+      );
       let initialMessage: InitialMessage | undefined;
       if (!resumeSession) {
         initialMessage = { text: request.initialMessage };
@@ -4790,13 +4838,15 @@ export default function App() {
         }
 
         if (effectiveRuntime === "builtin") {
-          const selection = resolveBuiltinSelection(
-            { agent: workspaceAgent, workspace: project },
-            currentConfig,
-            appProvidersRef.current,
-            appApiKeysRef.current,
-            appProviderVerifyStatusRef.current,
-          );
+          const selection =
+            sceneModelSelection ??
+            resolveBuiltinSelection(
+              { agent: workspaceAgent, workspace: project },
+              currentConfig,
+              appProvidersRef.current,
+              appApiKeysRef.current,
+              appProviderVerifyStatusRef.current,
+            );
           if (!selection) {
             throw new Error(
               "当前没有可用的模型服务，请先配置 API Key 或登录订阅账号",
@@ -5660,6 +5710,9 @@ export default function App() {
         ...(surface.bootstrap.historyGroupPath
           ? { historyGroupPath: surface.bootstrap.historyGroupPath }
           : {}),
+        ...(surface.bootstrap.modelSelection
+          ? { modelSelection: surface.bootstrap.modelSelection }
+          : {}),
         ...(surface.toolset ? { toolset: surface.toolset } : {}),
       };
 
@@ -5700,7 +5753,12 @@ export default function App() {
         dispatchWorkbenchHostAction({
           workbenchId: surface.workbenchId,
           workspacePath: surface.workspacePath,
-          action: "open-proposal-review",
+          action:
+            surface.toolset?.context?.mode === "items"
+              ? "open-item-proposal-review"
+              : surface.toolset?.context?.mode === "characters"
+                ? "open-character-proposal-review"
+                : "open-proposal-review",
         });
       }, 0);
     },

@@ -4,7 +4,6 @@ import {
   BookMarked,
   Check,
   ChevronRight,
-  Clock3,
   FileText,
   GitCompareArrows,
   Hash,
@@ -29,12 +28,16 @@ import {
 
 import {
   subscribeWorkbenchHostAction,
-  WorkbenchHeaderActions,
   WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+  WORKBENCH_AI_RUN_REQUEST_VERSION,
   type WorkbenchRendererProps,
 } from "@/workbench-sdk";
 
 import type { NovelChapterStatus, NovelMetadata } from "./projectSchema";
+import CharacterLibraryPrototype, {
+  type CharacterAiTarget,
+} from "./CharacterLibraryPrototype";
+import NovelModelScenarioSettings from "./NovelModelScenarioSettings";
 import PromptManager from "./PromptManager";
 import { createNovelPromptLibraryRepository } from "./promptLibraryRepository";
 import {
@@ -44,7 +47,10 @@ import {
 } from "./promptLibraryResolver";
 import type { LoadedNovelChapter, LoadedNovelProject } from "./repository";
 import SettingLibrary from "./SettingLibrary";
+import ItemLibrary from "./ItemLibrary";
+import FactionLibrary from "./FactionLibrary";
 import KnowledgeBase from "./KnowledgeBase";
+import TimelineLibrary from "./TimelineLibrary";
 import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
 import {
@@ -55,6 +61,11 @@ import WorldMapPrototype from "./WorldMapPrototype";
 import WorldProposalReview from "./WorldProposalReview";
 import { buildWorldProposalAgentInstructions } from "./worldProposalSchema";
 import { useNovelProject } from "./useNovelProject";
+import {
+  getEffectiveModelSceneSelection,
+  type NovelModelSceneId,
+} from "./modelSceneSettings";
+import { createNovelModelSceneSettingsRepository } from "./modelSceneSettingsRepository";
 
 const STATUS_LABELS: Record<NovelMetadata["status"], string> = {
   planning: "规划中",
@@ -866,7 +877,6 @@ function ContextInspector({
     outline: { icon: ListTree, label: "大纲文件", title: "outline.md" },
     lore: { icon: Users, label: "设定数据", title: "人物与世界" },
     map: { icon: Map, label: "地图数据", title: "世界空间模型" },
-    timeline: { icon: Clock3, label: "时间线数据", title: "事件与线索" },
     research: { icon: Library, label: "资料数据", title: "研究资料" },
   }[route] ?? { icon: Map, label: "当前上下文", title: project.metadata.title };
   const Icon = routeMeta.icon;
@@ -937,10 +947,21 @@ export default function NovelWorkbenchRenderer({
   const [selectedChapterId, setSelectedChapterId] = useState("");
   const [operationError, setOperationError] = useState<string | null>(null);
   const [isWorldAgentLaunching, setIsWorldAgentLaunching] = useState(false);
+  const [isItemAgentLaunching, setIsItemAgentLaunching] = useState(false);
+  const [isCharacterAgentLaunching, setIsCharacterAgentLaunching] =
+    useState(false);
   const [isProposalReviewOpen, setIsProposalReviewOpen] = useState(false);
+  const [isItemProposalReviewOpen, setIsItemProposalReviewOpen] =
+    useState(false);
+  const [isCharacterProposalReviewOpen, setIsCharacterProposalReviewOpen] =
+    useState(false);
   const [knowledgeSourceFocus, setKnowledgeSourceFocus] =
     useState<KnowledgeSourceRef | null>(null);
+  const [factionWorldNodeFocusId, setFactionWorldNodeFocusId] = useState<
+    string | null
+  >(null);
   const project = controller.project;
+  const navigateWorkbench = context.navigate;
 
   useEffect(
     () =>
@@ -953,6 +974,38 @@ export default function NovelWorkbenchRenderer({
         () => setIsProposalReviewOpen(true),
       ),
     [context.manifest.id, context.workspacePath],
+  );
+
+  useEffect(
+    () =>
+      subscribeWorkbenchHostAction(
+        {
+          workbenchId: context.manifest.id,
+          workspacePath: context.workspacePath,
+          action: "open-item-proposal-review",
+        },
+        () => {
+          navigateWorkbench("items");
+          setIsItemProposalReviewOpen(true);
+        },
+      ),
+    [context.manifest.id, context.workspacePath, navigateWorkbench],
+  );
+
+  useEffect(
+    () =>
+      subscribeWorkbenchHostAction(
+        {
+          workbenchId: context.manifest.id,
+          workspacePath: context.workspacePath,
+          action: "open-character-proposal-review",
+        },
+        () => {
+          navigateWorkbench("characters");
+          setIsCharacterProposalReviewOpen(true);
+        },
+      ),
+    [context.manifest.id, context.workspacePath, navigateWorkbench],
   );
 
   const selectedChapter = useMemo(() => {
@@ -973,6 +1026,13 @@ export default function NovelWorkbenchRenderer({
       />
     );
   }
+
+  const resolveSceneModelSelection = async (sceneId: NovelModelSceneId) => {
+    const settings = await createNovelModelSceneSettingsRepository(
+      context.storage,
+    ).load();
+    return getEffectiveModelSceneSelection(settings.settings, sceneId);
+  };
 
   const createChapter = async () => {
     setOperationError(null);
@@ -1009,6 +1069,11 @@ export default function NovelWorkbenchRenderer({
     }
   };
 
+  const openFactionWorldNode = (nodeId: string) => {
+    setFactionWorldNodeFocusId(nodeId);
+    context.navigate("lore");
+  };
+
   const launchWorldAgent = async (mode: "world" | "template") => {
     if (isWorldAgentLaunching) return;
     setOperationError(null);
@@ -1042,16 +1107,17 @@ export default function NovelWorkbenchRenderer({
         {
           target: isTemplateMode
             ? "通过多轮对话完善层级类型、设定模板和类型模板关联"
-            : "从一句话概念开始，通过多轮对话引导作者创建完整世界架构",
+            : "从一句话概念开始，通过多轮对话引导作者创建完整世界架构及区域地点",
           outputSchema: isTemplateMode
             ? "先逐步澄清模板覆盖范围，最终给出可审阅的 meta.json 变更方案"
-            : "先逐步澄清作者选择，最终给出可审阅的层级类型、模板配置、空间树与设定页变更方案",
+            : "先逐步澄清作者选择，最终给出可审阅的层级类型、模板配置、空间树、区域地点与设定页变更方案",
           context: JSON.stringify(
             {
               title: project.metadata.title,
               genres: project.metadata.genres,
               projectRoot: ".",
               settingLibrary: "world/setting-library/",
+              locationLibrary: "world/locations/index.json",
               promptId: selection.activation.prompt.id,
               promptVersion: selection.activation.prompt.version,
             },
@@ -1070,6 +1136,7 @@ export default function NovelWorkbenchRenderer({
               genres: project.metadata.genres,
               projectRoot: ".",
               settingLibrary: "world/setting-library/",
+              locationLibrary: "world/locations/index.json",
             },
             null,
             2,
@@ -1077,7 +1144,7 @@ export default function NovelWorkbenchRenderer({
           worldRulesContext: "",
           userHint: isTemplateMode
             ? "围绕层级类型、模板骨架和默认关联逐步完善配置。一次只推进必要的关键决定。"
-            : "从一句话概念开始，通过多轮对话引导作者完成层级类型、模板配置、空间树和设定页设计。一次只推进必要的关键决定。",
+            : "从一句话概念开始，通过多轮对话引导作者完成层级类型、模板配置、空间树、区域地点和设定页设计。一次只推进必要的关键决定。",
           isSummary: "",
           usesTone: "1",
           tone: "史诗且严谨",
@@ -1086,6 +1153,9 @@ export default function NovelWorkbenchRenderer({
         },
       );
       const initialMessage = `${domainPrompt}\n\n${buildWorldProposalAgentInstructions()}`;
+      const modelSelection = await resolveSceneModelSelection(
+        isTemplateMode ? "world.template" : "world.architecture",
+      );
       await context.agentSessions.open({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${isTemplateMode ? "模板配置向导" : "世界架构向导"} · ${project.metadata.title}`,
@@ -1106,11 +1176,130 @@ export default function NovelWorkbenchRenderer({
             promptVersion: selection.activation.prompt.version,
           },
         },
+        ...(modelSelection ? { modelSelection } : {}),
       });
     } catch (cause) {
       setOperationError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setIsWorldAgentLaunching(false);
+    }
+  };
+
+  const launchCharacterAgent = async (target: CharacterAiTarget) => {
+    if (isCharacterAgentLaunching) return;
+    if (!context.agentSessions.isAvailable) {
+      throw new Error("MyAgents Agent Session 当前不可用");
+    }
+    const scopeLabels: Record<CharacterAiTarget["scope"], string> = {
+      character: "角色设计",
+      relationship: "关系与弧光设计",
+      soul: "角色灵魂设计",
+      race: "种族设计",
+      group: "角色分组设计",
+    };
+    const sceneIds: Record<CharacterAiTarget["scope"], NovelModelSceneId> = {
+      character: "characters.design",
+      relationship: "characters.relationship",
+      soul: "characters.soul",
+      race: "characters.race",
+      group: "characters.group",
+    };
+    const focus = scopeLabels[target.scope];
+    setOperationError(null);
+    setIsCharacterAgentLaunching(true);
+    try {
+      const initialMessage = `## 小说工作台人物库 AI 设计任务
+
+你正在协助作者设计小说人物库。正式角色文件是事实源；你只能读取上下文并提交待审阅提案，绝对不能直接修改正式文件。
+
+项目：${project.metadata.title}
+创作题材：${project.metadata.genres.join("、") || "未设置"}
+本次范围：${focus}
+${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "当前未指定已有角色。"}
+作者要求：${target.requirements || "请先通过简洁对话确认本次设计的必要约束。"}
+
+执行协议：
+1. 首先调用 novel_characters_get_context，读取已有角色、种族、分组、灵魂，以及当前范围的必要信息。
+2. 通过简洁对话确认叙事功能、避免重复的约束和本次生成数量；一次只追问影响结果的关键问题。若作者已给出充分要求，可直接生成候选。
+3. 只生成与“${focus}”相关的候选。允许新增或更新，但禁止删除既有角色、种族、分组或灵魂。
+4. 新角色必须提供完整人物卡，引用的 raceId、soulId、groupIds 和关系 targetId 必须来自已存在记录或同一提案中新增的候选。物品栏中关联物品库的 itemId 必须来自已有物品；不关联的物品必须将 itemId 设为 null。每件物品都必须包含 id、name、quantity、unit、description。新种族、分组必须包含 id、name、description；新角色灵魂必须包含完整字段，并明确设定 builtIn 为 false。
+5. 角色灵魂只能提供表达、心智模型和决策倾向；不得覆盖人物硬设定、当前剧情、角色认知和因果。发现冲突时，人物设定优先。
+6. 完成后必须先调用 novel_characters_validate_proposal；校验通过才能调用 novel_characters_submit_proposal。
+7. 提交成功后告知作者回到人物库审阅提案。不得调用 Bash、Write、Edit 等工具写入正式角色文件。`;
+      const targetKey = `${target.scope}:${target.targetCharacterId ?? "library"}`;
+      const modelSelection = await resolveSceneModelSelection(
+        sceneIds[target.scope],
+      );
+      await context.agentSessions.open({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `${focus} · ${project.metadata.title}`,
+        promptId: "novel.characters.assist",
+        initialMessage,
+        presentation: "dialog",
+        conversationKey: `novel.characters.assist:${targetKey}`,
+        forceNew: true,
+        historyGroupPath: ["人物库", focus],
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "characters",
+            promptId: "novel.characters.assist",
+            promptVersion: "1.0.0",
+            targetScope: target.scope,
+            targetCharacterId: target.targetCharacterId ?? "",
+          },
+        },
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+    } finally {
+      setIsCharacterAgentLaunching(false);
+    }
+  };
+
+  const launchItemBatchAgent = async (preferredCategoryId?: string) => {
+    if (isItemAgentLaunching) return;
+    if (!context.agentSessions.isAvailable) {
+      throw new Error("MyAgents Agent Session 当前不可用");
+    }
+    setOperationError(null);
+    setIsItemAgentLaunching(true);
+    try {
+      const initialMessage = `## 小说工作台物品批量生产向导
+
+你正在协助作者批量设计并生产小说物品。使用完整 MyAgents 对话逐步确认需求，最终只能提交待审阅提案，不得直接修改正式物品库。
+
+项目：${project.metadata.title}
+${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}` : "作者尚未指定目标分类。"}
+
+执行协议：
+1. 首先调用 novel_items_get_context 读取分类与已有物品；若作者当前选中了分类，可优先围绕该分类询问，但不能替作者做最终选择。
+2. 通过简洁对话确认目标分类、数量（1 至 20）、用途、风格和必要约束。一次只追问影响结果的关键问题。
+3. 分类确认后，再调用 novel_items_get_context 并传入 categoryId，严格按照返回的继承字段生成候选。
+4. 候选名称不得与已有物品或同批候选重复；字段只能使用返回的 fieldId，并遵守类型、选项和必填约束。
+5. 每件候选应包含名称、别名、标签、一句话摘要、适用字段和完整 Markdown 描述。
+6. 作者确认生成方向后，必须先调用 novel_items_validate_batch；校验通过后才能调用 novel_items_submit_batch。
+7. 提交成功后说明候选数量，并提示作者回到物品库点击“审阅批量物品提案”。不得调用 Bash、Write、Edit 等工具写入正式文件。`;
+      const modelSelection = await resolveSceneModelSelection("items.batch");
+      await context.agentSessions.open({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `物品批量生产 · ${project.metadata.title}`,
+        promptId: "novel.items.batch",
+        initialMessage,
+        presentation: "dialog",
+        conversationKey: "novel.items.batch",
+        historyGroupPath: ["物品库", "批量生产"],
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "items",
+            promptId: "novel.items.batch",
+            promptVersion: "1.0.0",
+          },
+        },
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+    } finally {
+      setIsItemAgentLaunching(false);
     }
   };
 
@@ -1193,13 +1382,17 @@ ${JSON.stringify(injectedContext, null, 2)}
 2. 现有文件使用 modify；虚拟设定页尚未落盘时，同时创建页面、词条文件并修改 settings.json 登记引用。
 3. 生成完成后必须先调用 novel_world_validate_changes，再调用 novel_world_submit_proposal。
 4. 不得直接修改正式文件。提交成功后简要说明结果，并提示作者在小说工作台审阅提案。`;
+      const runId = `${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+      const modelSelection = await resolveSceneModelSelection("world.assist");
       await context.agentSessions.open({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${target.label} · AI 写作`,
         promptId: "novel.ai-assist",
         initialMessage,
         presentation: "dock",
-        conversationKey: `novel.ai-assist:${targetKey}`,
+        conversationKey: `novel.ai-assist:${targetKey}:${runId}`,
         forceNew: true,
         historyGroupPath: ["世界架构", target.label],
         toolset: {
@@ -1212,12 +1405,46 @@ ${JSON.stringify(injectedContext, null, 2)}
             targetKey,
           },
         },
+        ...(modelSelection ? { modelSelection } : {}),
       });
     } catch (cause) {
       setOperationError(cause instanceof Error ? cause.message : String(cause));
     }
     return null;
   };
+
+  const worldToolbarActions =
+    context.route === "lore" || context.route === "lore-config" ? (
+      <>
+        <button
+          type="button"
+          aria-label="审阅提案"
+          title="审阅 Agent 提交的世界设定变更"
+          onClick={() => setIsProposalReviewOpen(true)}
+          className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium transition-colors hover:bg-[var(--hover-bg)]"
+        >
+          <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
+          <span className="max-lg:hidden">审阅提案</span>
+        </button>
+        <WorldAgentButton
+          disabled={!context.agentSessions.isAvailable}
+          isLaunching={isWorldAgentLaunching}
+          label={
+            context.route === "lore-config" ? "AI 配置模板" : "AI 创建世界"
+          }
+          title={
+            context.route === "lore-config"
+              ? "打开模板配置 Agent"
+              : "打开世界架构 Agent"
+          }
+          onClick={() =>
+            void launchWorldAgent(
+              context.route === "lore-config" ? "template" : "world",
+            )
+          }
+        />
+      </>
+    ) : undefined;
 
   let content: ReactNode;
   switch (context.route) {
@@ -1249,8 +1476,10 @@ ${JSON.stringify(injectedContext, null, 2)}
             storage={context.storage}
             projectTitle={project.metadata.title}
             mode="library"
+            headerActions={worldToolbarActions}
             onAiAssist={runAiAssist}
             focusSource={knowledgeSourceFocus}
+            focusNodeId={factionWorldNodeFocusId}
           />
           {isProposalReviewOpen && (
             <WorldProposalReview
@@ -1269,6 +1498,7 @@ ${JSON.stringify(injectedContext, null, 2)}
             storage={context.storage}
             projectTitle={project.metadata.title}
             mode="meta"
+            headerActions={worldToolbarActions}
             onAiAssist={runAiAssist}
           />
           {isProposalReviewOpen && (
@@ -1279,6 +1509,64 @@ ${JSON.stringify(injectedContext, null, 2)}
             />
           )}
         </div>
+      );
+      break;
+    case "items":
+      content = (
+        <ItemLibrary
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          isActive={context.isActive}
+          onAiRun={
+            context.aiRuns.isAvailable
+              ? async (request) => {
+                  const modelSelection = await resolveSceneModelSelection(
+                    request.sceneId,
+                  );
+                  return (
+                    await context.aiRuns.run({
+                      version: WORKBENCH_AI_RUN_REQUEST_VERSION,
+                      ...request,
+                      ...(modelSelection ? { modelSelection } : {}),
+                    })
+                  ).output;
+                }
+              : undefined
+          }
+          onOpenBatchAgent={
+            context.agentSessions.isAvailable ? launchItemBatchAgent : undefined
+          }
+          isBatchAgentLaunching={isItemAgentLaunching}
+          proposalReviewOpen={isItemProposalReviewOpen}
+          onOpenProposalReview={() => setIsItemProposalReviewOpen(true)}
+          onCloseProposalReview={() => setIsItemProposalReviewOpen(false)}
+        />
+      );
+      break;
+    case "factions":
+      content = (
+        <FactionLibrary
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          isActive={context.isActive}
+          onOpenWorldNode={openFactionWorldNode}
+        />
+      );
+      break;
+    case "characters":
+      content = (
+        <CharacterLibraryPrototype
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          isActive={context.isActive}
+          onOpenAiAgent={
+            context.agentSessions.isAvailable ? launchCharacterAgent : undefined
+          }
+          isAiAgentLaunching={isCharacterAgentLaunching}
+          proposalReviewOpen={isCharacterProposalReviewOpen}
+          onOpenProposalReview={() => setIsCharacterProposalReviewOpen(true)}
+          onCloseProposalReview={() => setIsCharacterProposalReviewOpen(false)}
+        />
       );
       break;
     case "knowledge":
@@ -1297,10 +1585,10 @@ ${JSON.stringify(injectedContext, null, 2)}
       break;
     case "timeline":
       content = (
-        <EmptyDomainView
-          icon={Clock3}
-          title="时间线"
-          emptyText="暂无时间线事件"
+        <TimelineLibrary
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          isActive={context.isActive}
         />
       );
       break;
@@ -1322,6 +1610,15 @@ ${JSON.stringify(injectedContext, null, 2)}
         />
       );
       break;
+    case "settings":
+    case "model-scenes":
+      content = (
+        <NovelModelScenarioSettings
+          storage={context.storage}
+          isActive={context.isActive}
+        />
+      );
+      break;
     default:
       content = (
         <Overview
@@ -1336,44 +1633,18 @@ ${JSON.stringify(injectedContext, null, 2)}
   const isImmersiveRoute = [
     "lore",
     "lore-config",
+    "characters",
+    "items",
+    "factions",
     "knowledge",
     "map",
+    "timeline",
     "ai-prompts",
+    "settings",
+    "model-scenes",
   ].includes(context.route);
-
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
-      {(context.route === "lore" || context.route === "lore-config") && (
-        <WorkbenchHeaderActions>
-          <button
-            type="button"
-            aria-label="审阅提案"
-            title="审阅 Agent 提交的世界设定变更"
-            onClick={() => setIsProposalReviewOpen(true)}
-            className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium transition-colors hover:bg-[var(--hover-bg)]"
-          >
-            <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
-            <span className="max-lg:hidden">审阅提案</span>
-          </button>
-          <WorldAgentButton
-            disabled={!context.agentSessions.isAvailable}
-            isLaunching={isWorldAgentLaunching}
-            label={
-              context.route === "lore-config" ? "AI 配置模板" : "AI 创建世界"
-            }
-            title={
-              context.route === "lore-config"
-                ? "打开模板配置 Agent"
-                : "打开世界架构 Agent"
-            }
-            onClick={() =>
-              void launchWorldAgent(
-                context.route === "lore-config" ? "template" : "world",
-              )
-            }
-          />
-        </WorkbenchHeaderActions>
-      )}
       {!isImmersiveRoute && (
         <div className="flex h-9 shrink-0 items-center justify-between border-b border-[var(--line-subtle)] px-5 text-xs text-[var(--ink-muted)]">
           <div className="flex min-w-0 items-center gap-2">

@@ -6,8 +6,10 @@ export const WORLD_PROPOSAL_SCHEMA_VERSION = 1 as const;
 export const WORLD_PROPOSALS_DIRECTORY = "world/setting-library/proposals";
 const SETTING_LIBRARY_DIRECTORY = "world/setting-library";
 const SETTING_LIBRARY_PREFIX = `${SETTING_LIBRARY_DIRECTORY}/`;
+export const WORLD_LOCATION_LIBRARY_PATH = "world/locations/index.json";
+const WORLD_LOCATION_SNAPSHOT_PATH = "__locations/index.json";
 const WORLD_PROPOSAL_TARGET_PATTERN =
-  /^world\/setting-library\/(?:meta\.json|spatial-tree\.json|settings\.json|pages\/[a-z0-9-]+\/[a-z0-9-]+\.md|entries\/[a-z0-9-]+\/[a-z0-9-]+\.json)$/;
+  /^(?:world\/setting-library\/(?:meta\.json|spatial-tree\.json|settings\.json|pages\/[a-z0-9-]+\/[a-z0-9-]+\.md|entries\/[a-z0-9-]+\/[a-z0-9-]+\.json)|world\/locations\/index\.json)$/;
 
 const idSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 const semverSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
@@ -15,7 +17,7 @@ const semverSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
 export function normalizeWorldProposalTargetPath(path: string): string {
   const normalized = normalizeWorkbenchStoragePath(path);
   if (!WORLD_PROPOSAL_TARGET_PATTERN.test(normalized)) {
-    throw new Error("提案只能修改设定库的元配置、空间树、索引、页面或词条文件");
+    throw new Error("提案只能修改设定库文件或地点索引");
   }
   return normalized;
 }
@@ -24,11 +26,22 @@ export function worldProposalTargetPathFromSnapshotRelativePath(
   path: string,
 ): string {
   const normalized = normalizeWorkbenchStoragePath(path);
+  if (normalized === WORLD_LOCATION_SNAPSHOT_PATH) {
+    return WORLD_LOCATION_LIBRARY_PATH;
+  }
+  if (normalized === WORLD_LOCATION_LIBRARY_PATH) return normalized;
   return normalizeWorldProposalTargetPath(
     normalized.startsWith(SETTING_LIBRARY_PREFIX)
       ? normalized
       : `${SETTING_LIBRARY_PREFIX}${normalized}`,
   );
+}
+
+export function worldProposalSnapshotRelativePath(targetPath: string): string {
+  const normalized = normalizeWorldProposalTargetPath(targetPath);
+  return normalized === WORLD_LOCATION_LIBRARY_PATH
+    ? WORLD_LOCATION_SNAPSHOT_PATH
+    : normalized.slice(SETTING_LIBRARY_PREFIX.length);
 }
 
 function targetPathSchema() {
@@ -118,8 +131,7 @@ export function worldProposalSnapshotPath(
   side: "before" | "after",
   targetPath: string,
 ): string {
-  const normalized = normalizeWorldProposalTargetPath(targetPath);
-  const relative = normalized.slice(SETTING_LIBRARY_PREFIX.length);
+  const relative = worldProposalSnapshotRelativePath(targetPath);
   return `${WORLD_PROPOSALS_DIRECTORY}/${proposalId}/${side}/${relative}`;
 }
 
@@ -169,7 +181,7 @@ export function buildWorldProposalAgentInstructions(): string {
 
 1. 使用 \`novel_world_get_context\` 读取当前世界架构；不要猜测现有层级、模板或路径。
 2. 通过对话逐步确认作者选择。未获得作者明确确认前，不得提交提案。
-3. 生成完整变更后，先调用 \`novel_world_validate_changes\`。新增任何页面或词条文件时，必须在同一提案的 \`settings.json\` 变更中登记对应的 \`pagePath\` 与 \`entriesPath\`；校验失败时修正变更并重新校验。
+3. 生成完整变更后，先调用 \`novel_world_validate_changes\`。新增任何页面或词条文件时，必须在同一提案的 \`settings.json\` 变更中登记对应的 \`pagePath\` 与 \`entriesPath\`；新增或修改地点时，使用 \`world/locations/index.json\`，其 schemaVersion 固定为 1，且每条地点必须包含 id、nodeId、parentLocationId、name、aliases、type、status、summary、appearanceNote、description、order。地点名称允许重复；地点必须归属现有或同一提案中的空间节点，上级地点只能在同一空间节点内且不得形成循环。校验失败时修正变更并重新校验。
 4. 仅在校验通过后调用 \`novel_world_submit_proposal\`。该工具只创建待审批快照，不修改正式设定。
 5. 提交成功后说明变更数量，并请作者在小说工作台点击“审阅提案”逐项审批。
 

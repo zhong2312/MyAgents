@@ -45,6 +45,7 @@ export type {
   WorkbenchAiRunRequest,
   WorkbenchAiRunResult,
   WorkbenchAgentSessionRequest,
+  WorkbenchModelSelection,
   WorkbenchProjectInitialization,
   WorkbenchProjectTextFile,
   WorkbenchCreateTextOptions,

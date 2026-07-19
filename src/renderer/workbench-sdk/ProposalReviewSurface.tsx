@@ -16,6 +16,7 @@ export interface ProposalReviewSurfaceProps {
   readonly title: string;
   readonly subtitle: string;
   readonly sideBySide: boolean;
+  readonly showViewModeControl?: boolean;
   readonly isRefreshing?: boolean;
   readonly error?: string | null;
   readonly children: ReactNode;
@@ -29,6 +30,7 @@ export function ProposalReviewSurface({
   title,
   subtitle,
   sideBySide,
+  showViewModeControl = true,
   isRefreshing = false,
   error,
   children,
@@ -57,34 +59,37 @@ export function ProposalReviewSurface({
               {subtitle}
             </p>
           </div>
-          <div className="ml-auto flex items-center gap-1 rounded-md bg-[var(--paper-inset)] p-1 max-sm:order-2 max-sm:ml-0 max-sm:grid max-sm:w-full max-sm:grid-cols-2">
-            <button
-              type="button"
-              aria-pressed={sideBySide}
-              title="并排差异"
-              onClick={() => onSideBySideChange(true)}
-              className={`flex h-7 items-center justify-center gap-1 rounded px-2 text-xs ${
-                sideBySide
-                  ? "bg-[var(--paper-elevated)] shadow-sm"
-                  : "text-[var(--ink-muted)]"
-              }`}
-            >
-              <Columns2 className="h-3.5 w-3.5" /> 并排
-            </button>
-            <button
-              type="button"
-              aria-pressed={!sideBySide}
-              title="行内差异"
-              onClick={() => onSideBySideChange(false)}
-              className={`flex h-7 items-center justify-center gap-1 rounded px-2 text-xs ${
-                !sideBySide
-                  ? "bg-[var(--paper-elevated)] shadow-sm"
-                  : "text-[var(--ink-muted)]"
-              }`}
-            >
-              <AlignJustify className="h-3.5 w-3.5" /> 行内
-            </button>
-          </div>
+          {showViewModeControl && (
+            <div className="ml-auto flex items-center gap-1 rounded-md bg-[var(--paper-inset)] p-1 max-sm:order-2 max-sm:ml-0 max-sm:grid max-sm:w-full max-sm:grid-cols-2">
+              <button
+                type="button"
+                aria-pressed={sideBySide}
+                title="并排差异"
+                onClick={() => onSideBySideChange(true)}
+                className={`flex h-7 items-center justify-center gap-1 rounded px-2 text-xs ${
+                  sideBySide
+                    ? "bg-[var(--paper-elevated)] shadow-sm"
+                    : "text-[var(--ink-muted)]"
+                }`}
+              >
+                <Columns2 className="h-3.5 w-3.5" /> 并排
+              </button>
+              <button
+                type="button"
+                aria-pressed={!sideBySide}
+                title="行内差异"
+                onClick={() => onSideBySideChange(false)}
+                className={`flex h-7 items-center justify-center gap-1 rounded px-2 text-xs ${
+                  !sideBySide
+                    ? "bg-[var(--paper-elevated)] shadow-sm"
+                    : "text-[var(--ink-muted)]"
+                }`}
+              >
+                <AlignJustify className="h-3.5 w-3.5" /> 行内
+              </button>
+            </div>
+          )}
+          {!showViewModeControl && <span className="ml-auto" />}
           <button
             type="button"
             aria-label="重新读取提案"

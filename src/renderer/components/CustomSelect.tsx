@@ -49,6 +49,7 @@ interface CustomSelectProps {
     icon?: ReactNode;
     onClick: () => void;
   };
+  disabled?: boolean;
 }
 
 export default function CustomSelect({
@@ -62,6 +63,7 @@ export default function CustomSelect({
   size = "sm",
   compact,
   footerAction,
+  disabled = false,
 }: CustomSelectProps) {
   const { t } = useTranslation("app");
   const resolvedPlaceholder = placeholder ?? t("common.selectPlaceholder");
@@ -84,8 +86,11 @@ export default function CustomSelect({
         ref={triggerRef}
         type="button"
         aria-label={ariaLabel}
-        onClick={() => setIsOpen(!isOpen)}
-        className={`flex w-full items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] text-left transition-colors hover:border-[var(--ink-subtle)] ${
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) setIsOpen(!isOpen);
+        }}
+        className={`flex w-full items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] text-left transition-colors hover:border-[var(--ink-subtle)] disabled:cursor-not-allowed disabled:opacity-45 ${
           compact
             ? "px-2 py-1 text-xs"
             : size === "md"
@@ -121,7 +126,7 @@ export default function CustomSelect({
         />
       </button>
       <Popover
-        open={isOpen}
+        open={isOpen && !disabled}
         onClose={() => setIsOpen(false)}
         anchorRef={triggerRef}
         placement="bottom-start"

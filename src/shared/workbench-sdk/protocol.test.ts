@@ -6,8 +6,8 @@ import {
 } from "./protocol";
 
 describe("checkWorkbenchApiCompatibility", () => {
-  it("publishes workbench Agent dialog support as host API 1.4", () => {
-    expect(WORKBENCH_HOST_API_VERSION).toEqual({ major: 1, minor: 4 });
+  it("publishes workbench model-scene selection as host API 1.5", () => {
+    expect(WORKBENCH_HOST_API_VERSION).toEqual({ major: 1, minor: 5 });
   });
 
   it("accepts the same major when the host satisfies the minor floor", () => {

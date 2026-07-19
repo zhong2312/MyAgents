@@ -1,0 +1,181 @@
+.timeline-library {
+  --timeline-rail-line: color-mix(in srgb, var(--accent-cool) 40%, transparent);
+}
+
+.timeline-workspace {
+  background-image: linear-gradient(
+    to bottom,
+    transparent 31px,
+    rgb(28 22 18 / 0.025) 32px
+  );
+  background-size: 100% 32px;
+}
+
+.timeline-rail-scroll {
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
+}
+
+.timeline-rail-empty {
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent 23px,
+    rgb(28 22 18 / 0.035) 24px
+  );
+}
+
+.timeline-rail-line {
+  stroke: var(--timeline-rail-line);
+  stroke-width: 2;
+}
+
+.timeline-rail-tick,
+.timeline-rail-stem {
+  stroke: rgb(28 22 18 / 0.18);
+  stroke-width: 1;
+}
+
+.timeline-rail-tick-label,
+.timeline-rail-selected-label {
+  fill: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: var(--text-xs, 12px);
+}
+
+.timeline-rail-selected-label {
+  fill: var(--ink);
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+}
+
+.timeline-rail-event {
+  cursor: pointer;
+}
+
+.timeline-rail-dot {
+  fill: var(--accent-warm);
+  stroke: var(--paper-elevated);
+  stroke-width: 3;
+}
+
+.timeline-rail-dot.is-inherited {
+  fill: var(--accent-cool);
+}
+
+.timeline-rail-dot.is-selected {
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+
+.timeline-event-row.is-selected {
+  background: var(--accent-warm-subtle);
+}
+
+.timeline-event-grid {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.6fr) 28px minmax(0, 2.4fr);
+  min-height: 76px;
+  padding: 12px 8px;
+}
+
+.timeline-event-time {
+  min-width: 0;
+  padding-top: 2px;
+  padding-right: 12px;
+  text-align: right;
+}
+
+.timeline-event-axis {
+  position: relative;
+  min-height: 52px;
+}
+
+.timeline-event-axis::before {
+  position: absolute;
+  top: -12px;
+  bottom: -12px;
+  left: 50%;
+  width: 1px;
+  content: "";
+  background: color-mix(in srgb, var(--accent-cool) 42%, transparent);
+}
+
+.timeline-event-marker {
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent-warm);
+  box-shadow: 0 0 0 3px var(--paper);
+  transform: translateX(-50%);
+}
+
+.timeline-event-marker.is-inherited {
+  background: var(--accent-cool);
+}
+
+.timeline-event-content {
+  padding: 1px 8px 1px 4px;
+}
+
+.timeline-inherited-tag {
+  border: 1px solid color-mix(in srgb, var(--accent-cool) 25%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--accent-cool);
+}
+
+.timeline-reference-picker > summary::-webkit-details-marker {
+  display: none;
+}
+
+.timeline-reference-picker[open] > summary {
+  background: var(--hover-bg);
+}
+
+@media (max-width: 1023px) {
+  .timeline-branches {
+    display: none;
+  }
+
+  .timeline-workspace {
+    background-image: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .timeline-library-content {
+    flex-direction: column;
+  }
+
+  .timeline-library-content > main {
+    min-height: 0;
+  }
+
+  .timeline-inspector {
+    width: 100% !important;
+    height: min(54%, 420px);
+    flex: 0 0 min(54%, 420px);
+    border-top: 1px solid var(--line-strong);
+    border-left: 0;
+  }
+
+  .timeline-event-grid {
+    grid-template-columns: minmax(76px, 92px) 24px minmax(0, 1fr);
+    padding-right: 0;
+  }
+
+  .timeline-event-time {
+    padding-right: 8px;
+  }
+
+  .timeline-event-content {
+    padding-right: 4px;
+  }
+}

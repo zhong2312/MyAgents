@@ -1,11 +1,11 @@
 {
   "protocolVersion": "1.0",
-  "lastPushAt": "2026-07-15T13:28:11.701Z",
+  "lastPushAt": "2026-07-18T13:01:55.139731Z",
   "lastPullAt": "2026-07-15T16:12:46.842Z",
-  "lastDirection": "pull",
-  "exchangeHash": "f1696b961bc33c05af9ed7948e894dd83cee935d063af77b112831b5bd1a5e9d",
+  "lastDirection": "push",
+  "exchangeHash": "b1d275d9f2191e028b39ab40b1d754dbf476a0e7fdb50dae73aa8d4b8eab45c7",
   "openDesignProjectId": "myagents-5894",
-  "openDesignRunId": "b46d96eb-cee0-4be0-a832-f5f77e414429",
-  "artifactEntry": "setting-library-v3/index.html",
+  "openDesignRunId": null,
+  "artifactEntry": "item-library-v1/index.html",
   "conflicts": []
 }

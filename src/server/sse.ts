@@ -478,18 +478,13 @@ const SILENT_EVENTS = new Set([
 // that thread is the same one running the React renderer, so the backlog
 // materializes as UI jank in every tab simultaneously.
 //
-// Solution: buffer consecutive `chat:message-chunk` string deltas in a 40ms
-// window per process, then flush as a single concatenated chunk. 40ms ≈ 25fps,
-// far above the ~15fps threshold below which streaming text feels choppy, and
-// it cuts IPC traffic by ~58% in the steady state. Any non-chunk event
-// (tool-use-start, message-complete, permission prompts, …) flushes the
-// pending buffer first to keep strict event ordering.
-//
-// Only `chat:message-chunk` is coalesced. `chat:thinking-chunk` carries
-// `{index, delta}` payloads where different index values can't legally merge,
-// and its frequency is lower to begin with; tool-input-delta is also low
-// frequency and flows through already. Keeping the rule narrow avoids
-// semantic surprises.
+// Solution: buffer consecutive streamed deltas in a 40ms window per process,
+// then flush as one chunk. This applies to assistant text, reasoning text and
+// streamed tool JSON. 40ms ≈ 25fps, far above the ~15fps threshold below
+// which streaming feels choppy, while avoiding thousands of Tauri/WebView IPC
+// messages during providers that emit one thinking token or tool character at
+// a time. Any structural event (tool start/stop, completion, permission, …)
+// flushes pending buffers first to preserve the protocol order.
 const CHUNK_COALESCE_MS = 40;
 type LiveRevisionScope = {
   sessionId: string;
@@ -497,12 +492,64 @@ type LiveRevisionScope = {
 };
 
 type ChunkBuffer = {
+  event: string;
   merged: string;
   timer: ReturnType<typeof setTimeout>;
+  deltaPayload?: Readonly<Record<string, unknown>>;
   liveScope?: LiveRevisionScope;
 };
 
 const chunkBuffers = new Map<string, ChunkBuffer>();
+
+type DeltaCoalesceDescriptor = {
+  key: string;
+  delta: string;
+  payload?: Readonly<Record<string, unknown>>;
+};
+
+function coalesceDeltaDescriptor(
+  event: string,
+  data: unknown,
+): DeltaCoalesceDescriptor | null {
+  if (event === 'chat:message-chunk' && typeof data === 'string') {
+    return { key: event, delta: data };
+  }
+  if (!data || typeof data !== 'object') return null;
+  const payload = data as Record<string, unknown>;
+  if (typeof payload.delta !== 'string') return null;
+
+  if (event === 'chat:thinking-chunk') {
+    const { index } = payload;
+    if (typeof index !== 'number' && typeof index !== 'string') return null;
+    return { key: `${event}|index:${index}`, delta: payload.delta, payload };
+  }
+
+  if (
+    event === 'chat:tool-input-delta' ||
+    event === 'chat:tool-result-delta'
+  ) {
+    const streamId = payload.toolId ?? payload.toolUseId ?? payload.index;
+    if (typeof streamId !== 'string' && typeof streamId !== 'number') return null;
+    return { key: `${event}|tool:${streamId}`, delta: payload.delta, payload };
+  }
+
+  if (
+    event === 'chat:subagent-tool-input-delta' ||
+    event === 'chat:subagent-tool-result-delta'
+  ) {
+    const parentToolUseId = payload.parentToolUseId;
+    const toolId = payload.toolId ?? payload.toolUseId;
+    if (typeof parentToolUseId !== 'string' || !parentToolUseId) return null;
+    if (typeof toolId !== 'string' || !toolId) return null;
+    return {
+      key: `${event}|parent:${parentToolUseId}|tool:${toolId}`,
+      delta: payload.delta,
+      payload,
+    };
+  }
+
+  return null;
+}
 
 // Events that don't carry ordering semantics with the text stream and must
 // NOT cause a pending-chunk buffer drain. `chat:log` fires from inside the
@@ -518,21 +565,24 @@ const NON_FLUSHING_EVENTS = new Set<string>(['chat:log']);
 // mixing cannot happen here. If that invariant ever changes, key the buffer
 // by client id instead.
 
-function flushCoalescedChunk(event: string): void {
-  const entry = chunkBuffers.get(event);
+function flushCoalescedChunk(key: string): void {
+  const entry = chunkBuffers.get(key);
   if (!entry) return;
-  chunkBuffers.delete(event);
+  chunkBuffers.delete(key);
   clearTimeout(entry.timer);
+  const payload = entry.deltaPayload
+    ? { ...entry.deltaPayload, delta: entry.merged }
+    : entry.merged;
   if (entry.liveScope) {
-    const envelope: LiveRevisionEnvelope<string> = {
+    const envelope: LiveRevisionEnvelope = {
       sessionId: entry.liveScope.sessionId,
       liveRevision: entry.liveScope.nextRevision(),
-      payload: entry.merged,
+      payload,
     };
-    broadcastImmediate(event, envelope);
+    broadcastImmediate(entry.event, envelope);
     return;
   }
-  broadcastImmediate(event, entry.merged);
+  broadcastImmediate(entry.event, payload);
 }
 
 function flushAllCoalesced(): void {
@@ -540,6 +590,44 @@ function flushAllCoalesced(): void {
   // Copy keys — flushCoalescedChunk deletes entries as it runs.
   const keys = Array.from(chunkBuffers.keys());
   for (const k of keys) flushCoalescedChunk(k);
+}
+
+function enqueueCoalescedDelta(
+  event: string,
+  descriptor: DeltaCoalesceDescriptor,
+  liveScope?: LiveRevisionScope,
+): void {
+  let entry = chunkBuffers.get(descriptor.key);
+  if (
+    entry &&
+    ((liveScope && entry.liveScope?.sessionId !== liveScope.sessionId) ||
+      (!liveScope && entry.liveScope))
+  ) {
+    flushCoalescedChunk(descriptor.key);
+    entry = undefined;
+  }
+  // A different streamed block cannot overtake an earlier buffered block.
+  // Keeping one active buffer preserves the original event order even for
+  // providers that interleave multiple tool-call indexes.
+  if (!entry && chunkBuffers.size > 0) {
+    flushAllCoalesced();
+  }
+  entry = chunkBuffers.get(descriptor.key);
+  if (!entry) {
+    entry = {
+      event,
+      merged: descriptor.delta,
+      ...(descriptor.payload ? { deltaPayload: descriptor.payload } : {}),
+      ...(liveScope ? { liveScope } : {}),
+      timer: setTimeout(
+        () => flushCoalescedChunk(descriptor.key),
+        CHUNK_COALESCE_MS,
+      ),
+    };
+    chunkBuffers.set(descriptor.key, entry);
+    return;
+  }
+  entry.merged += descriptor.delta;
 }
 
 function broadcastImmediate(event: string, data: unknown): void {
@@ -562,17 +650,9 @@ function broadcastImmediate(event: string, data: unknown): void {
 }
 
 export function broadcast(event: string, data: unknown): void {
-  if (event === 'chat:message-chunk' && typeof data === 'string') {
-    let entry = chunkBuffers.get(event);
-    if (!entry) {
-      entry = {
-        merged: data,
-        timer: setTimeout(() => flushCoalescedChunk(event), CHUNK_COALESCE_MS),
-      };
-      chunkBuffers.set(event, entry);
-    } else {
-      entry.merged += data;
-    }
+  const descriptor = coalesceDeltaDescriptor(event, data);
+  if (descriptor) {
+    enqueueCoalescedDelta(event, descriptor);
     return;
   }
   // Every non-coalesced event flushes pending chunk buffers first so that
@@ -590,22 +670,9 @@ export function broadcastLive(
   data: unknown,
   scope: LiveRevisionScope,
 ): void {
-  if (event === 'chat:message-chunk' && typeof data === 'string') {
-    let entry = chunkBuffers.get(event);
-    if (entry && entry.liveScope?.sessionId !== scope.sessionId) {
-      flushCoalescedChunk(event);
-      entry = undefined;
-    }
-    if (!entry) {
-      entry = {
-        merged: data,
-        liveScope: scope,
-        timer: setTimeout(() => flushCoalescedChunk(event), CHUNK_COALESCE_MS),
-      };
-      chunkBuffers.set(event, entry);
-    } else {
-      entry.merged += data;
-    }
+  const descriptor = coalesceDeltaDescriptor(event, data);
+  if (descriptor) {
+    enqueueCoalescedDelta(event, descriptor, scope);
     return;
   }
 

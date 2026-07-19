@@ -10,13 +10,15 @@ import {
 import {
   AlertTriangle,
   BookOpen,
+  Building2,
   Boxes,
   Clapperboard,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Code2,
   Database,
   FileText,
-  FolderOpen,
   Library,
   LayoutDashboard,
   LayoutTemplate,
@@ -44,7 +46,6 @@ import {
 import { getFolderName } from "@/types/tab";
 import { workbenchRegistry } from "@/workbench-registry";
 import type { WorkbenchRegistry } from "./registry";
-import { WorkbenchHeaderActionsProvider } from "./WorkbenchHeaderActions";
 import { useWorkbenchStorage } from "@/workbench-host/useWorkbenchStorage";
 
 interface WorkbenchShellProps {
@@ -105,6 +106,7 @@ const NAV_ICONS = {
   "layout-dashboard": LayoutDashboard,
   "file-text": FileText,
   "book-open": BookOpen,
+  "building-2": Building2,
   "clock-3": Clock3,
   library: Library,
   "list-tree": ListTree,
@@ -165,8 +167,6 @@ export default function WorkbenchShell({
   const [isNavigationCollapsed, setIsNavigationCollapsed] = useState(
     () => definition?.shell?.defaultNavigationCollapsed ?? false,
   );
-  const [headerActionsTarget, setHeaderActionsTarget] =
-    useState<HTMLElement | null>(null);
   const routeIds = useMemo(
     () => new Set(manifest?.navigation.map((item) => item.id) ?? []),
     [manifest],
@@ -175,6 +175,32 @@ export default function WorkbenchShell({
     target && routeIds.has(target.route)
       ? target.route
       : (manifest?.entry.defaultRoute ?? "");
+  const navigation = useMemo(
+    () =>
+      [...(manifest?.navigation ?? [])].sort(
+        (left, right) =>
+          (left.order ?? 0) - (right.order ?? 0) ||
+          left.label.localeCompare(right.label),
+      ),
+    [manifest],
+  );
+  const navigationChildren = useMemo(() => {
+    const children = new globalThis.Map<string, typeof navigation>();
+    for (const item of navigation) {
+      if (!item.parentId) continue;
+      const current = children.get(item.parentId) ?? [];
+      current.push(item);
+      children.set(item.parentId, current);
+    }
+    return children;
+  }, [navigation]);
+  const topLevelNavigation = useMemo(
+    () => navigation.filter((item) => !item.parentId),
+    [navigation],
+  );
+  const [expandedNavigationParents, setExpandedNavigationParents] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   const navigate = useCallback(
     (nextRoute: string) => {
       if (routeIds.has(nextRoute)) onNavigate(nextRoute);
@@ -245,11 +271,6 @@ export default function WorkbenchShell({
     return <FailureState title={t("workbench.incompatible")} detail={detail} />;
   }
 
-  const navigation = [...manifest.navigation].sort(
-    (left, right) =>
-      (left.order ?? 0) - (right.order ?? 0) ||
-      left.label.localeCompare(right.label),
-  );
   const workspaceName = getFolderName(workspacePath);
   const context = Object.freeze({
     manifest,
@@ -330,35 +351,86 @@ export default function WorkbenchShell({
           className="min-h-0 flex-1 overflow-y-auto px-2 py-3"
           aria-label={t("workbench.navigation")}
         >
-          {navigation.map((item) => {
+          {topLevelNavigation.map((item) => {
             const Icon =
               NAV_ICONS[item.icon as keyof typeof NAV_ICONS] ?? Boxes;
-            const active = item.id === route;
+            const children = navigationChildren.get(item.id) ?? [];
+            const hasChildren = children.length > 0;
+            const hasActiveChild = children.some((child) => child.id === route);
+            const active = item.id === route || hasActiveChild;
+            const isExpanded =
+              hasActiveChild || expandedNavigationParents.has(item.id);
             return (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={active ? "page" : undefined}
-                aria-label={item.label}
-                title={item.label}
-                className={`mb-0.5 flex h-9 w-full items-center rounded-md text-left text-sm transition-colors ${
-                  isNavigationCollapsed
-                    ? "justify-center px-2"
-                    : "gap-2.5 px-2.5"
-                } ${
-                  active
-                    ? "bg-[var(--accent-warm-subtle)] font-medium text-[var(--ink)]"
-                    : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                }`}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon
-                  className={`h-4 w-4 flex-shrink-0 ${active ? "text-[var(--accent-warm)]" : ""}`}
-                />
-                {!isNavigationCollapsed && (
-                  <span className="truncate">{item.label}</span>
+              <div key={item.id} className="mb-0.5">
+                <button
+                  type="button"
+                  aria-current={active ? "page" : undefined}
+                  aria-expanded={
+                    hasChildren && !isNavigationCollapsed ? isExpanded : undefined
+                  }
+                  aria-label={item.label}
+                  title={item.label}
+                  className={`flex h-9 w-full items-center rounded-md text-left text-sm transition-colors ${
+                    isNavigationCollapsed
+                      ? "justify-center px-2"
+                      : "gap-2.5 px-2.5"
+                  } ${
+                    active
+                      ? "bg-[var(--accent-warm-subtle)] font-medium text-[var(--ink)]"
+                      : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  }`}
+                  onClick={() => {
+                    if (hasChildren) {
+                      if (isNavigationCollapsed) setIsNavigationCollapsed(false);
+                      setExpandedNavigationParents((current) => {
+                        const next = new Set(current);
+                        if (next.has(item.id)) next.delete(item.id);
+                        else next.add(item.id);
+                        return next;
+                      });
+                      return;
+                    }
+                    navigate(item.id);
+                  }}
+                >
+                  <Icon
+                    className={`h-4 w-4 flex-shrink-0 ${active ? "text-[var(--accent-warm)]" : ""}`}
+                  />
+                  {!isNavigationCollapsed && (
+                    <>
+                      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                      {hasChildren &&
+                        (isExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                        ))}
+                    </>
+                  )}
+                </button>
+                {hasChildren && !isNavigationCollapsed && isExpanded && (
+                  <div className="ml-5 mt-0.5 border-l border-[var(--line-subtle)] pl-2">
+                    {children.map((child) => {
+                      const childActive = child.id === route;
+                      return (
+                        <button
+                          key={child.id}
+                          type="button"
+                          aria-current={childActive ? "page" : undefined}
+                          className={`mb-0.5 flex h-8 w-full items-center rounded-md px-2 text-left text-sm transition-colors ${
+                            childActive
+                              ? "bg-[var(--accent-warm-subtle)] font-medium text-[var(--accent-warm)]"
+                              : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                          }`}
+                          onClick={() => navigate(child.id)}
+                        >
+                          <span className="truncate">{child.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
-              </button>
+              </div>
             );
           })}
         </nav>
@@ -371,31 +443,6 @@ export default function WorkbenchShell({
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--line)] px-5">
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-semibold text-[var(--ink)]">
-              {navigation.find((item) => item.id === route)?.label ??
-                manifest.name}
-            </h1>
-            <p
-              className="truncate text-xs text-[var(--ink-muted)] max-md:hidden"
-              title={workspacePath}
-            >
-              {workspacePath}
-            </p>
-          </div>
-          <div className="ml-4 flex shrink-0 items-center gap-2">
-            <div className="flex items-center gap-1.5 rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-medium text-[var(--ink-muted)] max-md:hidden">
-              <FolderOpen className="h-3.5 w-3.5" />
-              <span>{workspaceName}</span>
-            </div>
-            <span
-              ref={setHeaderActionsTarget}
-              className="flex shrink-0 items-center gap-2"
-            />
-          </div>
-        </header>
-
         <main className="min-h-0 flex-1 overflow-auto">
           <WorkbenchModuleBoundary
             resetKey={`${manifest.id}:${route}`}
@@ -407,9 +454,7 @@ export default function WorkbenchShell({
             )}
           >
             <Suspense fallback={<LoadingState />}>
-              <WorkbenchHeaderActionsProvider target={headerActionsTarget}>
-                <Renderer context={context} />
-              </WorkbenchHeaderActionsProvider>
+              <Renderer context={context} />
             </Suspense>
           </WorkbenchModuleBoundary>
         </main>

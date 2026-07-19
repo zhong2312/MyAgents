@@ -1,6 +1,8 @@
 import {
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   GitCompareArrows,
   Loader2,
@@ -14,7 +16,7 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
-import type { Tab } from "@/types/tab";
+import { getFolderName, type Tab } from "@/types/tab";
 import DraggableDialogFrame from "@/workbench-sdk/DraggableDialogFrame";
 
 interface WorkbenchAgentSurfaceHostProps {
@@ -62,6 +64,7 @@ export default function WorkbenchAgentSurfaceHost({
   const [maximizedDialogId, setMaximizedDialogId] = useState<string | null>(
     null,
   );
+  const [isDockCollapsed, setIsDockCollapsed] = useState(false);
 
   const visibleSurfaces = useMemo(
     () =>
@@ -78,18 +81,31 @@ export default function WorkbenchAgentSurfaceHost({
         .find((tab) => tab.workbenchAgentSurface?.presentation === "dialog"),
     [visibleSurfaces],
   );
-  const docked = useMemo(
+  const taskSurfaces = useMemo(
     () =>
-      visibleSurfaces.filter(
-        (tab) => tab.workbenchAgentSurface?.presentation === "dock",
+      surfaces.filter(
+        (tab) => tab.workbenchAgentSurface?.presentation !== "hidden",
       ),
-    [visibleSurfaces],
+    [surfaces],
   );
+  const orderedTaskSurfaces = useMemo(
+    () => [...taskSurfaces].reverse(),
+    [taskSurfaces],
+  );
+  const runningTaskCount = taskSurfaces.filter((tab) => tab.isGenerating).length;
+  const completedTaskCount = taskSurfaces.filter(
+    (tab) => !tab.isGenerating && tab.hasUnread,
+  ).length;
+  const taskSummary =
+    runningTaskCount > 0
+      ? `${runningTaskCount} 个运行中${
+          completedTaskCount > 0 ? ` · ${completedTaskCount} 个待查看` : ""
+        }`
+      : completedTaskCount > 0
+        ? `${completedTaskCount} 个待查看`
+        : `${taskSurfaces.length} 个任务`;
 
-  const visiblePendingRestart =
-    pendingRestart?.workbenchAgentSurface?.sourceTabId === activeSourceTabId
-      ? pendingRestart
-      : null;
+  const visiblePendingRestart = pendingRestart;
 
   useCloseLayer(() => {
     if (visiblePendingRestart) {
@@ -225,73 +241,137 @@ export default function WorkbenchAgentSurfaceHost({
           </div>
         ))}
 
-      {docked.length > 0 && (
+      {taskSurfaces.length > 0 && (
         <aside
-          aria-label="Agent 运行窗口"
-          className="absolute bottom-5 right-5 z-[190] flex w-96 max-w-[calc(100%-2rem)] flex-col gap-2"
+          aria-label="AI 任务坞"
+          className="absolute bottom-5 right-5 z-[190] w-96 max-w-[calc(100%-2rem)] overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-xl"
         >
-          {docked.map((tab) => (
-            <section
-              key={tab.id}
-              className="overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-xl"
+          <header className="flex min-h-12 items-center gap-2 border-b border-[var(--line)] px-3 py-2">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
+              {runningTaskCount > 0 ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Bot className="h-3.5 w-3.5" />
+              )}
+            </span>
+            <button
+              type="button"
+              aria-expanded={!isDockCollapsed}
+              onClick={() => setIsDockCollapsed((current) => !current)}
+              className="min-w-0 flex-1 text-left"
             >
-              <header className="flex min-h-12 items-center gap-2 px-3 py-2">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
-                  <Bot className="h-3.5 w-3.5" />
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onRestore(tab.id)}
-                  className="min-w-0 flex-1 text-left"
+              <strong className="block truncate text-xs font-semibold">
+                AI 任务
+              </strong>
+              <span className="block truncate text-xs text-[var(--ink-muted)]">
+                {taskSummary}
+              </span>
+            </button>
+            <span
+              aria-label={`共 ${taskSurfaces.length} 个任务`}
+              className="flex h-6 min-w-6 items-center justify-center rounded-full bg-[var(--paper-inset)] px-1.5 text-xs font-medium text-[var(--ink-muted)]"
+            >
+              {taskSurfaces.length}
+            </span>
+            <button
+              type="button"
+              aria-label={isDockCollapsed ? "展开 AI 任务" : "收起 AI 任务"}
+              title={isDockCollapsed ? "展开" : "收起"}
+              onClick={() => setIsDockCollapsed((current) => !current)}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+            >
+              {isDockCollapsed ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </button>
+          </header>
+
+          {!isDockCollapsed && (
+            <div className="max-h-[min(52vh,28rem)] overflow-y-auto">
+              {orderedTaskSurfaces.map((tab) => (
+                <section
+                  key={tab.id}
+                  className={`flex min-h-14 items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2 last:border-b-0 ${
+                    tab.id === dialog?.id
+                      ? "bg-[var(--accent-cool-subtle)]"
+                      : tab.hasUnread
+                        ? "bg-[var(--success-bg)]"
+                        : ""
+                  }`}
                 >
-                  <strong className="block truncate text-xs font-semibold">
-                    {tab.title}
-                  </strong>
-                  <SurfaceStatus tab={tab} />
-                </button>
-                {tab.workbenchAgentSurface?.bootstrap && (
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center text-[var(--ink-muted)]">
+                    {tab.isGenerating ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-[var(--accent-cool)]" />
+                    ) : tab.hasUnread ? (
+                      <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
+                    ) : (
+                      <Bot className="h-4 w-4" />
+                    )}
+                  </span>
                   <button
                     type="button"
-                    aria-label={`重新开始 ${tab.title}`}
-                    title="重新开始"
-                    onClick={() => setPendingRestart(tab)}
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                    onClick={() => onRestore(tab.id)}
+                    className="min-w-0 flex-1 text-left"
                   >
-                    <RotateCcw className="h-4 w-4" />
+                    <strong className="block truncate text-xs font-semibold">
+                      {tab.title}
+                    </strong>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <SurfaceStatus tab={tab} />
+                      <span className="truncate text-xs text-[var(--ink-subtle)]">
+                        ·{" "}
+                        {getFolderName(
+                          tab.workbenchAgentSurface?.workspacePath ?? "",
+                        )}
+                      </span>
+                    </span>
                   </button>
-                )}
-                {tab.workbenchAgentSurface?.toolset?.id === "novel-world" && (
+                  {tab.workbenchAgentSurface?.bootstrap && (
+                    <button
+                      type="button"
+                      aria-label={`重新开始 ${tab.title}`}
+                      title="重新开始"
+                      onClick={() => setPendingRestart(tab)}
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                    </button>
+                  )}
+                  {tab.workbenchAgentSurface?.toolset?.id === "novel-world" && (
+                    <button
+                      type="button"
+                      aria-label={`审阅 ${tab.title} 提案`}
+                      title="审阅提案"
+                      onClick={() => onReview(tab.id)}
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                    >
+                      <GitCompareArrows className="h-4 w-4" />
+                    </button>
+                  )}
                   <button
                     type="button"
-                    aria-label={`审阅 ${tab.title} 提案`}
-                    title="审阅提案"
-                    onClick={() => onReview(tab.id)}
+                    aria-label={`展开 ${tab.title}`}
+                    title="展开"
+                    onClick={() => onRestore(tab.id)}
                     className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                   >
-                    <GitCompareArrows className="h-4 w-4" />
+                    <ExternalLink className="h-4 w-4" />
                   </button>
-                )}
-                <button
-                  type="button"
-                  aria-label={`展开 ${tab.title}`}
-                  title="展开"
-                  onClick={() => onRestore(tab.id)}
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={`关闭 ${tab.title}窗口`}
-                  title="关闭窗口"
-                  onClick={() => onClose(tab.id)}
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </header>
-            </section>
-          ))}
+                  <button
+                    type="button"
+                    aria-label={`关闭 ${tab.title}窗口`}
+                    title="关闭窗口"
+                    onClick={() => onClose(tab.id)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </section>
+              ))}
+            </div>
+          )}
         </aside>
       )}
 

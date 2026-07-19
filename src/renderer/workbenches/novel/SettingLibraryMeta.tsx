@@ -14,7 +14,7 @@ import {
   Tags,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -32,6 +32,7 @@ type MetaTab = "types" | "templates" | "profiles";
 
 interface SettingLibraryMetaProps {
   readonly library: LoadedSettingLibrary;
+  readonly projectTitle: string;
   readonly isSaving: boolean;
   readonly error: string | null;
   readonly onSave: (meta: SettingLibraryMeta) => Promise<void>;
@@ -39,6 +40,7 @@ interface SettingLibraryMetaProps {
     target: NovelAiAssistTarget,
     localContext?: unknown,
   ) => Promise<string | null>;
+  readonly headerActions?: ReactNode;
 }
 
 const MAP_KIND_OPTIONS: SelectOption[] = [
@@ -160,10 +162,12 @@ function PreviewDialog({
 
 export default function SettingLibraryMeta({
   library,
+  projectTitle,
   isSaving,
   error,
   onSave,
   onAiAssist,
+  headerActions,
 }: SettingLibraryMetaProps) {
   const [tab, setTab] = useState<MetaTab>("types");
   const [draft, setDraft] = useState<SettingLibraryMeta>(library.meta);
@@ -259,6 +263,23 @@ export default function SettingLibraryMeta({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
+      <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
+        <div className="flex min-w-0 items-center gap-3">
+          <FileCode2 className="h-5 w-5 shrink-0 text-[var(--accent-warm)]" />
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold">模板配置</h1>
+            <p className="truncate text-xs text-[var(--ink-muted)]">
+              {projectTitle} · {draft.settingTemplates.length} 个设定模板 ·{" "}
+              {isSaving ? "保存中" : dirty ? "待保存" : "已保存"}
+            </p>
+          </div>
+        </div>
+        {headerActions && (
+          <div className="flex shrink-0 items-center gap-2">
+            {headerActions}
+          </div>
+        )}
+      </header>
       {error && (
         <div className="border-b border-[var(--line)] bg-[var(--error-bg)] px-5 py-2 text-xs text-[var(--error)]">
           {error}

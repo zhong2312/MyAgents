@@ -12,6 +12,7 @@ import type { RuntimeBackedProviderIdentity } from "../../shared/providerExecuti
 import type { OfficialToolId } from "../../shared/official-tools";
 import type {
   WorkbenchAgentToolsetRequest,
+  WorkbenchModelSelection,
   WorkbenchTabTarget,
 } from "../../shared/workbench-sdk";
 
@@ -20,6 +21,7 @@ export interface WorkbenchAgentSurfaceBootstrap {
   readonly initialMessage: string;
   readonly promptId?: string;
   readonly historyGroupPath?: readonly string[];
+  readonly modelSelection?: WorkbenchModelSelection;
 }
 
 export interface WorkbenchAgentSurfaceState {

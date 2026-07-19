@@ -13,29 +13,33 @@
     ]
   },
   "task": {
-    "id": "novel-setting-library-meta-v3",
-    "title": "空间层级与元配置驱动的小说设定库",
-    "status": "design-ready"
+    "id": "novel-item-library-v1",
+    "title": "支持分类继承与自定义字段的小说物品库",
+    "status": "design-in-progress"
   },
   "openDesign": {
     "projectId": "myagents-5894",
     "conversationId": "2371b41a-9054-43a8-806a-a1be74f3d080",
-    "runId": "7fe8d20d-d05c-47b3-9b7e-9a23b77fba28",
-    "entryFile": "setting-library-v3/index.html",
-    "previewUrl": "http://127.0.0.1:58474/api/projects/myagents-5894/raw/index.html",
-    "previousRunId": "2ed048b8-0d20-46e6-878a-41144d70a303",
-    "previousEntryFile": "setting-library-v2/index.html"
+    "runId": "70aebc14-f99c-4ef5-ac0a-476fa1f11a21",
+    "entryFile": "item-library-v1/index.html",
+    "previewUrl": null,
+    "previousRunId": "b46d96eb-cee0-4be0-a832-f5f77e414429",
+    "previousEntryFile": "setting-library-v3/index.html"
   },
   "relevantFiles": [
-    "src/renderer/workbenches/novel/SettingLibraryPrototype.tsx",
-    "src/renderer/workbenches/novel/WorldMapPrototype.tsx",
-    "src/renderer/setting-library-prototype.html",
-    "src/renderer/world-map-prototype.html"
+    "Novel-Design.md",
+    "src/renderer/workbenches/novel/index.ts",
+    "src/renderer/workbenches/novel/renderer.tsx",
+    "src/renderer/workbenches/novel/projectInitialization.ts",
+    "src/renderer/workbenches/novel/SettingLibrary.tsx",
+    "src/renderer/workbenches/novel/SettingLibraryMeta.tsx"
   ],
   "constraints": [
     "MyAgents 是产品需求、数据模型、路由和技术架构的事实源",
     "Open Design 是设计迭代期间设计文件的事实源",
-    "设定库与地图必须保持独立模块边界",
-    "设计产物先快照、审查，再按 MyAgents 既有组件与依赖边界实施"
+    "物品库是小说工作台独立一级模块，不嵌入设定库、知识库或地图",
+    "分类和字段变更必须非破坏，已有值不得静默删除",
+    "事实源使用项目内 UTF-8 Markdown 与 JSON，文件 IO 复用 WorkbenchStorage",
+    "设计产物先快照和审查，不自动覆盖 src 下产品源码"
   ]
 }

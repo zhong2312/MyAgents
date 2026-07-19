@@ -8,6 +8,8 @@ export interface WorkbenchNavigationItem {
   readonly label: string;
   readonly icon?: string;
   readonly order?: number;
+  /** Optional direct parent. Navigation currently supports one nested level. */
+  readonly parentId?: string;
 }
 
 export interface WorkbenchManifest {
@@ -132,13 +134,43 @@ export function validateWorkbenchManifest(value: unknown): WorkbenchManifestVali
       const label = readNonEmptyString(item.label, `${path}.label`, issues);
       const icon = item.icon === undefined ? undefined : readNonEmptyString(item.icon, `${path}.icon`, issues);
       const order = item.order === undefined ? undefined : readNonNegativeInteger(item.order, `${path}.order`, issues);
+      const parentId = item.parentId === undefined
+        ? undefined
+        : readNonEmptyString(item.parentId, `${path}.parentId`, issues);
       if (navId && !SEGMENT_PATTERN.test(navId)) {
         issues.push({ path: `${path}.id`, message: 'must be a lowercase route segment' });
       }
+      if (parentId && !SEGMENT_PATTERN.test(parentId)) {
+        issues.push({ path: `${path}.parentId`, message: 'must be a lowercase route segment' });
+      }
       if (navId && ids.has(navId)) issues.push({ path: `${path}.id`, message: 'must be unique' });
       if (navId) ids.add(navId);
-      if (navId && label) navigation.push({ id: navId, label, ...(icon ? { icon } : {}), ...(order === undefined ? {} : { order }) });
+      if (navId && label) {
+        navigation.push({
+          id: navId,
+          label,
+          ...(icon ? { icon } : {}),
+          ...(order === undefined ? {} : { order }),
+          ...(parentId ? { parentId } : {}),
+        });
+      }
     });
+    const navigationById = new Map(navigation.map((item) => [item.id, item]));
+    for (const item of navigation) {
+      if (!item.parentId) continue;
+      const parent = navigationById.get(item.parentId);
+      if (!parent) {
+        issues.push({
+          path: `navigation.${item.id}.parentId`,
+          message: 'must reference an existing navigation item',
+        });
+      } else if (parent.parentId) {
+        issues.push({
+          path: `navigation.${item.id}.parentId`,
+          message: 'must not exceed one nested navigation level',
+        });
+      }
+    }
     if (defaultRoute && !ids.has(defaultRoute)) {
       issues.push({ path: 'entry.defaultRoute', message: 'must reference a navigation item id' });
     }

@@ -6,6 +6,10 @@ import {
 
 import { createSettingLibraryInitializationFiles } from "./settingLibraryRepository";
 import { createPromptLibraryInitializationFiles } from "./promptLibraryRepository";
+import { createItemLibraryInitializationFiles } from "./itemLibraryRepository";
+import { createCharacterLibraryInitializationFiles } from "./characterLibraryRepository";
+import { createLocationLibraryInitializationFiles } from "./locationLibraryRepository";
+import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepository";
 
 export interface NovelProjectInitializationInput {
   readonly projectId: string;
@@ -21,9 +25,13 @@ const DIRECTORIES = [
   "outline/scenes",
   "story",
   "characters",
+  "characters/proposals",
   "world/locations",
   "world/factions",
   "world/items",
+  "world/items/records",
+  "world/items/pages",
+  "world/items/proposals",
   "world/codex",
   "world/setting-library/pages",
   "world/setting-library/entries",
@@ -142,7 +150,7 @@ Thumbs.db
 ## 叙事视角
 `,
     },
-    { path: "characters/index.json", content: createIndex("characters") },
+    ...createCharacterLibraryInitializationFiles(),
     {
       path: "world/worldview.md",
       content: `# 世界观
@@ -168,18 +176,13 @@ Thumbs.db
 `,
     },
     { path: "world/rules.json", content: createIndex("rules") },
-    { path: "world/locations/index.json", content: createIndex("locations") },
+    ...createLocationLibraryInitializationFiles(),
     { path: "world/factions/index.json", content: createIndex("factions") },
-    { path: "world/items/index.json", content: createIndex("items") },
+    ...createItemLibraryInitializationFiles(),
     { path: "world/codex/index.json", content: createIndex("entries") },
     ...createSettingLibraryInitializationFiles(input.title),
     ...createPromptLibraryInitializationFiles(),
-    { path: "timeline/events.json", content: createIndex("events") },
-    {
-      path: "timeline/foreshadowing.json",
-      content: createIndex("foreshadowing"),
-    },
-    { path: "timeline/facts.json", content: createIndex("facts") },
+    ...createTimelineLibraryInitializationFiles(input.createdAt),
     { path: "research/index.json", content: createIndex("sources") },
     { path: "knowledge/entities.json", content: createIndex("entities") },
     { path: "knowledge/relations.json", content: createIndex("relations") },

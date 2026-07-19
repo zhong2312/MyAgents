@@ -7,6 +7,10 @@ import {
   type LoadedSettingLibrary,
 } from "./settingLibraryRepository";
 import {
+  parseLocationLibraryIndex,
+  validateLocationNodeReferences,
+} from "./locationLibrarySchema";
+import {
   parseSettingEntriesFile,
   parseSettingLibraryMeta,
   parseSettingLibrarySettingsIndex,
@@ -18,6 +22,7 @@ import {
   parseWorldProposalManifest,
   serializeWorldProposalManifest,
   WORLD_PROPOSALS_DIRECTORY,
+  WORLD_LOCATION_LIBRARY_PATH,
   worldProposalLegacySnapshotPath,
   worldProposalManifestPath,
   worldProposalSnapshotPath,
@@ -252,12 +257,26 @@ function prospectiveLibrary(
       };
       continue;
     }
-    if (change.targetPath.endsWith(".json")) {
+    if (change.targetPath.startsWith("world/setting-library/entries/")) {
       parseSettingEntriesFile(change.afterContent);
     }
   }
   validateSettingLibraryReferences(next);
   return next;
+}
+
+function validateLocationProposalChanges(
+  library: LoadedSettingLibrary,
+  changes: readonly LoadedWorldProposalChange[],
+): void {
+  const locationChange = changes.find(
+    (change) => change.targetPath === WORLD_LOCATION_LIBRARY_PATH,
+  );
+  if (!locationChange) return;
+  validateLocationNodeReferences(
+    parseLocationLibraryIndex(locationChange.afterContent),
+    library.spatialTree.nodes.map((node) => node.id),
+  );
 }
 
 async function loadPersistedSettingLibrary(
@@ -754,6 +773,7 @@ export function createNovelWorldProposalRepository(
       const settingLibrary =
         await createNovelSettingLibraryRepository(storage).load(projectTitle);
       const prospective = prospectiveLibrary(settingLibrary, selected);
+      validateLocationProposalChanges(prospective, selected);
       await validateMaterializedSettingFiles(
         storage,
         prospective,

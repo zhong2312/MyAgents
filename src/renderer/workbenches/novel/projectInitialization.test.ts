@@ -43,7 +43,7 @@ describe("createNovelProjectInitialization", () => {
         "world/setting-library/meta.json",
         "world/setting-library/spatial-tree.json",
         "world/setting-library/settings.json",
-        "timeline/events.json",
+        "timeline/index.json",
         "knowledge/entities.json",
         "knowledge/relations.json",
         "knowledge/facts.json",

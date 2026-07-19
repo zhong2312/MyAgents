@@ -966,6 +966,11 @@ function ProposalReviewPrototype({
 
 type MiniRunStage = "context" | "running" | "ready";
 
+interface MiniRun {
+  readonly id: string;
+  readonly target: NovelAiAssistTarget;
+}
+
 function AgentRunMiniWindow({
   target,
   onClose,
@@ -994,7 +999,7 @@ function AgentRunMiniWindow({
   ] as const;
 
   return (
-    <aside className="absolute bottom-5 right-5 z-40 w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-2xl">
+    <section className="border-b border-[var(--line-subtle)] last:border-b-0">
       <header className="flex h-12 items-center gap-2 border-b border-[var(--line)] px-3">
         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
           <Bot className="h-3.5 w-3.5" />
@@ -1105,7 +1110,7 @@ function AgentRunMiniWindow({
           </>
         )}
       </footer>
-    </aside>
+    </section>
   );
 }
 
@@ -1122,9 +1127,7 @@ export default function AiWorldDesignPrototype({
     meta: { ...EMPTY_CONVERSATION },
   }));
   const [fullConversation, setFullConversation] = useState<string | null>(null);
-  const [miniTarget, setMiniTarget] = useState<NovelAiAssistTarget | null>(
-    null,
-  );
+  const [miniRuns, setMiniRuns] = useState<readonly MiniRun[]>([]);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const agentLabel = mode === "meta" ? "AI 配置模板" : "AI 创建世界";
   const pageLabel =
@@ -1133,6 +1136,17 @@ export default function AiWorldDesignPrototype({
       : mode === "prompts"
         ? "提示词管理"
         : "世界架构";
+
+  const addMiniRun = (target: NovelAiAssistTarget) => {
+    const id = `${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    setMiniRuns((current) => [...current, { id, target }]);
+  };
+
+  const removeMiniRun = (runId: string) => {
+    setMiniRuns((current) => current.filter((run) => run.id !== runId));
+  };
 
   const openAssist = async (target: NovelAiAssistTarget) => {
     if (target.kind === "world") {
@@ -1147,7 +1161,7 @@ export default function AiWorldDesignPrototype({
       setFullConversation(target.label);
       return null;
     }
-    setMiniTarget(target);
+    addMiniRun(target);
     return null;
   };
 
@@ -1209,24 +1223,44 @@ export default function AiWorldDesignPrototype({
             />
           )}
 
-          {miniTarget && (
-            <AgentRunMiniWindow
-              key={miniTarget.label}
-              target={miniTarget}
-              onClose={() => setMiniTarget(null)}
-              onExpand={() => {
-                setConversations((current) => ({
-                  ...current,
-                  [conversationMode]: {
-                    concept: miniTarget.label,
-                    started: true,
-                    planReady: current[conversationMode].planReady,
-                  },
-                }));
-                setFullConversation(miniTarget.label);
-                setMiniTarget(null);
-              }}
-            />
+          {miniRuns.length > 0 && (
+            <aside
+              aria-label="AI 任务"
+              className="absolute bottom-5 right-5 z-40 w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-2xl"
+            >
+              <header className="flex h-12 items-center gap-2 border-b border-[var(--line)] px-3">
+                <span className="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
+                  <Bot className="h-3.5 w-3.5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="truncate text-xs font-semibold">AI 任务</h2>
+                  <p className="truncate text-xs text-[var(--ink-muted)]">
+                    共 {miniRuns.length} 个任务
+                  </p>
+                </div>
+              </header>
+              <div className="max-h-[min(58vh,34rem)] overflow-y-auto">
+                {[...miniRuns].reverse().map((run) => (
+                  <AgentRunMiniWindow
+                    key={run.id}
+                    target={run.target}
+                    onClose={() => removeMiniRun(run.id)}
+                    onExpand={() => {
+                      setConversations((current) => ({
+                        ...current,
+                        [conversationMode]: {
+                          concept: run.target.label,
+                          started: true,
+                          planReady: current[conversationMode].planReady,
+                        },
+                      }));
+                      setFullConversation(run.target.label);
+                      removeMiniRun(run.id);
+                    }}
+                  />
+                ))}
+              </div>
+            </aside>
           )}
 
           {fullConversation !== null && mode !== "prompts" && (
@@ -1242,7 +1276,7 @@ export default function AiWorldDesignPrototype({
               onClose={() => setFullConversation(null)}
               onMinimize={() => {
                 setFullConversation(null);
-                setMiniTarget({
+                addMiniRun({
                   kind: "world",
                   label:
                     mode === "meta"

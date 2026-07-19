@@ -1,6 +1,11 @@
 export const NOVEL_WORKBENCH_MCP_ID = "novel-workbench" as const;
 
-export type NovelWorkbenchMode = "world" | "template" | "assist";
+export type NovelWorkbenchMode =
+  | "world"
+  | "template"
+  | "assist"
+  | "items"
+  | "characters";
 
 export interface NovelWorkbenchContext {
   readonly mode: NovelWorkbenchMode;
@@ -28,8 +33,16 @@ export function configureNovelWorkbenchRequest(
   const mode = input.mode;
   const promptId = input.promptId;
   const promptVersion = input.promptVersion;
-  if (mode !== "world" && mode !== "template" && mode !== "assist") {
-    throw new Error("toolset.context.mode must be world, template or assist");
+  if (
+    mode !== "world" &&
+    mode !== "template" &&
+    mode !== "assist" &&
+    mode !== "items" &&
+    mode !== "characters"
+  ) {
+    throw new Error(
+      "toolset.context.mode must be world, template, assist, items or characters",
+    );
   }
   if (typeof promptId !== "string" || !promptId.trim()) {
     throw new Error("toolset.context.promptId is required");

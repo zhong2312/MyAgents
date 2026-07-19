@@ -688,13 +688,16 @@ pub fn run() {
                     .level(log_level)
                     // Replace plugin defaults so the inaccessible OS app-log
                     // target is not initialized on portable builds.
-                    .targets([
-                        Target::new(TargetKind::Stdout),
-                        Target::new(TargetKind::Folder {
-                            path: tauri_log_dir,
-                            file_name: Some("tauri.log".into()),
-                        }),
-                    ])
+                    // Do not attach a Stdout target here. In Windows dev mode
+                    // the parent terminal/pipe can be closed while the app's
+                    // background tasks are still running. fern treats the
+                    // resulting broken-pipe write as a logging failure and
+                    // panics while trying its fallback logger, taking down the
+                    // whole desktop process (exit code 0xffffffff).
+                    .targets([Target::new(TargetKind::Folder {
+                        path: tauri_log_dir,
+                        file_name: Some("tauri.log".into()),
+                    })])
                     .build(),
             )?;
 
