@@ -50,14 +50,48 @@ function tc(t: ToolChromeTranslator | undefined, key: string, options?: Record<s
   return String(i18n.t(fullKey, { ns: 'chat', ...options }));
 }
 
-// Internal MCP servers (Context-injected, not in user config) — localized fallback names.
-// User-configured MCP names remain data and are returned verbatim by getMcpServerDisplayName.
-const INTERNAL_MCP_NAME_KEYS: Record<string, string> = {
+// Internal SDK tool adapters are not user-configured MCP services. Their raw
+// transport ids must always resolve to product-owned names in the tool chrome.
+const INTERNAL_TOOL_ADAPTER_NAME_KEYS: Record<string, string> = {
   'im-cron': 'mcpServers.imCron',
   'cron-tools': 'mcpServers.cronTools',
   'im-media': 'mcpServers.imMedia',
   'im-bridge-tools': 'mcpServers.imBridgeTools',
+  'novel-workbench': 'nativeTools.novelWorkbench',
 };
+
+const NOVEL_WORKBENCH_ACTION_KEYS: Record<string, string> = {
+  novel_world_get_context: 'nativeTools.readWorld',
+  novel_world_validate_changes: 'nativeTools.validateWorldProposal',
+  novel_world_submit_proposal: 'nativeTools.submitWorldProposal',
+  novel_power_get_context: 'nativeTools.readPowerSystems',
+  novel_power_create_draft: 'nativeTools.createPowerDraft',
+  novel_power_get_draft: 'nativeTools.readPowerDraft',
+  novel_power_update_draft_overview: 'nativeTools.updatePowerDraft',
+  novel_power_upsert_catalog: 'nativeTools.updatePowerCatalog',
+  novel_power_upsert_progression: 'nativeTools.updatePowerProgression',
+  novel_power_upsert_connections: 'nativeTools.updatePowerConnections',
+  novel_power_remove_draft_entities: 'nativeTools.removePowerDraftEntities',
+  novel_power_validate_draft: 'nativeTools.validatePowerDraft',
+  novel_power_submit_draft: 'nativeTools.submitPowerDraft',
+  novel_power_get_proposal_status: 'nativeTools.readPowerProposalStatus',
+  novel_items_get_context: 'nativeTools.readItems',
+  novel_items_validate_batch: 'nativeTools.validateItemProposal',
+  novel_items_submit_batch: 'nativeTools.submitItemProposal',
+  novel_characters_get_context: 'nativeTools.readCharacters',
+  novel_characters_validate_proposal: 'nativeTools.validateCharacterProposal',
+  novel_characters_submit_proposal: 'nativeTools.submitCharacterProposal',
+};
+
+function getNovelWorkbenchActionLabel(
+  toolName: string,
+  t?: ToolChromeTranslator,
+): string | null {
+  if (!toolName.startsWith('mcp__novel-workbench__')) return null;
+  const action = toolName.split('__').slice(2).join('__');
+  const actionKey = NOVEL_WORKBENCH_ACTION_KEYS[action];
+  return actionKey ? tc(t, actionKey) : tc(t, 'nativeTools.novelWorkbench');
+}
 
 /** Called by Chat.tsx when MCP server list changes */
 export function syncMcpServerNames(servers: Array<{ id: string; name: string }>): void {
@@ -71,7 +105,7 @@ export function syncMcpServerNames(servers: Array<{ id: string; name: string }>)
 function getMcpServerDisplayName(serverId: string, t?: ToolChromeTranslator): string {
   const configuredName = mcpServerNames.get(serverId);
   if (configuredName) return configuredName;
-  const fallbackKey = INTERNAL_MCP_NAME_KEYS[serverId];
+  const fallbackKey = INTERNAL_TOOL_ADAPTER_NAME_KEYS[serverId];
   return fallbackKey ? tc(t, fallbackKey) : serverId;
 }
 
@@ -453,6 +487,22 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
       };
     // Default - Blue (fallback for unknown tools like MCP tools, server_tool_use)
     default:
+      // Novel workbench tools are host-owned native capabilities. The raw MCP
+      // prefix is only how Claude Agent SDK transports in-process custom tools.
+      if (toolName.startsWith('mcp__novel-workbench__')) {
+        return {
+          icon: <BookOpen className="size-4" />,
+          colors: {
+            border: 'border-[var(--line)]',
+            bg: 'bg-[var(--accent-warm-subtle)]',
+            text: 'text-[var(--accent-warm)]',
+            hoverBg: 'hover:bg-[var(--accent-warm-muted)]',
+            chevron: 'text-[var(--accent-warm)]',
+            iconColor: 'text-[var(--accent-warm)]'
+          }
+        };
+      }
+
       // Gemini Image tools - Purple
       if (toolName.startsWith('mcp__gemini-image__')) {
         return {
@@ -621,6 +671,9 @@ export function getToolMainLabel(tool: ToolUseSimple, t?: ToolChromeTranslator):
 
 // Unified label generation logic - extracts compact label from tool
 export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): string {
+  const novelWorkbenchLabel = getNovelWorkbenchActionLabel(tool.name, t);
+  if (novelWorkbenchLabel) return novelWorkbenchLabel;
+
   if (tool.name === 'TodoWrite') {
     return getTodoWriteLabel(tool, t);
   }
@@ -848,6 +901,10 @@ export function getToolExpandedLabel(tool: ToolUseSimple, t?: ToolChromeTranslat
         }
         if (serverId === 'edge-tts') {
           return toolAction === 'list_voices' ? tc(t, 'labels.listVoices') : tc(t, 'labels.textToSpeech');
+        }
+        if (serverId === 'novel-workbench') {
+          return getNovelWorkbenchActionLabel(tool.name, t)
+            ?? tc(t, 'nativeTools.novelWorkbench');
         }
         // Generic MCP: show action if distinct from server name
         if (toolAction && toolAction !== 'search' && toolAction !== 'cron') {

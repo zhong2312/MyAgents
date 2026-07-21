@@ -1,45 +1,111 @@
-import type { PowerSystemRecord } from "./powerSystemSchema";
+import type {
+  PowerCatalog,
+  PowerConnection,
+  PowerConnections,
+  PowerEntityReference,
+  PowerSystemRecord,
+} from "./powerSystemSchema";
 
 export interface PowerSystemAuditIssue {
   readonly id: string;
   readonly severity: "error" | "warning" | "info";
   readonly title: string;
   readonly detail: string;
-  readonly targetKind?: "system" | "element" | "track" | "rule" | "dimension";
+  readonly targetKind?:
+    | "system"
+    | "track"
+    | "state"
+    | "transition"
+    | "dimension"
+    | "catalog"
+    | "connection";
   readonly targetId?: string;
+}
+
+function catalogEntityIds(catalog: PowerCatalog): Set<string> {
+  return new Set([
+    ...catalog.foundations.map((item) => item.id),
+    ...catalog.mediums.map((item) => item.id),
+    ...catalog.principles.map((item) => item.id),
+    ...catalog.resources.map((item) => item.id),
+    ...catalog.theories.map((item) => item.id),
+    ...catalog.methods.map((item) => item.id),
+    ...catalog.capabilities.map((item) => item.id),
+  ]);
+}
+
+function systemEntityIds(record: PowerSystemRecord): Set<string> {
+  return new Set([
+    record.id,
+    ...record.dimensions.map((item) => item.id),
+    ...record.tracks.flatMap((track) => [
+      track.id,
+      ...track.states.map((state) => state.id),
+      ...track.transitions.map((transition) => transition.id),
+    ]),
+  ]);
+}
+
+function referenceExists(
+  reference: PowerEntityReference,
+  record: PowerSystemRecord,
+  catalogIds: ReadonlySet<string>,
+  systemIds: ReadonlySet<string>,
+): boolean {
+  if (reference.namespace === "catalog") {
+    return catalogIds.has(reference.targetId);
+  }
+  if (reference.namespace === "external") return true;
+  if (!systemIds.has(reference.systemId)) return false;
+  if (reference.systemId !== record.id) return true;
+  return systemEntityIds(record).has(reference.targetId);
+}
+
+function connectionTouchesSystem(
+  connection: PowerConnection,
+  systemId: string,
+): boolean {
+  return [connection.source, connection.target].some(
+    (reference) =>
+      reference.namespace === "system" && reference.systemId === systemId,
+  );
 }
 
 export function auditPowerSystem(
   record: PowerSystemRecord,
+  catalog: PowerCatalog,
+  connections: PowerConnections,
+  systemIds: ReadonlySet<string>,
 ): readonly PowerSystemAuditIssue[] {
   const issues: PowerSystemAuditIssue[] = [];
-  const origins = record.elements.filter((item) => item.kind === "origin");
-  const capabilities = record.elements.filter(
-    (item) => item.kind === "capability",
+  const catalogIds = catalogEntityIds(catalog);
+  const localConnections = connections.connections.filter((connection) =>
+    connectionTouchesSystem(connection, record.id),
   );
+  const relevantCatalogIds = new Set(
+    localConnections.flatMap((connection) =>
+      [connection.source, connection.target]
+        .filter((reference) => reference.namespace === "catalog")
+        .map((reference) => reference.targetId),
+    ),
+  );
+  catalog.methods
+    .filter((method) => relevantCatalogIds.has(method.id))
+    .forEach((method) =>
+      method.theoryRefs.forEach((reference) =>
+        relevantCatalogIds.add(reference.targetId),
+      ),
+    );
 
-  if (
-    record.designContract.explanation === "explicit" &&
-    origins.length === 0
-  ) {
-    issues.push({
-      id: "missing-origin",
-      severity: "warning",
-      title: "缺少力量来源",
-      detail: "体系声明为明确解释，但尚未定义力量从哪里产生。",
-      targetKind: "system",
-      targetId: record.id,
-    });
-  }
   if (
     record.designContract.progression !== "none" &&
     record.tracks.length === 0
   ) {
     issues.push({
-      id: "missing-track",
+      id: "missing-progression-track",
       severity: "error",
-      title: "缺少状态轨道",
-      detail: "体系声明存在成长结构，但没有任何状态轨道。",
+      title: "缺少成长轨道",
+      detail: "体系声明存在成长结构，但没有任何境界、等级、形态或控制轨道。",
       targetKind: "system",
       targetId: record.id,
     });
@@ -49,124 +115,247 @@ export function auditPowerSystem(
     record.tracks.length > 1
   ) {
     issues.push({
-      id: "too-many-tracks",
+      id: "too-many-progression-tracks",
       severity: "error",
-      title: "状态轨道超过设计契约",
-      detail: "体系声明为单轨成长，但当前存在多条状态轨道。",
+      title: "成长轨道超过设计契约",
+      detail: "体系声明为单轨成长，但当前存在多条成长轨道。",
       targetKind: "system",
       targetId: record.id,
     });
   }
+
+  const qualityDimensions = new Set(
+    record.dimensions
+      .filter((dimension) => dimension.category === "quality")
+      .map((dimension) => dimension.id),
+  );
+  const boundaryDimensions = new Set(
+    record.dimensions
+      .filter((dimension) => dimension.category === "boundary")
+      .map((dimension) => dimension.id),
+  );
 
   record.tracks.forEach((track) => {
     if (track.states.length === 0) {
       issues.push({
         id: `empty-track-${track.id}`,
         severity: "warning",
-        title: `“${track.name}”没有状态`,
-        detail: "空轨道不会为人物提供任何可引用的状态。",
+        title: `成长轨道“${track.name}”没有状态`,
+        detail: "空轨道无法表达修炼境界、异能控制阶段、魔法等级或形态变化。",
         targetKind: "track",
         targetId: track.id,
       });
       return;
     }
-    const incoming = new Set(track.transitions.map((item) => item.toStateId));
-    const orderedStates = [...track.states].sort(
-      (left, right) => left.order - right.order,
+    const incoming = new Set(
+      track.transitions.map((transition) => transition.toStateId),
     );
-    orderedStates.slice(1).forEach((state) => {
-      if (!incoming.has(state.id) && track.mode !== "unordered") {
+    [...track.states]
+      .sort((left, right) => left.order - right.order)
+      .slice(1)
+      .forEach((state) => {
+        if (!incoming.has(state.id) && track.mode !== "unordered") {
+          issues.push({
+            id: `unreachable-state-${track.id}-${state.id}`,
+            severity: "warning",
+            title: `状态“${state.name}”不可达`,
+            detail: `轨道“${track.name}”中没有任何转换进入该状态。`,
+            targetKind: "state",
+            targetId: state.id,
+          });
+        }
+      });
+
+    track.states.forEach((state) => {
+      if (
+        record.designContract.theoryPolicy === "explicit" &&
+        state.contract.cognition.representationType === "unknown"
+      ) {
         issues.push({
-          id: `unreachable-${track.id}-${state.id}`,
+          id: `state-cognition-unknown-${state.id}`,
           severity: "warning",
-          title: `状态“${state.name}”不可达`,
-          detail: `轨道“${track.name}”中没有任何转换进入该状态。`,
-          targetKind: "track",
-          targetId: track.id,
+          title: `状态“${state.name}”缺少认知或控制模型`,
+          detail:
+            "显式理论体系应说明进入这一状态需要怎样的记忆、空间、算法、身体或情绪控制模式。",
+          targetKind: "state",
+          targetId: state.id,
+        });
+      }
+      if (
+        boundaryDimensions.size > 0 &&
+        state.contract.baseBoundaries.length === 0
+      ) {
+        issues.push({
+          id: `state-boundary-empty-${state.id}`,
+          severity: "warning",
+          title: `状态“${state.name}”没有能力边界`,
+          detail: "至少应描述储量、吞吐、范围、持续时间或承载能力中的一项。",
+          targetKind: "state",
+          targetId: state.id,
+        });
+      }
+      state.contract.baseQualities.forEach((value) => {
+        if (!qualityDimensions.has(value.dimensionId)) {
+          issues.push({
+            id: `state-quality-kind-${state.id}-${value.dimensionId}`,
+            severity: "error",
+            title: `状态“${state.name}”错误使用了边界维度`,
+            detail: `“${value.dimensionId}”不是质量维度。`,
+            targetKind: "state",
+            targetId: state.id,
+          });
+        }
+      });
+      state.contract.baseBoundaries.forEach((value) => {
+        if (!boundaryDimensions.has(value.dimensionId)) {
+          issues.push({
+            id: `state-boundary-kind-${state.id}-${value.dimensionId}`,
+            severity: "error",
+            title: `状态“${state.name}”错误使用了质量维度`,
+            detail: `“${value.dimensionId}”不是边界维度。`,
+            targetKind: "state",
+            targetId: state.id,
+          });
+        }
+      });
+    });
+
+    track.transitions.forEach((transition) => {
+      if (transition.outcomes.length === 0) {
+        issues.push({
+          id: `transition-without-outcome-${transition.id}`,
+          severity: "warning",
+          title: `转换“${transition.name}”没有成功结果`,
+          detail: "突破、觉醒、升级或变形应说明成功后发生什么。",
+          targetKind: "transition",
+          targetId: transition.id,
         });
       }
     });
   });
 
-  if (record.designContract.costPolicy !== "optional") {
-    capabilities.forEach((capability) => {
-      const scopedCosts = record.rules.some(
-        (rule) =>
-          rule.costs.length > 0 &&
-          (rule.scopeElementIds.length === 0 ||
-            rule.scopeElementIds.includes(capability.id)),
-      );
-      const resourceRelation = record.relations.some(
-        (relation) =>
-          relation.toId === capability.id &&
-          (relation.kind === "consumes" || relation.kind === "requires"),
-      );
-      if (!scopedCosts && !resourceRelation) {
+  const theoryIds = new Set(catalog.theories.map((theory) => theory.id));
+  catalog.methods
+    .filter((method) => relevantCatalogIds.has(method.id))
+    .forEach((method) => {
+      if (
+        record.designContract.theoryPolicy === "explicit" &&
+        method.theoryRefs.length === 0
+      ) {
         issues.push({
-          id: `costless-${capability.id}`,
-          severity:
-            record.designContract.costPolicy === "required" ? "error" : "info",
-          title: `能力“${capability.name}”没有成本约束`,
-          detail: "尚未发现资源消耗、前置需求或带代价的适用规则。",
-          targetKind: "element",
+          id: `method-without-theory-${method.id}`,
+          severity: "warning",
+          title: `发展方法“${method.name}”没有理论模型`,
+          detail:
+            "显式理论体系中的功法、冥想、训练或改造流程应说明为什么有效。",
+          targetKind: "catalog",
+          targetId: method.id,
+        });
+      }
+      method.theoryRefs.forEach((reference) => {
+        if (!theoryIds.has(reference.targetId)) {
+          issues.push({
+            id: `method-theory-missing-${method.id}-${reference.targetId}`,
+            severity: "error",
+            title: `发展方法“${method.name}”引用了不存在的理论`,
+            detail: `理论 ID “${reference.targetId}”不在共享目录中。`,
+            targetKind: "catalog",
+            targetId: method.id,
+          });
+        }
+      });
+    });
+
+  catalog.theories
+    .filter((theory) => relevantCatalogIds.has(theory.id))
+    .forEach((theory) => {
+      if (
+        theory.operations.length === 0 &&
+        theory.representationType !== "unknown"
+      ) {
+        issues.push({
+          id: `theory-without-operation-${theory.id}`,
+          severity: "warning",
+          title: `理论“${theory.name}”没有基础操作`,
+          detail:
+            "补充循环、压缩、转换、共振、自组织等操作，才能解释方法的运行过程。",
+          targetKind: "catalog",
+          targetId: theory.id,
+        });
+      }
+    });
+
+  catalog.capabilities
+    .filter((capability) => relevantCatalogIds.has(capability.id))
+    .forEach((capability) => {
+      if (!capability.effect.trim()) {
+        issues.push({
+          id: `capability-without-effect-${capability.id}`,
+          severity: "error",
+          title: `能力“${capability.name}”没有效果`,
+          detail: "能力必须说明它改变了什么，才能参与因果、边界和反制检查。",
+          targetKind: "catalog",
+          targetId: capability.id,
+        });
+      }
+      if (
+        capability.limitations.length === 0 &&
+        capability.countermeasures.length === 0
+      ) {
+        issues.push({
+          id: `capability-without-boundary-${capability.id}`,
+          severity: "warning",
+          title: `能力“${capability.name}”缺少限制或反制`,
+          detail:
+            "能力至少应有适用边界、副作用、资源成本或可被利用的反制方式。",
+          targetKind: "catalog",
           targetId: capability.id,
         });
       }
     });
-  }
 
-  record.rules.forEach((rule) => {
-    if (rule.effects.length === 0) {
+  localConnections.forEach((connection) => {
+    for (const endpoint of [connection.source, connection.target]) {
+      if (!referenceExists(endpoint, record, catalogIds, systemIds)) {
+        issues.push({
+          id: `connection-reference-${connection.id}-${endpoint.targetId}`,
+          severity: "error",
+          title: `连接“${connection.id}”存在失效引用`,
+          detail: `对象 ID “${endpoint.targetId}”不存在或不属于指定体系。`,
+          targetKind: "connection",
+          targetId: connection.id,
+        });
+      }
+    }
+    if (
+      connection.kind === "method-application" &&
+      !connection.executionModel.trim()
+    ) {
       issues.push({
-        id: `effectless-rule-${rule.id}`,
+        id: `method-application-model-${connection.id}`,
         severity: "warning",
-        title: `规则“${rule.name}”没有结果`,
-        detail: "规则可以保留未知条件，但至少需要描述成立后的结果。",
-        targetKind: "rule",
-        targetId: rule.id,
+        title: "方法应用缺少具体执行模型",
+        detail: "同一方法在不同状态可能采用不同路径、法阵、训练或控制模型。",
+        targetKind: "connection",
+        targetId: connection.id,
       });
     }
     if (
-      rule.metadata.authority === "exception" &&
-      rule.conditions.clauses.length === 0
+      connection.kind === "resource-requirement" &&
+      connection.amount.minimum !== null &&
+      connection.amount.maximum !== null &&
+      connection.amount.minimum > connection.amount.maximum
     ) {
       issues.push({
-        id: `unconditional-exception-${rule.id}`,
+        id: `resource-range-${connection.id}`,
         severity: "error",
-        title: `例外规则“${rule.name}”缺少触发条件`,
-        detail: "无条件例外会覆盖体系默认规则，必须明确何时成立。",
-        targetKind: "rule",
-        targetId: rule.id,
+        title: "资源需求区间颠倒",
+        detail: "资源最小需求不能高于最大需求。",
+        targetKind: "connection",
+        targetId: connection.id,
       });
     }
   });
 
-  record.benchmarks.forEach((benchmark) => {
-    benchmark.values.forEach((value) => {
-      if (
-        value.minimum !== null &&
-        value.maximum !== null &&
-        value.minimum > value.maximum
-      ) {
-        issues.push({
-          id: `invalid-range-${benchmark.id}-${value.dimensionId}`,
-          severity: "error",
-          title: `标尺“${benchmark.name}”区间颠倒`,
-          detail: "维度下限不能高于上限。",
-          targetKind: "dimension",
-          targetId: value.dimensionId,
-        });
-      }
-    });
-  });
-
-  if (issues.length === 0) {
-    issues.push({
-      id: "audit-clean",
-      severity: "info",
-      title: "未发现结构性问题",
-      detail: "当前结果只代表结构与设计契约一致，仍需作者判断叙事效果。",
-    });
-  }
   return issues;
 }

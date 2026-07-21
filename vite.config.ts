@@ -58,6 +58,16 @@ export default defineConfig({
       { find: /^lucide-umd-source(?=$|\?)/, replacement: resolve(__dirname, 'node_modules/lucide/dist/umd/lucide.min.js') },
     ]
   },
+  // These aliases resolve to JavaScript files that are intentionally loaded as
+  // raw text. Vite's dev dependency optimizer otherwise registers the bare
+  // alias before the `?raw` transform and emits a deps URL without metadata.
+  optimizeDeps: {
+    exclude: [
+      'chartjs-umd-source?raw',
+      'd3-umd-source?raw',
+      'lucide-umd-source?raw',
+    ],
+  },
   // Define environment variables for client code
   define: {
     // DEBUG_MODE: true when VITE_DEBUG_MODE is set or in dev server mode

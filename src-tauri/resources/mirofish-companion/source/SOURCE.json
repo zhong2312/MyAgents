@@ -1,0 +1,16 @@
+{
+  "component": "MiroFish-Explorer novel companion",
+  "upstream": "https://github.com/jjy1000/MiroFish-Explorer",
+  "upstreamCommit": "99d4003d2e47a6b3fd66a1f3a47d699297c91f8c",
+  "license": "AGPL-3.0",
+  "files": [
+    { "path": "backend/app/__init__.py", "sha256": "17466b8c9dd1221cd4fa726785cb618ca286e2950a8e865f1ede5ac94b924125" },
+    { "path": "backend/app/services/__init__.py", "sha256": "ebce0ffa2facd257a08566195f38d4391a312ec1ce37e9d23241b2ef14887038" },
+    { "path": "backend/app/services/novel_simulation_engine.py", "sha256": "2a74095e952b08ee16bb0f031b36c4be781388382546af0929fdfc86113b0a38" },
+    { "path": "backend/app/services/novel_simulation_manager.py", "sha256": "2c53bf727c35bd4415e6f72e60653bf1d9170a179d2444df0f16e6f0ef145b3d" },
+    { "path": "backend/app/services/novel_simulation_models.py", "sha256": "42692d370e1b6fa11712004dce42ae9a62e725a708ff9a316e17982c44206934" },
+    { "path": "backend/companion-requirements.txt", "sha256": "027b18602b327eaebb89f162422cc9afb2b424438bb36038e6a2681b1e594dff" },
+    { "path": "backend/novel_companion.py", "sha256": "d5073227839f7d817f5a572c683ed793f0c8c99c1bc7a7e7371b3c114b6b0553" },
+    { "path": "LICENSE", "sha256": "8d56b405468aad11f87ab5763f901e276e08d9646ff5c8481b1762b6b789e9ed" }
+  ]
+}

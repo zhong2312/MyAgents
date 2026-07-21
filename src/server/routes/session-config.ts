@@ -8,10 +8,19 @@ import type {
 } from "../session-engine/types";
 import type { InteractionScenario } from "../system-prompt";
 import {
-  configureNovelWorkbenchRequest,
+  configureNovelWorkbenchToolset,
   getNovelWorkbenchContext,
+  getNovelWorkbenchToolsetSnapshot,
+  NOVEL_WORKBENCH_TOOLSET_ID,
 } from "../novel-workbench-context";
-import { forceReloadActiveSession } from "../agent-session";
+import {
+  ensureSdkMcpInSync,
+  forceReloadActiveSession,
+} from "../agent-session";
+import {
+  getSessionMetadata,
+  updateSessionMetadata,
+} from "../SessionStore";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -106,7 +115,7 @@ export async function handleSessionConfigRoute(
       const payload = (await request.json()) as {
         toolset?: { id?: unknown; context?: unknown };
       };
-      if (payload.toolset?.id !== "novel-world") {
+      if (payload.toolset?.id !== NOVEL_WORKBENCH_TOOLSET_ID) {
         return jsonResponse(
           { success: false, error: "Unknown workbench Agent toolset." },
           400,
@@ -135,8 +144,9 @@ export async function handleSessionConfigRoute(
         );
       }
       const previousContext = getNovelWorkbenchContext();
-      const context = configureNovelWorkbenchRequest(payload.toolset.context, {
-        sessionId: activeSession.sessionId ?? "default",
+      const boundSessionId = activeSession.sessionId?.trim() || "default";
+      const context = configureNovelWorkbenchToolset(payload.toolset, {
+        sessionId: boundSessionId,
         workspace,
       });
       const contextChanged =
@@ -145,16 +155,33 @@ export async function handleSessionConfigRoute(
         previousContext?.promptVersion !== context.promptVersion ||
         previousContext?.sessionId !== context.sessionId ||
         previousContext?.workspace !== context.workspace;
-      if (contextChanged) {
-        // A resumed session may still hold historical tool names while its
-        // freshly spawned SDK process has no context-injected MCP. Rebuild it
-        // after binding the new workbench context so its real tool list agrees.
+      const toolsetSnapshot = getNovelWorkbenchToolsetSnapshot();
+      const existingMetadata = getSessionMetadata(boundSessionId);
+      if (existingMetadata && toolsetSnapshot) {
+        const updated = await updateSessionMetadata(boundSessionId, {
+          workbenchToolset: toolsetSnapshot,
+        });
+        if (!updated) {
+          throw new Error("Failed to persist workbench Agent toolset.");
+        }
+      }
+
+      // Always verify the live Query, including when the in-memory context is
+      // unchanged. A cold-resumed SDK process may have been created before the
+      // renderer repeated this binding and therefore still lack the adapter.
+      const toolsReady = await ensureSdkMcpInSync();
+      if (!toolsReady) {
+        // No live Query yet, or a turn currently owns it. The next Query is
+        // rebuilt from the context already bound above.
         forceReloadActiveSession("mcp");
       }
       return jsonResponse({
         success: true,
         toolsetId: payload.toolset.id,
         mode: context.mode,
+        persisted: Boolean(existingMetadata && toolsetSnapshot),
+        toolsReady,
+        contextChanged,
       });
     } catch (error) {
       console.error("[api/workbench-agent/configure] Error:", error);

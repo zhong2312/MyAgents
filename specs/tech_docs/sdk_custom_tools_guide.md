@@ -8,16 +8,21 @@ Claude Agent SDK 提供了 `createSdkMcpServer` 和 `tool` 函数，允许开发
 
 ## 当前工具清单
 
-当前常驻注册表只包含用户可启用的 `gemini-image` 与 `edge-tts`；IM Bridge
-还会按渠道动态创建自己的 SDK MCP。历史上的 `cron-tools`、`im-cron`、
-`im-media` 已在 0.2.11 退役，能力统一由 `myagents` CLI 提供，不能重新注册成
-SDK MCP。
+当前注册表包含用户可启用的 `gemini-image`、`edge-tts`，以及仅由受控
+小说工作台会话装配的 `novel-workbench` SDK 适配器；IM Bridge 还会按渠道动态
+创建自己的 SDK MCP。历史上的 `cron-tools`、`im-cron`、`im-media` 已在
+0.2.11 退役，能力统一由 `myagents` CLI 提供，不能重新注册成 SDK MCP。
 
 | MCP Server | Tool Name | 完整调用名 | 文件 | 注册条件 |
 |------------|-----------|-----------|------|---------|
 | `gemini-image` | image tools | `mcp__gemini-image__*` | `src/server/tools/gemini-image-tool.ts` | 用户启用 |
 | `edge-tts` | speech tools | `mcp__edge-tts__*` | `src/server/tools/edge-tts-tool.ts` | 用户启用 |
+| `novel-workbench` | 小说工作台内置业务工具 | `mcp__novel-workbench__*` | `src/server/tools/novel-workbench-tool.ts` | 工作台受控会话自动装配 |
 | IM Bridge dynamic server | channel tools | 动态 | `src/server/tools/im-bridge-tools.ts` | 对应 IM Bridge 渠道启用 |
+
+### 产品语义边界
+
+`novel-workbench` 在产品层属于 MyAgents 小说工作台内置工具，不是用户 MCP。它不进入设置页、不允许用户开关，也不存在面向用户的 MCP 连接状态。这里的 `createSdkMcpServer()` 和 `mcp__` 前缀只是 Claude Agent SDK 接收进程内自定义工具的传输适配。模型提示、工具卡和错误文案必须使用“小说工作台内置工具”及具体业务动作，禁止要求用户检查 MCP 设置或恢复 MCP 连接。
 
 ### 工具注册位置
 

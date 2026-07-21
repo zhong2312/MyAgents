@@ -9,20 +9,32 @@ import {
   raceDefinitionSchema,
 } from "../../shared/novel-character-library-schema";
 import {
+  powerCatalogSchema,
+  powerConnectionsSchema,
   powerSystemIndexSchema,
-  powerSystemInteractionsSchema,
   powerSystemMetaSchema,
   powerSystemRecordSchema,
+  type PowerCatalog,
+  type PowerConnections,
   type PowerSystemIndex,
-  type PowerSystemInteractions,
   type PowerSystemMeta,
   type PowerSystemRecord,
 } from "../../shared/novel-power-system-schema";
+import { validatePowerSystemLibrary } from "../../shared/novel-power-system-validation";
 import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
-  NOVEL_WORKBENCH_MCP_ID,
+  NOVEL_WORKBENCH_SDK_ADAPTER_ID,
+  NOVEL_WORKBENCH_SDK_INSTRUCTIONS,
 } from "../novel-workbench-context";
+import type {
+  PowerDraftCatalogEntityInput,
+  PowerDraftConnectionInput,
+  PowerDraftDesignBrief,
+  PowerDraftOverviewPatch,
+  PowerDraftProgressionInput,
+  PowerDraftRemoveScope,
+} from "../novel-power-draft";
 
 type CallToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -83,7 +95,7 @@ const MAX_CHARACTER_OPERATIONS = 40;
 const POWER_SYSTEM_ROOT = "world/power-systems";
 const POWER_SYSTEM_PROPOSAL_ROOT = `${POWER_SYSTEM_ROOT}/proposals`;
 const POWER_SYSTEM_TARGET_PATTERN =
-  /^world\/power-systems\/(?:meta\.json|index\.json|interactions\.json|records\/[a-z0-9-]+\.json|pages\/[a-z0-9-]+\.md)$/;
+  /^world\/power-systems\/(?:meta\.json|index\.json|catalog\.json|connections\.json|records\/[a-z0-9-]+\.json|pages\/[a-z0-9-]+\.md)$/;
 const MAX_POWER_SYSTEM_CHANGES = 40;
 
 type CharacterProposalOperation = {
@@ -1400,20 +1412,25 @@ async function validatePowerSystemChanges(
       : readOptional(workspaceFile(workspace, path));
   const metaPath = `${POWER_SYSTEM_ROOT}/meta.json`;
   const indexPath = `${POWER_SYSTEM_ROOT}/index.json`;
-  const interactionsPath = `${POWER_SYSTEM_ROOT}/interactions.json`;
-  const [metaContent, indexContent, interactionsContent] = await Promise.all([
-    candidateContent(metaPath),
-    candidateContent(indexPath),
-    candidateContent(interactionsPath),
-  ]);
+  const catalogPath = `${POWER_SYSTEM_ROOT}/catalog.json`;
+  const connectionsPath = `${POWER_SYSTEM_ROOT}/connections.json`;
+  const [metaContent, indexContent, catalogContent, connectionsContent] =
+    await Promise.all([
+      candidateContent(metaPath),
+      candidateContent(indexPath),
+      candidateContent(catalogPath),
+      candidateContent(connectionsPath),
+    ]);
   if (metaContent === null) errors.push("力量体系库缺少 meta.json");
   if (indexContent === null) errors.push("力量体系库缺少 index.json");
-  if (interactionsContent === null)
-    errors.push("力量体系库缺少 interactions.json");
+  if (catalogContent === null) errors.push("力量体系库缺少 catalog.json");
+  if (connectionsContent === null)
+    errors.push("力量体系库缺少 connections.json");
   if (
     metaContent === null ||
     indexContent === null ||
-    interactionsContent === null
+    catalogContent === null ||
+    connectionsContent === null
   ) {
     return errors;
   }
@@ -1430,13 +1447,19 @@ async function validatePowerSystemChanges(
     powerSystemIndexSchema,
     errors,
   );
-  const interactions = parsePowerSystemSchema<PowerSystemInteractions>(
-    interactionsPath,
-    interactionsContent,
-    powerSystemInteractionsSchema,
+  const catalog = parsePowerSystemSchema<PowerCatalog>(
+    catalogPath,
+    catalogContent,
+    powerCatalogSchema,
     errors,
   );
-  if (!meta || !index || !interactions) return errors;
+  const connections = parsePowerSystemSchema<PowerConnections>(
+    connectionsPath,
+    connectionsContent,
+    powerConnectionsSchema,
+    errors,
+  );
+  if (!meta || !index || !catalog || !connections) return errors;
 
   const typeIds = new Set<string>();
   for (const type of meta.systemTypes) {
@@ -1446,7 +1469,6 @@ async function validatePowerSystemChanges(
 
   const systemIds = new Set<string>();
   const records = new Map<string, PowerSystemRecord>();
-  const graphTargets = new Map<string, Set<string>>();
   for (const entry of index.systems) {
     if (systemIds.has(entry.id)) {
       errors.push(`力量体系索引 id 重复：${entry.id}`);
@@ -1482,7 +1504,7 @@ async function validatePowerSystemChanges(
       errors,
     );
     if (!record) continue;
-    records.set(record.id, record);
+    records.set(entry.id, record);
     if (record.id !== entry.id) {
       errors.push(`力量体系索引与记录 id 不一致：${entry.id}`);
     }
@@ -1498,15 +1520,6 @@ async function validatePowerSystemChanges(
     if (!typeIds.has(record.typeId)) {
       errors.push(`力量体系“${record.name}”引用了不存在的类型`);
     }
-    const targetsForSystem = new Set<string>([record.id]);
-    record.elements.forEach((item) => targetsForSystem.add(item.id));
-    record.tracks.forEach((track) => {
-      targetsForSystem.add(track.id);
-      track.states.forEach((state) => targetsForSystem.add(state.id));
-    });
-    record.rules.forEach((item) => targetsForSystem.add(item.id));
-    record.dimensions.forEach((item) => targetsForSystem.add(item.id));
-    graphTargets.set(record.id, targetsForSystem);
   }
 
   for (const path of proposed.keys()) {
@@ -1521,27 +1534,15 @@ async function validatePowerSystemChanges(
     }
   }
 
-  for (const interaction of interactions.interactions) {
-    for (const reference of [interaction.left, interaction.right]) {
-      if (!systemIds.has(reference.systemId)) {
-        errors.push(
-          `跨体系交互“${interaction.name}”引用了不存在的体系：${reference.systemId}`,
-        );
-        continue;
-      }
-      if (!graphTargets.get(reference.systemId)?.has(reference.targetId)) {
-        errors.push(
-          `跨体系交互“${interaction.name}”引用了不存在的目标：${reference.targetId}`,
-        );
-      }
-      if (
-        reference.kind === "system" &&
-        reference.targetId !== reference.systemId
-      ) {
-        errors.push(`跨体系交互“${interaction.name}”的体系级引用不一致`);
-      }
-    }
-  }
+  errors.push(
+    ...validatePowerSystemLibrary({
+      meta,
+      index,
+      catalog,
+      connections,
+      records,
+    }),
+  );
   return errors;
 }
 
@@ -1550,57 +1551,352 @@ async function getPowerSystemContextHandler(args: {
 }): Promise<CallToolResult> {
   try {
     const { workspace, context } = requireWorkspace();
-    const files: Record<string, string | null> = {};
-    const corePaths = [
-      `${POWER_SYSTEM_ROOT}/meta.json`,
-      `${POWER_SYSTEM_ROOT}/index.json`,
-      `${POWER_SYSTEM_ROOT}/interactions.json`,
-    ];
-    for (const path of corePaths) {
-      files[path] = await readOptional(workspaceFile(workspace, path));
-    }
+    const [metaContent, indexContent, catalogContent, connectionsContent] =
+      await Promise.all([
+        fs.readFile(workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/meta.json`), "utf8"),
+        fs.readFile(workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/index.json`), "utf8"),
+        fs.readFile(workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/catalog.json`), "utf8"),
+        fs.readFile(
+          workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/connections.json`),
+          "utf8",
+        ),
+      ]);
+    const meta = powerSystemMetaSchema.parse(JSON.parse(metaContent));
+    const index = powerSystemIndexSchema.parse(JSON.parse(indexContent));
+    const catalog = powerCatalogSchema.parse(JSON.parse(catalogContent));
+    const connections = powerConnectionsSchema.parse(
+      JSON.parse(connectionsContent),
+    );
+    const powerDrafts = await import("../novel-power-draft");
+    const drafts = await powerDrafts.listPowerDrafts(workspace);
+    let selectedSystem: {
+      record: PowerSystemRecord;
+      pageMarkdown: string | null;
+    } | null = null;
     if (args.systemId) {
       if (!ID_PATTERN.test(args.systemId)) {
         throw new Error("systemId 只能使用小写字母、数字和连字符");
       }
       const recordPath = `${POWER_SYSTEM_ROOT}/records/${args.systemId}.json`;
       const pagePath = `${POWER_SYSTEM_ROOT}/pages/${args.systemId}.md`;
-      files[recordPath] = await readOptional(
+      const recordContent = await fs.readFile(
         workspaceFile(workspace, recordPath),
+        "utf8",
       );
-      files[pagePath] = await readOptional(workspaceFile(workspace, pagePath));
+      selectedSystem = {
+        record: powerSystemRecordSchema.parse(JSON.parse(recordContent)),
+        pageMarkdown: await readOptional(workspaceFile(workspace, pagePath)),
+      };
     }
-    return result({ mode: context.mode, files });
+    const catalogEntities = [
+      ...catalog.foundations,
+      ...catalog.mediums,
+      ...catalog.principles,
+      ...catalog.resources,
+      ...catalog.theories,
+      ...catalog.methods,
+      ...catalog.capabilities,
+    ].map(({ id, name, kind, summary, tags }) => ({
+      id,
+      name,
+      kind,
+      summary,
+      tags,
+    }));
+    return result({
+      mode: context.mode,
+      workflow: [
+        "先用 novel_power_get_context 了解现状并与作者确认设计摘要",
+        "用 novel_power_create_draft 创建服务端草稿",
+        "按需调用 overview/catalog/progression/connections 增量工具",
+        "用 novel_power_validate_draft 获取绑定当前版本的 validationToken",
+        "用 novel_power_submit_draft 提交一次",
+        "用 novel_power_get_proposal_status 确认 exists=true",
+      ],
+      systemTypes: meta.systemTypes,
+      systems: index.systems,
+      catalogEntities,
+      connections: connections.connections.map(
+        ({ id, kind, source, target, note }) => ({
+          id,
+          kind,
+          source,
+          target,
+          note,
+        }),
+      ),
+      drafts,
+      selectedSystem,
+      modelingPatterns: [
+        {
+          id: "trained-progression",
+          fit: "修炼、魔法学习、武技、职业训练",
+          emphasis: "理论模型、发展方法、资源需求、状态与转换",
+        },
+        {
+          id: "event-awakening",
+          fit: "异能觉醒、血脉、变异、神授",
+          emphasis: "触发事件、状态条件、能力准入、代价与失控风险",
+        },
+        {
+          id: "authority-permission",
+          fit: "神权、契约、规则权限、社会制度型力量",
+          emphasis: "底层法则、权限状态、授权条件与例外边界",
+        },
+        {
+          id: "equipment-technology",
+          fit: "科技、装备、改造、外部装置",
+          emphasis: "介质、资源、版本路径、能力效果与系统交互",
+        },
+        {
+          id: "soft-mysterious",
+          fit: "神秘力量、寓言规则、不可完全解释的奇幻",
+          emphasis: "保持局部一致，只定义叙事需要的边界和反例",
+        },
+      ],
+    });
   } catch (error) {
     return result({ error: message(error) }, true);
   }
 }
 
-async function validatePowerSystemHandler(args: {
-  changes: ProposedChange[];
+type StructuredPowerValidationIssue = {
+  code: "schema" | "reference" | "conflict" | "limit" | "invalid";
+  path: string;
+  message: string;
+  suggestion: string;
+};
+
+const MAX_RETURNED_POWER_VALIDATION_ISSUES = 20;
+
+function structurePowerValidationIssue(
+  error: string,
+): StructuredPowerValidationIssue {
+  const filePath =
+    /^(world\/power-systems\/[^\s：]+)/u.exec(error)?.[1] ?? "$";
+  const fieldPath =
+    /^world\/power-systems\/[^\s：]+\s+([^：]+)：/u.exec(error)?.[1];
+  const path = fieldPath ? `${filePath}#${fieldPath}` : filePath;
+  const code = /引用|不存在|未被.*引用|不一致/u.test(error)
+    ? "reference"
+    : /重复|已经存在|不能按|不能从/u.test(error)
+      ? "conflict"
+      : /超过|最多|大小限制/u.test(error)
+        ? "limit"
+        : filePath !== "$" && error.includes("：")
+          ? "schema"
+          : "invalid";
+  const suggestion =
+    code === "reference"
+      ? "先读取当前上下文或草稿，使用已有稳定 id，并补齐对应目录对象或连接。"
+      : code === "conflict"
+        ? "为新对象使用唯一稳定 id；修改已有对象时保持原 kind 和目标体系。"
+        : code === "limit"
+          ? "缩小本次草稿范围，删除无叙事作用的冗余对象后重新校验。"
+          : code === "schema"
+            ? "使用对应领域 upsert 工具补齐该字段，不要手写完整文件。"
+            : "读取草稿摘要，修正列出的对象后再次调用校验工具。";
+  return { code, path, message: error, suggestion };
+}
+
+function structuredPowerValidationResult(errors: readonly string[]) {
+  return {
+    valid: errors.length === 0,
+    totalErrorCount: errors.length,
+    errors: errors
+      .slice(0, MAX_RETURNED_POWER_VALIDATION_ISSUES)
+      .map(structurePowerValidationIssue),
+    truncated: errors.length > MAX_RETURNED_POWER_VALIDATION_ISSUES,
+  };
+}
+
+async function createPowerDraftHandler(args: {
+  draftId?: string;
+  systemId: string;
+  name: string;
+  typeId: string;
+  summary?: string;
+  designBrief: PowerDraftDesignBrief;
 }): Promise<CallToolResult> {
   try {
-    const errors = await validatePowerSystemChanges(args.changes);
-    return result({ valid: errors.length === 0, errors }, errors.length > 0);
+    const { workspace, context } = requireWorkspace();
+    if (!context.sessionId) throw new Error("当前会话缺少稳定 sessionId");
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.createPowerDraft(workspace, args, {
+      sessionId: context.sessionId,
+      promptId: context.promptId,
+      promptVersion: context.promptVersion,
+    });
+    return result({
+      created: true,
+      draft: powerDrafts.summarizePowerDraft(draft),
+      nextAction: "按需增量写入目录对象、成长路径和连接；完成后校验草稿。",
+    });
   } catch (error) {
-    return result({ valid: false, errors: [message(error)] }, true);
+    return result({ created: false, error: message(error) }, true);
   }
 }
 
-async function submitPowerSystemHandler(args: {
-  proposalId?: string;
+async function getPowerDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.loadPowerDraft(workspace, args.draftId);
+    return result({
+      draft,
+      summary: powerDrafts.summarizePowerDraft(draft),
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function updatePowerDraftOverviewHandler(args: {
+  draftId: string;
+  patch: PowerDraftOverviewPatch;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.updatePowerDraftOverview(
+      workspace,
+      args.draftId,
+      args.patch,
+    );
+    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
+  } catch (error) {
+    return result({ updated: false, error: message(error) }, true);
+  }
+}
+
+async function upsertPowerDraftCatalogHandler(args: {
+  draftId: string;
+  entities: PowerDraftCatalogEntityInput[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.upsertPowerDraftCatalogEntities(
+      workspace,
+      args.draftId,
+      args.entities,
+    );
+    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
+  } catch (error) {
+    return result({ updated: false, error: message(error) }, true);
+  }
+}
+
+async function upsertPowerDraftProgressionHandler(args: {
+  draftId: string;
+  progression: PowerDraftProgressionInput;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.upsertPowerDraftProgression(
+      workspace,
+      args.draftId,
+      args.progression,
+    );
+    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
+  } catch (error) {
+    return result({ updated: false, error: message(error) }, true);
+  }
+}
+
+async function upsertPowerDraftConnectionsHandler(args: {
+  draftId: string;
+  connections: PowerDraftConnectionInput[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.upsertPowerDraftConnections(
+      workspace,
+      args.draftId,
+      args.connections,
+    );
+    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
+  } catch (error) {
+    return result({ updated: false, error: message(error) }, true);
+  }
+}
+
+async function removePowerDraftEntitiesHandler(args: {
+  draftId: string;
+  scope: PowerDraftRemoveScope;
+  ids: string[];
+  trackId?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.removePowerDraftEntities(
+      workspace,
+      args.draftId,
+      args.scope,
+      args.ids,
+      args.trackId,
+    );
+    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
+  } catch (error) {
+    return result({ updated: false, error: message(error) }, true);
+  }
+}
+
+async function validatePowerDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const draft = await powerDrafts.loadPowerDraft(workspace, args.draftId);
+    if (draft.submittedProposalId) {
+      throw new Error(`该草稿已经提交：${draft.submittedProposalId}`);
+    }
+    const materialized = await powerDrafts.materializePowerDraftChanges(
+      workspace,
+      draft,
+    );
+    const errors = await validatePowerSystemChanges(materialized.changes);
+    if (errors.length > 0) {
+      return result(structuredPowerValidationResult(errors), true);
+    }
+    const validated = await powerDrafts.savePowerDraftValidation(
+      workspace,
+      draft,
+      materialized.contentHash,
+    );
+    return result({
+      valid: true,
+      totalErrorCount: 0,
+      errors: [],
+      validationToken: validated.validation?.token,
+      contentHash: materialized.contentHash,
+      revision: validated.revision,
+      changeCount: materialized.changes.length,
+      nextAction: "使用完全相同的 validationToken 调用 novel_power_submit_draft。",
+    });
+  } catch (error) {
+    const errors = [message(error)];
+    return result(structuredPowerValidationResult(errors), true);
+  }
+}
+
+async function persistPowerSystemProposal(args: {
+  proposalId: string;
   title: string;
   description?: string;
   changes: ProposedChange[];
-}): Promise<CallToolResult> {
+}): Promise<{ proposalId: string; changeCount: number }> {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
     const { workspace, context } = requireWorkspace();
-    const errors = await validatePowerSystemChanges(args.changes);
-    if (errors.length > 0) return result({ submitted: false, errors }, true);
-    const proposalId =
-      args.proposalId?.trim() || `proposal-${randomUUID().slice(0, 8)}`;
+    const proposalId = args.proposalId.trim();
     if (!ID_PATTERN.test(proposalId)) {
       throw new Error("proposalId 只能使用小写字母、数字和连字符");
     }
@@ -1672,19 +1968,149 @@ async function submitPowerSystemHandler(args: {
       `${JSON.stringify(manifest, null, 2)}\n`,
       { encoding: "utf8", flag: "wx" },
     );
-    return result({
-      submitted: true,
-      proposalId,
-      changeCount: manifestChanges.length,
-      reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
-    });
+    return { proposalId, changeCount: manifestChanges.length };
   } catch (error) {
     if (createdProposalDirectory) {
       await fs
         .rm(proposalDirectory, { recursive: true, force: true })
         .catch(() => {});
     }
+    throw error;
+  }
+}
+
+async function submitPowerDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+  proposalId?: string;
+  title: string;
+  description?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    let draft = await powerDrafts.loadPowerDraft(workspace, args.draftId);
+    if (draft.submittedProposalId) {
+      const status = await powerDrafts.getPowerProposalStatus(
+        workspace,
+        draft.submittedProposalId,
+      );
+      return result(
+        {
+          submitted: status.exists,
+          recovered: true,
+          ...status,
+          reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
+        },
+        !status.exists,
+      );
+    }
+    const generatedProposalId = `proposal-${draft.draftId}`;
+    const proposalId = args.proposalId?.trim() || generatedProposalId;
+    const existingStatus = await powerDrafts.getPowerProposalStatus(
+      workspace,
+      proposalId,
+    );
+    if (existingStatus.exists) {
+      if (args.proposalId) {
+        throw new Error(`proposalId 已存在：${proposalId}`);
+      }
+      let draftLinked = false;
+      if (
+        draft.validation?.token === args.validationToken &&
+        draft.validation.revision === draft.revision
+      ) {
+        try {
+          draft = await powerDrafts.markPowerDraftSubmitted(
+            workspace,
+            draft,
+            proposalId,
+          );
+          draftLinked = true;
+        } catch {
+          // The proposal is durable even if a concurrent draft edit won the race.
+        }
+      }
+      return result({
+        submitted: true,
+        recovered: true,
+        draftLinked,
+        ...existingStatus,
+        draft: powerDrafts.summarizePowerDraft(draft),
+        ...(draftLinked
+          ? {}
+          : {
+              warning:
+                "提案已存在，但草稿在提交期间发生变化；请以提案状态为准。",
+            }),
+        reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
+      });
+    }
+    if (!draft.validation || draft.validation.token !== args.validationToken) {
+      throw new Error("validationToken 无效或已经因草稿修改而失效，请重新校验");
+    }
+    if (draft.validation.revision !== draft.revision) {
+      throw new Error("草稿版本已变化，请重新校验");
+    }
+    const materialized = await powerDrafts.materializePowerDraftChanges(
+      workspace,
+      draft,
+    );
+    if (materialized.contentHash !== draft.validation.contentHash) {
+      throw new Error("正式库或草稿内容在校验后发生变化，请重新校验");
+    }
+    const errors = await validatePowerSystemChanges(materialized.changes);
+    if (errors.length > 0) {
+      return result(
+        { submitted: false, ...structuredPowerValidationResult(errors) },
+        true,
+      );
+    }
+    const persisted = await persistPowerSystemProposal({
+      proposalId,
+      title: args.title,
+      description: args.description,
+      changes: materialized.changes,
+    });
+    draft = await powerDrafts.markPowerDraftSubmitted(
+      workspace,
+      draft,
+      persisted.proposalId,
+    );
+    const status = await powerDrafts.getPowerProposalStatus(
+      workspace,
+      persisted.proposalId,
+    );
+    if (!status.exists) {
+      throw new Error("提案写入后未能从磁盘回查，请勿宣称提交成功");
+    }
+    return result({
+      submitted: true,
+      ...status,
+      draft: powerDrafts.summarizePowerDraft(draft),
+      reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
+    });
+  } catch (error) {
     return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getPowerProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const powerDrafts = await import("../novel-power-draft");
+    const status = await powerDrafts.getPowerProposalStatus(
+      workspace,
+      args.proposalId,
+    );
+    return result(status, !status.exists);
+  } catch (error) {
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
   }
 }
 
@@ -1723,9 +2149,470 @@ export async function createNovelWorkbenchServer() {
     summary: z.string().min(1),
     value: z.record(z.string(), z.unknown()),
   });
+  const powerIdSchema = z.string().regex(ID_PATTERN);
+  const powerMetadataInputSchema = z.object({
+    settingLevel: z.string().optional(),
+    domainCategories: z.array(z.string().min(1)).optional(),
+    spatialScopeIds: z.array(powerIdSchema).optional(),
+    timeFrom: z.string().optional(),
+    timeTo: z.string().optional(),
+    authority: z.enum(["hard", "default", "exception", "rumor"]).optional(),
+    canon: z.enum(["draft", "provisional", "canon", "deprecated"]).optional(),
+    revealStage: z.string().optional(),
+  });
+  const powerDesignBriefSchema = z.object({
+    narrativePurpose: z.string().min(1).describe("该体系在故事中解决什么叙事问题"),
+    coreMechanism: z.string().min(1).describe("力量从何而来、通过什么机制产生效果"),
+    progressionModel: z.string().min(1).describe("成长、觉醒、授权或版本变化的方式"),
+    costs: z.array(z.string().min(1)).describe("获得、维持或使用力量的代价"),
+    comparisonRule: z.string().min(1).describe("同体系及跨体系比较时采用的规则"),
+    exceptionBoundaries: z.array(z.string().min(1)).describe("规则不适用的例外和边界"),
+  });
+  const powerDimensionSchema = z.object({
+    id: powerIdSchema,
+    name: z.string().min(1),
+    category: z.enum(["quality", "boundary"]),
+    measurement: z.enum(["numeric", "ordinal", "descriptive"]).optional(),
+    unit: z.string().optional(),
+    lowLabel: z.string().optional(),
+    highLabel: z.string().optional(),
+    description: z.string().optional(),
+  });
+  const powerOverviewPatchSchema = z.object({
+    name: z.string().min(1).optional(),
+    aliases: z.array(z.string().min(1)).optional(),
+    summary: z.string().optional(),
+    status: z.enum(["draft", "active", "archived"]).optional(),
+    designContract: z
+      .object({
+        explanation: z.enum(["explicit", "partial", "mysterious"]).optional(),
+        progression: z
+          .enum(["none", "single-track", "multi-track", "event-driven"])
+          .optional(),
+        costPolicy: z.enum(["required", "recommended", "optional"]).optional(),
+        comparison: z.enum(["stable", "contextual", "incomparable"]).optional(),
+        theoryPolicy: z.enum(["explicit", "partial", "unknown"]).optional(),
+      })
+      .optional(),
+    dimensions: z.array(powerDimensionSchema).optional(),
+    metadata: powerMetadataInputSchema.optional(),
+    pageMarkdown: z.string().optional(),
+  });
+  const powerEntityReferenceSchema = z.discriminatedUnion("namespace", [
+    z.object({
+      namespace: z.literal("catalog"),
+      kind: z.enum([
+        "foundation",
+        "medium",
+        "principle",
+        "resource",
+        "theory",
+        "method",
+        "capability",
+      ]),
+      targetId: powerIdSchema,
+    }),
+    z.object({
+      namespace: z.literal("system"),
+      systemId: powerIdSchema,
+      kind: z.enum([
+        "system",
+        "track",
+        "state",
+        "transition",
+        "quality-dimension",
+        "boundary-dimension",
+      ]),
+      targetId: powerIdSchema,
+    }),
+    z.object({
+      namespace: z.literal("external"),
+      kind: z.enum(["actor", "location", "faction", "item", "event", "external"]),
+      targetId: powerIdSchema,
+    }),
+  ]);
+  const catalogEntityBaseShape = {
+    id: powerIdSchema,
+    name: z.string().min(1),
+    aliases: z.array(z.string().min(1)).optional(),
+    subtypeId: z.string().optional(),
+    summary: z.string().optional(),
+    tags: z.array(z.string().min(1)).optional(),
+    metadata: powerMetadataInputSchema.optional(),
+  };
+  const theoryOperationSchema = z.object({
+    id: powerIdSchema,
+    name: z.string().min(1),
+    operationType: z.enum([
+      "circulate",
+      "aggregate",
+      "compress",
+      "refine",
+      "split",
+      "convert",
+      "resonate",
+      "synchronize",
+      "encode",
+      "inscribe",
+      "project",
+      "self-organize",
+      "feedback",
+      "sample",
+      "custom",
+    ]),
+    input: z.string(),
+    output: z.string(),
+    rule: z.string(),
+  });
+  const theoryReferenceSchema = z.object({
+    namespace: z.literal("catalog"),
+    kind: z.literal("theory"),
+    targetId: powerIdSchema,
+  });
+  const powerCatalogEntityInputSchema = z.discriminatedUnion("kind", [
+    z.object({
+      ...catalogEntityBaseShape,
+      kind: z.literal("foundation"),
+      details: z
+        .object({
+          foundationType: z
+            .enum([
+              "natural",
+              "biological",
+              "psychic",
+              "divine",
+              "technological",
+              "social",
+              "conceptual",
+              "extradimensional",
+              "unknown",
+            ])
+            .optional(),
+          availability: z
+            .enum([
+              "universal",
+              "regional",
+              "innate",
+              "granted",
+              "manufactured",
+              "institutional",
+              "event-bound",
+              "unknown",
+            ])
+            .optional(),
+          manifestation: z.string().optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...catalogEntityBaseShape,
+      kind: z.literal("medium"),
+      details: z
+        .object({
+          mediumType: z
+            .enum([
+              "energy",
+              "substance",
+              "field",
+              "network",
+              "body",
+              "mind",
+              "soul",
+              "symbolic",
+              "device",
+              "authority",
+              "environment",
+              "unknown",
+            ])
+            .optional(),
+          carrier: z.string().optional(),
+          circulation: z.string().optional(),
+          storage: z.string().optional(),
+          loss: z.string().optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...catalogEntityBaseShape,
+      kind: z.literal("principle"),
+      details: z
+        .object({
+          principleType: z
+            .enum(["invariant", "prohibition", "boundary", "conversion", "priority", "axiom", "custom"])
+            .optional(),
+          scope: z.enum(["universe", "world", "domain", "system", "local"]).optional(),
+          statements: z.array(z.string().min(1)).optional(),
+          conditions: z.array(z.string().min(1)).optional(),
+          exceptions: z.array(z.string().min(1)).optional(),
+          priority: z.number().int().min(0).max(9999).optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...catalogEntityBaseShape,
+      kind: z.literal("resource"),
+      details: z
+        .object({
+          resourceType: z
+            .enum(["fuel", "material", "catalyst", "environment", "information", "permission", "emotion", "biological", "time", "other"])
+            .optional(),
+          measurement: z.enum(["numeric", "ordinal", "descriptive", "unknown"]).optional(),
+          unit: z.string().optional(),
+          qualityDimensions: z.array(z.string().min(1)).optional(),
+          replenishment: z.string().optional(),
+          scarcity: z.string().optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...catalogEntityBaseShape,
+      kind: z.literal("theory"),
+      details: z
+        .object({
+          representationType: z
+            .enum(["sequence", "graph", "modular", "spatial-field", "symbolic", "dynamic-system", "rule-system", "probabilistic", "embodied", "emotional", "unknown"])
+            .optional(),
+          substrateRefs: z.array(powerEntityReferenceSchema).optional(),
+          topology: z
+            .object({
+              spatialDimensions: z.number().int().min(0).max(16).nullable(),
+              nodeDefinition: z.string(),
+              connectionDefinition: z.string(),
+              structure: z.string(),
+            })
+            .optional(),
+          operations: z.array(theoryOperationSchema).optional(),
+          controlStrategy: z.string().optional(),
+          complexity: z
+            .object({
+              memory: z.enum(["low", "medium", "high", "extreme", "unknown"]),
+              parallelism: z.enum(["low", "medium", "high", "extreme", "unknown"]),
+              abstraction: z.enum(["low", "medium", "high", "extreme", "unknown"]),
+              dynamism: z.enum(["low", "medium", "high", "extreme", "unknown"]),
+            })
+            .optional(),
+          assumptions: z.array(z.string().min(1)).optional(),
+          invariants: z.array(z.string().min(1)).optional(),
+          failureModes: z.array(z.string().min(1)).optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...catalogEntityBaseShape,
+      kind: z.literal("method"),
+      details: z
+        .object({
+          acquisition: z
+            .enum(["training", "study", "inheritance", "awakening", "implantation", "contract", "ritual", "equipment", "authorization", "event", "unknown"])
+            .optional(),
+          roles: z
+            .array(z.enum(["advance", "stabilize", "refine", "recover", "transform", "awaken", "control", "adapt"]))
+            .optional(),
+          theoryRefs: z.array(theoryReferenceSchema).optional(),
+          procedure: z.string().optional(),
+          phases: z
+            .array(
+              z.object({
+                id: powerIdSchema,
+                name: z.string().min(1),
+                order: z.number().int().nonnegative(),
+                goal: z.string(),
+                operations: z.array(z.string().min(1)),
+                requirements: z.array(z.string().min(1)),
+                outputs: z.array(z.string().min(1)),
+              }),
+            )
+            .optional(),
+          outputs: z.array(z.string().min(1)).optional(),
+          failureConsequences: z.array(z.string().min(1)).optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...catalogEntityBaseShape,
+      kind: z.literal("capability"),
+      details: z
+        .object({
+          capabilityType: z
+            .enum(["intrinsic", "technique", "spell", "superpower", "sense", "transformation", "authority", "technology", "custom"])
+            .optional(),
+          activation: z
+            .enum(["active", "passive", "conditional", "toggle", "ritual", "collective", "automatic"])
+            .optional(),
+          effect: z.string().optional(),
+          target: z.string().optional(),
+          range: z.string().optional(),
+          duration: z.string().optional(),
+          costs: z.array(z.string().min(1)).optional(),
+          limitations: z.array(z.string().min(1)).optional(),
+          sideEffects: z.array(z.string().min(1)).optional(),
+          countermeasures: z.array(z.string().min(1)).optional(),
+        })
+        .optional(),
+    }),
+  ]);
+  const powerMetricValueInputSchema = z.object({
+    dimensionId: powerIdSchema,
+    value: z.union([z.number(), z.string(), z.null()]),
+    note: z.string().optional(),
+  });
+  const powerStateInputSchema = z.object({
+    id: powerIdSchema,
+    name: z.string().min(1),
+    aliases: z.array(z.string().min(1)).optional(),
+    stateType: z.enum(["stage", "rank", "form", "control", "version", "permission", "condition", "custom"]).optional(),
+    summary: z.string().optional(),
+    order: z.number().int().nonnegative().optional(),
+    entryConditions: z.array(z.string().min(1)).optional(),
+    maintenanceConditions: z.array(z.string().min(1)).optional(),
+    exitConditions: z.array(z.string().min(1)).optional(),
+    baseQualities: z.array(powerMetricValueInputSchema).optional(),
+    baseBoundaries: z.array(powerMetricValueInputSchema).optional(),
+    cognition: z
+      .object({
+        representationType: z.enum(["sequence", "graph", "modular", "spatial-field", "symbolic", "dynamic-system", "rule-system", "probabilistic", "embodied", "emotional", "unknown"]).optional(),
+        description: z.string().optional(),
+        memoryLoad: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
+        parallelism: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
+        abstraction: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
+        dynamism: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
+        spatialDimensions: z.number().int().min(0).max(16).nullable().optional(),
+        requiredSkills: z.array(z.string().min(1)).optional(),
+        breakthroughInsight: z.string().optional(),
+      })
+      .optional(),
+    stability: z.string().optional(),
+    risks: z.array(z.string().min(1)).optional(),
+    metadata: powerMetadataInputSchema.optional(),
+  });
+  const powerTransitionInputSchema = z.object({
+    id: powerIdSchema,
+    name: z.string().min(1),
+    fromStateId: powerIdSchema.nullable().optional(),
+    toStateId: powerIdSchema,
+    transitionType: z.enum(["advance", "branch", "merge", "regress", "transform", "recover", "awaken", "event"]).optional(),
+    conditions: z.array(z.string().min(1)).optional(),
+    qualityCarryover: z.enum(["preserve", "reset", "transform", "partial", "custom"]).optional(),
+    qualityRule: z.string().optional(),
+    outcomes: z.array(z.string().min(1)).optional(),
+    failureModes: z.array(z.string().min(1)).optional(),
+    reversible: z.boolean().optional(),
+  });
+  const powerProgressionInputSchema = z.object({
+    track: z.object({
+      id: powerIdSchema,
+      name: z.string().min(1).optional(),
+      subtypeId: z.string().optional(),
+      summary: z.string().optional(),
+      mode: z.enum(["ordered", "branching", "coexisting", "cyclic", "threshold", "event-driven", "unordered"]).optional(),
+      metadata: powerMetadataInputSchema.optional(),
+    }),
+    states: z.array(powerStateInputSchema).optional(),
+    transitions: z.array(powerTransitionInputSchema).optional(),
+  });
+  const powerMetricModifierSchema = z.object({
+    dimensionId: powerIdSchema,
+    operation: z.enum(["set", "add", "multiply", "minimum", "maximum"]),
+    value: z.union([z.number(), z.string()]),
+    note: z.string(),
+  });
+  const powerConnectionBaseShape = {
+    id: powerIdSchema,
+    source: powerEntityReferenceSchema,
+    target: powerEntityReferenceSchema,
+    conditions: z.array(z.string().min(1)).optional(),
+    note: z.string().optional(),
+    metadata: powerMetadataInputSchema.optional(),
+  };
+  const powerConnectionInputSchema = z.discriminatedUnion("kind", [
+    z.object({
+      ...powerConnectionBaseShape,
+      kind: z.literal("association"),
+      details: z
+        .object({
+          relation: z.enum(["governs", "uses", "adopts", "expresses", "requires", "compatible-with", "counters", "forbidden-by", "depends-on", "converts-into"]).optional(),
+          compatibility: z.enum(["native", "adapted", "conditional", "forbidden"]).optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...powerConnectionBaseShape,
+      kind: z.literal("method-application"),
+      details: z
+        .object({
+          role: z.enum(["advance", "stabilize", "refine", "recover", "transform", "awaken", "control", "adapt"]).optional(),
+          compatibility: z.enum(["native", "adapted", "conditional", "forbidden"]).optional(),
+          theoryRef: theoryReferenceSchema.nullable().optional(),
+          executionModel: z.string().optional(),
+          efficiency: z
+            .object({
+              mode: z.enum(["qualitative", "multiplier", "formula"]),
+              value: z.union([z.number(), z.string(), z.null()]),
+              note: z.string(),
+            })
+            .optional(),
+          qualityEffects: z.array(powerMetricModifierSchema).optional(),
+          boundaryEffects: z.array(powerMetricModifierSchema).optional(),
+          outcomes: z.array(z.string().min(1)).optional(),
+          failureModes: z.array(z.string().min(1)).optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...powerConnectionBaseShape,
+      kind: z.literal("resource-requirement"),
+      details: z
+        .object({
+          purpose: z.enum(["develop", "advance", "maintain", "activate", "recover", "transform"]).optional(),
+          amount: z
+            .object({
+              mode: z.enum(["numeric", "range", "rate", "descriptive"]),
+              minimum: z.number().nullable(),
+              maximum: z.number().nullable(),
+              value: z.string(),
+              unit: z.string(),
+            })
+            .optional(),
+          quality: z.string().optional(),
+          consumed: z.boolean().optional(),
+          substituteRefs: z
+            .array(
+              z.object({
+                namespace: z.literal("catalog"),
+                kind: z.literal("resource"),
+                targetId: powerIdSchema,
+              }),
+            )
+            .optional(),
+          shortageConsequence: z.string().optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...powerConnectionBaseShape,
+      kind: z.literal("capability-access"),
+      details: z
+        .object({
+          accessMode: z.enum(["intrinsic", "learnable", "method-grant", "awakening", "equipped", "contracted", "authorized", "conditional", "forbidden"]).optional(),
+          mastery: z.enum(["available", "basic", "proficient", "mastered", "variable"]).optional(),
+        })
+        .optional(),
+    }),
+    z.object({
+      ...powerConnectionBaseShape,
+      kind: z.literal("system-interaction"),
+      details: z
+        .object({
+          interaction: z.enum(["compatible", "conversion", "suppression", "amplification", "interference", "exclusion", "fusion"]).optional(),
+          effect: z.string().optional(),
+        })
+        .optional(),
+    }),
+  ]);
   return createSdkMcpServer({
-    name: NOVEL_WORKBENCH_MCP_ID,
+    name: NOVEL_WORKBENCH_SDK_ADAPTER_ID,
     version: "1.0.0",
+    instructions: NOVEL_WORKBENCH_SDK_INSTRUCTIONS,
     tools: [
       tool(
         "novel_world_get_context",
@@ -1752,28 +2639,99 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_power_get_context",
-        "读取力量体系库的类型、索引和跨体系交互；传 systemId 时同时返回该体系的结构化记录与说明页。",
+        "读取精简的力量体系上下文、已有稳定 id、草稿列表和题材中立建模模式；传 systemId 时只额外读取该体系详情。每次设计必须先调用。",
         { systemId: z.string().regex(ID_PATTERN).optional() },
         getPowerSystemContextHandler,
       ),
       tool(
-        "novel_power_validate_changes",
-        "校验力量体系变更的文件范围、Schema、索引闭合、体系类型、关系、状态、标尺和跨体系引用。提交提案前必须调用。",
+        "novel_power_create_draft",
+        "在作者明确确认设计摘要后创建服务端力量体系草稿。该工具自动生成最小合法记录，不要求手写 index、record 或 page 文件。",
         {
-          changes: z.array(changeSchema).min(1).max(MAX_POWER_SYSTEM_CHANGES),
+          draftId: powerIdSchema.optional(),
+          systemId: powerIdSchema,
+          name: z.string().min(1),
+          typeId: powerIdSchema,
+          summary: z.string().optional(),
+          designBrief: powerDesignBriefSchema,
         },
-        validatePowerSystemHandler,
+        createPowerDraftHandler,
       ),
       tool(
-        "novel_power_submit_proposal",
-        "提交待审批的力量体系提案。该工具只写 proposals 快照，不会修改正式力量体系。",
+        "novel_power_get_draft",
+        "读取一份力量体系草稿的完整领域对象和当前 revision。恢复会话或修复校验问题时使用。",
+        { draftId: powerIdSchema },
+        getPowerDraftHandler,
+      ),
+      tool(
+        "novel_power_update_draft_overview",
+        "增量更新力量体系草稿的名称、摘要、设计契约、质量/边界维度、元数据或说明页。未提供的字段保持不变。",
         {
+          draftId: powerIdSchema,
+          patch: powerOverviewPatchSchema,
+        },
+        updatePowerDraftOverviewHandler,
+      ),
+      tool(
+        "novel_power_upsert_catalog",
+        "增量新增或更新共享力量对象：本源、介质、法则、资源、理论、方法、能力。按稳定 id 合并，未提供的已有字段保持不变。",
+        {
+          draftId: powerIdSchema,
+          entities: z.array(powerCatalogEntityInputSchema).min(1).max(30),
+        },
+        upsertPowerDraftCatalogHandler,
+      ),
+      tool(
+        "novel_power_upsert_progression",
+        "增量新增或更新一个成长路径及其状态、转换、认知要求、条件、基础质量和能力边界。状态不是固定境界，可表示等级、形态、版本、权限或条件。",
+        {
+          draftId: powerIdSchema,
+          progression: powerProgressionInputSchema,
+        },
+        upsertPowerDraftProgressionHandler,
+      ),
+      tool(
+        "novel_power_upsert_connections",
+        "增量新增或更新领域连接，用于把方法、资源、能力应用到体系/状态/转换，或定义跨体系交互。引用必须使用上下文中的稳定 id。",
+        {
+          draftId: powerIdSchema,
+          connections: z.array(powerConnectionInputSchema).min(1).max(50),
+        },
+        upsertPowerDraftConnectionsHandler,
+      ),
+      tool(
+        "novel_power_remove_draft_entities",
+        "仅从未提交草稿中删除误建的目录对象、成长路径、状态、转换或连接。不会删除正式库内容。",
+        {
+          draftId: powerIdSchema,
+          scope: z.enum(["catalog", "track", "state", "transition", "connection"]),
+          ids: z.array(powerIdSchema).min(1).max(50),
+          trackId: powerIdSchema.optional(),
+        },
+        removePowerDraftEntitiesHandler,
+      ),
+      tool(
+        "novel_power_validate_draft",
+        "物化并完整校验草稿的 Schema、索引、引用、成长结构、指标和生态连接。成功后返回绑定当前 revision 与内容哈希的 validationToken。",
+        { draftId: powerIdSchema },
+        validatePowerDraftHandler,
+      ),
+      tool(
+        "novel_power_submit_draft",
+        "使用最近一次校验返回的 validationToken 提交草稿。提交前会重新物化、核对内容哈希并再次校验，只创建待审批快照。每份草稿只能成功提交一次。",
+        {
+          draftId: powerIdSchema,
+          validationToken: z.string().min(1),
           proposalId: z.string().regex(ID_PATTERN).optional(),
           title: z.string().min(1),
           description: z.string().optional(),
-          changes: z.array(changeSchema).min(1).max(MAX_POWER_SYSTEM_CHANGES),
         },
-        submitPowerSystemHandler,
+        submitPowerDraftHandler,
+      ),
+      tool(
+        "novel_power_get_proposal_status",
+        "从磁盘查询力量体系提案是否真实存在及其待审批、已采纳、已拒绝数量。只有 exists=true 才能向作者宣称提交成功。",
+        { proposalId: powerIdSchema },
+        getPowerProposalStatusHandler,
       ),
       tool(
         "novel_items_get_context",

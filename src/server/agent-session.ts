@@ -62,9 +62,13 @@ import {
 } from './tools/im-bridge-tools';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 import {
+  bindNovelWorkbenchRuntime,
+  clearNovelWorkbenchContext,
   configureNovelWorkbenchRequest,
+  configureNovelWorkbenchToolset,
   getNovelWorkbenchContext,
-  NOVEL_WORKBENCH_MCP_ID,
+  getNovelWorkbenchToolsetSnapshot,
+  NOVEL_WORKBENCH_SDK_ADAPTER_ID,
   novelWorkbenchMutationDenyMessage,
   shouldBlockNovelWorkbenchRawMutation,
 } from './novel-workbench-context';
@@ -470,7 +474,7 @@ const SUPPRESS_PER_TOKEN_LOG_BROADCAST = true;
 export const SDK_RESERVED_MCP_NAMES = ['claude-in-chrome', 'computer-use'];
 
 /**
- * MyAgents-reserved MCP server ids — names used by context-injected builtins
+ * MyAgents-reserved SDK adapter ids — names used by context-injected builtins
  * that are managed by the sidecar, not user-toggleable. User MCPs configured
  * with these ids are silently dropped at SDK build time so they cannot
  * (a) overwrite the legitimate builtin in `result[server.id]`, or
@@ -482,13 +486,13 @@ export const SDK_RESERVED_MCP_NAMES = ['claude-in-chrome', 'computer-use'];
  *
  * v0.2.11 — `cron-tools`, `im-cron`, and `im-media` were retired in favour of
  * `myagents` CLI commands + system prompt guidance (single CLI surface usable
- * across builtin / Codex / Gemini / Claude Code runtimes). Only `im-bridge-tools`
- * remains a context-injected MCP because its tool surface is a runtime-dynamic
- * passthrough of OpenClaw plugin tools — no fixed schema to teach via prompt.
+ * across builtin / Codex / Gemini / Claude Code runtimes). `im-bridge-tools`
+ * remains a runtime-dynamic plugin passthrough. The novel-workbench entry is a
+ * host-native toolset whose Claude SDK adapter happens to use this transport.
  */
 export const MYAGENTS_CONTEXT_INJECTED_MCP_IDS = [
   'im-bridge-tools',
-  NOVEL_WORKBENCH_MCP_ID,
+  NOVEL_WORKBENCH_SDK_ADAPTER_ID,
 ] as const;
 
 // ===== OAuth credential revision listener =====
@@ -1359,6 +1363,10 @@ function setCurrentSessionId(next: string): void {
   }
   sessionId = next as typeof sessionId;
   publishCurrentSessionEnv();
+  bindNovelWorkbenchRuntime({
+    sessionId,
+    ...(agentDir ? { workspace: agentDir } : {}),
+  });
 }
 
 function broadcast(event: string, data: unknown): void {
@@ -1729,22 +1737,43 @@ export function isTurnInFlight(): boolean {
 function restoreLegacyNovelWorkbenchContext(
   messages: unknown,
   runtime: { sessionId: string; workspace: string },
-): void {
-  if (getNovelWorkbenchContext()) return;
+): boolean {
+  if (getNovelWorkbenchContext()) return false;
 
   const serialized = JSON.stringify(messages);
-  const restoredMode = serialized.includes(
-    'mcp__novel-workbench__novel_characters_',
-  )
-    ? 'characters'
-    : serialized.includes('mcp__novel-workbench__novel_items_')
-      ? 'items'
-      : serialized.includes('mcp__novel-workbench__novel_power_')
-        ? 'powers'
-        : serialized.includes('mcp__novel-workbench__novel_world_')
-          ? 'world'
-          : null;
-  if (!restoredMode) return;
+  const candidates = [
+    [
+      'characters',
+      [
+        'mcp__novel-workbench__novel_characters_',
+        '小说工作台人物库 AI 设计任务',
+      ],
+    ],
+    [
+      'items',
+      [
+        'mcp__novel-workbench__novel_items_',
+        '小说工作台物品批量生产向导',
+      ],
+    ],
+    [
+      'powers',
+      [
+        'mcp__novel-workbench__novel_power_',
+        '小说工作台力量体系 AI 设计任务',
+      ],
+    ],
+    [
+      'factions',
+      ['小说工作台势力组织 AI 设计任务', '小说工作台势力批量设计任务'],
+    ],
+    ['assist', ['小说工作台单项 AI 任务']],
+    ['world', ['mcp__novel-workbench__novel_world_']],
+  ] as const;
+  const restoredMode = candidates.find(([, signatures]) =>
+    signatures.some((signature) => serialized.includes(signature)),
+  )?.[0];
+  if (!restoredMode) return false;
 
   configureNovelWorkbenchRequest(
     {
@@ -1757,6 +1786,66 @@ function restoreLegacyNovelWorkbenchContext(
   console.log(
     `[agent] restored legacy novel-workbench context: mode=${restoredMode}, session=${runtime.sessionId}`,
   );
+  return true;
+}
+
+function restorePersistedNovelWorkbenchContext(
+  metadata: Pick<SessionMetadata, 'workbenchToolset'> | null | undefined,
+  runtime: { sessionId: string; workspace: string },
+): boolean {
+  if (!metadata?.workbenchToolset) return false;
+  try {
+    const restored = configureNovelWorkbenchToolset(
+      metadata.workbenchToolset,
+      runtime,
+    );
+    console.log(
+      `[agent] restored persisted novel workbench context: mode=${restored.mode}, session=${runtime.sessionId}`,
+    );
+    return true;
+  } catch (error) {
+    clearNovelWorkbenchContext();
+    console.warn(
+      '[agent] ignored invalid persisted novel workbench context:',
+      error,
+    );
+    return false;
+  }
+}
+
+function getNovelWorkbenchMetadataPatch(
+  targetSessionId: string,
+): Pick<SessionMetadata, 'workbenchToolset'> | Record<string, never> {
+  const currentContext = getNovelWorkbenchContext();
+  const toolset = getNovelWorkbenchToolsetSnapshot();
+  if (!currentContext || !toolset) return {};
+  if (
+    currentContext.workspace &&
+    !workspacePathsEqual(currentContext.workspace, agentDir)
+  ) {
+    return {};
+  }
+  if (
+    currentContext.sessionId &&
+    currentContext.sessionId !== targetSessionId &&
+    !isPendingSessionId(currentContext.sessionId)
+  ) {
+    return {};
+  }
+  return { workbenchToolset: toolset };
+}
+
+async function backfillNovelWorkbenchToolsetMetadata(
+  targetSessionId: string,
+): Promise<void> {
+  const patch = getNovelWorkbenchMetadataPatch(targetSessionId);
+  if (!('workbenchToolset' in patch)) return;
+  const updated = await updateSessionMetadata(targetSessionId, patch);
+  if (!updated) {
+    console.warn(
+      `[agent] failed to backfill novel workbench toolset metadata for session ${targetSessionId}`,
+    );
+  }
 }
 
 /** 当前正在流式传输的 assistant 消息 ID（未在流式传输时返回 null） */
@@ -3355,7 +3444,7 @@ export function getAgents(): Record<string, AgentDefinition> | null {
 }
 
 /**
- * Predicate for each MyAgents-reserved context-injected builtin MCP id.
+ * Predicate for each MyAgents-reserved context-injected SDK adapter id.
  * Returns true when the corresponding sidecar context is set, mirroring the
  * inclusion conditions in `buildSdkMcpServers()` Pattern 1.
  *
@@ -3365,10 +3454,10 @@ export function getAgents(): Record<string, AgentDefinition> | null {
  * versa) is a compile error. This is the pit-of-success against the drift
  * that caused issue #148.
  *
- * Background: builtin MCPs are injected into the SDK based on sidecar context
- * (IM bot / cron task / bridge plugin), but `checkMcpToolPermission()` used to
+ * Background: builtin adapters are injected into the SDK based on sidecar
+ * context, but `checkMcpToolPermission()` used to
  * compare tool names against `configState.currentMcpServers` only — which never contains
- * context-injected MCPs. Result: SDK said "tool ready", permission gate said
+ * context-injected adapters. Result: SDK said "tool ready", permission gate said
  * "未启用". The fix routes the permission gate through this single map.
  */
 const CONTEXT_INJECTED_BUILTIN_PREDICATES: Record<
@@ -3381,7 +3470,7 @@ const CONTEXT_INJECTED_BUILTIN_PREDICATES: Record<
     .split('|', 1)[0]
     .split(',')
     .includes('im-bridge-tools'),
-  [NOVEL_WORKBENCH_MCP_ID]: () => Boolean(getNovelWorkbenchContext()),
+  [NOVEL_WORKBENCH_SDK_ADAPTER_ID]: () => Boolean(getNovelWorkbenchContext()),
 };
 
 /** Resolve Bridge caller identity from the request currently owning SDK output. */
@@ -3487,10 +3576,11 @@ function buildSettingSources(): ('user' | 'project')[] {
 /**
  * Convert McpServerDefinition to SDK mcpServers format.
  *
- * Three MCP injection patterns:
- * 1. Context-injected (im-bridge-tools) — always present based on sidecar
- *    context, invisible in Settings UI, not user-toggled. Used for the
- *    OpenClaw plugin bridge which exposes a runtime-dynamic tool surface.
+ * Three SDK MCP transport patterns:
+ * 1. Context-injected adapters — present based on sidecar context, invisible
+ *    in Settings UI and not user-toggled. `im-bridge-tools` exposes a
+ *    runtime-dynamic plugin surface; `novel-workbench` adapts host-native
+ *    workbench tools to the Claude SDK.
  *    Other historical context-injected MCPs (`cron-tools`, `im-cron`,
  *    `im-media`) were retired in v0.2.11 — the AI now reaches those
  *    capabilities through the `myagents` CLI + system prompt guidance,
@@ -3537,12 +3627,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 
   const result: Record<string, McpServerEntry> = {};
 
-  // --- Pattern 1: Context-injected MCPs (always present based on sidecar context) ---
+  // --- Pattern 1: Context-injected SDK adapters ---
   // Add Bridge tools if we're in an IM context with a plugin bridge that has tools.
   // Dynamic server is created from actual plugin tool definitions — transparent
-  // passthrough. This is the only remaining Pattern 1 MCP after the v0.2.11 cron
-  // / im-cron / im-media → CLI migration: bridge plugins expose runtime-dynamic
-  // tool surfaces that can't be expressed as a static prompt + CLI.
+  // passthrough. Bridge plugins expose runtime-dynamic tool surfaces that can't
+  // be expressed as a static prompt + CLI.
   const bridgeToolSurface = getImBridgeToolSurface();
   const bridgeServer = getImBridgeToolServer();
   if (bridgeToolSurface && bridgeServer) {
@@ -3551,9 +3640,9 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
   }
 
   if (getNovelWorkbenchContext()) {
-    const entry = await getBuiltinMcpInstance(NOVEL_WORKBENCH_MCP_ID);
+    const entry = await getBuiltinMcpInstance(NOVEL_WORKBENCH_SDK_ADAPTER_ID);
     if (!entry) {
-      throw new Error('Novel workbench MCP is not registered');
+      throw new Error('Novel workbench native tool adapter is not registered');
     }
     entry.configure?.(
       {},
@@ -3562,8 +3651,8 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
         workspace: agentDir,
       },
     );
-    result[NOVEL_WORKBENCH_MCP_ID] = entry.server as McpSdkServerConfigWithInstance;
-    console.log('[agent] Added novel-workbench MCP server for controlled workbench session');
+    result[NOVEL_WORKBENCH_SDK_ADAPTER_ID] = entry.server as McpSdkServerConfigWithInstance;
+    console.log('[agent] Added novel workbench native tool adapter for controlled session');
   }
 
   // --- Pattern 2: Builtin registry MCPs (in-process, user-toggled) ---
@@ -4786,6 +4875,7 @@ function createMetadataForSessionId(
     title,
     origin,
   });
+  Object.assign(meta, getNovelWorkbenchMetadataPatch(targetSessionId));
   return {
     meta,
     snapshotKind: agent ? (isLiveFollowScenario(scenario) ? 'live-follow' : 'owned') : `runtime:${meta.runtime ?? 'none'}`,
@@ -4867,6 +4957,7 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
     const updated = await updateSessionMetadata(targetSessionId, {
       sdkSessionId: sdkSessionId ?? targetSessionId,
       unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : targetMeta.unifiedSession,
+      ...getNovelWorkbenchMetadataPatch(targetSessionId),
     });
     if (!updated) {
       throw new Error(`[agent] failed to update session metadata for SDK system_init session ${targetSessionId}`);
@@ -7620,6 +7711,7 @@ export async function resetSession(): Promise<void> {
   // 2. Clear all message state (shared with initializeAgent)
   clearMessageState();
   clearImBridgeToolsContext();
+  clearNovelWorkbenchContext();
 
   // 3. Generate new session ID (don't persist yet - wait for first message)
   setCurrentSessionId(randomUUID());
@@ -7754,6 +7846,7 @@ export async function initializeAgent(
     console.log('[agent] pre-warm disabled via --no-pre-warm (Global Sidecar)');
   }
   agentDir = nextAgentDir;
+  clearNovelWorkbenchContext();
   hasInitialPrompt = Boolean(initialPrompt && initialPrompt.trim());
   setSystemInitInfo(null);
   setSdkControlReady(false);
@@ -7812,6 +7905,13 @@ export async function initializeAgent(
   // Clear message state (shared with resetSession)
   clearMessageState();
 
+  if (initialSessionId && initMeta) {
+    restorePersistedNovelWorkbenchContext(initMeta, {
+      sessionId,
+      workspace: agentDir,
+    });
+  }
+
   // For resume sessions: load existing transcriptState.messages from disk into memory.
   // This is critical for shared Sidecar (IM + Desktop Tab):
   // 1. SSE replay (chat:message-replay) includes old transcriptState.messages when Tab connects
@@ -7836,10 +7936,13 @@ export async function initializeAgent(
 	  const sessionData = getSessionData(initialSessionId);
 	  if (sessionData?.messages?.length) {
 	    loadTranscriptFromSessionMessages(sessionData.messages);
-	    restoreLegacyNovelWorkbenchContext(sessionData.messages, {
+	    const restoredLegacyWorkbench = restoreLegacyNovelWorkbenchContext(sessionData.messages, {
 	      sessionId,
 	      workspace: agentDir,
 	    });
+	    if (restoredLegacyWorkbench) {
+	      await backfillNovelWorkbenchToolsetMetadata(sessionId);
+	    }
 	    console.log(`[agent] initializeAgent: loaded ${sessionData.messages.length} existing transcriptState.messages, transcriptState.messageSequence=${transcriptState.messageSequence}`);
 	  }
   }
@@ -8018,6 +8121,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   // Reset message/queue/streaming state (shared with initializeAgent, resetSession)
   clearMessageState();
   clearImBridgeToolsContext();
+  clearNovelWorkbenchContext();
 
   // Reset session-level runtime state
   resetAbortFlag();
@@ -8080,6 +8184,23 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   // Update agentDir from session
   if (sessionMeta.agentDir) {
     agentDir = sessionMeta.agentDir;
+  }
+
+  const restoredPersistedWorkbench = restorePersistedNovelWorkbenchContext(
+    sessionMeta,
+    {
+      sessionId: targetSessionId,
+      workspace: agentDir,
+    },
+  );
+  if (!restoredPersistedWorkbench && sessionData?.messages?.length) {
+    const restoredLegacyWorkbench = restoreLegacyNovelWorkbenchContext(sessionData.messages, {
+      sessionId: targetSessionId,
+      workspace: agentDir,
+    });
+    if (restoredLegacyWorkbench) {
+      await backfillNovelWorkbenchToolsetMetadata(targetSessionId);
+    }
   }
 
   if (agentDir && !isExternalRuntime(getCurrentRuntimeType())) {
@@ -10731,8 +10852,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     // Build MCP set ONCE so we both pass it to query() and capture its fingerprint.
     // Capturing here (not inline in commonQueryOptions) lets ensureSdkMcpInSync() later
-    // diff the live SDK set against newly-arriving context-injected MCPs (im-media,
-    // im-bridge-tools) without rebuilding fingerprint twice.
+    // diff the live SDK set against newly-arriving context-injected adapters
+    // without rebuilding the fingerprint twice.
     const sdkMcpServersInitial = await buildSdkMcpServers();
 
     // Build common query options (shared between normal start and "already in use" fallback)

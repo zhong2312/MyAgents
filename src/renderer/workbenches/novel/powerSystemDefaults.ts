@@ -1,9 +1,13 @@
 import {
   NOVEL_POWER_SYSTEM_SCHEMA_VERSION,
+  type PowerCatalog,
+  type PowerCognitiveModel,
+  type PowerConditionGroup,
+  type PowerConnections,
   type PowerDesignContract,
-  type PowerDimension,
+  type PowerMetricDimension,
+  type PowerStateContract,
   type PowerSystemIndex,
-  type PowerSystemInteractions,
   type PowerSystemMeta,
   type PowerSystemRecord,
   type PowerTruthMetadata,
@@ -13,42 +17,49 @@ export const POWER_SYSTEM_TYPE_PRESETS = Object.freeze([
   {
     id: "blank",
     name: "空白体系",
-    description: "从顶层来源、状态和规则开始自由设计",
+    description: "不预设成长、资源或能力结构",
     icon: "circle-dashed",
     builtin: true,
   },
   {
     id: "cultivation",
     name: "修炼体系",
-    description: "适合境界、功法、资源积累和突破结构",
+    description: "适合功法、境界、资源、突破与质量差异",
     icon: "sparkles",
     builtin: true,
   },
   {
     id: "magic",
     name: "魔法体系",
-    description: "适合法术、仪式、元素、法环和魔力资源",
+    description: "适合魔力介质、咒式理论、法术与施法边界",
     icon: "wand-sparkles",
     builtin: true,
   },
   {
-    id: "technology",
-    name: "科技体系",
-    description: "适合装备、能源、义体、权限和技术代际",
-    icon: "cpu",
-    builtin: true,
-  },
-  {
     id: "superpower",
-    name: "超能力体系",
-    description: "适合觉醒、个体能力、失控和能力边界",
+    name: "异能体系",
+    description: "适合觉醒、控制阶段、能力表达与失控风险",
     icon: "zap",
     builtin: true,
   },
   {
+    id: "martial",
+    name: "武道体系",
+    description: "适合身体训练、劲力介质、技法与体能边界",
+    icon: "swords",
+    builtin: true,
+  },
+  {
+    id: "technology",
+    name: "科技改造",
+    description: "适合装备、能源、义体、协议与技术代际",
+    icon: "cpu",
+    builtin: true,
+  },
+  {
     id: "lineage",
-    name: "血脉与变身",
-    description: "适合血统、形态、进化、返祖和副作用",
+    name: "血脉与形态",
+    description: "适合激活、返祖、变身、进化和副作用",
     icon: "dna",
     builtin: true,
   },
@@ -61,8 +72,8 @@ export const POWER_SYSTEM_TYPE_PRESETS = Object.freeze([
   },
   {
     id: "soft-system",
-    name: "软体系",
-    description: "适合刻意保留未知、无固定等级的神秘力量",
+    name: "软力量体系",
+    description: "允许理论、边界与成长保持部分未知",
     icon: "cloud-fog",
     builtin: true,
   },
@@ -81,55 +92,101 @@ export function createDefaultPowerTruthMetadata(): PowerTruthMetadata {
   };
 }
 
+export function createEmptyConditionGroup(): PowerConditionGroup {
+  return { mode: "all", clauses: [] };
+}
+
+export function createDefaultCognitiveModel(): PowerCognitiveModel {
+  return {
+    representationType: "unknown",
+    description: "",
+    memoryLoad: "unknown",
+    parallelism: "unknown",
+    abstraction: "unknown",
+    dynamism: "unknown",
+    spatialDimensions: null,
+    requiredSkills: [],
+    breakthroughInsight: "",
+  };
+}
+
+export function createDefaultStateContract(): PowerStateContract {
+  return {
+    entryConditions: createEmptyConditionGroup(),
+    maintenanceConditions: createEmptyConditionGroup(),
+    exitConditions: createEmptyConditionGroup(),
+    baseQualities: [],
+    baseBoundaries: [],
+    cognition: createDefaultCognitiveModel(),
+    stability: "",
+    risks: [],
+  };
+}
+
 export function createDefaultDesignContract(
   typeId: string,
 ): PowerDesignContract {
   if (typeId === "soft-system") {
     return {
       explanation: "mysterious",
-      quantification: "descriptive",
       progression: "none",
       costPolicy: "optional",
       comparison: "incomparable",
-      exceptionPolicy: "mythic",
+      theoryPolicy: "unknown",
     };
   }
   if (typeId === "superpower" || typeId === "lineage") {
     return {
       explanation: "partial",
-      quantification: "mixed",
       progression: "event-driven",
       costPolicy: "recommended",
       comparison: "contextual",
-      exceptionPolicy: "limited",
+      theoryPolicy: "partial",
     };
   }
   return {
     explanation: "explicit",
-    quantification: "mixed",
     progression: typeId === "blank" ? "none" : "multi-track",
     costPolicy: "recommended",
     comparison: "contextual",
-    exceptionPolicy: "limited",
+    theoryPolicy: "explicit",
   };
 }
 
-export function createDefaultPowerDimensions(): PowerDimension[] {
+export function createDefaultPowerDimensions(): PowerMetricDimension[] {
   return [
-    ["output", "输出"],
-    ["defense", "防御"],
-    ["control", "控制"],
-    ["mobility", "机动"],
-    ["endurance", "续航"],
-    ["perception", "感知"],
-    ["range", "作用范围"],
-  ].map(([id, name]) => ({
-    id,
-    name,
-    measurement: "numeric" as const,
+    {
+      id: "quality-stability",
+      name: "稳定性",
+      category: "quality" as const,
+      lowLabel: "脆弱",
+      highLabel: "稳定",
+    },
+    {
+      id: "quality-control",
+      name: "控制精度",
+      category: "quality" as const,
+      lowLabel: "粗放",
+      highLabel: "精密",
+    },
+    {
+      id: "boundary-capacity",
+      name: "储量上限",
+      category: "boundary" as const,
+      lowLabel: "有限",
+      highLabel: "庞大",
+    },
+    {
+      id: "boundary-throughput",
+      name: "瞬时吞吐",
+      category: "boundary" as const,
+      lowLabel: "缓慢",
+      highLabel: "爆发",
+    },
+  ].map((dimension) => ({
+    ...dimension,
+    measurement: "descriptive" as const,
     unit: "",
-    lowLabel: "低",
-    highLabel: "高",
     description: "",
   }));
 }
@@ -145,8 +202,24 @@ export function createEmptyPowerSystemIndex(): PowerSystemIndex {
   return { schemaVersion: NOVEL_POWER_SYSTEM_SCHEMA_VERSION, systems: [] };
 }
 
-export function createEmptyPowerSystemInteractions(): PowerSystemInteractions {
-  return { schemaVersion: NOVEL_POWER_SYSTEM_SCHEMA_VERSION, interactions: [] };
+export function createEmptyPowerCatalog(): PowerCatalog {
+  return {
+    schemaVersion: NOVEL_POWER_SYSTEM_SCHEMA_VERSION,
+    foundations: [],
+    mediums: [],
+    principles: [],
+    resources: [],
+    theories: [],
+    methods: [],
+    capabilities: [],
+  };
+}
+
+export function createEmptyPowerConnections(): PowerConnections {
+  return {
+    schemaVersion: NOVEL_POWER_SYSTEM_SCHEMA_VERSION,
+    connections: [],
+  };
 }
 
 export function createPowerSystemRecord(input: {
@@ -164,12 +237,8 @@ export function createPowerSystemRecord(input: {
     status: "draft",
     summary: "",
     designContract: createDefaultDesignContract(input.typeId),
-    elements: [],
     tracks: [],
-    rules: [],
-    relations: [],
     dimensions: createDefaultPowerDimensions(),
-    benchmarks: [],
     metadata: createDefaultPowerTruthMetadata(),
     createdAt: now,
     updatedAt: now,

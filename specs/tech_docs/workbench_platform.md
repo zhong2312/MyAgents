@@ -15,8 +15,9 @@
 - Workbench API 1.1 的工作区根绑定通用存储接口。
 - Workbench API 1.2 的声明式新项目初始化协议。
 - Workbench API 1.3 的完整 MyAgents Agent Session 宿主端口。
+- Workbench API 1.7 的页面导航守卫注册接口。
 
-本阶段不包含工作台后台进程、动态下载、第三方代码沙箱、工作台自有存储后端或领域 MCP。API 1.1 的通用存储端口与 API 1.2 的项目初始化均委托 MyAgents 已有 Workspace File Service，不引入第二套文件 IO owner；API 1.3 的大型 AI 任务委托现有 Chat Session 生命周期。
+本阶段不包含工作台后台进程、动态下载、第三方代码沙箱、工作台自有存储后端或用户可配置的领域 MCP。API 1.1 的通用存储端口与 API 1.2 的项目初始化均委托 MyAgents 已有 Workspace File Service，不引入第二套文件 IO owner；API 1.3 的大型 AI 任务委托现有 Chat Session 生命周期。
 
 ## 目录与依赖方向
 
@@ -76,7 +77,7 @@ interface WorkbenchManifest {
 
 ## API 版本协议
 
-宿主版本由 `WORKBENCH_HOST_API_VERSION` 定义，当前为 `1.3`。
+宿主版本由 `WORKBENCH_HOST_API_VERSION` 定义，当前为 `1.7`。
 
 - `major` 必须完全相同；
 - 宿主 `minor` 必须大于等于 `minMinor`；
@@ -97,7 +98,9 @@ interface WorkbenchManifest {
 export default defineWorkbench(manifest, () => import("./renderer"));
 ```
 
-模块默认导出接收 `WorkbenchRendererProps`。宿主 context 只暴露稳定字段：manifest、workspacePath、workspaceName、route、isActive、`storage`、`agentSessions` 和 `navigate()`。
+模块默认导出接收 `WorkbenchRendererProps`。宿主 context 只暴露稳定字段：manifest、workspacePath、workspaceName、route、isActive、`storage`、`agentSessions`、受控运行端口、`navigate()` 和 `registerNavigationGuard()`。
+
+Workbench API 1.7 允许当前页面注册一个导航守卫。具体工作台只声明页面是否允许离开以及保存动作；Shell 统一串行化侧栏导航请求，App 在关闭工作台标签前调用同一守卫，并根据结果决定继续或留在原页。页面卸载时必须注销守卫，宿主不会替工作台推断 dirty 状态。
 
 工作台需要浮层或选择器时使用 Renderer SDK 导出的 `Popover` 与 `CustomSelect`。这些原语统一提供 Portal、视口翻转、边界偏移、关闭语义和跨平台选择器样式，具体工作台不得直接导入宿主 `components/` 下的实现。
 
@@ -138,6 +141,8 @@ Workbench API 1.3 在 renderer context 中提供 `agentSessions`。大型领域�
 
 `agentSessions.open()` 是显式用户操作。普通工作台 Tab 仍不挂载 `TabProvider`、不拥有 `sessionId`、不隐式启动 Sidecar。小型单次生成不复用此完整对话端口，后续通过独立的受控运行接口和统一运行投影接入。
 
+工作台通过 `toolset` 请求的业务工具属于 MyAgents Host 原生能力：生命周期由工作台会话控制，不进入 MCP 设置，不允许用户开关，也没有面向用户的连接状态。Claude Agent SDK 当前只通过 `createSdkMcpServer()` 接收进程内自定义工具，因此 builtin Runtime 适配器可以在 SDK 边界使用该传输；`mcp__` 名称、server id 和连接术语都属于适配层实现细节，禁止进入工作台 UI、模型对用户的说明或故障恢复建议。其它 Runtime 应使用各自的宿主工具适配面，不得据此把工作台能力定义成领域 MCP。
+
 ## 打开与 Tab 语义
 
 一个工作台 Tab 由 `(workbenchId, canonical workspacePath)` 唯一标识。调用方发送：
@@ -160,6 +165,7 @@ Shell 统一负责：
 
 - 工作台与 Workspace 身份展示；
 - manifest 驱动的导航和 route 归一化；
+- 页面级未保存修改导航守卫；
 - renderer 懒加载；
 - 未注册、版本不兼容、模块加载失败和加载中状态；
 - 工作台局部错误边界，避免具体 renderer 崩溃替换整个 MyAgents UI。

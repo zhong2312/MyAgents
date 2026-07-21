@@ -1,0 +1,764 @@
+.world-simulation-root {
+  display: flex;
+  min-height: 100%;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.world-simulation-loading {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+.world-simulation-header {
+  display: flex;
+  min-height: 4.25rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.75rem 1.25rem;
+  background: var(--paper-elevated);
+}
+
+.world-simulation-heading,
+.world-simulation-header-actions,
+.world-simulation-connection,
+.world-simulation-facts,
+.world-simulation-panel-title,
+.world-simulation-history-title,
+.world-simulation-section-heading,
+.world-simulation-controls,
+.world-simulation-controls button,
+.world-simulation-secondary-button,
+.world-simulation-primary-button {
+  display: flex;
+  align-items: center;
+}
+
+.world-simulation-heading {
+  min-width: 0;
+  gap: 0.7rem;
+  color: var(--accent-warm);
+}
+
+.world-simulation-heading > div {
+  min-width: 0;
+}
+
+.world-simulation-heading h1 {
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.world-simulation-heading p,
+.world-simulation-section-heading p {
+  margin-top: 0.15rem;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-simulation-header-actions {
+  flex-shrink: 0;
+  gap: 0.5rem;
+}
+
+.world-simulation-connection {
+  height: 1.75rem;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 0.55rem;
+  font-size: 0.75rem;
+}
+
+.world-simulation-connection.is-connected {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--line));
+  color: var(--success);
+}
+
+.world-simulation-connection.is-unavailable {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--line));
+  color: var(--error);
+}
+
+.world-simulation-connection.is-checking {
+  color: var(--ink-muted);
+}
+
+.world-simulation-icon-button {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink-muted);
+}
+
+.world-simulation-icon-button:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.world-simulation-icon-button.is-small {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.world-simulation-icon-button:disabled,
+.world-simulation-controls button:disabled,
+.world-simulation-primary-button:disabled,
+.world-simulation-secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.world-simulation-error {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--error) 25%, var(--line));
+  background: var(--error-bg);
+  padding: 0.5rem 1.25rem;
+  color: var(--error);
+  font-size: 0.75rem;
+}
+
+.world-simulation-facts {
+  min-height: 2.25rem;
+  flex-shrink: 0;
+  gap: 1rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0 1.25rem;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.world-simulation-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.world-simulation-revision {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ink-subtle);
+}
+
+.world-simulation-layout {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(12rem, 15rem) minmax(21rem, 0.9fr) minmax(25rem, 1.25fr);
+  overflow: hidden;
+}
+
+.world-simulation-scenarios,
+.world-simulation-editor,
+.world-simulation-run {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.world-simulation-scenarios,
+.world-simulation-editor {
+  border-right: 1px solid var(--line);
+}
+
+.world-simulation-scenarios {
+  background: var(--paper-elevated);
+}
+
+.world-simulation-panel-title,
+.world-simulation-history-title {
+  height: 2.75rem;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0 0.8rem;
+}
+
+.world-simulation-panel-title h2,
+.world-simulation-history-title h2,
+.world-simulation-section-heading h2 {
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.world-simulation-scenario-list,
+.world-simulation-history-list {
+  padding: 0.4rem;
+}
+
+.world-simulation-scenario-list {
+  max-height: 13rem;
+  overflow-y: auto;
+}
+
+.world-simulation-scenario-row,
+.world-simulation-history-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-radius: 4px;
+  padding: 0.5rem 0.55rem;
+  text-align: left;
+}
+
+.world-simulation-scenario-row:hover,
+.world-simulation-history-row:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.world-simulation-scenario-row.is-active,
+.world-simulation-history-row.is-active {
+  background: var(--accent-warm-subtle);
+}
+
+.world-simulation-scenario-row span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-simulation-scenario-row small,
+.world-simulation-history-copy small {
+  flex-shrink: 0;
+  color: var(--ink-subtle);
+  font-size: 0.6875rem;
+}
+
+.world-simulation-history-title {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+}
+
+.world-simulation-history-row {
+  align-items: flex-start;
+}
+
+.world-simulation-history-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.world-simulation-history-copy strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.75rem;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-simulation-status {
+  display: inline-flex;
+  min-height: 1.35rem;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 0.38rem;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.world-simulation-status.is-running,
+.world-simulation-status.is-completed {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--line));
+  color: var(--success);
+}
+
+.world-simulation-status.is-failed,
+.world-simulation-status.is-cancelled {
+  color: var(--error);
+}
+
+.world-simulation-pulse {
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.world-simulation-empty-note {
+  padding: 0.75rem 0.55rem;
+  color: var(--ink-subtle);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.world-simulation-editor,
+.world-simulation-run {
+  padding: 1rem;
+}
+
+.world-simulation-section-heading {
+  min-height: 2.25rem;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.world-simulation-secondary-button,
+.world-simulation-primary-button {
+  height: 2rem;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 5px;
+  padding: 0 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.world-simulation-secondary-button {
+  border: 1px solid var(--line-strong);
+  background: var(--paper-elevated);
+}
+
+.world-simulation-primary-button {
+  background: var(--button-primary-bg);
+  color: var(--button-primary-text);
+}
+
+.world-simulation-primary-button:hover:not(:disabled) {
+  background: var(--button-primary-bg-hover);
+}
+
+.world-simulation-field {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.world-simulation-field > span,
+.world-simulation-round-field > span {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.world-simulation-field input,
+.world-simulation-field textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--paper-elevated);
+  padding: 0.5rem 0.65rem;
+  color: var(--ink);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  outline: none;
+}
+
+.world-simulation-field input {
+  height: 2.25rem;
+}
+
+.world-simulation-field textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.world-simulation-field input:focus,
+.world-simulation-field textarea:focus {
+  border-color: var(--accent-warm);
+}
+
+.world-simulation-round-field {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr) 2rem;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.world-simulation-round-field input {
+  accent-color: var(--accent-warm);
+}
+
+.world-simulation-round-field output {
+  font-size: 0.8125rem;
+  font-weight: 650;
+  text-align: right;
+}
+
+.world-simulation-actor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.world-simulation-actor-heading h3,
+.world-simulation-result-section h3 {
+  display: inline;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.world-simulation-actor-heading span {
+  margin-left: 0.5rem;
+  color: var(--ink-subtle);
+  font-size: 0.6875rem;
+}
+
+.world-simulation-actor-heading button {
+  color: var(--accent-cool);
+  font-size: 0.75rem;
+}
+
+.world-simulation-actor-list {
+  display: grid;
+  max-height: 10.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  overflow-y: auto;
+  margin-bottom: 1rem;
+  padding-right: 0.2rem;
+}
+
+.world-simulation-actor-list label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--line-subtle);
+  border-radius: 4px;
+  padding: 0.45rem 0.5rem;
+  cursor: pointer;
+}
+
+.world-simulation-actor-list label.is-checked {
+  border-color: color-mix(in srgb, var(--accent-cool) 40%, var(--line));
+  background: var(--accent-cool-subtle);
+}
+
+.world-simulation-actor-list input {
+  flex-shrink: 0;
+  accent-color: var(--accent-cool);
+}
+
+.world-simulation-actor-list label > span {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.world-simulation-actor-list strong {
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-simulation-actor-list small {
+  flex-shrink: 0;
+  color: var(--ink-subtle);
+  font-size: 0.6875rem;
+}
+
+.world-simulation-two-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.world-simulation-create-row {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line-subtle);
+  padding-top: 0.85rem;
+}
+
+.world-simulation-controls {
+  min-height: 2.75rem;
+  gap: 0.4rem;
+  border-top: 1px solid var(--line-subtle);
+  border-bottom: 1px solid var(--line-subtle);
+  margin: 0 -1rem;
+  padding: 0 1rem;
+}
+
+.world-simulation-controls button {
+  height: 1.9rem;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0 0.6rem;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+}
+
+.world-simulation-controls button:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.world-simulation-controls button.is-danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.world-simulation-run-empty {
+  display: flex;
+  min-height: 14rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  color: var(--ink-subtle);
+  font-size: 0.8125rem;
+}
+
+.world-simulation-results {
+  padding-top: 1rem;
+}
+
+.world-simulation-run-error {
+  margin-bottom: 0.75rem;
+  border-left: 3px solid var(--error);
+  background: var(--error-bg);
+  padding: 0.55rem 0.7rem;
+  color: var(--error);
+  font-size: 0.75rem;
+}
+
+.world-simulation-result-section + .world-simulation-result-section {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--line-subtle);
+  padding-top: 1rem;
+}
+
+.world-simulation-event-list,
+.world-simulation-change-list {
+  margin-top: 0.5rem;
+}
+
+.world-simulation-event-list article {
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr) 1rem;
+  gap: 0.65rem;
+  align-items: start;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0.75rem 0;
+}
+
+.world-simulation-event-index {
+  display: flex;
+  width: 1.5rem;
+  height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent-warm);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.world-simulation-event-list h4 {
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.world-simulation-event-list p {
+  margin-top: 0.25rem;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.world-simulation-event-list dl {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr);
+  gap: 0.15rem 0.45rem;
+  margin-top: 0.45rem;
+  font-size: 0.6875rem;
+  line-height: 1.55;
+}
+
+.world-simulation-event-list dt {
+  color: var(--accent-warm);
+}
+
+.world-simulation-event-list dd {
+  color: var(--ink-muted);
+}
+
+.world-simulation-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.45rem;
+}
+
+.world-simulation-event-meta span {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  color: var(--ink-subtle);
+  font-size: 0.6875rem;
+}
+
+.world-simulation-change-list > div {
+  display: grid;
+  grid-template-columns: minmax(5rem, 0.7fr) minmax(4rem, 0.5fr) minmax(0, 1.4fr);
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0.55rem 0;
+  font-size: 0.75rem;
+}
+
+.world-simulation-change-list strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-simulation-change-list span {
+  color: var(--ink-muted);
+}
+
+.world-simulation-change-list p {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--ink-muted);
+}
+
+.world-simulation-result-section.is-warning ul {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.world-simulation-result-section.is-warning li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  color: var(--warning);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 1180px) {
+  .world-simulation-layout {
+    grid-template-columns: 12rem minmax(20rem, 0.9fr) minmax(22rem, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .world-simulation-root {
+    overflow: auto;
+  }
+
+  .world-simulation-layout {
+    display: flex;
+    min-height: auto;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .world-simulation-scenarios,
+  .world-simulation-editor,
+  .world-simulation-run {
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .world-simulation-scenario-list,
+  .world-simulation-history-list {
+    max-height: 11rem;
+    overflow-y: auto;
+  }
+
+  .world-simulation-history-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .world-simulation-header {
+    align-items: flex-start;
+    padding: 0.75rem;
+  }
+
+  .world-simulation-connection {
+    max-width: 7.5rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .world-simulation-facts {
+    padding: 0 0.75rem;
+  }
+
+  .world-simulation-revision {
+    margin-left: 0;
+  }
+
+  .world-simulation-editor,
+  .world-simulation-run {
+    padding: 0.75rem;
+  }
+
+  .world-simulation-two-fields,
+  .world-simulation-actor-list,
+  .world-simulation-history-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .world-simulation-controls {
+    margin: 0 -0.75rem;
+    padding: 0 0.75rem;
+  }
+
+  .world-simulation-change-list > div {
+    grid-template-columns: minmax(5rem, 0.7fr) minmax(0, 1.3fr);
+  }
+
+  .world-simulation-change-list p {
+    grid-column: 1 / -1;
+  }
+}

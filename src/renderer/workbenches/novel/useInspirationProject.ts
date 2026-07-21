@@ -3,49 +3,34 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
-  createNovelNarrativeStudioRepository,
-  type LoadedNarrativeStudioProject,
-} from "./narrativeStudioRepository";
-import type {
-  CreativeProfile,
-  InspirationLibrary,
-  NarrativeDesign,
-} from "./narrativeStudioSchema";
+  createNovelInspirationRepository,
+  type LoadedInspirationProject,
+} from "./inspirationRepository";
+import type { InspirationLibrary } from "./inspirationSchema";
 
-export interface NarrativeStudioProjectController {
-  readonly project: LoadedNarrativeStudioProject | null;
+export interface InspirationProjectController {
+  readonly project: LoadedInspirationProject | null;
   readonly error: string | null;
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
   readonly isSaving: boolean;
-  reload(): Promise<LoadedNarrativeStudioProject | null>;
-  saveNarrative(value: NarrativeDesign): Promise<void>;
-  saveInspirations(value: InspirationLibrary): Promise<void>;
-  saveProfile(value: CreativeProfile): Promise<void>;
+  reload(): Promise<LoadedInspirationProject | null>;
+  save(value: InspirationLibrary): Promise<void>;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function useNarrativeStudioProject(
+export function useInspirationProject(
   storage: WorkbenchStorage,
-  projectTitle: string,
-  projectGenres: readonly string[],
   isActive: boolean,
-): NarrativeStudioProjectController {
+): InspirationProjectController {
   const repository = useMemo(
-    () =>
-      createNovelNarrativeStudioRepository(
-        storage,
-        projectTitle,
-        projectGenres,
-      ),
-    [projectGenres, projectTitle, storage],
+    () => createNovelInspirationRepository(storage),
+    [storage],
   );
-  const [project, setProject] = useState<LoadedNarrativeStudioProject | null>(
-    null,
-  );
+  const [project, setProject] = useState<LoadedInspirationProject | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -100,7 +85,7 @@ export function useNarrativeStudioProject(
       })
       .catch((cause) => {
         if (!disposed) {
-          console.warn("[NarrativeStudio] File watch unavailable:", cause);
+          console.warn("[Inspiration] File watch unavailable:", cause);
         }
       });
     return () => {
@@ -110,18 +95,13 @@ export function useNarrativeStudioProject(
     };
   }, [isActive, isSaving, load, storage]);
 
-  const runSave = useCallback(
-    async (
-      operation: (
-        current: LoadedNarrativeStudioProject,
-      ) => Promise<LoadedNarrativeStudioProject>,
-    ) => {
-      if (!project) throw new Error("叙事工程尚未加载");
+  const save = useCallback(
+    async (value: InspirationLibrary) => {
+      if (!project) throw new Error("灵感尚未加载");
       setIsSaving(true);
       setError(null);
       try {
-        const saved = await operation(project);
-        setProject(saved);
+        setProject(await repository.save(project, value));
       } catch (cause) {
         setError(errorMessage(cause));
         throw cause;
@@ -129,23 +109,7 @@ export function useNarrativeStudioProject(
         setIsSaving(false);
       }
     },
-    [project],
-  );
-
-  const saveNarrative = useCallback(
-    (value: NarrativeDesign) =>
-      runSave((current) => repository.saveNarrative(current, value)),
-    [repository, runSave],
-  );
-  const saveInspirations = useCallback(
-    (value: InspirationLibrary) =>
-      runSave((current) => repository.saveInspirations(current, value)),
-    [repository, runSave],
-  );
-  const saveProfile = useCallback(
-    (value: CreativeProfile) =>
-      runSave((current) => repository.saveProfile(current, value)),
-    [repository, runSave],
+    [project, repository],
   );
 
   return Object.freeze({
@@ -155,9 +119,6 @@ export function useNarrativeStudioProject(
     isRefreshing,
     isSaving,
     reload,
-    saveNarrative,
-    saveInspirations,
-    saveProfile,
+    save,
   });
 }
-

@@ -249,6 +249,7 @@ export const timelineLibrarySchema = z
     periods: z.array(timelinePeriodSchema).default([]),
     views: z.array(timelineViewSchema).default([]),
     storyStartEventId: idSchema.nullable().default(null),
+    factsThroughEventId: idSchema.nullable().default(null),
     branches: z.array(timelineBranchSchema).min(1),
     events: z.array(timelineEventSchema),
   })
@@ -401,6 +402,27 @@ export const timelineLibrarySchema = z
         code: "custom",
         path: ["storyStartEventId"],
         message: "故事起点事件不存在",
+      });
+    }
+
+    if (
+      library.factsThroughEventId &&
+      !eventsById.has(library.factsThroughEventId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["factsThroughEventId"],
+        message: "事实截止事件不存在",
+      });
+    } else if (
+      library.factsThroughEventId &&
+      eventsById.get(library.factsThroughEventId)?.branchId !==
+        MAIN_TIMELINE_BRANCH_ID
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["factsThroughEventId"],
+        message: "事实截止事件必须位于主时间线",
       });
     }
 
@@ -852,6 +874,7 @@ export function createEmptyTimelineLibrary(createdAt: string): TimelineLibrary {
     periods: createDefaultTimelinePeriods(createdAt),
     views: createDefaultTimelineViews(),
     storyStartEventId: null,
+    factsThroughEventId: null,
     branches: [
       {
         id: MAIN_TIMELINE_BRANCH_ID,

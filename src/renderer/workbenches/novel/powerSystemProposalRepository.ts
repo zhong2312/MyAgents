@@ -1,13 +1,12 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
+import { validatePowerSystemLibrary } from "../../../shared/novel-power-system-validation";
 
 import {
+  parsePowerCatalog,
+  parsePowerConnections,
   parsePowerSystemIndex,
-  parsePowerSystemInteractions,
   parsePowerSystemMeta,
   parsePowerSystemRecord,
-  type PowerSystemIndex,
-  type PowerSystemInteractions,
-  type PowerSystemMeta,
   type PowerSystemRecord,
 } from "./powerSystemSchema";
 import {
@@ -73,7 +72,8 @@ export interface NovelPowerSystemProposalRepository {
 const POWER_SYSTEM_ROOT = "world/power-systems";
 const META_PATH = `${POWER_SYSTEM_ROOT}/meta.json`;
 const INDEX_PATH = `${POWER_SYSTEM_ROOT}/index.json`;
-const INTERACTIONS_PATH = `${POWER_SYSTEM_ROOT}/interactions.json`;
+const CATALOG_PATH = `${POWER_SYSTEM_ROOT}/catalog.json`;
+const CONNECTIONS_PATH = `${POWER_SYSTEM_ROOT}/connections.json`;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -100,70 +100,6 @@ function updateManifestChanges(
   };
 }
 
-function validateCoreReferences(
-  meta: PowerSystemMeta,
-  index: PowerSystemIndex,
-  interactions: PowerSystemInteractions,
-  records: ReadonlyMap<string, PowerSystemRecord>,
-): void {
-  const typeIds = new Set<string>();
-  for (const type of meta.systemTypes) {
-    if (typeIds.has(type.id)) {
-      throw new Error(`力量体系类型 id 重复：${type.id}`);
-    }
-    typeIds.add(type.id);
-  }
-
-  const systemIds = new Set<string>();
-  const targets = new Map<string, Set<string>>();
-  for (const entry of index.systems) {
-    if (systemIds.has(entry.id)) {
-      throw new Error(`力量体系索引 id 重复：${entry.id}`);
-    }
-    systemIds.add(entry.id);
-    if (!typeIds.has(entry.typeId)) {
-      throw new Error(`力量体系“${entry.name}”引用了不存在的类型`);
-    }
-    const record = records.get(entry.id);
-    if (!record) throw new Error(`力量体系“${entry.name}”缺少结构化记录`);
-    if (
-      record.name !== entry.name ||
-      record.typeId !== entry.typeId ||
-      record.status !== entry.status ||
-      record.summary !== entry.summary ||
-      record.updatedAt !== entry.updatedAt
-    ) {
-      throw new Error(`力量体系“${entry.name}”的索引摘要与记录不一致`);
-    }
-    const ids = new Set<string>([record.id]);
-    record.elements.forEach((item) => ids.add(item.id));
-    record.tracks.forEach((track) => {
-      ids.add(track.id);
-      track.states.forEach((state) => ids.add(state.id));
-    });
-    record.rules.forEach((item) => ids.add(item.id));
-    record.dimensions.forEach((item) => ids.add(item.id));
-    targets.set(entry.id, ids);
-  }
-
-  for (const interaction of interactions.interactions) {
-    for (const reference of [interaction.left, interaction.right]) {
-      if (!systemIds.has(reference.systemId)) {
-        throw new Error(`跨体系交互“${interaction.name}”引用了不存在的体系`);
-      }
-      if (!targets.get(reference.systemId)?.has(reference.targetId)) {
-        throw new Error(`跨体系交互“${interaction.name}”引用了不存在的目标`);
-      }
-      if (
-        reference.kind === "system" &&
-        reference.targetId !== reference.systemId
-      ) {
-        throw new Error(`跨体系交互“${interaction.name}”的体系引用不一致`);
-      }
-    }
-  }
-}
-
 async function validateProspectiveLibrary(
   storage: WorkbenchStorage,
   selectedChanges: readonly LoadedPowerSystemProposalChange[],
@@ -177,17 +113,20 @@ async function validateProspectiveLibrary(
     if (selected) return selected.afterContent;
     return readOptionalText(storage, path);
   };
-  const [metaContent, indexContent, interactionsContent] = await Promise.all([
-    candidateContent(META_PATH),
-    candidateContent(INDEX_PATH),
-    candidateContent(INTERACTIONS_PATH),
-  ]);
-  if (!metaContent || !indexContent || !interactionsContent) {
+  const [metaContent, indexContent, catalogContent, connectionsContent] =
+    await Promise.all([
+      candidateContent(META_PATH),
+      candidateContent(INDEX_PATH),
+      candidateContent(CATALOG_PATH),
+      candidateContent(CONNECTIONS_PATH),
+    ]);
+  if (!metaContent || !indexContent || !catalogContent || !connectionsContent) {
     throw new Error("应用后的力量体系库缺少核心索引文件");
   }
   const meta = parsePowerSystemMeta(metaContent);
   const index = parsePowerSystemIndex(indexContent);
-  const interactions = parsePowerSystemInteractions(interactionsContent);
+  const catalog = parsePowerCatalog(catalogContent);
+  const connections = parsePowerConnections(connectionsContent);
   const records = new Map<string, PowerSystemRecord>();
   for (const entry of index.systems) {
     const expectedRecordPath = `${POWER_SYSTEM_ROOT}/records/${entry.id}.json`;
@@ -209,7 +148,7 @@ async function validateProspectiveLibrary(
     if (record.id !== entry.id) {
       throw new Error(`力量体系“${entry.name}”的记录 id 与索引不一致`);
     }
-    records.set(record.id, record);
+    records.set(entry.id, record);
   }
   for (const change of selectedChanges) {
     const match =
@@ -220,7 +159,16 @@ async function validateProspectiveLibrary(
       throw new Error(`提案文件未被最终 index.json 引用：${change.targetPath}`);
     }
   }
-  validateCoreReferences(meta, index, interactions, records);
+  const referenceErrors = validatePowerSystemLibrary({
+    meta,
+    index,
+    catalog,
+    connections,
+    records,
+  });
+  if (referenceErrors.length > 0) {
+    throw new Error(referenceErrors.join("；"));
+  }
 
   if (!allowSnapshots) {
     for (const change of selectedChanges) {

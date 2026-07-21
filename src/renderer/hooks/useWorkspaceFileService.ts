@@ -18,7 +18,8 @@
 import { useCallback, useMemo } from 'react';
 
 import { i18n } from '@/i18n';
-import { isTauriEnvironment } from '@/utils/browserMock';
+import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
+import { apiPostJson } from '@/api/apiFetch';
 import type { WorkbenchProjectInitialization } from '../../shared/workbench-sdk';
 
 function workspaceFileText(key: string): string {
@@ -373,16 +374,22 @@ interface BlobUrlHandle {
 
 export function useWorkspaceFileService(workspacePath: string | null): WorkspaceFileService {
   const tauri = isTauriEnvironment();
+  const browserDev = isBrowserDevMode();
 
   const invokeIfTauri = useCallback(async <T,>(cmd: string, args: Record<string, unknown>): Promise<T> => {
     if (!tauri) {
-      throw new Error(
-        workspaceFileText('desktopOnly')
+      if (!browserDev || !workspacePath) {
+        throw new Error(workspaceFileText('desktopOnly'));
+      }
+      const response = await apiPostJson<{ success: true; data: T }>(
+        '/api/workbench-dev-storage/request',
+        { workspacePath, command: cmd, args },
       );
+      return response.data;
     }
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<T>(cmd, args);
-  }, [tauri]);
+  }, [browserDev, tauri, workspacePath]);
 
   const requireWorkspace = useCallback(() => {
     if (!workspacePath) {
@@ -799,7 +806,7 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
   // searchFiles, fetchCommands — ~10 sites) don't rebuild on every keystroke.
   // Pre-PRD-0.2.7 the legacy `apiPost`/`apiGet` came from a stable Tab context;
   // this useMemo restores that render-loop stability.
-  const isAvailable = tauri && workspacePath != null;
+  const isAvailable = (tauri || browserDev) && workspacePath != null;
   return useMemo(
     () => ({
       initializeProject,

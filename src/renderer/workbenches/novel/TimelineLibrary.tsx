@@ -980,6 +980,38 @@ export default function TimelineLibrary({
     );
   };
 
+  const setFactsThrough = async () => {
+    if (!loaded || !eventDraft) return;
+    if (eventDraft.branchId !== MAIN_TIMELINE_BRANCH_ID) {
+      setError("事实截止只能设置在主时间线事件上");
+      return;
+    }
+    if (!eventDraft.title.trim() || !eventDraft.timeLabel.trim()) {
+      setError("事件名称和故事时间不能为空");
+      return;
+    }
+    const event: TimelineEvent = {
+      ...eventDraft,
+      title: eventDraft.title.trim(),
+      timeLabel: eventDraft.timeLabel.trim(),
+      summary: eventDraft.summary.trim(),
+      description: eventDraft.description.trim(),
+      tags: eventDraft.tags.map((tag) => tag.trim()).filter(Boolean),
+      updatedAt: new Date().toISOString(),
+    };
+    await persist(
+      {
+        ...loaded.library,
+        factsThroughEventId: event.id,
+        events: loaded.library.events.map((item) =>
+          item.id === event.id ? event : item,
+        ),
+      },
+      selectedBranchId,
+      event.id,
+    );
+  };
+
   return (
     <div className="timeline-library flex h-full min-h-0 flex-col overflow-hidden bg-[var(--paper)]">
       <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
@@ -1251,11 +1283,13 @@ export default function TimelineLibrary({
             calendars={loaded?.library.calendars ?? []}
             periods={loaded?.library.periods ?? []}
             storyStartEventId={loaded?.library.storyStartEventId ?? null}
+            factsThroughEventId={loaded?.library.factsThroughEventId ?? null}
             isSaving={isSaving}
             onUpdate={updateEvent}
             onSave={() => void saveEvent()}
             onRemove={() => void removeEvent()}
             onSetStoryStart={() => void setStoryStart()}
+            onSetFactsThrough={() => void setFactsThrough()}
           />
           {selectedBranch && selectedBranch.id !== MAIN_TIMELINE_BRANCH_ID && (
             <div className="border-t border-[var(--line-subtle)] px-4 py-3">
@@ -1625,11 +1659,13 @@ function EventInspector({
   calendars,
   periods,
   storyStartEventId,
+  factsThroughEventId,
   isSaving,
   onUpdate,
   onSave,
   onRemove,
   onSetStoryStart,
+  onSetFactsThrough,
 }: {
   readonly draft: TimelineEvent | null;
   readonly projected: TimelineProjectedEvent | null;
@@ -1639,11 +1675,13 @@ function EventInspector({
   readonly calendars: readonly TimelineCalendar[];
   readonly periods: readonly TimelinePeriod[];
   readonly storyStartEventId: string | null;
+  readonly factsThroughEventId: string | null;
   readonly isSaving: boolean;
   readonly onUpdate: (patch: Partial<TimelineEvent>) => void;
   readonly onSave: () => void;
   readonly onRemove: () => void;
   readonly onSetStoryStart: () => void;
+  readonly onSetFactsThrough: () => void;
 }) {
   const selectableEventOptions = eventOptions
     .filter((event) => event.id !== draft?.id)
@@ -1842,6 +1880,27 @@ function EventInspector({
               className="shrink-0 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--accent-cool)] hover:bg-[var(--paper)] disabled:cursor-not-allowed disabled:opacity-45"
             >
               {storyStartEventId === draft.id ? "已设为起点" : "设为起点"}
+            </button>
+          </div>
+        </div>
+        <div className="rounded-md border border-[var(--line)] bg-[var(--paper-inset)]/45 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-[var(--ink-muted)]">
+                世界事实截止
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onSetFactsThrough}
+              disabled={
+                isSaving ||
+                draft.branchId !== MAIN_TIMELINE_BRANCH_ID ||
+                factsThroughEventId === draft.id
+              }
+              className="shrink-0 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--accent-cool)] hover:bg-[var(--paper)] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {factsThroughEventId === draft.id ? "已设为截止" : "设为截止"}
             </button>
           </div>
         </div>

@@ -15,7 +15,7 @@
   "task": {
     "id": "novel-narrative-studio-v1",
     "title": "面向所有小说类型的叙事设计与灵感工作面",
-    "status": "prototype-reviewed"
+    "status": "prototype-revision"
   },
   "openDesign": {
     "projectId": "c3b32f4a-c96a-4d7f-9690-7c4fdc804f7d",
@@ -37,6 +37,10 @@
     "src/renderer/workbenches/novel/renderer.tsx",
     "src/renderer/workbenches/novel/repository.ts",
     "src/renderer/workbenches/novel/itemLibrarySchema.ts",
+    "src/renderer/workbenches/novel/NarrativeDesignWorkbench.tsx",
+    "src/renderer/workbenches/novel/NarrativeStudio.css",
+    "src/renderer/workbenches/novel/narrativeStudioSchema.ts",
+    "src/renderer/workbenches/novel/NarrativeHelp.tsx",
     "src/renderer/workbenches/novel/timelineLibrarySchema.ts",
     "src/shared/types/thought.ts"
   ],

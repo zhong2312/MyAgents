@@ -3,6 +3,7 @@ import {
   Suspense,
   useCallback,
   useMemo,
+  useRef,
   useState,
   type ErrorInfo,
   type ReactNode,
@@ -28,6 +29,7 @@ import {
   Loader2,
   Map,
   Network,
+  Orbit,
   PanelLeftClose,
   PanelLeftOpen,
   Route,
@@ -42,16 +44,20 @@ import {
   WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
   WORKBENCH_AI_RUN_REQUEST_VERSION,
   WORKBENCH_HOST_API_VERSION,
+  WORKBENCH_SIMULATION_REQUEST_VERSION,
   formatWorkbenchApiVersion,
   type WorkbenchAgentSessionRequest,
   type WorkbenchAiRunRequest,
   type WorkbenchAiRunResult,
   type WorkbenchTabTarget,
+  type WorkbenchSimulationDataFor,
+  type WorkbenchSimulationRequest,
 } from "../../shared/workbench-sdk";
 import { getFolderName } from "@/types/tab";
 import { workbenchRegistry } from "@/workbench-registry";
 import type { WorkbenchRegistry } from "./registry";
 import { useWorkbenchStorage } from "@/workbench-host/useWorkbenchStorage";
+import type { WorkbenchNavigationGuard } from "./types";
 
 interface WorkbenchShellProps {
   readonly target: WorkbenchTabTarget | undefined;
@@ -66,6 +72,13 @@ interface WorkbenchShellProps {
     workspacePath: string,
     request: WorkbenchAiRunRequest,
   ) => Promise<WorkbenchAiRunResult>;
+  readonly onRequestSimulation?: (
+    workspacePath: string,
+    request: WorkbenchSimulationRequest,
+  ) => Promise<unknown>;
+  readonly onNavigationGuardChange?: (
+    guard: WorkbenchNavigationGuard | null,
+  ) => void;
   readonly registry?: WorkbenchRegistry;
 }
 
@@ -128,6 +141,7 @@ const NAV_ICONS = {
   lightbulb: Lightbulb,
   "layers-3": Layers3,
   waypoints: Waypoints,
+  orbit: Orbit,
 } as const;
 
 function FailureState({ title, detail }: { title: string; detail: string }) {
@@ -165,6 +179,8 @@ export default function WorkbenchShell({
   onNavigate,
   onOpenAgentSession,
   onRunAi,
+  onRequestSimulation,
+  onNavigationGuardChange,
   registry = workbenchRegistry,
 }: WorkbenchShellProps) {
   const { t } = useTranslation("app");
@@ -213,11 +229,44 @@ export default function WorkbenchShell({
   const [expandedNavigationParents, setExpandedNavigationParents] = useState<
     ReadonlySet<string>
   >(() => new Set());
+  const navigationGuardRef = useRef<WorkbenchNavigationGuard | null>(null);
+  const navigationPendingRef = useRef(false);
+  const registerNavigationGuard = useCallback(
+    (guard: WorkbenchNavigationGuard) => {
+      navigationGuardRef.current = guard;
+      onNavigationGuardChange?.(guard);
+      return () => {
+        if (navigationGuardRef.current === guard) {
+          navigationGuardRef.current = null;
+          onNavigationGuardChange?.(null);
+        }
+      };
+    },
+    [onNavigationGuardChange],
+  );
   const navigate = useCallback(
     (nextRoute: string) => {
-      if (routeIds.has(nextRoute)) onNavigate(nextRoute);
+      if (!routeIds.has(nextRoute) || nextRoute === route) return;
+      const guard = navigationGuardRef.current;
+      if (!guard) {
+        onNavigate(nextRoute);
+        return;
+      }
+      if (navigationPendingRef.current) return;
+      navigationPendingRef.current = true;
+      void guard
+        .confirmLeave()
+        .then((allowed) => {
+          if (allowed) onNavigate(nextRoute);
+        })
+        .catch((error) => {
+          console.error("[WorkbenchShell] Navigation guard failed:", error);
+        })
+        .finally(() => {
+          navigationPendingRef.current = false;
+        });
     },
-    [onNavigate, routeIds],
+    [onNavigate, route, routeIds],
   );
   const openAgentSession = useCallback(
     async (request: WorkbenchAgentSessionRequest) => {
@@ -244,6 +293,25 @@ export default function WorkbenchShell({
       return onRunAi(workspacePath, request);
     },
     [onRunAi, workspacePath],
+  );
+  const requestSimulation = useCallback(
+    async <TRequest extends WorkbenchSimulationRequest>(
+      request: TRequest,
+    ): Promise<WorkbenchSimulationDataFor<TRequest>> => {
+      if (request.version !== WORKBENCH_SIMULATION_REQUEST_VERSION) {
+        throw new Error(
+          `Unsupported workbench simulation request version: ${request.version}`,
+        );
+      }
+      if (!onRequestSimulation) {
+        throw new Error("MyAgents 世界推演服务当前不可用");
+      }
+      return (await onRequestSimulation(
+        workspacePath,
+        request,
+      )) as WorkbenchSimulationDataFor<TRequest>;
+    },
+    [onRequestSimulation, workspacePath],
   );
   const openProjectAssistant = useCallback(async () => {
     if (isOpeningProjectAssistant || !onOpenAgentSession) return;
@@ -324,7 +392,12 @@ export default function WorkbenchShell({
       isAvailable: Boolean(onRunAi),
       run: runAi,
     }),
+    simulationRuns: Object.freeze({
+      isAvailable: Boolean(onRequestSimulation),
+      request: requestSimulation,
+    }),
     navigate,
+    registerNavigationGuard,
   });
 
   return (

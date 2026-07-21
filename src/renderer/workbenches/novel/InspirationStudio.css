@@ -1,0 +1,665 @@
+.inspiration-studio {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.inspiration-studio .ns-header {
+  display: flex;
+  min-height: 3.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0.5rem 1rem;
+  background: var(--paper-elevated);
+}
+
+.inspiration-studio .ns-title {
+  min-width: max-content;
+  font-family: "Songti SC", "STSong", var(--font-chinese), serif;
+  font-size: var(--text-base);
+  font-weight: 700;
+}
+
+.inspiration-studio .ns-subtitle,
+.inspiration-studio .ns-pane-meta {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.inspiration-studio .ns-header-spacer {
+  flex: 1 1 auto;
+}
+
+.inspiration-studio .ns-button,
+.inspiration-studio .ns-icon-button,
+.inspiration-studio .ns-segment-button {
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
+}
+
+.inspiration-studio .ns-button:hover,
+.inspiration-studio .ns-icon-button:hover,
+.inspiration-studio .ns-segment-button:hover {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.inspiration-studio .ns-button {
+  display: inline-flex;
+  min-height: 2.125rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border: 1px solid var(--line);
+  padding: 0 0.75rem;
+  background: var(--paper);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.inspiration-studio .ns-button.is-primary {
+  border-color: var(--accent-warm);
+  background: var(--accent-warm);
+  color: var(--button-primary-text);
+}
+
+.inspiration-studio .ns-button.is-primary:hover {
+  background: var(--button-primary-bg-hover);
+  color: var(--button-primary-text);
+}
+
+.inspiration-studio .ns-button.is-danger {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--line));
+  color: var(--error);
+}
+
+.inspiration-studio .ns-button:disabled,
+.inspiration-studio .ns-icon-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.inspiration-studio .ns-icon-button {
+  display: inline-flex;
+  width: 2.125rem;
+  height: 2.125rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+}
+
+.inspiration-studio .ns-help-button {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+}
+
+.inspiration-studio .ns-search {
+  display: flex;
+  width: min(12rem, 22vw);
+  min-width: 8rem;
+  height: 2.125rem;
+  align-items: center;
+  gap: 0.375rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 0.625rem;
+  background: var(--paper);
+  color: var(--ink-muted);
+}
+
+.inspiration-studio .ns-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.inspiration-studio .ns-warning-banner {
+  display: flex;
+  min-height: 2.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.45rem 1rem;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: var(--text-xs);
+}
+
+.inspiration-studio .ns-mobile-tabs {
+  display: none;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0.25rem 0.5rem;
+  background: var(--paper-inset);
+}
+
+.inspiration-studio .ns-segment-button {
+  min-height: 2rem;
+  border: 0;
+  font-size: var(--text-xs);
+}
+
+.inspiration-studio .ns-segment-button.is-active {
+  background: var(--paper-elevated);
+  box-shadow: inset 0 -2px var(--accent-warm);
+  color: var(--ink);
+}
+
+.inspiration-studio .ns-detail-toggle,
+.inspiration-studio .ns-detail-close {
+  display: none;
+}
+
+.inspiration-studio .ns-workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: 15rem minmax(28rem, 1fr) 20rem;
+  overflow: hidden;
+}
+
+.inspiration-studio .ns-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--paper);
+}
+
+.inspiration-studio .ns-pane + .ns-pane {
+  border-left: 1px solid var(--line-subtle);
+}
+
+.inspiration-studio .ns-tree-pane {
+  background: var(--paper-inset);
+}
+
+.inspiration-studio .ns-pane-header {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0 0.75rem;
+  background: inherit;
+}
+
+.inspiration-studio .ns-pane-header strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspiration-studio .ns-filter-list {
+  padding: 0.5rem;
+}
+
+.inspiration-studio .ns-filter-row,
+.inspiration-studio .ns-list-row {
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  text-align: left;
+}
+
+.inspiration-studio .ns-filter-row {
+  display: flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  font-size: var(--text-sm);
+}
+
+.inspiration-studio .ns-filter-row:hover,
+.inspiration-studio .ns-filter-row.is-active,
+.inspiration-studio .ns-list-row:hover,
+.inspiration-studio .ns-list-row.is-active {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.inspiration-studio .ns-filter-row.is-active,
+.inspiration-studio .ns-list-row.is-active {
+  box-shadow: inset 3px 0 var(--accent-warm);
+}
+
+.inspiration-studio .ns-tree-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspiration-studio .ns-count {
+  display: inline-flex;
+  min-width: 1.4rem;
+  min-height: 1.25rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.35rem;
+  background: var(--paper);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.inspiration-studio .ns-tree-note {
+  border-top: 1px solid var(--line-subtle);
+  padding: 0.75rem;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.inspiration-studio .ns-content-toolbar {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0.35rem 0.75rem;
+  background: var(--paper-elevated);
+  scrollbar-width: none;
+}
+
+.inspiration-studio .ns-content-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.inspiration-studio .ns-content-toolbar > strong {
+  white-space: nowrap;
+}
+
+.inspiration-studio .ns-content-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: 0.875rem;
+}
+
+.inspiration-studio .ns-empty {
+  display: flex;
+  min-height: 20rem;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+.inspiration-studio .ns-empty strong {
+  display: block;
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.inspiration-studio .ns-empty p {
+  max-width: 28rem;
+  margin-top: 0.35rem;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.inspiration-studio .ns-list {
+  display: grid;
+}
+
+.inspiration-studio .ns-list-row {
+  display: grid;
+  min-height: 3.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.25rem 0.75rem;
+  border-bottom: 1px solid var(--line-subtle);
+  border-radius: 0;
+  padding: 0.7rem 0.875rem;
+}
+
+.inspiration-studio .ns-list-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspiration-studio .ns-list-summary {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspiration-studio .ns-badge {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 1.4rem;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  background: var(--paper);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.3;
+}
+
+.inspiration-studio .ns-inspector-body {
+  padding: 0.875rem;
+}
+
+.inspiration-studio .ns-kicker {
+  color: var(--accent-warm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.inspiration-studio .ns-object-title {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+  font-family: "Songti SC", "STSong", var(--font-chinese), serif;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.inspiration-studio .ns-section {
+  margin-top: 0.875rem;
+  border-top: 1px solid var(--line-subtle);
+  padding-top: 0.875rem;
+}
+
+.inspiration-studio .ns-section-header {
+  display: flex;
+  min-height: 1.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.inspiration-studio .ns-field {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.65rem;
+}
+
+.inspiration-studio .ns-field > span,
+.inspiration-studio .ns-field > label {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.inspiration-studio .ns-input,
+.inspiration-studio .ns-select {
+  width: 100%;
+  min-width: 0;
+  min-height: 3rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 0.6rem;
+  outline: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.inspiration-studio .ns-input:focus,
+.inspiration-studio .ns-select:focus {
+  border-color: var(--accent-warm);
+  box-shadow: 0 0 0 2px var(--accent-warm-subtle);
+}
+
+.inspiration-studio .ns-markdown-field {
+  min-width: 0;
+  min-height: 8rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.inspiration-studio .ns-markdown-field > .novel-markdown-shell {
+  min-height: inherit;
+}
+
+.inspiration-studio .ns-markdown-field:focus-within {
+  border-color: var(--accent-warm);
+  box-shadow: 0 0 0 2px var(--accent-warm-subtle);
+}
+
+.inspiration-studio .ns-source-row {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.65rem;
+  background: var(--paper-inset);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.inspiration-studio .ns-source-row strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--ink);
+}
+
+.inspiration-studio .ns-kanban {
+  display: grid;
+  min-width: 44rem;
+  grid-template-columns: repeat(4, minmax(10rem, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.inspiration-studio .ns-kanban-column {
+  min-height: 28rem;
+  border-right: 1px solid var(--line);
+  background: var(--paper-inset);
+}
+
+.inspiration-studio .ns-kanban-column:last-child {
+  border-right: 0;
+}
+
+.inspiration-studio .ns-kanban-header {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding: 0 0.65rem;
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.inspiration-studio .ns-kanban-card {
+  display: block;
+  width: calc(100% - 0.75rem);
+  margin: 0.375rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+}
+
+.inspiration-studio .ns-kanban-card:hover,
+.inspiration-studio .ns-kanban-card.is-active {
+  border-color: var(--accent-warm);
+}
+
+.inspiration-studio .ns-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: min(42rem, calc(100vh - 2rem));
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper-elevated);
+  box-shadow: 0 18px 50px rgb(28 22 18 / 18%);
+}
+
+.inspiration-studio .ns-dialog.is-maximized {
+  display: flex;
+  width: calc(100vw - 1.5rem);
+  height: calc(100vh - 1.5rem);
+  max-height: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.inspiration-studio .ns-dialog.is-maximized .ns-dialog-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.inspiration-studio .ns-dialog-header,
+.inspiration-studio .ns-dialog-footer {
+  display: flex;
+  min-height: 3.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+}
+
+.inspiration-studio .ns-dialog-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.inspiration-studio .ns-dialog-header h2 {
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.inspiration-studio .ns-dialog-body {
+  padding: 1rem;
+}
+
+.inspiration-studio .ns-dialog-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 1100px) {
+  .inspiration-studio .ns-workspace {
+    position: relative;
+    grid-template-columns: 14rem minmax(26rem, 1fr);
+  }
+
+  .inspiration-studio .ns-inspector-pane {
+    display: none;
+    position: absolute;
+    z-index: 30;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(22rem, 88vw);
+    border-left: 1px solid var(--line-strong);
+    box-shadow: -12px 0 30px rgb(28 22 18 / 12%);
+  }
+
+  .inspiration-studio[data-mobile-pane="detail"] .ns-inspector-pane {
+    display: block;
+  }
+
+  .inspiration-studio .ns-detail-toggle,
+  .inspiration-studio .ns-detail-close {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 720px) {
+  .inspiration-studio .ns-detail-toggle,
+  .inspiration-studio .ns-detail-close {
+    display: none;
+  }
+
+  .inspiration-studio .ns-header {
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0.4rem 0.55rem;
+  }
+
+  .inspiration-studio .ns-subtitle,
+  .inspiration-studio .ns-search {
+    display: none;
+  }
+
+  .inspiration-studio .ns-mobile-tabs {
+    display: grid;
+  }
+
+  .inspiration-studio .ns-workspace {
+    display: block;
+    position: relative;
+  }
+
+  .inspiration-studio .ns-pane {
+    display: none;
+    width: 100%;
+    height: 100%;
+    border-left: 0 !important;
+  }
+
+  .inspiration-studio[data-mobile-pane="structure"] .ns-tree-pane,
+  .inspiration-studio[data-mobile-pane="content"] .ns-content-pane,
+  .inspiration-studio[data-mobile-pane="detail"] .ns-inspector-pane {
+    display: block;
+  }
+
+  .inspiration-studio .ns-inspector-pane {
+    position: static;
+    width: 100%;
+    box-shadow: none;
+  }
+
+  .inspiration-studio .ns-content-scroll {
+    padding: 0.5rem;
+  }
+
+  .inspiration-studio .ns-content-toolbar .ns-pane-meta {
+    display: none;
+  }
+}

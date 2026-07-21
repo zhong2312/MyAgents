@@ -126,9 +126,16 @@ import type {
   WorkbenchAiRunResult,
   WorkbenchAgentSessionRequest,
   WorkbenchModelSelection,
+  WorkbenchSimulationRequest,
 } from "../shared/workbench-sdk";
-import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION } from "../shared/workbench-sdk";
-import { dispatchWorkbenchHostAction } from "@/workbench-sdk";
+import {
+  WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+  WORKBENCH_SIMULATION_MODEL_SCENE_IDS,
+} from "../shared/workbench-sdk";
+import {
+  dispatchWorkbenchHostAction,
+  type WorkbenchNavigationGuard,
+} from "@/workbench-sdk";
 import { createWorkbenchTab, isSameWorkbenchTab } from "@/workbench-sdk/tab";
 import { workbenchRegistry } from "@/workbench-registry";
 import {
@@ -497,6 +504,10 @@ interface TabContentProps {
   onSidecarConfigAdopted: (tabId: string) => void;
   onFilePreviewIntentConsumed?: (tabId: string, intentId: string) => void;
   onUpdateWorkbenchRoute: (tabId: string, route: string) => void;
+  onRegisterWorkbenchNavigationGuard?: (
+    tabId: string,
+    guard: WorkbenchNavigationGuard | null,
+  ) => void;
   onOpenWorkbenchAgentSession?: (
     workspacePath: string,
     request: WorkbenchAgentSessionRequest,
@@ -505,6 +516,10 @@ interface TabContentProps {
     workspacePath: string,
     request: WorkbenchAiRunRequest,
   ) => Promise<WorkbenchAiRunResult>;
+  onRequestWorkbenchSimulation?: (
+    workspacePath: string,
+    request: WorkbenchSimulationRequest,
+  ) => Promise<unknown>;
   // Settings callbacks
   onSettingsSectionChange: () => void;
   updateReady: boolean;
@@ -546,8 +561,10 @@ export const MemoizedTabContent = memo(
     onSidecarConfigAdopted,
     onFilePreviewIntentConsumed,
     onUpdateWorkbenchRoute,
+    onRegisterWorkbenchNavigationGuard,
     onOpenWorkbenchAgentSession,
     onRunWorkbenchAi,
+    onRequestWorkbenchSimulation,
     settingsInitialSection,
     settingsInitialMcpId,
     settingsInitialOfficialToolId,
@@ -622,8 +639,12 @@ export const MemoizedTabContent = memo(
               workspacePath={tab.agentDir ?? ""}
               isActive={isActive}
               onNavigate={(route) => onUpdateWorkbenchRoute(tab.id, route)}
+              onNavigationGuardChange={(guard) =>
+                onRegisterWorkbenchNavigationGuard?.(tab.id, guard)
+              }
               onOpenAgentSession={onOpenWorkbenchAgentSession}
               onRunAi={onRunWorkbenchAi}
+              onRequestSimulation={onRequestWorkbenchSimulation}
             />
           </Suspense>
         ) : kind === "cold" ? (
@@ -848,6 +869,17 @@ export default function App() {
 
   const configuredWorkbenchToolsetsRef = useRef(new Map<string, string>());
   const persistedWorkbenchHistoryGroupsRef = useRef(new Map<string, string>());
+  const workbenchNavigationGuardsRef = useRef(
+    new Map<string, WorkbenchNavigationGuard>(),
+  );
+  const closingWorkbenchTabsRef = useRef(new Set<string>());
+  const registerWorkbenchNavigationGuard = useCallback(
+    (tabId: string, guard: WorkbenchNavigationGuard | null) => {
+      if (guard) workbenchNavigationGuardsRef.current.set(tabId, guard);
+      else workbenchNavigationGuardsRef.current.delete(tabId);
+    },
+    [],
+  );
   useEffect(() => {
     const liveSurfaceIds = new Set<string>();
     const liveHistoryGroupTabIds = new Set<string>();
@@ -2144,10 +2176,24 @@ export default function App() {
   );
 
   // Close tab — if AI is generating, close immediately and let it finish in background.
-  // No confirmation dialog: background completion keeps the Sidecar alive.
+  // Workbench-owned dirty state is resolved before the tab lifecycle continues.
   const closeTabWithConfirmation = useCallback(
     async (tabId: string) => {
+      if (closingWorkbenchTabsRef.current.has(tabId)) return;
       const tab = tabsRef.current.find((t) => t.id === tabId);
+      const guard = workbenchNavigationGuardsRef.current.get(tabId);
+
+      if (guard) {
+        closingWorkbenchTabsRef.current.add(tabId);
+        try {
+          if (!(await guard.confirmLeave())) return;
+        } catch (error) {
+          console.error("[App] Workbench navigation guard failed:", error);
+          return;
+        } finally {
+          closingWorkbenchTabsRef.current.delete(tabId);
+        }
+      }
 
       if (tab?.isGenerating && tab.sessionId) {
         void performCloseTab(tabId);
@@ -4613,6 +4659,72 @@ export default function App() {
     [],
   );
 
+  const handleRequestWorkbenchSimulation = useCallback(
+    async (
+      workspacePath: string,
+      request: WorkbenchSimulationRequest,
+    ): Promise<unknown> => {
+      const project = configProjectsRef.current.find((candidate) =>
+        workspacePathsEqual(candidate.path, workspacePath),
+      );
+      if (!project) {
+        throw new Error(`工作台项目尚未注册到 MyAgents：${workspacePath}`);
+      }
+      let validatedRequest = request;
+      if (request.operation === "create" && request.modelSelections) {
+        const validatedSelections = Object.fromEntries(
+          Object.entries(request.modelSelections).map(([sceneId, selection]) => {
+            if (
+              !WORKBENCH_SIMULATION_MODEL_SCENE_IDS.includes(
+                sceneId as (typeof WORKBENCH_SIMULATION_MODEL_SCENE_IDS)[number],
+              )
+            ) {
+              throw new Error(`未知的世界推演模型场景：${sceneId}`);
+            }
+            const resolved = resolveWorkbenchModelSelection(
+              selection,
+              appProvidersRef.current,
+              appApiKeysRef.current,
+              appProviderVerifyStatusRef.current,
+            );
+            if (!resolved || isRuntimeBackedProvider(resolved.provider)) {
+              throw new Error(
+                `模型场景 ${sceneId} 当前不支持运行时托管的供应商，请重新选择。`,
+              );
+            }
+            return [
+              sceneId,
+              { providerId: resolved.provider.id, model: resolved.model },
+            ];
+          }),
+        );
+        validatedRequest = {
+          ...request,
+          modelSelections: validatedSelections,
+        };
+      }
+      const serverUrl = await getGlobalServerUrl();
+      const response = await proxyFetch(
+        `${serverUrl}/api/workbench-simulation/request`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspacePath, request: validatedRequest }),
+        },
+      );
+      const payload = (await response.json().catch(() => ({}))) as {
+        success?: boolean;
+        data?: unknown;
+        error?: string;
+      };
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.error ?? "世界推演服务请求失败");
+      }
+      return payload.data;
+    },
+    [],
+  );
+
   const handleOpenWorkbenchAgentSession = useCallback(
     async (workspacePath: string, request: WorkbenchAgentSessionRequest) => {
       const presentation = request.presentation ?? "tab";
@@ -4879,8 +4991,8 @@ export default function App() {
         }
       } else if (request.toolset) {
         // Resumed Agent sessions retain their conversation but not the sidecar's
-        // context-injected MCP. Hand Chat a setup-only intent so it rebinds the
-        // workbench toolset before the user continues the prior conversation.
+        // in-process SDK adapter. Hand Chat a setup-only intent so it rebinds
+        // the host-owned workbench toolset before the user continues.
         initialMessage = {
           text: "",
           workbenchToolset: request.toolset,
@@ -5802,8 +5914,10 @@ export default function App() {
       onSidecarConfigAdopted={markSidecarConfigAdopted}
       onFilePreviewIntentConsumed={handleFilePreviewIntentConsumed}
       onUpdateWorkbenchRoute={updateWorkbenchRoute}
+      onRegisterWorkbenchNavigationGuard={registerWorkbenchNavigationGuard}
       onOpenWorkbenchAgentSession={handleOpenWorkbenchAgentSession}
       onRunWorkbenchAi={handleRunWorkbenchAi}
+      onRequestWorkbenchSimulation={handleRequestWorkbenchSimulation}
       settingsInitialSection={
         tab.view === "settings" ? settingsInitialSection : undefined
       }

@@ -15,6 +15,7 @@ Builds MyAgents and atomically updates the long-term Windows test package.
 param(
     [string]$TargetRoot = 'F:\workspace\MyAgents-test',
     [string]$BuildToolsRoot = 'F:\workspace\.myagents-build-tools',
+    [string]$MiroFishSourceRoot = '',
     [switch]$SkipSmokeTest,
     [switch]$ValidateOnly,
     [switch]$ReuseBuild
@@ -26,6 +27,11 @@ $ErrorActionPreference = 'Stop'
 $script:RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path.TrimEnd('\')
 $script:TargetRoot = [System.IO.Path]::GetFullPath($TargetRoot).TrimEnd('\')
 $script:BuildToolsRoot = [System.IO.Path]::GetFullPath($BuildToolsRoot).TrimEnd('\')
+if (-not $MiroFishSourceRoot) {
+    $MiroFishSourceRoot = Join-Path $script:RepoRoot 'src-tauri\resources\mirofish-companion\source'
+}
+$script:MiroFishSourceRoot = [System.IO.Path]::GetFullPath($MiroFishSourceRoot).TrimEnd('\')
+$script:MiroFishRuntimePath = Join-Path $script:RepoRoot 'src-tauri\resources\mirofish-companion\runtime'
 $script:NovelsDirectoryName = [string][char]0x5C0F + [string][char]0x8BF4
 $script:AppPath = Join-Path $script:TargetRoot 'app'
 $script:StagingPath = Join-Path $script:TargetRoot 'app.new'
@@ -76,7 +82,7 @@ function Remove-PackageFile {
 
 function Get-TestPackageProcesses {
     $appPrefix = [System.IO.Path]::GetFullPath($script:AppPath).TrimEnd('\') + '\'
-    return @(Get-Process -Name myagents, node, cuse -ErrorAction SilentlyContinue | Where-Object {
+    return @(Get-Process -Name myagents, node, cuse, 'mirofish-companion' -ErrorAction SilentlyContinue | Where-Object {
         try {
             $_.Path -and [System.IO.Path]::GetFullPath($_.Path).StartsWith(
                 $appPrefix,
@@ -131,7 +137,7 @@ function Stop-OldMyAgentsProcesses {
         [System.IO.Path]::GetFullPath($script:BuildToolsRoot).TrimEnd('\') + '\'
     )
     $commandLines = Get-ProcessCommandLines
-    $candidates = @(Get-Process -Name myagents, cargo, rustc, node, cuse -ErrorAction SilentlyContinue)
+    $candidates = @(Get-Process -Name myagents, cargo, rustc, node, cuse, python, uv, 'mirofish-companion' -ErrorAction SilentlyContinue)
     $owned = @($candidates | Where-Object {
         $process = $_
         $path = ''
@@ -157,6 +163,7 @@ function Stop-OldMyAgentsProcesses {
         $commandOwned = $commandLine -and (
             $commandLine.IndexOf($script:RepoRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
             $commandLine.IndexOf($script:TargetRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine.IndexOf($script:MiroFishSourceRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
             $commandLine.IndexOf('Start-MyAgents-Dev', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
         )
 
@@ -319,6 +326,7 @@ $directoryMappings = @(
     @{ Source = 'src-tauri\resources\claude-agent-sdk'; Name = 'claude-agent-sdk' },
     @{ Source = 'src-tauri\resources\cli'; Name = 'cli' },
     @{ Source = 'src-tauri\resources\nodejs'; Name = 'nodejs' },
+    @{ Source = 'src-tauri\resources\mirofish-companion'; Name = 'mirofish-companion' },
     @{ Source = 'src-tauri\resources\sharp-runtime'; Name = 'sharp-runtime' },
     @{ Source = 'src-tauri\resources\tsx-runtime'; Name = 'tsx-runtime' },
     @{ Source = 'src\server\plugin-bridge\sdk-shim'; Name = 'plugin-bridge-sdk-shim' },
@@ -371,6 +379,38 @@ foreach ($relativePath in @(
     }
 }
 
+$miroFishBuildScript = Join-Path $script:RepoRoot 'scripts\build-mirofish-companion.ps1'
+$miroFishSourceManifestPath = Join-Path $script:MiroFishSourceRoot 'SOURCE.json'
+foreach ($required in @(
+    $miroFishBuildScript,
+    (Join-Path $script:MiroFishSourceRoot 'backend\novel_companion.py'),
+    (Join-Path $script:MiroFishSourceRoot 'backend\companion-requirements.txt'),
+    (Join-Path $script:MiroFishSourceRoot 'LICENSE'),
+    $miroFishSourceManifestPath
+)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+        throw "Missing MiroFish package input: $required"
+    }
+}
+$miroFishSourceManifest = Get-Content -LiteralPath $miroFishSourceManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if (-not $miroFishSourceManifest.upstreamCommit -or -not $miroFishSourceManifest.files) {
+    throw "Invalid MiroFish source manifest: $miroFishSourceManifestPath"
+}
+foreach ($entry in @($miroFishSourceManifest.files)) {
+    $sourcePath = Join-Path $script:MiroFishSourceRoot ([string]$entry.path).Replace('/', '\')
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        throw "Missing manifest source file: $sourcePath"
+    }
+    $actualHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne ([string]$entry.sha256).ToLowerInvariant()) {
+        throw "MiroFish source hash mismatch: $($entry.path)"
+    }
+}
+$uvAvailable = [bool](
+    (Get-Command uv.exe -ErrorAction SilentlyContinue) -or
+    (Get-Command uv -ErrorAction SilentlyContinue)
+)
+
 $null = Get-VsDevShell
 $bundledCargo = Join-Path $script:BuildToolsRoot 'cargo\bin\cargo.exe'
 if (-not (Test-Path -LiteralPath $bundledCargo -PathType Leaf) -and -not (Get-Command cargo.exe -ErrorAction SilentlyContinue)) {
@@ -382,12 +422,20 @@ if ($ValidateOnly) {
         Repository = $script:RepoRoot
         Target = $script:TargetRoot
         BuildTools = $script:BuildToolsRoot
+        MiroFishSource = $script:MiroFishSourceRoot
+        MiroFishSourceCommit = [string]$miroFishSourceManifest.upstreamCommit
+        MiroFishRuntimeExists = Test-Path -LiteralPath (Join-Path $script:MiroFishRuntimePath 'mirofish-companion.exe') -PathType Leaf
+        UvAvailable = $uvAvailable
         AppExists = Test-Path -LiteralPath (Join-Path $script:AppPath 'myagents.exe')
         ExistingBuildOutput = Test-Path -LiteralPath (Join-Path $script:RepoRoot 'src-tauri\target\x86_64-pc-windows-msvc\release\myagents.exe')
         PersistentDirectories = @('profile', $script:NovelsDirectoryName)
         Status = 'ready'
     } | ConvertTo-Json
     return
+}
+
+if (-not $uvAvailable) {
+    throw 'uv was not found. It is required to build the MiroFish companion.'
 }
 
 if (-not $SkipSmokeTest) {
@@ -410,6 +458,21 @@ Write-Step 'Stopping the long-term test package'
 Write-Step 'Checking for old MyAgents build processes'
 Stop-OldMyAgentsProcesses
 Stop-TestPackageProcesses
+
+if ($ReuseBuild) {
+    if (-not (Test-Path -LiteralPath (Join-Path $script:MiroFishRuntimePath 'mirofish-companion.exe') -PathType Leaf)) {
+        throw 'Missing completed MiroFish companion runtime. Run without -ReuseBuild once.'
+    }
+} else {
+    Write-Step 'Building the MiroFish novel companion'
+    & $miroFishBuildScript `
+        -SourceRoot $script:MiroFishSourceRoot `
+        -OutputRoot $script:MiroFishRuntimePath `
+        -BuildRoot (Join-Path $script:BuildToolsRoot 'mirofish-companion')
+    if ($LASTEXITCODE -ne 0) {
+        throw "MiroFish companion build failed with exit code $LASTEXITCODE."
+    }
+}
 
 $profilePath = Join-Path $script:TargetRoot 'profile'
 $novelsPath = Join-Path $script:TargetRoot $script:NovelsDirectoryName
@@ -452,7 +515,7 @@ try {
         Copy-FileResource -SourceRelativePath $mapping.Source -DestinationName $mapping.Name
     }
 
-    foreach ($relative in @('myagents.exe', 'server-dist.js', 'plugin-bridge-dist.mjs', 'nodejs\node.exe', 'cli\myagents.js', 'cuse.exe')) {
+    foreach ($relative in @('myagents.exe', 'server-dist.js', 'plugin-bridge-dist.mjs', 'nodejs\node.exe', 'mirofish-companion\runtime\mirofish-companion.exe', 'cli\myagents.js', 'cuse.exe')) {
         if (-not (Test-Path -LiteralPath (Join-Path $script:StagingPath $relative) -PathType Leaf)) {
             throw "Staging validation failed: $relative"
         }

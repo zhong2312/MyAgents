@@ -2171,7 +2171,8 @@ export default function Chat({
         }
 
         // 0. Pin provider/model on the session BEFORE workbench tools / MCP set.
-        // MCP set and workbench toolset configuration can trigger SDK pre-warm.
+        // User MCP changes and the workbench's internal SDK adapter can both
+        // trigger SDK pre-warm while remaining separate product capabilities.
         // If we pre-warm without providerEnv, the sidecar defaults to anthropic-sub
         // even when the project is configured for a third-party provider (e.g.
         // volcengine + deepseek). That mismatch makes the first auto-send fail.
@@ -2220,9 +2221,9 @@ export default function Chat({
           );
         }
 
-        // 1. Configure host-owned workbench tools before the MCP fingerprint is
+        // 1. Configure host-owned workbench tools before the SDK tool surface is
         // rebuilt. The sidecar validates the toolset id and binds it to this
-        // session; the renderer never sends file contents or write authority.
+        // controlled session; it is not part of the user's MCP configuration.
         if (launchMessage.workbenchToolset) {
           await postWithRetry("/api/workbench-agent/configure", {
             toolset: launchMessage.workbenchToolset,

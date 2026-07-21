@@ -9,6 +9,8 @@ export const MODEL_SCENE_IDS = [
   "world.architecture",
   "world.template",
   "world.assist",
+  "inspiration.assist",
+  "inspiration.coauthor",
   "powers.design",
   "items.profile",
   "items.description",
@@ -24,6 +26,10 @@ export const MODEL_SCENE_IDS = [
   "factions.rights",
   "factions.history",
   "factions.batch",
+  "simulation.actor",
+  "simulation.world",
+  "simulation.resolve",
+  "simulation.report",
 ] as const;
 
 export type NovelModelSceneId = (typeof MODEL_SCENE_IDS)[number];
@@ -57,6 +63,20 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     group: "世界架构",
     label: "单项 AI 写作",
     description: "设定页、层级与空间节点辅助",
+    execution: "agent",
+  },
+  {
+    id: "inspiration.assist",
+    group: "灵感",
+    label: "灵感诊断与展开",
+    description: "检查灵感并提供可发展的方向",
+    execution: "run",
+  },
+  {
+    id: "inspiration.coauthor",
+    group: "灵感",
+    label: "灵感深度共创",
+    description: "携带当前灵感上下文的完整 MyAgents 会话",
     execution: "agent",
   },
   {
@@ -163,6 +183,34 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     label: "物品批量生产",
     description: "批量物品设计对话",
     execution: "agent",
+  },
+  {
+    id: "simulation.actor",
+    group: "世界推演",
+    label: "主体决策",
+    description: "角色与势力的下一步行动判断",
+    execution: "run",
+  },
+  {
+    id: "simulation.world",
+    group: "世界推演",
+    label: "世界响应",
+    description: "规则、环境与外部势力响应",
+    execution: "run",
+  },
+  {
+    id: "simulation.resolve",
+    group: "世界推演",
+    label: "冲突裁定",
+    description: "规则碰撞与行动结果裁定",
+    execution: "run",
+  },
+  {
+    id: "simulation.report",
+    group: "世界推演",
+    label: "推演报告",
+    description: "事件流与状态变化摘要",
+    execution: "run",
   },
 ] as const;
 

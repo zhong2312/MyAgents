@@ -13,6 +13,7 @@ import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecuti
 import type { RuntimeSource } from '../../shared/types/runtime';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { SessionOrigin } from '../../shared/session-origin';
+import type { WorkbenchAgentToolsetRequest } from '../../shared/workbench-sdk';
 import {
     isSystemMaintenanceSession,
     type SystemMaintenanceSessionKind,
@@ -64,6 +65,8 @@ export interface SessionMetadata {
     origin?: SessionOrigin;
     /** Optional project-local history grouping. Missing means project root. */
     historyGroupPath?: string[];
+    /** Host-owned business tools rebound by the sidecar when this session resumes. */
+    workbenchToolset?: WorkbenchAgentToolsetRequest;
     /** User-pinned to the 收藏 filter view. Only `true` is persisted; absent
      *  has identical meaning to false. */
     favorite?: boolean;

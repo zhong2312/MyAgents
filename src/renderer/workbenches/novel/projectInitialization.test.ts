@@ -19,13 +19,13 @@ describe("createNovelProjectInitialization", () => {
     expect(initialization.directories).toEqual(
       expect.arrayContaining([
         "manuscript/chapters",
-        "outline/volumes",
         "characters",
         "world/codex",
         "world/setting-library/pages",
         "world/setting-library/entries",
         "world/setting-library/proposals",
         "timeline",
+        "simulation",
         "research/notes",
         "knowledge",
         "prompts/installations",
@@ -36,14 +36,14 @@ describe("createNovelProjectInitialization", () => {
         "novel.json",
         "README.md",
         "manuscript/index.json",
-        "outline/outline.md",
-        "story/core.md",
+        "inspiration/index.json",
         "characters/index.json",
         "world/worldview.md",
         "world/setting-library/meta.json",
         "world/setting-library/spatial-tree.json",
         "world/setting-library/settings.json",
         "timeline/index.json",
+        "simulation/scenarios.json",
         "knowledge/entities.json",
         "knowledge/relations.json",
         "knowledge/facts.json",
@@ -65,8 +65,8 @@ describe("createNovelProjectInitialization", () => {
         ),
       ),
     ).toHaveLength(89);
-    const encodedSizes = initialization.files.map((file) =>
-      new TextEncoder().encode(file.content).byteLength,
+    const encodedSizes = initialization.files.map(
+      (file) => new TextEncoder().encode(file.content).byteLength,
     );
     const registrySize = new TextEncoder().encode(
       initialization.files.find((file) => file.path === "prompts/registry.json")
@@ -74,9 +74,9 @@ describe("createNovelProjectInitialization", () => {
     ).byteLength;
     expect(registrySize).toBeGreaterThan(64 * 1024);
     expect(Math.max(...encodedSizes)).toBeLessThanOrEqual(256 * 1024);
-    expect(encodedSizes.reduce((total, size) => total + size, 0)).toBeLessThanOrEqual(
-      2 * 1024 * 1024,
-    );
+    expect(
+      encodedSizes.reduce((total, size) => total + size, 0),
+    ).toBeLessThanOrEqual(2 * 1024 * 1024);
     for (const file of initialization.files.filter((entry) =>
       entry.path.endsWith(".json"),
     )) {
@@ -100,7 +100,7 @@ describe("createNovelProjectInitialization", () => {
     });
   });
 
-  it("uses the same complete outline structure for every project", () => {
+  it("does not initialize retired story planning files", () => {
     const initialization = createNovelProjectInitialization({
       projectId: "project-2",
       title: "回声",
@@ -108,14 +108,15 @@ describe("createNovelProjectInitialization", () => {
       targetWordCount: 20_000,
       createdAt: "2026-07-14T12:00:00.000Z",
     });
-    const outline = initialization.files.find(
-      (file) => file.path === "outline/outline.md",
-    );
-
-    expect(outline?.content).toContain("故事总纲");
-    expect(outline?.content).toContain("核心冲突");
-    expect(outline?.content).toContain("分卷规划");
-    expect(outline?.content).toContain("场景规划");
+    expect(
+      initialization.files.some(
+        (file) =>
+          file.path.startsWith("story/") ||
+          file.path.startsWith("outline/") ||
+          file.path === "settings/creative-profile.json",
+      ),
+    ).toBe(false);
+    expect(initialization.directories).not.toContain("story");
     expect(initialization.initializeGit).toBe(false);
   });
 });

@@ -11,7 +11,8 @@ import { createCharacterLibraryInitializationFiles } from "./characterLibraryRep
 import { createLocationLibraryInitializationFiles } from "./locationLibraryRepository";
 import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepository";
 import { createPowerSystemInitializationFiles } from "./powerSystemRepository";
-import { createNarrativeStudioInitializationFiles } from "./narrativeStudioRepository";
+import { createInspirationInitializationFile } from "./inspirationRepository";
+import { createWorldSimulationInitializationFiles } from "./worldSimulationRepository";
 import {
   createEmptyFactionLibrary,
   serializeFactionLibrary,
@@ -27,9 +28,6 @@ export interface NovelProjectInitializationInput {
 
 const DIRECTORIES = [
   "manuscript/chapters",
-  "outline/volumes",
-  "outline/scenes",
-  "story",
   "inspiration",
   "settings",
   "characters",
@@ -48,6 +46,7 @@ const DIRECTORIES = [
   "world/setting-library/entries",
   "world/setting-library/proposals",
   "timeline",
+  "simulation",
   "research/notes",
   "assets/images",
   "assets/references",
@@ -57,8 +56,6 @@ const DIRECTORIES = [
 
 const EMPTY_DIRECTORY_MARKERS = [
   "manuscript/chapters/.gitkeep",
-  "outline/volumes/.gitkeep",
-  "outline/scenes/.gitkeep",
   "research/notes/.gitkeep",
   "assets/images/.gitkeep",
   "assets/references/.gitkeep",
@@ -74,21 +71,6 @@ function markdownTitle(value: string): string {
 
 function createIndex(key: string): string {
   return json({ schemaVersion: 1, [key]: [] });
-}
-
-function createOutline(): string {
-  return `# 故事大纲
-
-## 故事总纲
-
-## 核心冲突
-
-## 主线与支线
-
-## 分卷规划
-
-## 场景规划
-`;
 }
 
 function createFiles(
@@ -131,36 +113,6 @@ Thumbs.db
       path: "manuscript/index.json",
       content: json({ schemaVersion: 1, nextChapterNumber: 1, chapters: [] }),
     },
-    { path: "outline/outline.md", content: createOutline() },
-    {
-      path: "outline/volumes.json",
-      content: json({ schemaVersion: 1, nextVolumeNumber: 1, volumes: [] }),
-    },
-    { path: "outline/plotlines.json", content: createIndex("plotlines") },
-    {
-      path: "story/core.md",
-      content: `# 故事核心
-
-## 一句话故事
-
-## 核心冲突
-
-## 主角目标
-
-## 故事承诺
-`,
-    },
-    {
-      path: "story/themes.md",
-      content: `# 主题与表达
-
-## 核心主题
-
-## 情绪基调
-
-## 叙事视角
-`,
-    },
     ...createCharacterLibraryInitializationFiles(),
     {
       path: "world/worldview.md",
@@ -198,11 +150,8 @@ Thumbs.db
     ...createSettingLibraryInitializationFiles(input.title),
     ...createPromptLibraryInitializationFiles(),
     ...createTimelineLibraryInitializationFiles(input.createdAt),
-    ...createNarrativeStudioInitializationFiles({
-      title: input.title,
-      genres: input.genres,
-      createdAt: input.createdAt,
-    }),
+    ...createWorldSimulationInitializationFiles(),
+    createInspirationInitializationFile(input.createdAt),
     { path: "research/index.json", content: createIndex("sources") },
     { path: "knowledge/entities.json", content: createIndex("entities") },
     { path: "knowledge/relations.json", content: createIndex("relations") },

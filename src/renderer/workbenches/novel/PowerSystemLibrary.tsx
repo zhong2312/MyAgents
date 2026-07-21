@@ -1,39 +1,23 @@
 import {
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  arrayMove,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
-import {
   AlertTriangle,
-  ArrowRight,
-  ArrowRightLeft,
   Atom,
-  Check,
-  CircleHelp,
-  CircleDashed,
-  Gauge,
+  BookOpenText,
+  BrainCircuit,
+  CheckCircle2,
+  CircleGauge,
+  FlaskConical,
   GitBranch,
-  GripVertical,
-  Layers3,
+  Link2,
   Loader2,
   Network,
   Plus,
   RefreshCw,
   Save,
+  ScrollText,
   Search,
-  ShieldAlert,
   Sparkles,
-  Waypoints,
   X,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -44,37 +28,47 @@ import {
   type ReactNode,
 } from "react";
 
-import {
-  CustomSelect,
-  DraggableDialogFrame,
-  type WorkbenchStorage,
-} from "@/workbench-sdk";
+import { CustomSelect, type WorkbenchStorage } from "@/workbench-sdk";
 
 import MarkdownVisualEditor from "./MarkdownVisualEditor";
 import PowerSystemGraph from "./PowerSystemGraph";
 import PowerSystemInspector, {
-  createPowerRule,
   type PowerInspectorSelection,
 } from "./PowerSystemInspector";
-import { auditPowerSystem } from "./powerSystemAudit";
-import { createDefaultPowerTruthMetadata } from "./powerSystemDefaults";
+import {
+  auditPowerSystem,
+  type PowerSystemAuditIssue,
+} from "./powerSystemAudit";
+import {
+  createDefaultPowerTruthMetadata,
+  createDefaultStateContract,
+  createPowerSystemRecord,
+} from "./powerSystemDefaults";
 import {
   createNovelPowerSystemRepository,
   type LoadedPowerSystem,
   type LoadedPowerSystemLibrary,
 } from "./powerSystemRepository";
 import type {
-  CrossSystemInteraction,
-  PowerBenchmark,
+  PowerCatalog,
+  PowerCatalogEntity,
+  PowerCatalogKind,
   PowerCapability,
-  PowerDimension,
-  PowerElement,
+  PowerConnection,
+  PowerConditionGroup,
+  PowerConnections,
+  PowerEntityReference,
+  PowerFoundation,
+  PowerMedium,
   PowerMethod,
-  PowerOrigin,
+  PowerMetricDimension,
+  PowerPrinciple,
+  PowerProgressionState,
+  PowerProgressionTrack,
+  PowerProgressionTransition,
   PowerResource,
-  PowerState,
-  PowerStateTrack,
   PowerSystemRecord,
+  PowerTheory,
 } from "./powerSystemSchema";
 
 interface PowerSystemLibraryProps {
@@ -87,92 +81,213 @@ interface PowerSystemLibraryProps {
 type PowerView =
   | "architecture"
   | "states"
+  | "methods"
+  | "theories"
   | "capabilities"
   | "resources"
-  | "rules"
-  | "interactions"
-  | "scales"
-  | "audit";
+  | "quality"
+  | "connections"
+  | "audit"
+  | "notes";
 
 const VIEW_ITEMS: readonly {
   readonly id: PowerView;
   readonly label: string;
   readonly icon: LucideIcon;
 }[] = [
-  { id: "architecture", label: "架构", icon: Network },
-  { id: "states", label: "状态", icon: GitBranch },
-  { id: "capabilities", label: "能力", icon: Sparkles },
-  { id: "resources", label: "资源", icon: Atom },
-  { id: "rules", label: "规则", icon: ShieldAlert },
-  { id: "interactions", label: "交互", icon: ArrowRightLeft },
-  { id: "scales", label: "标尺", icon: Gauge },
-  { id: "audit", label: "审查", icon: Check },
+  { id: "architecture", label: "体系架构", icon: Network },
+  { id: "states", label: "成长状态", icon: GitBranch },
+  { id: "methods", label: "发展方法", icon: ScrollText },
+  { id: "theories", label: "理论模型", icon: BrainCircuit },
+  { id: "capabilities", label: "能力目录", icon: Zap },
+  { id: "resources", label: "资源条件", icon: FlaskConical },
+  { id: "quality", label: "质量边界", icon: CircleGauge },
+  { id: "connections", label: "关联矩阵", icon: Link2 },
+  { id: "audit", label: "一致性审查", icon: AlertTriangle },
+  { id: "notes", label: "体系说明", icon: BookOpenText },
 ];
 
-const inputClass =
-  "w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]";
+const CATALOG_LABELS: Readonly<Record<PowerCatalogKind, string>> = {
+  foundation: "力量本源",
+  medium: "运行介质",
+  principle: "底层法则",
+  resource: "资源",
+  theory: "理论模型",
+  method: "发展方法",
+  capability: "能力",
+};
+
+const CONNECTION_LABELS: Readonly<Record<PowerConnection["kind"], string>> = {
+  association: "通用关联",
+  "method-application": "方法应用",
+  "resource-requirement": "资源需求",
+  "capability-access": "能力准入",
+  "system-interaction": "体系交互",
+};
+
+const CONNECTION_FILTERS: readonly ("all" | PowerConnection["kind"])[] = [
+  "all",
+  ...Object.keys(CONNECTION_LABELS),
+] as ("all" | PowerConnection["kind"])[];
+
+const EMPTY_INSPECTOR_RECORD = createPowerSystemRecord({
+  id: "unassigned-system",
+  name: "尚未创建体系",
+  typeId: "blank",
+});
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function createElement(kind: PowerElement["kind"]): PowerElement {
-  const base = {
+function baseCatalogEntity(kind: PowerCatalogKind) {
+  return {
     id: createId(kind),
-    name:
-      kind === "origin"
-        ? "新力量来源"
-        : kind === "resource"
-          ? "新资源"
-          : kind === "method"
-            ? "新运用方式"
-            : "新能力",
+    name: `新${CATALOG_LABELS[kind]}`,
+    aliases: [],
     subtypeId: "",
     summary: "",
+    tags: [],
     metadata: createDefaultPowerTruthMetadata(),
   };
-  if (kind === "origin") {
-    return { ...base, kind, availability: "unknown" } satisfies PowerOrigin;
-  }
-  if (kind === "resource") {
-    return {
-      ...base,
-      kind,
-      measurement: "descriptive",
-      unit: "",
-      minimum: null,
-      maximum: null,
-      recovery: "",
-      depletion: "",
-    } satisfies PowerResource;
-  }
-  if (kind === "method") {
-    return {
-      ...base,
-      kind,
-      acquisition: "unknown",
-      procedure: "",
-    } satisfies PowerMethod;
-  }
-  return {
-    ...base,
-    kind,
-    activation: "active",
-    effect: "",
-    target: "",
-    range: "",
-    duration: "",
-  } satisfies PowerCapability;
 }
 
-function createTrack(): PowerStateTrack {
+function createCatalogEntity(kind: PowerCatalogKind): PowerCatalogEntity {
+  const base = baseCatalogEntity(kind);
+  switch (kind) {
+    case "foundation":
+      return {
+        ...base,
+        kind,
+        foundationType: "unknown",
+        availability: "unknown",
+        manifestation: "",
+      } satisfies PowerFoundation;
+    case "medium":
+      return {
+        ...base,
+        kind,
+        mediumType: "unknown",
+        carrier: "",
+        circulation: "",
+        storage: "",
+        loss: "",
+      } satisfies PowerMedium;
+    case "principle":
+      return {
+        ...base,
+        kind,
+        principleType: "custom",
+        scope: "system",
+        statements: [],
+        conditions: [],
+        exceptions: [],
+        priority: 100,
+      } satisfies PowerPrinciple;
+    case "resource":
+      return {
+        ...base,
+        kind,
+        resourceType: "other",
+        measurement: "unknown",
+        unit: "",
+        qualityDimensions: [],
+        replenishment: "",
+        scarcity: "",
+      } satisfies PowerResource;
+    case "theory":
+      return {
+        ...base,
+        kind,
+        representationType: "unknown",
+        substrateRefs: [],
+        topology: {
+          spatialDimensions: null,
+          nodeDefinition: "",
+          connectionDefinition: "",
+          structure: "",
+        },
+        operations: [],
+        controlStrategy: "",
+        complexity: {
+          memory: "unknown",
+          parallelism: "unknown",
+          abstraction: "unknown",
+          dynamism: "unknown",
+        },
+        assumptions: [],
+        invariants: [],
+        failureModes: [],
+      } satisfies PowerTheory;
+    case "method":
+      return {
+        ...base,
+        kind,
+        acquisition: "unknown",
+        roles: [],
+        theoryRefs: [],
+        procedure: "",
+        phases: [],
+        outputs: [],
+        failureConsequences: [],
+      } satisfies PowerMethod;
+    case "capability":
+      return {
+        ...base,
+        kind,
+        capabilityType: "custom",
+        activation: "active",
+        effect: "",
+        target: "",
+        range: "",
+        duration: "",
+        costs: [],
+        limitations: [],
+        sideEffects: [],
+        countermeasures: [],
+      } satisfies PowerCapability;
+  }
+}
+
+function addCatalogEntity(
+  catalog: PowerCatalog,
+  entity: PowerCatalogEntity,
+): PowerCatalog {
+  switch (entity.kind) {
+    case "foundation":
+      return { ...catalog, foundations: [...catalog.foundations, entity] };
+    case "medium":
+      return { ...catalog, mediums: [...catalog.mediums, entity] };
+    case "principle":
+      return { ...catalog, principles: [...catalog.principles, entity] };
+    case "resource":
+      return { ...catalog, resources: [...catalog.resources, entity] };
+    case "theory":
+      return { ...catalog, theories: [...catalog.theories, entity] };
+    case "method":
+      return { ...catalog, methods: [...catalog.methods, entity] };
+    case "capability":
+      return { ...catalog, capabilities: [...catalog.capabilities, entity] };
+  }
+}
+
+function removeCatalogEntity(catalog: PowerCatalog, id: string): PowerCatalog {
+  return {
+    ...catalog,
+    foundations: catalog.foundations.filter((item) => item.id !== id),
+    mediums: catalog.mediums.filter((item) => item.id !== id),
+    principles: catalog.principles.filter((item) => item.id !== id),
+    resources: catalog.resources.filter((item) => item.id !== id),
+    theories: catalog.theories.filter((item) => item.id !== id),
+    methods: catalog.methods.filter((item) => item.id !== id),
+    capabilities: catalog.capabilities.filter((item) => item.id !== id),
+  };
+}
+
+function createTrack(): PowerProgressionTrack {
   return {
     id: createId("track"),
-    name: "新状态轨道",
+    name: "新成长轨道",
     subtypeId: "",
     summary: "",
     mode: "ordered",
@@ -182,387 +297,427 @@ function createTrack(): PowerStateTrack {
   };
 }
 
-function createState(track: PowerStateTrack): PowerState {
+function createState(order: number): PowerProgressionState {
   return {
     id: createId("state"),
-    name: `状态 ${track.states.length + 1}`,
+    name: `新状态 ${order + 1}`,
+    aliases: [],
+    stateType: "stage",
     summary: "",
-    order: track.states.length,
+    order,
+    contract: createDefaultStateContract(),
     metadata: createDefaultPowerTruthMetadata(),
   };
 }
 
-function createDimension(): PowerDimension {
+function createTransition(
+  track: PowerProgressionTrack,
+): PowerProgressionTransition | null {
+  const ordered = [...track.states].sort(
+    (left, right) => left.order - right.order,
+  );
+  const target = ordered.at(-1);
+  if (!target) return null;
+  const source = ordered.length > 1 ? ordered.at(-2) : null;
   return {
-    id: createId("dimension"),
-    name: "新维度",
-    measurement: "numeric",
+    id: createId("transition"),
+    name: source ? `${source.name} → ${target.name}` : `进入${target.name}`,
+    fromStateId: source?.id ?? null,
+    toStateId: target.id,
+    transitionType: "advance",
+    conditions: { mode: "all", clauses: [] },
+    qualityCarryover: "preserve",
+    qualityRule: "",
+    outcomes: [],
+    failureModes: [],
+    reversible: false,
+  };
+}
+
+function createDimension(
+  category: PowerMetricDimension["category"],
+): PowerMetricDimension {
+  return {
+    id: createId(category),
+    name: category === "quality" ? "新质量维度" : "新边界维度",
+    category,
+    measurement: "descriptive",
     unit: "",
-    lowLabel: "低",
-    highLabel: "高",
+    lowLabel: "",
+    highLabel: "",
     description: "",
   };
 }
 
-function createBenchmark(): PowerBenchmark {
-  return {
-    id: createId("benchmark"),
-    name: "新场景标尺",
-    context: "",
-    values: [],
-  };
-}
-
-function elementKindLabel(kind: PowerElement["kind"]): string {
-  return {
-    origin: "来源",
-    resource: "资源",
-    method: "方式",
-    capability: "能力",
-  }[kind];
-}
-
-function EmptyLibrary({
-  isInitializing,
-  onInitialize,
-}: {
-  readonly isInitializing: boolean;
-  readonly onInitialize: () => void;
-}) {
+function sameReference(
+  left: PowerEntityReference,
+  right: PowerEntityReference,
+): boolean {
+  if (
+    left.namespace !== right.namespace ||
+    left.kind !== right.kind ||
+    left.targetId !== right.targetId
+  ) {
+    return false;
+  }
   return (
-    <div className="flex h-full items-center justify-center p-8">
-      <div className="max-w-md text-center">
-        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
-          <Waypoints className="h-5 w-5" />
-        </div>
-        <h1 className="mt-4 text-lg font-semibold text-[var(--ink)]">
-          尚未建立力量体系库
-        </h1>
-        <p className="mt-2 text-sm leading-6 text-[var(--ink-muted)]">
-          初始化只会创建新的结构化事实源，不会读取、迁移或覆盖旧的
-          world/power-system.md。
-        </p>
-        <button
-          type="button"
-          disabled={isInitializing}
-          onClick={onInitialize}
-          className="mx-auto mt-5 flex h-9 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-4 text-sm font-medium text-white disabled:opacity-45"
-        >
-          {isInitializing ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Plus className="h-4 w-4" />
-          )}
-          初始化力量体系库
-        </button>
-      </div>
-    </div>
+    left.namespace !== "system" ||
+    (right.namespace === "system" && left.systemId === right.systemId)
   );
 }
 
-function ErrorState({
-  error,
-  onRetry,
+function matchesAnyReference(
+  reference: PowerEntityReference,
+  targets: readonly PowerEntityReference[],
+): boolean {
+  return targets.some((target) => sameReference(reference, target));
+}
+
+function cleanConditionReferences(
+  group: PowerConditionGroup,
+  targets: readonly PowerEntityReference[],
+): PowerConditionGroup {
+  return {
+    ...group,
+    clauses: group.clauses.map((clause) =>
+      clause.subjectRef && matchesAnyReference(clause.subjectRef, targets)
+        ? { ...clause, subjectRef: null }
+        : clause,
+    ),
+  };
+}
+
+function cleanRecordReferences(
+  record: PowerSystemRecord,
+  targets: readonly PowerEntityReference[],
+): PowerSystemRecord {
+  return {
+    ...record,
+    tracks: record.tracks.map((track) => ({
+      ...track,
+      states: track.states.map((state) => ({
+        ...state,
+        contract: {
+          ...state.contract,
+          entryConditions: cleanConditionReferences(
+            state.contract.entryConditions,
+            targets,
+          ),
+          maintenanceConditions: cleanConditionReferences(
+            state.contract.maintenanceConditions,
+            targets,
+          ),
+          exitConditions: cleanConditionReferences(
+            state.contract.exitConditions,
+            targets,
+          ),
+        },
+      })),
+      transitions: track.transitions.map((transition) => ({
+        ...transition,
+        conditions: cleanConditionReferences(transition.conditions, targets),
+      })),
+    })),
+  };
+}
+
+function cleanCatalogReferences(
+  catalog: PowerCatalog,
+  targets: readonly PowerEntityReference[],
+): PowerCatalog {
+  return {
+    ...catalog,
+    theories: catalog.theories.map((theory) => ({
+      ...theory,
+      substrateRefs: theory.substrateRefs.filter(
+        (reference) => !matchesAnyReference(reference, targets),
+      ),
+    })),
+    methods: catalog.methods.map((method) => ({
+      ...method,
+      theoryRefs: method.theoryRefs.filter(
+        (reference) => !matchesAnyReference(reference, targets),
+      ),
+    })),
+  };
+}
+
+function connectionDimensionMatches(
+  connection: PowerConnection,
+  dimensionId: string,
+  targets: readonly PowerEntityReference[],
+): boolean {
+  if (connection.target.namespace !== "system") return false;
+  const systemId = connection.target.systemId;
+  return targets.some(
+    (target) =>
+      target.namespace === "system" &&
+      target.systemId === systemId &&
+      target.targetId === dimensionId &&
+      ["quality-dimension", "boundary-dimension"].includes(target.kind),
+  );
+}
+
+function cleanConnectionReferences(
+  connections: PowerConnections,
+  targets: readonly PowerEntityReference[],
+): PowerConnections {
+  return {
+    ...connections,
+    connections: connections.connections
+      .filter(
+        (connection) =>
+          !matchesAnyReference(connection.source, targets) &&
+          !matchesAnyReference(connection.target, targets),
+      )
+      .map((connection): PowerConnection => {
+        const conditions = cleanConditionReferences(
+          connection.conditions,
+          targets,
+        );
+        if (connection.kind === "method-application") {
+          return {
+            ...connection,
+            conditions,
+            theoryRef:
+              connection.theoryRef &&
+              matchesAnyReference(connection.theoryRef, targets)
+                ? null
+                : connection.theoryRef,
+            qualityEffects: connection.qualityEffects.filter(
+              (effect) =>
+                !connectionDimensionMatches(
+                  connection,
+                  effect.dimensionId,
+                  targets,
+                ),
+            ),
+            boundaryEffects: connection.boundaryEffects.filter(
+              (effect) =>
+                !connectionDimensionMatches(
+                  connection,
+                  effect.dimensionId,
+                  targets,
+                ),
+            ),
+          };
+        }
+        if (connection.kind === "resource-requirement") {
+          return {
+            ...connection,
+            conditions,
+            substituteRefs: connection.substituteRefs.filter(
+              (reference) => !matchesAnyReference(reference, targets),
+            ),
+          };
+        }
+        return { ...connection, conditions };
+      }),
+  };
+}
+
+function referenceName(
+  reference: PowerEntityReference,
+  catalog: PowerCatalog,
+  record: PowerSystemRecord | null,
+  library: LoadedPowerSystemLibrary,
+): string {
+  if (reference.namespace === "external") return reference.targetId;
+  if (reference.namespace === "catalog") {
+    const entities: readonly PowerCatalogEntity[] = [
+      ...catalog.foundations,
+      ...catalog.mediums,
+      ...catalog.principles,
+      ...catalog.resources,
+      ...catalog.theories,
+      ...catalog.methods,
+      ...catalog.capabilities,
+    ];
+    return (
+      entities.find((item) => item.id === reference.targetId)?.name ??
+      reference.targetId
+    );
+  }
+  if (reference.kind === "system") {
+    return (
+      library.index.systems.find((item) => item.id === reference.systemId)
+        ?.name ?? reference.systemId
+    );
+  }
+  if (record?.id === reference.systemId) {
+    if (
+      reference.kind === "quality-dimension" ||
+      reference.kind === "boundary-dimension"
+    ) {
+      return (
+        record.dimensions.find((item) => item.id === reference.targetId)
+          ?.name ?? reference.targetId
+      );
+    }
+    for (const track of record.tracks) {
+      if (reference.kind === "track" && track.id === reference.targetId)
+        return track.name;
+      const state = track.states.find((item) => item.id === reference.targetId);
+      if (reference.kind === "state" && state) return state.name;
+      const transition = track.transitions.find(
+        (item) => item.id === reference.targetId,
+      );
+      if (reference.kind === "transition" && transition) return transition.name;
+    }
+  }
+  return reference.targetId;
+}
+
+function EntityList({
+  title,
+  description,
+  entities,
+  selection,
+  onAdd,
+  onSelect,
 }: {
-  readonly error: string;
-  readonly onRetry: () => void;
+  readonly title: string;
+  readonly description: string;
+  readonly entities: readonly PowerCatalogEntity[];
+  readonly selection: PowerInspectorSelection;
+  readonly onAdd: () => void;
+  readonly onSelect: (entity: PowerCatalogEntity) => void;
 }) {
   return (
-    <div className="flex h-full items-center justify-center p-8">
-      <div className="max-w-lg text-center">
-        <AlertTriangle className="mx-auto h-6 w-6 text-[var(--error)]" />
-        <h1 className="mt-3 text-base font-semibold">无法读取力量体系</h1>
-        <p className="mt-2 text-sm leading-6 text-[var(--ink-muted)]">
-          {error}
-        </p>
+    <section className="min-w-0">
+      <div className="mb-3 flex items-end justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--ink)]">{title}</h2>
+          <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
+            {description}
+          </p>
+        </div>
         <button
           type="button"
-          onClick={onRetry}
-          className="mx-auto mt-4 flex h-9 items-center gap-1.5 rounded-md border border-[var(--line)] px-3 text-sm"
+          onClick={onAdd}
+          className="ns-compact-primary-button"
         >
-          <RefreshCw className="h-3.5 w-3.5" /> 重新读取
+          <Plus className="h-3.5 w-3.5" /> 添加
         </button>
       </div>
-    </div>
+      {entities.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-[var(--line)] px-4 py-8 text-center text-xs text-[var(--ink-muted)]">
+          尚未建立{title}。只创建在故事中真正会被使用的对象。
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
+          {entities.map((entity) => {
+            const active =
+              selection.kind === "catalog" && selection.id === entity.id;
+            return (
+              <button
+                key={entity.id}
+                type="button"
+                onClick={() => onSelect(entity)}
+                className={`min-h-20 rounded-lg border px-3 py-2 text-left transition-colors ${
+                  active
+                    ? "border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]"
+                    : "border-[var(--line)] bg-[var(--paper-elevated)] hover:border-[var(--line-strong)]"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <strong className="truncate text-sm font-semibold text-[var(--ink)]">
+                    {entity.name}
+                  </strong>
+                  <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
+                    {CATALOG_LABELS[entity.kind]}
+                  </span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs leading-4 text-[var(--ink-muted)]">
+                  {entity.summary || "等待补充定义、用途与边界"}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
 function CreateSystemDialog({
-  library,
+  types,
   onClose,
   onCreate,
 }: {
-  readonly library: LoadedPowerSystemLibrary;
+  readonly types: LoadedPowerSystemLibrary["meta"]["systemTypes"];
   readonly onClose: () => void;
   readonly onCreate: (name: string, typeId: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [typeId, setTypeId] = useState("blank");
+  const [typeId, setTypeId] = useState(types[0]?.id ?? "blank");
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/30 p-4">
-      <section className="w-full max-w-md overflow-hidden rounded-lg border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-xl">
-        <header className="flex h-14 items-center gap-3 border-b border-[var(--line)] px-5">
-          <Waypoints className="h-4 w-4 text-[var(--accent-warm)]" />
-          <h2 className="text-sm font-semibold">新建力量体系</h2>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 p-6"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="w-full max-w-md rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+        <header className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-[var(--ink)]">
+              创建力量体系
+            </h2>
+            <p className="text-xs text-[var(--ink-muted)]">
+              类型只提供起始设计契约，不限制后续结构。
+            </p>
+          </div>
           <button
             type="button"
-            aria-label="关闭"
             onClick={onClose}
-            className="ml-auto flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--hover-bg)]"
+            className="ns-icon-button"
+            aria-label="关闭"
           >
             <X className="h-4 w-4" />
           </button>
         </header>
-        <div className="space-y-4 p-5">
+        <div className="space-y-4 p-4">
           <label className="block">
             <span className="mb-1.5 block text-xs font-medium text-[var(--ink-muted)]">
               体系名称
             </span>
             <input
               autoFocus
-              className={inputClass}
               value={name}
-              placeholder="例如：灵能、王权契约、第三代义体"
               onChange={(event) => setName(event.target.value)}
+              className="w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm outline-none focus:border-[var(--accent-warm)]"
+              placeholder="例如：灵能、符文魔法、义体协议"
             />
           </label>
           <label className="block">
             <span className="mb-1.5 block text-xs font-medium text-[var(--ink-muted)]">
-              起始预设
+              起始类型
             </span>
             <CustomSelect
               value={typeId}
-              options={library.meta.systemTypes.map((type) => ({
+              options={types.map((type) => ({
                 value: type.id,
-                label: type.name,
-                description: type.description,
+                label: `${type.name} · ${type.description}`,
               }))}
               onChange={setTypeId}
+              size="toolbar"
             />
           </label>
-          <p className="text-xs leading-5 text-[var(--ink-muted)]">
-            预设只决定默认设计契约和显示方式，所有体系使用同一套数据模型。
-          </p>
         </div>
-        <footer className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-9 rounded-md px-3 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-          >
+        <footer className="flex justify-end gap-2 border-t border-[var(--line)] px-4 py-3">
+          <button type="button" onClick={onClose} className="ns-compact-button">
             取消
           </button>
           <button
             type="button"
             disabled={!name.trim()}
             onClick={() => onCreate(name.trim(), typeId)}
-            className="h-9 rounded-md bg-[var(--accent-warm)] px-4 text-sm font-medium text-white disabled:opacity-40"
+            className="ns-compact-primary-button disabled:opacity-50"
           >
-            创建
+            创建体系
           </button>
         </footer>
-      </section>
-    </div>
-  );
-}
-
-function PowerSystemHelpDialog({ onClose }: { readonly onClose: () => void }) {
-  return (
-    <DraggableDialogFrame
-      ariaLabel="力量体系设计说明"
-      className="w-[min(680px,calc(100vw-24px))]"
-      overlayClassName="bg-black/35"
-      headerClassName="border-b border-[var(--line)] bg-[var(--paper-elevated)]"
-      header={
-        <div className="flex h-12 items-center justify-between px-4">
-          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--ink)]">
-            <CircleHelp className="h-4 w-4 text-[var(--accent-cool)]" />
-            力量体系设计说明
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="关闭力量体系设计说明"
-            title="关闭"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      }
-    >
-      <div className="max-h-[min(680px,calc(100vh-9rem))] overflow-y-auto p-5">
-        <p className="text-sm leading-6 text-[var(--ink-muted)]">
-          力量体系描述的是故事中“某种力量如何成立并产生影响”，不是固定题材的等级表。修炼、魔法、科技、超能力、血脉、神权契约和弱规则体系都使用同一套结构。
-        </p>
-
-        <section className="mt-5 border-b border-[var(--line-subtle)] pb-4">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">
-            1. 先建立力量的因果骨架
-          </h2>
-          <div className="mt-3 grid grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] items-center gap-2 text-xs max-sm:grid-cols-1">
-            {[
-              ["来源", "力量从哪里来"],
-              ["资源", "需要什么载体或消耗"],
-              ["方式", "如何获得与运用"],
-              ["能力", "最终能产生什么效果"],
-            ].map(([title, description], index) => (
-              <div key={title} className="contents">
-                <div className="min-w-0 border-l-2 border-[var(--accent-warm)] pl-2.5">
-                  <strong className="block font-semibold text-[var(--ink)]">
-                    {title}
-                  </strong>
-                  <span className="mt-0.5 block leading-5 text-[var(--ink-muted)]">
-                    {description}
-                  </span>
-                </div>
-                {index < 3 && (
-                  <ArrowRight className="h-3.5 w-3.5 text-[var(--ink-subtle)] max-sm:hidden" />
-                )}
-              </div>
-            ))}
-          </div>
-          <p className="mt-3 text-xs leading-5 text-[var(--ink-muted)]">
-            不是每个体系都必须拥有四类元素。只记录实际存在的部分，再用关系说明依赖、转化、增强、克制或替代。
-          </p>
-        </section>
-
-        <section className="border-b border-[var(--line-subtle)] py-4">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">
-            2. 用状态与规则定义变化
-          </h2>
-          <p className="mt-1.5 text-sm leading-6 text-[var(--ink-muted)]">
-            “状态”记录角色、物品或组织可能经历的阶段；转换负责表达推进、分支、合流、回退、变形、恢复与事件触发。“规则”补充跨状态生效的条件、优先级、效果、代价和例外。这样既能表达严格等级，也能表达非线性成长、装备迭代或契约关系。
-          </p>
-        </section>
-
-        <section className="border-b border-[var(--line-subtle)] py-4">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">
-            3. 区分体系内部与体系之间
-          </h2>
-          <p className="mt-1.5 text-sm leading-6 text-[var(--ink-muted)]">
-            如果两组力量拥有彼此独立的来源和运行规则，应拆成两个体系，再在“交互”中记录兼容、干扰、转化、克制或共鸣；如果只是同一机制的不同流派、装备或能力，则保留在一个体系内。
-          </p>
-        </section>
-
-        <section className="border-b border-[var(--line-subtle)] py-4">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">
-            4. 标尺只服务具体场景
-          </h2>
-          <p className="mt-1.5 text-sm leading-6 text-[var(--ink-muted)]">
-            “标尺”按速度、范围、精度、代价、稳定性等独立维度比较对象。它用于回答某个场景中的明确问题，不合并成永久的总战力数字，避免不同机制被错误压缩到同一排名。
-          </p>
-        </section>
-
-        <section className="pt-4">
-          <h2 className="text-sm font-semibold text-[var(--ink)]">
-            5. 让设定能被正文追溯
-          </h2>
-          <p className="mt-1.5 text-sm leading-6 text-[var(--ink-muted)]">
-            右侧资料中的设定层级、领域、时空范围、权威级别、Canon、揭示阶段与来源引用共同说明一条设定在何处成立、可信到什么程度，以及读者何时能够知道。完成建模后，用“审查”检查体系是否满足自己的设计契约。
-          </p>
-        </section>
       </div>
-      <footer className="flex justify-end border-t border-[var(--line)] bg-[var(--paper-elevated)] px-5 py-3">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md px-3 py-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
-        >
-          关闭
-        </button>
-      </footer>
-    </DraggableDialogFrame>
-  );
-}
-
-function SortableStateRow({
-  state,
-  active,
-  onSelect,
-}: {
-  readonly state: PowerState;
-  readonly active: boolean;
-  readonly onSelect: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition } =
-    useSortable({ id: state.id });
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      onClick={onSelect}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-      }}
-      className={`grid w-full grid-cols-[2rem_2rem_minmax(0,1fr)] items-center border-b border-[var(--line-subtle)] px-3 py-2.5 text-left ${active ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
-    >
-      <span
-        {...attributes}
-        {...listeners}
-        className="flex h-7 w-7 cursor-grab items-center justify-center rounded text-[var(--ink-subtle)] hover:bg-[var(--paper-inset)]"
-      >
-        <GripVertical className="h-3.5 w-3.5" />
-      </span>
-      <span className="font-mono text-xs text-[var(--ink-subtle)]">
-        {String(state.order + 1).padStart(2, "0")}
-      </span>
-      <span className="min-w-0">
-        <strong className="block truncate text-sm font-medium">
-          {state.name}
-        </strong>
-        <span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">
-          {state.summary || "暂无说明"}
-        </span>
-      </span>
-    </button>
-  );
-}
-
-function ElementTable({
-  elements,
-  selection,
-  onSelect,
-}: {
-  readonly elements: readonly PowerElement[];
-  readonly selection: PowerInspectorSelection;
-  readonly onSelect: (id: string) => void;
-}) {
-  if (elements.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
-        暂无内容
-      </div>
-    );
-  }
-  return (
-    <div className="overflow-auto">
-      <div className="grid min-w-[680px] grid-cols-[8rem_minmax(10rem,1fr)_9rem_1.5fr] border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 text-xs font-medium text-[var(--ink-muted)]">
-        <span>类型</span>
-        <span>名称</span>
-        <span>子类型</span>
-        <span>摘要</span>
-      </div>
-      {elements.map((element) => (
-        <button
-          key={element.id}
-          type="button"
-          onClick={() => onSelect(element.id)}
-          className={`grid min-w-[680px] w-full grid-cols-[8rem_minmax(10rem,1fr)_9rem_1.5fr] items-center border-b border-[var(--line-subtle)] px-4 py-3 text-left text-sm ${selection.kind === "element" && selection.id === element.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
-        >
-          <span className="text-xs font-medium text-[var(--ink-muted)]">
-            {elementKindLabel(element.kind)}
-          </span>
-          <strong className="truncate font-medium">{element.name}</strong>
-          <span className="truncate text-xs text-[var(--ink-muted)]">
-            {element.subtypeId || "未分类"}
-          </span>
-          <span className="truncate text-xs text-[var(--ink-muted)]">
-            {element.summary || "暂无摘要"}
-          </span>
-        </button>
-      ))}
     </div>
   );
 }
@@ -578,1014 +733,1332 @@ export default function PowerSystemLibrary({
     [storage],
   );
   const [library, setLibrary] = useState<LoadedPowerSystemLibrary | null>(null);
-  const [system, setSystem] = useState<LoadedPowerSystem | null>(null);
-  const [draft, setDraft] = useState<PowerSystemRecord | null>(null);
+  const [loadedSystem, setLoadedSystem] = useState<LoadedPowerSystem | null>(
+    null,
+  );
+  const [recordDraft, setRecordDraft] = useState<PowerSystemRecord | null>(
+    null,
+  );
+  const [catalogDraft, setCatalogDraft] = useState<PowerCatalog | null>(null);
+  const [connectionsDraft, setConnectionsDraft] =
+    useState<PowerConnections | null>(null);
   const [pageDraft, setPageDraft] = useState("");
-  const [interactionsDraft, setInteractionsDraft] = useState<
-    LoadedPowerSystemLibrary["interactions"] | null
-  >(null);
-  const [selectedSystemId, setSelectedSystemId] = useState("");
+  const [view, setView] = useState<PowerView>("architecture");
   const [selection, setSelection] = useState<PowerInspectorSelection>({
     kind: "system",
   });
-  const [view, setView] = useState<PowerView>("architecture");
-  const [architectureMode, setArchitectureMode] = useState<"graph" | "notes">(
-    "graph",
-  );
-  const [systemSearch, setSystemSearch] = useState("");
-  const [selectedTrackId, setSelectedTrackId] = useState("");
+  const [search, setSearch] = useState("");
+  const [connectionFilter, setConnectionFilter] = useState<
+    "all" | PowerConnection["kind"]
+  >("all");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [dirty, setDirty] = useState({
+    record: false,
+    catalog: false,
+    connections: false,
+    page: false,
+  });
+  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-  );
 
   const loadLibrary = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const loaded = await repository.load();
-      setLibrary(loaded);
-      setInteractionsDraft(loaded?.interactions ?? null);
-      if (!loaded) {
-        setSystem(null);
-        setDraft(null);
-        setSelectedSystemId("");
+      const next = await repository.load();
+      setLibrary(next);
+      setCatalogDraft(next?.catalog ?? null);
+      setConnectionsDraft(next?.connections ?? null);
+      if (next?.index.systems[0]) {
+        const system = await repository.loadSystem(next.index.systems[0]);
+        setLoadedSystem(system);
+        setRecordDraft(system.record);
+        setPageDraft(system.pageContent);
       } else {
-        const nextId = loaded.index.systems.some(
-          (entry) => entry.id === selectedSystemId,
-        )
-          ? selectedSystemId
-          : (loaded.index.systems[0]?.id ?? "");
-        setSelectedSystemId(nextId);
+        setLoadedSystem(null);
+        setRecordDraft(null);
+        setPageDraft("");
       }
+      setSelection({ kind: "system" });
+      setDirty({
+        record: false,
+        catalog: false,
+        connections: false,
+        page: false,
+      });
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setIsLoading(false);
     }
-  }, [repository, selectedSystemId]);
+  }, [repository]);
 
   useEffect(() => {
-    if (isActive) void loadLibrary();
-  }, [isActive, loadLibrary]);
+    void loadLibrary();
+  }, [loadLibrary]);
+  void isActive;
 
-  useEffect(() => {
-    if (!library || !selectedSystemId) {
-      setSystem(null);
-      setDraft(null);
+  const hasDirty = Object.values(dirty).some(Boolean);
+  const updateRecord = (record: PowerSystemRecord) => {
+    setRecordDraft(record);
+    setDirty((current) => ({ ...current, record: true }));
+  };
+  const updateCatalog = (catalog: PowerCatalog) => {
+    setCatalogDraft(catalog);
+    setDirty((current) => ({ ...current, catalog: true }));
+  };
+  const updateConnections = (connections: PowerConnections) => {
+    setConnectionsDraft(connections);
+    setDirty((current) => ({ ...current, connections: true }));
+  };
+
+  const selectSystem = async (systemId: string) => {
+    if (!library || systemId === recordDraft?.id) return;
+    if (
+      hasDirty &&
+      !window.confirm("当前修改尚未保存。切换体系会放弃这些修改，是否继续？")
+    )
       return;
-    }
-    const entry = library.index.systems.find(
-      (item) => item.id === selectedSystemId,
-    );
+    const entry = library.index.systems.find((item) => item.id === systemId);
     if (!entry) return;
-    let disposed = false;
-    setError(null);
-    void repository
-      .loadSystem(entry)
-      .then((loaded) => {
-        if (disposed) return;
-        setSystem(loaded);
-        setDraft(loaded.record);
-        setPageDraft(loaded.pageContent);
-        setSelection({ kind: "system" });
-        setSelectedTrackId(loaded.record.tracks[0]?.id ?? "");
-      })
-      .catch((cause) => {
-        if (!disposed) setError(errorMessage(cause));
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [library, repository, selectedSystemId]);
-
-  const interactionsDirty = Boolean(
-    library &&
-      interactionsDraft &&
-      JSON.stringify(library.interactions) !==
-        JSON.stringify(interactionsDraft),
-  );
-  const systemDirty = Boolean(
-    system &&
-      draft &&
-      (JSON.stringify(system.record) !== JSON.stringify(draft) ||
-        system.pageContent !== pageDraft),
-  );
-  const isDirty = systemDirty || interactionsDirty;
-
-  const save = useCallback(async () => {
-    if (!library || !interactionsDraft) return;
-    setIsSaving(true);
+    setIsLoading(true);
     setError(null);
     try {
-      let nextLibrary = library;
-      if (system && draft && systemDirty) {
-        const result = await repository.saveSystem(
-          nextLibrary,
-          system,
-          draft,
-          pageDraft,
-        );
-        nextLibrary = result.library;
-        setSystem(result.system);
-        setDraft(result.system.record);
-        setPageDraft(result.system.pageContent);
-      }
-      if (interactionsDirty) {
-        nextLibrary = await repository.saveInteractions(
-          nextLibrary,
-          interactionsDraft,
-        );
-      }
-      setLibrary(nextLibrary);
-      setInteractionsDraft(nextLibrary.interactions);
+      const system = await repository.loadSystem(entry);
+      setLoadedSystem(system);
+      setRecordDraft(system.record);
+      setCatalogDraft(library.catalog);
+      setConnectionsDraft(library.connections);
+      setPageDraft(system.pageContent);
+      setSelection({ kind: "system" });
+      setDirty({
+        record: false,
+        catalog: false,
+        connections: false,
+        page: false,
+      });
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const initialize = async () => {
+    if (
+      !window.confirm(
+        "将以新版通用力量模型初始化该项目。已有旧版力量体系文件不会被迁移，是否继续？",
+      )
+    )
+      return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      const next = await repository.initialize();
+      setLibrary(next);
+      setCatalogDraft(next.catalog);
+      setConnectionsDraft(next.connections);
+      setMessage("力量体系工作区已初始化");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const save = async () => {
+    if (!library || !catalogDraft || !connectionsDraft || isSaving) return;
+    setIsSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await repository.saveWorkspace(library, loadedSystem, {
+        ...(recordDraft && loadedSystem && (dirty.record || dirty.page)
+          ? { record: recordDraft, pageContent: pageDraft }
+          : {}),
+        ...(dirty.catalog ? { catalog: catalogDraft } : {}),
+        ...(dirty.connections ? { connections: connectionsDraft } : {}),
+      });
+      const nextLibrary = result.library;
+      const nextSystem = result.system;
+      setLibrary(nextLibrary);
+      setLoadedSystem(nextSystem);
+      setRecordDraft(nextSystem?.record ?? null);
+      setCatalogDraft(nextLibrary.catalog);
+      setConnectionsDraft(nextLibrary.connections);
+      setDirty({
+        record: false,
+        catalog: false,
+        connections: false,
+        page: false,
+      });
+      setMessage("力量体系已保存");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setIsSaving(false);
     }
-  }, [
-    draft,
-    interactionsDirty,
-    interactionsDraft,
-    library,
-    pageDraft,
-    repository,
-    system,
-    systemDirty,
-  ]);
+  };
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-        event.preventDefault();
-        if (isDirty && !isSaving) void save();
+  const createSystem = async (name: string, typeId: string) => {
+    if (!library) return;
+    if (
+      (dirty.record || dirty.page) &&
+      !window.confirm(
+        "当前体系的修改尚未保存。创建新体系会放弃这些修改，是否继续？",
+      )
+    ) {
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      let current = library;
+      if (
+        catalogDraft &&
+        connectionsDraft &&
+        (dirty.catalog || dirty.connections)
+      ) {
+        current = await repository.saveLibrary(
+          current,
+          catalogDraft,
+          connectionsDraft,
+        );
       }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isDirty, isSaving, save]);
+      const result = await repository.createSystem(current, {
+        id: createId("power-system"),
+        name,
+        typeId,
+      });
+      setLibrary(result.library);
+      setLoadedSystem(result.system);
+      setRecordDraft(result.system.record);
+      setCatalogDraft(result.library.catalog);
+      setConnectionsDraft(result.library.connections);
+      setPageDraft(result.system.pageContent);
+      setDirty({
+        record: false,
+        catalog: false,
+        connections: false,
+        page: false,
+      });
+      setSelection({ kind: "system" });
+      setIsCreateOpen(false);
+      setMessage(`已创建“${name}”`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-  if (isLoading) {
+  const addEntity = (kind: PowerCatalogKind) => {
+    if (!catalogDraft) return;
+    const entity = createCatalogEntity(kind);
+    updateCatalog(addCatalogEntity(catalogDraft, entity));
+    setSelection({ kind: "catalog", id: entity.id });
+  };
+
+  const addTrack = () => {
+    if (!recordDraft) return;
+    const track = createTrack();
+    updateRecord({ ...recordDraft, tracks: [...recordDraft.tracks, track] });
+    setSelection({ kind: "track", id: track.id });
+  };
+
+  const addState = (trackId: string) => {
+    if (!recordDraft) return;
+    const track = recordDraft.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    const state = createState(
+      Math.max(-1, ...track.states.map((item) => item.order)) + 1,
+    );
+    updateRecord({
+      ...recordDraft,
+      tracks: recordDraft.tracks.map((item) =>
+        item.id === trackId
+          ? { ...item, states: [...item.states, state] }
+          : item,
+      ),
+    });
+    setSelection({ kind: "state", trackId, id: state.id });
+  };
+
+  const addTransition = (trackId: string) => {
+    if (!recordDraft) return;
+    const track = recordDraft.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    const transition = createTransition(track);
+    if (!transition) {
+      setError("请先在成长轨道中建立至少一个状态");
+      return;
+    }
+    updateRecord({
+      ...recordDraft,
+      tracks: recordDraft.tracks.map((item) =>
+        item.id === trackId
+          ? { ...item, transitions: [...item.transitions, transition] }
+          : item,
+      ),
+    });
+    setSelection({ kind: "transition", trackId, id: transition.id });
+  };
+
+  const addDimension = (category: PowerMetricDimension["category"]) => {
+    if (!recordDraft) return;
+    const dimension = createDimension(category);
+    updateRecord({
+      ...recordDraft,
+      dimensions: [...recordDraft.dimensions, dimension],
+    });
+    setSelection({ kind: "dimension", id: dimension.id });
+  };
+
+  const addConnection = (kind: PowerConnection["kind"]) => {
+    if (!library || !catalogDraft || !connectionsDraft || !recordDraft) {
+      setError("请先创建并选择一个力量体系");
+      return;
+    }
+    const systemRef: PowerEntityReference = {
+      namespace: "system",
+      systemId: recordDraft.id,
+      kind: "system",
+      targetId: recordDraft.id,
+    };
+    const common = {
+      id: createId(kind),
+      conditions: { mode: "all" as const, clauses: [] },
+      note: "",
+      metadata: createDefaultPowerTruthMetadata(),
+    };
+    let connection: PowerConnection;
+    if (kind === "method-application") {
+      const method = catalogDraft.methods[0];
+      if (!method) return setError("请先建立至少一个发展方法");
+      connection = {
+        ...common,
+        kind,
+        source: { namespace: "catalog", kind: "method", targetId: method.id },
+        target: systemRef,
+        role: "advance",
+        compatibility: "native",
+        theoryRef: method.theoryRefs[0] ?? null,
+        executionModel: "",
+        efficiency: { mode: "qualitative", value: null, note: "" },
+        qualityEffects: [],
+        boundaryEffects: [],
+        outcomes: [],
+        failureModes: [],
+      };
+    } else if (kind === "resource-requirement") {
+      const resource = catalogDraft.resources[0];
+      if (!resource) return setError("请先建立至少一个资源");
+      connection = {
+        ...common,
+        kind,
+        source: {
+          namespace: "catalog",
+          kind: "resource",
+          targetId: resource.id,
+        },
+        target: systemRef,
+        purpose: "develop",
+        amount: {
+          mode: "descriptive",
+          minimum: null,
+          maximum: null,
+          value: "",
+          unit: "",
+        },
+        quality: "",
+        consumed: true,
+        substituteRefs: [],
+        shortageConsequence: "",
+      };
+    } else if (kind === "capability-access") {
+      const capability = catalogDraft.capabilities[0];
+      if (!capability) return setError("请先建立至少一个能力");
+      connection = {
+        ...common,
+        kind,
+        source: systemRef,
+        target: {
+          namespace: "catalog",
+          kind: "capability",
+          targetId: capability.id,
+        },
+        accessMode: "learnable",
+        mastery: "available",
+      };
+    } else if (kind === "system-interaction") {
+      const target = library.index.systems.find(
+        (item) => item.id !== recordDraft.id,
+      );
+      if (!target) return setError("体系交互至少需要两个力量体系");
+      connection = {
+        ...common,
+        kind,
+        source: systemRef,
+        target: {
+          namespace: "system",
+          systemId: target.id,
+          kind: "system",
+          targetId: target.id,
+        },
+        interaction: "compatible",
+        effect: "",
+      };
+    } else {
+      const target =
+        catalogDraft.foundations[0] ??
+        catalogDraft.mediums[0] ??
+        catalogDraft.principles[0];
+      if (!target) return setError("请先建立本源、介质或法则，再创建通用关联");
+      connection = {
+        ...common,
+        kind,
+        source: systemRef,
+        target: {
+          namespace: "catalog",
+          kind: target.kind,
+          targetId: target.id,
+        },
+        relation: "uses",
+        compatibility: "native",
+      };
+    }
+    updateConnections({
+      ...connectionsDraft,
+      connections: [...connectionsDraft.connections, connection],
+    });
+    setSelection({ kind: "connection", id: connection.id });
+    setView("connections");
+  };
+
+  const deleteSelection = () => {
+    if (!catalogDraft || !connectionsDraft) return;
+    if (!window.confirm("确认删除当前对象？相关连接和局部引用会同时清理。"))
+      return;
+    const applyReferenceCleanup = (
+      targets: readonly PowerEntityReference[],
+      nextRecord: PowerSystemRecord | null,
+      nextCatalog: PowerCatalog,
+    ) => {
+      if (nextRecord) {
+        updateRecord(cleanRecordReferences(nextRecord, targets));
+      }
+      updateCatalog(cleanCatalogReferences(nextCatalog, targets));
+      updateConnections(cleanConnectionReferences(connectionsDraft, targets));
+    };
+    let deleted = false;
+    if (selection.kind === "catalog") {
+      const entity = [
+        ...catalogDraft.foundations,
+        ...catalogDraft.mediums,
+        ...catalogDraft.principles,
+        ...catalogDraft.resources,
+        ...catalogDraft.theories,
+        ...catalogDraft.methods,
+        ...catalogDraft.capabilities,
+      ].find((item) => item.id === selection.id);
+      if (!entity) return;
+      applyReferenceCleanup(
+        [
+          {
+            namespace: "catalog",
+            kind: entity.kind,
+            targetId: entity.id,
+          },
+        ],
+        recordDraft,
+        removeCatalogEntity(catalogDraft, entity.id),
+      );
+      deleted = true;
+    } else if (selection.kind === "connection") {
+      updateConnections({
+        ...connectionsDraft,
+        connections: connectionsDraft.connections.filter(
+          (item) => item.id !== selection.id,
+        ),
+      });
+      deleted = true;
+    } else if (recordDraft && selection.kind === "track") {
+      const track = recordDraft.tracks.find((item) => item.id === selection.id);
+      if (!track) return;
+      const targets: PowerEntityReference[] = [
+        {
+          namespace: "system",
+          systemId: recordDraft.id,
+          kind: "track",
+          targetId: track.id,
+        },
+        ...track.states.map(
+          (state): PowerEntityReference => ({
+            namespace: "system",
+            systemId: recordDraft.id,
+            kind: "state",
+            targetId: state.id,
+          }),
+        ),
+        ...track.transitions.map(
+          (transition): PowerEntityReference => ({
+            namespace: "system",
+            systemId: recordDraft.id,
+            kind: "transition",
+            targetId: transition.id,
+          }),
+        ),
+      ];
+      applyReferenceCleanup(
+        targets,
+        {
+          ...recordDraft,
+          tracks: recordDraft.tracks.filter((item) => item.id !== track.id),
+        },
+        catalogDraft,
+      );
+      deleted = true;
+    } else if (recordDraft && selection.kind === "state") {
+      const track = recordDraft.tracks.find(
+        (item) => item.id === selection.trackId,
+      );
+      if (!track?.states.some((item) => item.id === selection.id)) return;
+      const removedTransitions = track.transitions.filter(
+        (item) =>
+          item.fromStateId === selection.id || item.toStateId === selection.id,
+      );
+      const targets: PowerEntityReference[] = [
+        {
+          namespace: "system",
+          systemId: recordDraft.id,
+          kind: "state",
+          targetId: selection.id,
+        },
+        ...removedTransitions.map(
+          (transition): PowerEntityReference => ({
+            namespace: "system",
+            systemId: recordDraft.id,
+            kind: "transition",
+            targetId: transition.id,
+          }),
+        ),
+      ];
+      applyReferenceCleanup(
+        targets,
+        {
+          ...recordDraft,
+          tracks: recordDraft.tracks.map((item) =>
+            item.id === track.id
+              ? {
+                  ...item,
+                  states: item.states.filter(
+                    (state) => state.id !== selection.id,
+                  ),
+                  transitions: item.transitions.filter(
+                    (transition) =>
+                      !removedTransitions.some(
+                        (removed) => removed.id === transition.id,
+                      ),
+                  ),
+                }
+              : item,
+          ),
+        },
+        catalogDraft,
+      );
+      deleted = true;
+    } else if (recordDraft && selection.kind === "transition") {
+      const track = recordDraft.tracks.find(
+        (item) => item.id === selection.trackId,
+      );
+      if (!track?.transitions.some((item) => item.id === selection.id)) return;
+      applyReferenceCleanup(
+        [
+          {
+            namespace: "system",
+            systemId: recordDraft.id,
+            kind: "transition",
+            targetId: selection.id,
+          },
+        ],
+        {
+          ...recordDraft,
+          tracks: recordDraft.tracks.map((item) =>
+            item.id === track.id
+              ? {
+                  ...item,
+                  transitions: item.transitions.filter(
+                    (transition) => transition.id !== selection.id,
+                  ),
+                }
+              : item,
+          ),
+        },
+        catalogDraft,
+      );
+      deleted = true;
+    } else if (recordDraft && selection.kind === "dimension") {
+      const dimension = recordDraft.dimensions.find(
+        (item) => item.id === selection.id,
+      );
+      if (!dimension) return;
+      applyReferenceCleanup(
+        [
+          {
+            namespace: "system",
+            systemId: recordDraft.id,
+            kind:
+              dimension.category === "quality"
+                ? "quality-dimension"
+                : "boundary-dimension",
+            targetId: dimension.id,
+          },
+        ],
+        {
+          ...recordDraft,
+          dimensions: recordDraft.dimensions.filter(
+            (item) => item.id !== dimension.id,
+          ),
+          tracks: recordDraft.tracks.map((track) => ({
+            ...track,
+            states: track.states.map((state) => ({
+              ...state,
+              contract: {
+                ...state.contract,
+                baseQualities: state.contract.baseQualities.filter(
+                  (item) => item.dimensionId !== dimension.id,
+                ),
+                baseBoundaries: state.contract.baseBoundaries.filter(
+                  (item) => item.dimensionId !== dimension.id,
+                ),
+              },
+            })),
+          })),
+        },
+        catalogDraft,
+      );
+      deleted = true;
+    }
+    if (deleted) setSelection({ kind: "system" });
+  };
+
+  const issues = useMemo(
+    () =>
+      recordDraft && catalogDraft && connectionsDraft && library
+        ? auditPowerSystem(
+            recordDraft,
+            catalogDraft,
+            connectionsDraft,
+            new Set(library.index.systems.map((item) => item.id)),
+          )
+        : [],
+    [catalogDraft, connectionsDraft, library, recordDraft],
+  );
+
+  const selectIssue = (issue: PowerSystemAuditIssue) => {
+    if (!issue.targetKind || !issue.targetId || !recordDraft) return;
+    if (issue.targetKind === "system") setSelection({ kind: "system" });
+    else if (issue.targetKind === "catalog")
+      setSelection({ kind: "catalog", id: issue.targetId });
+    else if (issue.targetKind === "track")
+      setSelection({ kind: "track", id: issue.targetId });
+    else if (issue.targetKind === "dimension")
+      setSelection({ kind: "dimension", id: issue.targetId });
+    else if (issue.targetKind === "connection")
+      setSelection({ kind: "connection", id: issue.targetId });
+    else {
+      const track = recordDraft.tracks.find((item) =>
+        issue.targetKind === "state"
+          ? item.states.some((state) => state.id === issue.targetId)
+          : item.transitions.some(
+              (transition) => transition.id === issue.targetId,
+            ),
+      );
+      if (!track) return;
+      setSelection(
+        issue.targetKind === "state"
+          ? { kind: "state", trackId: track.id, id: issue.targetId }
+          : { kind: "transition", trackId: track.id, id: issue.targetId },
+      );
+    }
+  };
+
+  if (isLoading && !library) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 正在读取力量体系
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 正在读取力量体系…
       </div>
     );
   }
-  if (error && !library)
-    return <ErrorState error={error} onRetry={() => void loadLibrary()} />;
-  if (!library) {
+
+  if (!library || !catalogDraft || !connectionsDraft) {
     return (
-      <EmptyLibrary
-        isInitializing={isInitializing}
-        onInitialize={() => {
-          setIsInitializing(true);
-          setError(null);
-          void repository
-            .initialize()
-            .then((loaded) => {
-              setLibrary(loaded);
-              setInteractionsDraft(loaded.interactions);
-            })
-            .catch((cause) => setError(errorMessage(cause)))
-            .finally(() => setIsInitializing(false));
-        }}
-      />
+      <div className="flex h-full items-center justify-center bg-[var(--paper)] p-8">
+        <div className="max-w-lg rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-6 text-center shadow-sm">
+          <Atom className="mx-auto h-8 w-8 text-[var(--accent-warm)]" />
+          <h1 className="mt-3 text-base font-semibold text-[var(--ink)]">
+            建立通用力量生态
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-[var(--ink-muted)]">
+            新模型把体系、成长状态、理论、方法、资源与能力拆开，再通过明确连接组合。旧版数据不会迁移。
+          </p>
+          {error && <p className="mt-3 text-xs text-[var(--error)]">{error}</p>}
+          <button
+            type="button"
+            onClick={() => void initialize()}
+            className="ns-compact-primary-button mt-4"
+          >
+            <Sparkles className="h-4 w-4" /> 初始化新版工作区
+          </button>
+        </div>
+      </div>
     );
   }
 
-  const filteredSystems = library.index.systems.filter((entry) =>
-    `${entry.name} ${entry.summary}`
-      .toLowerCase()
-      .includes(systemSearch.trim().toLowerCase()),
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const filteredSystems = library.index.systems.filter((system) =>
+    `${system.name} ${system.summary}`
+      .toLocaleLowerCase()
+      .includes(normalizedSearch),
   );
-
-  const addElement = (kind: PowerElement["kind"]) => {
-    if (!draft) return;
-    const element = createElement(kind);
-    setDraft({ ...draft, elements: [...draft.elements, element] });
-    setSelection({ kind: "element", id: element.id });
-  };
-
-  const activeTrack = draft?.tracks.find(
-    (track) => track.id === selectedTrackId,
+  const selectedSystemType = library.meta.systemTypes.find(
+    (item) => item.id === recordDraft?.typeId,
   );
-  const auditIssues = draft ? auditPowerSystem(draft) : [];
+  const filteredConnections = connectionsDraft.connections.filter(
+    (connection) =>
+      connectionFilter === "all" || connection.kind === connectionFilter,
+  );
 
   const renderCenter = () => {
-    if (!draft) {
-      return (
-        <div className="flex h-full items-center justify-center">
-          <div className="text-center">
-            <CircleDashed className="mx-auto h-5 w-5 text-[var(--ink-subtle)]" />
-            <p className="mt-2 text-sm text-[var(--ink-muted)]">
-              创建第一个力量体系后开始设计
-            </p>
-          </div>
-        </div>
-      );
-    }
-
     if (view === "architecture") {
       return (
-        <div className="flex h-full min-h-0 flex-col">
-          <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-[var(--line-subtle)] px-3 py-1.5">
-            {(["origin", "resource", "method", "capability"] as const).map(
-              (kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => addElement(kind)}
-                  className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                >
-                  <Plus className="h-3.5 w-3.5" /> {elementKindLabel(kind)}
-                </button>
-              ),
-            )}
-            <div className="ml-auto flex rounded-md bg-[var(--paper-inset)] p-0.5">
+        <div className="space-y-5 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-base font-semibold text-[var(--ink)]">
+                力量生态架构
+              </h1>
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                本源回答力量来自哪里，介质回答如何承载与流动，法则约束所有具体用法。
+              </p>
+            </div>
+            <div className="flex gap-1.5">
               <button
                 type="button"
-                onClick={() => setArchitectureMode("graph")}
-                className={`h-7 rounded px-2 text-xs ${architectureMode === "graph" ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-muted)]"}`}
+                onClick={() => addEntity("foundation")}
+                className="ns-compact-button"
               >
-                图谱
+                <Plus className="h-3.5 w-3.5" /> 本源
               </button>
               <button
                 type="button"
-                onClick={() => setArchitectureMode("notes")}
-                className={`h-7 rounded px-2 text-xs ${architectureMode === "notes" ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-muted)]"}`}
+                onClick={() => addEntity("medium")}
+                className="ns-compact-button"
               >
-                说明
+                <Plus className="h-3.5 w-3.5" /> 介质
+              </button>
+              <button
+                type="button"
+                onClick={() => addEntity("principle")}
+                className="ns-compact-button"
+              >
+                <Plus className="h-3.5 w-3.5" /> 法则
               </button>
             </div>
           </div>
-          <div className="min-h-0 flex-1">
-            {architectureMode === "graph" ? (
-              <PowerSystemGraph
-                record={draft}
-                onChange={setDraft}
-                onSelectElement={(id) => setSelection({ kind: "element", id })}
-                onSelectRelation={(id) =>
-                  setSelection({ kind: "relation", id })
-                }
-              />
-            ) : (
-              <MarkdownVisualEditor
-                pageId={draft.id}
-                label={`${draft.name}说明`}
-                value={pageDraft}
-                onChange={setPageDraft}
-                onSave={() => void save()}
-                fullWidth
-              />
-            )}
+          {recordDraft ? (
+            <PowerSystemGraph
+              record={recordDraft}
+              catalog={catalogDraft}
+              connections={connectionsDraft}
+              index={library.index}
+              onConnectionsChange={updateConnections}
+              onSelectionChange={setSelection}
+            />
+          ) : (
+            <div className="rounded-lg border border-dashed border-[var(--line)] px-4 py-16 text-center text-sm text-[var(--ink-muted)]">
+              共享目录可以先建立；创建体系后，图谱会显示体系与这些对象之间的连接。
+            </div>
+          )}
+          <div className="grid gap-5 xl:grid-cols-3">
+            <EntityList
+              title="力量本源"
+              description="自然、血脉、精神、神权、技术或社会制度"
+              entities={catalogDraft.foundations}
+              selection={selection}
+              onAdd={() => addEntity("foundation")}
+              onSelect={(entity) =>
+                setSelection({ kind: "catalog", id: entity.id })
+              }
+            />
+            <EntityList
+              title="运行介质"
+              description="能量、身体、灵魂、符号、设备、网络或权限"
+              entities={catalogDraft.mediums}
+              selection={selection}
+              onAdd={() => addEntity("medium")}
+              onSelect={(entity) =>
+                setSelection({ kind: "catalog", id: entity.id })
+              }
+            />
+            <EntityList
+              title="底层法则"
+              description="不变量、禁制、转换规则、优先级与例外"
+              entities={catalogDraft.principles}
+              selection={selection}
+              onAdd={() => addEntity("principle")}
+              onSelect={(entity) =>
+                setSelection({ kind: "catalog", id: entity.id })
+              }
+            />
           </div>
         </div>
       );
     }
-
     if (view === "states") {
-      const reorderStates = (event: DragEndEvent) => {
-        if (!activeTrack || !event.over || event.active.id === event.over.id)
-          return;
-        const oldIndex = activeTrack.states.findIndex(
-          (state) => state.id === event.active.id,
-        );
-        const newIndex = activeTrack.states.findIndex(
-          (state) => state.id === event.over?.id,
-        );
-        const states = arrayMove(activeTrack.states, oldIndex, newIndex).map(
-          (state, order) => ({ ...state, order }),
-        );
-        setDraft({
-          ...draft,
-          tracks: draft.tracks.map((track) =>
-            track.id === activeTrack.id ? { ...track, states } : track,
-          ),
-        });
-      };
       return (
-        <div className="flex h-full min-h-0">
-          <aside className="w-56 shrink-0 overflow-y-auto border-r border-[var(--line-subtle)]">
-            <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-3">
-              <span className="text-xs font-semibold text-[var(--ink-muted)]">
-                状态轨道
-              </span>
-              <button
-                type="button"
-                title="新增状态轨道"
-                onClick={() => {
-                  const track = createTrack();
-                  setDraft({ ...draft, tracks: [...draft.tracks, track] });
-                  setSelectedTrackId(track.id);
-                  setSelection({ kind: "track", id: track.id });
-                }}
-                className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-[var(--hover-bg)]"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
+        <div className="space-y-4 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-base font-semibold text-[var(--ink)]">
+                成长状态
+              </h1>
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                状态定义获得了什么，转换定义如何到达；境界、等级、形态、控制阶段都是状态。
+              </p>
             </div>
-            {draft.tracks.map((track) => (
-              <button
+            <button
+              type="button"
+              onClick={addTrack}
+              disabled={!recordDraft}
+              className="ns-compact-primary-button disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" /> 添加轨道
+            </button>
+          </div>
+          {!recordDraft ? (
+            <div className="rounded-lg border border-dashed border-[var(--line)] p-10 text-center text-sm text-[var(--ink-muted)]">
+              先创建一个体系，才能定义它的成长状态。
+            </div>
+          ) : recordDraft.tracks.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-[var(--line)] p-10 text-center text-sm text-[var(--ink-muted)]">
+              当前体系没有成长轨道。事件型或软力量体系也可以保持无轨道。
+            </div>
+          ) : (
+            recordDraft.tracks.map((track) => (
+              <section
                 key={track.id}
-                type="button"
-                onClick={() => {
-                  setSelectedTrackId(track.id);
-                  setSelection({ kind: "track", id: track.id });
-                }}
-                className={`w-full border-b border-[var(--line-subtle)] px-3 py-3 text-left ${selectedTrackId === track.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
+                className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)]"
               >
-                <strong className="block truncate text-sm font-medium">
-                  {track.name}
-                </strong>
-                <span className="mt-1 block text-xs text-[var(--ink-muted)]">
-                  {track.states.length} 个状态 · {track.mode}
-                </span>
-              </button>
-            ))}
-          </aside>
-          <div className="min-w-0 flex-1 overflow-y-auto">
-            {activeTrack ? (
-              <>
-                <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-4">
-                  <div className="min-w-0">
-                    <strong className="truncate text-sm font-semibold">
-                      {activeTrack.name}
-                    </strong>
-                    <span className="ml-2 text-xs text-[var(--ink-muted)]">
-                      拖拽调整顺序
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      disabled={activeTrack.states.length === 0}
-                      onClick={() => {
-                        const ordered = [...activeTrack.states].sort(
-                          (left, right) => left.order - right.order,
-                        );
-                        const transition = {
-                          id: createId("transition"),
-                          fromStateId:
-                            ordered.length > 1 ? ordered[0]!.id : null,
-                          toStateId: ordered.at(-1)!.id,
-                          kind: "branch" as const,
-                          conditions: { mode: "all" as const, clauses: [] },
-                          costs: [],
-                          outcomes: [],
-                          failure: "",
-                        };
-                        setDraft({
-                          ...draft,
-                          tracks: draft.tracks.map((track) =>
-                            track.id === activeTrack.id
-                              ? {
-                                  ...track,
-                                  transitions: [
-                                    ...track.transitions,
-                                    transition,
-                                  ],
-                                }
-                              : track,
-                          ),
-                        });
-                        setSelection({
-                          kind: "transition",
-                          trackId: activeTrack.id,
-                          id: transition.id,
-                        });
-                      }}
-                      className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] disabled:opacity-35"
-                    >
-                      <GitBranch className="h-3.5 w-3.5" /> 添加转换
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const state = createState(activeTrack);
-                        const previous = [...activeTrack.states]
-                          .sort((left, right) => left.order - right.order)
-                          .at(-1);
-                        const transitions = previous
-                          ? [
-                              ...activeTrack.transitions,
-                              {
-                                id: createId("transition"),
-                                fromStateId: previous.id,
-                                toStateId: state.id,
-                                kind: "advance" as const,
-                                conditions: {
-                                  mode: "all" as const,
-                                  clauses: [],
-                                },
-                                costs: [],
-                                outcomes: [],
-                                failure: "",
-                              },
-                            ]
-                          : activeTrack.transitions;
-                        setDraft({
-                          ...draft,
-                          tracks: draft.tracks.map((track) =>
-                            track.id === activeTrack.id
-                              ? {
-                                  ...track,
-                                  states: [...track.states, state],
-                                  transitions,
-                                }
-                              : track,
-                          ),
-                        });
-                        setSelection({
-                          kind: "state",
-                          trackId: activeTrack.id,
-                          id: state.id,
-                        });
-                      }}
-                      className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--accent-warm)] hover:bg-[var(--hover-bg)]"
-                    >
-                      <Plus className="h-3.5 w-3.5" /> 添加状态
-                    </button>
-                  </div>
-                </div>
-                <DndContext sensors={sensors} onDragEnd={reorderStates}>
-                  <SortableContext
-                    items={[...activeTrack.states]
-                      .sort((left, right) => left.order - right.order)
-                      .map((state) => state.id)}
-                    strategy={verticalListSortingStrategy}
+                <header className="flex items-center justify-between gap-3 border-b border-[var(--line-subtle)] px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelection({ kind: "track", id: track.id })
+                    }
+                    className="min-w-0 text-left"
                   >
-                    {[...activeTrack.states]
-                      .sort((left, right) => left.order - right.order)
-                      .map((state) => (
-                        <SortableStateRow
+                    <strong className="block truncate text-sm text-[var(--ink)]">
+                      {track.name}
+                    </strong>
+                    <span className="text-xs text-[var(--ink-muted)]">
+                      {track.mode} · {track.states.length} 个状态 ·{" "}
+                      {track.transitions.length} 条转换
+                    </span>
+                  </button>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => addState(track.id)}
+                      className="ns-compact-button"
+                    >
+                      <Plus className="h-3 w-3" /> 状态
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => addTransition(track.id)}
+                      className="ns-compact-button"
+                    >
+                      <Plus className="h-3 w-3" /> 转换
+                    </button>
+                  </div>
+                </header>
+                <div className="grid gap-3 p-3 lg:grid-cols-[1fr_13rem]">
+                  <div className="flex min-w-0 gap-2 overflow-x-auto pb-1">
+                    {[...track.states]
+                      .sort((a, b) => a.order - b.order)
+                      .map((state, index) => (
+                        <div
                           key={state.id}
-                          state={state}
-                          active={
-                            selection.kind === "state" &&
-                            selection.id === state.id
-                          }
-                          onSelect={() =>
-                            setSelection({
-                              kind: "state",
-                              trackId: activeTrack.id,
-                              id: state.id,
-                            })
-                          }
-                        />
-                      ))}
-                  </SortableContext>
-                </DndContext>
-                {activeTrack.transitions.length > 0 && (
-                  <section className="border-t border-[var(--line)] px-4 py-4">
-                    <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
-                      状态转换
-                    </h3>
-                    <div className="mt-2 space-y-1.5">
-                      {activeTrack.transitions.map((transition) => {
-                        const from = activeTrack.states.find(
-                          (state) => state.id === transition.fromStateId,
-                        );
-                        const to = activeTrack.states.find(
-                          (state) => state.id === transition.toStateId,
-                        );
-                        return (
+                          className="flex shrink-0 items-center gap-2"
+                        >
+                          {index > 0 && (
+                            <span className="text-[var(--ink-subtle)]">→</span>
+                          )}
                           <button
-                            key={transition.id}
                             type="button"
                             onClick={() =>
                               setSelection({
-                                kind: "transition",
-                                trackId: activeTrack.id,
-                                id: transition.id,
+                                kind: "state",
+                                trackId: track.id,
+                                id: state.id,
                               })
                             }
-                            className="flex items-center gap-2 rounded-md border border-[var(--line-subtle)] px-3 py-2 text-xs"
+                            className={`w-36 rounded-md border px-2.5 py-2 text-left ${selection.kind === "state" && selection.id === state.id ? "border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]" : "border-[var(--line)] bg-[var(--paper)]"}`}
                           >
-                            <span>{from?.name ?? "入口"}</span>
-                            <ArrowRight className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
-                            <span>{to?.name ?? transition.toStateId}</span>
-                            <span className="ml-auto text-[var(--ink-muted)]">
-                              {transition.kind}
+                            <span className="block text-xs text-[var(--ink-subtle)]">
+                              {state.stateType} · {state.order + 1}
                             </span>
+                            <strong className="block truncate text-xs text-[var(--ink)]">
+                              {state.name}
+                            </strong>
                           </button>
-                        );
-                      })}
+                        </div>
+                      ))}
+                  </div>
+                  <div className="space-y-1.5 border-l border-[var(--line-subtle)] pl-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-subtle)]">
+                      状态转换
                     </div>
-                  </section>
-                )}
-              </>
-            ) : (
-              <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
-                新增一条状态轨道开始设计
-              </div>
-            )}
-          </div>
+                    {track.transitions.length === 0 ? (
+                      <p className="text-xs text-[var(--ink-muted)]">
+                        尚未建立转换
+                      </p>
+                    ) : (
+                      track.transitions.map((transition) => (
+                        <button
+                          key={transition.id}
+                          type="button"
+                          onClick={() =>
+                            setSelection({
+                              kind: "transition",
+                              trackId: track.id,
+                              id: transition.id,
+                            })
+                          }
+                          className={`block w-full truncate rounded px-2 py-1.5 text-left text-xs ${selection.kind === "transition" && selection.id === transition.id ? "bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                        >
+                          {transition.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </section>
+            ))
+          )}
         </div>
       );
     }
-
-    if (view === "capabilities") {
+    if (view === "methods")
       return (
-        <div className="flex h-full flex-col">
-          <div className="flex h-11 items-center justify-end border-b border-[var(--line-subtle)] px-3">
-            <button
-              type="button"
-              onClick={() => addElement("capability")}
-              className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--accent-warm)] hover:bg-[var(--hover-bg)]"
-            >
-              <Plus className="h-3.5 w-3.5" /> 新增能力
-            </button>
-          </div>
-          <ElementTable
-            elements={draft.elements.filter(
-              (item) => item.kind === "capability",
-            )}
+        <div className="p-4">
+          <EntityList
+            title="发展方法"
+            description="功法、训练、冥想、研究、改造、仪式与授权流程；方法描述怎样发展，而不是发展到了什么状态。"
+            entities={catalogDraft.methods}
             selection={selection}
-            onSelect={(id) => setSelection({ kind: "element", id })}
+            onAdd={() => addEntity("method")}
+            onSelect={(entity) =>
+              setSelection({ kind: "catalog", id: entity.id })
+            }
           />
         </div>
       );
-    }
-
-    if (view === "resources") {
-      const elements = draft.elements.filter(
-        (item) => item.kind !== "capability",
-      );
+    if (view === "theories")
       return (
-        <div className="flex h-full flex-col">
-          <div className="flex h-11 items-center justify-end gap-1 border-b border-[var(--line-subtle)] px-3">
-            {(["origin", "resource", "method"] as const).map((kind) => (
+        <div className="p-4">
+          <EntityList
+            title="理论模型"
+            description="解释方法为何有效：表达模型、拓扑结构、基础操作、控制策略、复杂度与失败模式。"
+            entities={catalogDraft.theories}
+            selection={selection}
+            onAdd={() => addEntity("theory")}
+            onSelect={(entity) =>
+              setSelection({ kind: "catalog", id: entity.id })
+            }
+          />
+        </div>
+      );
+    if (view === "capabilities")
+      return (
+        <div className="p-4">
+          <EntityList
+            title="能力目录"
+            description="基础能力与可学习技能使用同一模型，通过能力准入区分自动获得、允许学习、装备、契约或授权。"
+            entities={catalogDraft.capabilities}
+            selection={selection}
+            onAdd={() => addEntity("capability")}
+            onSelect={(entity) =>
+              setSelection({ kind: "catalog", id: entity.id })
+            }
+          />
+        </div>
+      );
+    if (view === "resources")
+      return (
+        <div className="p-4">
+          <EntityList
+            title="资源条件"
+            description="燃料、材料、环境、信息、权限、情绪、身体条件与时间；具体消耗通过资源需求连接到方法、状态或能力。"
+            entities={catalogDraft.resources}
+            selection={selection}
+            onAdd={() => addEntity("resource")}
+            onSelect={(entity) =>
+              setSelection({ kind: "catalog", id: entity.id })
+            }
+          />
+        </div>
+      );
+    if (view === "quality") {
+      return (
+        <div className="space-y-5 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-base font-semibold text-[var(--ink)]">
+                质量与边界
+              </h1>
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                质量描述同一状态下“做得有多好”，边界描述“最多能做到哪里”；不生成单一总战力。
+              </p>
+            </div>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => addDimension("quality")}
+                className="ns-compact-button"
+              >
+                <Plus className="h-3.5 w-3.5" /> 质量
+              </button>
+              <button
+                type="button"
+                onClick={() => addDimension("boundary")}
+                className="ns-compact-button"
+              >
+                <Plus className="h-3.5 w-3.5" /> 边界
+              </button>
+            </div>
+          </div>
+          {!recordDraft ? (
+            <div className="rounded-lg border border-dashed border-[var(--line)] p-10 text-center text-sm text-[var(--ink-muted)]">
+              质量与边界属于具体体系，请先创建体系。
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              {(["quality", "boundary"] as const).map((category) => (
+                <section
+                  key={category}
+                  className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)]"
+                >
+                  <header className="border-b border-[var(--line-subtle)] px-3 py-2 text-xs font-semibold text-[var(--ink)]">
+                    {category === "quality" ? "质量维度" : "能力边界"}
+                  </header>
+                  <div className="divide-y divide-[var(--line-subtle)]">
+                    {recordDraft.dimensions
+                      .filter((item) => item.category === category)
+                      .map((dimension) => (
+                        <button
+                          key={dimension.id}
+                          type="button"
+                          onClick={() =>
+                            setSelection({
+                              kind: "dimension",
+                              id: dimension.id,
+                            })
+                          }
+                          className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left ${selection.kind === "dimension" && selection.id === dimension.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
+                        >
+                          <span>
+                            <strong className="block text-xs text-[var(--ink)]">
+                              {dimension.name}
+                            </strong>
+                            <span className="text-xs text-[var(--ink-muted)]">
+                              {dimension.measurement}
+                              {dimension.unit ? ` · ${dimension.unit}` : ""}
+                            </span>
+                          </span>
+                          <span className="text-xs text-[var(--ink-subtle)]">
+                            {dimension.lowLabel || "低"} →{" "}
+                            {dimension.highLabel || "高"}
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+    if (view === "connections") {
+      return (
+        <div className="space-y-4 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-base font-semibold text-[var(--ink)]">
+                关联矩阵
+              </h1>
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                连接把共享对象应用到具体体系、状态或转换；同一方法可在不同体系中产生不同效率和质量。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                Object.keys(CONNECTION_LABELS) as PowerConnection["kind"][]
+              ).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => addConnection(kind)}
+                  className="ns-compact-button"
+                >
+                  <Plus className="h-3 w-3" /> {CONNECTION_LABELS[kind]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-1">
+            {CONNECTION_FILTERS.map((kind) => (
               <button
                 key={kind}
                 type="button"
-                onClick={() => addElement(kind)}
-                className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--accent-warm)] hover:bg-[var(--hover-bg)]"
-              >
-                <Plus className="h-3.5 w-3.5" /> {elementKindLabel(kind)}
-              </button>
-            ))}
-          </div>
-          <ElementTable
-            elements={elements}
-            selection={selection}
-            onSelect={(id) => setSelection({ kind: "element", id })}
-          />
-        </div>
-      );
-    }
-
-    if (view === "rules") {
-      return (
-        <div className="h-full overflow-y-auto">
-          <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-4">
-            <span className="text-xs font-semibold text-[var(--ink-muted)]">
-              条件、结果、代价与例外
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                const rule = createPowerRule();
-                setDraft({ ...draft, rules: [...draft.rules, rule] });
-                setSelection({ kind: "rule", id: rule.id });
-              }}
-              className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--accent-warm)] hover:bg-[var(--hover-bg)]"
-            >
-              <Plus className="h-3.5 w-3.5" /> 新增规则
-            </button>
-          </div>
-          {draft.rules.map((rule) => (
-            <button
-              key={rule.id}
-              type="button"
-              onClick={() => setSelection({ kind: "rule", id: rule.id })}
-              className={`grid w-full grid-cols-[5rem_minmax(10rem,1fr)_7rem_7rem_1.5fr] items-center border-b border-[var(--line-subtle)] px-4 py-3 text-left text-sm ${selection.kind === "rule" && selection.id === rule.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
-            >
-              <span className="font-mono text-xs text-[var(--ink-muted)]">
-                P{rule.priority}
-              </span>
-              <strong className="truncate font-medium">{rule.name}</strong>
-              <span className="text-xs text-[var(--ink-muted)]">
-                {rule.conditions.clauses.length} 条件
-              </span>
-              <span className="text-xs text-[var(--ink-muted)]">
-                {rule.costs.length} 代价
-              </span>
-              <span className="truncate text-xs text-[var(--ink-muted)]">
-                {rule.summary || rule.effects.join("；") || "暂无结果"}
-              </span>
-            </button>
-          ))}
-        </div>
-      );
-    }
-
-    if (view === "interactions") {
-      return (
-        <div className="h-full overflow-y-auto">
-          <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-4">
-            <span className="text-xs font-semibold text-[var(--ink-muted)]">
-              体系内部关系与跨体系作用
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                if (!interactionsDraft) return;
-                const first = draft.elements[0];
-                const otherSystem = library.index.systems.find(
-                  (entry) => entry.id !== draft.id,
-                );
-                const interaction: CrossSystemInteraction = {
-                  id: createId("interaction"),
-                  name: "新跨体系交互",
-                  left: first
-                    ? {
-                        systemId: draft.id,
-                        kind: first.kind,
-                        targetId: first.id,
-                      }
-                    : {
-                        systemId: draft.id,
-                        kind: "system",
-                        targetId: draft.id,
-                      },
-                  right: {
-                    systemId: otherSystem?.id ?? draft.id,
-                    kind: "system",
-                    targetId: otherSystem?.id ?? draft.id,
-                  },
-                  kind: "compatible",
-                  conditions: { mode: "all", clauses: [] },
-                  summary: "",
-                  metadata: createDefaultPowerTruthMetadata(),
-                };
-                setInteractionsDraft({
-                  ...interactionsDraft,
-                  interactions: [
-                    ...interactionsDraft.interactions,
-                    interaction,
-                  ],
-                });
-                setSelection({ kind: "interaction", id: interaction.id });
-              }}
-              className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--accent-warm)] hover:bg-[var(--hover-bg)]"
-            >
-              <Plus className="h-3.5 w-3.5" /> 跨体系交互
-            </button>
-          </div>
-          <section>
-            <h3 className="border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-4 py-2 text-xs font-semibold text-[var(--ink-muted)]">
-              内部关系
-            </h3>
-            {draft.relations.map((relation) => (
-              <button
-                key={relation.id}
-                type="button"
                 onClick={() =>
-                  setSelection({ kind: "relation", id: relation.id })
+                  setConnectionFilter(kind as typeof connectionFilter)
                 }
-                className="grid w-full grid-cols-[minmax(8rem,1fr)_7rem_minmax(8rem,1fr)_1.5fr] items-center border-b border-[var(--line-subtle)] px-4 py-3 text-left text-sm hover:bg-[var(--hover-bg)]"
+                className={`rounded-md px-2.5 py-1 text-xs ${connectionFilter === kind ? "bg-[var(--paper)] font-medium text-[var(--ink)] shadow-sm" : "text-[var(--ink-muted)] hover:text-[var(--ink)]"}`}
               >
-                <span className="truncate">{relation.fromId}</span>
-                <span className="text-xs text-[var(--accent-cool)]">
-                  {relation.kind}
-                </span>
-                <span className="truncate">{relation.toId}</span>
-                <span className="truncate text-xs text-[var(--ink-muted)]">
-                  {relation.summary}
-                </span>
+                {kind === "all" ? "全部" : CONNECTION_LABELS[kind]}
               </button>
             ))}
-          </section>
-          <section>
-            <h3 className="border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-4 py-2 text-xs font-semibold text-[var(--ink-muted)]">
-              跨体系交互
-            </h3>
-            {interactionsDraft?.interactions.map((interaction) => (
-              <button
-                key={interaction.id}
-                type="button"
-                onClick={() =>
-                  setSelection({ kind: "interaction", id: interaction.id })
-                }
-                className={`grid w-full grid-cols-[minmax(8rem,1fr)_7rem_minmax(8rem,1fr)_1.5fr] items-center border-b border-[var(--line-subtle)] px-4 py-3 text-left text-sm ${selection.kind === "interaction" && selection.id === interaction.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
-              >
-                <span className="truncate">
-                  {interaction.left.systemId} / {interaction.left.targetId}
-                </span>
-                <span className="text-xs text-[var(--accent-warm)]">
-                  {interaction.kind}
-                </span>
-                <span className="truncate">
-                  {interaction.right.systemId} / {interaction.right.targetId}
-                </span>
-                <span className="truncate text-xs text-[var(--ink-muted)]">
-                  {interaction.summary}
-                </span>
-              </button>
-            ))}
-          </section>
-        </div>
-      );
-    }
-
-    if (view === "scales") {
-      return (
-        <div className="flex h-full min-h-0">
-          <aside className="w-56 shrink-0 overflow-y-auto border-r border-[var(--line-subtle)]">
-            <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-3">
-              <span className="text-xs font-semibold text-[var(--ink-muted)]">
-                比较维度
-              </span>
-              <button
-                type="button"
-                title="新增维度"
-                onClick={() => {
-                  const dimension = createDimension();
-                  setDraft({
-                    ...draft,
-                    dimensions: [...draft.dimensions, dimension],
-                  });
-                  setSelection({ kind: "dimension", id: dimension.id });
-                }}
-                className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-[var(--hover-bg)]"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
+          </div>
+          <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)]">
+            <div className="grid grid-cols-[8rem_1fr_2rem_1fr_6rem] gap-2 border-b border-[var(--line)] bg-[var(--hover-bg)] px-3 py-2 text-xs font-semibold text-[var(--ink-muted)]">
+              <span>连接类型</span>
+              <span>来源</span>
+              <span></span>
+              <span>目标</span>
+              <span>状态</span>
             </div>
-            {draft.dimensions.map((dimension) => (
-              <button
-                key={dimension.id}
-                type="button"
-                onClick={() =>
-                  setSelection({ kind: "dimension", id: dimension.id })
-                }
-                className="w-full border-b border-[var(--line-subtle)] px-3 py-2.5 text-left hover:bg-[var(--hover-bg)]"
-              >
-                <strong className="block truncate text-sm font-medium">
-                  {dimension.name}
-                </strong>
-                <span className="mt-0.5 block text-xs text-[var(--ink-muted)]">
-                  {dimension.measurement}
-                </span>
-              </button>
-            ))}
-          </aside>
-          <div className="min-w-0 flex-1 overflow-y-auto">
-            <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-4">
-              <span className="text-xs font-semibold text-[var(--ink-muted)]">
-                场景标尺，不生成永久总战力
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  const benchmark = createBenchmark();
-                  setDraft({
-                    ...draft,
-                    benchmarks: [...draft.benchmarks, benchmark],
-                  });
-                  setSelection({ kind: "benchmark", id: benchmark.id });
-                }}
-                className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--accent-warm)] hover:bg-[var(--hover-bg)]"
-              >
-                <Plus className="h-3.5 w-3.5" /> 新增标尺
-              </button>
-            </div>
-            {draft.benchmarks.map((benchmark) => (
-              <button
-                key={benchmark.id}
-                type="button"
-                onClick={() =>
-                  setSelection({ kind: "benchmark", id: benchmark.id })
-                }
-                className={`block w-full border-b border-[var(--line-subtle)] px-4 py-4 text-left ${selection.kind === "benchmark" && selection.id === benchmark.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
-              >
-                <strong className="text-sm font-semibold">
-                  {benchmark.name}
-                </strong>
-                <span className="ml-2 text-xs text-[var(--ink-muted)]">
-                  {benchmark.context || "未设置场景"}
-                </span>
-                <div className="mt-3 grid gap-2 md:grid-cols-2">
-                  {draft.dimensions.slice(0, 8).map((dimension) => {
-                    const value = benchmark.values.find(
-                      (candidate) => candidate.dimensionId === dimension.id,
-                    );
-                    const maximum = Math.max(
-                      value?.maximum ?? value?.minimum ?? 0,
-                      0,
-                    );
-                    return (
-                      <div
-                        key={dimension.id}
-                        className="grid grid-cols-[5rem_1fr_4rem] items-center gap-2 text-xs"
-                      >
-                        <span className="truncate text-[var(--ink-muted)]">
-                          {dimension.name}
-                        </span>
-                        <span className="h-1.5 overflow-hidden rounded-sm bg-[var(--paper-inset)]">
-                          <span
-                            className="block h-full bg-[var(--accent-cool)]"
-                            style={{ width: `${Math.min(100, maximum)}%` }}
-                          />
-                        </span>
-                        <span className="truncate text-right font-mono text-[var(--ink-muted)]">
-                          {value?.label ||
-                            (value?.minimum === null ||
-                            value?.minimum === undefined
-                              ? "—"
-                              : value.minimum === value.maximum
-                                ? value.minimum
-                                : `${value.minimum}-${value.maximum ?? "?"}`)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="h-full overflow-y-auto">
-        <div className="grid grid-cols-3 border-b border-[var(--line)]">
-          {(["error", "warning", "info"] as const).map((severity) => (
-            <div
-              key={severity}
-              className="border-r border-[var(--line-subtle)] px-5 py-4 last:border-r-0"
-            >
-              <div className="text-2xl font-semibold">
-                {
-                  auditIssues.filter((issue) => issue.severity === severity)
-                    .length
-                }
+            {filteredConnections.length === 0 ? (
+              <div className="px-4 py-10 text-center text-xs text-[var(--ink-muted)]">
+                当前筛选下没有连接
               </div>
-              <div className="mt-1 text-xs text-[var(--ink-muted)]">
-                {severity === "error"
-                  ? "阻断问题"
-                  : severity === "warning"
-                    ? "风险"
-                    : "提示"}
-              </div>
-            </div>
-          ))}
+            ) : (
+              filteredConnections.map((connection) => (
+                <button
+                  key={connection.id}
+                  type="button"
+                  onClick={() =>
+                    setSelection({ kind: "connection", id: connection.id })
+                  }
+                  className={`grid w-full grid-cols-[8rem_1fr_2rem_1fr_6rem] gap-2 border-b border-[var(--line-subtle)] px-3 py-2 text-left text-xs last:border-0 ${selection.kind === "connection" && selection.id === connection.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
+                >
+                  <span className="font-medium text-[var(--ink)]">
+                    {CONNECTION_LABELS[connection.kind]}
+                  </span>
+                  <span className="truncate text-[var(--ink-muted)]">
+                    {referenceName(
+                      connection.source,
+                      catalogDraft,
+                      recordDraft,
+                      library,
+                    )}
+                  </span>
+                  <span className="text-center text-[var(--ink-subtle)]">
+                    →
+                  </span>
+                  <span className="truncate text-[var(--ink-muted)]">
+                    {referenceName(
+                      connection.target,
+                      catalogDraft,
+                      recordDraft,
+                      library,
+                    )}
+                  </span>
+                  <span className="text-xs text-[var(--ink-subtle)]">
+                    {connection.conditions.clauses.length
+                      ? `${connection.conditions.clauses.length} 条条件`
+                      : "总是"}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
         </div>
-        {auditIssues.map((issue) => (
-          <button
-            key={issue.id}
-            type="button"
-            onClick={() => {
-              if (issue.targetKind === "element" && issue.targetId) {
-                setView("capabilities");
-                setSelection({ kind: "element", id: issue.targetId });
-              } else if (issue.targetKind === "track" && issue.targetId) {
-                setView("states");
-                setSelectedTrackId(issue.targetId);
-                setSelection({ kind: "track", id: issue.targetId });
-              } else if (issue.targetKind === "rule" && issue.targetId) {
-                setView("rules");
-                setSelection({ kind: "rule", id: issue.targetId });
-              } else if (issue.targetKind === "dimension" && issue.targetId) {
-                setView("scales");
-                setSelection({ kind: "dimension", id: issue.targetId });
-              } else {
-                setSelection({ kind: "system" });
-              }
-            }}
-            className="flex w-full items-start gap-3 border-b border-[var(--line-subtle)] px-5 py-4 text-left hover:bg-[var(--hover-bg)]"
-          >
-            <span
-              className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${issue.severity === "error" ? "bg-[var(--error)]" : issue.severity === "warning" ? "bg-[var(--warning)]" : "bg-[var(--info)]"}`}
-            />
-            <span className="min-w-0">
-              <strong className="block text-sm font-medium">
-                {issue.title}
-              </strong>
-              <span className="mt-1 block text-xs leading-5 text-[var(--ink-muted)]">
-                {issue.detail}
-              </span>
-            </span>
-          </button>
-        ))}
+      );
+    }
+    if (view === "audit") {
+      return (
+        <div className="space-y-4 p-4">
+          <div>
+            <h1 className="text-base font-semibold text-[var(--ink)]">
+              一致性审查
+            </h1>
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              检查成长契约、认知模型、方法理论、能力边界与连接引用，不评价故事风格。
+            </p>
+          </div>
+          {!recordDraft ? (
+            <div className="rounded-lg border border-dashed border-[var(--line)] p-10 text-center text-sm text-[var(--ink-muted)]">
+              选择体系后开始审查。
+            </div>
+          ) : issues.length === 0 ? (
+            <div className="flex items-center gap-3 rounded-lg border border-[var(--success)]/30 bg-[var(--success-bg)] p-4 text-sm text-[var(--success)]">
+              <CheckCircle2 className="h-5 w-5" /> 当前未发现结构性问题
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {issues.map((issue) => (
+                <button
+                  key={issue.id}
+                  type="button"
+                  onClick={() => selectIssue(issue)}
+                  className="flex w-full gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-3 text-left hover:border-[var(--line-strong)]"
+                >
+                  <AlertTriangle
+                    className={`mt-0.5 h-4 w-4 shrink-0 ${issue.severity === "error" ? "text-[var(--error)]" : issue.severity === "warning" ? "text-[var(--warning)]" : "text-[var(--ink-muted)]"}`}
+                  />
+                  <span>
+                    <strong className="block text-sm text-[var(--ink)]">
+                      {issue.title}
+                    </strong>
+                    <span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">
+                      {issue.detail}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+    return recordDraft ? (
+      <div className="h-full p-4">
+        <MarkdownVisualEditor
+          pageId={`world/power-systems/pages/${recordDraft.id}.md`}
+          label={`${recordDraft.name}说明`}
+          value={pageDraft}
+          onChange={(value) => {
+            setPageDraft(value);
+            setDirty((current) => ({ ...current, page: true }));
+          }}
+          onSave={() => void save()}
+          fullWidth
+          placeholder="记录体系的叙事用途、读者认知顺序、关键例外和作者备注……"
+        />
+      </div>
+    ) : (
+      <div className="p-10 text-center text-sm text-[var(--ink-muted)]">
+        体系说明属于具体体系，请先创建体系。
       </div>
     );
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
-      <header className="flex min-h-13 shrink-0 items-center gap-3 border-b border-[var(--line)] px-4 py-2">
-        <Waypoints className="h-4 w-4 text-[var(--accent-warm)]" />
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-1">
-            <h1 className="truncate text-sm font-semibold">力量体系</h1>
-            <button
-              type="button"
-              onClick={() => setIsHelpOpen(true)}
-              aria-label="查看力量体系设计说明"
-              title="力量体系设计说明"
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-            >
-              <CircleHelp className="h-3.5 w-3.5" />
-            </button>
+    <div className="relative flex h-full min-h-0 flex-col bg-[var(--paper)] text-[var(--ink)]">
+      <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Atom className="h-4 w-4 text-[var(--accent-warm)]" />
+          <div className="min-w-0">
+            <div className="truncate text-xs font-semibold">
+              力量体系 · {projectTitle}
+            </div>
+            <div className="truncate text-xs text-[var(--ink-subtle)]">
+              {recordDraft
+                ? `${recordDraft.name} · ${selectedSystemType?.name ?? recordDraft.typeId}`
+                : "共享力量目录"}
+            </div>
           </div>
-          <p className="truncate text-xs text-[var(--ink-muted)]">
-            {projectTitle}
-          </p>
         </div>
-        {draft && (
-          <button
-            type="button"
-            onClick={() => setSelection({ kind: "system" })}
-            className="ml-2 min-w-0 truncate border-l border-[var(--line)] pl-3 text-sm font-medium hover:text-[var(--accent-warm)]"
-          >
-            {draft.name}
-          </button>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          {headerActions}
+        <div className="flex items-center gap-1.5">
+          {message && (
+            <span className="mr-2 text-xs text-[var(--success)]">
+              {message}
+            </span>
+          )}
           {error && (
             <span
-              className="max-w-80 truncate text-xs text-[var(--error)]"
+              className="mr-2 max-w-80 truncate text-xs text-[var(--error)]"
               title={error}
             >
               {error}
             </span>
           )}
-          <span
-            className={`text-xs ${isDirty ? "text-[var(--warning)]" : "text-[var(--success)]"}`}
-          >
-            {isDirty ? "有未保存修改" : "已保存"}
-          </span>
           <button
             type="button"
-            disabled={!isDirty || isSaving}
+            onClick={() => void loadLibrary()}
+            className="ns-icon-button"
+            title="重新读取"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
             onClick={() => void save()}
-            className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-3 text-sm font-medium text-white disabled:opacity-40"
+            disabled={!hasDirty || isSaving}
+            className="ns-compact-primary-button disabled:opacity-45"
           >
             {isSaving ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Save className="h-3.5 w-3.5" />
-            )}
-            保存
+            )}{" "}
+            {hasDirty ? "保存" : "已保存"}
           </button>
+          {headerActions}
         </div>
       </header>
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--line-subtle)] bg-[var(--paper-elevated)]/45">
-          <div className="border-b border-[var(--line-subtle)] p-3">
+        <aside className="flex w-56 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--paper-elevated)]">
+          <div className="border-b border-[var(--line-subtle)] p-2.5">
             <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-[var(--ink-subtle)]" />
+              <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-[var(--ink-subtle)]" />
               <input
-                className={`${inputClass} h-9 pl-8`}
-                value={systemSearch}
-                placeholder="搜索体系"
-                onChange={(event) => setSystemSearch(event.target.value)}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                className="w-full rounded-md border border-[var(--line)] bg-[var(--paper)] py-1.5 pl-8 pr-2 text-xs outline-none focus:border-[var(--accent-warm)]"
+                placeholder="查找体系"
               />
             </div>
+            <button
+              type="button"
+              onClick={() => setIsCreateOpen(true)}
+              className="ns-compact-button mt-2 w-full justify-center"
+            >
+              <Plus className="h-3.5 w-3.5" /> 新建体系
+            </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {filteredSystems.map((entry) => (
-              <button
-                key={entry.id}
-                type="button"
-                onClick={() => setSelectedSystemId(entry.id)}
-                className={`w-full border-b border-[var(--line-subtle)] px-3 py-3 text-left ${selectedSystemId === entry.id ? "bg-[var(--accent-warm-subtle)]" : "hover:bg-[var(--hover-bg)]"}`}
-              >
-                <div className="flex items-center gap-2">
-                  <Layers3 className="h-3.5 w-3.5 shrink-0 text-[var(--accent-cool)]" />
-                  <strong className="min-w-0 flex-1 truncate text-sm font-medium">
-                    {entry.name}
+          <div className="max-h-48 overflow-y-auto border-b border-[var(--line-subtle)] p-1.5">
+            {filteredSystems.length === 0 ? (
+              <div className="px-2 py-4 text-center text-xs text-[var(--ink-muted)]">
+                暂无体系
+              </div>
+            ) : (
+              filteredSystems.map((system) => (
+                <button
+                  key={system.id}
+                  type="button"
+                  onClick={() => void selectSystem(system.id)}
+                  className={`mb-0.5 block w-full rounded-md px-2.5 py-2 text-left ${recordDraft?.id === system.id ? "bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"}`}
+                >
+                  <strong className="block truncate text-xs font-semibold">
+                    {system.name}
                   </strong>
-                  <span className="text-xs text-[var(--ink-subtle)]">
-                    {entry.status}
+                  <span className="mt-0.5 block truncate text-xs opacity-75">
+                    {library.meta.systemTypes.find(
+                      (type) => type.id === system.typeId,
+                    )?.name ?? system.typeId}{" "}
+                    · {system.status}
                   </span>
-                </div>
-                <p className="mt-1 line-clamp-2 pl-5 text-xs leading-4 text-[var(--ink-muted)]">
-                  {entry.summary || "暂无摘要"}
-                </p>
-              </button>
-            ))}
+                </button>
+              ))
+            )}
           </div>
-          <button
-            type="button"
-            onClick={() => setIsCreateOpen(true)}
-            className="flex h-11 shrink-0 items-center justify-center gap-1.5 border-t border-[var(--line)] text-sm font-medium text-[var(--accent-warm)] hover:bg-[var(--hover-bg)]"
-          >
-            <Plus className="h-4 w-4" /> 新建体系
-          </button>
-        </aside>
-        <main className="flex min-w-0 flex-1 flex-col">
-          <nav className="flex h-11 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--line-subtle)] px-2">
+          <nav className="flex-1 overflow-y-auto p-1.5">
             {VIEW_ITEMS.map((item) => {
               const Icon = item.icon;
               return (
@@ -1593,56 +2066,54 @@ export default function PowerSystemLibrary({
                   key={item.id}
                   type="button"
                   onClick={() => setView(item.id)}
-                  className={`flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-2.5 text-xs font-medium ${view === item.id ? "border-[var(--accent-warm)] text-[var(--ink)]" : "border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]"}`}
+                  className={`mb-0.5 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs ${view === item.id ? "bg-[var(--paper)] font-medium text-[var(--ink)] shadow-sm" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"}`}
                 >
-                  <Icon className="h-3.5 w-3.5" /> {item.label}
+                  <Icon className="h-3.5 w-3.5" />
+                  {item.label}
+                  {item.id === "audit" && issues.length > 0 && (
+                    <span className="ml-auto rounded-full bg-[var(--warning-bg)] px-1.5 text-xs text-[var(--warning)]">
+                      {issues.length}
+                    </span>
+                  )}
                 </button>
               );
             })}
           </nav>
-          <div className="min-h-0 flex-1">{renderCenter()}</div>
-        </main>
-        {draft && interactionsDraft && (
-          <aside className="w-[22rem] shrink-0 overflow-y-auto border-l border-[var(--line-subtle)] bg-[var(--paper-elevated)]/35 max-xl:w-80">
+        </aside>
+        <main className="min-w-0 flex-1 overflow-y-auto">{renderCenter()}</main>
+        <aside className="w-80 shrink-0 overflow-y-auto border-l border-[var(--line)] bg-[var(--paper-elevated)] xl:w-[22rem]">
+          {selection.kind === "system" && !recordDraft ? (
+            <div className="p-6 text-center text-xs leading-5 text-[var(--ink-muted)]">
+              从中间目录选择对象进行编辑，或先创建一个力量体系。
+            </div>
+          ) : (
             <PowerSystemInspector
               selection={selection}
-              record={draft}
+              record={recordDraft ?? EMPTY_INSPECTOR_RECORD}
+              catalog={catalogDraft}
+              connections={connectionsDraft}
               meta={library.meta}
               index={library.index}
-              interactions={interactionsDraft}
-              onChange={setDraft}
-              onInteractionsChange={setInteractionsDraft}
+              onRecordChange={updateRecord}
+              onCatalogChange={updateCatalog}
+              onConnectionsChange={updateConnections}
               onSelectionChange={setSelection}
+              onDeleteSelection={deleteSelection}
             />
-          </aside>
-        )}
+          )}
+        </aside>
       </div>
       {isCreateOpen && (
         <CreateSystemDialog
-          library={library}
+          types={library.meta.systemTypes}
           onClose={() => setIsCreateOpen(false)}
-          onCreate={(name, typeId) => {
-            setError(null);
-            void repository
-              .createSystem(library, {
-                id: createId("power-system"),
-                name,
-                typeId,
-              })
-              .then((result) => {
-                setLibrary(result.library);
-                setSystem(result.system);
-                setDraft(result.system.record);
-                setPageDraft(result.system.pageContent);
-                setSelectedSystemId(result.system.record.id);
-                setIsCreateOpen(false);
-              })
-              .catch((cause) => setError(errorMessage(cause)));
-          }}
+          onCreate={(name, typeId) => void createSystem(name, typeId)}
         />
       )}
-      {isHelpOpen && (
-        <PowerSystemHelpDialog onClose={() => setIsHelpOpen(false)} />
+      {isLoading && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-[var(--paper)]/35">
+          <Loader2 className="h-5 w-5 animate-spin text-[var(--accent-warm)]" />
+        </div>
       )}
     </div>
   );

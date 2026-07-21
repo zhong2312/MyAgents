@@ -1,3 +1,28 @@
+.novel-markdown-shell {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.novel-markdown-fullscreen-overlay {
+  position: fixed;
+  z-index: 260;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background: var(--paper);
+}
+
+.novel-markdown-shell.is-expanded {
+  width: 100%;
+  height: 100%;
+}
+
 .novel-markdown-editor {
   --basePageBg: var(--paper);
   --baseBase: var(--paper-elevated);
@@ -46,6 +71,37 @@
   border-radius: 0;
   padding: 0.5rem 1rem;
   background: var(--paper-elevated);
+}
+
+.novel-markdown-expand-button {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--ink-muted);
+  background: transparent;
+}
+
+.novel-markdown-expand-button:hover,
+.novel-markdown-expand-button:focus-visible {
+  border-color: var(--line);
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.novel-markdown-expand-button:focus-visible {
+  outline: 2px solid var(--accent-warm);
+  outline-offset: 1px;
+}
+
+.novel-markdown-expand-button svg {
+  width: 1rem;
+  height: 1rem;
 }
 
 .novel-markdown-toolbar button,

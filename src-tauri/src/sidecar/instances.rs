@@ -93,6 +93,13 @@ pub fn start_tab_sidecar<R: Runtime>(
     append_sidecar_entrypoint_args(&mut cmd, &script_path, port, process_role);
     if is_global {
         cmd.arg("--no-pre-warm");
+        if let Some(companion_path) = find_mirofish_companion_executable(app_handle) {
+            ulog_info!(
+                "[sidecar] MiroFish companion runtime resolved to {:?}",
+                companion_path
+            );
+            cmd.env("MYAGENTS_MIROFISH_COMPANION_PATH", companion_path);
+        }
     }
     let effective_agent_dir = if let Some(ref dir) = agent_dir {
         cmd.arg("--agent-dir").arg(dir);

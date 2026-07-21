@@ -1,4 +1,4 @@
-import type { WorkbenchStorage } from '@/workbench-sdk';
+import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
   parseNovelChapterIndex,
@@ -7,11 +7,10 @@ import {
   type NovelChapterIndex,
   type NovelChapterRecord,
   type NovelMetadata,
-} from './projectSchema';
+} from "./projectSchema";
 
-const NOVEL_METADATA_PATH = 'novel.json';
-const CHAPTER_INDEX_PATH = 'manuscript/index.json';
-const OUTLINE_PATH = 'outline/outline.md';
+const NOVEL_METADATA_PATH = "novel.json";
+const CHAPTER_INDEX_PATH = "manuscript/index.json";
 
 export interface LoadedNovelChapter extends NovelChapterRecord {
   readonly content: string;
@@ -24,7 +23,6 @@ export interface LoadedNovelProject {
   readonly chapterIndex: NovelChapterIndex;
   readonly chapterIndexContent: string;
   readonly chapters: readonly LoadedNovelChapter[];
-  readonly outlineContent: string;
 }
 
 export interface NovelRepository {
@@ -44,39 +42,42 @@ export interface NovelRepository {
     content: string,
     expectedContent: string,
   ): Promise<LoadedNovelChapter>;
-  saveOutline(content: string, expectedContent: string): Promise<string>;
 }
 
 export function countNovelWords(content: string): number {
-  return Array.from(content).filter((character) => !/\s/u.test(character)).length;
+  return Array.from(content).filter((character) => !/\s/u.test(character))
+    .length;
 }
 
 function chapterFileName(number: number): string {
-  return `${String(number).padStart(6, '0')}.md`;
+  return `${String(number).padStart(6, "0")}.md`;
 }
 
-export function createNovelRepository(storage: WorkbenchStorage): NovelRepository {
+export function createNovelRepository(
+  storage: WorkbenchStorage,
+): NovelRepository {
   const repository: NovelRepository = {
     async load() {
       if (!storage.isAvailable) {
-        throw new Error('小说项目存储仅在 MyAgents 桌面端可用');
+        throw new Error("小说项目存储仅在 MyAgents 桌面端可用");
       }
-      const [metadataFile, chapterIndexFile, outlineFile] = await Promise.all([
+      const [metadataFile, chapterIndexFile] = await Promise.all([
         storage.readText(NOVEL_METADATA_PATH),
         storage.readText(CHAPTER_INDEX_PATH),
-        storage.readText(OUTLINE_PATH),
       ]);
       const metadata = parseNovelMetadata(metadataFile.content);
       const chapterIndex = parseNovelChapterIndex(chapterIndexFile.content);
       const chapters = await Promise.all(
-        chapterIndex.chapters.map(async (record): Promise<LoadedNovelChapter> => {
-          const file = await storage.readText(record.path);
-          return Object.freeze({
-            ...record,
-            content: file.content,
-            words: countNovelWords(file.content),
-          });
-        }),
+        chapterIndex.chapters.map(
+          async (record): Promise<LoadedNovelChapter> => {
+            const file = await storage.readText(record.path);
+            return Object.freeze({
+              ...record,
+              content: file.content,
+              words: countNovelWords(file.content),
+            });
+          },
+        ),
       );
       chapters.sort((left, right) => left.number - right.number);
       return Object.freeze({
@@ -85,7 +86,6 @@ export function createNovelRepository(storage: WorkbenchStorage): NovelRepositor
         chapterIndex,
         chapterIndexContent: chapterIndexFile.content,
         chapters: Object.freeze(chapters),
-        outlineContent: outlineFile.content,
       });
     },
 
@@ -116,13 +116,13 @@ export function createNovelRepository(storage: WorkbenchStorage): NovelRepositor
 
     async createChapter(project) {
       const number = project.chapterIndex.nextChapterNumber;
-      const serial = String(number).padStart(6, '0');
+      const serial = String(number).padStart(6, "0");
       const record: NovelChapterRecord = {
         id: `chapter-${serial}`,
         number,
         title: `第 ${number} 章`,
         path: `manuscript/chapters/${chapterFileName(number)}`,
-        status: 'draft',
+        status: "draft",
       };
       const nextIndex: NovelChapterIndex = {
         ...project.chapterIndex,
@@ -130,13 +130,15 @@ export function createNovelRepository(storage: WorkbenchStorage): NovelRepositor
         chapters: [...project.chapterIndex.chapters, record],
       };
       const nextIndexContent = serializeNovelChapterIndex(nextIndex);
-      await storage.createText(record.path, '', { createParents: true });
+      await storage.createText(record.path, "", { createParents: true });
       try {
         await storage.writeText(CHAPTER_INDEX_PATH, nextIndexContent, {
           expectedContent: project.chapterIndexContent,
         });
       } catch (error) {
-        await storage.remove(record.path, { permanent: true }).catch(() => false);
+        await storage
+          .remove(record.path, { permanent: true })
+          .catch(() => false);
         throw error;
       }
       return Object.freeze(record);
@@ -144,7 +146,7 @@ export function createNovelRepository(storage: WorkbenchStorage): NovelRepositor
 
     async renameChapter(project, chapterId, title) {
       const normalizedTitle = title.trim();
-      if (!normalizedTitle) throw new Error('章节标题不能为空');
+      if (!normalizedTitle) throw new Error("章节标题不能为空");
       const position = project.chapterIndex.chapters.findIndex(
         (chapter) => chapter.id === chapterId,
       );
@@ -169,11 +171,6 @@ export function createNovelRepository(storage: WorkbenchStorage): NovelRepositor
         content,
         words: countNovelWords(content),
       });
-    },
-
-    async saveOutline(content, expectedContent) {
-      await storage.writeText(OUTLINE_PATH, content, { expectedContent });
-      return content;
     },
   };
   return Object.freeze(repository);

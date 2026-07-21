@@ -8,7 +8,6 @@ import {
   GitCompareArrows,
   Hash,
   Library,
-  ListTree,
   Loader2,
   Map,
   PenLine,
@@ -55,9 +54,7 @@ import PowerSystemProposalReview from "./PowerSystemProposalReview";
 import { buildPowerSystemProposalAgentInstructions } from "./powerSystemProposalSchema";
 import KnowledgeBase from "./KnowledgeBase";
 import TimelineLibrary from "./TimelineLibrary";
-import NarrativeStudio, {
-  type NarrativeStudioScreen,
-} from "./NarrativeStudio";
+import InspirationStudio from "./InspirationStudio";
 import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
 import {
@@ -65,6 +62,7 @@ import {
   type LoadedSettingLibrary,
 } from "./settingLibraryRepository";
 import WorldMapPrototype from "./WorldMapPrototype";
+import WorldSimulationWorkbench from "./WorldSimulationWorkbench";
 import WorldProposalReview from "./WorldProposalReview";
 import { buildWorldProposalAgentInstructions } from "./worldProposalSchema";
 import { useNovelProject } from "./useNovelProject";
@@ -710,129 +708,6 @@ function Manuscript({
   );
 }
 
-function OutlineEditor({
-  content,
-  onSave,
-}: {
-  content: string;
-  onSave: (content: string, expectedContent: string) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState(content);
-  const [savedDraft, setSavedDraft] = useState(content);
-  const [mode, setMode] = useState<"edit" | "preview">("edit");
-  const [isSaving, setIsSaving] = useState(false);
-  const [externalChanged, setExternalChanged] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const isSaved = draft === savedDraft;
-
-  useEffect(() => {
-    if (content === savedDraft) return;
-    if (draft === savedDraft) {
-      setDraft(content);
-      setSavedDraft(content);
-      setExternalChanged(false);
-    } else {
-      setExternalChanged(true);
-    }
-  }, [content, draft, savedDraft]);
-
-  const save = async () => {
-    if (isSaved || isSaving) return;
-    setError(null);
-    setIsSaving(true);
-    try {
-      await onSave(draft, savedDraft);
-      setSavedDraft(draft);
-      setExternalChanged(false);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line-subtle)] px-6 py-2">
-        <div>
-          <h1 className="text-base font-semibold text-[var(--ink)]">
-            故事大纲
-          </h1>
-          <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-            outline/outline.md
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="flex rounded-md bg-[var(--paper-inset)] p-0.5">
-            {(["edit", "preview"] as const).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setMode(item)}
-                className={`rounded px-2.5 py-1 text-xs font-medium ${mode === item ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-xs" : "text-[var(--ink-muted)]"}`}
-              >
-                {item === "edit" ? "编辑" : "预览"}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => void save()}
-            disabled={isSaved || isSaving}
-            title={isSaved ? "已保存" : "保存大纲"}
-            className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] disabled:opacity-45"
-          >
-            {isSaving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : isSaved ? (
-              <Check className="h-3.5 w-3.5 text-[var(--success)]" />
-            ) : (
-              <Save className="h-3.5 w-3.5" />
-            )}
-            <span className="max-sm:hidden">
-              {isSaving ? "保存中" : isSaved ? "已保存" : "保存"}
-            </span>
-          </button>
-        </div>
-      </header>
-      {(externalChanged || error) && (
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line-subtle)] bg-[var(--warning-bg)] px-6 py-2 text-xs text-[var(--warning)]">
-          <span>{error ?? "大纲文件已在外部修改，本地草稿未被覆盖"}</span>
-          {externalChanged && (
-            <button
-              type="button"
-              onClick={() => {
-                setDraft(content);
-                setSavedDraft(content);
-                setExternalChanged(false);
-                setError(null);
-              }}
-              className="shrink-0 font-medium underline underline-offset-2"
-            >
-              载入磁盘版本
-            </button>
-          )}
-        </div>
-      )}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {mode === "edit" ? (
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            spellCheck={false}
-            aria-label="故事大纲"
-            className="mx-auto block min-h-full w-full max-w-4xl resize-none bg-transparent px-10 py-9 font-mono text-sm leading-7 text-[var(--ink)] outline-none max-md:px-5"
-          />
-        ) : (
-          <div className="mx-auto max-w-4xl whitespace-pre-wrap px-10 py-9 text-base leading-8 text-[var(--ink)] max-md:px-5">
-            {draft}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function EmptyDomainView({
   icon: Icon,
   title,
@@ -881,7 +756,6 @@ function ContextInspector({
       label: "章节信息",
       title: chapter ? `第 ${chapter.number} 章` : "暂无章节",
     },
-    outline: { icon: ListTree, label: "大纲文件", title: "outline.md" },
     lore: { icon: Users, label: "设定数据", title: "人物与世界" },
     map: { icon: Map, label: "地图数据", title: "世界空间模型" },
     research: { icon: Library, label: "资料数据", title: "研究资料" },
@@ -1070,8 +944,6 @@ export default function NovelWorkbenchRenderer({
       const match = /^manuscript\/chapters\/(\d{6})\.md$/u.exec(source.path);
       if (match) setSelectedChapterId(`chapter-${match[1]}`);
       context.navigate("manuscript");
-    } else if (source.path.startsWith("outline/")) {
-      context.navigate("outline");
     } else if (source.path.startsWith("timeline/")) {
       context.navigate("timeline");
     } else if (source.path.startsWith("research/")) {
@@ -1288,12 +1160,15 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
 力量体系目录：world/power-systems/
 
 执行原则：
-1. 首先调用 novel_power_get_context，读取体系类型、体系索引、跨体系交互和已有体系摘要。
-2. 先确认本次是新建体系还是完善已有体系，并通过简洁对话确认叙事功能、力量来源、显式程度、量化方式、成长结构、代价、比较方式和例外边界；一次只追问影响结构的关键问题。
-3. 共用来源和规则的流派、能力或装备保留在同一体系；拥有独立来源与运行规则的力量拆成不同体系，再通过 interactions.json 记录交互。
-4. 只为实际存在的概念建立来源、资源、方式、能力、状态、规则、关系、维度与场景标尺。不得为了填满字段制造无叙事作用的设定，也不得生成永久总战力。
-5. 作者确认方案前只能讨论和读取，不能提交提案。确认后生成完整、可校验的文件变更。
+1. 首先调用 novel_power_get_context，读取体系类型、体系索引、共享力量目录、生态连接和已有体系摘要。
+2. 先确认本次是新建体系还是完善已有体系，并通过简洁对话确认叙事功能、解释程度、成长结构、代价、比较方式和例外边界；一次只追问影响结构的关键问题。
+3. 严格区分：状态定义获得了什么，方法定义怎样发展，理论解释为什么有效，能力定义能产生什么效果。本源、介质、法则、资源、理论、方法和能力放入共享 catalog.json，再通过 connections.json 应用到体系、状态或转换。
+4. 共用本源与运行规则的流派、能力或装备保留在同一体系；拥有独立本源与运行规则的力量拆成不同体系，再通过 system-interaction 连接记录兼容、转换、压制、放大、干扰、排斥或融合。
+5. 质量描述同一状态下做得多好，边界描述最多能做到哪里。不得为了填满字段制造无叙事作用的设定，也不得生成永久总战力。
+6. 理论与认知模型必须允许顺序路径、图网络、模块算法、空间场、动态系统、演化规则、概率、身体和情绪等不同范式，不得把所有题材改写为修真境界。
+7. 作者确认方案前只能讨论和读取，不能创建草稿或提交提案。确认后使用领域工具创建草稿并逐步补充，不得手写完整文件变更。
 
+功法、训练、冥想、改造与仪式都属于发展方法；神通、法术、异能与科技效果都属于能力；大道法则只是底层法则的一种题材表达；阵法应按实际语义建模为方法、能力或外部装置，而不是所有体系必备的固定模块。
 ${buildPowerSystemProposalAgentInstructions()}`;
       const modelSelection = await resolveSceneModelSelection("powers.design");
       await context.agentSessions.open({
@@ -1310,7 +1185,7 @@ ${buildPowerSystemProposalAgentInstructions()}`;
           context: {
             mode: "powers",
             promptId: "novel.powers.design",
-            promptVersion: "1.0.0",
+            promptVersion: "2.0.0",
           },
         },
         ...(modelSelection ? { modelSelection } : {}),
@@ -1680,34 +1555,50 @@ ${JSON.stringify(injectedContext, null, 2)}
         />
       );
       break;
-    case "outline":
-    case "inspiration":
-    case "creative-profile": {
-      const screen: NarrativeStudioScreen =
-        context.route === "inspiration"
-          ? "inspiration"
-          : context.route === "creative-profile"
-            ? "profile"
-            : "narrative";
+    case "inspiration": {
       content = (
-        <NarrativeStudio
-          screen={screen}
+        <InspirationStudio
           storage={context.storage}
           isActive={context.isActive}
           projectTitle={project.metadata.title}
-          projectGenres={project.metadata.genres}
-          chapters={project.chapters}
-          outlineContent={project.outlineContent}
-          onSaveOutline={controller.saveOutline}
-          onNavigateScreen={(target) =>
-            context.navigate(
-              target === "narrative"
-                ? "outline"
-                : target === "inspiration"
-                  ? "inspiration"
-                  : "creative-profile",
-            )
+          onAiRun={
+            context.aiRuns.isAvailable
+              ? async (request) => {
+                  const modelSelection = await resolveSceneModelSelection(
+                    request.sceneId,
+                  );
+                  return (
+                    await context.aiRuns.run({
+                      version: WORKBENCH_AI_RUN_REQUEST_VERSION,
+                      label: request.label,
+                      prompt: request.prompt,
+                      systemPrompt: request.systemPrompt,
+                      ...(modelSelection ? { modelSelection } : {}),
+                    })
+                  ).output;
+                }
+              : undefined
           }
+          onOpenAiAgent={
+            context.agentSessions.isAvailable
+              ? async (request) => {
+                  const modelSelection =
+                    await resolveSceneModelSelection("inspiration.coauthor");
+                  await context.agentSessions.open({
+                    version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+                    title: request.title,
+                    promptId: "novel.inspiration.coauthor",
+                    initialMessage: request.initialMessage,
+                    presentation: "dialog",
+                    conversationKey: request.conversationKey,
+                    historyGroupPath: request.historyGroupPath,
+                    forceNew: true,
+                    ...(modelSelection ? { modelSelection } : {}),
+                  });
+                }
+              : undefined
+          }
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -1859,6 +1750,15 @@ ${JSON.stringify(injectedContext, null, 2)}
     case "map":
       content = <WorldMapPrototype />;
       break;
+    case "simulation":
+      content = (
+        <WorldSimulationWorkbench
+          storage={context.storage}
+          simulationRuns={context.simulationRuns}
+          isActive={context.isActive}
+        />
+      );
+      break;
     case "timeline":
       content = (
         <TimelineLibrary
@@ -1915,10 +1815,9 @@ ${JSON.stringify(injectedContext, null, 2)}
     "powers",
     "knowledge",
     "map",
+    "simulation",
     "timeline",
-    "outline",
     "inspiration",
-    "creative-profile",
     "ai-prompts",
     "settings",
     "model-scenes",

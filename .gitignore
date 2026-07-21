@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+__pycache__/
+*.py[cod]
 
 # Build outputs
 dist/
@@ -65,6 +67,7 @@ src-tauri/resources/tsx-runtime
 src-tauri/resources/nodejs/*
 !src-tauri/resources/nodejs/.gitkeep
 src-tauri/resources/nodejs-cache/
+src-tauri/resources/mirofish-companion/runtime/
 src-tauri/resources/vcruntime140.dll
 src-tauri/resources/vcruntime140_1.dll
 src-tauri/nsis/Git-Installer.exe
@@ -102,3 +105,5 @@ specs/assets/avatar-candidates/**/manifest.json
 # Dev
 .claude/plans/myagents/
 myagents_files/
+.playwright-cli
+output

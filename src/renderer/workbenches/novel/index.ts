@@ -9,8 +9,8 @@ const novelWorkbenchDefinition = defineWorkbench(
     version: "0.3.0",
     api: {
       major: 1,
-      minMinor: 5,
-      maxMinor: 5,
+      minMinor: 7,
+      maxMinor: 7,
     },
     entry: {
       renderer: "builtin-novel",
@@ -18,20 +18,13 @@ const novelWorkbenchDefinition = defineWorkbench(
     },
     navigation: [
       { id: "overview", label: "总览", icon: "layout-dashboard", order: 10 },
-      { id: "manuscript", label: "正文", icon: "file-text", order: 20 },
-      { id: "outline", label: "叙事设计", icon: "route", order: 30 },
-      { id: "inspiration", label: "灵感", icon: "lightbulb", order: 31 },
-      { id: "characters", label: "人物库", icon: "users", order: 32 },
-      {
-        id: "creative-profile",
-        label: "创作方案",
-        icon: "layers-3",
-        order: 33,
-      },
-      { id: "items", label: "物品库", icon: "package-open", order: 35 },
-      { id: "factions", label: "势力组织", icon: "building-2", order: 37 },
-      { id: "powers", label: "力量体系", icon: "waypoints", order: 39 },
-      { id: "lore", label: "世界架构", icon: "network", order: 40 },
+      { id: "inspiration", label: "灵感", icon: "lightbulb", order: 20 },
+      { id: "manuscript", label: "正文", icon: "file-text", order: 30 },
+      { id: "characters", label: "人物库", icon: "users", order: 50 },
+      { id: "items", label: "物品库", icon: "package-open", order: 55 },
+      { id: "factions", label: "势力组织", icon: "building-2", order: 57 },
+      { id: "powers", label: "力量体系", icon: "waypoints", order: 59 },
+      { id: "lore", label: "世界架构", icon: "network", order: 60 },
       {
         id: "lore-config",
         label: "模板配置",
@@ -40,6 +33,7 @@ const novelWorkbenchDefinition = defineWorkbench(
       },
       { id: "knowledge", label: "知识库", icon: "database-search", order: 47 },
       { id: "map", label: "世界地图", icon: "map", order: 50 },
+      { id: "simulation", label: "世界推演", icon: "orbit", order: 55 },
       { id: "timeline", label: "时间线", icon: "clock-3", order: 60 },
       { id: "research", label: "资料", icon: "library", order: 70 },
       {
@@ -57,7 +51,12 @@ const novelWorkbenchDefinition = defineWorkbench(
         order: 10,
       },
     ],
-    capabilities: ["storage", "agent-session", "agent-dialog"],
+    capabilities: [
+      "storage",
+      "agent-session",
+      "agent-dialog",
+      "world-simulation",
+    ],
   },
   () => import("./renderer"),
   {

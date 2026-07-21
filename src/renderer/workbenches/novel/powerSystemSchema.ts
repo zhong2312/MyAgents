@@ -1,12 +1,14 @@
 import { z } from "zod";
 
 import {
+  powerCatalogSchema,
+  powerConnectionsSchema,
   powerSystemIndexSchema,
-  powerSystemInteractionsSchema,
   powerSystemMetaSchema,
   powerSystemRecordSchema,
+  type PowerCatalog,
+  type PowerConnections,
   type PowerSystemIndex,
-  type PowerSystemInteractions,
   type PowerSystemMeta,
   type PowerSystemRecord,
 } from "../../../shared/novel-power-system-schema";
@@ -90,12 +92,18 @@ export function parsePowerSystemRecord(
   return parseFile(path, powerSystemRecordSchema, content);
 }
 
-export function parsePowerSystemInteractions(
-  content: string,
-): PowerSystemInteractions {
+export function parsePowerConnections(content: string): PowerConnections {
   return parseFile(
-    "world/power-systems/interactions.json",
-    powerSystemInteractionsSchema,
+    "world/power-systems/connections.json",
+    powerConnectionsSchema,
+    content,
+  );
+}
+
+export function parsePowerCatalog(content: string): PowerCatalog {
+  return parseFile(
+    "world/power-systems/catalog.json",
+    powerCatalogSchema,
     content,
   );
 }

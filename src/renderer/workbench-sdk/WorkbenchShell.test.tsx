@@ -43,7 +43,7 @@ describe("WorkbenchShell", () => {
       />,
     );
     expect(await screen.findByTestId("workbench-module")).toHaveTextContent(
-      "overview:Novel:false",
+      "overview:Novel:true",
     );
     fireEvent.click(screen.getByRole("button", { name: "Documents" }));
     expect(onNavigate).toHaveBeenCalledWith("documents");

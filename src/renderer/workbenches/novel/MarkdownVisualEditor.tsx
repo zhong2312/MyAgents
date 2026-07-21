@@ -25,8 +25,11 @@ import {
   tablePlugin,
   toolbarPlugin,
 } from "@mdxeditor/editor";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Maximize2, Minimize2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+
+import { useCloseLayer } from "@/hooks/useCloseLayer";
 
 interface MarkdownVisualEditorProps {
   readonly pageId: string;
@@ -36,6 +39,10 @@ interface MarkdownVisualEditorProps {
   readonly onSave: () => void;
   readonly placeholder?: string;
   readonly fullWidth?: boolean;
+  readonly expandable?: boolean;
+  readonly disabled?: boolean;
+  readonly toolbarVariant?: "full" | "narrative";
+  readonly onExpand?: () => void;
 }
 
 const EDITOR_TRANSLATIONS: Readonly<Record<string, string>> = {
@@ -90,11 +97,32 @@ export default function MarkdownVisualEditor({
   onSave,
   placeholder = "开始记录这个设定……",
   fullWidth = false,
+  expandable = true,
+  disabled = false,
+  toolbarVariant = "full",
+  onExpand,
 }: MarkdownVisualEditorProps) {
   const editorRef = useRef<MDXEditorMethods>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const lastEditorValue = useRef(value);
   const [editorError, setEditorError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useCloseLayer(() => {
+    if (!expanded) return false;
+    setExpanded(false);
+    return true;
+  }, 260);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [expanded]);
+
   const plugins = useMemo(
     () => [
       headingsPlugin(),
@@ -125,24 +153,59 @@ export default function MarkdownVisualEditor({
       toolbarPlugin({
         toolbarClassName: "novel-markdown-toolbar",
         toolbarContents: () => (
-          <DiffSourceToggleWrapper options={["rich-text", "source"]}>
-            <UndoRedo />
-            <Separator />
-            <BlockTypeSelect />
-            <Separator />
-            <BoldItalicUnderlineToggles />
-            <Separator />
-            <CodeToggle />
-            <Separator />
-            <ListsToggle options={["bullet", "number", "check"]} />
-            <Separator />
-            <CreateLink />
-            <InsertTable />
-          </DiffSourceToggleWrapper>
+          <>
+            <DiffSourceToggleWrapper options={["rich-text", "source"]}>
+              {toolbarVariant === "narrative" ? (
+                <>
+                  <BlockTypeSelect />
+                  <Separator />
+                  <BoldItalicUnderlineToggles options={["Bold", "Italic"]} />
+                  <Separator />
+                  <ListsToggle options={["bullet", "number"]} />
+                  <Separator />
+                  <CreateLink />
+                </>
+              ) : (
+                <>
+                  <UndoRedo />
+                  <Separator />
+                  <BlockTypeSelect />
+                  <Separator />
+                  <BoldItalicUnderlineToggles />
+                  <Separator />
+                  <CodeToggle />
+                  <Separator />
+                  <ListsToggle options={["bullet", "number", "check"]} />
+                  <Separator />
+                  <CreateLink />
+                  <InsertTable />
+                </>
+              )}
+            </DiffSourceToggleWrapper>
+            {expandable && (
+              <button
+                className="novel-markdown-expand-button"
+                type="button"
+                title={expanded ? "恢复编辑器" : "放大编辑器"}
+                aria-label={expanded ? "恢复编辑器" : "放大编辑器"}
+                aria-pressed={expanded}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  if (onExpand) {
+                    onExpand();
+                    return;
+                  }
+                  setExpanded((current) => !current);
+                }}
+              >
+                {expanded ? <Minimize2 /> : <Maximize2 />}
+              </button>
+            )}
+          </>
         ),
       }),
     ],
-    [],
+    [expandable, expanded, onExpand, toolbarVariant],
   );
 
   useEffect(() => {
@@ -176,10 +239,10 @@ export default function MarkdownVisualEditor({
     return () => observer.disconnect();
   }, [label, pageId]);
 
-  return (
+  const editor = (
     <div
       ref={rootRef}
-      className="flex min-h-0 flex-1 flex-col"
+      className={`novel-markdown-shell ${expanded ? "is-expanded" : ""}`}
       onKeyDownCapture={(event) => {
         if (
           (event.ctrlKey || event.metaKey) &&
@@ -205,6 +268,7 @@ export default function MarkdownVisualEditor({
         markdown={value}
         plugins={plugins}
         trim={false}
+        readOnly={disabled}
         spellCheck
         placeholder={placeholder}
         className="novel-markdown-editor"
@@ -222,4 +286,11 @@ export default function MarkdownVisualEditor({
       />
     </div>
   );
+
+  return expanded
+    ? createPortal(
+        <div className="novel-markdown-fullscreen-overlay">{editor}</div>,
+        document.body,
+      )
+    : editor;
 }

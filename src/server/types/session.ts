@@ -6,6 +6,7 @@ import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { SystemMaintenanceSessionKind } from '../../shared/managedScheduledJob';
+import type { WorkbenchAgentToolsetRequest } from '../../shared/workbench-sdk';
 
 /**
  * Session statistics for tracking usage
@@ -44,6 +45,8 @@ export interface SessionMetadata {
     origin?: SessionOrigin;
     /** Optional project-local history grouping. Missing means project root. */
     historyGroupPath?: string[];
+    /** Host-owned business tools that must be rebound when this session is resumed. */
+    workbenchToolset?: WorkbenchAgentToolsetRequest;
     /** User-pinned to the 收藏 filter view in TaskCenterOverlay /
      *  SessionHistoryDropdown. Only `true` is persisted; absent/false has
      *  identical semantics, so the on-disk size cost is zero for the common

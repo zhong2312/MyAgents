@@ -96,7 +96,14 @@ function context(
         throw new Error("AI runs unavailable in renderer fixture");
       },
     },
+    simulationRuns: {
+      isAvailable: false,
+      request: async () => {
+        throw new Error("Simulation runs unavailable in renderer fixture");
+      },
+    },
     navigate,
+    registerNavigationGuard: () => () => undefined,
   };
 }
 
@@ -174,24 +181,6 @@ describe("NovelWorkbenchRenderer storage loop", () => {
     expect(screen.getByDisplayValue("尚未保存的本地草稿")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "载入磁盘版本" }));
     expect(screen.getByDisplayValue("外部编辑后的版本")).toBeInTheDocument();
-  });
-
-  it("edits and saves the Markdown outline through project storage", async () => {
-    const storage = createEmptyNovelStorage();
-    const navigate = vi.fn();
-    render(
-      <NovelWorkbenchRenderer
-        context={context(storage, "outline", navigate)}
-      />,
-    );
-
-    const editor = await screen.findByLabelText("故事大纲");
-    fireEvent.change(editor, { target: { value: "# 新大纲\n\n第一幕" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
-
-    await waitFor(() => {
-      expect(storage.getText("outline/outline.md")).toBe("# 新大纲\n\n第一幕");
-    });
   });
 
   it("renders and persists the setting library as a spatial Markdown workspace", async () => {

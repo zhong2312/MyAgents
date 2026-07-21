@@ -56,9 +56,10 @@ registerBuiltinMcpMeta({
   },
 });
 
-// --- Workbench-controlled builtins ---
-// Hidden from Settings. The session route establishes context first, then
-// agent-session injects this server only for that controlled conversation.
+// --- Workbench-controlled native tool adapters ---
+// Hidden from Settings. Product semantics and lifecycle are owned by the
+// Workbench Host; createSdkMcpServer is only the Claude SDK's in-process
+// custom-tool transport. Never expose this entry as an MCP service to users.
 registerBuiltinMcpMeta({
   id: "novel-workbench",
   load: async () => {

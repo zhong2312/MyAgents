@@ -1019,6 +1019,7 @@ export async function updateSessionMetadata(
         | 'source'
         | 'origin'
         | 'historyGroupPath'
+        | 'workbenchToolset'
         | 'favorite'
         | 'lastMessagePreview'
         | 'titleSource'

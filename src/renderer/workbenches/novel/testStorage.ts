@@ -211,6 +211,5 @@ export function createEmptyNovelStorage(): NovelMemoryStorage {
       null,
       2,
     )}\n`,
-    "outline/outline.md": "# 故事大纲\n",
   });
 }

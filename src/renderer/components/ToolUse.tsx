@@ -21,6 +21,7 @@ import WebFetchTool from './tools/WebFetchTool';
 import WebSearchTool from './tools/WebSearchTool';
 import WriteTool from './tools/WriteTool';
 import CronTaskCard from './scheduled-tasks/CronTaskCard';
+import { getToolExpandedLabel } from './tools/toolBadgeConfig';
 
 
 /** Parse cron tool result JSON, returning structured data for card rendering or null on failure */
@@ -79,10 +80,13 @@ export default function ToolUse({ tool: rawTool }: ToolUseProps) {
   // message flow in Message.tsx (standalone, always-visible in-flow cards);
   // PROCESS media (screenshots) is rendered by ProcessRow right after this
   // component inside the expanded body — deliberately behind the fold.
-  return renderToolBody(tool);
+  return renderToolBody(tool, t);
 }
 
-function renderToolBody(tool: ToolUseSimple): React.JSX.Element {
+function renderToolBody(
+  tool: ToolUseSimple,
+  t: ChatTranslator,
+): React.JSX.Element {
   switch (tool.name) {
     case 'Bash':
       return <BashTool tool={tool} />;
@@ -153,7 +157,7 @@ function renderToolBody(tool: ToolUseSimple): React.JSX.Element {
       // Fallback for unknown tools - show raw JSON
       const collapsedContent = (
         <div className="text-sm text-[var(--ink-muted)]">
-          <span className="font-medium">{tool.name}</span>
+          <span className="font-medium">{getToolExpandedLabel(tool, t)}</span>
         </div>
       );
 

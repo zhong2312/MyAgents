@@ -422,3 +422,55 @@ pub(super) fn find_server_script_inner<R: Runtime>(_app_handle: &AppHandle<R>) -
     ulog_error!("[sidecar] Server script not found in any location");
     None
 }
+
+/// Find the optional packaged MiroFish novel companion runtime.
+pub(super) fn find_mirofish_companion_executable<R: Runtime>(
+    app_handle: &AppHandle<R>,
+) -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("MYAGENTS_MIROFISH_COMPANION_PATH") {
+        let path = normalize_external_path(PathBuf::from(configured));
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    let executable_name = "mirofish-companion.exe";
+    #[cfg(not(target_os = "windows"))]
+    let executable_name = "mirofish-companion";
+
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        let candidate = normalize_external_path(
+            resource_dir
+                .join("mirofish-companion")
+                .join("runtime")
+                .join(executable_name),
+        );
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            let candidates = [
+                exe_dir
+                    .join("mirofish-companion")
+                    .join("runtime")
+                    .join(executable_name),
+                exe_dir
+                    .join("resources")
+                    .join("mirofish-companion")
+                    .join("runtime")
+                    .join(executable_name),
+            ];
+            for candidate in candidates {
+                let candidate = normalize_external_path(candidate);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}

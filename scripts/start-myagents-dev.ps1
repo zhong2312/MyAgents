@@ -154,6 +154,11 @@ function Initialize-TestProfileEnv {
     $env:APPDATA = $roaming
     $env:LOCALAPPDATA = $local
     $env:MYAGENTS_TEST_ROOT = $script:TestRoot
+    $env:MYAGENTS_BROWSER_DEV_STORAGE = '1'
+    $miroFishSourceRoot = Join-Path $script:RepoRoot 'src-tauri\resources\mirofish-companion\source'
+    if (Test-Path -LiteralPath (Join-Path $miroFishSourceRoot 'backend\novel_companion.py') -PathType Leaf) {
+        $env:MIROFISH_SOURCE_ROOT = $miroFishSourceRoot
+    }
 
     # Windows treats environment-variable names case-insensitively, but the
     # current process can still inherit both `Path` and `PATH`. PowerShell 5.1

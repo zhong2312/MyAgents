@@ -103,6 +103,8 @@ import {
   PluginStoreError,
 } from './plugins/store';
 import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
+import { handleWorkbenchSimulationRoute } from './routes/workbench-simulation';
+import { handleWorkbenchDevStorageRoute } from './routes/workbench-dev-storage';
 
 type SpaceSkillExportPackage = {
   tempId: string;
@@ -4095,6 +4097,13 @@ async function main() {
           if (typeof payload.workspacePath !== 'string' || !payload.workspacePath.trim()) {
             return jsonResponse({ success: false, error: 'workspacePath is required.' }, 400);
           }
+          const workspacePath = payload.workspacePath.trim();
+          if (!findAgentByWorkspacePath(workspacePath)) {
+            return jsonResponse({
+              success: false,
+              error: 'workspacePath is not a registered MyAgents project.',
+            }, 403);
+          }
           if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) {
             return jsonResponse({ success: false, error: 'prompt is required.' }, 400);
           }
@@ -4127,6 +4136,18 @@ async function main() {
               error: `Provider "${providerId}" is unavailable.`,
             }, 400);
           }
+          const providerModels = Array.isArray(provider.models) ? provider.models : [];
+          if (!providerModels.some((candidate: unknown) => (
+            candidate !== null
+            && typeof candidate === 'object'
+            && 'model' in candidate
+            && candidate.model === model
+          ))) {
+            return jsonResponse({
+              success: false,
+              error: `Model "${model}" is unavailable for provider "${providerId}".`,
+            }, 400);
+          }
           const providerEnv = resolveProviderEnv(providerId) as ProviderEnv | undefined;
           if (provider.type !== 'subscription' && !providerEnv) {
             return jsonResponse({
@@ -4141,7 +4162,7 @@ async function main() {
           const output = await generateOneShotText({
             prompt: payload.prompt,
             systemPrompt,
-            workspacePath: payload.workspacePath,
+            workspacePath,
             model,
             providerEnv,
           });
@@ -4751,6 +4772,19 @@ async function main() {
 
       const qrCodeAssetResponse = await handleQrCodeAssetRoute(pathname, request);
       if (qrCodeAssetResponse) return qrCodeAssetResponse;
+
+      const workbenchSimulationResponse = await handleWorkbenchSimulationRoute(
+        pathname,
+        request,
+      );
+      if (workbenchSimulationResponse) return workbenchSimulationResponse;
+
+      const workbenchDevStorageResponse = await handleWorkbenchDevStorageRoute(
+        pathname,
+        request,
+        currentAgentDir,
+      );
+      if (workbenchDevStorageResponse) return workbenchDevStorageResponse;
 
       // ============= END PROVIDER VERIFICATION API =============
 
