@@ -5872,16 +5872,21 @@ export default function App() {
       if (tabsRef.current.some((tab) => tab.id === surface.sourceTabId)) {
         setActiveTabId(surface.sourceTabId);
       }
+      const mode = surface.toolset?.context?.mode;
+      const action =
+        mode === "items"
+          ? "open-item-proposal-review"
+          : mode === "characters"
+            ? "open-character-proposal-review"
+            : mode === "world" || mode === "template" || mode === "assist"
+              ? "open-proposal-review"
+              : null;
+      if (!action) return;
       window.setTimeout(() => {
         dispatchWorkbenchHostAction({
           workbenchId: surface.workbenchId,
           workspacePath: surface.workspacePath,
-          action:
-            surface.toolset?.context?.mode === "items"
-              ? "open-item-proposal-review"
-              : surface.toolset?.context?.mode === "characters"
-                ? "open-character-proposal-review"
-                : "open-proposal-review",
+          action,
         });
       }, 0);
     },

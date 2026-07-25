@@ -1757,13 +1757,6 @@ function restoreLegacyNovelWorkbenchContext(
       ],
     ],
     [
-      'powers',
-      [
-        'mcp__novel-workbench__novel_power_',
-        '小说工作台力量体系 AI 设计任务',
-      ],
-    ],
-    [
       'factions',
       ['小说工作台势力组织 AI 设计任务', '小说工作台势力批量设计任务'],
     ],
@@ -3639,7 +3632,8 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
     console.log(`[agent] Added im-bridge-tools MCP server for plugin ${bridgeToolSurface.pluginId}`);
   }
 
-  if (getNovelWorkbenchContext()) {
+  const novelWorkbenchContext = getNovelWorkbenchContext();
+  if (novelWorkbenchContext) {
     const entry = await getBuiltinMcpInstance(NOVEL_WORKBENCH_SDK_ADAPTER_ID);
     if (!entry) {
       throw new Error('Novel workbench native tool adapter is not registered');

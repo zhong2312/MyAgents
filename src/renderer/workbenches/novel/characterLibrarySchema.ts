@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  createLegacyCharacterArcStageId,
   characterGroupDefinitionSchema,
   characterRecordSchema,
   characterSoulDefinitionSchema,
@@ -11,7 +12,9 @@ import { normalizeWorkbenchStoragePath } from "@/workbench-sdk";
 import { CHARACTER_LIBRARY_SCHEMA_VERSION } from "./characterLibraryDefaults";
 
 export {
+  createLegacyCharacterArcStageId,
   characterAppearanceSchema,
+  characterArcStageSchema,
   characterGroupDefinitionSchema,
   characterInventoryItemSchema,
   characterRelationSchema,
@@ -22,6 +25,7 @@ export {
 } from "../../../shared/novel-character-library-schema";
 export type {
   CharacterAppearance,
+  CharacterArcStage,
   CharacterGroupDefinition,
   CharacterInventoryItem,
   CharacterRelation,
@@ -115,10 +119,11 @@ function parseFile<T>(
   filePath: string,
   schema: z.ZodType<T>,
   content: string,
+  normalize: (value: unknown) => unknown = (value) => value,
 ): T {
   let value: unknown;
   try {
-    value = JSON.parse(content);
+    value = normalize(JSON.parse(content));
   } catch (error) {
     throw new CharacterLibraryFormatError(
       filePath,
@@ -135,6 +140,46 @@ function parseFile<T>(
     );
   }
   return result.data;
+}
+
+function normalizeCharacterArcStageIds(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const characters = (value as { characters?: unknown }).characters;
+  if (!Array.isArray(characters)) return value;
+  characters.forEach((candidate) => {
+    if (!candidate || typeof candidate !== "object") return;
+    const character = candidate as {
+      id?: unknown;
+      arcStages?: unknown;
+    };
+    if (typeof character.id !== "string" || !Array.isArray(character.arcStages))
+      return;
+    const usedIds = new Set(
+      character.arcStages.flatMap((stage) => {
+        if (!stage || typeof stage !== "object") return [];
+        const id = (stage as { id?: unknown }).id;
+        return typeof id === "string" && id ? [id] : [];
+      }),
+    );
+    character.arcStages.forEach((stage, index) => {
+      if (!stage || typeof stage !== "object") return;
+      const record = stage as { id?: unknown };
+      if (typeof record.id === "string" && record.id) return;
+      const baseId = createLegacyCharacterArcStageId(
+        character.id as string,
+        index,
+      );
+      let nextId = baseId;
+      let suffix = 2;
+      while (usedIds.has(nextId)) {
+        nextId = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+      record.id = nextId;
+      usedIds.add(nextId);
+    });
+  });
+  return value;
 }
 
 export function parseCharacterLibraryMeta(
@@ -154,6 +199,7 @@ export function parseCharacterLibraryIndex(
     "characters/index.json",
     characterLibraryIndexSchema,
     content,
+    normalizeCharacterArcStageIds,
   );
 }
 

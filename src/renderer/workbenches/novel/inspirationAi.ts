@@ -107,7 +107,7 @@ export function createInspirationAiAgentRequest(
 
 你正在与作者共同处理“${context.projectTitle}”中的灵感“${context.focusLabel}”。
 
-除非作者明确要求修改文件，否则只讨论、追问和形成可执行建议，不得调用写入、编辑或删除类工具。
+这是只读共创会话：无论作者如何表述，都只能讨论、追问和形成可执行建议。不得调用写入、编辑、删除、提案提交或其它会修改项目数据的工具；需要落库时，明确请作者在相应工作台确认并执行。
 
 当前上下文：
 ${clipContext(context.facts)}${seed}`,

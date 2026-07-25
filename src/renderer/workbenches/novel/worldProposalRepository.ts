@@ -734,7 +734,7 @@ export function createNovelWorldProposalRepository(
           !proposalId ||
           proposalId === "." ||
           proposalId === ".." ||
-          /[\\/\u0000-\u001f\u007f]/.test(proposalId)
+          /[\\/]/.test(proposalId) || Array.from(proposalId).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
         ) {
           throw new Error(`提案 ID 非法：${proposalId}`);
         }

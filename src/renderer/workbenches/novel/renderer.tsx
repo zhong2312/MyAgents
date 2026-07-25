@@ -1,3 +1,5 @@
+import "./NovelControls.css";
+
 import {
   AlertTriangle,
   ArrowRight,
@@ -49,11 +51,11 @@ import SettingLibrary from "./SettingLibrary";
 import ItemLibrary from "./ItemLibrary";
 import FactionLibrary, { type FactionAiTarget } from "./FactionLibrary";
 import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
-import PowerSystemLibrary from "./PowerSystemLibrary";
-import PowerSystemProposalReview from "./PowerSystemProposalReview";
-import { buildPowerSystemProposalAgentInstructions } from "./powerSystemProposalSchema";
+import CultivationEcologyWorkbench from "./CultivationEcologyWorkbench";
 import KnowledgeBase from "./KnowledgeBase";
 import TimelineLibrary from "./TimelineLibrary";
+import NarrativeEngineering from "./NarrativeEngineering";
+import type { NarrativeAiAgentRequest } from "./narrativeAi";
 import InspirationStudio from "./InspirationStudio";
 import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
@@ -831,7 +833,6 @@ export default function NovelWorkbenchRenderer({
   const [isItemAgentLaunching, setIsItemAgentLaunching] = useState(false);
   const [isCharacterAgentLaunching, setIsCharacterAgentLaunching] =
     useState(false);
-  const [isPowerAgentLaunching, setIsPowerAgentLaunching] = useState(false);
   const [factionAgentLaunchMode, setFactionAgentLaunchMode] = useState<
     "single" | "batch" | null
   >(null);
@@ -840,9 +841,6 @@ export default function NovelWorkbenchRenderer({
     useState(false);
   const [isCharacterProposalReviewOpen, setIsCharacterProposalReviewOpen] =
     useState(false);
-  const [isPowerProposalReviewOpen, setIsPowerProposalReviewOpen] =
-    useState(false);
-  const [powerLibraryRevision, setPowerLibraryRevision] = useState(0);
   const [knowledgeSourceFocus, setKnowledgeSourceFocus] =
     useState<KnowledgeSourceRef | null>(null);
   const [factionWorldNodeFocusId, setFactionWorldNodeFocusId] = useState<
@@ -1108,10 +1106,10 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
 1. 首先调用 novel_characters_get_context，读取已有角色、种族、分组、灵魂，以及当前范围的必要信息。
 2. 通过简洁对话确认叙事功能、避免重复的约束和本次生成数量；一次只追问影响结果的关键问题。若作者已给出充分要求，可直接生成候选。
 3. 只生成与“${focus}”相关的候选。允许新增或更新，但禁止删除既有角色、种族、分组或灵魂。
-4. 新角色必须提供完整人物卡，引用的 raceId、soulId、groupIds 和关系 targetId 必须来自已存在记录或同一提案中新增的候选。物品栏中关联物品库的 itemId 必须来自已有物品；不关联的物品必须将 itemId 设为 null。每件物品都必须包含 id、name、quantity、unit、description。新种族、分组必须包含 id、name、description；新角色灵魂必须包含完整字段，并明确设定 builtIn 为 false。
+4. 每次只处理少量候选。新角色、种族、分组和灵魂可先提交本次确认的字段，服务端会补齐可编辑的基础骨架；如需补充同一候选，使用同一个 candidateId 再次写入草稿。提交前仍必须补齐关系和物品引用：raceId、soulId、groupIds、关系 targetId 只能引用已有记录或同一草稿候选；物品栏关联物品库时 itemId 必须存在，不关联时设为 null。
 5. 角色灵魂只能提供表达、心智模型和决策倾向；不得覆盖人物硬设定、当前剧情、角色认知和因果。发现冲突时，人物设定优先。
-6. 完成后必须先调用 novel_characters_validate_proposal；校验通过才能调用 novel_characters_submit_proposal。
-7. 提交成功后告知作者回到人物库审阅提案。不得调用 Bash、Write、Edit 等工具写入正式角色文件。`;
+6. 作者确认后先调用 novel_characters_create_draft；再用 novel_characters_upsert_draft_operations 分批写入候选。工具中断或会话恢复时先调用 novel_characters_get_draft，继续同一草稿。
+7. 完成后调用 novel_characters_validate_draft；只能使用返回的 validationToken 调用 novel_characters_submit_draft。随后调用 novel_characters_get_proposal_status，只有 exists=true 才能告知作者已提交。不得调用 Bash、Write、Edit 等工具写入正式角色文件。`;
       const targetKey = `${target.scope}:${target.targetCharacterId ?? "library"}`;
       const modelSelection = await resolveSceneModelSelection(
         sceneIds[target.scope],
@@ -1139,61 +1137,6 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
       });
     } finally {
       setIsCharacterAgentLaunching(false);
-    }
-  };
-
-  const launchPowerSystemAgent = async () => {
-    if (isPowerAgentLaunching) return;
-    if (!context.agentSessions.isAvailable) {
-      setOperationError("MyAgents Agent Session 当前不可用");
-      return;
-    }
-    setOperationError(null);
-    setIsPowerAgentLaunching(true);
-    try {
-      const initialMessage = `## 小说工作台力量体系 AI 设计任务
-
-你正在协助作者创建或完善小说力量体系。力量体系是题材中立的机制模型，不是固定的修炼等级表。
-
-项目：${project.metadata.title}
-创作题材：${project.metadata.genres.join("、") || "未设置"}
-力量体系目录：world/power-systems/
-
-执行原则：
-1. 首先调用 novel_power_get_context，读取体系类型、体系索引、共享力量目录、生态连接和已有体系摘要。
-2. 先确认本次是新建体系还是完善已有体系，并通过简洁对话确认叙事功能、解释程度、成长结构、代价、比较方式和例外边界；一次只追问影响结构的关键问题。
-3. 严格区分：状态定义获得了什么，方法定义怎样发展，理论解释为什么有效，能力定义能产生什么效果。本源、介质、法则、资源、理论、方法和能力放入共享 catalog.json，再通过 connections.json 应用到体系、状态或转换。
-4. 共用本源与运行规则的流派、能力或装备保留在同一体系；拥有独立本源与运行规则的力量拆成不同体系，再通过 system-interaction 连接记录兼容、转换、压制、放大、干扰、排斥或融合。
-5. 质量描述同一状态下做得多好，边界描述最多能做到哪里。不得为了填满字段制造无叙事作用的设定，也不得生成永久总战力。
-6. 理论与认知模型必须允许顺序路径、图网络、模块算法、空间场、动态系统、演化规则、概率、身体和情绪等不同范式，不得把所有题材改写为修真境界。
-7. 作者确认方案前只能讨论和读取，不能创建草稿或提交提案。确认后使用领域工具创建草稿并逐步补充，不得手写完整文件变更。
-
-功法、训练、冥想、改造与仪式都属于发展方法；神通、法术、异能与科技效果都属于能力；大道法则只是底层法则的一种题材表达；阵法应按实际语义建模为方法、能力或外部装置，而不是所有体系必备的固定模块。
-${buildPowerSystemProposalAgentInstructions()}`;
-      const modelSelection = await resolveSceneModelSelection("powers.design");
-      await context.agentSessions.open({
-        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
-        title: `力量体系设计 · ${project.metadata.title}`,
-        promptId: "novel.powers.design",
-        initialMessage,
-        presentation: "dialog",
-        conversationKey: "novel.powers.design",
-        forceNew: true,
-        historyGroupPath: ["力量体系", "体系设计"],
-        toolset: {
-          id: "novel-world",
-          context: {
-            mode: "powers",
-            promptId: "novel.powers.design",
-            promptVersion: "2.0.0",
-          },
-        },
-        ...(modelSelection ? { modelSelection } : {}),
-      });
-    } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setIsPowerAgentLaunching(false);
     }
   };
 
@@ -1348,8 +1291,8 @@ ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}
 3. 分类确认后，再调用 novel_items_get_context 并传入 categoryId，严格按照返回的继承字段生成候选。
 4. 候选名称不得与已有物品或同批候选重复；字段只能使用返回的 fieldId，并遵守类型、选项和必填约束。
 5. 每件候选应包含名称、别名、标签、一句话摘要、适用字段和完整 Markdown 描述。
-6. 作者确认生成方向后，必须先调用 novel_items_validate_batch；校验通过后才能调用 novel_items_submit_batch。
-7. 提交成功后说明候选数量，并提示作者回到物品库点击“审阅批量物品提案”。不得调用 Bash、Write、Edit 等工具写入正式文件。`;
+6. 作者确认生成方向后，先调用 novel_items_create_draft，再用 novel_items_upsert_draft_items 分批写入候选。工具中断或会话恢复时必须先调用 novel_items_get_draft，继续同一草稿。
+7. 完成后调用 novel_items_validate_draft；只能使用返回的 validationToken 调用 novel_items_submit_draft。随后调用 novel_items_get_proposal_status，只有 exists=true 才能说明候选已经提交，并提示作者回到物品库点击“审阅批量物品提案”。不得调用 Bash、Write、Edit 等工具写入正式文件。`;
       const modelSelection = await resolveSceneModelSelection("items.batch");
       await context.agentSessions.open({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
@@ -1451,8 +1394,9 @@ ${JSON.stringify(injectedContext, null, 2)}
 执行规则：
 1. 只处理当前目标以及保证 settings.json 引用闭合所必需的关联文件，不扩展无关设定。
 2. 现有文件使用 modify；虚拟设定页尚未落盘时，同时创建页面、词条文件并修改 settings.json 登记引用。
-3. 生成完成后必须先调用 novel_world_validate_changes，再调用 novel_world_submit_proposal。
-4. 不得直接修改正式文件。提交成功后简要说明结果，并提示作者在小说工作台审阅提案。`;
+3. 先调用 novel_world_create_draft，再用 novel_world_upsert_draft_changes 写入候选；会话恢复或失败后先调用 novel_world_get_draft。
+4. 生成完成后必须先调用 novel_world_validate_draft，再使用 validationToken 调用 novel_world_submit_draft，最后调用 novel_world_get_proposal_status 确认 exists=true。
+5. 不得直接修改正式文件。提交成功后简要说明结果，并提示作者在小说工作台审阅提案。`;
       const runId = `${Date.now().toString(36)}-${Math.random()
         .toString(36)
         .slice(2, 8)}`;
@@ -1517,29 +1461,6 @@ ${JSON.stringify(injectedContext, null, 2)}
       </>
     ) : undefined;
 
-  const powerToolbarActions =
-    context.route === "powers" ? (
-      <>
-        <button
-          type="button"
-          aria-label="审阅力量体系提案"
-          title="审阅 Agent 提交的力量体系变更"
-          onClick={() => setIsPowerProposalReviewOpen(true)}
-          className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium transition-colors hover:bg-[var(--hover-bg)]"
-        >
-          <GitCompareArrows className="h-4 w-4 text-[var(--accent-cool)]" />
-          <span className="max-lg:hidden">审阅提案</span>
-        </button>
-        <WorldAgentButton
-          disabled={!context.agentSessions.isAvailable}
-          isLaunching={isPowerAgentLaunching}
-          label="AI 设计体系"
-          title="打开力量体系设计 Agent"
-          onClick={() => void launchPowerSystemAgent()}
-        />
-      </>
-    ) : undefined;
-
   let content: ReactNode;
   switch (context.route) {
     case "manuscript":
@@ -1582,8 +1503,9 @@ ${JSON.stringify(injectedContext, null, 2)}
           onOpenAiAgent={
             context.agentSessions.isAvailable
               ? async (request) => {
-                  const modelSelection =
-                    await resolveSceneModelSelection("inspiration.coauthor");
+                  const modelSelection = await resolveSceneModelSelection(
+                    "inspiration.coauthor",
+                  );
                   await context.agentSessions.open({
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
@@ -1593,6 +1515,14 @@ ${JSON.stringify(injectedContext, null, 2)}
                     conversationKey: request.conversationKey,
                     historyGroupPath: request.historyGroupPath,
                     forceNew: true,
+                    toolset: {
+                      id: "novel-world",
+                      context: {
+                        mode: "inspiration",
+                        promptId: "novel.inspiration.coauthor",
+                        promptVersion: "1.0.0",
+                      },
+                    },
                     ...(modelSelection ? { modelSelection } : {}),
                   });
                 }
@@ -1603,6 +1533,44 @@ ${JSON.stringify(injectedContext, null, 2)}
       );
       break;
     }
+    case "narrative":
+      content = (
+        <NarrativeEngineering
+          storage={context.storage}
+          projectTitle={project.metadata.title}
+          chapters={project.chapters}
+          isActive={context.isActive}
+          onOpenAiAgent={
+            context.agentSessions.isAvailable
+              ? async (request: NarrativeAiAgentRequest) => {
+                  const modelSelection =
+                    await resolveSceneModelSelection("narrative.assist");
+                  await context.agentSessions.open({
+                    version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+                    title: request.title,
+                    promptId: "novel.narrative.assist",
+                    initialMessage: request.initialMessage,
+                    presentation: "dock",
+                    conversationKey: request.conversationKey,
+                    historyGroupPath: request.historyGroupPath,
+                    forceNew: true,
+                    toolset: {
+                      id: "novel-world",
+                      context: {
+                        mode: "narrative",
+                        promptId: "novel.narrative.assist",
+                        promptVersion: "1.0.0",
+                      },
+                    },
+                    ...(modelSelection ? { modelSelection } : {}),
+                  });
+                }
+              : undefined
+          }
+          registerNavigationGuard={context.registerNavigationGuard}
+        />
+      );
+      break;
     case "lore":
       content = (
         <div className="h-full min-h-0">
@@ -1700,23 +1668,10 @@ ${JSON.stringify(injectedContext, null, 2)}
     case "powers":
       content = (
         <div className="h-full min-h-0">
-          <PowerSystemLibrary
-            key={powerLibraryRevision}
+          <CultivationEcologyWorkbench
             storage={context.storage}
             projectTitle={project.metadata.title}
-            isActive={context.isActive}
-            headerActions={powerToolbarActions}
           />
-          {isPowerProposalReviewOpen && (
-            <PowerSystemProposalReview
-              storage={context.storage}
-              projectTitle={project.metadata.title}
-              onClose={() => {
-                setIsPowerProposalReviewOpen(false);
-                setPowerLibraryRevision((current) => current + 1);
-              }}
-            />
-          )}
         </div>
       );
       break;
@@ -1817,6 +1772,7 @@ ${JSON.stringify(injectedContext, null, 2)}
     "map",
     "simulation",
     "timeline",
+    "narrative",
     "inspiration",
     "ai-prompts",
     "settings",

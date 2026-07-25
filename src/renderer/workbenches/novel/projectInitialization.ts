@@ -10,8 +10,9 @@ import { createItemLibraryInitializationFiles } from "./itemLibraryRepository";
 import { createCharacterLibraryInitializationFiles } from "./characterLibraryRepository";
 import { createLocationLibraryInitializationFiles } from "./locationLibraryRepository";
 import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepository";
-import { createPowerSystemInitializationFiles } from "./powerSystemRepository";
+import { createCultivationEcologyInitializationFiles } from "./cultivationEcologyRepository";
 import { createInspirationInitializationFile } from "./inspirationRepository";
+import { createNarrativeEngineeringInitializationFiles } from "./narrativeEngineeringRepository";
 import { createWorldSimulationInitializationFiles } from "./worldSimulationRepository";
 import {
   createEmptyFactionLibrary,
@@ -28,6 +29,7 @@ export interface NovelProjectInitializationInput {
 
 const DIRECTORIES = [
   "manuscript/chapters",
+  "narrative",
   "inspiration",
   "settings",
   "characters",
@@ -38,9 +40,7 @@ const DIRECTORIES = [
   "world/items/records",
   "world/items/pages",
   "world/items/proposals",
-  "world/power-systems/records",
-  "world/power-systems/pages",
-  "world/power-systems/proposals",
+  "world/cultivation-ecology",
   "world/codex",
   "world/setting-library/pages",
   "world/setting-library/entries",
@@ -113,6 +113,7 @@ Thumbs.db
       path: "manuscript/index.json",
       content: json({ schemaVersion: 1, nextChapterNumber: 1, chapters: [] }),
     },
+    ...createNarrativeEngineeringInitializationFiles(input.createdAt),
     ...createCharacterLibraryInitializationFiles(),
     {
       path: "world/worldview.md",
@@ -127,18 +128,7 @@ Thumbs.db
 ## 历史与事件
 `,
     },
-    {
-      path: "world/power-system.md",
-      content: `# 力量体系
-
-## 基本规则
-
-## 等级与代价
-
-## 边界与例外
-`,
-    },
-    ...createPowerSystemInitializationFiles(),
+    ...createCultivationEcologyInitializationFiles(),
     { path: "world/rules.json", content: createIndex("rules") },
     ...createLocationLibraryInitializationFiles(),
     {

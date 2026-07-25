@@ -181,9 +181,9 @@ export function buildWorldProposalAgentInstructions(): string {
 
 1. 使用 \`novel_world_get_context\` 读取当前世界架构；不要猜测现有层级、模板或路径。
 2. 通过对话逐步确认作者选择。未获得作者明确确认前，不得提交提案。
-3. 生成完整变更后，先调用 \`novel_world_validate_changes\`。新增任何页面或词条文件时，必须在同一提案的 \`settings.json\` 变更中登记对应的 \`pagePath\` 与 \`entriesPath\`；新增或修改地点时，使用 \`world/locations/index.json\`，其 schemaVersion 固定为 1，且每条地点必须包含 id、nodeId、parentLocationId、name、aliases、type、status、summary、appearanceNote、description、order。地点名称允许重复；地点必须归属现有或同一提案中的空间节点，上级地点只能在同一空间节点内且不得形成循环。校验失败时修正变更并重新校验。
-4. 仅在校验通过后调用 \`novel_world_submit_proposal\`。该工具只创建待审批快照，不修改正式设定。
-5. 提交成功后说明变更数量，并请作者在小说工作台点击“审阅提案”逐项审批。
+3. 作者确认后先调用 \`novel_world_create_draft\`，再用 \`novel_world_upsert_draft_changes\` 分批写入候选。工具中断、会话恢复或校验失败时，先调用 \`novel_world_get_draft\`，不得重新生成另一份提案。新增任何页面或词条文件时，必须在同一草稿的 \`settings.json\` 变更中登记对应的 \`pagePath\` 与 \`entriesPath\`；新增或修改地点时，使用 \`world/locations/index.json\`，其 schemaVersion 固定为 1，且每条地点必须包含 id、nodeId、parentLocationId、name、aliases、type、status、summary、appearanceNote、description、order。地点名称允许重复；地点必须归属现有或同一草稿中的空间节点，上级地点只能在同一空间节点内且不得形成循环。
+4. 完成后调用 \`novel_world_validate_draft\`。只使用这次返回的 \`validationToken\` 调用 \`novel_world_submit_draft\`；草稿变化后必须重新校验。该工具只创建待审批快照，不修改正式设定。
+5. 最后调用 \`novel_world_get_proposal_status\`。仅当 \`exists=true\` 时说明提交成功，并请作者在小说工作台点击“审阅提案”逐项审批。
 
 你没有应用提案的工具。只有作者在审批界面采纳变更后，小说工作台才能写入正式存储。`;
 }

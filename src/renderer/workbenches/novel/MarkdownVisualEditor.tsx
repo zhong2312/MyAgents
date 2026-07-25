@@ -26,9 +26,10 @@ import {
   toolbarPlugin,
 } from "@mdxeditor/editor";
 import { AlertTriangle, Maximize2, Minimize2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 
 interface MarkdownVisualEditorProps {
@@ -43,6 +44,33 @@ interface MarkdownVisualEditorProps {
   readonly disabled?: boolean;
   readonly toolbarVariant?: "full" | "narrative";
   readonly onExpand?: () => void;
+  readonly className?: string;
+}
+
+type MarkdownLineSpacing = "compact" | "standard" | "relaxed";
+
+const MARKDOWN_LINE_SPACING_STORAGE_KEY =
+  "myagents.novel.markdown-line-spacing";
+
+const MARKDOWN_LINE_SPACING_OPTIONS: SelectOption[] = [
+  { value: "compact", label: "紧凑" },
+  { value: "standard", label: "标准" },
+  { value: "relaxed", label: "宽松" },
+];
+
+function readMarkdownLineSpacing(): MarkdownLineSpacing {
+  if (typeof window === "undefined") return "compact";
+  try {
+    const stored = window.localStorage.getItem(
+      MARKDOWN_LINE_SPACING_STORAGE_KEY,
+    );
+    if (stored === "compact" || stored === "standard" || stored === "relaxed") {
+      return stored;
+    }
+  } catch {
+    // Local storage may be unavailable in restricted web views.
+  }
+  return "compact";
 }
 
 const EDITOR_TRANSLATIONS: Readonly<Record<string, string>> = {
@@ -97,16 +125,78 @@ export default function MarkdownVisualEditor({
   onSave,
   placeholder = "开始记录这个设定……",
   fullWidth = false,
-  expandable = true,
+  expandable = false,
   disabled = false,
   toolbarVariant = "full",
   onExpand,
+  className = "",
 }: MarkdownVisualEditorProps) {
   const editorRef = useRef<MDXEditorMethods>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const lastEditorValue = useRef(value);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [hasEditorFocus, setHasEditorFocus] = useState(false);
+  const [lineSpacing, setLineSpacing] = useState<MarkdownLineSpacing>(
+    readMarkdownLineSpacing,
+  );
+
+  const renderLineSpacingControl = useCallback(
+    () => (
+      <div className="novel-markdown-line-spacing-control">
+        <CustomSelect
+          ariaLabel="正文行距"
+          className="novel-markdown-line-spacing-select"
+          options={MARKDOWN_LINE_SPACING_OPTIONS}
+          size="toolbar"
+          value={lineSpacing}
+          onChange={(nextValue) =>
+            setLineSpacing(nextValue as MarkdownLineSpacing)
+          }
+        />
+      </div>
+    ),
+    [lineSpacing],
+  );
+
+  const renderFormattingTools = useCallback(() => {
+    if (toolbarVariant === "narrative") {
+      return (
+        <>
+          <div className="novel-markdown-block-type-control">
+            <BlockTypeSelect />
+          </div>
+          {renderLineSpacingControl()}
+          <Separator />
+          <BoldItalicUnderlineToggles options={["Bold", "Italic"]} />
+          <Separator />
+          <ListsToggle options={["bullet", "number"]} />
+          <Separator />
+          <CreateLink />
+        </>
+      );
+    }
+
+    return (
+      <>
+        <UndoRedo />
+        <Separator />
+        <div className="novel-markdown-block-type-control">
+          <BlockTypeSelect />
+        </div>
+        {renderLineSpacingControl()}
+        <Separator />
+        <BoldItalicUnderlineToggles />
+        <Separator />
+        <CodeToggle />
+        <Separator />
+        <ListsToggle options={["bullet", "number", "check"]} />
+        <Separator />
+        <CreateLink />
+        <InsertTable />
+      </>
+    );
+  }, [renderLineSpacingControl, toolbarVariant]);
 
   useCloseLayer(() => {
     if (!expanded) return false;
@@ -122,6 +212,17 @@ export default function MarkdownVisualEditor({
       document.body.style.overflow = previousOverflow;
     };
   }, [expanded]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        MARKDOWN_LINE_SPACING_STORAGE_KEY,
+        lineSpacing,
+      );
+    } catch {
+      // Local storage may be unavailable in restricted web views.
+    }
+  }, [lineSpacing]);
 
   const plugins = useMemo(
     () => [
@@ -154,33 +255,21 @@ export default function MarkdownVisualEditor({
         toolbarClassName: "novel-markdown-toolbar",
         toolbarContents: () => (
           <>
-            <DiffSourceToggleWrapper options={["rich-text", "source"]}>
-              {toolbarVariant === "narrative" ? (
-                <>
-                  <BlockTypeSelect />
-                  <Separator />
-                  <BoldItalicUnderlineToggles options={["Bold", "Italic"]} />
-                  <Separator />
-                  <ListsToggle options={["bullet", "number"]} />
-                  <Separator />
-                  <CreateLink />
-                </>
-              ) : (
-                <>
-                  <UndoRedo />
-                  <Separator />
-                  <BlockTypeSelect />
-                  <Separator />
-                  <BoldItalicUnderlineToggles />
-                  <Separator />
-                  <CodeToggle />
-                  <Separator />
-                  <ListsToggle options={["bullet", "number", "check"]} />
-                  <Separator />
-                  <CreateLink />
-                  <InsertTable />
-                </>
-              )}
+            <DiffSourceToggleWrapper
+              options={["rich-text", "source"]}
+              SourceToolbar={
+                <div
+                  className="novel-markdown-source-toolbar"
+                  aria-label="Markdown 源码工具栏"
+                >
+                  <span className="novel-markdown-source-label">源码</span>
+                  <div className="novel-markdown-source-tools">
+                    {renderFormattingTools()}
+                  </div>
+                </div>
+              }
+            >
+              {renderFormattingTools()}
             </DiffSourceToggleWrapper>
             {expandable && (
               <button
@@ -205,7 +294,7 @@ export default function MarkdownVisualEditor({
         ),
       }),
     ],
-    [expandable, expanded, onExpand, toolbarVariant],
+    [expandable, expanded, onExpand, renderFormattingTools],
   );
 
   useEffect(() => {
@@ -242,7 +331,29 @@ export default function MarkdownVisualEditor({
   const editor = (
     <div
       ref={rootRef}
-      className={`novel-markdown-shell ${expanded ? "is-expanded" : ""}`}
+      className={`novel-markdown-shell ${expanded ? "is-expanded" : ""} ${className}`}
+      data-line-spacing={lineSpacing}
+      onPointerDownCapture={(event) => {
+        if (disabled) return;
+        const target = event.target as HTMLElement;
+        if (
+          target.closest("button, input, select, textarea, a, [role='button']")
+        ) {
+          return;
+        }
+        requestAnimationFrame(() => {
+          rootRef.current
+            ?.querySelector<HTMLElement>(
+              '.novel-markdown-content[contenteditable="true"]',
+            )
+            ?.focus();
+        });
+      }}
+      onFocusCapture={() => setHasEditorFocus(true)}
+      onBlurCapture={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget)) return;
+        setHasEditorFocus(false);
+      }}
       onKeyDownCapture={(event) => {
         if (
           (event.ctrlKey || event.metaKey) &&
@@ -270,7 +381,7 @@ export default function MarkdownVisualEditor({
         trim={false}
         readOnly={disabled}
         spellCheck
-        placeholder={placeholder}
+        placeholder={hasEditorFocus ? "" : placeholder}
         className="novel-markdown-editor"
         contentEditableClassName={`novel-markdown-content ${
           fullWidth ? "novel-markdown-content--full" : ""

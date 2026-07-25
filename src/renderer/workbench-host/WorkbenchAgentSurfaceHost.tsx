@@ -31,6 +31,22 @@ interface WorkbenchAgentSurfaceHostProps {
   readonly onClose: (tabId: string) => void;
 }
 
+const PROPOSAL_REVIEW_MODES = new Set([
+  "world",
+  "template",
+  "assist",
+  "items",
+  "characters",
+]);
+
+function supportsProposalReview(tab: Tab): boolean {
+  const surface = tab.workbenchAgentSurface;
+  return Boolean(
+    surface?.toolset?.id === "novel-world" &&
+      PROPOSAL_REVIEW_MODES.has(surface.toolset.context?.mode ?? ""),
+  );
+}
+
 function SurfaceStatus({ tab }: { readonly tab: Tab }) {
   if (tab.isGenerating) {
     return (
@@ -92,7 +108,9 @@ export default function WorkbenchAgentSurfaceHost({
     () => [...taskSurfaces].reverse(),
     [taskSurfaces],
   );
-  const runningTaskCount = taskSurfaces.filter((tab) => tab.isGenerating).length;
+  const runningTaskCount = taskSurfaces.filter(
+    (tab) => tab.isGenerating,
+  ).length;
   const completedTaskCount = taskSurfaces.filter(
     (tab) => !tab.isGenerating && tab.hasUnread,
   ).length;
@@ -339,7 +357,7 @@ export default function WorkbenchAgentSurfaceHost({
                       <RotateCcw className="h-4 w-4" />
                     </button>
                   )}
-                  {tab.workbenchAgentSurface?.toolset?.id === "novel-world" && (
+                  {supportsProposalReview(tab) && (
                     <button
                       type="button"
                       aria-label={`审阅 ${tab.title} 提案`}

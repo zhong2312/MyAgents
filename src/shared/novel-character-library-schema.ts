@@ -53,14 +53,24 @@ export type CharacterInventoryItem = z.infer<
   typeof characterInventoryItemSchema
 >;
 
-const characterArcStageSchema = z
+export const characterArcStageSchema = z
   .object({
+    id: characterLibraryIdSchema.optional(),
     title: textSchema,
     state: textSchema,
     detail: textSchema,
     complete: z.boolean(),
   })
   .strict();
+
+export type CharacterArcStage = z.infer<typeof characterArcStageSchema>;
+
+export function createLegacyCharacterArcStageId(
+  characterId: string,
+  position: number,
+): string {
+  return `${characterId}-arc-stage-${position + 1}`;
+}
 
 export const characterRecordSchema = z
   .object({
@@ -114,6 +124,18 @@ export const characterRecordSchema = z
   })
   .strict()
   .superRefine((character, context) => {
+    const arcStageIds = new Set<string>();
+    character.arcStages.forEach((stage, index) => {
+      if (!stage.id) return;
+      if (arcStageIds.has(stage.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["arcStages", index, "id"],
+          message: "人物弧阶段 id 不得重复",
+        });
+      }
+      arcStageIds.add(stage.id);
+    });
     const itemIds = new Set<string>();
     character.inventory.forEach((item, index) => {
       if (itemIds.has(item.id)) {

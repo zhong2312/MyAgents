@@ -9,9 +9,9 @@ export const MODEL_SCENE_IDS = [
   "world.architecture",
   "world.template",
   "world.assist",
+  "narrative.assist",
   "inspiration.assist",
   "inspiration.coauthor",
-  "powers.design",
   "items.profile",
   "items.description",
   "items.batch",
@@ -66,6 +66,13 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     execution: "agent",
   },
   {
+    id: "narrative.assist",
+    group: "剧情工程",
+    label: "剧情工程共创",
+    description: "分析线路、故事弧、章节和叙事检查，并提出可审阅建议",
+    execution: "agent",
+  },
+  {
     id: "inspiration.assist",
     group: "灵感",
     label: "灵感诊断与展开",
@@ -77,13 +84,6 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     group: "灵感",
     label: "灵感深度共创",
     description: "携带当前灵感上下文的完整 MyAgents 会话",
-    execution: "agent",
-  },
-  {
-    id: "powers.design",
-    group: "力量体系",
-    label: "力量体系设计",
-    description: "AI 创建或完善题材中立的力量体系",
     execution: "agent",
   },
   {

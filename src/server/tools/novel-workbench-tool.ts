@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import { dirname, join, resolve, sep } from "path";
 
@@ -9,32 +9,21 @@ import {
   raceDefinitionSchema,
 } from "../../shared/novel-character-library-schema";
 import {
-  powerCatalogSchema,
-  powerConnectionsSchema,
-  powerSystemIndexSchema,
-  powerSystemMetaSchema,
-  powerSystemRecordSchema,
-  type PowerCatalog,
-  type PowerConnections,
-  type PowerSystemIndex,
-  type PowerSystemMeta,
-  type PowerSystemRecord,
-} from "../../shared/novel-power-system-schema";
-import { validatePowerSystemLibrary } from "../../shared/novel-power-system-validation";
-import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
   NOVEL_WORKBENCH_SDK_ADAPTER_ID,
   NOVEL_WORKBENCH_SDK_INSTRUCTIONS,
+  type NovelWorkbenchMode,
 } from "../novel-workbench-context";
-import type {
-  PowerDraftCatalogEntityInput,
-  PowerDraftConnectionInput,
-  PowerDraftDesignBrief,
-  PowerDraftOverviewPatch,
-  PowerDraftProgressionInput,
-  PowerDraftRemoveScope,
-} from "../novel-power-draft";
+import {
+  createNovelWorkbenchDraft,
+  hashNovelWorkbenchDraftPayload,
+  loadNovelWorkbenchDraft,
+  markNovelWorkbenchDraftSubmitted,
+  saveNovelWorkbenchDraftValidation,
+  summarizeNovelWorkbenchDraft,
+  updateNovelWorkbenchDraft,
+} from "../novel-workbench-draft";
 
 type CallToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -92,11 +81,67 @@ const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const CHARACTER_LIBRARY_ROOT = "characters";
 const CHARACTER_PROPOSAL_ROOT = `${CHARACTER_LIBRARY_ROOT}/proposals`;
 const MAX_CHARACTER_OPERATIONS = 40;
-const POWER_SYSTEM_ROOT = "world/power-systems";
-const POWER_SYSTEM_PROPOSAL_ROOT = `${POWER_SYSTEM_ROOT}/proposals`;
-const POWER_SYSTEM_TARGET_PATTERN =
-  /^world\/power-systems\/(?:meta\.json|index\.json|catalog\.json|connections\.json|records\/[a-z0-9-]+\.json|pages\/[a-z0-9-]+\.md)$/;
-const MAX_POWER_SYSTEM_CHANGES = 40;
+const NARRATIVE_PROPOSAL_ROOT = "narrative/proposals";
+const MAX_NARRATIVE_CANDIDATES = 30;
+const NARRATIVE_ENGINEERING_PATH = "narrative/index.json";
+const NARRATIVE_LINE_COLORS = {
+  main: "#b64a3a",
+  emotion: "#c3812f",
+  mirror: "#46766b",
+  information: "#486c9c",
+  theme: "#765b91",
+  custom: "#687078",
+} as const;
+
+type NarrativeLineKind = keyof typeof NARRATIVE_LINE_COLORS;
+type NarrativeStoryRole = "a" | "b" | "both" | "none";
+type NarrativeLineStatus = "idea" | "active" | "resolved" | "paused";
+type NarrativeArcKind =
+  | "plot"
+  | "character"
+  | "relationship"
+  | "mystery"
+  | "theme"
+  | "custom";
+
+type NarrativeLineInput = {
+  candidateId: string;
+  title: string;
+  kind?: NarrativeLineKind;
+  storyRole?: NarrativeStoryRole;
+  status?: NarrativeLineStatus;
+  premise?: string;
+  content?: string;
+  protagonistCharacterId?: string | null;
+  keyNodes: NarrativeKeyNodeInput[];
+};
+
+type NarrativeStoryArcInput = {
+  candidateId: string;
+  title: string;
+  kind?: NarrativeArcKind;
+  characterId?: string | null;
+  characterArcStageId?: string | null;
+  characterArcStageTitle?: string;
+  lineIds?: string[];
+  content?: string;
+  keyNodes: NarrativeKeyNodeInput[];
+};
+
+type NarrativeKeyNodeInput = {
+  nodeId: string;
+  title: string;
+  content: string;
+  locations?: { chapterId: string; sectionId: string | null }[];
+};
+
+type NarrativeDraftPayload = {
+  title: string;
+  description: string;
+  baseSourceHash: string;
+  lines: NarrativeLineInput[];
+  arcs: NarrativeStoryArcInput[];
+};
 
 type CharacterProposalOperation = {
   candidateId: string;
@@ -127,6 +172,19 @@ function requireWorkspace(): {
     throw new Error("小说工作台工具尚未绑定到项目工作区");
   }
   return { workspace: resolve(context.workspace), context };
+}
+
+function requireWorkbenchMode(
+  expected: NovelWorkbenchMode | readonly NovelWorkbenchMode[],
+): ReturnType<typeof requireWorkspace> {
+  const current = requireWorkspace();
+  const allowed = Array.isArray(expected) ? expected : [expected];
+  if (!allowed.includes(current.context.mode)) {
+    throw new Error(
+      `当前受控会话为 ${current.context.mode} 模式，不能调用此工具`,
+    );
+  }
+  return current;
 }
 
 function normalizeTargetPath(value: string): string {
@@ -733,10 +791,7 @@ async function getItemContextHandler(args: {
   categoryId?: string;
 }): Promise<CallToolResult> {
   try {
-    const { workspace, context } = requireWorkspace();
-    if (context.mode !== "items") {
-      throw new Error("当前受控会话不是物品库批量生产会话");
-    }
+    const { workspace } = requireWorkspace();
     const state = await readItemLibraryState(workspace);
     const categories = state.categories.map((value) => {
       const category = objectValue(value, "物品分类");
@@ -809,6 +864,14 @@ async function submitItemBatchHandler(args: {
       workspace,
       `${ITEM_PROPOSAL_ROOT}/${proposalId}`,
     );
+    if (await readOptional(join(proposalDirectory, "proposal.json"))) {
+      return result({
+        submitted: true,
+        proposalId,
+        recovered: true,
+        reviewAction: "请作者在小说工作台的物品库中审阅并选择创建候选。",
+      });
+    }
     await fs.mkdir(proposalsDirectory, { recursive: true });
     await fs.mkdir(proposalDirectory);
     createdProposalDirectory = true;
@@ -1047,10 +1110,7 @@ async function getCharacterContextHandler(args: {
   characterId?: string;
 }): Promise<CallToolResult> {
   try {
-    const { workspace, context } = requireWorkspace();
-    if (context.mode !== "characters") {
-      throw new Error("当前受控会话不是人物库设计会话");
-    }
+    const { workspace } = requireWorkspace();
     const state = await readCharacterLibraryState(workspace);
     const selected = args.characterId
       ? (state.characters
@@ -1142,6 +1202,14 @@ async function submitCharacterProposalHandler(args: {
       workspace,
       `${CHARACTER_PROPOSAL_ROOT}/${proposalId}`,
     );
+    if (await readOptional(join(proposalDirectory, "proposal.json"))) {
+      return result({
+        submitted: true,
+        proposalId,
+        recovered: true,
+        reviewAction: "请作者在小说工作台的人物库中审阅并采纳候选。",
+      });
+    }
     await fs.mkdir(proposalsDirectory, { recursive: true });
     await fs.mkdir(proposalDirectory);
     createdProposalDirectory = true;
@@ -1183,6 +1251,490 @@ async function submitCharacterProposalHandler(args: {
   }
 }
 
+type NarrativeContextScope =
+  | "overview"
+  | "lines"
+  | "arcs"
+  | "outline"
+  | "chapters"
+  | "all";
+
+function filterNarrativeRecords(
+  records: unknown[],
+  ids: ReadonlySet<string>,
+): unknown[] {
+  if (ids.size === 0) return records;
+  return records.filter((record) => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      return false;
+    }
+    const id = (record as Record<string, unknown>).id;
+    return typeof id === "string" && ids.has(id);
+  });
+}
+
+async function getNarrativeContextHandler(args: {
+  scope?: NarrativeContextScope;
+  ids?: string[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireWorkspace();
+    const content = await fs.readFile(
+      workspaceFile(workspace, NARRATIVE_ENGINEERING_PATH),
+      "utf8",
+    );
+    const document = JSON.parse(content) as unknown;
+    if (!document || typeof document !== "object" || Array.isArray(document)) {
+      throw new Error("剧情工程事实源不是有效 JSON 对象");
+    }
+    const library = document as Record<string, unknown>;
+    const lines = arrayField(library, "lines");
+    const arcs = arrayField(library, "arcs");
+    const directories = arrayField(library, "directories");
+    const chapters = arrayField(library, "chapters");
+    if (!lines || !arcs || !directories || !chapters) {
+      throw new Error("剧情工程事实源缺少线路、故事弧、目录或章节数组");
+    }
+
+    const scope = args.scope ?? "overview";
+    const ids = new Set(args.ids ?? []);
+    const overview = {
+      schemaVersion: library.schemaVersion,
+      updatedAt: library.updatedAt,
+      counts: {
+        lines: lines.length,
+        arcs: arcs.length,
+        directories: directories.length,
+        chapters: chapters.length,
+        sections: chapters.reduce<number>((total, chapter) => {
+          const sections = arrayField(chapter, "sections");
+          return total + (sections?.length ?? 0);
+        }, 0),
+      },
+      lines: lines.map((line) => {
+        const value = line as Record<string, unknown>;
+        return {
+          id: value.id,
+          title: value.title,
+          kind: value.kind,
+          storyRole: value.storyRole,
+          status: value.status,
+        };
+      }),
+      arcs: arcs.map((arc) => {
+        const value = arc as Record<string, unknown>;
+        return {
+          id: value.id,
+          title: value.title,
+          kind: value.kind,
+          characterId: value.characterId,
+          lineIds: value.lineIds,
+        };
+      }),
+      directories: directories.map((directory) => {
+        const value = directory as Record<string, unknown>;
+        return {
+          id: value.id,
+          parentId: value.parentId,
+          kind: value.kind,
+          title: value.title,
+          order: value.order,
+        };
+      }),
+      chapters: chapters.map((chapter) => {
+        const value = chapter as Record<string, unknown>;
+        return {
+          id: value.id,
+          title: value.title,
+          directoryId: value.directoryId,
+          order: value.order,
+          lineIds: value.lineIds,
+          arcIds: value.arcIds,
+          sectionCount: arrayField(chapter, "sections")?.length ?? 0,
+        };
+      }),
+    };
+
+    const data =
+      scope === "lines"
+        ? { lines: filterNarrativeRecords(lines, ids) }
+        : scope === "arcs"
+          ? { arcs: filterNarrativeRecords(arcs, ids) }
+          : scope === "outline"
+            ? { directories: filterNarrativeRecords(directories, ids) }
+            : scope === "chapters"
+              ? { chapters: filterNarrativeRecords(chapters, ids) }
+              : scope === "all"
+                ? library
+                : overview;
+
+    return result({
+      mode: context.mode,
+      sourcePath: NARRATIVE_ENGINEERING_PATH,
+      source: "saved-facts",
+      sourceHash: narrativeSourceHash(content),
+      scope,
+      data,
+      note: "工具返回的是已保存事实；会话初始消息中的未保存界面草稿如有冲突，应以作者当前草稿为准。",
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+function narrativeSourceHash(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function narrativeRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label}格式错误`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function narrativeRecords(
+  library: Record<string, unknown>,
+  key: "lines" | "arcs" | "directories" | "chapters",
+): Record<string, unknown>[] {
+  const records = arrayField(library, key);
+  if (!records) throw new Error(`剧情工程事实源缺少${key}数组`);
+  return records.map((record, index) => narrativeRecord(record, `${key}[${index}]`));
+}
+
+function narrativeId(prefix: string, knownIds: ReadonlySet<string>): string {
+  let id = "";
+  do {
+    id = `${prefix}-${randomUUID().slice(0, 8)}`;
+  } while (knownIds.has(id));
+  return id;
+}
+
+function narrativeKeyNodeErrors(
+  nodes: readonly NarrativeKeyNodeInput[],
+  library: Record<string, unknown>,
+  label: string,
+): string[] {
+  const errors: string[] = [];
+  const ids = new Set<string>();
+  const chapters = narrativeRecords(library, "chapters");
+  const chapterById = new Map(
+    chapters.map((chapter) => [String(chapter.id), chapter]),
+  );
+  nodes.forEach((node, index) => {
+    if (!ID_PATTERN.test(node.nodeId) || ids.has(node.nodeId))
+      errors.push(`${label}[${index}] 的 nodeId 非法或重复`);
+    ids.add(node.nodeId);
+    if (!node.title.trim()) errors.push(`${label}[${index}] 缺少标题`);
+    if (!node.content.trim()) errors.push(`${label}[${index}] 缺少内容`);
+    for (const location of node.locations ?? []) {
+      const chapter = chapterById.get(location.chapterId);
+      if (!chapter) {
+        errors.push(`${label}[${index}] 关联了不存在的章节：${location.chapterId}`);
+        continue;
+      }
+      if (
+        location.sectionId &&
+        !arrayField(chapter, "sections")?.some(
+          (section) =>
+            section &&
+            typeof section === "object" &&
+            !Array.isArray(section) &&
+            (section as Record<string, unknown>).id === location.sectionId,
+        )
+      ) {
+        errors.push(`${label}[${index}] 关联的节不属于章节：${location.sectionId}`);
+      }
+    }
+  });
+  if (nodes.length === 0) errors.push(`${label} 至少需要一个关键节点`);
+  return errors;
+}
+
+function validateNarrativeDraftPayload(
+  payload: NarrativeDraftPayload,
+  library: Record<string, unknown>,
+): string[] {
+  const errors: string[] = [];
+  if (!payload.title.trim()) errors.push("剧情提案标题不能为空");
+  const candidateIds = new Set<string>();
+  for (const [index, line] of payload.lines.entries()) {
+    if (!ID_PATTERN.test(line.candidateId) || candidateIds.has(line.candidateId))
+      errors.push(`线路候选 ${index + 1} 的 candidateId 非法或重复`);
+    candidateIds.add(line.candidateId);
+    if (!line.title.trim()) errors.push(`线路候选 ${index + 1} 缺少标题`);
+    errors.push(...narrativeKeyNodeErrors(line.keyNodes, library, `线路候选 ${index + 1} 的关键节点`));
+  }
+  for (const [index, arc] of payload.arcs.entries()) {
+    if (!ID_PATTERN.test(arc.candidateId) || candidateIds.has(arc.candidateId))
+      errors.push(`故事弧候选 ${index + 1} 的 candidateId 非法或重复`);
+    candidateIds.add(arc.candidateId);
+    if (!arc.title.trim()) errors.push(`故事弧候选 ${index + 1} 缺少标题`);
+    errors.push(...narrativeKeyNodeErrors(arc.keyNodes, library, `故事弧候选 ${index + 1} 的关键节点`));
+  }
+  if (payload.lines.length + payload.arcs.length === 0)
+    errors.push("至少需要一条线路或一个故事弧候选");
+  const existingLineIds = new Set(
+    narrativeRecords(library, "lines").map((line) => String(line.id)),
+  );
+  const allLineIds = new Set([...existingLineIds, ...payload.lines.map((line) => line.candidateId)]);
+  payload.arcs.forEach((arc, index) => {
+    const missing = [...new Set(arc.lineIds ?? [])].filter((id) => !allLineIds.has(id));
+    if (missing.length > 0)
+      errors.push(`故事弧候选 ${index + 1} 关联了不存在的线路：${missing.join(", ")}`);
+  });
+  return errors;
+}
+
+function materializeNarrativeDraft(
+  payload: NarrativeDraftPayload,
+  library: Record<string, unknown>,
+): { lines: Record<string, unknown>[]; arcs: Record<string, unknown>[] } {
+  const knownLineIds = new Set(
+    narrativeRecords(library, "lines").map((line) => String(line.id)),
+  );
+  const knownArcIds = new Set(
+    narrativeRecords(library, "arcs").map((arc) => String(arc.id)),
+  );
+  const knownNodeIds = new Set<string>();
+  for (const owner of [
+    ...narrativeRecords(library, "lines"),
+    ...narrativeRecords(library, "arcs"),
+  ]) {
+    for (const node of arrayField(owner, "keyNodes") ?? []) {
+      if (node && typeof node === "object" && !Array.isArray(node))
+        knownNodeIds.add(String((node as Record<string, unknown>).id));
+    }
+  }
+  const lineIds = new Map<string, string>();
+  const lines = payload.lines.map((input) => {
+    const id = narrativeId("line", knownLineIds);
+    knownLineIds.add(id);
+    lineIds.set(input.candidateId, id);
+    return {
+      id,
+      title: input.title.trim(),
+      kind: input.kind ?? "custom",
+      storyRole: input.storyRole ?? ((input.kind ?? "custom") === "main" ? "a" : "none"),
+      status: input.status ?? "idea",
+      color: NARRATIVE_LINE_COLORS[input.kind ?? "custom"],
+      premise: input.premise?.trim() ?? "",
+      protagonistCharacterId: input.protagonistCharacterId ?? null,
+      keyNodes: input.keyNodes.map((node, order) => ({
+        id: narrativeId("node", knownNodeIds),
+        title: node.title.trim(),
+        content: node.content,
+        order,
+        locations: (node.locations ?? []).map((location) => ({
+          id: narrativeId("location", knownNodeIds),
+          chapterId: location.chapterId,
+          sectionId: location.sectionId,
+        })),
+      })),
+      content: input.content ?? "",
+    };
+  });
+  const arcs = payload.arcs.map((input) => ({
+    id: narrativeId("arc", knownArcIds),
+    title: input.title.trim(),
+    kind: input.kind ?? "plot",
+    characterId: input.characterId ?? null,
+    characterArcStageId: input.characterArcStageId ?? null,
+    characterArcStageTitle: input.characterArcStageTitle?.trim() ?? "",
+    lineIds: [...new Set(input.lineIds ?? [])].map((id) => lineIds.get(id) ?? id),
+    keyNodes: input.keyNodes.map((node, order) => ({
+      id: narrativeId("node", knownNodeIds),
+      title: node.title.trim(),
+      content: node.content,
+      order,
+      locations: (node.locations ?? []).map((location) => ({
+        id: narrativeId("location", knownNodeIds),
+        chapterId: location.chapterId,
+        sectionId: location.sectionId,
+      })),
+    })),
+    content: input.content ?? "",
+  }));
+  return { lines, arcs };
+}
+
+async function readNarrativeSource(): Promise<{
+  workspace: string;
+  content: string;
+  library: Record<string, unknown>;
+}> {
+  const { workspace } = requireDraftMode("narrative");
+  const content = await fs.readFile(
+    workspaceFile(workspace, NARRATIVE_ENGINEERING_PATH),
+    "utf8",
+  );
+  const library = narrativeRecord(JSON.parse(content), "剧情工程事实源");
+  narrativeRecords(library, "lines");
+  narrativeRecords(library, "arcs");
+  narrativeRecords(library, "directories");
+  narrativeRecords(library, "chapters");
+  if (library.schemaVersion !== 3) throw new Error("请先在剧情工程页面保存一次，以完成旧数据迁移");
+  return { workspace, content, library };
+}
+
+function narrativeProposalId(draftId: string): string {
+  return `narrative-${draftId}`;
+}
+
+async function createNarrativeDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+  baseSourceHash: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("narrative");
+    const draft = await createNovelWorkbenchDraft<NarrativeDraftPayload>(
+      workspace,
+      "narrative",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        baseSourceHash: args.baseSourceHash,
+        lines: [],
+        arcs: [],
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getNarrativeDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("narrative");
+    return result(summarizeNovelWorkbenchDraft(await loadNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId)));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertNarrativeDraftLinesHandler(args: {
+  draftId: string;
+  lines: NarrativeLineInput[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("narrative");
+    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId, (payload) => {
+      const lines = new Map(payload.lines.map((line) => [line.candidateId, line]));
+      args.lines.forEach((line) => lines.set(line.candidateId, line));
+      return { ...payload, lines: [...lines.values()] };
+    });
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertNarrativeDraftArcsHandler(args: {
+  draftId: string;
+  arcs: NarrativeStoryArcInput[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("narrative");
+    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId, (payload) => {
+      const arcs = new Map(payload.arcs.map((arc) => [arc.candidateId, arc]));
+      args.arcs.forEach((arc) => arcs.set(arc.candidateId, arc));
+      return { ...payload, arcs: [...arcs.values()] };
+    });
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validateNarrativeDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("narrative");
+    const draft = await loadNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId);
+    const source = await readNarrativeSource();
+    if (narrativeSourceHash(source.content) !== draft.payload.baseSourceHash)
+      throw new Error("剧情工程事实源已变化，请重新读取上下文并创建新草稿");
+    const errors = validateNarrativeDraftPayload(draft.payload, source.library);
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const saved = await saveNovelWorkbenchDraftValidation(workspace, draft, hashNovelWorkbenchDraftPayload(draft.payload));
+    return result({ valid: true, ...summarizeNovelWorkbenchDraft(saved), validationToken: saved.validation?.token });
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitNarrativeProposalHandler(args: {
+  proposalId: string;
+  title: string;
+  description?: string;
+  baseSourceHash: string;
+  lines: Record<string, unknown>[];
+  arcs: Record<string, unknown>[];
+}): Promise<{ proposalId: string; lineCount: number; arcCount: number }> {
+  const { workspace, context } = requireDraftMode("narrative");
+  const proposalDirectory = workspaceFile(workspace, `${NARRATIVE_PROPOSAL_ROOT}/${args.proposalId}`);
+  if (await readOptional(join(proposalDirectory, "proposal.json")))
+    return { proposalId: args.proposalId, lineCount: args.lines.length, arcCount: args.arcs.length };
+  await fs.mkdir(proposalDirectory, { recursive: true });
+  const manifest = {
+    schemaVersion: 1,
+    proposalId: args.proposalId,
+    title: args.title.trim(),
+    description: args.description?.trim() ?? "",
+    createdAt: new Date().toISOString(),
+    source: { kind: "agent", promptId: context.promptId, promptVersion: context.promptVersion },
+    baseSourceHash: args.baseSourceHash,
+    lines: args.lines.map((value) => ({ candidateId: String(value.id), summary: `新增线路：${String(value.title)}`, status: "pending", value })),
+    arcs: args.arcs.map((value) => ({ candidateId: String(value.id), summary: `新增故事弧：${String(value.title)}`, status: "pending", value })),
+  };
+  await fs.writeFile(join(proposalDirectory, "proposal.json"), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+  return { proposalId: args.proposalId, lineCount: args.lines.length, arcCount: args.arcs.length };
+}
+
+async function submitNarrativeDraftHandler(args: { draftId: string; validationToken: string }): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("narrative");
+    const draft = await loadNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId);
+    const proposalId = narrativeProposalId(draft.draftId);
+    if (draft.submittedProposalId) return result(await getNarrativeProposalStatusHandlerValue(proposalId));
+    if (draft.validation?.token !== args.validationToken || draft.validation.contentHash !== hashNovelWorkbenchDraftPayload(draft.payload))
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    const source = await readNarrativeSource();
+    if (narrativeSourceHash(source.content) !== draft.payload.baseSourceHash) throw new Error("剧情工程事实源已变化，请重新读取上下文");
+    const errors = validateNarrativeDraftPayload(draft.payload, source.library);
+    if (errors.length > 0) return result({ submitted: false, errors }, true);
+    const materialized = materializeNarrativeDraft(draft.payload, source.library);
+    const persisted = await submitNarrativeProposalHandler({ proposalId, title: draft.payload.title, description: draft.payload.description, baseSourceHash: draft.payload.baseSourceHash, lines: materialized.lines, arcs: materialized.arcs });
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    const status = await getNarrativeProposalStatusHandlerValue(proposalId);
+    return result({ submitted: true, ...persisted, ...status, draftId: draft.draftId, reviewAction: "请作者在剧情工程的线路或故事弧页面点击“审阅提案”。" });
+  } catch (error) {
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getNarrativeProposalStatusHandlerValue(proposalId: string): Promise<Record<string, unknown>> {
+  const { workspace } = requireDraftMode("narrative");
+  const content = await readOptional(workspaceFile(workspace, `${NARRATIVE_PROPOSAL_ROOT}/${proposalId}/proposal.json`));
+  if (!content) return { exists: false, proposalId };
+  const manifest = narrativeRecord(JSON.parse(content), "剧情提案");
+  const candidates = [...(arrayField(manifest, "lines") ?? []), ...(arrayField(manifest, "arcs") ?? [])];
+  const statuses = candidates.map((candidate) => String(narrativeRecord(candidate, "剧情提案候选").status));
+  return { exists: true, proposalId, title: manifest.title, pending: statuses.filter((status) => status === "pending").length, applied: statuses.filter((status) => status === "applied").length, rejected: statuses.filter((status) => status === "rejected").length };
+}
+
+async function getNarrativeProposalStatusHandler(args: { proposalId: string }): Promise<CallToolResult> {
+  try {
+    return result(await getNarrativeProposalStatusHandlerValue(args.proposalId));
+  } catch (error) {
+    return result({ exists: false, proposalId: args.proposalId, error: message(error) }, true);
+  }
+}
+
 async function getContextHandler(args: {
   paths?: string[];
 }): Promise<CallToolResult> {
@@ -1210,6 +1762,10 @@ async function validateHandler(args: {
   changes: ProposedChange[];
 }): Promise<CallToolResult> {
   try {
+    const { context } = requireWorkspace();
+    if (!["world", "template", "assist"].includes(context.mode)) {
+      throw new Error("当前受控会话不是世界架构设计会话");
+    }
     const errors = await validateChanges(args.changes);
     return result({ valid: errors.length === 0, errors }, errors.length > 0);
   } catch (error) {
@@ -1227,6 +1783,9 @@ async function submitHandler(args: {
   let createdProposalDirectory = false;
   try {
     const { workspace, context } = requireWorkspace();
+    if (!["world", "template", "assist"].includes(context.mode)) {
+      throw new Error("当前受控会话不是世界架构设计会话");
+    }
     const errors = await validateChanges(args.changes);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
     const proposalId =
@@ -1238,6 +1797,14 @@ async function submitHandler(args: {
       workspace,
       `${PROPOSAL_ROOT}/${proposalId}`,
     );
+    if (await readOptional(join(proposalDirectory, "proposal.json"))) {
+      return result({
+        submitted: true,
+        proposalId,
+        recovered: true,
+        reviewAction: "请作者在小说工作台点击“审阅提案”进行逐项审批。",
+      });
+    }
     await fs.mkdir(proposalsDirectory, { recursive: true });
     await fs.mkdir(proposalDirectory);
     createdProposalDirectory = true;
@@ -1314,798 +1881,615 @@ async function submitHandler(args: {
   }
 }
 
-function normalizePowerSystemTargetPath(value: string): string {
-  const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
-  if (!POWER_SYSTEM_TARGET_PATTERN.test(normalized)) {
-    throw new Error(`不允许的力量体系目标路径：${value}`);
-  }
-  return normalized;
-}
 
-function powerSystemProposalSnapshotRelativePath(targetPath: string): string {
-  return targetPath.slice(`${POWER_SYSTEM_ROOT}/`.length);
-}
-
-type SchemaResult<T> =
-  | { success: true; data: T }
-  | {
-      success: false;
-      error: {
-        issues: readonly { path: readonly PropertyKey[]; message: string }[];
-      };
-    };
-
-function parsePowerSystemSchema<T>(
-  path: string,
-  content: string,
-  schema: { safeParse(value: unknown): SchemaResult<T> },
-  errors: string[],
-): T | null {
-  const value = parseJson(path, content, errors);
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) {
-    errors.push(
-      ...parsed.error.issues.map(
-        (issue) =>
-          `${path} ${issue.path.map(String).join(".") || "$"}：${issue.message}`,
-      ),
-    );
-    return null;
-  }
-  return parsed.data;
-}
-
-async function validatePowerSystemChanges(
-  changes: ProposedChange[],
-): Promise<string[]> {
-  const { workspace } = requireWorkspace();
-  const errors: string[] = [];
-  if (changes.length === 0) return ["至少需要一项力量体系变更"];
-  if (changes.length > MAX_POWER_SYSTEM_CHANGES) {
-    return [`单次最多提交 ${MAX_POWER_SYSTEM_CHANGES} 项力量体系变更`];
-  }
-
-  const ids = new Set<string>();
-  const targets = new Set<string>();
-  const proposed = new Map<string, string>();
-  let totalBytes = 0;
-  for (const change of changes) {
-    let targetPath: string;
-    try {
-      targetPath = normalizePowerSystemTargetPath(change.targetPath);
-    } catch (error) {
-      errors.push(message(error));
-      continue;
-    }
-    if (!ID_PATTERN.test(change.id) || ids.has(change.id)) {
-      errors.push(`力量体系变更包含非法或重复 id：${change.id}`);
-    }
-    if (targets.has(targetPath)) {
-      errors.push(`同一提案不能重复修改：${targetPath}`);
-    }
-    ids.add(change.id);
-    targets.add(targetPath);
-    proposed.set(targetPath, change.content);
-    const bytes = Buffer.byteLength(change.content, "utf8");
-    totalBytes += bytes;
-    if (bytes > MAX_CHANGE_BYTES) {
-      errors.push(`${targetPath} 超过单文件大小限制`);
-    }
-    if (!change.summary.trim()) {
-      errors.push(`${targetPath} 缺少变更摘要`);
-    }
-    const current = await readOptional(workspaceFile(workspace, targetPath));
-    if (change.operation === "create" && current !== null) {
-      errors.push(`新增目标已存在：${targetPath}`);
-    }
-    if (change.operation === "modify" && current === null) {
-      errors.push(`修改目标不存在：${targetPath}`);
-    }
-  }
-  if (totalBytes > MAX_TOTAL_BYTES) {
-    errors.push("力量体系提案总大小超过限制");
-  }
-
-  const candidateContent = async (path: string): Promise<string | null> =>
-    proposed.has(path)
-      ? (proposed.get(path) ?? null)
-      : readOptional(workspaceFile(workspace, path));
-  const metaPath = `${POWER_SYSTEM_ROOT}/meta.json`;
-  const indexPath = `${POWER_SYSTEM_ROOT}/index.json`;
-  const catalogPath = `${POWER_SYSTEM_ROOT}/catalog.json`;
-  const connectionsPath = `${POWER_SYSTEM_ROOT}/connections.json`;
-  const [metaContent, indexContent, catalogContent, connectionsContent] =
-    await Promise.all([
-      candidateContent(metaPath),
-      candidateContent(indexPath),
-      candidateContent(catalogPath),
-      candidateContent(connectionsPath),
-    ]);
-  if (metaContent === null) errors.push("力量体系库缺少 meta.json");
-  if (indexContent === null) errors.push("力量体系库缺少 index.json");
-  if (catalogContent === null) errors.push("力量体系库缺少 catalog.json");
-  if (connectionsContent === null)
-    errors.push("力量体系库缺少 connections.json");
-  if (
-    metaContent === null ||
-    indexContent === null ||
-    catalogContent === null ||
-    connectionsContent === null
-  ) {
-    return errors;
-  }
-
-  const meta = parsePowerSystemSchema<PowerSystemMeta>(
-    metaPath,
-    metaContent,
-    powerSystemMetaSchema,
-    errors,
-  );
-  const index = parsePowerSystemSchema<PowerSystemIndex>(
-    indexPath,
-    indexContent,
-    powerSystemIndexSchema,
-    errors,
-  );
-  const catalog = parsePowerSystemSchema<PowerCatalog>(
-    catalogPath,
-    catalogContent,
-    powerCatalogSchema,
-    errors,
-  );
-  const connections = parsePowerSystemSchema<PowerConnections>(
-    connectionsPath,
-    connectionsContent,
-    powerConnectionsSchema,
-    errors,
-  );
-  if (!meta || !index || !catalog || !connections) return errors;
-
-  const typeIds = new Set<string>();
-  for (const type of meta.systemTypes) {
-    if (typeIds.has(type.id)) errors.push(`力量体系类型 id 重复：${type.id}`);
-    typeIds.add(type.id);
-  }
-
-  const systemIds = new Set<string>();
-  const records = new Map<string, PowerSystemRecord>();
-  for (const entry of index.systems) {
-    if (systemIds.has(entry.id)) {
-      errors.push(`力量体系索引 id 重复：${entry.id}`);
-      continue;
-    }
-    systemIds.add(entry.id);
-    if (!typeIds.has(entry.typeId)) {
-      errors.push(`力量体系“${entry.name}”引用了不存在的类型：${entry.typeId}`);
-    }
-    const expectedRecordPath = `${POWER_SYSTEM_ROOT}/records/${entry.id}.json`;
-    const expectedPagePath = `${POWER_SYSTEM_ROOT}/pages/${entry.id}.md`;
-    if (entry.recordPath !== expectedRecordPath) {
-      errors.push(`力量体系“${entry.name}”的记录路径与 id 不一致`);
-    }
-    if (entry.pagePath !== expectedPagePath) {
-      errors.push(`力量体系“${entry.name}”的说明路径与 id 不一致`);
-    }
-    const [recordContent, pageContent] = await Promise.all([
-      candidateContent(expectedRecordPath),
-      candidateContent(expectedPagePath),
-    ]);
-    if (recordContent === null) {
-      errors.push(`力量体系“${entry.name}”缺少结构化记录`);
-      continue;
-    }
-    if (pageContent === null) {
-      errors.push(`力量体系“${entry.name}”缺少说明页`);
-    }
-    const record = parsePowerSystemSchema<PowerSystemRecord>(
-      expectedRecordPath,
-      recordContent,
-      powerSystemRecordSchema,
-      errors,
-    );
-    if (!record) continue;
-    records.set(entry.id, record);
-    if (record.id !== entry.id) {
-      errors.push(`力量体系索引与记录 id 不一致：${entry.id}`);
-    }
-    if (
-      record.name !== entry.name ||
-      record.typeId !== entry.typeId ||
-      record.status !== entry.status ||
-      record.summary !== entry.summary ||
-      record.updatedAt !== entry.updatedAt
-    ) {
-      errors.push(`力量体系“${entry.name}”的索引摘要与记录不一致`);
-    }
-    if (!typeIds.has(record.typeId)) {
-      errors.push(`力量体系“${record.name}”引用了不存在的类型`);
-    }
-  }
-
-  for (const path of proposed.keys()) {
-    const recordMatch =
-      /^world\/power-systems\/records\/([a-z0-9-]+)\.json$/.exec(path);
-    const pageMatch = /^world\/power-systems\/pages\/([a-z0-9-]+)\.md$/.exec(
-      path,
-    );
-    const referencedId = recordMatch?.[1] ?? pageMatch?.[1];
-    if (referencedId && !systemIds.has(referencedId)) {
-      errors.push(`提案文件未被最终 index.json 引用：${path}`);
-    }
-  }
-
-  errors.push(
-    ...validatePowerSystemLibrary({
-      meta,
-      index,
-      catalog,
-      connections,
-      records,
-    }),
-  );
-  return errors;
-}
-
-async function getPowerSystemContextHandler(args: {
-  systemId?: string;
-}): Promise<CallToolResult> {
-  try {
-    const { workspace, context } = requireWorkspace();
-    const [metaContent, indexContent, catalogContent, connectionsContent] =
-      await Promise.all([
-        fs.readFile(workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/meta.json`), "utf8"),
-        fs.readFile(workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/index.json`), "utf8"),
-        fs.readFile(workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/catalog.json`), "utf8"),
-        fs.readFile(
-          workspaceFile(workspace, `${POWER_SYSTEM_ROOT}/connections.json`),
-          "utf8",
-        ),
-      ]);
-    const meta = powerSystemMetaSchema.parse(JSON.parse(metaContent));
-    const index = powerSystemIndexSchema.parse(JSON.parse(indexContent));
-    const catalog = powerCatalogSchema.parse(JSON.parse(catalogContent));
-    const connections = powerConnectionsSchema.parse(
-      JSON.parse(connectionsContent),
-    );
-    const powerDrafts = await import("../novel-power-draft");
-    const drafts = await powerDrafts.listPowerDrafts(workspace);
-    let selectedSystem: {
-      record: PowerSystemRecord;
-      pageMarkdown: string | null;
-    } | null = null;
-    if (args.systemId) {
-      if (!ID_PATTERN.test(args.systemId)) {
-        throw new Error("systemId 只能使用小写字母、数字和连字符");
-      }
-      const recordPath = `${POWER_SYSTEM_ROOT}/records/${args.systemId}.json`;
-      const pagePath = `${POWER_SYSTEM_ROOT}/pages/${args.systemId}.md`;
-      const recordContent = await fs.readFile(
-        workspaceFile(workspace, recordPath),
-        "utf8",
-      );
-      selectedSystem = {
-        record: powerSystemRecordSchema.parse(JSON.parse(recordContent)),
-        pageMarkdown: await readOptional(workspaceFile(workspace, pagePath)),
-      };
-    }
-    const catalogEntities = [
-      ...catalog.foundations,
-      ...catalog.mediums,
-      ...catalog.principles,
-      ...catalog.resources,
-      ...catalog.theories,
-      ...catalog.methods,
-      ...catalog.capabilities,
-    ].map(({ id, name, kind, summary, tags }) => ({
-      id,
-      name,
-      kind,
-      summary,
-      tags,
-    }));
-    return result({
-      mode: context.mode,
-      workflow: [
-        "先用 novel_power_get_context 了解现状并与作者确认设计摘要",
-        "用 novel_power_create_draft 创建服务端草稿",
-        "按需调用 overview/catalog/progression/connections 增量工具",
-        "用 novel_power_validate_draft 获取绑定当前版本的 validationToken",
-        "用 novel_power_submit_draft 提交一次",
-        "用 novel_power_get_proposal_status 确认 exists=true",
-      ],
-      systemTypes: meta.systemTypes,
-      systems: index.systems,
-      catalogEntities,
-      connections: connections.connections.map(
-        ({ id, kind, source, target, note }) => ({
-          id,
-          kind,
-          source,
-          target,
-          note,
-        }),
-      ),
-      drafts,
-      selectedSystem,
-      modelingPatterns: [
-        {
-          id: "trained-progression",
-          fit: "修炼、魔法学习、武技、职业训练",
-          emphasis: "理论模型、发展方法、资源需求、状态与转换",
-        },
-        {
-          id: "event-awakening",
-          fit: "异能觉醒、血脉、变异、神授",
-          emphasis: "触发事件、状态条件、能力准入、代价与失控风险",
-        },
-        {
-          id: "authority-permission",
-          fit: "神权、契约、规则权限、社会制度型力量",
-          emphasis: "底层法则、权限状态、授权条件与例外边界",
-        },
-        {
-          id: "equipment-technology",
-          fit: "科技、装备、改造、外部装置",
-          emphasis: "介质、资源、版本路径、能力效果与系统交互",
-        },
-        {
-          id: "soft-mysterious",
-          fit: "神秘力量、寓言规则、不可完全解释的奇幻",
-          emphasis: "保持局部一致，只定义叙事需要的边界和反例",
-        },
-      ],
-    });
-  } catch (error) {
-    return result({ error: message(error) }, true);
-  }
-}
-
-type StructuredPowerValidationIssue = {
-  code: "schema" | "reference" | "conflict" | "limit" | "invalid";
-  path: string;
-  message: string;
-  suggestion: string;
+type WorldDraftPayload = {
+  title: string;
+  description: string;
+  changes: ProposedChange[];
 };
 
-const MAX_RETURNED_POWER_VALIDATION_ISSUES = 20;
+type CharacterDraftPayload = {
+  title: string;
+  description: string;
+  operations: CharacterProposalOperation[];
+};
 
-function structurePowerValidationIssue(
-  error: string,
-): StructuredPowerValidationIssue {
-  const filePath =
-    /^(world\/power-systems\/[^\s：]+)/u.exec(error)?.[1] ?? "$";
-  const fieldPath =
-    /^world\/power-systems\/[^\s：]+\s+([^：]+)：/u.exec(error)?.[1];
-  const path = fieldPath ? `${filePath}#${fieldPath}` : filePath;
-  const code = /引用|不存在|未被.*引用|不一致/u.test(error)
-    ? "reference"
-    : /重复|已经存在|不能按|不能从/u.test(error)
-      ? "conflict"
-      : /超过|最多|大小限制/u.test(error)
-        ? "limit"
-        : filePath !== "$" && error.includes("：")
-          ? "schema"
-          : "invalid";
-  const suggestion =
-    code === "reference"
-      ? "先读取当前上下文或草稿，使用已有稳定 id，并补齐对应目录对象或连接。"
-      : code === "conflict"
-        ? "为新对象使用唯一稳定 id；修改已有对象时保持原 kind 和目标体系。"
-        : code === "limit"
-          ? "缩小本次草稿范围，删除无叙事作用的冗余对象后重新校验。"
-          : code === "schema"
-            ? "使用对应领域 upsert 工具补齐该字段，不要手写完整文件。"
-            : "读取草稿摘要，修正列出的对象后再次调用校验工具。";
-  return { code, path, message: error, suggestion };
-}
+type ItemDraftPayload = {
+  title: string;
+  description: string;
+  categoryId: string;
+  items: ItemBatchCandidate[];
+};
 
-function structuredPowerValidationResult(errors: readonly string[]) {
+function createCharacterDraftValue(
+  operation: CharacterProposalOperation,
+  previous?: CharacterProposalOperation,
+): Record<string, unknown> {
+  const supplied = operation.value;
+  if (previous?.kind === operation.kind) {
+    return { ...previous.value, ...supplied };
+  }
+  if (operation.action === "update") return supplied;
+  const id = typeof supplied.id === "string" ? supplied.id : "";
+  if (operation.kind === "race" || operation.kind === "group") {
+    return { id, name: "未命名定义", description: "", ...supplied };
+  }
+  if (operation.kind === "soul") {
+    return {
+      id,
+      builtIn: false,
+      name: "未命名角色灵魂",
+      category: "",
+      summary: "",
+      expressionDna: "",
+      mentalModel: "",
+      decisionHeuristics: "",
+      valueAntiPatterns: "",
+      boundaries: "",
+      expressionConflictKeywords: [],
+      decisionConflictKeywords: [],
+      valueConflictKeywords: [],
+      amplificationKeywords: [],
+      ...supplied,
+    };
+  }
   return {
-    valid: errors.length === 0,
-    totalErrorCount: errors.length,
-    errors: errors
-      .slice(0, MAX_RETURNED_POWER_VALIDATION_ISSUES)
-      .map(structurePowerValidationIssue),
-    truncated: errors.length > MAX_RETURNED_POWER_VALIDATION_ISSUES,
+    id,
+    name: "未命名角色",
+    alias: "",
+    roleWeight: "secondary",
+    archetype: "待定",
+    alignment: "绝对中立",
+    status: "草稿",
+    summary: "",
+    identities: [],
+    age: "",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
+    gender: "",
+    raceId: "",
+    soulId: "",
+    groupIds: [],
+    hometown: "",
+    appearance: "",
+    personality: "",
+    values: "",
+    strengths: "",
+    weaknesses: "",
+    fears: "",
+    motivation: "",
+    goals: "",
+    innerConflict: "",
+    background: "",
+    abilities: "",
+    speechStyle: "",
+    habits: "",
+    signatureItem: "",
+    storyRole: "",
+    arc: "",
+    firstAppearance: "未安排",
+    completeness: 8,
+    relations: [],
+    appearances: [],
+    arcStages: [],
+    inventory: [],
+    ...supplied,
   };
 }
 
-async function createPowerDraftHandler(args: {
-  draftId?: string;
-  systemId: string;
-  name: string;
-  typeId: string;
-  summary?: string;
-  designBrief: PowerDraftDesignBrief;
-}): Promise<CallToolResult> {
-  try {
-    const { workspace, context } = requireWorkspace();
-    if (!context.sessionId) throw new Error("当前会话缺少稳定 sessionId");
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.createPowerDraft(workspace, args, {
-      sessionId: context.sessionId,
-      promptId: context.promptId,
-      promptVersion: context.promptVersion,
-    });
-    return result({
-      created: true,
-      draft: powerDrafts.summarizePowerDraft(draft),
-      nextAction: "按需增量写入目录对象、成长路径和连接；完成后校验草稿。",
-    });
-  } catch (error) {
-    return result({ created: false, error: message(error) }, true);
-  }
+function requireDraftMode(
+  expected: "world" | "characters" | "items" | "narrative",
+): ReturnType<typeof requireWorkspace> {
+  const allowed =
+    expected === "world"
+      ? (["world", "template", "assist"] as const)
+      : ([expected] as const);
+  return requireWorkbenchMode(allowed);
 }
 
-async function getPowerDraftHandler(args: {
-  draftId: string;
+function draftSource(context: ReturnType<typeof requireWorkspace>["context"]) {
+  return {
+    promptId: context.promptId,
+    promptVersion: context.promptVersion,
+    sessionId: context.sessionId ?? "unknown-session",
+  };
+}
+
+function decodeToolResult(value: CallToolResult): Record<string, unknown> {
+  const text = value.content[0]?.text ?? "{}";
+  const parsed = JSON.parse(text);
+  return parsed && typeof parsed === "object" ? parsed : {};
+}
+
+async function getProposalStatus(
+  proposalRoot: string,
+  proposalId: string,
+  collection: "changes" | "operations" | "items",
+): Promise<Record<string, unknown>> {
+  const { workspace } = requireWorkspace();
+  if (!ID_PATTERN.test(proposalId)) throw new Error("proposalId 非法");
+  const content = await readOptional(
+    workspaceFile(workspace, `${proposalRoot}/${proposalId}/proposal.json`),
+  );
+  if (!content) return { exists: false, proposalId };
+  const manifest = objectValue(JSON.parse(content), "提案");
+  const candidates = arrayField(manifest, collection) ?? [];
+  const statuses = candidates.map(
+    (candidate) => objectValue(candidate, "提案候选").status,
+  );
+  return {
+    exists: true,
+    proposalId,
+    title: manifest.title,
+    pending: statuses.filter((status) => status === "pending").length,
+    applied: statuses.filter((status) => status === "applied").length,
+    rejected: statuses.filter((status) => status === "rejected").length,
+  };
+}
+
+async function createWorldDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
 }): Promise<CallToolResult> {
   try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.loadPowerDraft(workspace, args.draftId);
-    return result({
-      draft,
-      summary: powerDrafts.summarizePowerDraft(draft),
-    });
+    const { workspace, context } = requireDraftMode("world");
+    const draft = await createNovelWorkbenchDraft<WorldDraftPayload>(
+      workspace,
+      "world",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        changes: [],
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
   } catch (error) {
     return result({ error: message(error) }, true);
   }
 }
 
-async function updatePowerDraftOverviewHandler(args: {
+async function getWorldDraftHandler(args: {
   draftId: string;
-  patch: PowerDraftOverviewPatch;
 }): Promise<CallToolResult> {
   try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.updatePowerDraftOverview(
-      workspace,
-      args.draftId,
-      args.patch,
+    const { workspace } = requireDraftMode("world");
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<WorldDraftPayload>(
+          workspace,
+          "world",
+          args.draftId,
+        ),
+      ),
     );
-    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
   } catch (error) {
-    return result({ updated: false, error: message(error) }, true);
+    return result({ error: message(error) }, true);
   }
 }
 
-async function upsertPowerDraftCatalogHandler(args: {
+async function upsertWorldDraftChangesHandler(args: {
   draftId: string;
-  entities: PowerDraftCatalogEntityInput[];
+  changes: ProposedChange[];
 }): Promise<CallToolResult> {
   try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.upsertPowerDraftCatalogEntities(
+    const { workspace } = requireDraftMode("world");
+    const draft = await updateNovelWorkbenchDraft<WorldDraftPayload>(
       workspace,
+      "world",
       args.draftId,
-      args.entities,
+      (payload) => {
+        const changes = new Map(
+          payload.changes.map((change) => [change.targetPath, change]),
+        );
+        for (const change of args.changes)
+          changes.set(change.targetPath, change);
+        return { ...payload, changes: [...changes.values()] };
+      },
     );
-    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
+    return result(summarizeNovelWorkbenchDraft(draft));
   } catch (error) {
-    return result({ updated: false, error: message(error) }, true);
+    return result({ error: message(error) }, true);
   }
 }
 
-async function upsertPowerDraftProgressionHandler(args: {
+async function validateWorldDraftHandler(args: {
   draftId: string;
-  progression: PowerDraftProgressionInput;
 }): Promise<CallToolResult> {
   try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.upsertPowerDraftProgression(
+    const { workspace } = requireDraftMode("world");
+    const draft = await loadNovelWorkbenchDraft<WorldDraftPayload>(
       workspace,
+      "world",
       args.draftId,
-      args.progression,
     );
-    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
-  } catch (error) {
-    return result({ updated: false, error: message(error) }, true);
-  }
-}
-
-async function upsertPowerDraftConnectionsHandler(args: {
-  draftId: string;
-  connections: PowerDraftConnectionInput[];
-}): Promise<CallToolResult> {
-  try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.upsertPowerDraftConnections(
-      workspace,
-      args.draftId,
-      args.connections,
-    );
-    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
-  } catch (error) {
-    return result({ updated: false, error: message(error) }, true);
-  }
-}
-
-async function removePowerDraftEntitiesHandler(args: {
-  draftId: string;
-  scope: PowerDraftRemoveScope;
-  ids: string[];
-  trackId?: string;
-}): Promise<CallToolResult> {
-  try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.removePowerDraftEntities(
-      workspace,
-      args.draftId,
-      args.scope,
-      args.ids,
-      args.trackId,
-    );
-    return result({ updated: true, draft: powerDrafts.summarizePowerDraft(draft) });
-  } catch (error) {
-    return result({ updated: false, error: message(error) }, true);
-  }
-}
-
-async function validatePowerDraftHandler(args: {
-  draftId: string;
-}): Promise<CallToolResult> {
-  try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const draft = await powerDrafts.loadPowerDraft(workspace, args.draftId);
-    if (draft.submittedProposalId) {
-      throw new Error(`该草稿已经提交：${draft.submittedProposalId}`);
-    }
-    const materialized = await powerDrafts.materializePowerDraftChanges(
+    const errors = await validateChanges(draft.payload.changes);
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const saved = await saveNovelWorkbenchDraftValidation(
       workspace,
       draft,
-    );
-    const errors = await validatePowerSystemChanges(materialized.changes);
-    if (errors.length > 0) {
-      return result(structuredPowerValidationResult(errors), true);
-    }
-    const validated = await powerDrafts.savePowerDraftValidation(
-      workspace,
-      draft,
-      materialized.contentHash,
+      hashNovelWorkbenchDraftPayload(draft.payload),
     );
     return result({
       valid: true,
-      totalErrorCount: 0,
-      errors: [],
-      validationToken: validated.validation?.token,
-      contentHash: materialized.contentHash,
-      revision: validated.revision,
-      changeCount: materialized.changes.length,
-      nextAction: "使用完全相同的 validationToken 调用 novel_power_submit_draft。",
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
     });
   } catch (error) {
-    const errors = [message(error)];
-    return result(structuredPowerValidationResult(errors), true);
+    return result({ valid: false, errors: [message(error)] }, true);
   }
 }
 
-async function persistPowerSystemProposal(args: {
-  proposalId: string;
-  title: string;
-  description?: string;
-  changes: ProposedChange[];
-}): Promise<{ proposalId: string; changeCount: number }> {
-  let proposalDirectory = "";
-  let createdProposalDirectory = false;
-  try {
-    const { workspace, context } = requireWorkspace();
-    const proposalId = args.proposalId.trim();
-    if (!ID_PATTERN.test(proposalId)) {
-      throw new Error("proposalId 只能使用小写字母、数字和连字符");
-    }
-    const proposalsDirectory = workspaceFile(
-      workspace,
-      POWER_SYSTEM_PROPOSAL_ROOT,
-    );
-    proposalDirectory = workspaceFile(
-      workspace,
-      `${POWER_SYSTEM_PROPOSAL_ROOT}/${proposalId}`,
-    );
-    await fs.mkdir(proposalsDirectory, { recursive: true });
-    await fs.mkdir(proposalDirectory);
-    createdProposalDirectory = true;
-
-    const manifestChanges = [];
-    for (const change of args.changes) {
-      const targetPath = normalizePowerSystemTargetPath(change.targetPath);
-      const relativePath = powerSystemProposalSnapshotRelativePath(targetPath);
-      const afterPath = join(
-        proposalDirectory,
-        "after",
-        ...relativePath.split("/"),
-      );
-      await fs.mkdir(dirname(afterPath), { recursive: true });
-      await fs.writeFile(afterPath, change.content, {
-        encoding: "utf8",
-        flag: "wx",
-      });
-      if (change.operation === "modify") {
-        const beforeContent = await fs.readFile(
-          workspaceFile(workspace, targetPath),
-          "utf8",
-        );
-        const beforePath = join(
-          proposalDirectory,
-          "before",
-          ...relativePath.split("/"),
-        );
-        await fs.mkdir(dirname(beforePath), { recursive: true });
-        await fs.writeFile(beforePath, beforeContent, {
-          encoding: "utf8",
-          flag: "wx",
-        });
-      }
-      manifestChanges.push({
-        id: change.id,
-        targetPath,
-        operation: change.operation,
-        summary: change.summary.trim(),
-        status: "pending",
-      });
-    }
-    const manifest = {
-      schemaVersion: 1,
-      proposalId,
-      title: args.title.trim(),
-      description: args.description?.trim() ?? "",
-      createdAt: new Date().toISOString(),
-      source: {
-        kind: "agent",
-        promptId: context.promptId,
-        promptVersion: context.promptVersion,
-      },
-      changes: manifestChanges,
-    };
-    await fs.writeFile(
-      join(proposalDirectory, "proposal.json"),
-      `${JSON.stringify(manifest, null, 2)}\n`,
-      { encoding: "utf8", flag: "wx" },
-    );
-    return { proposalId, changeCount: manifestChanges.length };
-  } catch (error) {
-    if (createdProposalDirectory) {
-      await fs
-        .rm(proposalDirectory, { recursive: true, force: true })
-        .catch(() => {});
-    }
-    throw error;
-  }
-}
-
-async function submitPowerDraftHandler(args: {
+async function submitWorldDraftHandler(args: {
   draftId: string;
   validationToken: string;
-  proposalId?: string;
-  title: string;
-  description?: string;
 }): Promise<CallToolResult> {
   try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    let draft = await powerDrafts.loadPowerDraft(workspace, args.draftId);
+    const { workspace } = requireDraftMode("world");
+    const draft = await loadNovelWorkbenchDraft<WorldDraftPayload>(
+      workspace,
+      "world",
+      args.draftId,
+    );
+    const hash = hashNovelWorkbenchDraftPayload(draft.payload);
     if (draft.submittedProposalId) {
-      const status = await powerDrafts.getPowerProposalStatus(
-        workspace,
-        draft.submittedProposalId,
-      );
       return result(
-        {
-          submitted: status.exists,
-          recovered: true,
-          ...status,
-          reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
-        },
-        !status.exists,
+        await getProposalStatus(
+          PROPOSAL_ROOT,
+          draft.submittedProposalId,
+          "changes",
+        ),
       );
     }
-    const generatedProposalId = `proposal-${draft.draftId}`;
-    const proposalId = args.proposalId?.trim() || generatedProposalId;
-    const existingStatus = await powerDrafts.getPowerProposalStatus(
-      workspace,
-      proposalId,
-    );
-    if (existingStatus.exists) {
-      if (args.proposalId) {
-        throw new Error(`proposalId 已存在：${proposalId}`);
-      }
-      let draftLinked = false;
-      if (
-        draft.validation?.token === args.validationToken &&
-        draft.validation.revision === draft.revision
-      ) {
-        try {
-          draft = await powerDrafts.markPowerDraftSubmitted(
-            workspace,
-            draft,
-            proposalId,
-          );
-          draftLinked = true;
-        } catch {
-          // The proposal is durable even if a concurrent draft edit won the race.
-        }
-      }
-      return result({
-        submitted: true,
-        recovered: true,
-        draftLinked,
-        ...existingStatus,
-        draft: powerDrafts.summarizePowerDraft(draft),
-        ...(draftLinked
-          ? {}
-          : {
-              warning:
-                "提案已存在，但草稿在提交期间发生变化；请以提案状态为准。",
-            }),
-        reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
-      });
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !== hash
+    ) {
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
     }
-    if (!draft.validation || draft.validation.token !== args.validationToken) {
-      throw new Error("validationToken 无效或已经因草稿修改而失效，请重新校验");
-    }
-    if (draft.validation.revision !== draft.revision) {
-      throw new Error("草稿版本已变化，请重新校验");
-    }
-    const materialized = await powerDrafts.materializePowerDraftChanges(
-      workspace,
-      draft,
-    );
-    if (materialized.contentHash !== draft.validation.contentHash) {
-      throw new Error("正式库或草稿内容在校验后发生变化，请重新校验");
-    }
-    const errors = await validatePowerSystemChanges(materialized.changes);
-    if (errors.length > 0) {
-      return result(
-        { submitted: false, ...structuredPowerValidationResult(errors) },
-        true,
-      );
-    }
-    const persisted = await persistPowerSystemProposal({
-      proposalId,
-      title: args.title,
-      description: args.description,
-      changes: materialized.changes,
-    });
-    draft = await powerDrafts.markPowerDraftSubmitted(
-      workspace,
-      draft,
-      persisted.proposalId,
-    );
-    const status = await powerDrafts.getPowerProposalStatus(
-      workspace,
-      persisted.proposalId,
-    );
-    if (!status.exists) {
-      throw new Error("提案写入后未能从磁盘回查，请勿宣称提交成功");
-    }
-    return result({
-      submitted: true,
-      ...status,
-      draft: powerDrafts.summarizePowerDraft(draft),
-      reviewAction: "请作者在小说工作台的力量体系页面点击“审阅提案”。",
-    });
+    const proposalId = `world-${draft.draftId}`;
+    const submitted = await submitHandler({ proposalId, ...draft.payload });
+    if (submitted.isError) return submitted;
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    return result({ ...decodeToolResult(submitted), draftId: draft.draftId });
   } catch (error) {
     return result({ submitted: false, error: message(error) }, true);
   }
 }
 
-async function getPowerProposalStatusHandler(args: {
+async function getWorldProposalStatusHandler(args: {
   proposalId: string;
 }): Promise<CallToolResult> {
   try {
-    const { workspace } = requireWorkspace();
-    const powerDrafts = await import("../novel-power-draft");
-    const status = await powerDrafts.getPowerProposalStatus(
-      workspace,
-      args.proposalId,
+    requireDraftMode("world");
+    return result(
+      await getProposalStatus(PROPOSAL_ROOT, args.proposalId, "changes"),
     );
-    return result(status, !status.exists);
+  } catch (error) {
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
+  }
+}
+
+async function createCharacterDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("characters");
+    const draft = await createNovelWorkbenchDraft<CharacterDraftPayload>(
+      workspace,
+      "characters",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        operations: [],
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getCharacterDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("characters");
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<CharacterDraftPayload>(
+          workspace,
+          "characters",
+          args.draftId,
+        ),
+      ),
+    );
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertCharacterDraftOperationsHandler(args: {
+  draftId: string;
+  operations: CharacterProposalOperation[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("characters");
+    const draft = await updateNovelWorkbenchDraft<CharacterDraftPayload>(
+      workspace,
+      "characters",
+      args.draftId,
+      (payload) => {
+        const operations = new Map(
+          payload.operations.map((operation) => [
+            operation.candidateId,
+            operation,
+          ]),
+        );
+        for (const operation of args.operations) {
+          const previous = operations.get(operation.candidateId);
+          operations.set(operation.candidateId, {
+            ...operation,
+            value: createCharacterDraftValue(operation, previous),
+          });
+        }
+        return { ...payload, operations: [...operations.values()] };
+      },
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validateCharacterDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("characters");
+    const draft = await loadNovelWorkbenchDraft<CharacterDraftPayload>(
+      workspace,
+      "characters",
+      args.draftId,
+    );
+    const errors = await validateCharacterProposal(draft.payload.operations);
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const saved = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      hashNovelWorkbenchDraftPayload(draft.payload),
+    );
+    return result({
+      valid: true,
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
+    });
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitCharacterDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("characters");
+    const draft = await loadNovelWorkbenchDraft<CharacterDraftPayload>(
+      workspace,
+      "characters",
+      args.draftId,
+    );
+    const hash = hashNovelWorkbenchDraftPayload(draft.payload);
+    if (draft.submittedProposalId)
+      return result(
+        await getProposalStatus(
+          CHARACTER_PROPOSAL_ROOT,
+          draft.submittedProposalId,
+          "operations",
+        ),
+      );
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !== hash
+    )
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    const proposalId = `characters-${draft.draftId}`;
+    const submitted = await submitCharacterProposalHandler({
+      proposalId,
+      ...draft.payload,
+    });
+    if (submitted.isError) return submitted;
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    return result({ ...decodeToolResult(submitted), draftId: draft.draftId });
+  } catch (error) {
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getCharacterProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
+  try {
+    requireDraftMode("characters");
+    return result(
+      await getProposalStatus(
+        CHARACTER_PROPOSAL_ROOT,
+        args.proposalId,
+        "operations",
+      ),
+    );
+  } catch (error) {
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
+  }
+}
+
+async function createItemDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+  categoryId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("items");
+    const draft = await createNovelWorkbenchDraft<ItemDraftPayload>(
+      workspace,
+      "items",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        categoryId: args.categoryId,
+        items: [],
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getItemDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("items");
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<ItemDraftPayload>(
+          workspace,
+          "items",
+          args.draftId,
+        ),
+      ),
+    );
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertItemDraftItemsHandler(args: {
+  draftId: string;
+  items: ItemBatchCandidate[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("items");
+    const draft = await updateNovelWorkbenchDraft<ItemDraftPayload>(
+      workspace,
+      "items",
+      args.draftId,
+      (payload) => {
+        const items = new Map(
+          payload.items.map((item) => [
+            item.name.trim().toLocaleLowerCase("zh-CN"),
+            item,
+          ]),
+        );
+        for (const item of args.items)
+          items.set(item.name.trim().toLocaleLowerCase("zh-CN"), item);
+        return { ...payload, items: [...items.values()] };
+      },
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validateItemDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("items");
+    const draft = await loadNovelWorkbenchDraft<ItemDraftPayload>(
+      workspace,
+      "items",
+      args.draftId,
+    );
+    const errors = await validateItemBatch(
+      draft.payload.categoryId,
+      draft.payload.items,
+    );
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const saved = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      hashNovelWorkbenchDraftPayload(draft.payload),
+    );
+    return result({
+      valid: true,
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
+    });
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitItemDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("items");
+    const draft = await loadNovelWorkbenchDraft<ItemDraftPayload>(
+      workspace,
+      "items",
+      args.draftId,
+    );
+    const hash = hashNovelWorkbenchDraftPayload(draft.payload);
+    if (draft.submittedProposalId)
+      return result(
+        await getProposalStatus(
+          ITEM_PROPOSAL_ROOT,
+          draft.submittedProposalId,
+          "items",
+        ),
+      );
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !== hash
+    )
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    const proposalId = `items-${draft.draftId}`;
+    const submitted = await submitItemBatchHandler({
+      proposalId,
+      ...draft.payload,
+    });
+    if (submitted.isError) return submitted;
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    return result({ ...decodeToolResult(submitted), draftId: draft.draftId });
+  } catch (error) {
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getItemProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
+  try {
+    requireDraftMode("items");
+    return result(
+      await getProposalStatus(ITEM_PROPOSAL_ROOT, args.proposalId, "items"),
+    );
   } catch (error) {
     return result(
       { exists: false, proposalId: args.proposalId, error: message(error) },
@@ -2125,6 +2509,50 @@ export async function createNovelWorkbenchServer() {
     operation: z.enum(["create", "modify"]),
     summary: z.string().min(1),
     content: z.string(),
+  });
+  const narrativeExpectedSourceHashSchema = z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .describe("调用 novel_narrative_get_context 后返回的 sourceHash");
+  const narrativeKeyNodeInputSchema = z.object({
+    nodeId: z.string().regex(ID_PATTERN),
+    title: z.string().trim().min(1).max(160),
+    content: z.string().trim().min(1).max(160_000),
+    locations: z
+      .array(
+        z.object({
+          chapterId: z.string().regex(ID_PATTERN),
+          sectionId: z.string().regex(ID_PATTERN).nullable(),
+        }),
+      )
+      .max(100)
+      .optional(),
+  });
+  const narrativeLineInputSchema = z.object({
+    candidateId: z.string().regex(ID_PATTERN),
+    title: z.string().trim().min(1).max(160),
+    kind: z
+      .enum(["main", "emotion", "mirror", "information", "theme", "custom"])
+      .optional(),
+    storyRole: z.enum(["a", "b", "both", "none"]).optional(),
+    status: z.enum(["idea", "active", "resolved", "paused"]).optional(),
+    premise: z.string().max(20_000).optional(),
+    content: z.string().max(160_000).optional(),
+    protagonistCharacterId: z.string().regex(ID_PATTERN).nullable().optional(),
+    keyNodes: z.array(narrativeKeyNodeInputSchema).min(1).max(30),
+  });
+  const narrativeStoryArcInputSchema = z.object({
+    candidateId: z.string().regex(ID_PATTERN),
+    title: z.string().trim().min(1).max(160),
+    kind: z
+      .enum(["plot", "character", "relationship", "mystery", "theme", "custom"])
+      .optional(),
+    characterId: z.string().regex(ID_PATTERN).nullable().optional(),
+    characterArcStageId: z.string().regex(ID_PATTERN).nullable().optional(),
+    characterArcStageTitle: z.string().max(160).optional(),
+    lineIds: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
+    content: z.string().max(160_000).optional(),
+    keyNodes: z.array(narrativeKeyNodeInputSchema).min(1).max(30),
   });
   const itemFieldValueSchema = z.union([
     z.string(),
@@ -2149,471 +2577,222 @@ export async function createNovelWorkbenchServer() {
     summary: z.string().min(1),
     value: z.record(z.string(), z.unknown()),
   });
-  const powerIdSchema = z.string().regex(ID_PATTERN);
-  const powerMetadataInputSchema = z.object({
-    settingLevel: z.string().optional(),
-    domainCategories: z.array(z.string().min(1)).optional(),
-    spatialScopeIds: z.array(powerIdSchema).optional(),
-    timeFrom: z.string().optional(),
-    timeTo: z.string().optional(),
-    authority: z.enum(["hard", "default", "exception", "rumor"]).optional(),
-    canon: z.enum(["draft", "provisional", "canon", "deprecated"]).optional(),
-    revealStage: z.string().optional(),
-  });
-  const powerDesignBriefSchema = z.object({
-    narrativePurpose: z.string().min(1).describe("该体系在故事中解决什么叙事问题"),
-    coreMechanism: z.string().min(1).describe("力量从何而来、通过什么机制产生效果"),
-    progressionModel: z.string().min(1).describe("成长、觉醒、授权或版本变化的方式"),
-    costs: z.array(z.string().min(1)).describe("获得、维持或使用力量的代价"),
-    comparisonRule: z.string().min(1).describe("同体系及跨体系比较时采用的规则"),
-    exceptionBoundaries: z.array(z.string().min(1)).describe("规则不适用的例外和边界"),
-  });
-  const powerDimensionSchema = z.object({
-    id: powerIdSchema,
-    name: z.string().min(1),
-    category: z.enum(["quality", "boundary"]),
-    measurement: z.enum(["numeric", "ordinal", "descriptive"]).optional(),
-    unit: z.string().optional(),
-    lowLabel: z.string().optional(),
-    highLabel: z.string().optional(),
-    description: z.string().optional(),
-  });
-  const powerOverviewPatchSchema = z.object({
-    name: z.string().min(1).optional(),
-    aliases: z.array(z.string().min(1)).optional(),
-    summary: z.string().optional(),
-    status: z.enum(["draft", "active", "archived"]).optional(),
-    designContract: z
-      .object({
-        explanation: z.enum(["explicit", "partial", "mysterious"]).optional(),
-        progression: z
-          .enum(["none", "single-track", "multi-track", "event-driven"])
-          .optional(),
-        costPolicy: z.enum(["required", "recommended", "optional"]).optional(),
-        comparison: z.enum(["stable", "contextual", "incomparable"]).optional(),
-        theoryPolicy: z.enum(["explicit", "partial", "unknown"]).optional(),
-      })
-      .optional(),
-    dimensions: z.array(powerDimensionSchema).optional(),
-    metadata: powerMetadataInputSchema.optional(),
-    pageMarkdown: z.string().optional(),
-  });
-  const powerEntityReferenceSchema = z.discriminatedUnion("namespace", [
-    z.object({
-      namespace: z.literal("catalog"),
-      kind: z.enum([
-        "foundation",
-        "medium",
-        "principle",
-        "resource",
-        "theory",
-        "method",
-        "capability",
-      ]),
-      targetId: powerIdSchema,
-    }),
-    z.object({
-      namespace: z.literal("system"),
-      systemId: powerIdSchema,
-      kind: z.enum([
-        "system",
-        "track",
-        "state",
-        "transition",
-        "quality-dimension",
-        "boundary-dimension",
-      ]),
-      targetId: powerIdSchema,
-    }),
-    z.object({
-      namespace: z.literal("external"),
-      kind: z.enum(["actor", "location", "faction", "item", "event", "external"]),
-      targetId: powerIdSchema,
-    }),
-  ]);
-  const catalogEntityBaseShape = {
-    id: powerIdSchema,
-    name: z.string().min(1),
-    aliases: z.array(z.string().min(1)).optional(),
-    subtypeId: z.string().optional(),
-    summary: z.string().optional(),
-    tags: z.array(z.string().min(1)).optional(),
-    metadata: powerMetadataInputSchema.optional(),
-  };
-  const theoryOperationSchema = z.object({
-    id: powerIdSchema,
-    name: z.string().min(1),
-    operationType: z.enum([
-      "circulate",
-      "aggregate",
-      "compress",
-      "refine",
-      "split",
-      "convert",
-      "resonate",
-      "synchronize",
-      "encode",
-      "inscribe",
-      "project",
-      "self-organize",
-      "feedback",
-      "sample",
-      "custom",
-    ]),
-    input: z.string(),
-    output: z.string(),
-    rule: z.string(),
-  });
-  const theoryReferenceSchema = z.object({
-    namespace: z.literal("catalog"),
-    kind: z.literal("theory"),
-    targetId: powerIdSchema,
-  });
-  const powerCatalogEntityInputSchema = z.discriminatedUnion("kind", [
-    z.object({
-      ...catalogEntityBaseShape,
-      kind: z.literal("foundation"),
-      details: z
-        .object({
-          foundationType: z
-            .enum([
-              "natural",
-              "biological",
-              "psychic",
-              "divine",
-              "technological",
-              "social",
-              "conceptual",
-              "extradimensional",
-              "unknown",
-            ])
-            .optional(),
-          availability: z
-            .enum([
-              "universal",
-              "regional",
-              "innate",
-              "granted",
-              "manufactured",
-              "institutional",
-              "event-bound",
-              "unknown",
-            ])
-            .optional(),
-          manifestation: z.string().optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...catalogEntityBaseShape,
-      kind: z.literal("medium"),
-      details: z
-        .object({
-          mediumType: z
-            .enum([
-              "energy",
-              "substance",
-              "field",
-              "network",
-              "body",
-              "mind",
-              "soul",
-              "symbolic",
-              "device",
-              "authority",
-              "environment",
-              "unknown",
-            ])
-            .optional(),
-          carrier: z.string().optional(),
-          circulation: z.string().optional(),
-          storage: z.string().optional(),
-          loss: z.string().optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...catalogEntityBaseShape,
-      kind: z.literal("principle"),
-      details: z
-        .object({
-          principleType: z
-            .enum(["invariant", "prohibition", "boundary", "conversion", "priority", "axiom", "custom"])
-            .optional(),
-          scope: z.enum(["universe", "world", "domain", "system", "local"]).optional(),
-          statements: z.array(z.string().min(1)).optional(),
-          conditions: z.array(z.string().min(1)).optional(),
-          exceptions: z.array(z.string().min(1)).optional(),
-          priority: z.number().int().min(0).max(9999).optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...catalogEntityBaseShape,
-      kind: z.literal("resource"),
-      details: z
-        .object({
-          resourceType: z
-            .enum(["fuel", "material", "catalyst", "environment", "information", "permission", "emotion", "biological", "time", "other"])
-            .optional(),
-          measurement: z.enum(["numeric", "ordinal", "descriptive", "unknown"]).optional(),
-          unit: z.string().optional(),
-          qualityDimensions: z.array(z.string().min(1)).optional(),
-          replenishment: z.string().optional(),
-          scarcity: z.string().optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...catalogEntityBaseShape,
-      kind: z.literal("theory"),
-      details: z
-        .object({
-          representationType: z
-            .enum(["sequence", "graph", "modular", "spatial-field", "symbolic", "dynamic-system", "rule-system", "probabilistic", "embodied", "emotional", "unknown"])
-            .optional(),
-          substrateRefs: z.array(powerEntityReferenceSchema).optional(),
-          topology: z
-            .object({
-              spatialDimensions: z.number().int().min(0).max(16).nullable(),
-              nodeDefinition: z.string(),
-              connectionDefinition: z.string(),
-              structure: z.string(),
-            })
-            .optional(),
-          operations: z.array(theoryOperationSchema).optional(),
-          controlStrategy: z.string().optional(),
-          complexity: z
-            .object({
-              memory: z.enum(["low", "medium", "high", "extreme", "unknown"]),
-              parallelism: z.enum(["low", "medium", "high", "extreme", "unknown"]),
-              abstraction: z.enum(["low", "medium", "high", "extreme", "unknown"]),
-              dynamism: z.enum(["low", "medium", "high", "extreme", "unknown"]),
-            })
-            .optional(),
-          assumptions: z.array(z.string().min(1)).optional(),
-          invariants: z.array(z.string().min(1)).optional(),
-          failureModes: z.array(z.string().min(1)).optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...catalogEntityBaseShape,
-      kind: z.literal("method"),
-      details: z
-        .object({
-          acquisition: z
-            .enum(["training", "study", "inheritance", "awakening", "implantation", "contract", "ritual", "equipment", "authorization", "event", "unknown"])
-            .optional(),
-          roles: z
-            .array(z.enum(["advance", "stabilize", "refine", "recover", "transform", "awaken", "control", "adapt"]))
-            .optional(),
-          theoryRefs: z.array(theoryReferenceSchema).optional(),
-          procedure: z.string().optional(),
-          phases: z
-            .array(
-              z.object({
-                id: powerIdSchema,
-                name: z.string().min(1),
-                order: z.number().int().nonnegative(),
-                goal: z.string(),
-                operations: z.array(z.string().min(1)),
-                requirements: z.array(z.string().min(1)),
-                outputs: z.array(z.string().min(1)),
-              }),
-            )
-            .optional(),
-          outputs: z.array(z.string().min(1)).optional(),
-          failureConsequences: z.array(z.string().min(1)).optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...catalogEntityBaseShape,
-      kind: z.literal("capability"),
-      details: z
-        .object({
-          capabilityType: z
-            .enum(["intrinsic", "technique", "spell", "superpower", "sense", "transformation", "authority", "technology", "custom"])
-            .optional(),
-          activation: z
-            .enum(["active", "passive", "conditional", "toggle", "ritual", "collective", "automatic"])
-            .optional(),
-          effect: z.string().optional(),
-          target: z.string().optional(),
-          range: z.string().optional(),
-          duration: z.string().optional(),
-          costs: z.array(z.string().min(1)).optional(),
-          limitations: z.array(z.string().min(1)).optional(),
-          sideEffects: z.array(z.string().min(1)).optional(),
-          countermeasures: z.array(z.string().min(1)).optional(),
-        })
-        .optional(),
-    }),
-  ]);
-  const powerMetricValueInputSchema = z.object({
-    dimensionId: powerIdSchema,
-    value: z.union([z.number(), z.string(), z.null()]),
-    note: z.string().optional(),
-  });
-  const powerStateInputSchema = z.object({
-    id: powerIdSchema,
-    name: z.string().min(1),
-    aliases: z.array(z.string().min(1)).optional(),
-    stateType: z.enum(["stage", "rank", "form", "control", "version", "permission", "condition", "custom"]).optional(),
-    summary: z.string().optional(),
-    order: z.number().int().nonnegative().optional(),
-    entryConditions: z.array(z.string().min(1)).optional(),
-    maintenanceConditions: z.array(z.string().min(1)).optional(),
-    exitConditions: z.array(z.string().min(1)).optional(),
-    baseQualities: z.array(powerMetricValueInputSchema).optional(),
-    baseBoundaries: z.array(powerMetricValueInputSchema).optional(),
-    cognition: z
-      .object({
-        representationType: z.enum(["sequence", "graph", "modular", "spatial-field", "symbolic", "dynamic-system", "rule-system", "probabilistic", "embodied", "emotional", "unknown"]).optional(),
-        description: z.string().optional(),
-        memoryLoad: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
-        parallelism: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
-        abstraction: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
-        dynamism: z.enum(["low", "medium", "high", "extreme", "unknown"]).optional(),
-        spatialDimensions: z.number().int().min(0).max(16).nullable().optional(),
-        requiredSkills: z.array(z.string().min(1)).optional(),
-        breakthroughInsight: z.string().optional(),
-      })
-      .optional(),
-    stability: z.string().optional(),
-    risks: z.array(z.string().min(1)).optional(),
-    metadata: powerMetadataInputSchema.optional(),
-  });
-  const powerTransitionInputSchema = z.object({
-    id: powerIdSchema,
-    name: z.string().min(1),
-    fromStateId: powerIdSchema.nullable().optional(),
-    toStateId: powerIdSchema,
-    transitionType: z.enum(["advance", "branch", "merge", "regress", "transform", "recover", "awaken", "event"]).optional(),
-    conditions: z.array(z.string().min(1)).optional(),
-    qualityCarryover: z.enum(["preserve", "reset", "transform", "partial", "custom"]).optional(),
-    qualityRule: z.string().optional(),
-    outcomes: z.array(z.string().min(1)).optional(),
-    failureModes: z.array(z.string().min(1)).optional(),
-    reversible: z.boolean().optional(),
-  });
-  const powerProgressionInputSchema = z.object({
-    track: z.object({
-      id: powerIdSchema,
-      name: z.string().min(1).optional(),
-      subtypeId: z.string().optional(),
-      summary: z.string().optional(),
-      mode: z.enum(["ordered", "branching", "coexisting", "cyclic", "threshold", "event-driven", "unordered"]).optional(),
-      metadata: powerMetadataInputSchema.optional(),
-    }),
-    states: z.array(powerStateInputSchema).optional(),
-    transitions: z.array(powerTransitionInputSchema).optional(),
-  });
-  const powerMetricModifierSchema = z.object({
-    dimensionId: powerIdSchema,
-    operation: z.enum(["set", "add", "multiply", "minimum", "maximum"]),
-    value: z.union([z.number(), z.string()]),
-    note: z.string(),
-  });
-  const powerConnectionBaseShape = {
-    id: powerIdSchema,
-    source: powerEntityReferenceSchema,
-    target: powerEntityReferenceSchema,
-    conditions: z.array(z.string().min(1)).optional(),
-    note: z.string().optional(),
-    metadata: powerMetadataInputSchema.optional(),
-  };
-  const powerConnectionInputSchema = z.discriminatedUnion("kind", [
-    z.object({
-      ...powerConnectionBaseShape,
-      kind: z.literal("association"),
-      details: z
-        .object({
-          relation: z.enum(["governs", "uses", "adopts", "expresses", "requires", "compatible-with", "counters", "forbidden-by", "depends-on", "converts-into"]).optional(),
-          compatibility: z.enum(["native", "adapted", "conditional", "forbidden"]).optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...powerConnectionBaseShape,
-      kind: z.literal("method-application"),
-      details: z
-        .object({
-          role: z.enum(["advance", "stabilize", "refine", "recover", "transform", "awaken", "control", "adapt"]).optional(),
-          compatibility: z.enum(["native", "adapted", "conditional", "forbidden"]).optional(),
-          theoryRef: theoryReferenceSchema.nullable().optional(),
-          executionModel: z.string().optional(),
-          efficiency: z
-            .object({
-              mode: z.enum(["qualitative", "multiplier", "formula"]),
-              value: z.union([z.number(), z.string(), z.null()]),
-              note: z.string(),
-            })
-            .optional(),
-          qualityEffects: z.array(powerMetricModifierSchema).optional(),
-          boundaryEffects: z.array(powerMetricModifierSchema).optional(),
-          outcomes: z.array(z.string().min(1)).optional(),
-          failureModes: z.array(z.string().min(1)).optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...powerConnectionBaseShape,
-      kind: z.literal("resource-requirement"),
-      details: z
-        .object({
-          purpose: z.enum(["develop", "advance", "maintain", "activate", "recover", "transform"]).optional(),
-          amount: z
-            .object({
-              mode: z.enum(["numeric", "range", "rate", "descriptive"]),
-              minimum: z.number().nullable(),
-              maximum: z.number().nullable(),
-              value: z.string(),
-              unit: z.string(),
-            })
-            .optional(),
-          quality: z.string().optional(),
-          consumed: z.boolean().optional(),
-          substituteRefs: z
-            .array(
-              z.object({
-                namespace: z.literal("catalog"),
-                kind: z.literal("resource"),
-                targetId: powerIdSchema,
-              }),
-            )
-            .optional(),
-          shortageConsequence: z.string().optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...powerConnectionBaseShape,
-      kind: z.literal("capability-access"),
-      details: z
-        .object({
-          accessMode: z.enum(["intrinsic", "learnable", "method-grant", "awakening", "equipped", "contracted", "authorized", "conditional", "forbidden"]).optional(),
-          mastery: z.enum(["available", "basic", "proficient", "mastered", "variable"]).optional(),
-        })
-        .optional(),
-    }),
-    z.object({
-      ...powerConnectionBaseShape,
-      kind: z.literal("system-interaction"),
-      details: z
-        .object({
-          interaction: z.enum(["compatible", "conversion", "suppression", "amplification", "interference", "exclusion", "fusion"]).optional(),
-          effect: z.string().optional(),
-        })
-        .optional(),
-    }),
-  ]);
   return createSdkMcpServer({
     name: NOVEL_WORKBENCH_SDK_ADAPTER_ID,
     version: "1.0.0",
     instructions: NOVEL_WORKBENCH_SDK_INSTRUCTIONS,
     tools: [
+      tool(
+        "novel_world_create_draft",
+        "在作者确认目标后创建可恢复的世界架构草稿。草稿不会修改正式设定，后续所有变更都必须写入这份草稿。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1),
+          description: z.string().optional(),
+        },
+        createWorldDraftHandler,
+      ),
+      tool(
+        "novel_world_get_draft",
+        "读取世界架构草稿的当前内容、revision、校验令牌和提交状态。会话恢复或工具报错后必须先调用。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getWorldDraftHandler,
+      ),
+      tool(
+        "novel_world_upsert_draft_changes",
+        "将已确认的世界架构变更增量写入草稿；同一目标文件只保留最后一次变更。不得直接提交完整提案。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          changes: z.array(changeSchema).min(1).max(100),
+        },
+        upsertWorldDraftChangesHandler,
+      ),
+      tool(
+        "novel_world_validate_draft",
+        "完整校验世界架构草稿的文件闭合、Schema、空间与地点引用。成功后返回绑定当前 revision 的 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateWorldDraftHandler,
+      ),
+      tool(
+        "novel_world_submit_draft",
+        "使用 validationToken 提交世界架构草稿。每份草稿最多成功提交一次，提交后必须再查询状态才能声明成功。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitWorldDraftHandler,
+      ),
+      tool(
+        "novel_world_get_proposal_status",
+        "从磁盘确认世界架构提案是否真实存在及其待审、已采纳、已拒绝数量。只有 exists=true 才能向作者宣称提交成功。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getWorldProposalStatusHandler,
+      ),
+      tool(
+        "novel_characters_create_draft",
+        "创建可恢复的人物库提案草稿。先创建草稿，再逐批添加角色、种族、分组或角色灵魂候选。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1),
+          description: z.string().optional(),
+        },
+        createCharacterDraftHandler,
+      ),
+      tool(
+        "novel_characters_get_draft",
+        "读取人物库草稿及其 revision、校验令牌、提交状态。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getCharacterDraftHandler,
+      ),
+      tool(
+        "novel_characters_upsert_draft_operations",
+        "把一批人物库候选增量写入草稿。按 candidateId 合并，可分批完成，未提供的候选保持不变。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          operations: z
+            .array(characterProposalOperationSchema)
+            .min(1)
+            .max(MAX_CHARACTER_OPERATIONS),
+        },
+        upsertCharacterDraftOperationsHandler,
+      ),
+      tool(
+        "novel_characters_validate_draft",
+        "校验人物库草稿的角色卡、定义、关系与物品引用；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateCharacterDraftHandler,
+      ),
+      tool(
+        "novel_characters_submit_draft",
+        "使用 validationToken 创建待作者审批的人物库提案。不会修改正式人物库。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitCharacterDraftHandler,
+      ),
+      tool(
+        "novel_characters_get_proposal_status",
+        "从磁盘确认角色提案是否真实存在及其待审、已采纳、已拒绝数量。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getCharacterProposalStatusHandler,
+      ),
+      tool(
+        "novel_items_create_draft",
+        "在确认分类后创建可恢复的物品批量草稿。草稿不写入正式物品库。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1),
+          description: z.string().optional(),
+          categoryId: z.string().regex(ID_PATTERN),
+        },
+        createItemDraftHandler,
+      ),
+      tool(
+        "novel_items_get_draft",
+        "读取物品批量草稿及其 revision、校验令牌和提交状态。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getItemDraftHandler,
+      ),
+      tool(
+        "novel_items_upsert_draft_items",
+        "按物品名称增量新增或替换草稿候选；可分批生成，不需要一次提供整批物品。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          items: z.array(itemBatchCandidateSchema).min(1).max(MAX_BATCH_ITEMS),
+        },
+        upsertItemDraftItemsHandler,
+      ),
+      tool(
+        "novel_items_validate_draft",
+        "校验物品草稿的分类、继承字段、名称重复、类型和必填项；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateItemDraftHandler,
+      ),
+      tool(
+        "novel_items_submit_draft",
+        "使用 validationToken 提交物品批量草稿供作者审阅。每份草稿只能成功提交一次。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitItemDraftHandler,
+      ),
+      tool(
+        "novel_items_get_proposal_status",
+        "从磁盘确认物品批量提案是否真实存在及其待审、已创建、已拒绝数量。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getItemProposalStatusHandler,
+      ),
+      tool(
+        "novel_narrative_get_context",
+        "按总览、线路、故事弧、目录或章节范围读取已保存的剧情工程事实。默认只返回总览；需要完整字段时指定 scope，必要时用 ids 限定对象。初始消息里的未保存界面草稿仍优先于这里的已保存事实。",
+        {
+          scope: z
+            .enum(["overview", "lines", "arcs", "outline", "chapters", "all"])
+            .optional(),
+          ids: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
+        },
+        getNarrativeContextHandler,
+      ),
+      tool(
+        "novel_narrative_create_draft",
+        "在作者明确要求创建线路或故事弧后创建可恢复的剧情草稿。草稿包含关键节点候选，不会写入正式剧情工程。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().trim().min(1).max(160),
+          description: z.string().max(20_000).optional(),
+          baseSourceHash: narrativeExpectedSourceHashSchema,
+        },
+        createNarrativeDraftHandler,
+      ),
+      tool(
+        "novel_narrative_get_draft",
+        "读取剧情工程 AI 草稿及其关键节点候选、revision、校验令牌和提交状态。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+        },
+        getNarrativeDraftHandler,
+      ),
+      tool(
+        "novel_narrative_upsert_draft_lines",
+        "向剧情工程草稿增量写入或替换线路候选；每条线路必须提供至少一个关键节点。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          lines: z.array(narrativeLineInputSchema).min(1).max(MAX_NARRATIVE_CANDIDATES),
+        },
+        upsertNarrativeDraftLinesHandler,
+      ),
+      tool(
+        "novel_narrative_upsert_draft_story_arcs",
+        "向剧情工程草稿增量写入或替换故事弧候选；每条故事弧必须提供至少一个关键节点。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          arcs: z.array(narrativeStoryArcInputSchema).min(1).max(MAX_NARRATIVE_CANDIDATES),
+        },
+        upsertNarrativeDraftArcsHandler,
+      ),
+      tool(
+        "novel_narrative_validate_draft",
+        "校验剧情草稿的候选 id、关键节点、章节/节关联和故事弧线路引用；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateNarrativeDraftHandler,
+      ),
+      tool(
+        "novel_narrative_submit_draft",
+        "使用最近一次校验返回的 validationToken 提交剧情草稿为待审提案；只写 narrative/proposals，不修改正式 narrative/index.json。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitNarrativeDraftHandler,
+      ),
+      tool(
+        "novel_narrative_get_proposal_status",
+        "从磁盘查询剧情提案是否真实存在及其线路、故事弧候选的待审、已采纳、已拒绝数量。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getNarrativeProposalStatusHandler,
+      ),
       tool(
         "novel_world_get_context",
         "读取小说工作台当前世界架构。默认返回 meta、空间树、设定索引和地点索引；需要查看具体页面时传入受支持的项目相对路径。",
@@ -2636,102 +2815,6 @@ export async function createNovelWorkbenchServer() {
           changes: z.array(changeSchema).min(1).max(100),
         },
         submitHandler,
-      ),
-      tool(
-        "novel_power_get_context",
-        "读取精简的力量体系上下文、已有稳定 id、草稿列表和题材中立建模模式；传 systemId 时只额外读取该体系详情。每次设计必须先调用。",
-        { systemId: z.string().regex(ID_PATTERN).optional() },
-        getPowerSystemContextHandler,
-      ),
-      tool(
-        "novel_power_create_draft",
-        "在作者明确确认设计摘要后创建服务端力量体系草稿。该工具自动生成最小合法记录，不要求手写 index、record 或 page 文件。",
-        {
-          draftId: powerIdSchema.optional(),
-          systemId: powerIdSchema,
-          name: z.string().min(1),
-          typeId: powerIdSchema,
-          summary: z.string().optional(),
-          designBrief: powerDesignBriefSchema,
-        },
-        createPowerDraftHandler,
-      ),
-      tool(
-        "novel_power_get_draft",
-        "读取一份力量体系草稿的完整领域对象和当前 revision。恢复会话或修复校验问题时使用。",
-        { draftId: powerIdSchema },
-        getPowerDraftHandler,
-      ),
-      tool(
-        "novel_power_update_draft_overview",
-        "增量更新力量体系草稿的名称、摘要、设计契约、质量/边界维度、元数据或说明页。未提供的字段保持不变。",
-        {
-          draftId: powerIdSchema,
-          patch: powerOverviewPatchSchema,
-        },
-        updatePowerDraftOverviewHandler,
-      ),
-      tool(
-        "novel_power_upsert_catalog",
-        "增量新增或更新共享力量对象：本源、介质、法则、资源、理论、方法、能力。按稳定 id 合并，未提供的已有字段保持不变。",
-        {
-          draftId: powerIdSchema,
-          entities: z.array(powerCatalogEntityInputSchema).min(1).max(30),
-        },
-        upsertPowerDraftCatalogHandler,
-      ),
-      tool(
-        "novel_power_upsert_progression",
-        "增量新增或更新一个成长路径及其状态、转换、认知要求、条件、基础质量和能力边界。状态不是固定境界，可表示等级、形态、版本、权限或条件。",
-        {
-          draftId: powerIdSchema,
-          progression: powerProgressionInputSchema,
-        },
-        upsertPowerDraftProgressionHandler,
-      ),
-      tool(
-        "novel_power_upsert_connections",
-        "增量新增或更新领域连接，用于把方法、资源、能力应用到体系/状态/转换，或定义跨体系交互。引用必须使用上下文中的稳定 id。",
-        {
-          draftId: powerIdSchema,
-          connections: z.array(powerConnectionInputSchema).min(1).max(50),
-        },
-        upsertPowerDraftConnectionsHandler,
-      ),
-      tool(
-        "novel_power_remove_draft_entities",
-        "仅从未提交草稿中删除误建的目录对象、成长路径、状态、转换或连接。不会删除正式库内容。",
-        {
-          draftId: powerIdSchema,
-          scope: z.enum(["catalog", "track", "state", "transition", "connection"]),
-          ids: z.array(powerIdSchema).min(1).max(50),
-          trackId: powerIdSchema.optional(),
-        },
-        removePowerDraftEntitiesHandler,
-      ),
-      tool(
-        "novel_power_validate_draft",
-        "物化并完整校验草稿的 Schema、索引、引用、成长结构、指标和生态连接。成功后返回绑定当前 revision 与内容哈希的 validationToken。",
-        { draftId: powerIdSchema },
-        validatePowerDraftHandler,
-      ),
-      tool(
-        "novel_power_submit_draft",
-        "使用最近一次校验返回的 validationToken 提交草稿。提交前会重新物化、核对内容哈希并再次校验，只创建待审批快照。每份草稿只能成功提交一次。",
-        {
-          draftId: powerIdSchema,
-          validationToken: z.string().min(1),
-          proposalId: z.string().regex(ID_PATTERN).optional(),
-          title: z.string().min(1),
-          description: z.string().optional(),
-        },
-        submitPowerDraftHandler,
-      ),
-      tool(
-        "novel_power_get_proposal_status",
-        "从磁盘查询力量体系提案是否真实存在及其待审批、已采纳、已拒绝数量。只有 exists=true 才能向作者宣称提交成功。",
-        { proposalId: powerIdSchema },
-        getPowerProposalStatusHandler,
       ),
       tool(
         "novel_items_get_context",

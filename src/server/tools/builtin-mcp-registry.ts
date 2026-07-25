@@ -27,13 +27,18 @@ export interface BuiltinMcpEntry {
    * buildSdkMcpServers() for user-toggleable builtins (gemini-image, edge-tts).
    * Context-injected builtins (cron-tools, etc.) don't need this hook.
    */
-  configure?: (env: Record<string, string>, ctx: BuiltinMcpSessionContext) => void;
+  configure?: (
+    env: Record<string, string>,
+    ctx: BuiltinMcpSessionContext,
+  ) => void;
   /**
    * Validate config on enable. Return error object or null if valid.
    * Called on user "Test" / "Enable" action — the meta proxy force-loads
    * the tool module before calling through.
    */
-  validate?: (env: Record<string, string>) => Promise<{ type: string; message: string } | null>;
+  validate?: (
+    env: Record<string, string>,
+  ) => Promise<{ type: string; message: string } | null>;
 }
 
 /** META: the bits we can register eagerly without loading the tool module. */

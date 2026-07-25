@@ -1,0 +1,110 @@
+@layer components {
+  .ns-button,
+  .ns-icon-button,
+  .ns-compact-button,
+  .ns-compact-primary-button {
+    flex: 0 0 auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--paper);
+    color: var(--ink-muted);
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      border-color 120ms ease;
+  }
+
+  .ns-button {
+    display: inline-flex;
+    min-height: 2.125rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    padding: 0 0.75rem;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .ns-compact-button,
+  .ns-compact-primary-button {
+    display: inline-flex;
+    min-height: 1.875rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    padding: 0 0.625rem;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .ns-icon-button {
+    display: inline-flex;
+    width: 2.125rem;
+    height: 2.125rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .ns-button > svg,
+  .ns-icon-button > svg,
+  .ns-compact-button > svg,
+  .ns-compact-primary-button > svg {
+    flex: 0 0 auto;
+  }
+
+  .ns-button:hover:not(:disabled),
+  .ns-icon-button:hover:not(:disabled),
+  .ns-compact-button:hover:not(:disabled) {
+    background: var(--hover-bg);
+    color: var(--ink);
+  }
+
+  .ns-button.is-primary {
+    border-color: var(--accent-warm);
+    background: var(--accent-warm);
+    color: var(--button-primary-text);
+  }
+
+  .ns-button.is-primary:hover:not(:disabled) {
+    background: var(--button-primary-bg-hover);
+    color: var(--button-primary-text);
+  }
+
+  .ns-compact-primary-button {
+    border-color: var(--button-primary-bg);
+    background: var(--button-primary-bg);
+    color: var(--button-primary-text);
+  }
+
+  .ns-compact-primary-button:hover:not(:disabled) {
+    border-color: var(--button-primary-bg-hover);
+    background: var(--button-primary-bg-hover);
+  }
+
+  .ns-button.is-danger {
+    border-color: color-mix(in srgb, var(--error) 35%, var(--line));
+    color: var(--error);
+  }
+
+  .ns-button:focus-visible,
+  .ns-icon-button:focus-visible,
+  .ns-compact-button:focus-visible,
+  .ns-compact-primary-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent-warm) 42%, transparent);
+    outline-offset: 2px;
+  }
+
+  .ns-button:disabled,
+  .ns-icon-button:disabled,
+  .ns-compact-button:disabled,
+  .ns-compact-primary-button:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+}

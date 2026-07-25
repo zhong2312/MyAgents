@@ -152,6 +152,7 @@ interface CharacterRecord {
   appearances: CharacterAppearance[];
   inventory: CharacterInventoryItem[];
   arcStages: {
+    readonly id?: string;
     title: string;
     state: string;
     detail: string;
@@ -2464,7 +2465,7 @@ function ArcTab({ character }: { readonly character: CharacterRecord }) {
           <ol className="mt-7 space-y-0">
             {character.arcStages.map((stage, index) => (
               <li
-                key={stage.title}
+                key={stage.id ?? `${stage.title}-${index}`}
                 className="relative flex gap-4 pb-7 last:pb-0"
               >
                 {index < character.arcStages.length - 1 && (

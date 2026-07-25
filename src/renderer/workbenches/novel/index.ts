@@ -20,10 +20,11 @@ const novelWorkbenchDefinition = defineWorkbench(
       { id: "overview", label: "总览", icon: "layout-dashboard", order: 10 },
       { id: "inspiration", label: "灵感", icon: "lightbulb", order: 20 },
       { id: "manuscript", label: "正文", icon: "file-text", order: 30 },
+      { id: "narrative", label: "剧情工程", icon: "route", order: 40 },
       { id: "characters", label: "人物库", icon: "users", order: 50 },
       { id: "items", label: "物品库", icon: "package-open", order: 55 },
       { id: "factions", label: "势力组织", icon: "building-2", order: 57 },
-      { id: "powers", label: "力量体系", icon: "waypoints", order: 59 },
+      { id: "powers", label: "修炼体系", icon: "waypoints", order: 59 },
       { id: "lore", label: "世界架构", icon: "network", order: 60 },
       {
         id: "lore-config",

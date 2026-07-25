@@ -73,6 +73,73 @@
   background: var(--paper-elevated);
 }
 
+.novel-markdown-source-toolbar,
+.novel-markdown-source-tools {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.novel-markdown-source-toolbar {
+  flex: 1 1 auto;
+  gap: 0.75rem;
+  overflow: hidden;
+}
+
+.novel-markdown-source-label {
+  flex: 0 0 auto;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.novel-markdown-source-tools {
+  gap: 0.125rem;
+  overflow-x: auto;
+  padding-bottom: 1px;
+}
+
+.novel-markdown-line-spacing-control {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: 0.375rem;
+}
+
+.novel-markdown-block-type-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.novel-markdown-block-type-control [data-toolbar-item] {
+  width: 5.75rem;
+  min-width: 5.75rem;
+}
+
+.novel-markdown-line-spacing-select > button {
+  min-width: 4.75rem;
+  height: 2rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 1.75rem 0 0.625rem;
+  color: var(--ink-muted);
+  background: var(--paper-inset);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.novel-markdown-line-spacing-select > button:hover,
+.novel-markdown-line-spacing-select > button:focus-visible {
+  border-color: var(--accent-cool);
+  color: var(--ink);
+}
+
+.novel-markdown-line-spacing-select > button:focus-visible {
+  outline: 2px solid var(--accent-warm);
+  outline-offset: 1px;
+}
+
 .novel-markdown-expand-button {
   display: inline-flex;
   width: 2rem;
@@ -125,8 +192,23 @@
   background: #fcfcfc;
   color: var(--ink);
   font-size: 1rem;
-  line-height: 2;
+  line-height: var(--novel-markdown-line-height, 1.6);
   outline: none;
+}
+
+.novel-markdown-shell[data-line-spacing="compact"] {
+  --novel-markdown-line-height: 1.6;
+  --novel-markdown-paragraph-gap: 0.5rem;
+}
+
+.novel-markdown-shell[data-line-spacing="standard"] {
+  --novel-markdown-line-height: 1.8;
+  --novel-markdown-paragraph-gap: 0.75rem;
+}
+
+.novel-markdown-shell[data-line-spacing="relaxed"] {
+  --novel-markdown-line-height: 2;
+  --novel-markdown-paragraph-gap: 1rem;
 }
 
 .novel-markdown-content--full {
@@ -162,7 +244,7 @@
 }
 
 .novel-markdown-content p {
-  margin: 1rem 0;
+  margin: var(--novel-markdown-paragraph-gap, 0.5rem) 0;
 }
 
 .novel-markdown-content ul,
