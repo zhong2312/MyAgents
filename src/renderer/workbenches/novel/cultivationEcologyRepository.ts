@@ -89,10 +89,16 @@ export function createCultivationEcologyRepository(storage: WorkbenchStorage) {
       return { ecology: rebuildCultivationAudits(parse(file.content)), content: file.content };
     }
 
-    const ecology = rebuildCultivationAudits(cloneDefaultCultivationEcology());
+    // 版本不匹配时做字段补全（forward migration），不覆盖用户数据
+    // 目前 v1→v2 的唯一变化是 resource.grades 新增了 effect 字段，
+    // normalizeResourceGradeEffects 已经处理，直接重新解析即可
+    const migrated = cultivationEcologySchema.parse(normalizeResourceGradeEffects(JSON.parse(file.content)));
+    const migratedWithVersion = { ...migrated, schemaVersion: CULTIVATION_ECOLOGY_SCHEMA_VERSION };
+    const auditedMigrated = rebuildCultivationAudits(migratedWithVersion);
+    const migratedContent = serialize(auditedMigrated);
     const replacement = await storage.writeText(
       CULTIVATION_ECOLOGY_PATH,
-      serialize(ecology),
+      migratedContent,
       { expectedContent: file.content },
     );
     return { ecology: parse(replacement.content), content: replacement.content };

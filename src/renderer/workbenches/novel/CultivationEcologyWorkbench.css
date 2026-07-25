@@ -1935,6 +1935,47 @@
 .ce-item-reference-note.is-warning {
   color: var(--accent-warm);
 }
+.ce-metric-thresholds-field {
+  gap: 0.35rem;
+}
+.ce-metric-thresholds-field > small {
+  color: var(--ink-subtle);
+  font-size: 0.62rem;
+}
+.ce-metric-threshold-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--paper-inset);
+  padding: 0.25rem 0.35rem;
+}
+.ce-metric-threshold-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.62rem;
+  color: var(--ink-muted);
+}
+.ce-metric-threshold-input {
+  width: 6rem;
+  flex-shrink: 0;
+  font-size: 0.62rem;
+}
+.ce-metric-threshold-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 999px;
+  color: var(--ink-muted);
+}
+.ce-metric-threshold-remove:hover {
+  background: var(--paper);
+  color: var(--error);
+}
 @media (max-width: 1180px) {
   .ce-body {
     grid-template-columns: 13rem minmax(0, 1fr) 18rem;

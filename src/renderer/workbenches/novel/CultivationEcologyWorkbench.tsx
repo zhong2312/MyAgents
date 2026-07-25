@@ -719,7 +719,11 @@ export default function CultivationEcologyWorkbench({
       );
       return currentAuditSignature === nextAuditSignature ? current : next;
     });
-  }, [availableItemIds, ecology, itemLibraryReady]);
+  // ecology は setEcology の functional updater 内で読むため依存配列から除外する。
+  // 含めると commit() → setEcology → effect 再実行 のループが発生し毎編集で余分な
+  // audit rebuild が走る。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableItemIds, itemLibraryReady]);
   const save = async () => {
     if (!ecology || !dirty) return;
     setSaving(true);
@@ -748,6 +752,12 @@ export default function CultivationEcologyWorkbench({
   };
   const deleteSystem = () => {
     if (!ecology || !activeSystem) return;
+    if (
+      !window.confirm(
+        `确认删除体系「${activeSystem.name}」？关联的跨体系关系也将一并删除，此操作不可撤销。`,
+      )
+    )
+      return;
     const nextSystems = ecology.systems.filter(
       (item) => item.id !== activeSystem.id,
     );
@@ -982,6 +992,9 @@ export default function CultivationEcologyWorkbench({
 }
 
 function PageHeader({
+  eyebrow,
+  title,
+  description,
   action,
 }: {
   eyebrow: string;
@@ -989,8 +1002,16 @@ function PageHeader({
   description: string;
   action?: ReactNode;
 }) {
-  if (!action) return null;
-  return <div className="ce-page-action">{action}</div>;
+  return (
+    <div className="ce-page-header">
+      <div>
+        {eyebrow && <div className="ce-eyebrow">{eyebrow}</div>}
+        <h1>{title}</h1>
+        {description && <p>{description}</p>}
+      </div>
+      {action && <div className="ce-page-action">{action}</div>}
+    </div>
+  );
 }
 
 function StatStrip({ system }: { system: CultivationSystem }) {
@@ -1964,7 +1985,16 @@ function TopologyCard({
         <span>
           {topology.edges.length} 条有向边 · 运行拓扑属于法门，不属于体系顶层
         </span>
-        <Button variant="secondary" onClick={addNode}>
+        <Button
+          variant="secondary"
+          onClick={addNode}
+          disabled={system.theoryModel.nodeCatalog.length === 0}
+          title={
+            system.theoryModel.nodeCatalog.length === 0
+              ? "请先在「理论模型」中添加理论节点，再建立运行拓扑"
+              : undefined
+          }
+        >
           <Plus className="h-3.5 w-3.5" />
           添加节点
         </Button>
@@ -2672,7 +2702,11 @@ function AuditDirectory({
                             ? "abilities"
                             : item.targetType === "theory"
                               ? "theory"
-                              : "overview";
+                              : item.targetType === "foundation"
+                                ? "foundations"
+                                : item.targetType === "constraint"
+                                  ? "constraints"
+                                  : "overview";
                 onOpenModule(
                   target,
                   item.targetId
@@ -3383,7 +3417,16 @@ function Relations({
         title="跨体系关系"
         description="只在这里管理体系之间的兼容、克制、转换、依赖、污染与冲突；体系内部的运行拓扑不属于全局关系。"
         action={
-          <Button variant="primary" onClick={add}>
+          <Button
+            variant="primary"
+            onClick={add}
+            disabled={ecology.systems.length < 2}
+            title={
+              ecology.systems.length < 2
+                ? "至少需要两个修行体系才能创建跨体系关系"
+                : undefined
+            }
+          >
             <Plus className="h-3.5 w-3.5" />
             新增关系
           </Button>
@@ -3438,6 +3481,131 @@ function SelectField({
         ariaLabel={label}
         placeholder="未指定"
       />
+    </div>
+  );
+}
+
+/** Multi-select for in-system named objects (methods, abilities, tracks, etc.) */
+function SystemMultiSelectField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: readonly string[];
+  options: readonly { value: string; label: string }[];
+  onChange: (value: string[]) => void;
+}) {
+  const names = new Map(options.map((o) => [o.value, o.label]));
+  const selected = new Set(value);
+  const available = options.filter((o) => !selected.has(o.value));
+  return (
+    <div className="ce-field ce-item-reference-field">
+      <span>{label}</span>
+      <div className="ce-item-reference-list">
+        {value.map((id) => (
+          <span
+            className={
+              names.has(id) ? "ce-item-chip" : "ce-item-chip is-missing"
+            }
+            key={id}
+          >
+            <span>{names.get(id) ?? id}</span>
+            <button
+              type="button"
+              title={`移除 ${names.get(id) ?? id}`}
+              aria-label={`移除 ${names.get(id) ?? id}`}
+              onClick={() =>
+                onChange(value.filter((itemId) => itemId !== id))
+              }
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+        {value.length === 0 && <small>尚未关联</small>}
+      </div>
+      <CustomSelect
+        value=""
+        options={available}
+        onChange={(id) => {
+          if (id && !selected.has(id)) onChange([...value, id]);
+        }}
+        ariaLabel={`添加${label}`}
+        placeholder={available.length > 0 ? `选择${label}` : "无可添加项"}
+        disabled={available.length === 0}
+      />
+    </div>
+  );
+}
+
+/** Row-based editor for metricThresholds — each entry has a metric select + threshold text */
+function MetricThresholdsField({
+  label,
+  value,
+  metrics,
+  onChange,
+}: {
+  label: string;
+  value: readonly { metricId: string; threshold: string }[];
+  metrics: readonly { id: string; name: string }[];
+  onChange: (value: { metricId: string; threshold: string }[]) => void;
+}) {
+  const names = new Map(metrics.map((m) => [m.id, m.name]));
+  const usedIds = new Set(value.map((v) => v.metricId));
+  const addable = metrics.filter((m) => !usedIds.has(m.id));
+  const updateRow = (
+    index: number,
+    patch: Partial<{ metricId: string; threshold: string }>,
+  ) => {
+    const next = value.map((row, i) => (i === index ? { ...row, ...patch } : row));
+    onChange(next);
+  };
+  return (
+    <div className="ce-field ce-metric-thresholds-field">
+      <span>{label}</span>
+      {value.map((row, index) => (
+        <div key={row.metricId} className="ce-metric-threshold-row">
+          <span className="ce-metric-threshold-name">
+            {names.get(row.metricId) ?? row.metricId}
+          </span>
+          <input
+            className="ce-metric-threshold-input"
+            value={row.threshold}
+            placeholder="门槛值"
+            aria-label={`${names.get(row.metricId) ?? row.metricId} 门槛`}
+            onChange={(event) =>
+              updateRow(index, { threshold: event.target.value })
+            }
+          />
+          <button
+            type="button"
+            className="ce-metric-threshold-remove"
+            title="移除"
+            aria-label="移除此门槛"
+            onClick={() => onChange(value.filter((_, i) => i !== index))}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      ))}
+      {value.length === 0 && <small>尚未设置门槛</small>}
+      {addable.length > 0 && (
+        <CustomSelect
+          value=""
+          options={addable.map((m) => ({
+            value: m.id,
+            label: `${m.name} · ${m.id}`,
+          }))}
+          onChange={(id) => {
+            if (!id) return;
+            onChange([...value, { metricId: id, threshold: "" }]);
+          }}
+          ariaLabel="添加指标门槛"
+          placeholder="添加指标门槛"
+        />
+      )}
     </div>
   );
 }
@@ -3590,12 +3758,17 @@ function InspectorV2({
       value: item.id,
       label: `${item.name} · ${item.id}`,
     }));
+  const tracks = system?.progressionTracks ?? [];
   const levels =
     system?.progressionTracks.flatMap((track) => track.levels) ?? [];
   const methods = system?.methods ?? [];
   const resources = system?.resources ?? [];
   const abilities = system?.abilities ?? [];
   const theoryNodes = system?.theoryModel.nodeCatalog ?? [];
+  const worldOrigins = ecology.worldOrigins;
+  const manifestations = ecology.worldOrigins.flatMap(
+    (origin) => origin.manifestations,
+  );
 
   if (!selection && scope === "origins")
     return (
@@ -4138,28 +4311,25 @@ function InspectorV2({
   if (selection?.kind === "projection")
     return (
       <InspectorEditor title="体系本源投影" type="本源投影">
-        <Field
-          label="世界本源 ID（一行一个）"
-          value={system.projection.originIds.join("\n")}
+        <SystemMultiSelectField
+          label="关联世界本源"
+          value={system.projection.originIds}
+          options={listOptions(worldOrigins)}
           onChange={(value) =>
             patchSystem({
-              projection: { ...system.projection, originIds: idList(value) },
+              projection: { ...system.projection, originIds: value },
             })
           }
-          multiline
         />
-        <Field
-          label="显化节点 ID（一行一个）"
-          value={system.projection.manifestationIds.join("\n")}
+        <SystemMultiSelectField
+          label="关联显化节点"
+          value={system.projection.manifestationIds}
+          options={listOptions(manifestations)}
           onChange={(value) =>
             patchSystem({
-              projection: {
-                ...system.projection,
-                manifestationIds: idList(value),
-              },
+              projection: { ...system.projection, manifestationIds: value },
             })
           }
-          multiline
         />
         <Field
           label="接入方式"
@@ -4344,6 +4514,24 @@ function InspectorV2({
               })
             }
           />
+          <Field
+            label="法门术语"
+            value={system.terminology.method}
+            onChange={(value) =>
+              patchSystem({
+                terminology: { ...system.terminology, method: value },
+              })
+            }
+          />
+          <Field
+            label="能力术语"
+            value={system.terminology.ability}
+            onChange={(value) =>
+              patchSystem({
+                terminology: { ...system.terminology, ability: value },
+              })
+            }
+          />
         </Section>
         <Button variant="danger" onClick={onDeleteSystem}>
           <Trash2 className="h-3.5 w-3.5" />
@@ -4490,11 +4678,11 @@ function InspectorV2({
           options={[{ value: "", label: "未指定" }, ...listOptions(levels)]}
           onChange={(value) => update({ bestLevelId: value || null })}
         />
-        <Field
-          label="可用阶段 ID（一行一个）"
-          value={item.usableLevelIds.join("\n")}
-          onChange={(value) => update({ usableLevelIds: idList(value) })}
-          multiline
+        <SystemMultiSelectField
+          label="可用阶段"
+          value={item.usableLevelIds}
+          options={listOptions(levels)}
+          onChange={(value) => update({ usableLevelIds: value })}
         />
         <Field
           label="供给与来源"
@@ -4912,12 +5100,6 @@ function InspectorV2({
           ...patch,
         })),
       });
-    const scripture = item.scriptureSource ?? {
-      title: "",
-      methodId: null,
-      itemIds: [],
-      summary: "",
-    };
     return (
       <InspectorEditor
         title={item.name}
@@ -4963,12 +5145,25 @@ function InspectorV2({
             { value: "natural", label: "境界突破自动解锁" },
             { value: "scripture", label: "秘籍修炼获得" },
           ]}
-          onChange={(value) =>
-            update({
-              acquisitionType: value as Ability["acquisitionType"],
-              scriptureSource: value === "scripture" ? scripture : null,
-            })
-          }
+          onChange={(value) => {
+            if (value === "scripture") {
+              // Switching to scripture: ensure scriptureSource is non-null.
+              // Preserves previously entered data if user toggled away and back.
+              update({
+                acquisitionType: "scripture",
+                scriptureSource: item.scriptureSource ?? {
+                  title: item.name,
+                  methodId: null,
+                  itemIds: [],
+                  summary: "",
+                },
+              });
+            } else {
+              // Switching to natural: only change acquisitionType, keep
+              // scriptureSource intact so it survives a round-trip toggle.
+              update({ acquisitionType: value as Ability["acquisitionType"] });
+            }
+          }}
         />
         <SelectField
           label="解锁阶段"
@@ -5099,43 +5294,52 @@ function InspectorV2({
           onChange={(value) => update({ counters: textList(value) })}
           multiline
         />
-        {item.acquisitionType === "scripture" && (
+        {item.acquisitionType === "scripture" && item.scriptureSource && (
           <>
             <Field
               label="秘籍标题"
-              value={scripture.title}
+              value={item.scriptureSource.title}
               onChange={(value) =>
-                update({ scriptureSource: { ...scripture, title: value } })
+                update({
+                  scriptureSource: { ...item.scriptureSource!, title: value },
+                })
               }
             />
             <ItemIdsField
               label="秘籍来源物品库物品"
-              value={scripture.itemIds}
+              value={item.scriptureSource.itemIds}
               entries={itemEntries}
               loading={itemLibraryLoading}
               error={itemLibraryError}
               onChange={(itemIds) =>
-                update({ scriptureSource: { ...scripture, itemIds } })
+                update({
+                  scriptureSource: { ...item.scriptureSource!, itemIds },
+                })
               }
             />
             <SelectField
               label="来源法门"
-              value={scripture.methodId ?? ""}
+              value={item.scriptureSource.methodId ?? ""}
               options={[
                 { value: "", label: "未指定" },
                 ...listOptions(methods),
               ]}
               onChange={(value) =>
                 update({
-                  scriptureSource: { ...scripture, methodId: value || null },
+                  scriptureSource: {
+                    ...item.scriptureSource!,
+                    methodId: value || null,
+                  },
                 })
               }
             />
             <Field
               label="秘籍说明"
-              value={scripture.summary}
+              value={item.scriptureSource.summary}
               onChange={(value) =>
-                update({ scriptureSource: { ...scripture, summary: value } })
+                update({
+                  scriptureSource: { ...item.scriptureSource!, summary: value },
+                })
               }
               multiline
             />
@@ -5343,23 +5547,11 @@ function InspectorV2({
           value={item.quality}
           onChange={(value) => update({ quality: value })}
         />
-        <Field
-          label="指标门槛（指标 ID=门槛）"
-          value={item.metricThresholds
-            .map((threshold) => `${threshold.metricId}=${threshold.threshold}`)
-            .join("\n")}
-          onChange={(value) =>
-            update({
-              metricThresholds: textList(value).map((line) => {
-                const [metricId, ...threshold] = line.split("=");
-                return {
-                  metricId: metricId.trim(),
-                  threshold: threshold.join("=").trim(),
-                };
-              }),
-            })
-          }
-          multiline
+        <MetricThresholdsField
+          label="指标门槛"
+          value={item.metricThresholds}
+          metrics={track.metrics}
+          onChange={(value) => update({ metricThresholds: value })}
         />
         <Field
           label="进入条件（一行一条）"
@@ -5421,17 +5613,17 @@ function InspectorV2({
           }
           multiline
         />
-        <Field
-          label="自然能力 ID（一行一个）"
-          value={item.naturalAbilityIds.join("\n")}
-          onChange={(value) => update({ naturalAbilityIds: idList(value) })}
-          multiline
+        <SystemMultiSelectField
+          label="自然能力"
+          value={item.naturalAbilityIds}
+          options={listOptions(abilities)}
+          onChange={(value) => update({ naturalAbilityIds: value })}
         />
-        <Field
-          label="可用法门 ID（一行一个）"
-          value={item.methodIds.join("\n")}
-          onChange={(value) => update({ methodIds: idList(value) })}
-          multiline
+        <SystemMultiSelectField
+          label="可用法门"
+          value={item.methodIds}
+          options={listOptions(methods)}
+          onChange={(value) => update({ methodIds: value })}
         />
       </InspectorEditor>
     );
@@ -5845,6 +6037,169 @@ function InspectorV2({
           onChange={(value) => update({ permanentConsequence: value })}
           multiline
         />
+        <SelectField
+          label="是否可逆"
+          value={item.reversible ? "true" : "false"}
+          options={[
+            { value: "true", label: "可逆" },
+            { value: "false", label: "不可逆" },
+          ]}
+          onChange={(value) => update({ reversible: value === "true" })}
+        />
+        <SystemMultiSelectField
+          label="相关法门"
+          value={item.methodIds}
+          options={listOptions(methods)}
+          onChange={(value) => update({ methodIds: value })}
+        />
+      </InspectorEditor>
+    );
+  }
+  if (selection?.kind === "foundation") {
+    const item = system.foundations.find((f) => f.id === selected);
+    if (!item) return <InspectorMissing />;
+    const update = (patch: Partial<Foundation>) =>
+      patchSystem({
+        foundations: updateById(
+          system.foundations,
+          item.id,
+          (current) => ({ ...current, ...patch }),
+        ),
+      });
+    return (
+      <InspectorEditor
+        title={item.name}
+        type="修炼根基"
+        onDelete={() => {
+          patchSystem({
+            foundations: system.foundations.filter((f) => f.id !== item.id),
+          });
+          onSelect?.(null);
+        }}
+      >
+        <Field
+          label="名称"
+          value={item.name}
+          onChange={(value) => update({ name: value })}
+        />
+        <Field
+          label="摘要"
+          value={item.summary}
+          onChange={(value) => update({ summary: value })}
+          multiline
+        />
+        <Field
+          label="影响因素"
+          value={item.factor}
+          onChange={(value) => update({ factor: value })}
+        />
+        <Field
+          label="当前值"
+          value={item.value}
+          onChange={(value) => update({ value: value })}
+        />
+        <Field
+          label="对修炼的影响"
+          value={item.impact}
+          onChange={(value) => update({ impact: value })}
+          multiline
+        />
+        <SystemMultiSelectField
+          label="影响的修炼轨迹"
+          value={item.affectedTracks}
+          options={listOptions(tracks)}
+          onChange={(value) => update({ affectedTracks: value })}
+        />
+        <Field
+          label="调整方式"
+          value={item.adjustment}
+          onChange={(value) => update({ adjustment: value })}
+          multiline
+        />
+        <Field
+          label="持久性说明"
+          value={item.permanence}
+          onChange={(value) => update({ permanence: value })}
+          multiline
+        />
+      </InspectorEditor>
+    );
+  }
+  if (selection?.kind === "constraint") {
+    const item = system.constraints.find((c) => c.id === selected);
+    if (!item) return <InspectorMissing />;
+    const update = (patch: Partial<Constraint>) =>
+      patchSystem({
+        constraints: updateById(
+          system.constraints,
+          item.id,
+          (current) => ({ ...current, ...patch }),
+        ),
+      });
+    return (
+      <InspectorEditor
+        title={item.name}
+        type="修炼约束"
+        onDelete={() => {
+          patchSystem({
+            constraints: system.constraints.filter((c) => c.id !== item.id),
+          });
+          onSelect?.(null);
+        }}
+      >
+        <Field
+          label="名称"
+          value={item.name}
+          onChange={(value) => update({ name: value })}
+        />
+        <Field
+          label="摘要"
+          value={item.summary}
+          onChange={(value) => update({ summary: value })}
+          multiline
+        />
+        <SelectField
+          label="约束类别"
+          value={item.category}
+          options={[
+            { value: "cost", label: "代价" },
+            { value: "pollution", label: "污染" },
+            { value: "backlash", label: "反噬" },
+            { value: "world-rule", label: "世界规则" },
+            { value: "identity", label: "身份限制" },
+            { value: "irreversible", label: "不可逆" },
+          ]}
+          onChange={(value) =>
+            update({ category: value as Constraint["category"] })
+          }
+        />
+        <Field
+          label="触发条件"
+          value={item.trigger}
+          onChange={(value) => update({ trigger: value })}
+          multiline
+        />
+        <Field
+          label="后果"
+          value={item.consequence}
+          onChange={(value) => update({ consequence: value })}
+          multiline
+        />
+        <Field
+          label="缓解措施"
+          value={item.mitigation}
+          onChange={(value) => update({ mitigation: value })}
+          multiline
+        />
+        <SelectField
+          label="是否可逆"
+          value={item.reversible ? "true" : "false"}
+          options={[
+            { value: "true", label: "可逆" },
+            { value: "false", label: "不可逆" },
+          ]}
+          onChange={(value) => update({ reversible: value === "true" })}
+        />
       </InspectorEditor>
     );
   }
@@ -5972,7 +6327,14 @@ function InspectorEditor({
       <div className="ce-inspector-rule" />
       <div className="ce-inspector-form">{children}</div>
       {onDelete && (
-        <Button variant="danger" onClick={onDelete}>
+        <Button
+          variant="danger"
+          onClick={() => {
+            if (window.confirm("确认删除？此操作不可撤销。")) {
+              onDelete();
+            }
+          }}
+        >
           <Trash2 className="h-3.5 w-3.5" />
           删除对象
         </Button>

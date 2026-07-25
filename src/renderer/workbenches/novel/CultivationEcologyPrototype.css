@@ -1,13 +1,13 @@
 .cultivation-prototype {
-  --cp-ink-deep: #263333;
-  --cp-ink-blue: #3d6c78;
-  --cp-copper: #b96438;
-  --cp-copper-soft: #f2dfd2;
-  --cp-teal: #36786d;
-  --cp-teal-soft: #dcece6;
-  --cp-blue-soft: #e4edf0;
-  --cp-violet: #766a91;
-  --cp-violet-soft: #eae6f0;
+  --cp-ink-deep: var(--ink);
+  --cp-ink-blue: var(--ink-muted);
+  --cp-copper: var(--accent-warm);
+  --cp-copper-soft: var(--accent-warm-subtle);
+  --cp-teal: var(--success);
+  --cp-teal-soft: color-mix(in srgb, var(--success) 12%, var(--paper-elevated));
+  --cp-blue-soft: var(--paper-inset);
+  --cp-violet: var(--ink-muted);
+  --cp-violet-soft: var(--paper-inset);
   display: flex;
   height: 100%;
   min-height: 0;
