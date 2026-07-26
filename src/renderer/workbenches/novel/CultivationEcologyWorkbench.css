@@ -844,6 +844,65 @@
 .ce-topology-view-switch > button:hover {
   color: var(--ink);
 }
+
+.ce-method-list-item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 2rem;
+  border-bottom: 1px solid var(--line-subtle);
+  color: var(--ink-muted);
+}
+
+.ce-method-list-item.is-active {
+  border-left: 2px solid var(--accent-warm);
+  background: var(--accent-warm-subtle);
+  color: var(--ink);
+}
+
+.ce-method-list-item-trigger {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.55rem;
+  border: 0;
+  background: transparent;
+  padding: 0.7rem 0.35rem 0.7rem 0.5rem;
+  color: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.ce-method-list-item-trigger:hover {
+  background: var(--hover-bg);
+}
+
+.ce-method-list-item-trigger > svg,
+.ce-method-list-item-trigger > em {
+  flex: 0 0 auto;
+}
+
+.ce-method-list-item-trigger > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.ce-method-list-item-edit {
+  display: flex;
+  width: 2rem;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  border: 0;
+  background: transparent;
+  color: var(--ink-subtle);
+}
+
+.ce-method-list-item-edit:hover,
+.ce-method-list-item-edit:focus-visible {
+  background: var(--accent-warm-subtle);
+  color: var(--accent-warm);
+}
 .ce-topology-view-switch > button.is-active {
   background: var(--paper-elevated);
   box-shadow: var(--shadow-xs);
@@ -2461,18 +2520,101 @@
     grid-template-columns: 1fr;
   }
 }
-.ce-relation-row {
+.ce-relation-list {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+.ce-relation-row {
+  display: grid;
   width: 100%;
-  border: 1px solid var(--line);
-  background: var(--paper-elevated);
+  min-height: 4.6rem;
+  grid-template-columns: minmax(20rem, 1.05fr) minmax(16rem, 1fr) 2rem;
+  align-items: center;
+  gap: 1.25rem;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  padding: 0.8rem 0.75rem;
+  color: var(--ink);
   text-align: left;
 }
 .ce-relation-row:hover {
-  border-color: var(--accent-warm);
+  background: var(--hover-bg);
+}
+.ce-relation-route {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.45rem;
+}
+.ce-relation-route > svg {
+  flex: 0 0 auto;
+  color: var(--ink-subtle);
+}
+.ce-relation-system {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ce-relation-type {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent-warm) 28%, var(--line));
+  border-radius: var(--radius-sm);
+  background: var(--accent-warm-subtle);
+  padding: 0.2rem 0.42rem;
+  color: var(--accent-warm);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+.ce-relation-summary {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.ce-relation-summary strong,
+.ce-relation-summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ce-relation-summary strong {
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+.ce-relation-summary small {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.ce-relation-open {
+  color: var(--ink-subtle);
+  transition: transform 0.15s ease;
+}
+.ce-relation-row:hover .ce-relation-open {
+  color: var(--accent-warm);
+  transform: translateX(0.15rem);
+}
+@media (max-width: 820px) {
+  .ce-relation-row {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) 1.75rem;
+    gap: 0.55rem;
+    padding: 0.75rem 0.5rem;
+  }
+  .ce-relation-route {
+    grid-column: 1 / -1;
+  }
+  .ce-relation-summary {
+    grid-column: 1;
+  }
+  .ce-relation-open {
+    grid-column: 2;
+    grid-row: 2;
+  }
 }
 
 /* 原型布局：左侧体系导航、中间页面工作区、右侧焦点检查器。 */
@@ -4141,6 +4283,12 @@
 
   .ce-method-list > button,
   .ce-formation-list > button {
+    border: 1px solid var(--line-subtle);
+  }
+
+  .ce-method-list-item {
+    width: 12rem;
+    flex: 0 0 auto;
     border: 1px solid var(--line-subtle);
   }
 

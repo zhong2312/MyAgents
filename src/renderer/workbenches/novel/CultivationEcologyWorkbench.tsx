@@ -121,18 +121,18 @@ type Selection = {
 } | null;
 
 const modules: readonly { id: ModuleId; label: string; icon: LucideIcon }[] = [
-  { id: "overview", label: "体系总览", icon: Compass },
-  { id: "projection", label: "本源投影", icon: Sparkles },
-  { id: "theory", label: "理论模型", icon: Atom },
-  { id: "progression", label: "成长轨道", icon: Route },
-  { id: "resources", label: "资源库", icon: FlaskConical },
-  { id: "methods", label: "修行法门", icon: ScrollText },
-  { id: "abilities", label: "能力库", icon: Zap },
-  { id: "formations", label: "阵法与部署", icon: Hexagon },
-  { id: "assets", label: "资产索引", icon: Layers3 },
-  { id: "foundations", label: "根基与质量", icon: Target },
-  { id: "transitions", label: "突破与转换", icon: GitBranch },
-  { id: "constraints", label: "体系约束", icon: ShieldAlert },
+  { id: "overview", label: "总览", icon: Compass },
+  { id: "projection", label: "本源", icon: Sparkles },
+  { id: "theory", label: "理论", icon: Atom },
+  { id: "progression", label: "成长", icon: Route },
+  { id: "resources", label: "资源", icon: FlaskConical },
+  { id: "methods", label: "法门", icon: ScrollText },
+  { id: "abilities", label: "能力", icon: Zap },
+  { id: "formations", label: "阵法", icon: Hexagon },
+  { id: "assets", label: "资产", icon: Layers3 },
+  { id: "foundations", label: "根基", icon: Target },
+  { id: "transitions", label: "跃迁", icon: GitBranch },
+  { id: "constraints", label: "约束", icon: ShieldAlert },
   { id: "audit", label: "审查", icon: ShieldCheck },
 ];
 
@@ -2590,23 +2590,36 @@ function MethodWorkspace({
             </Button>
           </div>
           {system.methods.map((item) => (
-            <button
-              type="button"
+            <div
               key={item.id}
-              className={item.id === method.id ? "is-active" : ""}
-              onClick={() => {
-                setMethodId(item.id);
-                setTopologyId(item.operationTopologies[0]?.id ?? "");
-                onSelect({ kind: "method", id: item.id });
-              }}
+              className={`ce-method-list-item ${item.id === method.id ? "is-active" : ""}`}
             >
-              <BookOpen className="h-4 w-4" />
-              <span>
-                <strong>{item.name}</strong>
-                <small>{item.kind}</small>
-              </span>
-              <em>{item.operationTopologies.length}</em>
-            </button>
+              <button
+                type="button"
+                className="ce-method-list-item-trigger"
+                aria-pressed={item.id === method.id}
+                onClick={() => {
+                  setMethodId(item.id);
+                  setTopologyId(item.operationTopologies[0]?.id ?? "");
+                }}
+              >
+                <BookOpen className="h-4 w-4" />
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>{item.kind}</small>
+                </span>
+                <em>{item.operationTopologies.length}</em>
+              </button>
+              <button
+                type="button"
+                className="ce-method-list-item-edit"
+                title={`编辑法门：${item.name}`}
+                aria-label={`编辑法门：${item.name}`}
+                onClick={() => onSelect({ kind: "method", id: item.id })}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            </div>
           ))}
         </div>
         <div className="ce-method-detail">
@@ -5569,18 +5582,27 @@ function Relations({
             type="button"
             className="ce-relation-row"
             key={item.id}
+            aria-label={`查看关系：${item.name}`}
             onClick={() => onSelect({ kind: "relation", id: item.id })}
           >
-            <span className="ce-relation-system">
-              {names.get(item.sourceSystemId) || item.sourceSystemId}
+            <span className="ce-relation-route">
+              <span className="ce-relation-system">
+                {names.get(item.sourceSystemId) || item.sourceSystemId}
+              </span>
+              <ChevronRight className="h-3.5 w-3.5" />
+              <span className="ce-relation-type">{item.relation}</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+              <span className="ce-relation-system">
+                {names.get(item.targetSystemId) || item.targetSystemId}
+              </span>
             </span>
-            <ChevronRight className="h-4 w-4" />
-            <span className="ce-relation-type">{item.relation}</span>
-            <ChevronRight className="h-4 w-4" />
-            <span className="ce-relation-system">
-              {names.get(item.targetSystemId) || item.targetSystemId}
+            <span className="ce-relation-summary">
+              <strong>{item.name}</strong>
+              <small>
+                {item.conversionRule || item.summary || "尚未描述转换规则"}
+              </small>
             </span>
-            <p>{item.conversionRule || item.summary || "尚未描述转换规则"}</p>
+            <ChevronRight className="ce-relation-open h-4 w-4" />
           </button>
         ))}
       </div>
