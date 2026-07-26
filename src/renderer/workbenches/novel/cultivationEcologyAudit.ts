@@ -10,6 +10,7 @@ type IssueTarget =
   | "method"
   | "topology"
   | "level"
+  | "level-stage"
   | "resource"
   | "ability"
   | "formation"
@@ -22,37 +23,66 @@ export interface CultivationAuditOptions {
   readonly itemIds?: ReadonlySet<string>;
 }
 
-export function calculateCultivationCompleteness(system: CultivationSystem): number {
-  const levels = system.progressionTracks.reduce((total, track) => total + track.levels.length, 0);
-  const topologyCount = system.methods.reduce((total, method) => total + method.operationTopologies.length, 0);
-  const core = [
-    system.projection.originIds.length > 0,
-    system.projection.manifestationIds.length > 0,
-    system.progressionTracks.length > 0,
-    levels > 0,
-  ].filter(Boolean).length / 4;
-  const structure = [
-    Boolean(system.theoryModel.statement.trim()),
-    system.theoryModel.nodeCatalog.length > 0,
-    system.resources.length > 0,
-    system.transitions.length > 0 || system.progressionTracks.some((track) => track.transitions.length > 0),
-    topologyCount > 0,
-  ].filter(Boolean).length / 5;
-  const extension = [
-    system.formations.length > 0,
-    system.foundations.length > 0,
-    system.constraints.length > 0,
-    system.methods.some((method) => method.courses.length > 0),
-  ].filter(Boolean).length / 4;
-  const narrative = system.summary.trim() && system.constraints.some((constraint) => constraint.narrativePrompt?.trim()) ? 1 : 0;
-  const fieldQuality = [
-    Boolean(system.projection.access.trim()),
-    Boolean(system.projection.translation.trim()),
-    system.methods.some((method) => method.formula.trim() && method.coverage.startLevelId),
-    system.abilities.some((ability) => ability.effect.trim() && ability.cast.amount.trim()),
-    system.resources.some((resource) => resource.summary.trim() && resource.supply.trim()),
-  ].filter(Boolean).length / 5;
-  return Math.round((core * 35 + structure * 30 + extension * 15 + fieldQuality * 10 + narrative * 10));
+export function calculateCultivationCompleteness(
+  system: CultivationSystem,
+): number {
+  const levels = system.progressionTracks.reduce(
+    (total, track) => total + track.levels.length,
+    0,
+  );
+  const topologyCount = system.methods.reduce(
+    (total, method) => total + method.operationTopologies.length,
+    0,
+  );
+  const core =
+    [
+      system.projection.originIds.length > 0,
+      system.projection.manifestationIds.length > 0,
+      system.progressionTracks.length > 0,
+      levels > 0,
+    ].filter(Boolean).length / 4;
+  const structure =
+    [
+      Boolean(system.theoryModel.statement.trim()),
+      system.theoryModel.nodeCatalog.length > 0,
+      system.resources.length > 0,
+      system.transitions.length > 0 ||
+        system.progressionTracks.some((track) => track.transitions.length > 0),
+      topologyCount > 0,
+    ].filter(Boolean).length / 5;
+  const extension =
+    [
+      system.formations.length > 0,
+      system.foundations.length > 0,
+      system.constraints.length > 0,
+      system.methods.some((method) => method.courses.length > 0),
+    ].filter(Boolean).length / 4;
+  const narrative =
+    system.summary.trim() &&
+    system.constraints.some((constraint) => constraint.narrativePrompt?.trim())
+      ? 1
+      : 0;
+  const fieldQuality =
+    [
+      Boolean(system.projection.access.trim()),
+      Boolean(system.projection.translation.trim()),
+      system.methods.some(
+        (method) => method.formula.trim() && method.coverage.startLevelId,
+      ),
+      system.abilities.some(
+        (ability) => ability.effect.trim() && ability.cast.amount.trim(),
+      ),
+      system.resources.some(
+        (resource) => resource.summary.trim() && resource.supply.trim(),
+      ),
+    ].filter(Boolean).length / 5;
+  return Math.round(
+    core * 35 +
+      structure * 30 +
+      extension * 15 +
+      fieldQuality * 10 +
+      narrative * 10,
+  );
 }
 
 function buildIssue(
@@ -68,7 +98,8 @@ function buildIssue(
 ): AuditIssue {
   return {
     id: `${systemId}-audit-${index}`,
-    fingerprint: fingerprint ?? `${targetType}:${targetId ?? ""}:${title}:${message}`,
+    fingerprint:
+      fingerprint ?? `${targetType}:${targetId ?? ""}:${title}:${message}`,
     severity,
     targetType,
     targetId,
@@ -140,13 +171,22 @@ export function auditSystem(
     });
   };
   const checkResourceRequirements = (
-    requirements: readonly { resourceId: string; substituteResourceIds: readonly string[] }[],
+    requirements: readonly {
+      resourceId: string;
+      substituteResourceIds: readonly string[];
+    }[],
     targetType: IssueTarget,
     targetId: string,
     label: string,
   ) => {
     requirements.forEach((requirement) => {
-      checkRefs([requirement.resourceId], resourceIds, targetType, targetId, label);
+      checkRefs(
+        [requirement.resourceId],
+        resourceIds,
+        targetType,
+        targetId,
+        label,
+      );
       checkRefs(
         requirement.substituteResourceIds,
         resourceIds,
@@ -167,7 +207,9 @@ export function auditSystem(
   );
   const manifestationOwners = new Map(
     ecology.worldOrigins.flatMap((origin) =>
-      origin.manifestations.map((manifestation) => [manifestation.id, origin.id] as const),
+      origin.manifestations.map(
+        (manifestation) => [manifestation.id, origin.id] as const,
+      ),
     ),
   );
   const originProjectionNodeIds = new Set([
@@ -180,7 +222,10 @@ export function auditSystem(
       ...origin.manifestations.map((manifestation) => manifestation.id),
     ]);
     origin.manifestations.forEach((manifestation) => {
-      if (manifestation.sourceId && !nodeIdsInOrigin.has(manifestation.sourceId))
+      if (
+        manifestation.sourceId &&
+        !nodeIdsInOrigin.has(manifestation.sourceId)
+      )
         add(
           "error",
           "system",
@@ -192,7 +237,10 @@ export function auditSystem(
         );
     });
     origin.relations.forEach((relation) => {
-      if (!nodeIdsInOrigin.has(relation.sourceId) || !nodeIdsInOrigin.has(relation.targetId))
+      if (
+        !nodeIdsInOrigin.has(relation.sourceId) ||
+        !nodeIdsInOrigin.has(relation.targetId)
+      )
         add(
           "error",
           "system",
@@ -225,7 +273,9 @@ export function auditSystem(
         `本源投影引用了不存在的显化节点 ${id}。`,
         "从世界本源的显化节点中选择。",
       );
-    else if (!system.projection.originIds.includes(manifestationOwners.get(id) ?? ""))
+    else if (
+      !system.projection.originIds.includes(manifestationOwners.get(id) ?? "")
+    )
       add(
         "error",
         "system",
@@ -253,7 +303,10 @@ export function auditSystem(
         `绑定 ${binding.sourceId} 所属本源 ${ownerId} 未在当前体系本源列表中。`,
         "补充所属本源投影，或改绑到当前体系已选择的节点。",
       );
-    if (binding.role === "manifestation" && !manifestationOwners.has(binding.sourceId))
+    if (
+      binding.role === "manifestation" &&
+      !manifestationOwners.has(binding.sourceId)
+    )
       add(
         "error",
         "system",
@@ -282,20 +335,58 @@ export function auditSystem(
             "error",
             "level",
             level.id,
-            "阶段指标引用不存在",
-            `阶段 ${level.name} 引用了不存在的指标 ${item.metricId}。`,
+            "境界指标引用不存在",
+            `境界 ${level.name} 引用了不存在的指标 ${item.metricId}。`,
             "从当前成长轨道的指标中选择。",
           );
       });
-      checkResourceRequirements(level.resourceRequirements, "level", level.id, "阶段资源");
+      checkResourceRequirements(
+        level.resourceRequirements,
+        "level",
+        level.id,
+        "境界资源",
+      );
       checkRefs(
         level.naturalAbilityIds,
         abilityIds,
         "level",
         level.id,
-        "阶段自然能力",
+        "境界自然能力",
       );
-      checkRefs(level.methodIds, methodIds, "level", level.id, "阶段法门");
+      checkRefs(level.methodIds, methodIds, "level", level.id, "境界法门");
+      level.subStages.forEach((stage) => {
+        stage.metricThresholds.forEach((item) => {
+          if (!trackMetricIds.has(item.metricId))
+            add(
+              "error",
+              "level-stage",
+              stage.id,
+              "境内阶段指标引用不存在",
+              `${level.name} · ${stage.name} 引用了不存在的指标 ${item.metricId}。`,
+              "从当前成长轨道的指标中选择。",
+            );
+        });
+        checkResourceRequirements(
+          stage.resourceRequirements,
+          "level-stage",
+          stage.id,
+          "境内阶段资源",
+        );
+        checkRefs(
+          stage.naturalAbilityIds,
+          abilityIds,
+          "level-stage",
+          stage.id,
+          "境内阶段自然能力",
+        );
+        checkRefs(
+          stage.methodIds,
+          methodIds,
+          "level-stage",
+          stage.id,
+          "境内阶段法门",
+        );
+      });
     });
     track.transitions.forEach((transition) => {
       checkRefs(
@@ -305,7 +396,7 @@ export function auditSystem(
         levelIds,
         "transition",
         transition.id,
-        "轨道转换阶段",
+        "轨道转换境界",
       );
       checkRefs(
         transition.methodIds,
@@ -314,21 +405,50 @@ export function auditSystem(
         transition.id,
         "转换法门",
       );
-      checkResourceRequirements(transition.resourceRequirements, "transition", transition.id, "转换资源");
+      checkResourceRequirements(
+        transition.resourceRequirements,
+        "transition",
+        transition.id,
+        "转换资源",
+      );
     });
   });
 
-  const interactionIds = new Set(system.progressionTracks.map((track) => track.id));
   const interactionGraph = new Map<string, string[]>();
   (system.trackInteractions ?? []).forEach((interaction) => {
-    if (!interactionIds.has(interaction.sourceTrackId) || !interactionIds.has(interaction.targetTrackId)) {
-      add("error", "system", system.id, "轨道交叉规则引用不存在", `交叉规则 ${interaction.name} 的源轨道或目标轨道不存在。`, "重新选择有效的成长轨道。", `track-interaction:${interaction.id}:reference`);
+    if (
+      !trackIds.has(interaction.sourceTrackId) ||
+      !trackIds.has(interaction.targetTrackId)
+    ) {
+      add(
+        "error",
+        "system",
+        system.id,
+        "轨道交叉规则引用不存在",
+        `交叉规则 ${interaction.name} 的源轨道或目标轨道不存在。`,
+        "重新选择有效的成长轨道。",
+        `track-interaction:${interaction.id}:reference`,
+      );
     }
     if (interaction.sourceTrackId === interaction.targetTrackId) {
-      add("error", "system", system.id, "轨道交叉规则自引用", `交叉规则 ${interaction.name} 不能把同一轨道作为源和目标。`, "选择不同的源轨道与目标轨道。", `track-interaction:${interaction.id}:self`);
+      add(
+        "error",
+        "system",
+        system.id,
+        "轨道交叉规则自引用",
+        `交叉规则 ${interaction.name} 不能把同一轨道作为源和目标。`,
+        "选择不同的源轨道与目标轨道。",
+        `track-interaction:${interaction.id}:self`,
+      );
     }
-    if (interaction.kind === "dependency" || interaction.kind === "cross-breakthrough")
-      interactionGraph.set(interaction.sourceTrackId, [...(interactionGraph.get(interaction.sourceTrackId) ?? []), interaction.targetTrackId]);
+    if (
+      interaction.kind === "dependency" ||
+      interaction.kind === "cross-breakthrough"
+    )
+      interactionGraph.set(interaction.sourceTrackId, [
+        ...(interactionGraph.get(interaction.sourceTrackId) ?? []),
+        interaction.targetTrackId,
+      ]);
   });
   const visiting = new Set<string>();
   const visited = new Set<string>();
@@ -341,8 +461,15 @@ export function auditSystem(
     visited.add(trackId);
     return cycle;
   };
-  if ([...interactionIds].some(visit)) {
-    add("error", "system", system.id, "轨道交叉规则存在循环依赖", "跨轨道依赖形成闭环，无法确定先后顺序。", "拆分循环依赖，或为循环增加明确的终止条件。");
+  if ([...trackIds].some(visit)) {
+    add(
+      "error",
+      "system",
+      system.id,
+      "轨道交叉规则存在循环依赖",
+      "跨轨道依赖形成闭环，无法确定先后顺序。",
+      "拆分循环依赖，或为循环增加明确的终止条件。",
+    );
   }
 
   system.methods.forEach((method) => {
@@ -395,7 +522,9 @@ export function auditSystem(
         "法门课程资源",
       );
       checkRefs(
-        course.resourceRequirements.flatMap((item) => item.substituteResourceIds),
+        course.resourceRequirements.flatMap(
+          (item) => item.substituteResourceIds,
+        ),
         resourceIds,
         "method",
         method.id,
@@ -494,7 +623,9 @@ export function auditSystem(
       "能力完整发挥阶段",
     );
     checkRefs(
-      ability.scriptureSource?.methodId ? [ability.scriptureSource.methodId] : [],
+      ability.scriptureSource?.methodId
+        ? [ability.scriptureSource.methodId]
+        : [],
       methodIds,
       "ability",
       ability.id,
@@ -542,13 +673,25 @@ export function auditSystem(
         "能力缺少释放能量或消耗数量。",
         "区分修炼资源和每次释放的能量消耗。",
       );
-    if (!ability.cast.reserve?.trim() || !ability.cast.overloadThreshold?.trim())
-      add("warning", "ability", ability.id, "能力缺少储备或过载边界", "能力释放没有声明最低储备或过载阈值。", "补充储备、持续消耗、欠费结果和过载阈值。");
+    if (
+      !ability.cast.reserve?.trim() ||
+      !ability.cast.overloadThreshold?.trim()
+    )
+      add(
+        "warning",
+        "ability",
+        ability.id,
+        "能力缺少储备或过载边界",
+        "能力释放没有声明最低储备或过载阈值。",
+        "补充储备、持续消耗、欠费结果和过载阈值。",
+      );
   });
 
   const topologyOwners = new Map(
     system.methods.flatMap((method) =>
-      method.operationTopologies.map((topology) => [topology.id, method.id] as const),
+      method.operationTopologies.map(
+        (topology) => [topology.id, method.id] as const,
+      ),
     ),
   );
   system.formations.forEach((formation) => {
@@ -620,12 +763,52 @@ export function auditSystem(
       "阵法资源",
     );
     checkRefs(
-      formation.resourceRequirements.flatMap((item) => item.substituteResourceIds),
+      formation.resourceRequirements.flatMap(
+        (item) => item.substituteResourceIds,
+      ),
       resourceIds,
       "formation",
       formation.id,
       "阵法替代资源",
     );
+    const ringIds = new Set<string>();
+    formation.design.rings.forEach((ring) => {
+      if (ringIds.has(ring.id))
+        add(
+          "error",
+          "formation",
+          formation.id,
+          "阵环标识重复",
+          `阵法 ${formation.name} 中存在重复阵环，节点绑定将无法唯一解析。`,
+          "删除重复阵环，或为阵环重新生成唯一标识。",
+          `formation:${formation.id}:duplicate-ring:${ring.id}`,
+        );
+      ringIds.add(ring.id);
+    });
+    const backdropLayerIds = new Set<string>();
+    formation.design.backdropLayers.forEach((layer) => {
+      if (backdropLayerIds.has(layer.id))
+        add(
+          "error",
+          "formation",
+          formation.id,
+          "底纹标识重复",
+          `阵法 ${formation.name} 中存在重复底纹，排序和编辑结果可能作用于错误图层。`,
+          "删除重复底纹，或为底纹重新生成唯一标识。",
+          `formation:${formation.id}:duplicate-backdrop:${layer.id}`,
+        );
+      backdropLayerIds.add(layer.id);
+    });
+    if (Object.values(formation.sixElements).every((value) => !value.trim()))
+      add(
+        "warning",
+        "formation",
+        formation.id,
+        "阵法六元尚未定义",
+        `阵法 ${formation.name} 尚未描述阵源、阵基、阵纹、阵眼、阵域与阵则。`,
+        "至少明确六元结构的叙事职责，确保阵法规则能够完整解释。",
+        `formation:${formation.id}:six-elements`,
+      );
     const formationNodeIds = new Set(formation.nodes.map((node) => node.id));
     formation.nodes.forEach((node) => {
       if (node.theoryNodeId && !nodeIds.has(node.theoryNodeId))
@@ -636,6 +819,16 @@ export function auditSystem(
           "阵法节点引用不存在",
           `阵法节点 ${node.name} 引用了不存在的理论节点。`,
           "从当前体系理论节点库选择。",
+        );
+      if (node.ringId && !ringIds.has(node.ringId))
+        add(
+          "error",
+          "formation",
+          formation.id,
+          "阵法节点绑定阵环不存在",
+          `阵法节点 ${node.name} 绑定了不存在的阵环。`,
+          "重新选择有效阵环，或将节点改为自由定位。",
+          `formation:${formation.id}:node-ring:${node.id}`,
         );
     });
     formation.edges.forEach((edge) => {
@@ -680,7 +873,13 @@ export function auditSystem(
       resource.id,
       "资源最佳阶段",
     );
-    checkRefs(resource.usableLevelIds, levelIds, "resource", resource.id, "资源可用阶段");
+    checkRefs(
+      resource.usableLevelIds,
+      levelIds,
+      "resource",
+      resource.id,
+      "资源可用阶段",
+    );
   });
   system.transitions.forEach((transition) => {
     checkRefs(
@@ -707,7 +906,9 @@ export function auditSystem(
       "突破资源",
     );
     checkRefs(
-      transition.resourceRequirements.flatMap((item) => item.substituteResourceIds),
+      transition.resourceRequirements.flatMap(
+        (item) => item.substituteResourceIds,
+      ),
       resourceIds,
       "transition",
       transition.id,
@@ -716,13 +917,49 @@ export function auditSystem(
   });
   system.constraints.forEach((constraint) => {
     if (!constraint.trigger.trim())
-      add("warning", "constraint", constraint.id, "约束缺少触发条件", `约束 ${constraint.name} 尚未说明何时生效。`, "补充触发条件和适用范围。", `constraint:${constraint.id}:trigger`);
+      add(
+        "warning",
+        "constraint",
+        constraint.id,
+        "约束缺少触发条件",
+        `约束 ${constraint.name} 尚未说明何时生效。`,
+        "补充触发条件和适用范围。",
+        `constraint:${constraint.id}:trigger`,
+      );
     if (!constraint.consequence.trim())
-      add("warning", "constraint", constraint.id, "约束缺少后果", `约束 ${constraint.name} 尚未定义触发后的实际后果。`, "补充可观察、可执行的后果。", `constraint:${constraint.id}:consequence`);
-    if ((constraint.category === "world-rule" || constraint.category === "identity") && !constraint.target?.trim())
-      add("warning", "constraint", constraint.id, "约束作用对象未定义", `${constraint.name} 属于${constraint.category === "world-rule" ? "世界规则" : "身份限制"}，但没有声明作用对象。`, "填写受约束的对象、范围或身份条件。", `constraint:${constraint.id}:target`);
+      add(
+        "warning",
+        "constraint",
+        constraint.id,
+        "约束缺少后果",
+        `约束 ${constraint.name} 尚未定义触发后的实际后果。`,
+        "补充可观察、可执行的后果。",
+        `constraint:${constraint.id}:consequence`,
+      );
+    if (
+      (constraint.category === "world-rule" ||
+        constraint.category === "identity") &&
+      !constraint.target?.trim()
+    )
+      add(
+        "warning",
+        "constraint",
+        constraint.id,
+        "约束作用对象未定义",
+        `${constraint.name} 属于${constraint.category === "world-rule" ? "世界规则" : "身份限制"}，但没有声明作用对象。`,
+        "填写受约束的对象、范围或身份条件。",
+        `constraint:${constraint.id}:target`,
+      );
     if (!constraint.reversible && !constraint.releaseMethod?.trim())
-      add("suggestion", "constraint", constraint.id, "不可逆约束缺少解除说明", `约束 ${constraint.name} 标记为不可逆，但没有记录是否存在特殊解除路径。`, "明确不可逆边界，或补充极端解除方式。", `constraint:${constraint.id}:release`);
+      add(
+        "suggestion",
+        "constraint",
+        constraint.id,
+        "不可逆约束缺少解除说明",
+        `约束 ${constraint.name} 标记为不可逆，但没有记录是否存在特殊解除路径。`,
+        "明确不可逆边界，或补充极端解除方式。",
+        `constraint:${constraint.id}:release`,
+      );
   });
   const assetIdsForSystem = (candidate: CultivationSystem) =>
     new Set([
@@ -730,10 +967,15 @@ export function auditSystem(
       ...candidate.progressionTracks.flatMap((track) => [
         track.id,
         ...track.metrics.map((metric) => metric.id),
-        ...track.levels.map((level) => level.id),
+        ...track.levels.flatMap((level) => [
+          level.id,
+          ...level.subStages.map((stage) => stage.id),
+        ]),
         ...track.transitions.map((transition) => transition.id),
       ]),
-      ...(candidate.trackInteractions ?? []).map((interaction) => interaction.id),
+      ...(candidate.trackInteractions ?? []).map(
+        (interaction) => interaction.id,
+      ),
       ...candidate.resources.map((resource) => resource.id),
       ...candidate.methods.flatMap((method) => [
         method.id,
@@ -767,18 +1009,47 @@ export function auditSystem(
         "选择当前项目中已存在的修行体系。",
       );
     if (relation.sourceSystemId === relation.targetSystemId)
-      add("error", "relation", relation.id, "跨体系关系自引用", "源体系与目标体系不能是同一个体系。", "选择两个不同的修行体系。");
-    if (!relation.conversionRule.trim() && ["转换", "继承", "依赖"].includes(relation.relation))
-      add("warning", "relation", relation.id, "跨体系关系缺少规则", `${relation.relation}关系尚未定义转换或依赖规则。`, "补充条件、转换规则和风险边界。", `relation:${relation.id}:rule`);
+      add(
+        "error",
+        "relation",
+        relation.id,
+        "跨体系关系自引用",
+        "源体系与目标体系不能是同一个体系。",
+        "选择两个不同的修行体系。",
+      );
+    if (
+      !relation.conversionRule.trim() &&
+      ["转换", "继承", "依赖"].includes(relation.relation)
+    )
+      add(
+        "warning",
+        "relation",
+        relation.id,
+        "跨体系关系缺少规则",
+        `${relation.relation}关系尚未定义转换或依赖规则。`,
+        "补充条件、转换规则和风险边界。",
+        `relation:${relation.id}:rule`,
+      );
     if ((relation.affectedAssetIds ?? []).length > 0) {
-      const source = ecology.systems.find((candidate) => candidate.id === relation.sourceSystemId);
-      const target = ecology.systems.find((candidate) => candidate.id === relation.targetSystemId);
+      const source = ecology.systems.find(
+        (candidate) => candidate.id === relation.sourceSystemId,
+      );
+      const target = ecology.systems.find(
+        (candidate) => candidate.id === relation.targetSystemId,
+      );
       const valid = new Set<string>();
       if (source) assetIdsForSystem(source).forEach((id) => valid.add(id));
       if (target) assetIdsForSystem(target).forEach((id) => valid.add(id));
       (relation.affectedAssetIds ?? []).forEach((assetId) => {
         if (!valid.has(assetId))
-          add("error", "relation", relation.id, "跨体系关系资产引用不存在", `关系 ${relation.name} 关联了源体系或目标体系之外的资产 ${assetId}。`, "选择源体系或目标体系中的有效资产，或移除该引用。");
+          add(
+            "error",
+            "relation",
+            relation.id,
+            "跨体系关系资产引用不存在",
+            `关系 ${relation.name} 关联了源体系或目标体系之外的资产 ${assetId}。`,
+            "选择源体系或目标体系中的有效资产，或移除该引用。",
+          );
       });
     }
   });
@@ -790,7 +1061,8 @@ export function rebuildCultivationAudits(
   options: CultivationAuditOptions = {},
 ): CultivationEcology {
   const issueKey = (issue: AuditIssue) =>
-    issue.fingerprint ?? `${issue.targetType}:${issue.targetId ?? ""}:${issue.title}:${issue.message}`;
+    issue.fingerprint ??
+    `${issue.targetType}:${issue.targetId ?? ""}:${issue.title}:${issue.message}`;
   const legacyIssueKey = (issue: AuditIssue) =>
     `${issue.targetType}:${issue.targetId ?? ""}:${issue.title}`;
   return {
@@ -802,12 +1074,15 @@ export function rebuildCultivationAudits(
         previous.set(legacyIssueKey(issue), issue.resolved);
       });
       return {
-      ...system,
-      audit: auditSystem(system, ecology, options).map((issue) => ({
-        ...issue,
-        resolved: previous.get(issueKey(issue)) ?? previous.get(legacyIssueKey(issue)) ?? issue.resolved,
-      })),
-    };
+        ...system,
+        audit: auditSystem(system, ecology, options).map((issue) => ({
+          ...issue,
+          resolved:
+            previous.get(issueKey(issue)) ??
+            previous.get(legacyIssueKey(issue)) ??
+            issue.resolved,
+        })),
+      };
     }),
   };
 }

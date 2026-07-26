@@ -109,7 +109,10 @@
 .cp-add-button {
   border: 1px solid var(--line);
   color: var(--ink-muted);
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
 }
 
 .cp-exit-button {
@@ -189,7 +192,7 @@
   justify-content: center;
   border-radius: var(--radius-sm);
   background: transparent;
-  font-size: 1rem;
+  font-size: var(--text-base);
   line-height: 1;
 }
 
@@ -253,7 +256,11 @@
 
 .cp-system-card.is-active {
   border-color: color-mix(in srgb, var(--cp-copper) 20%, var(--line));
-  background: color-mix(in srgb, var(--cp-copper-soft) 62%, var(--paper-elevated));
+  background: color-mix(
+    in srgb,
+    var(--cp-copper-soft) 62%,
+    var(--paper-elevated)
+  );
   color: var(--cp-ink-deep);
 }
 
@@ -1054,10 +1061,18 @@
   background: color-mix(in srgb, var(--cp-teal) 45%, var(--line));
 }
 
-.cp-line-a { transform: rotate(-56deg); }
-.cp-line-b { transform: rotate(56deg); }
-.cp-line-c { transform: rotate(180deg); }
-.cp-line-d { transform: rotate(0deg); }
+.cp-line-a {
+  transform: rotate(-56deg);
+}
+.cp-line-b {
+  transform: rotate(56deg);
+}
+.cp-line-c {
+  transform: rotate(180deg);
+}
+.cp-line-d {
+  transform: rotate(0deg);
+}
 
 .cp-formation-node {
   position: absolute;
@@ -1101,7 +1116,8 @@
   border-radius: 999px;
   background: var(--cp-copper-soft);
   color: var(--cp-copper);
-  box-shadow: 0 0 0 0.5rem color-mix(in srgb, var(--cp-copper-soft) 45%, transparent);
+  box-shadow: 0 0 0 0.5rem
+    color-mix(in srgb, var(--cp-copper-soft) 45%, transparent);
 }
 
 .cp-formation-core span {
@@ -1251,16 +1267,41 @@
   line-height: 1.55;
 }
 
-.cp-tone-warm { background: var(--cp-copper-soft); color: var(--cp-copper); }
-.cp-tone-cool { background: var(--cp-teal-soft); color: var(--cp-teal); }
-.cp-tone-blue { background: var(--cp-blue-soft); color: var(--cp-ink-blue); }
-.cp-tone-violet { background: var(--cp-violet-soft); color: var(--cp-violet); }
-.cp-tone-ink { background: var(--paper-inset); color: var(--cp-ink-deep); }
-.cp-meter .cp-tone-warm { background: var(--cp-copper); }
-.cp-meter .cp-tone-cool { background: var(--cp-teal); }
-.cp-meter .cp-tone-blue { background: var(--cp-ink-blue); }
-.cp-meter .cp-tone-ink { background: var(--cp-ink-deep); }
-.cp-meter .cp-tone-violet { background: var(--cp-violet); }
+.cp-tone-warm {
+  background: var(--cp-copper-soft);
+  color: var(--cp-copper);
+}
+.cp-tone-cool {
+  background: var(--cp-teal-soft);
+  color: var(--cp-teal);
+}
+.cp-tone-blue {
+  background: var(--cp-blue-soft);
+  color: var(--cp-ink-blue);
+}
+.cp-tone-violet {
+  background: var(--cp-violet-soft);
+  color: var(--cp-violet);
+}
+.cp-tone-ink {
+  background: var(--paper-inset);
+  color: var(--cp-ink-deep);
+}
+.cp-meter .cp-tone-warm {
+  background: var(--cp-copper);
+}
+.cp-meter .cp-tone-cool {
+  background: var(--cp-teal);
+}
+.cp-meter .cp-tone-blue {
+  background: var(--cp-ink-blue);
+}
+.cp-meter .cp-tone-ink {
+  background: var(--cp-ink-deep);
+}
+.cp-meter .cp-tone-violet {
+  background: var(--cp-violet);
+}
 
 .cp-module-intro {
   display: flex;
@@ -1354,7 +1395,11 @@
 }
 
 .cp-ability-group-scripture .cp-section-heading {
-  background: color-mix(in srgb, var(--cp-violet-soft) 42%, var(--paper-elevated));
+  background: color-mix(
+    in srgb,
+    var(--cp-violet-soft) 42%,
+    var(--paper-elevated)
+  );
 }
 
 .cp-group-description {

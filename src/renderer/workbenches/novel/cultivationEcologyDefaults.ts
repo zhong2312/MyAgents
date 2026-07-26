@@ -10,6 +10,7 @@ import type {
   TheoryNode,
 } from "../../../shared/novel-cultivation-ecology-schema";
 import { createEmptyCultivationEcology } from "../../../shared/novel-cultivation-ecology-schema";
+import { createFormationBackdropPreset } from "./formationBackdropPresets";
 
 function named(
   itemId: string,
@@ -231,6 +232,23 @@ function node(
   };
 }
 
+function defaultLevelSubStages(
+  levelId: string,
+): CultivationLevel["subStages"] {
+  return ["前期", "中期", "后期"].map((name, order) => ({
+    id: `${levelId}-stage-${["early", "middle", "late"][order]}`,
+    name,
+    summary: "",
+    order,
+    metricThresholds: [],
+    entryConditions: [],
+    completionConditions: [],
+    resourceRequirements: [],
+    naturalAbilityIds: [],
+    methodIds: [],
+  }));
+}
+
 function level(
   itemId: string,
   order: number,
@@ -253,6 +271,7 @@ function level(
     resourceRequirements: [],
     naturalAbilityIds,
     methodIds: [],
+    subStages: defaultLevelSubStages(itemId),
   };
 }
 
@@ -376,6 +395,10 @@ function formation(
   requiredLevelIds: string[] = ["taixu-level-2"],
   methodIds: string[] = ["taixu-method-weekly"],
 ): Formation {
+  const backdrop = createFormationBackdropPreset(
+    "classic",
+    (index) => `${itemId}-backdrop-${index + 1}`,
+  );
   return {
     ...named(itemId, name, purpose),
     category: "法阵 / 仪式网络",
@@ -396,6 +419,47 @@ function formation(
     boundary: "阵外能量无法被阵内规则强制改写",
     risks: ["阵眼过载", "回路反噬"],
     countermeasures: "保留备用收束节点",
+    sixElements: {
+      source: "阵旗与灵石持续供能",
+      foundation: "主阵盘与三处方位锚点",
+      pattern: "三角闭合回路引导能量循环",
+      eye: "主阵眼聚能并控制全局",
+      domain: "阵图边界以内形成局部规则场",
+      law: purpose,
+    },
+    design: {
+      layout: "concentric",
+      canvasStyle: "mystic",
+      ...backdrop,
+      rings: [
+        {
+          id: `${itemId}-ring-1`,
+          name: "纹环",
+          radius: 210,
+          style: "runic",
+          color: "#74aab7",
+          strokeWidth: 1.5,
+          rotation: 0,
+          rotating: false,
+          runes: "道生纹 · 纹生阵 · 气循其理 · ",
+          visible: true,
+          order: 0,
+        },
+        {
+          id: `${itemId}-ring-2`,
+          name: "域环",
+          radius: 360,
+          style: "double",
+          color: "#cdbb8c",
+          strokeWidth: 2.5,
+          rotation: 0,
+          rotating: false,
+          runes: "天地为盘 · 万物为子 · ",
+          visible: true,
+          order: 1,
+        },
+      ],
+    },
     nodes: [
       {
         id: `${itemId}-node-1`,
@@ -403,7 +467,15 @@ function formation(
         kind: "eye",
         role: "聚能与控制",
         theoryNodeId,
-        position: { x: 50, y: 16 },
+        position: { x: 50, y: 50 },
+        canvasPosition: { x: 454, y: 454 },
+        ringId: null,
+        angle: 0,
+        size: 92,
+        color: "#d9c98f",
+        glyph: "眼",
+        element: "eye",
+        nodeStyle: "seal",
       },
       {
         id: `${itemId}-node-2`,
@@ -411,7 +483,15 @@ function formation(
         kind: "support",
         role: "稳定回路",
         theoryNodeId: null,
-        position: { x: 20, y: 72 },
+        position: { x: 81.2, y: 68 },
+        canvasPosition: { x: 776, y: 644 },
+        ringId: `${itemId}-ring-2`,
+        angle: 120,
+        size: 72,
+        color: "#a87858",
+        glyph: "基",
+        element: "foundation",
+        nodeStyle: "sigil",
       },
       {
         id: `${itemId}-node-3`,
@@ -419,30 +499,53 @@ function formation(
         kind: "support",
         role: "回收余能",
         theoryNodeId: null,
-        position: { x: 80, y: 72 },
+        position: { x: 18.8, y: 68 },
+        canvasPosition: { x: 152, y: 644 },
+        ringId: `${itemId}-ring-2`,
+        angle: 240,
+        size: 72,
+        color: "#74aab7",
+        glyph: "纹",
+        element: "pattern",
+        nodeStyle: "seal",
       },
     ],
     edges: [
       {
         id: `${itemId}-edge-1`,
+        name: "主阵眼 · 东辅位",
         fromNodeId: `${itemId}-node-1`,
         toNodeId: `${itemId}-node-2`,
         order: 0,
         rule: "分流",
+        flowType: "灵流",
+        lineStyle: "bezier",
+        color: "#d9c98f",
+        animated: true,
       },
       {
         id: `${itemId}-edge-2`,
+        name: "东辅位 · 西辅位",
         fromNodeId: `${itemId}-node-2`,
         toNodeId: `${itemId}-node-3`,
         order: 1,
         rule: "平衡",
+        flowType: "灵流",
+        lineStyle: "smoothstep",
+        color: "#a87858",
+        animated: true,
       },
       {
         id: `${itemId}-edge-3`,
+        name: "西辅位 · 主阵眼",
         fromNodeId: `${itemId}-node-3`,
         toNodeId: `${itemId}-node-1`,
         order: 2,
         rule: "回收",
+        flowType: "余能回流",
+        lineStyle: "bezier",
+        color: "#74aab7",
+        animated: true,
       },
     ],
   };
@@ -894,7 +997,7 @@ function createTaixu(): CultivationSystem {
       {
         id: "taixu-audit-2",
         severity: "suggestion",
-        title: "元神阶段质量区间可细化",
+        title: "元神境界质量区间可细化",
         targetType: "level",
         targetId: "taixu-level-4",
         message: "当前只写了统一质量。",
@@ -922,7 +1025,7 @@ function createGenericSystem(
       `${systemId}-level-${index + 1}`,
       index,
       stage,
-      `${name}的第 ${index + 1} 阶段。`,
+      `${name}的第 ${index + 1} 个境界。`,
       index === 0 ? [`${systemId}-ability-natural`] : [],
     ),
   );
@@ -990,7 +1093,7 @@ function createGenericSystem(
     kind,
     terminology: {
       energy,
-      stage: "阶段",
+      stage: "境界",
       method: "法门",
       ability: "技能 / 法术",
     },
@@ -1017,7 +1120,7 @@ function createGenericSystem(
         ...named(
           `${systemId}-track-main`,
           `${name}成长轨道`,
-          "阶段由容量、控制与稳定度共同决定。",
+          "境界由容量、控制与稳定度共同决定。",
         ),
         mode: "训练 / 觉醒 / 施法",
         structure: "ordered",

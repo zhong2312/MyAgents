@@ -43,12 +43,12 @@
   white-space: nowrap;
 }
 .ce-brand strong {
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
 }
 .ce-brand small {
   margin-top: 0.1rem;
   color: var(--ink-muted);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
 }
 .ce-top-actions {
   justify-content: flex-end;
@@ -57,19 +57,19 @@
   max-width: 20rem;
   overflow: hidden;
   color: var(--error);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ce-save-message {
   color: var(--ink-muted);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
 }
 .ce-body {
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-template-columns: 15rem minmax(28rem, 1fr) 20rem;
+  grid-template-columns: 15.25rem minmax(0, 1fr);
   overflow: hidden;
 }
 .ce-sidebar {
@@ -89,7 +89,7 @@
   margin-bottom: 0.25rem;
   padding: 0.25rem 0.5rem;
   color: var(--ink-subtle);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -163,7 +163,7 @@
   background: transparent;
   padding: 0.35rem 0.55rem;
   color: var(--ink-muted);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   text-align: left;
 }
 .ce-nav-item:hover,
@@ -186,6 +186,34 @@
   gap: 0.15rem;
   overflow-y: auto;
 }
+.ce-system-entry {
+  position: relative;
+  min-width: 0;
+}
+.ce-system-entry .ce-system-arrow {
+  margin-right: 1.8rem;
+}
+.ce-system-edit {
+  position: absolute;
+  top: 50%;
+  right: 0.4rem;
+  z-index: 1;
+  display: flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--paper-elevated) 88%, transparent);
+  color: var(--ink-muted);
+  transform: translateY(-50%);
+}
+.ce-system-edit:hover,
+.ce-system-edit:focus-visible {
+  background: var(--paper-inset);
+  color: var(--accent-warm);
+}
 .ce-system-item {
   align-items: flex-start;
   padding: 0.5rem 0.55rem;
@@ -206,12 +234,12 @@
   white-space: nowrap;
 }
 .ce-system-item strong {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 .ce-system-item small {
   margin-top: 0.12rem;
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-system-arrow {
   margin-top: 0.15rem;
@@ -225,7 +253,7 @@
   border-top: 1px solid var(--line-subtle);
   padding: 0.65rem 0.45rem 0.2rem;
   color: var(--ink-subtle);
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
 }
 .ce-main {
   min-width: 0;
@@ -249,7 +277,7 @@
 }
 .ce-page-header h1 {
   margin: 0.2rem 0 0;
-  font-size: 1.2rem;
+  font-size: var(--text-xl);
   font-weight: 700;
   letter-spacing: 0;
 }
@@ -257,12 +285,12 @@
   max-width: 50rem;
   margin: 0.35rem 0 0;
   color: var(--ink-muted);
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   line-height: 1.55;
 }
 .ce-eyebrow {
   color: var(--accent-warm);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -286,12 +314,12 @@
   display: block;
 }
 .ce-stat-strip strong {
-  font-size: 1.15rem;
+  font-size: var(--text-lg);
 }
 .ce-stat-strip span {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
 }
 .ce-panel-grid {
   display: grid;
@@ -313,7 +341,7 @@
 }
 .ce-section-head h2 {
   margin: 0.18rem 0 0;
-  font-size: 0.86rem;
+  font-size: var(--text-sm);
   font-weight: 700;
 }
 .ce-origin-card {
@@ -321,12 +349,12 @@
   padding: 0.3rem 0.7rem;
 }
 .ce-origin-card strong {
-  font-size: 0.88rem;
+  font-size: var(--text-sm);
 }
 .ce-origin-card p {
   margin: 0.3rem 0;
   color: var(--ink-muted);
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 .ce-origin-card span,
@@ -337,7 +365,7 @@
 }
 .ce-origin-card span {
   color: var(--accent-cool);
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
 }
 .ce-summary-list {
   display: grid;
@@ -351,11 +379,11 @@
 }
 .ce-summary-list span {
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-summary-list strong {
   margin-top: 0.25rem;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 .ce-asset-grid {
   display: grid;
@@ -384,12 +412,12 @@
   display: block;
 }
 .ce-asset-grid strong {
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
 }
 .ce-asset-grid small {
   margin-top: 0.2rem;
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-warning-list > div {
   display: flex;
@@ -409,12 +437,12 @@
   display: block;
 }
 .ce-warning-list strong {
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
 }
 .ce-warning-list small {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-two-column {
   display: grid;
@@ -429,7 +457,7 @@
   background: var(--paper);
   padding: 0.65rem 0.75rem;
   color: var(--ink-muted);
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
   line-height: 1.55;
 }
 .ce-callout svg {
@@ -446,7 +474,7 @@
   margin: 0;
   padding-left: 1.2rem;
   color: var(--ink-muted);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   line-height: 1.8;
 }
 .ce-form-grid {
@@ -462,7 +490,7 @@
 }
 .ce-field > span {
   color: var(--ink-muted);
-  font-size: 0.66rem;
+  font-size: var(--text-xs);
   font-weight: 600;
 }
 .ce-field input,
@@ -473,7 +501,7 @@
   background: var(--paper);
   color: var(--ink);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   line-height: 1.45;
   padding: 0.45rem 0.55rem;
   outline: 0;
@@ -486,6 +514,50 @@
 .ce-field textarea:focus {
   border-color: var(--accent-cool);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-cool) 15%, transparent);
+}
+.ce-switch-field {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.ce-switch-field > span {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.ce-switch-field > button {
+  position: relative;
+  width: 2.75rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--line-strong);
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.ce-switch-field > button.is-checked {
+  background: var(--accent-warm);
+}
+.ce-switch-field > button > i {
+  position: absolute;
+  top: 0.125rem;
+  left: 0.125rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: var(--radius-full);
+  background: #fff;
+  box-shadow: var(--shadow-xs);
+  transition: transform 160ms ease;
+}
+.ce-switch-field > button.is-checked > i {
+  transform: translateX(1.25rem);
+}
+.ce-switch-field > button:focus-visible {
+  outline: 2px solid var(--accent-warm);
+  outline-offset: 2px;
 }
 .ce-reference-grid,
 .ce-metric-grid,
@@ -519,20 +591,20 @@
 .ce-method-meta span,
 .ce-formation-meta span {
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-reference-grid strong,
 .ce-metric-grid strong,
 .ce-method-meta strong,
 .ce-formation-meta strong {
   margin-top: 0.25rem;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   line-height: 1.4;
 }
 .ce-metric-grid small {
   margin-top: 0.25rem;
   color: var(--ink-subtle);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-table-wrap {
   overflow-x: auto;
@@ -540,11 +612,11 @@
 .ce-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
 }
 .ce-table th {
   color: var(--ink-subtle);
-  font-size: 0.63rem;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-align: left;
 }
@@ -558,7 +630,7 @@
   display: block;
   margin-top: 0.15rem;
   color: var(--ink-subtle);
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
 }
 .ce-table-link {
   font-weight: 700;
@@ -586,13 +658,13 @@
   background: var(--paper-elevated);
   padding: 0.45rem 0.65rem;
   color: var(--ink-muted);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
 }
 .ce-tabs button small,
 .ce-filter-tabs button small,
 .ce-topology-tabs button small {
   color: var(--ink-subtle);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-tabs button.is-active,
 .ce-filter-tabs button.is-active,
@@ -602,44 +674,118 @@
   color: var(--accent-warm);
 }
 .ce-level-rail {
-  display: flex;
-  gap: 0.45rem;
-  overflow-x: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+  gap: 0.7rem;
   padding: 0.15rem 0;
 }
 .ce-level-card {
-  position: relative;
   display: flex;
-  width: 9.5rem;
-  min-height: 6rem;
-  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 10.25rem;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  box-shadow: inset 3px 0 0 var(--accent-cool);
+}
+.ce-level-card:hover,
+.ce-level-card:focus-within {
+  border-color: var(--accent-warm);
+}
+.ce-level-card-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--accent-cool);
-  background: var(--paper);
-  padding: 0.6rem;
+  border: 0;
+  background: transparent;
+  padding: 0.72rem 0.8rem 0.65rem 0.9rem;
   text-align: left;
 }
-.ce-level-card:hover {
-  border-color: var(--accent-warm);
+.ce-level-card-main:hover {
+  background: var(--accent-warm-subtle);
 }
-.ce-level-card span,
-.ce-level-card small {
+.ce-level-card-head {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+.ce-level-card-main span,
+.ce-level-card-main small {
   color: var(--ink-muted);
-  font-size: 0.63rem;
+  font-size: var(--text-xs);
 }
-.ce-level-card strong {
+.ce-level-card-main strong {
+  max-width: 100%;
   margin: 0.2rem 0;
-  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
 }
 .ce-level-arrow {
-  position: absolute;
-  right: -0.65rem;
-  top: 2.25rem;
-  z-index: 1;
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
   color: var(--ink-subtle);
+}
+.ce-level-stage-panel {
+  border-top: 1px solid var(--line-subtle);
+  background: var(--paper-inset);
+  padding: 0.5rem 0.55rem 0.55rem 0.65rem;
+}
+.ce-level-stage-heading {
+  display: flex;
+  min-height: 1.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
+}
+.ce-level-stage-heading > button {
+  display: inline-flex;
+  width: 1.65rem;
+  height: 1.65rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+}
+.ce-level-stage-heading > button:hover {
+  border-color: var(--line-strong);
+  background: var(--paper);
+  color: var(--accent-warm);
+}
+.ce-level-stage-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(3.5rem, 1fr));
+  gap: 0.3rem;
+}
+.ce-level-stage-list button {
+  min-width: 0;
+  min-height: 2rem;
+  border: 1px solid var(--line-subtle);
+  background: var(--paper);
+  padding: 0.35rem 0.3rem;
+  overflow-wrap: anywhere;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.ce-level-stage-list button:hover {
+  border-color: var(--accent-warm);
+  color: var(--accent-warm);
+}
+.ce-level-stage-empty {
+  display: block;
+  padding: 0.25rem 0;
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
 }
 .ce-transition-list {
   display: flex;
@@ -670,13 +816,13 @@
   display: block;
 }
 .ce-transition-list strong {
-  font-size: 0.73rem;
+  font-size: var(--text-xs);
 }
 .ce-transition-list small,
 .ce-transition-list em {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.64rem;
+  font-size: var(--text-xs);
   font-style: normal;
 }
 .ce-directory {
@@ -720,13 +866,13 @@
   display: block;
 }
 .ce-directory strong {
-  font-size: 0.76rem;
+  font-size: var(--text-sm);
 }
 .ce-directory small,
 .ce-directory em {
   margin-top: 0.16rem;
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   font-style: normal;
 }
 .ce-method-workspace,
@@ -752,7 +898,7 @@
   justify-content: space-between;
   padding: 0.3rem 0.4rem 0.5rem;
   color: var(--ink-subtle);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 .ce-method-list > button,
@@ -789,7 +935,7 @@
 .ce-method-list strong,
 .ce-formation-list strong {
   overflow: hidden;
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -797,10 +943,10 @@
 .ce-formation-list small {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-method-list em {
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
   font-style: normal;
 }
 .ce-method-detail,
@@ -1779,7 +1925,7 @@
 .ce-route-line button small {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-topology-rule-grid {
   display: grid;
@@ -1796,11 +1942,11 @@
 }
 .ce-topology-rule-grid span {
   color: var(--ink-muted);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-topology-rule-grid strong {
   margin-top: 0.2rem;
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
 }
 .ce-topology-footer {
   display: flex;
@@ -1809,7 +1955,7 @@
   gap: 0.5rem;
   margin-top: 0.7rem;
   color: var(--ink-subtle);
-  font-size: 0.63rem;
+  font-size: var(--text-xs);
 }
 .ce-ability-grid {
   display: grid;
@@ -1846,7 +1992,7 @@
 }
 .ce-card-kicker {
   color: var(--ink-subtle);
-  font-size: 0.61rem;
+  font-size: var(--text-xs);
 }
 .ce-ability-card strong,
 .ce-ability-card p,
@@ -1855,21 +2001,21 @@
 }
 .ce-ability-card strong {
   margin-top: 0.2rem;
-  font-size: 0.78rem;
+  font-size: var(--text-sm);
 }
 .ce-ability-card p {
   display: -webkit-box;
   margin: 0.25rem 0;
   overflow: hidden;
   color: var(--ink-muted);
-  font-size: 0.67rem;
+  font-size: var(--text-xs);
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 .ce-ability-card small {
   color: var(--accent-cool);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-formation-map {
   position: relative;
@@ -1894,7 +2040,7 @@
   flex-direction: column;
   align-items: center;
   color: var(--accent-warm);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-formation-node {
   position: absolute;
@@ -1906,7 +2052,7 @@
   background: var(--paper-elevated);
   padding: 0.35rem 0.45rem;
   color: var(--ink);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-formation-node:hover {
   border-color: var(--accent-warm);
@@ -1925,12 +2071,12 @@
   display: block;
 }
 .ce-deployment-list span {
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
 }
 .ce-deployment-list small {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-asset-index {
   display: grid;
@@ -1957,7 +2103,7 @@
   justify-content: center;
   background: var(--accent-warm-subtle);
   color: var(--accent-warm);
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   font-weight: 700;
 }
 .ce-asset-index button span:nth-child(2) {
@@ -1969,12 +2115,12 @@
   display: block;
 }
 .ce-asset-index strong {
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
 }
 .ce-asset-index small {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-constraint-grid {
   display: grid;
@@ -2006,13 +2152,13 @@
   display: block;
 }
 .ce-constraint-grid strong {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 .ce-constraint-grid small,
 .ce-constraint-grid em {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.63rem;
+  font-size: var(--text-xs);
   font-style: normal;
 }
 .ce-audit-score {
@@ -2034,15 +2180,15 @@
 }
 .ce-audit-score span {
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-audit-score strong {
   margin-left: 0.35rem;
-  font-size: 1.2rem;
+  font-size: var(--text-xl);
 }
 .ce-audit-score small {
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-progress {
   height: 0.35rem;
@@ -2080,13 +2226,13 @@
   display: block;
 }
 .ce-audit-list strong {
-  font-size: 0.74rem;
+  font-size: var(--text-xs);
 }
 .ce-audit-list small,
 .ce-audit-list em {
   margin-top: 0.18rem;
   color: var(--ink-muted);
-  font-size: 0.64rem;
+  font-size: var(--text-xs);
   font-style: normal;
 }
 .ce-severity {
@@ -2094,7 +2240,7 @@
   border-radius: var(--radius-sm);
   padding: 0.18rem 0.3rem;
   text-align: center;
-  font-size: 0.61rem;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 .ce-severity-error {
@@ -2127,52 +2273,20 @@
 .ce-origin-node strong {
   display: block;
   margin-top: 0.45rem;
-  font-size: 0.84rem;
+  font-size: var(--text-sm);
 }
 .ce-origin-node p {
   min-height: 3rem;
   margin: 0.35rem 0;
   color: var(--ink-muted);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 .ce-origin-node div {
   display: flex;
   gap: 0.5rem;
   color: var(--accent-cool);
-  font-size: 0.63rem;
-}
-.ce-relation-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-  margin-top: 1rem;
-}
-.ce-relation-list > div {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  border: 1px solid var(--line);
-  background: var(--paper-elevated);
-  padding: 0.7rem;
-}
-.ce-relation-system {
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-.ce-relation-type {
-  border: 1px solid var(--accent-warm);
-  background: var(--accent-warm-subtle);
-  padding: 0.2rem 0.4rem;
-  color: var(--accent-warm);
-  font-size: 0.65rem;
-}
-.ce-relation-list p {
-  width: 100%;
-  margin: 0.15rem 0 0;
-  color: var(--ink-muted);
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
 }
 .ce-empty,
 .ce-loading {
@@ -2182,7 +2296,7 @@
   justify-content: center;
   gap: 0.5rem;
   color: var(--ink-subtle);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 .ce-loading {
   height: 100%;
@@ -2201,7 +2315,7 @@
 .ce-inspector-label {
   margin-bottom: 0.65rem;
   color: var(--ink-subtle);
-  font-size: 0.64rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2228,12 +2342,12 @@
   white-space: nowrap;
 }
 .ce-inspector-focus strong {
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
 }
 .ce-inspector-focus small {
   margin-top: 0.15rem;
   color: var(--ink-muted);
-  font-size: 0.64rem;
+  font-size: var(--text-xs);
 }
 .ce-inspector-rule {
   height: 1px;
@@ -2257,11 +2371,11 @@
 }
 .ce-inspector-facts span {
   color: var(--ink-muted);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-inspector-facts strong {
   margin-top: 0.15rem;
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
 }
 .ce-inspector-content > .ce-section {
   border: 0;
@@ -2277,6 +2391,14 @@
   gap: 0.65rem;
   margin-bottom: 0.8rem;
 }
+.ce-inspector-insert-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.ce-inspector-insert-actions .ce-button {
+  justify-content: center;
+}
 .ce-inspector-empty {
   display: flex;
   height: 100%;
@@ -2286,12 +2408,12 @@
   gap: 0.45rem;
   padding: 1rem;
   color: var(--ink-subtle);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   text-align: center;
 }
 @media (max-width: 1180px) {
   .ce-body {
-    grid-template-columns: 13rem minmax(24rem, 1fr) 18rem;
+    grid-template-columns: 12rem minmax(0, 1fr);
   }
   .ce-panel-grid,
   .ce-two-column {
@@ -2413,6 +2535,917 @@
   }
 }
 
+/* Formation designer: React Flow interaction over a scalable ritual-diagram layer. */
+.ce-formation-list-item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 2rem;
+  border-bottom: 1px solid var(--line-subtle);
+  color: var(--ink-muted);
+}
+
+.ce-formation-list-item.is-active {
+  border-left: 2px solid var(--accent-warm);
+  background: var(--accent-warm-subtle);
+  color: var(--ink);
+}
+
+.ce-formation-list-item-trigger {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.55rem;
+  border: 0;
+  background: transparent;
+  padding: 0.7rem 0.35rem 0.7rem 0.5rem;
+  color: inherit;
+  text-align: left;
+}
+
+.ce-formation-list-item-trigger:hover {
+  background: var(--hover-bg);
+}
+
+.ce-formation-list-item-trigger > svg {
+  flex: 0 0 auto;
+  margin-top: 0.08rem;
+}
+
+.ce-formation-list-item-trigger > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.ce-formation-list-item-trigger strong,
+.ce-formation-list-item-trigger small {
+  display: block;
+}
+
+.ce-formation-list-item-trigger strong {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ce-formation-list-item-trigger small {
+  margin-top: 0.15rem;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.ce-formation-list-item-edit {
+  display: flex;
+  width: 2rem;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--ink-subtle);
+}
+
+.ce-formation-list-item-edit:hover,
+.ce-formation-list-item-edit:focus-visible {
+  background: var(--accent-warm-subtle);
+  color: var(--accent-warm);
+}
+
+.ce-formation-overview-actions,
+.ce-formation-canvas-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.ce-formation-canvas-toolbar {
+  flex-wrap: wrap;
+}
+
+.ce-formation-canvas-stats {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.ce-formation-canvas-stats span + span {
+  border-left: 1px solid var(--line-strong);
+  padding-left: 0.75rem;
+}
+
+.ce-formation-preset-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper-elevated);
+}
+
+.ce-formation-preset-switch > button {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.35rem;
+  border: 0;
+  border-left: 1px solid var(--line-subtle);
+  background: transparent;
+  padding: 0.35rem 0.6rem;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+.ce-formation-preset-switch > button:first-child {
+  border-left: 0;
+}
+
+.ce-formation-preset-switch > button:hover {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.ce-formation-preset-switch > button.is-active {
+  background: var(--accent-warm-subtle);
+  color: var(--accent-warm);
+  font-weight: 600;
+}
+
+.ce-formation-preset-switch i {
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  box-shadow: 0 0 0.35rem currentColor;
+}
+
+.ce-formation-designer {
+  min-width: 0;
+}
+
+.ce-formation-designer.is-preview .ce-formation-flow-surface {
+  height: clamp(26rem, calc(100dvh - 24rem), 34rem);
+  min-height: 26rem;
+}
+
+.ce-formation-designer.is-preview .ce-formation-flow-handle {
+  display: none;
+}
+
+.ce-formation-flow-surface {
+  position: relative;
+  width: 100%;
+  height: clamp(38rem, calc(100dvh - 17rem), 56rem);
+  min-height: 38rem;
+  overflow: hidden;
+  border: 1px solid #4e4437;
+  border-radius: var(--radius-sm);
+  background: #08070b;
+  box-shadow:
+    inset 0 0 7rem rgb(38 29 20 / 52%),
+    0 0.75rem 2rem rgb(0 0 0 / 16%);
+}
+
+.ce-formation-flow-surface.is-technical {
+  border-color: #46545b;
+  background: #0a1013;
+  box-shadow: inset 0 0 5rem rgb(25 45 51 / 42%);
+}
+
+.ce-formation-flow-surface .react-flow {
+  background: transparent;
+}
+
+.ce-formation-backdrop {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  box-shadow:
+    inset 0 0 5rem rgb(0 0 0 / 72%),
+    0 0 5rem rgb(213 177 99 / 10%);
+}
+
+.ce-formation-backdrop::after {
+  position: absolute;
+  inset: 3.5rem;
+  border: 1px solid rgb(221 194 135 / 18%);
+  border-radius: 50%;
+  content: "";
+}
+
+.ce-formation-backdrop.is-mystic {
+  background:
+    radial-gradient(circle at 50% 50%, rgb(190 141 75 / 10%), transparent 31%),
+    repeating-radial-gradient(
+      circle at 50% 50%,
+      rgb(219 195 139 / 3%) 0 1px,
+      transparent 1px 13px
+    );
+}
+
+.ce-formation-backdrop.is-technical {
+  border-radius: 0;
+  background:
+    linear-gradient(rgb(126 174 188 / 5%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(126 174 188 / 5%) 1px, transparent 1px);
+  background-size: 25px 25px;
+}
+
+.ce-formation-backdrop > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ce-formation-procedural-art {
+  transform-box: view-box;
+  transform-origin: center;
+}
+
+.ce-formation-procedural-art.is-rotate {
+  animation: ce-formation-backdrop-rotate 48s linear infinite;
+}
+
+.ce-formation-procedural-art.is-pulse {
+  animation: ce-formation-backdrop-pulse 4.8s ease-in-out infinite;
+}
+
+.ce-formation-layer-rotator,
+.ce-formation-ring-rotator {
+  transform-box: view-box;
+  transform-origin: center;
+}
+
+.ce-formation-layer-rotator.is-rotating,
+.ce-formation-ring-rotator.is-rotating {
+  animation: ce-formation-backdrop-rotate 48s linear infinite;
+}
+
+.ce-formation-backdrop-layer path,
+.ce-formation-backdrop-layer line,
+.ce-formation-backdrop-layer circle,
+.ce-formation-backdrop-layer polygon {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ce-formation-backdrop-layer.is-radial-rays line:nth-child(3n) {
+  stroke-width: 1.6;
+}
+
+.ce-formation-backdrop-runes {
+  fill: currentColor;
+  font-family: "STKaiti", "KaiTi", var(--font-body);
+  font-size: var(--text-xs);
+  letter-spacing: 0;
+}
+
+.ce-formation-structural-rings {
+  filter: drop-shadow(0 0 3px var(--formation-backdrop-glow));
+}
+
+.ce-formation-backdrop-grid line,
+.ce-formation-backdrop-grid polygon {
+  fill: none;
+  stroke: rgb(207 185 131 / 18%);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.ce-formation-backdrop-grid polygon:nth-last-child(2) {
+  stroke: rgb(116 170 183 / 22%);
+}
+
+.ce-formation-backdrop-grid polygon:last-child {
+  stroke: rgb(185 108 98 / 18%);
+}
+
+.ce-formation-ring {
+  color: #d9b86c;
+}
+
+.ce-formation-ring circle,
+.ce-formation-ring polygon {
+  fill: none;
+  stroke: currentColor;
+  vector-effect: non-scaling-stroke;
+}
+
+.ce-formation-ring.is-runic circle {
+  stroke-dasharray: 2 5;
+}
+
+.ce-formation-node-polygon {
+  stroke-dasharray: 5 8;
+  stroke-opacity: 0.42;
+  stroke-width: 1 !important;
+}
+
+.ce-formation-rune-text {
+  fill: currentColor;
+  font-size: var(--text-xs);
+  letter-spacing: 0;
+  opacity: 0.74;
+}
+
+.ce-formation-ring-name {
+  fill: currentColor;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0;
+  opacity: 0.72;
+}
+
+.ce-formation-eye-mark circle,
+.ce-formation-eye-mark polygon {
+  fill: none;
+  stroke: #d9c98f;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.ce-formation-eye-mark polygon {
+  stroke: #b96c62;
+  stroke-dasharray: 5 4;
+}
+
+.ce-formation-flow-node {
+  position: relative;
+  width: var(--formation-node-size);
+  height: var(--formation-node-size);
+  color: #f3ead4;
+  text-align: center;
+}
+
+.ce-formation-node-core {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid color-mix(in srgb, var(--formation-node-color) 70%, #f5e9c8);
+  border-radius: 50%;
+  background:
+    radial-gradient(
+      circle,
+      color-mix(in srgb, var(--formation-node-color) 35%, #161117) 0 24%,
+      transparent 25%
+    ),
+    conic-gradient(
+      from 22.5deg,
+      transparent 0 10%,
+      color-mix(in srgb, var(--formation-node-color) 48%, transparent) 10% 12%,
+      transparent 12% 23%
+    ),
+    #0c090c;
+  box-shadow:
+    inset 0 0 0 5px #0c090c,
+    inset 0 0 0 6px
+      color-mix(in srgb, var(--formation-node-color) 55%, transparent),
+    0 0 0.8rem color-mix(in srgb, var(--formation-node-color) 68%, transparent),
+    0 0 2rem color-mix(in srgb, var(--formation-node-color) 24%, transparent);
+}
+
+.ce-formation-node-core::before,
+.ce-formation-node-core::after {
+  position: absolute;
+  border: 1px solid
+    color-mix(in srgb, var(--formation-node-color) 55%, transparent);
+  border-radius: 50%;
+  content: "";
+}
+
+.ce-formation-node-core::before {
+  inset: 17%;
+}
+
+.ce-formation-node-core::after {
+  inset: 30%;
+  border-style: dashed;
+}
+
+.ce-formation-node-core > span {
+  position: relative;
+  z-index: 1;
+  color: color-mix(in srgb, var(--formation-node-color) 52%, #fff5df);
+  font-family: "STKaiti", "KaiTi", serif;
+  font-size: clamp(1rem, calc(var(--formation-node-size) * 0.32), 2.5rem);
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 0 0.65rem var(--formation-node-color);
+}
+
+.ce-formation-node-core > i {
+  position: absolute;
+  inset: -7%;
+  border: 1px dashed
+    color-mix(in srgb, var(--formation-node-color) 58%, transparent);
+  border-radius: 50%;
+  animation: ce-formation-spin 18s linear infinite;
+}
+
+.ce-formation-flow-node.is-orb .ce-formation-node-core {
+  border-color: color-mix(in srgb, var(--formation-node-color) 45%, white);
+  background:
+    radial-gradient(circle at 38% 34%, white 0 2%, transparent 4%),
+    radial-gradient(
+      circle,
+      color-mix(in srgb, var(--formation-node-color) 82%, white) 0 8%,
+      var(--formation-node-color) 16%,
+      color-mix(in srgb, var(--formation-node-color) 28%, #08070b) 42%,
+      #08070b 70%
+    );
+  box-shadow:
+    inset 0 0 1.2rem var(--formation-node-color),
+    0 0 1rem var(--formation-node-color),
+    0 0 3rem color-mix(in srgb, var(--formation-node-color) 45%, transparent);
+}
+
+.ce-formation-flow-node.is-sigil .ce-formation-node-core {
+  border-radius: 18%;
+  clip-path: polygon(50% 0, 92% 24%, 92% 76%, 50% 100%, 8% 76%, 8% 24%);
+}
+
+.ce-formation-flow-node.is-sigil .ce-formation-node-core::before,
+.ce-formation-flow-node.is-sigil .ce-formation-node-core::after {
+  border-radius: 18%;
+}
+
+.ce-formation-flow-node > strong,
+.ce-formation-flow-node > small {
+  position: absolute;
+  left: 50%;
+  display: block;
+  width: max-content;
+  max-width: 9rem;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.ce-formation-flow-node > strong {
+  top: calc(100% + 0.5rem);
+  overflow: hidden;
+  color: #f5ecd7;
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 4px #000;
+}
+
+.ce-formation-flow-node > small {
+  top: calc(100% + 1.65rem);
+  color: color-mix(in srgb, var(--formation-node-color) 68%, #d9d1c4);
+  font-size: var(--text-xs);
+}
+
+.ce-formation-flow-node.is-selected .ce-formation-node-core {
+  box-shadow:
+    inset 0 0 0 5px #0c090c,
+    inset 0 0 0 6px var(--formation-node-color),
+    0 0 0 3px #f4e7c5,
+    0 0 2.4rem var(--formation-node-color);
+}
+
+.ce-formation-flow-handle.react-flow__handle {
+  width: 9px;
+  height: 9px;
+  border: 1px solid #fff4d6;
+  background: var(--formation-node-color);
+  box-shadow: 0 0 0.55rem var(--formation-node-color);
+  opacity: 0.58;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.ce-formation-flow-node:hover .ce-formation-flow-handle.react-flow__handle,
+.ce-formation-flow-surface.is-connecting
+  .ce-formation-flow-handle.react-flow__handle {
+  transform: scale(1.3);
+  opacity: 1;
+}
+
+.ce-formation-flow-surface .react-flow__edge-path {
+  filter: drop-shadow(0 0 4px rgb(215 184 108 / 42%));
+}
+
+.ce-formation-flow-surface .react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 7px rgb(255 236 190 / 74%));
+}
+
+.ce-formation-flow-surface .react-flow__edgeupdater {
+  fill: rgb(217 184 108 / 10%);
+  stroke: #f4e7c5;
+  stroke-width: 2;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.ce-formation-flow-surface .react-flow__edge:hover .react-flow__edgeupdater,
+.ce-formation-flow-surface .react-flow__edge.selected .react-flow__edgeupdater {
+  opacity: 0.9;
+}
+
+.ce-formation-flow-surface .react-flow__controls,
+.ce-formation-flow-surface .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid #544737;
+  border-radius: var(--radius-sm);
+  background: #15110e;
+  box-shadow: 0 0.6rem 1.8rem rgb(0 0 0 / 32%);
+}
+
+.ce-formation-flow-surface .react-flow__controls-button {
+  border-bottom-color: #544737;
+  background: #15110e;
+  color: #f1e6c9;
+}
+
+.ce-formation-flow-surface .react-flow__controls-button:hover {
+  background: #292015;
+}
+
+.ce-formation-flow-surface .react-flow__minimap-mask {
+  fill: rgb(7 6 8 / 76%);
+}
+
+.ce-formation-object-rail {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.ce-formation-object-group {
+  min-width: 0;
+  padding: 0.65rem 0.75rem 0.75rem;
+}
+
+.ce-formation-object-group + .ce-formation-object-group {
+  border-left: 1px solid var(--line);
+}
+
+.ce-formation-object-head {
+  display: flex;
+  min-height: 1.8rem;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.ce-formation-object-head > button {
+  display: flex;
+  width: 1.7rem;
+  height: 1.7rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.ce-formation-object-head > button:hover {
+  background: var(--hover-bg);
+  color: var(--accent-warm);
+}
+
+.ce-formation-object-head > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.ce-formation-object-list {
+  display: flex;
+  max-height: 10.5rem;
+  min-height: 2.25rem;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.ce-formation-object-list > button {
+  display: grid;
+  min-width: 0;
+  min-height: 2.15rem;
+  align-items: center;
+  grid-template-columns: 0.55rem minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  border: 0;
+  border-top: 1px solid var(--line-subtle);
+  background: transparent;
+  padding: 0.35rem 0.15rem;
+  color: var(--ink);
+  text-align: left;
+}
+
+.ce-formation-object-list > button:hover {
+  background: var(--hover-bg);
+}
+
+.ce-formation-object-list > button > i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  box-shadow: 0 0 0.35rem currentColor;
+}
+
+.ce-formation-object-list > button > span {
+  overflow: hidden;
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ce-formation-object-list > button > small {
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.ce-formation-layer-row {
+  position: relative;
+  z-index: 0;
+  display: grid;
+  min-width: 0;
+  min-height: 2.15rem;
+  align-items: center;
+  grid-template-columns: 1.7rem minmax(0, 1fr) 2.25rem 1.7rem;
+  border-top: 1px solid var(--line-subtle);
+  background: transparent;
+}
+
+.ce-formation-layer-row:hover {
+  background: var(--hover-bg);
+}
+
+.ce-formation-layer-row.is-dragging {
+  z-index: 2;
+  background: var(--paper-elevated);
+  box-shadow: var(--shadow-sm);
+  opacity: 0.86;
+}
+
+.ce-formation-layer-row > button {
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.ce-formation-layer-drag,
+.ce-formation-layer-visibility {
+  display: flex;
+  width: 1.7rem;
+  height: 1.7rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+}
+
+.ce-formation-layer-drag {
+  cursor: grab;
+  touch-action: none;
+}
+
+.ce-formation-layer-drag:active {
+  cursor: grabbing;
+}
+
+.ce-formation-layer-drag:hover,
+.ce-formation-layer-visibility:hover {
+  background: var(--paper-inset);
+  color: var(--ink);
+}
+
+.ce-formation-layer-main {
+  display: grid;
+  min-width: 0;
+  min-height: 2.15rem;
+  align-items: center;
+  grid-template-columns: 0.55rem minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  padding: 0.35rem 0.15rem;
+  text-align: left;
+}
+
+.ce-formation-layer-main > i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  box-shadow: 0 0 0.35rem currentColor;
+}
+
+.ce-formation-layer-main > span {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ce-formation-layer-main > small {
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.ce-formation-ring-row {
+  grid-template-columns: minmax(0, 1fr) 2.25rem;
+}
+
+.ce-formation-ring-row .ce-formation-layer-main {
+  padding-left: 0.5rem;
+}
+
+.ce-formation-rotation-toggle {
+  position: relative;
+  width: 2rem;
+  height: 1.1rem;
+  justify-self: center;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: var(--radius-full);
+  background: var(--paper-inset) !important;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+.ce-formation-rotation-toggle > i {
+  position: absolute;
+  top: 0.14rem;
+  left: 0.14rem;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: var(--radius-full);
+  background: var(--ink-subtle);
+  box-shadow: var(--shadow-xs);
+  transition:
+    background-color 160ms ease,
+    transform 160ms ease;
+}
+
+.ce-formation-rotation-toggle.is-checked {
+  border-color: var(--accent-cool) !important;
+  background: var(--accent-cool-subtle) !important;
+}
+
+.ce-formation-rotation-toggle.is-checked > i {
+  background: var(--accent-cool);
+  transform: translateX(0.86rem);
+}
+
+.ce-formation-rotation-toggle:focus-visible {
+  outline: 2px solid var(--accent-cool);
+  outline-offset: 2px;
+}
+
+.ce-formation-six-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0.75rem 0;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.ce-formation-six-grid > button {
+  min-width: 0;
+  min-height: 4.5rem;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-elevated);
+  padding: 0.65rem;
+  color: var(--ink);
+  text-align: left;
+}
+
+.ce-formation-six-grid > button:hover {
+  background: var(--hover-bg);
+}
+
+.ce-formation-six-grid span,
+.ce-formation-six-grid strong {
+  display: block;
+}
+
+.ce-formation-six-grid span {
+  color: var(--accent-warm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.ce-formation-six-grid strong {
+  display: -webkit-box;
+  margin-top: 0.3rem;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@keyframes ce-formation-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ce-formation-backdrop-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ce-formation-backdrop-pulse {
+  0%,
+  100% {
+    opacity: 0.76;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ce-formation-node-core > i,
+  .ce-formation-procedural-art,
+  .ce-formation-layer-rotator,
+  .ce-formation-ring-rotator {
+    animation: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .ce-formation-canvas-stats {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .ce-formation-flow-surface {
+    height: 38rem;
+  }
+}
+
+@media (max-width: 820px) {
+  .ce-formation-list {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .ce-formation-list-item {
+    width: 12rem;
+    flex: 0 0 auto;
+    border: 1px solid var(--line-subtle);
+  }
+
+  .ce-formation-canvas-toolbar {
+    align-items: stretch;
+  }
+
+  .ce-formation-canvas-toolbar > .ce-button {
+    flex: 1 1 calc(50% - 0.5rem);
+  }
+
+  .ce-formation-flow-surface {
+    height: 32rem;
+    min-height: 32rem;
+  }
+
+  .ce-formation-object-rail,
+  .ce-formation-six-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ce-formation-object-group + .ce-formation-object-group {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .ce-formation-six-grid > button {
+    min-height: 3.75rem;
+  }
+}
+
 /* 统一键盘焦点和新增结构化编辑器的布局。 */
 .ce-shell button:focus-visible,
 .ce-shell [role="button"]:focus-visible,
@@ -2439,7 +3472,7 @@
   white-space: nowrap;
 }
 .ce-completeness-card strong {
-  font-size: 1.35rem;
+  font-size: var(--text-2xl);
 }
 .ce-completeness-card small {
   color: var(--ink-muted);
@@ -2636,7 +3669,7 @@
   align-items: center;
   gap: 0.5rem;
   color: var(--ink-muted);
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
 }
 .ce-readonly-dot {
   width: 0.375rem;
@@ -2649,9 +3682,6 @@
   width: 1px;
   height: 1rem;
   background: var(--line-strong);
-}
-.ce-body {
-  grid-template-columns: 15.25rem minmax(0, 1fr);
 }
 .ce-sidebar {
   overflow: hidden;
@@ -2668,7 +3698,7 @@
   gap: 0.625rem;
   border-radius: var(--radius-md);
   padding: 0.625rem 0.5rem;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 .ce-global-entry span:nth-child(2) {
   min-width: 0;
@@ -2680,7 +3710,7 @@
 }
 .ce-sidebar-count {
   color: var(--ink-subtle);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-system-block {
   min-height: 0;
@@ -2721,11 +3751,11 @@
   color: var(--accent-warm);
 }
 .ce-system-item strong {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   font-weight: 650;
 }
 .ce-system-item small {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-system-arrow {
   margin-left: auto;
@@ -2736,7 +3766,7 @@
 .ce-sidebar-footer {
   gap: 0.5rem;
   padding: 0.75rem 0.5rem 0.125rem;
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 .ce-sidebar-footer strong {
   margin-left: auto;
@@ -2760,7 +3790,7 @@
 .ce-main-header h1 {
   margin-top: 0.375rem;
   color: var(--ink);
-  font-size: 1.35rem;
+  font-size: var(--text-2xl);
   font-weight: 650;
   letter-spacing: 0.01em;
 }
@@ -2768,7 +3798,7 @@
   max-width: 52rem;
   margin-top: 0.5rem;
   color: var(--ink-muted);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   line-height: 1.6;
 }
 .ce-main-actions {
@@ -2805,7 +3835,7 @@
   border-bottom: 2px solid transparent;
   padding: 0.75rem 0.625rem 0.625rem;
   color: var(--ink-muted);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   font-weight: 550;
   white-space: nowrap;
 }
@@ -2895,9 +3925,6 @@
 }
 
 @media (max-width: 1180px) {
-  .ce-body {
-    grid-template-columns: 13rem minmax(0, 1fr);
-  }
   .ce-main-header {
     padding-left: 1.25rem;
     padding-right: 1.25rem;
@@ -2968,10 +3995,6 @@
   }
 }
 
-/* 与新版原型一致：体系导航、工作区、焦点检查器三栏并列。 */
-.ce-body {
-  grid-template-columns: 15.25rem minmax(0, 1fr) 20rem;
-}
 .ce-inspector {
   min-width: 0;
 }
@@ -2989,7 +4012,7 @@
   background: var(--paper-elevated);
   padding: 0.4rem 0.5rem;
   color: var(--ink-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   text-align: left;
 }
 .ce-edge-list button:hover {
@@ -3002,7 +4025,7 @@
 }
 .ce-edge-list small {
   color: var(--ink-subtle);
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
 }
 .ce-metric-grid button,
 .ce-deployment-list button {
@@ -3027,7 +4050,7 @@
 }
 .ce-item-reference-list > small {
   color: var(--ink-subtle);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-item-chip {
   display: inline-flex;
@@ -3039,7 +4062,7 @@
   background: color-mix(in srgb, var(--accent-cool-subtle) 72%, var(--paper));
   padding: 0.2rem 0.35rem 0.2rem 0.5rem;
   color: var(--ink);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-item-chip > span {
   overflow: hidden;
@@ -3078,7 +4101,7 @@
 }
 .ce-item-reference-note {
   color: var(--ink-subtle);
-  font-size: 0.61rem;
+  font-size: var(--text-xs);
   line-height: 1.4;
 }
 .ce-item-reference-note.is-warning {
@@ -3089,7 +4112,7 @@
 }
 .ce-metric-thresholds-field > small {
   color: var(--ink-subtle);
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-metric-threshold-row {
   display: flex;
@@ -3105,13 +4128,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
   color: var(--ink-muted);
 }
 .ce-metric-threshold-input {
   width: 6rem;
   flex-shrink: 0;
-  font-size: 0.62rem;
+  font-size: var(--text-xs);
 }
 .ce-metric-threshold-remove {
   display: flex;
@@ -3125,22 +4148,6 @@
   background: var(--paper);
   color: var(--error);
 }
-@media (max-width: 1180px) {
-  .ce-body {
-    grid-template-columns: 13rem minmax(0, 1fr) 18rem;
-  }
-}
-
-/* 世界本源使用独立的三栏工作面，外层只保留全局导航与工作区。 */
-.ce-body.ce-body-no-inspector {
-  grid-template-columns: 15.25rem minmax(0, 1fr);
-}
-@media (max-width: 1180px) {
-  .ce-body.ce-body-no-inspector {
-    grid-template-columns: 13rem minmax(0, 1fr);
-  }
-}
-
 /* 世界本源工作台：用分层结构表达本体、显化与修行体系投影。 */
 .ce-world-origin-workspace {
   display: flex;
@@ -3180,7 +4187,7 @@
   gap: 0.2rem;
 }
 .ce-world-origin-directory-head strong {
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
 }
 .ce-world-origin-directory-head .ce-button {
   width: 2rem;
@@ -3242,7 +4249,7 @@
   white-space: nowrap;
 }
 .ce-world-origin-directory-list strong {
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
 }
 .ce-world-origin-directory-list small {
   color: var(--ink-muted);
@@ -3264,7 +4271,7 @@
 .ce-world-origin-directory-empty {
   padding: 1rem;
   color: var(--ink-subtle);
-  font-size: 0.64rem;
+  font-size: var(--text-xs);
   text-align: center;
 }
 .ce-world-origin-inspector {
@@ -3445,7 +4452,7 @@
   gap: 0.2rem;
 }
 .ce-world-origin-core strong {
-  font-size: 1rem;
+  font-size: var(--text-base);
   font-weight: 700;
 }
 .ce-world-origin-core small {
@@ -3535,7 +4542,7 @@
 .ce-world-origin-layer p {
   margin: 0;
   color: var(--ink-muted);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   line-height: 1.55;
 }
 .ce-world-origin-manifestation-grid {
@@ -4215,10 +5222,6 @@
 }
 
 @media (max-width: 1180px) {
-  .ce-body {
-    grid-template-columns: 12rem minmax(0, 1fr) 16rem;
-  }
-
   .ce-main-scroll {
     padding-left: 1.25rem;
     padding-right: 1.25rem;
@@ -4537,7 +5540,7 @@
 .ce-main-header-compact h1 {
   flex: 0 0 auto;
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--text-base);
   white-space: nowrap;
 }
 .ce-main-header-compact p {
@@ -5040,12 +6043,6 @@
   }
 }
 
-/* 右侧检查器改为覆盖式抽屉，主工作区不再预留固定第三列。 */
-.ce-body,
-.ce-body.ce-body-no-inspector {
-  grid-template-columns: 15.25rem minmax(0, 1fr);
-}
-
 .ce-world-origin-layout {
   grid-template-columns: 16rem minmax(0, 1fr);
 }
@@ -5145,13 +6142,6 @@
   }
 }
 
-@media (max-width: 1180px) {
-  .ce-body,
-  .ce-body.ce-body-no-inspector {
-    grid-template-columns: 12rem minmax(0, 1fr);
-  }
-}
-
 @media (max-width: 820px) {
   .ce-world-origin-layout {
     grid-template-columns: 1fr;
@@ -5175,6 +6165,134 @@
   .ce-topology-flow-edge.is-immersive path,
   .ce-origin-flow-edge.animated path {
     animation: none;
+  }
+}
+
+/* 阵图在页面内只读预览，完整编辑器覆盖当前模块并固定对象栏可见。 */
+.ce-formation-editor-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+  box-shadow: 0 -1px 0 var(--line-strong);
+}
+
+.ce-formation-editor-header {
+  display: flex;
+  min-height: 3.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.55rem 1rem;
+  background: var(--paper-elevated);
+}
+
+.ce-formation-editor-header > div {
+  min-width: 0;
+}
+
+.ce-formation-editor-header span,
+.ce-formation-editor-header h2 {
+  display: block;
+  margin: 0;
+}
+
+.ce-formation-editor-header span {
+  color: var(--accent-warm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.ce-formation-editor-header h2 {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--text-base);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ce-formation-editor-header .ce-button {
+  width: 2rem;
+  min-height: 2rem;
+  flex: 0 0 auto;
+}
+
+.ce-formation-editor-body {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  padding: 0.75rem 1rem 1rem;
+}
+
+.ce-formation-editor-body .ce-formation-designer.is-editor {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) clamp(8rem, 22vh, 12rem);
+  gap: 0.75rem;
+}
+
+.ce-formation-editor-body .ce-formation-canvas-toolbar,
+.ce-formation-editor-body .ce-formation-object-rail {
+  margin: 0;
+}
+
+.ce-formation-editor-body .ce-formation-flow-surface {
+  height: 100%;
+  min-height: 0;
+}
+
+.ce-formation-editor-body .ce-formation-object-rail {
+  height: 100%;
+  min-height: 0;
+}
+
+.ce-formation-editor-body .ce-formation-object-group {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.ce-formation-editor-body .ce-formation-object-list {
+  min-height: 0;
+  flex: 1;
+  max-height: none;
+}
+
+@media (max-width: 820px) {
+  .ce-formation-designer.is-preview .ce-formation-flow-surface {
+    height: 26rem;
+    min-height: 26rem;
+  }
+
+  .ce-formation-editor-body {
+    padding-inline: 0.6rem;
+  }
+
+  .ce-formation-editor-body .ce-formation-designer.is-editor {
+    grid-template-rows: auto minmax(0, 1fr) 9rem;
+  }
+
+  .ce-formation-editor-body .ce-formation-object-rail {
+    grid-template-columns: repeat(4, minmax(10rem, 1fr));
+    overflow-x: auto;
+  }
+
+  .ce-formation-editor-body
+    .ce-formation-object-group
+    + .ce-formation-object-group {
+    border-top: 0;
+    border-left: 1px solid var(--line);
   }
 }
 
@@ -5397,15 +6515,6 @@
 .ce-origin-flow-node.is-system .ce-origin-flow-handle.react-flow__handle {
   background: #22d3ee;
   box-shadow: none;
-}
-
-.ce-origin-flow-node.is-origin .ce-origin-flow-handle.react-flow__handle {
-  top: 4rem;
-}
-
-.ce-origin-flow-node.is-manifestation
-  .ce-origin-flow-handle.react-flow__handle {
-  top: 3.3rem;
 }
 
 .ce-origin-flow-surface .react-flow__edge.selected path {

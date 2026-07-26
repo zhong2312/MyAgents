@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CULTIVATION_ECOLOGY_SCHEMA_VERSION = 3 as const;
+export const CULTIVATION_ECOLOGY_SCHEMA_VERSION = 6 as const;
 
 const idSchema = z
   .string()
@@ -45,6 +45,8 @@ const worldOriginManifestationSchema = namedSchema.extend({
 const worldOriginRelationSchema = namedSchema.extend({
   sourceId: idSchema,
   targetId: idSchema,
+  sourceHandleId: textSchema.optional(),
+  targetHandleId: textSchema.optional(),
   relation: z.enum([
     "differentiate",
     "manifest",
@@ -87,6 +89,8 @@ export const cultivationProjectionSchema = z.object({
     .array(
       z.object({
         sourceId: idSchema,
+        sourceHandleId: textSchema.optional(),
+        targetHandleId: textSchema.optional(),
         role: z.enum(["primary", "secondary", "manifestation"]),
         purpose: textSchema,
         weight: textSchema,
@@ -135,6 +139,18 @@ export const resourceRequirementSchema = z.object({
   missingConsequence: textSchema,
 });
 
+export const levelSubStageSchema = namedSchema.extend({
+  order: z.number().int().nonnegative(),
+  metricThresholds: z.array(
+    z.object({ metricId: idSchema, threshold: textSchema }),
+  ),
+  entryConditions: z.array(textSchema),
+  completionConditions: z.array(textSchema),
+  resourceRequirements: z.array(resourceRequirementSchema),
+  naturalAbilityIds: z.array(idSchema),
+  methodIds: z.array(idSchema),
+});
+
 export const levelSchema = namedSchema.extend({
   order: z.number().int().nonnegative(),
   stageType: textSchema,
@@ -151,6 +167,7 @@ export const levelSchema = namedSchema.extend({
   resourceRequirements: z.array(resourceRequirementSchema),
   naturalAbilityIds: z.array(idSchema),
   methodIds: z.array(idSchema),
+  subStages: z.array(levelSubStageSchema).default([]),
 });
 
 export const transitionSchema = namedSchema.extend({
@@ -324,6 +341,65 @@ export const abilitySchema = namedSchema.extend({
   counters: z.array(textSchema),
 });
 
+export const formationRingSchema = z.object({
+  id: idSchema,
+  name: nameSchema,
+  radius: z.number().finite().min(40).max(1000),
+  style: z.enum(["solid", "double", "dashed", "runic", "polygon"]),
+  color: textSchema,
+  strokeWidth: z.number().finite().min(0.5).max(12),
+  rotation: z.number().finite(),
+  rotating: z.boolean().default(false),
+  runes: textSchema,
+  visible: z.boolean(),
+  order: z.number().int().nonnegative(),
+});
+
+export const formationBackdropLayerSchema = z.object({
+  id: idSchema,
+  name: nameSchema,
+  type: z.enum([
+    "ring",
+    "rune-band",
+    "polygon",
+    "star",
+    "radial-rays",
+    "arc-petals",
+    "ornament-ring",
+    "core-symbol",
+  ]),
+  radius: z.number().finite().min(20).max(1000).default(320),
+  innerRadius: z.number().finite().min(0).max(1000).default(80),
+  count: z.number().int().min(1).max(96).default(1),
+  spacing: z.number().finite().min(0).max(48).default(10),
+  sides: z.number().int().min(3).max(24).default(6),
+  step: z.number().int().min(1).max(12).default(1),
+  innerRatio: z.number().finite().min(0.08).max(0.92).default(0.5),
+  curvature: z.number().finite().min(0.1).max(1.5).default(0.65),
+  symbol: z
+    .enum([
+      "circuit",
+      "crystal",
+      "gate",
+      "diamond",
+      "eye",
+      "star",
+      "seal",
+      "void",
+    ])
+    .default("diamond"),
+  text: textSchema.default(""),
+  repeat: z.number().int().min(1).max(16).default(4),
+  rotation: z.number().finite().min(-360).max(360).default(0),
+  rotating: z.boolean().default(false),
+  color: textSchema.default("#d9b86c"),
+  secondaryColor: textSchema.default("#74aab7"),
+  strokeWidth: z.number().finite().min(0.5).max(8).default(1.5),
+  opacity: z.number().finite().min(0.05).max(1).default(0.72),
+  visible: z.boolean().default(true),
+  order: z.number().int().nonnegative(),
+});
+
 export const formationNodeSchema = z.object({
   id: idSchema,
   name: nameSchema,
@@ -331,13 +407,32 @@ export const formationNodeSchema = z.object({
   role: textSchema,
   theoryNodeId: idSchema.nullable(),
   position: z.object({ x: z.number(), y: z.number() }),
+  canvasPosition: z
+    .object({ x: z.number().finite(), y: z.number().finite() })
+    .optional(),
+  ringId: idSchema.nullable().default(null),
+  angle: z.number().finite().default(0),
+  size: z.number().finite().min(36).max(140).default(72),
+  color: textSchema.default("#d9b86c"),
+  glyph: textSchema.default("阵"),
+  element: z
+    .enum(["source", "foundation", "pattern", "eye", "domain", "law"])
+    .default("pattern"),
+  nodeStyle: z.enum(["seal", "orb", "sigil"]).default("seal"),
 });
 export const formationEdgeSchema = z.object({
   id: idSchema,
+  name: textSchema.default("灵流"),
   fromNodeId: idSchema,
   toNodeId: idSchema,
+  fromHandleId: textSchema.optional(),
+  toHandleId: textSchema.optional(),
   order: z.number().int().nonnegative(),
   rule: textSchema,
+  flowType: textSchema.default("灵流"),
+  lineStyle: z.enum(["straight", "bezier", "smoothstep"]).default("bezier"),
+  color: textSchema.default("#d9b86c"),
+  animated: z.boolean().default(true),
 });
 
 export const formationSchema = namedSchema.extend({
@@ -359,6 +454,77 @@ export const formationSchema = namedSchema.extend({
   boundary: textSchema,
   risks: z.array(textSchema),
   countermeasures: textSchema,
+  sixElements: z
+    .object({
+      source: textSchema.default(""),
+      foundation: textSchema.default(""),
+      pattern: textSchema.default(""),
+      eye: textSchema.default(""),
+      domain: textSchema.default(""),
+      law: textSchema.default(""),
+    })
+    .default({
+      source: "",
+      foundation: "",
+      pattern: "",
+      eye: "",
+      domain: "",
+      law: "",
+    }),
+  design: z
+    .object({
+      layout: z.enum(["free", "radial", "concentric"]).default("concentric"),
+      canvasStyle: z.enum(["mystic", "technical"]).default("mystic"),
+      presetId: z
+        .enum(["classic", "emerald-eye", "ember-star", "azure-gates", "custom"])
+        .default("classic"),
+      backgroundColor: textSchema.default("#08070b"),
+      palette: z
+        .object({
+          primary: textSchema.default("#d9b86c"),
+          secondary: textSchema.default("#74aab7"),
+          accent: textSchema.default("#b96c62"),
+          glow: textSchema.default("#f2d791"),
+        })
+        .default({
+          primary: "#d9b86c",
+          secondary: "#74aab7",
+          accent: "#b96c62",
+          glow: "#f2d791",
+        }),
+      effects: z
+        .object({
+          glowStrength: z.number().finite().min(0).max(1).default(0.52),
+          lineOpacity: z.number().finite().min(0.15).max(1).default(0.82),
+          motion: z.enum(["still", "rotate", "pulse"]).default("still"),
+        })
+        .default({
+          glowStrength: 0.52,
+          lineOpacity: 0.82,
+          motion: "still",
+        }),
+      backdropLayers: z.array(formationBackdropLayerSchema).max(48).default([]),
+      rings: z.array(formationRingSchema).default([]),
+    })
+    .default({
+      layout: "concentric",
+      canvasStyle: "mystic",
+      presetId: "classic",
+      backgroundColor: "#08070b",
+      palette: {
+        primary: "#d9b86c",
+        secondary: "#74aab7",
+        accent: "#b96c62",
+        glow: "#f2d791",
+      },
+      effects: {
+        glowStrength: 0.52,
+        lineOpacity: 0.82,
+        motion: "still",
+      },
+      backdropLayers: [],
+      rings: [],
+    }),
   nodes: z.array(formationNodeSchema),
   edges: z.array(formationEdgeSchema),
 });
@@ -473,6 +639,7 @@ export type TheoryNode = z.infer<typeof theoryNodeSchema>;
 export type ProgressionTrack = z.infer<typeof progressionTrackSchema>;
 export type TrackInteraction = z.infer<typeof trackInteractionSchema>;
 export type CultivationLevel = z.infer<typeof levelSchema>;
+export type CultivationLevelSubStage = z.infer<typeof levelSubStageSchema>;
 export type ResourceRequirement = z.infer<typeof resourceRequirementSchema>;
 export type CultivationMethod = z.infer<typeof cultivationMethodSchema>;
 export type MethodCourse = z.infer<typeof methodCourseSchema>;

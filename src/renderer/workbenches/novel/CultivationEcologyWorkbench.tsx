@@ -9,6 +9,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  reconnectEdge,
   useEdgesState,
   useNodesState,
   type Connection,
@@ -18,6 +19,20 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   Activity,
   AlertTriangle,
   Atom,
@@ -26,13 +41,18 @@ import {
   ChevronRight,
   CircleDot,
   Compass,
+  Copy,
+  Eye,
+  EyeOff,
   FileText,
   FlaskConical,
   GitBranch,
+  GripVertical,
   Hexagon,
   Layers3,
   Link2,
   Loader2,
+  Maximize2,
   Pencil,
   Plus,
   Route,
@@ -51,12 +71,14 @@ import {
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type ReactNode,
 } from "react";
 
 import {
+  ConfirmDialog,
   CustomSelect,
   type WorkbenchNavigationGuard,
   type WorkbenchStorage,
@@ -68,6 +90,7 @@ import type {
   CultivationEcology,
   CultivationOrbStyle,
   CultivationLevel,
+  CultivationLevelSubStage,
   CultivationMethod,
   CultivationResource,
   CultivationSystem,
@@ -88,6 +111,21 @@ import { newEcologyId } from "./cultivationEcologyDefaults";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import type { ItemIndexEntry } from "./itemLibrarySchema";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
+import FormationBackdropArt from "./FormationBackdropArt";
+import {
+  createDefaultFormationBackdropLayer,
+  createFormationBackdropPreset,
+  FORMATION_BASE_CANVAS_SIZE,
+  FORMATION_BACKDROP_LAYER_LABELS,
+  FORMATION_BACKDROP_LAYER_TYPE_OPTIONS,
+  FORMATION_BACKDROP_PRESETS,
+  FORMATION_BACKDROP_PRESET_OPTIONS,
+  FORMATION_BACKDROP_SYMBOL_OPTIONS,
+  FORMATION_MAX_RADIUS,
+  getFormationCanvasSize,
+  type FormationBackdropLayer,
+  type FormationBackdropPresetId,
+} from "./formationBackdropPresets";
 import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
 import {
   calculateCultivationCompleteness,
@@ -118,6 +156,7 @@ type Selection = {
   id: string;
   parentId?: string;
   parentKind?: string;
+  grandParentId?: string;
 } | null;
 
 const modules: readonly { id: ModuleId; label: string; icon: LucideIcon }[] = [
@@ -162,13 +201,13 @@ const moduleMeta: Record<
     eyebrow: "体系内部 / 03 成长轨道",
     title: "境界层级与数值模型",
     description:
-      "一套体系可以有多条成长轨道；每个阶段定义指标门槛、资源需求、自然能力和突破失败语义。",
+      "一套体系可以有多条成长轨道；每个境界定义突破与退化规则，境界内可继续划分前期、中期、后期等阶段。",
   },
   resources: {
     eyebrow: "体系内部 / 04 资源库",
     title: "修炼资源",
     description:
-      "定义能量、材料、环境、知识、权限和替代关系；消耗由阶段、法门、能力或阵法明确引用。",
+      "定义能量、材料、环境、知识、权限和替代关系；消耗由境界、境内阶段、法门、能力或阵法明确引用。",
   },
   methods: {
     eyebrow: "体系内部 / 05 修行法门",
@@ -192,13 +231,13 @@ const moduleMeta: Record<
     eyebrow: "体系内部 / 08 资产索引",
     title: "资产索引",
     description:
-      "所有资产只定义一次，再通过阶段、法门、能力和阵法建立关联；从任一资产都能回到覆盖对象。",
+      "所有资产只定义一次，再通过境界、境内阶段、法门、能力和阵法建立关联；从任一资产都能回到覆盖对象。",
   },
   foundations: {
     eyebrow: "体系内部 / 09 根基与质量",
     title: "根基与质量",
     description:
-      "根骨、血脉、灵魂资质、元素亲和或改造程度会跨多个阶段影响速度、质量、上限和突破。",
+      "根骨、血脉、灵魂资质、元素亲和或改造程度会跨多个境界影响速度、质量、上限和突破。",
   },
   transitions: {
     eyebrow: "体系内部 / 10 突破与转换",
@@ -215,7 +254,7 @@ const moduleMeta: Record<
   audit: {
     eyebrow: "体系内部 / 12 审查",
     title: "结构审查",
-    description: "定位无效引用、缺失消耗、拓扑断路、阶段冲突和跨体系转换风险。",
+    description: "定位无效引用、缺失消耗、拓扑断路、境界冲突和跨体系转换风险。",
   },
 };
 
@@ -290,6 +329,32 @@ function Field({
         />
       )}
     </label>
+  );
+}
+
+function SwitchField({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="ce-switch-field">
+      <span>{label}</span>
+      <button
+        type="button"
+        role="switch"
+        aria-label={label}
+        aria-checked={checked}
+        className={checked ? "is-checked" : ""}
+        onClick={() => onChange(!checked)}
+      >
+        <i />
+      </button>
+    </div>
   );
 }
 
@@ -400,16 +465,18 @@ function topologyNodeOrbStyle(
 function TopologyColorField({
   value,
   onChange,
+  label = "节点颜色",
 }: {
   value: string;
   onChange: (value: string) => void;
+  label?: string;
 }) {
   const resolvedValue = /^#[0-9a-f]{6}$/iu.test(value)
     ? value
     : TOPOLOGY_NODE_PALETTE[0];
   return (
     <fieldset className="ce-topology-color-field">
-      <legend>节点颜色</legend>
+      <legend>{label}</legend>
       <div className="ce-topology-color-control">
         <input
           type="color"
@@ -615,6 +682,10 @@ function removeResourceReferences(
       levels: track.levels.map((level) => ({
         ...level,
         resourceRequirements: clean(level.resourceRequirements),
+        subStages: level.subStages.map((stage) => ({
+          ...stage,
+          resourceRequirements: clean(stage.resourceRequirements),
+        })),
       })),
       transitions: track.transitions.map((transition) => ({
         ...transition,
@@ -699,6 +770,10 @@ function removeMethodReferences(
       levels: track.levels.map((level) => ({
         ...level,
         methodIds: level.methodIds.filter((id) => id !== methodId),
+        subStages: level.subStages.map((stage) => ({
+          ...stage,
+          methodIds: stage.methodIds.filter((id) => id !== methodId),
+        })),
       })),
       transitions: track.transitions.map((transition) => ({
         ...transition,
@@ -745,6 +820,12 @@ function removeAbilityReferences(
         naturalAbilityIds: level.naturalAbilityIds.filter(
           (id) => id !== abilityId,
         ),
+        subStages: level.subStages.map((stage) => ({
+          ...stage,
+          naturalAbilityIds: stage.naturalAbilityIds.filter(
+            (id) => id !== abilityId,
+          ),
+        })),
       })),
     })),
     formations: system.formations.map((formation) => ({
@@ -851,7 +932,7 @@ function createSystem(): CultivationSystem {
     kind: "自定义体系",
     terminology: {
       energy: "能量",
-      stage: "阶段",
+      stage: "境界",
       method: "法门",
       ability: "能力",
     },
@@ -883,10 +964,10 @@ function createSystem(): CultivationSystem {
         levels: [
           {
             id: levelId,
-            name: "起始阶段",
+            name: "起始境界",
             summary: "",
             order: 0,
-            stageType: "阶段",
+            stageType: "境界",
             metricThresholds: [],
             quality: "",
             entryConditions: [],
@@ -898,6 +979,7 @@ function createSystem(): CultivationSystem {
             resourceRequirements: [],
             naturalAbilityIds: [],
             methodIds: [],
+            subStages: createDefaultLevelSubStages(),
           },
         ],
         transitions: [],
@@ -931,10 +1013,10 @@ function createNode(): TheoryNode {
 function createLevel(order: number): CultivationLevel {
   return {
     id: newEcologyId("level"),
-    name: `新阶段 ${order + 1}`,
+    name: `新境界 ${order + 1}`,
     summary: "",
     order,
-    stageType: "阶段",
+    stageType: "境界",
     metricThresholds: [],
     quality: "",
     entryConditions: [],
@@ -946,7 +1028,30 @@ function createLevel(order: number): CultivationLevel {
     resourceRequirements: [],
     naturalAbilityIds: [],
     methodIds: [],
+    subStages: createDefaultLevelSubStages(),
   };
+}
+
+function createLevelSubStage(order: number): CultivationLevelSubStage {
+  return {
+    id: newEcologyId("level-stage"),
+    name: `新阶段 ${order + 1}`,
+    summary: "",
+    order,
+    metricThresholds: [],
+    entryConditions: [],
+    completionConditions: [],
+    resourceRequirements: [],
+    naturalAbilityIds: [],
+    methodIds: [],
+  };
+}
+
+function createDefaultLevelSubStages(): CultivationLevelSubStage[] {
+  return ["前期", "中期", "后期"].map((name, order) => ({
+    ...createLevelSubStage(order),
+    name,
+  }));
 }
 function createTrack(): ProgressionTrack {
   return {
@@ -1080,7 +1185,224 @@ function createAbility(): Ability {
     counters: [],
   };
 }
+
+const FORMATION_CANVAS_SIZE = FORMATION_BASE_CANVAS_SIZE;
+const FORMATION_CANVAS_CENTER = FORMATION_CANVAS_SIZE / 2;
+const FORMATION_ELEMENT_LABELS: Record<
+  Formation["nodes"][number]["element"],
+  string
+> = {
+  source: "阵源",
+  foundation: "阵基",
+  pattern: "阵纹",
+  eye: "阵眼",
+  domain: "阵域",
+  law: "阵则",
+};
+const FORMATION_ELEMENT_COLORS: Record<
+  Formation["nodes"][number]["element"],
+  string
+> = {
+  source: "#d7aa55",
+  foundation: "#a87858",
+  pattern: "#74aab7",
+  eye: "#d9c98f",
+  domain: "#8b87b8",
+  law: "#b96c62",
+};
+
+function formationCanvasPosition(angle: number, radius: number, size: number) {
+  const radians = ((angle - 90) * Math.PI) / 180;
+  return {
+    x: FORMATION_CANVAS_CENTER + Math.cos(radians) * radius - size / 2,
+    y: FORMATION_CANVAS_CENTER + Math.sin(radians) * radius - size / 2,
+  };
+}
+
+function createFormationScaffold(): Pick<
+  Formation,
+  "design" | "nodes" | "edges"
+> {
+  const innerRingId = newEcologyId("formation-ring");
+  const patternRingId = newEcologyId("formation-ring");
+  const domainRingId = newEcologyId("formation-ring");
+  const boundaryRingId = newEcologyId("formation-ring");
+  const ringSpecs: Formation["design"]["rings"] = [
+    {
+      id: innerRingId,
+      name: "内枢",
+      radius: 110,
+      style: "double",
+      color: "#d9c98f",
+      strokeWidth: 2,
+      rotation: 0,
+      rotating: false,
+      runes: "",
+      visible: true,
+      order: 0,
+    },
+    {
+      id: patternRingId,
+      name: "纹环",
+      radius: 210,
+      style: "runic",
+      color: "#74aab7",
+      strokeWidth: 1.5,
+      rotation: 0,
+      rotating: false,
+      runes: "道生纹 · 纹生阵 · 气循其理 · 意御其枢 · ",
+      visible: true,
+      order: 1,
+    },
+    {
+      id: domainRingId,
+      name: "域环",
+      radius: 320,
+      style: "polygon",
+      color: "#a87858",
+      strokeWidth: 1.5,
+      rotation: 30,
+      rotating: false,
+      runes: "",
+      visible: true,
+      order: 2,
+    },
+    {
+      id: boundaryRingId,
+      name: "天盘",
+      radius: 420,
+      style: "double",
+      color: "#cdbb8c",
+      strokeWidth: 3,
+      rotation: 0,
+      rotating: false,
+      runes: "天地为盘 · 万物为子 · 大道为纹 · 人心为眼 · ",
+      visible: true,
+      order: 3,
+    },
+  ];
+  const nodeSpecs: Array<{
+    name: string;
+    element: Formation["nodes"][number]["element"];
+    ringId: string | null;
+    angle: number;
+    radius: number;
+    glyph: string;
+  }> = [
+    {
+      name: "主阵眼",
+      element: "eye",
+      ringId: null,
+      angle: 0,
+      radius: 0,
+      glyph: "眼",
+    },
+    {
+      name: "引灵阵源",
+      element: "source",
+      ringId: boundaryRingId,
+      angle: 0,
+      radius: 420,
+      glyph: "源",
+    },
+    {
+      name: "镇域阵基",
+      element: "foundation",
+      ringId: domainRingId,
+      angle: 72,
+      radius: 320,
+      glyph: "基",
+    },
+    {
+      name: "周天阵纹",
+      element: "pattern",
+      ringId: patternRingId,
+      angle: 144,
+      radius: 210,
+      glyph: "纹",
+    },
+    {
+      name: "结界阵域",
+      element: "domain",
+      ringId: domainRingId,
+      angle: 216,
+      radius: 320,
+      glyph: "域",
+    },
+    {
+      name: "归元阵则",
+      element: "law",
+      ringId: patternRingId,
+      angle: 288,
+      radius: 210,
+      glyph: "则",
+    },
+  ];
+  const nodes: Formation["nodes"] = nodeSpecs.map((spec) => {
+    const size = spec.element === "eye" ? 92 : 72;
+    const canvasPosition = formationCanvasPosition(
+      spec.angle,
+      spec.radius,
+      size,
+    );
+    return {
+      id: newEcologyId("formation-node"),
+      name: spec.name,
+      kind: "阵元",
+      role: FORMATION_ELEMENT_LABELS[spec.element],
+      theoryNodeId: null,
+      position: {
+        x: ((canvasPosition.x + size / 2) / FORMATION_CANVAS_SIZE) * 100,
+        y: ((canvasPosition.y + size / 2) / FORMATION_CANVAS_SIZE) * 100,
+      },
+      canvasPosition,
+      ringId: spec.ringId,
+      angle: spec.angle,
+      size,
+      color: FORMATION_ELEMENT_COLORS[spec.element],
+      glyph: spec.glyph,
+      element: spec.element,
+      nodeStyle: spec.element === "source" ? "orb" : "seal",
+    };
+  });
+  const edgePairs = [
+    [1, 2],
+    [2, 3],
+    [3, 0],
+    [0, 4],
+    [4, 5],
+    [5, 1],
+  ] as const;
+  const edges: Formation["edges"] = edgePairs.map(
+    ([fromIndex, toIndex], order) => ({
+      id: newEcologyId("formation-edge"),
+      name: `${nodes[fromIndex].name} · ${nodes[toIndex].name}`,
+      fromNodeId: nodes[fromIndex].id,
+      toNodeId: nodes[toIndex].id,
+      order,
+      rule: "",
+      flowType: "灵流",
+      lineStyle: "bezier",
+      color: nodes[fromIndex].color,
+      animated: true,
+    }),
+  );
+  return {
+    design: {
+      layout: "concentric",
+      canvasStyle: "mystic",
+      ...createFormationBackdropPreset("classic", () =>
+        newEcologyId("formation-backdrop"),
+      ),
+      rings: ringSpecs,
+    },
+    nodes,
+    edges,
+  };
+}
+
 function createFormation(): Formation {
+  const scaffold = createFormationScaffold();
   return {
     id: newEcologyId("formation"),
     name: "新阵法",
@@ -1103,8 +1425,15 @@ function createFormation(): Formation {
     boundary: "",
     risks: [],
     countermeasures: "",
-    nodes: [],
-    edges: [],
+    sixElements: {
+      source: "",
+      foundation: "",
+      pattern: "",
+      eye: "",
+      domain: "",
+      law: "",
+    },
+    ...scaffold,
   };
 }
 
@@ -1136,6 +1465,9 @@ export default function CultivationEcologyWorkbench({
   const [module, setModule] = useState<ModuleId>("overview");
   const [selection, setSelection] = useState<Selection>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [formationEditorId, setFormationEditorId] = useState<string | null>(
+    null,
+  );
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
@@ -1144,15 +1476,21 @@ export default function CultivationEcologyWorkbench({
   const [itemLibraryLoading, setItemLibraryLoading] = useState(false);
   const [itemLibraryReady, setItemLibraryReady] = useState(false);
   const [itemLibraryError, setItemLibraryError] = useState("");
+  const [systemDeleteTarget, setSystemDeleteTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   useEffect(() => {
-    if (!inspectorOpen) return;
+    if (!inspectorOpen && !formationEditorId) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setInspectorOpen(false);
+      if (event.key !== "Escape") return;
+      if (inspectorOpen) setInspectorOpen(false);
+      else setFormationEditorId(null);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [inspectorOpen]);
+  }, [formationEditorId, inspectorOpen]);
 
   useEffect(() => {
     let disposed = false;
@@ -1286,17 +1624,17 @@ export default function CultivationEcologyWorkbench({
     setModule("overview");
     setSelection({ kind: "system", id: system.id });
     setInspectorOpen(true);
+    setFormationEditorId(null);
   };
-  const deleteSystem = () => {
-    if (!ecology || !activeSystem) return;
-    if (
-      !window.confirm(
-        `确认删除体系「${activeSystem.name}」？关联的跨体系关系也将一并删除，此操作不可撤销。`,
-      )
-    )
-      return;
+  const requestDeleteSystem = () => {
+    if (!activeSystem) return;
+    setSystemDeleteTarget({ id: activeSystem.id, name: activeSystem.name });
+  };
+  const confirmDeleteSystem = () => {
+    if (!ecology || !systemDeleteTarget) return;
+    const deletedSystemId = systemDeleteTarget.id;
     const nextSystems = ecology.systems.filter(
-      (item) => item.id !== activeSystem.id,
+      (item) => item.id !== deletedSystemId,
     );
     commit({
       ...ecology,
@@ -1305,20 +1643,22 @@ export default function CultivationEcologyWorkbench({
         ...origin,
         canvasPositions: Object.fromEntries(
           Object.entries(origin.canvasPositions ?? {}).filter(
-            ([id]) => id !== activeSystem.id,
+            ([id]) => id !== deletedSystemId,
           ),
         ),
       })),
       crossSystemRelations: ecology.crossSystemRelations.filter(
         (item) =>
-          item.sourceSystemId !== activeSystem.id &&
-          item.targetSystemId !== activeSystem.id,
+          item.sourceSystemId !== deletedSystemId &&
+          item.targetSystemId !== deletedSystemId,
       ),
     });
     const next = nextSystems[0];
     setActiveSystemId(next?.id ?? null);
     setSelection(next ? { kind: "system", id: next.id } : null);
     setInspectorOpen(false);
+    setFormationEditorId(null);
+    setSystemDeleteTarget(null);
   };
   const selectAndOpenInspector = (nextSelection: Selection) => {
     setSelection(nextSelection);
@@ -1328,12 +1668,14 @@ export default function CultivationEcologyWorkbench({
   const openModule = (nextModule: ModuleId, nextSelection?: Selection) => {
     setScope("system");
     setModule(nextModule);
+    setFormationEditorId(null);
     selectAndOpenInspector(
       nextSelection ?? getModuleSelection(activeSystem, nextModule),
     );
   };
   const openRelations = (nextSelection?: Selection) => {
     setScope("relations");
+    setFormationEditorId(null);
     selectAndOpenInspector(nextSelection ?? null);
   };
 
@@ -1353,6 +1695,9 @@ export default function CultivationEcologyWorkbench({
     );
 
   const pageMeta = getPageMeta(scope, activeSystem, module);
+  const formationEditor = formationEditorId
+    ? activeSystem?.formations.find((item) => item.id === formationEditorId)
+    : undefined;
   return (
     <div className="ce-shell cultivation-prototype">
       <NarrativeUnsavedChangesGuard
@@ -1403,6 +1748,7 @@ export default function CultivationEcologyWorkbench({
                 setScope("origins");
                 setSelection(null);
                 setInspectorOpen(false);
+                setFormationEditorId(null);
               }}
             >
               <Sparkles className="h-4 w-4" />
@@ -1418,6 +1764,7 @@ export default function CultivationEcologyWorkbench({
                 setScope("relations");
                 setSelection(null);
                 setInspectorOpen(false);
+                setFormationEditorId(null);
               }}
             >
               <Link2 className="h-4 w-4" />
@@ -1435,29 +1782,46 @@ export default function CultivationEcologyWorkbench({
             </div>
             <div className="ce-system-list cp-system-list">
               {ecology.systems.map((system) => (
-                <button
-                  type="button"
-                  key={system.id}
-                  className={`ce-system-item cp-system-card ${activeSystemId === system.id && scope === "system" ? "is-active" : ""}`}
-                  onClick={() => {
-                    setActiveSystemId(system.id);
-                    setScope("system");
-                    setModule("overview");
-                    setSelection({ kind: "system", id: system.id });
-                    setInspectorOpen(false);
-                  }}
-                >
-                  <span className="cp-system-icon">
-                    <Boxes className="h-3.5 w-3.5 shrink-0" />
-                  </span>
-                  <span>
-                    <strong>{system.name}</strong>
-                    <small>
-                      {system.kind} · {system.methods.length} 部法门
-                    </small>
-                  </span>
-                  <ChevronRight className="h-3.5 w-3.5 ce-system-arrow cp-system-arrow" />
-                </button>
+                <div key={system.id} className="ce-system-entry">
+                  <button
+                    type="button"
+                    className={`ce-system-item cp-system-card ${activeSystemId === system.id && scope === "system" ? "is-active" : ""}`}
+                    onClick={() => {
+                      setActiveSystemId(system.id);
+                      setScope("system");
+                      setModule("overview");
+                      setSelection({ kind: "system", id: system.id });
+                      setInspectorOpen(false);
+                      setFormationEditorId(null);
+                    }}
+                  >
+                    <span className="cp-system-icon">
+                      <Boxes className="h-3.5 w-3.5 shrink-0" />
+                    </span>
+                    <span>
+                      <strong>{system.name}</strong>
+                      <small>
+                        {system.kind} · {system.methods.length} 部法门
+                      </small>
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 ce-system-arrow cp-system-arrow" />
+                  </button>
+                  <button
+                    type="button"
+                    className="ce-system-edit"
+                    title={`编辑体系「${system.name}」`}
+                    aria-label={`编辑体系「${system.name}」`}
+                    onClick={() => {
+                      setActiveSystemId(system.id);
+                      setScope("system");
+                      setModule("overview");
+                      setFormationEditorId(null);
+                      selectAndOpenInspector({ kind: "system", id: system.id });
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -1495,6 +1859,7 @@ export default function CultivationEcologyWorkbench({
                       setModule(item.id);
                       setSelection(getModuleSelection(activeSystem, item.id));
                       setInspectorOpen(false);
+                      setFormationEditorId(null);
                     }}
                     aria-pressed={module === item.id}
                   >
@@ -1524,6 +1889,7 @@ export default function CultivationEcologyWorkbench({
                 />
               ) : activeSystem ? (
                 <SystemModule
+                  worldOrigins={ecology.worldOrigins}
                   system={activeSystem}
                   module={module}
                   selection={selection}
@@ -1531,12 +1897,48 @@ export default function CultivationEcologyWorkbench({
                   onSelect={selectAndOpenInspector}
                   onOpenModule={openModule}
                   onOpenRelations={openRelations}
-                  onDeleteSystem={deleteSystem}
+                  onOpenFormationEditor={(formationId) => {
+                    setFormationEditorId(formationId);
+                    setInspectorOpen(false);
+                  }}
                 />
               ) : (
                 <Empty text="请先创建一个修行体系" />
               )}
             </div>
+            {formationEditor && activeSystem && module === "formations" && (
+              <section
+                className="ce-formation-editor-layer"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="ce-formation-editor-title"
+              >
+                <header className="ce-formation-editor-header">
+                  <div>
+                    <span>阵图编辑</span>
+                    <h2 id="ce-formation-editor-title">
+                      {formationEditor.name}
+                    </h2>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setFormationEditorId(null)}
+                    title="关闭全屏编辑"
+                    ariaLabel="关闭全屏编辑"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </header>
+                <div className="ce-formation-editor-body">
+                  <FormationDesignCanvas
+                    system={activeSystem}
+                    formation={formationEditor}
+                    onChange={updateSystem}
+                    onSelect={selectAndOpenInspector}
+                  />
+                </div>
+              </section>
+            )}
             {inspectorOpen && selection && (
               <div className="ce-inspector-layer">
                 <button
@@ -1576,7 +1978,7 @@ export default function CultivationEcologyWorkbench({
                       selection={selection}
                       onChange={commit}
                       onChangeSystem={updateSystem}
-                      onDeleteSystem={deleteSystem}
+                      onDeleteSystem={requestDeleteSystem}
                       onSelect={selectAndOpenInspector}
                       itemEntries={itemEntries}
                       itemLibraryLoading={itemLibraryLoading}
@@ -1589,6 +1991,16 @@ export default function CultivationEcologyWorkbench({
           </div>
         </main>
       </div>
+      {systemDeleteTarget && (
+        <ConfirmDialog
+          title={`删除修行体系「${systemDeleteTarget.name}」`}
+          message="关联的跨体系关系也将一并删除，且此操作不可撤销。"
+          confirmText="删除体系"
+          confirmVariant="danger"
+          onConfirm={confirmDeleteSystem}
+          onCancel={() => setSystemDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1620,7 +2032,7 @@ function StatStrip({ system }: { system: CultivationSystem }) {
   const stats = [
     { label: "理论节点", value: system.theoryModel.nodeCatalog.length },
     {
-      label: "成长阶段",
+      label: "成长境界",
       value: system.progressionTracks.reduce(
         (total, track) => total + track.levels.length,
         0,
@@ -1643,6 +2055,7 @@ function StatStrip({ system }: { system: CultivationSystem }) {
 }
 
 function SystemModule({
+  worldOrigins,
   system,
   module,
   selection,
@@ -1650,8 +2063,9 @@ function SystemModule({
   onSelect,
   onOpenModule,
   onOpenRelations,
-  onDeleteSystem,
+  onOpenFormationEditor,
 }: {
+  worldOrigins: readonly WorldOrigin[];
   system: CultivationSystem;
   module: ModuleId;
   selection: Selection;
@@ -1659,18 +2073,18 @@ function SystemModule({
   onSelect: (selection: Selection) => void;
   onOpenModule: (module: ModuleId, selection?: Selection) => void;
   onOpenRelations: (selection?: Selection) => void;
-  onDeleteSystem: () => void;
+  onOpenFormationEditor: (formationId: string) => void;
 }) {
   if (module === "overview")
+    return <Overview system={system} onOpenModule={onOpenModule} />;
+  if (module === "projection")
     return (
-      <Overview
+      <Projection
+        worldOrigins={worldOrigins}
         system={system}
-        onOpenModule={onOpenModule}
-        onDeleteSystem={onDeleteSystem}
+        onChange={onChange}
       />
     );
-  if (module === "projection")
-    return <Projection system={system} onChange={onChange} />;
   if (module === "theory")
     return <Theory system={system} onChange={onChange} onSelect={onSelect} />;
   if (module === "progression")
@@ -1708,6 +2122,7 @@ function SystemModule({
         system={system}
         onChange={onChange}
         onSelect={onSelect}
+        onOpenEditor={onOpenFormationEditor}
       />
     );
   if (module === "assets")
@@ -1752,8 +2167,8 @@ function Overview({
 }: {
   system: CultivationSystem;
   onOpenModule: (module: ModuleId, selection?: Selection) => void;
-  onDeleteSystem?: () => void;
 }) {
+  const completeness = calculateCultivationCompleteness(system);
   return (
     <>
       <PageHeader
@@ -1768,13 +2183,11 @@ function Overview({
       <div className="ce-completeness-card">
         <div>
           <span>结构完整度</span>
-          <strong>{calculateCultivationCompleteness(system)}</strong>
+          <strong>{completeness}</strong>
           <small>/ 100</small>
         </div>
         <div className="ce-progress">
-          <i
-            style={{ width: `${calculateCultivationCompleteness(system)}%` }}
-          />
+          <i style={{ width: `${completeness}%` }} />
         </div>
         <Button variant="ghost" onClick={() => onOpenModule("audit")}>
           {system.audit.filter((item) => !item.resolved).length} 项待处理
@@ -1890,13 +2303,28 @@ function Overview({
 }
 
 function Projection({
+  worldOrigins,
   system,
   onChange,
 }: {
+  worldOrigins: readonly WorldOrigin[];
   system: CultivationSystem;
   onChange: (system: CultivationSystem) => void;
 }) {
   const projection = system.projection;
+  const originNames = new Map(worldOrigins.map((item) => [item.id, item.name]));
+  const manifestationNames = new Map(
+    worldOrigins.flatMap((origin) =>
+      origin.manifestations.map((item) => [item.id, item.name] as const),
+    ),
+  );
+  const displayReferences = (
+    ids: readonly string[],
+    names: ReadonlyMap<string, string>,
+  ) =>
+    ids.length > 0
+      ? ids.map((id) => names.get(id) ?? "已失效引用").join("、")
+      : "未引用";
   const set = (key: keyof typeof projection, value: string) =>
     onChange({ ...system, projection: { ...projection, [key]: value } });
   return (
@@ -1937,12 +2365,17 @@ function Projection({
         <div className="ce-reference-grid">
           <div>
             <span>世界本源</span>
-            <strong>{projection.originIds.join("、") || "未引用"}</strong>
+            <strong>
+              {displayReferences(projection.originIds, originNames)}
+            </strong>
           </div>
           <div>
             <span>显化节点</span>
             <strong>
-              {projection.manifestationIds.join("、") || "未引用"}
+              {displayReferences(
+                projection.manifestationIds,
+                manifestationNames,
+              )}
             </strong>
           </div>
         </div>
@@ -2086,7 +2519,7 @@ function Progression({
         <PageHeader
           eyebrow="体系内部 / 03 成长轨道"
           title="境界层级与数值模型"
-          description="一条体系可以有多条成长轨道；每个阶段定义指标门槛、资源需求、自然能力和突破失败语义。"
+          description="一套体系可以有多条成长轨道；每个境界定义突破与退化规则，境界内可继续划分前期、中期、后期等阶段。"
           action={
             <Button variant="primary" onClick={addTrack}>
               <Plus className="h-3.5 w-3.5" />
@@ -2112,6 +2545,30 @@ function Progression({
       id: item.id,
       parentId: track.id,
       parentKind: "track",
+    });
+  };
+  const addSubStage = (level: CultivationLevel) => {
+    const item = createLevelSubStage(level.subStages.length);
+    onChange({
+      ...system,
+      progressionTracks: updateById(
+        system.progressionTracks,
+        track.id,
+        (current) => ({
+          ...current,
+          levels: updateById(current.levels, level.id, (currentLevel) => ({
+            ...currentLevel,
+            subStages: [...currentLevel.subStages, item],
+          })),
+        }),
+      ),
+    });
+    onSelect({
+      kind: "level-stage",
+      id: item.id,
+      parentId: level.id,
+      parentKind: "level",
+      grandParentId: track.id,
     });
   };
   const addMetric = () => {
@@ -2141,10 +2598,11 @@ function Progression({
   };
   const addInteraction = () => {
     if (system.progressionTracks.length < 2) return;
-    const item = createTrackInteraction(
-      system.progressionTracks[0].id,
-      system.progressionTracks[1].id,
+    const targetTrack = system.progressionTracks.find(
+      (candidate) => candidate.id !== track.id,
     );
+    if (!targetTrack) return;
+    const item = createTrackInteraction(track.id, targetTrack.id);
     onChange({
       ...system,
       trackInteractions: [...(system.trackInteractions ?? []), item],
@@ -2176,7 +2634,7 @@ function Progression({
       <PageHeader
         eyebrow="体系内部 / 03 成长轨道"
         title="境界层级与数值模型"
-        description="一条体系可以有多条成长轨道；每个阶段定义指标门槛、资源需求、自然能力和突破失败语义。"
+        description="一套体系可以有多条成长轨道；每个境界定义突破与退化规则，境界内可继续划分前期、中期、后期等阶段。"
         action={
           <>
             <Button variant="secondary" onClick={addTrack}>
@@ -2185,7 +2643,7 @@ function Progression({
             </Button>
             <Button variant="primary" onClick={addLevel}>
               <Plus className="h-3.5 w-3.5" />
-              新增阶段
+              新增境界
             </Button>
           </>
         }
@@ -2202,7 +2660,7 @@ function Progression({
             }}
           >
             {item.name}
-            <small>{item.levels.length} 阶段</small>
+            <small>{item.levels.length} 个境界</small>
           </button>
         ))}
       </div>
@@ -2212,28 +2670,72 @@ function Progression({
       >
         <div className="ce-level-rail">
           {track.levels.map((item, index) => (
-            <button
-              type="button"
-              key={item.id}
-              className="ce-level-card"
-              onClick={() =>
-                onSelect({
-                  kind: "level",
-                  id: item.id,
-                  parentId: track.id,
-                  parentKind: "track",
-                })
-              }
-            >
-              <span>阶段 {index + 1}</span>
-              <strong>{item.name}</strong>
-              <small>{item.quality || "质量未定义"}</small>
-              {index < track.levels.length - 1 && (
-                <ChevronRight className="ce-level-arrow" />
-              )}
-            </button>
+            <article key={item.id} className="ce-level-card">
+              <button
+                type="button"
+                className="ce-level-card-main"
+                onClick={() =>
+                  onSelect({
+                    kind: "level",
+                    id: item.id,
+                    parentId: track.id,
+                    parentKind: "track",
+                  })
+                }
+              >
+                <span className="ce-level-card-head">
+                  <span>境界 {String(index + 1).padStart(2, "0")}</span>
+                  {index < track.levels.length - 1 && (
+                    <ChevronRight className="ce-level-arrow" />
+                  )}
+                </span>
+                <strong>{item.name}</strong>
+                <small>
+                  {item.quality || "质量未定义"} · {item.subStages.length} 个阶段
+                </small>
+              </button>
+              <div className="ce-level-stage-panel">
+                <div className="ce-level-stage-heading">
+                  <span>境内阶段</span>
+                  <button
+                    type="button"
+                    title={`为${item.name}新增阶段`}
+                    aria-label={`为${item.name}新增阶段`}
+                    onClick={() => addSubStage(item)}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="ce-level-stage-list">
+                  {[...item.subStages]
+                    .sort((left, right) => left.order - right.order)
+                    .map((stage) => (
+                      <button
+                        type="button"
+                        key={stage.id}
+                        title={`编辑${item.name} · ${stage.name}`}
+                        onClick={() =>
+                          onSelect({
+                            kind: "level-stage",
+                            id: stage.id,
+                            parentId: item.id,
+                            parentKind: "level",
+                            grandParentId: track.id,
+                          })
+                        }
+                      >
+                        {stage.name}
+                      </button>
+                    ))}
+                </div>
+                {item.subStages.length === 0 && (
+                  <span className="ce-level-stage-empty">尚未划分阶段</span>
+                )}
+              </div>
+            </article>
           ))}
         </div>
+        {track.levels.length === 0 && <Empty text="当前轨道尚未建立境界" />}
       </Section>
       <Section
         title="指标定义"
@@ -2367,6 +2869,13 @@ function ResourceDirectory({
   onChange: (system: CultivationSystem) => void;
   onSelect: (selection: Selection) => void;
 }) {
+  const levelNames = new Map(
+    system.progressionTracks.flatMap((track) =>
+      track.levels.map(
+        (level) => [level.id, `${track.name} / ${level.name}`] as const,
+      ),
+    ),
+  );
   const assetReferences = useMemo(() => {
     const references = new Map<string, string[]>();
     const addReference = (resourceId: string, reference: string) => {
@@ -2376,14 +2885,23 @@ function ResourceDirectory({
       ]);
     };
     system.progressionTracks.forEach((track) => {
-      track.levels.forEach((level) =>
+      track.levels.forEach((level) => {
         level.resourceRequirements.forEach((requirement) => {
-          addReference(requirement.resourceId, `阶段 · ${level.name}`);
+          addReference(requirement.resourceId, `境界 · ${level.name}`);
           requirement.substituteResourceIds.forEach((id) =>
-            addReference(id, `阶段替代 · ${level.name}`),
+            addReference(id, `境界替代 · ${level.name}`),
           );
-        }),
-      );
+        });
+        level.subStages.forEach((stage) =>
+          stage.resourceRequirements.forEach((requirement) => {
+            const label = `${level.name} · ${stage.name}`;
+            addReference(requirement.resourceId, `境内阶段 · ${label}`);
+            requirement.substituteResourceIds.forEach((id) =>
+              addReference(id, `境内阶段替代 · ${label}`),
+            );
+          }),
+        );
+      });
       track.transitions.forEach((transition) =>
         transition.resourceRequirements.forEach((requirement) => {
           addReference(requirement.resourceId, `轨道转换 · ${transition.name}`);
@@ -2441,7 +2959,7 @@ function ResourceDirectory({
       <PageHeader
         eyebrow="体系内部 / 04 资源库"
         title="修炼资源"
-        description="定义能量、材料、环境、知识、权限和替代关系；消耗应由阶段、法门、技能或阵法明确引用。"
+        description="定义能量、材料、环境、知识、权限和替代关系；消耗应由境界、境内阶段、法门、技能或阵法明确引用。"
         action={
           <Button variant="primary" onClick={add}>
             <Plus className="h-3.5 w-3.5" />
@@ -2462,7 +2980,10 @@ function ResourceDirectory({
             <span>
               <strong>{item.name}</strong>
               <small>
-                {item.category} · 最佳阶段 {item.bestLevelId || "未指定"}
+                {item.category} · 最佳境界{" "}
+                {item.bestLevelId
+                  ? (levelNames.get(item.bestLevelId) ?? "已失效引用")
+                  : "未指定"}
               </small>
               <em>{item.summary || "暂无说明"}</em>
               <small className="ce-directory-references">
@@ -2583,12 +3104,7 @@ function MethodWorkspace({
       />
       <div className="ce-method-workspace">
         <div className="ce-method-list">
-          <div className="ce-list-title">
-            法门目录{" "}
-            <Button variant="ghost" onClick={addTopology} title="新增运行拓扑">
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+          <div className="ce-list-title">法门目录</div>
           {system.methods.map((item) => (
             <div
               key={item.id}
@@ -2889,7 +3405,7 @@ function buildTopologyCanvasEdges(
         label: edgeName,
         labelStyle: {
           fill: mode === "immersive" ? "#fff2ff" : "var(--ink-muted)",
-          fontSize: 11,
+          fontSize: 12,
           fontWeight: 650,
         },
         labelBgStyle: {
@@ -2935,6 +3451,7 @@ function TopologyCard({
 }) {
   const [mode, setMode] = useState<TopologyCanvasMode>("immersive");
   const [connecting, setConnecting] = useState(false);
+  const reconnectingEdgeIdRef = useRef<string | null>(null);
   const theoryNames = useMemo(
     () =>
       new Map(
@@ -3045,6 +3562,7 @@ function TopologyCard({
     if (connection.source === connection.target) return false;
     return !topology.edges.some(
       (edge) =>
+        edge.id !== reconnectingEdgeIdRef.current &&
         edge.fromNodeId === connection.source &&
         edge.toNodeId === connection.target,
     );
@@ -3078,6 +3596,30 @@ function TopologyCard({
       parentId: topology.id,
       parentKind: "topology",
     });
+  };
+
+  const handleReconnect = (
+    oldEdge: TopologyCanvasEdge,
+    connection: Connection,
+  ) => {
+    if (
+      !isValidConnection(connection) ||
+      !connection.source ||
+      !connection.target
+    )
+      return;
+    const edgeId = oldEdge.data?.edgeId ?? oldEdge.id;
+    setEdges((current) => reconnectEdge(oldEdge, connection, current));
+    updateTopology((current) => ({
+      ...current,
+      edges: updateById(current.edges, edgeId, (edge) => ({
+        ...edge,
+        fromNodeId: connection.source as string,
+        toNodeId: connection.target as string,
+        fromHandleId: connection.sourceHandle ?? undefined,
+        toHandleId: connection.targetHandle ?? undefined,
+      })),
+    }));
   };
 
   const handleNodeDragStop = (_event: unknown, node: TopologyCanvasNode) => {
@@ -3206,12 +3748,23 @@ function TopologyCard({
           onConnect={handleConnect}
           onConnectStart={() => setConnecting(true)}
           onConnectEnd={() => setConnecting(false)}
+          onReconnect={handleReconnect}
+          onReconnectStart={(_event, edge) => {
+            reconnectingEdgeIdRef.current = edge.id;
+            setConnecting(true);
+          }}
+          onReconnectEnd={() => {
+            reconnectingEdgeIdRef.current = null;
+            setConnecting(false);
+          }}
           isValidConnection={isValidConnection}
           connectionMode={ConnectionMode.Loose}
           connectionLineType={ConnectionLineType.Bezier}
           connectionRadius={28}
           connectionDragThreshold={0}
           nodesConnectable
+          edgesReconnectable
+          reconnectRadius={30}
           connectOnClick
           onInit={setFlowInstance}
           fitView
@@ -3420,18 +3973,1176 @@ function AbilityDirectory({
   );
 }
 
+type FormationViewMode = "overview" | "canvas";
+type FormationDesignerMode = "preview" | "editor";
+const MAX_FORMATION_BACKDROP_LAYERS = 48;
+type FormationBackdropData = {
+  formationId: string;
+  design: Formation["design"];
+  points: Array<{ ringId: string | null; x: number; y: number }>;
+  motionEnabled: boolean;
+};
+type FormationBackdropNode = Node<FormationBackdropData, "formationBackdrop">;
+type FormationCanvasNodeData = {
+  title: string;
+  kind: string;
+  role: string;
+  glyph: string;
+  color: string;
+  size: number;
+  element: Formation["nodes"][number]["element"];
+  nodeStyle: Formation["nodes"][number]["nodeStyle"];
+};
+type FormationFlowNode = Node<FormationCanvasNodeData, "formationNode">;
+type FormationCanvasNode = FormationBackdropNode | FormationFlowNode;
+type FormationCanvasEdgeData = {
+  edgeId: string;
+  name: string;
+  flowType: string;
+  rule: string;
+};
+type FormationCanvasEdge = Edge<FormationCanvasEdgeData>;
+
+function FormationBackdropNodeView({ data }: NodeProps<FormationBackdropNode>) {
+  return (
+    <FormationBackdropArt
+      formationId={data.formationId}
+      design={data.design}
+      points={data.points}
+      motionEnabled={data.motionEnabled}
+    />
+  );
+}
+
+function FormationCanvasNodeView({
+  data,
+  selected,
+}: NodeProps<FormationFlowNode>) {
+  const style = {
+    "--formation-node-color": data.color,
+    "--formation-node-size": `${data.size}px`,
+  } as CSSProperties;
+  return (
+    <div
+      className={`ce-formation-flow-node is-${data.nodeStyle} ${selected ? "is-selected" : ""}`}
+      style={style}
+      title={`${data.title} · ${FORMATION_ELEMENT_LABELS[data.element]}`}
+    >
+      <div className="ce-formation-node-core">
+        <span>{data.glyph || data.title.slice(0, 1)}</span>
+        <i aria-hidden="true" />
+      </div>
+      <strong>{data.title}</strong>
+      <small>{FORMATION_ELEMENT_LABELS[data.element]}</small>
+      {TOPOLOGY_HANDLE_POINTS.map((handle) => (
+        <Handle
+          key={handle.id}
+          id={handle.id}
+          type="source"
+          position={handle.position}
+          style={handle.style}
+          isConnectable
+          className="ce-formation-flow-handle"
+        />
+      ))}
+    </div>
+  );
+}
+
+const formationCanvasNodeTypes = {
+  formationBackdrop: FormationBackdropNodeView,
+  formationNode: FormationCanvasNodeView,
+};
+
+function FormationBackdropLayerRow({
+  layer,
+  onSelect,
+  onToggle,
+  onRotationToggle,
+}: {
+  layer: FormationBackdropLayer;
+  onSelect: () => void;
+  onToggle: () => void;
+  onRotationToggle: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: layer.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  } as CSSProperties;
+  return (
+    <div
+      ref={setNodeRef}
+      className={`ce-formation-layer-row ${isDragging ? "is-dragging" : ""}`}
+      style={style}
+    >
+      <button
+        type="button"
+        className="ce-formation-layer-drag"
+        title={`拖动调整${layer.name}层级`}
+        aria-label={`拖动调整${layer.name}层级`}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        className="ce-formation-layer-main"
+        onClick={onSelect}
+      >
+        <i style={{ background: layer.color }} />
+        <span>{layer.name}</span>
+        <small>{FORMATION_BACKDROP_LAYER_LABELS[layer.type]}</small>
+      </button>
+      <FormationRotationToggle
+        name={layer.name}
+        checked={layer.rotating}
+        onChange={onRotationToggle}
+      />
+      <button
+        type="button"
+        className="ce-formation-layer-visibility"
+        onClick={onToggle}
+        title={layer.visible ? "隐藏底纹" : "显示底纹"}
+        aria-label={`${layer.visible ? "隐藏" : "显示"}${layer.name}`}
+      >
+        {layer.visible ? (
+          <Eye className="h-3.5 w-3.5" />
+        ) : (
+          <EyeOff className="h-3.5 w-3.5" />
+        )}
+      </button>
+    </div>
+  );
+}
+
+function FormationRotationToggle({
+  name,
+  checked,
+  onChange,
+}: {
+  name: string;
+  checked: boolean;
+  onChange: () => void;
+}) {
+  const action = checked ? "停止" : "开启";
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={`${action}${name}旋转`}
+      title={`${action}${name}旋转`}
+      className={`ce-formation-rotation-toggle ${checked ? "is-checked" : ""}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onChange();
+      }}
+    >
+      <i />
+    </button>
+  );
+}
+
+function formationNodePositionForCanvas(node: Formation["nodes"][number]) {
+  if (node.canvasPosition) return node.canvasPosition;
+  return {
+    x: (node.position.x / 100) * FORMATION_CANVAS_SIZE - node.size / 2,
+    y: (node.position.y / 100) * FORMATION_CANVAS_SIZE - node.size / 2,
+  };
+}
+
+function buildFormationBackdropNode(
+  formationId: string,
+  design: Formation["design"],
+  formationNodes: Formation["nodes"],
+  motionEnabled: boolean,
+): FormationBackdropNode {
+  const canvasSize = getFormationCanvasSize(design);
+  const points = formationNodes.map((node) => {
+    const position = formationNodePositionForCanvas(node);
+    return {
+      ringId: node.ringId,
+      x: position.x + node.size / 2,
+      y: position.y + node.size / 2,
+    };
+  });
+  return {
+    id: `formation-backdrop-${formationId}`,
+    type: "formationBackdrop",
+    position: { x: 0, y: 0 },
+    data: {
+      formationId,
+      design,
+      points,
+      motionEnabled,
+    },
+    style: {
+      width: canvasSize,
+      height: canvasSize,
+      zIndex: -1,
+      pointerEvents: "none",
+    },
+    draggable: false,
+    selectable: false,
+    deletable: false,
+    connectable: false,
+    focusable: false,
+    zIndex: -1,
+  };
+}
+
+function buildFormationFlowNodes(
+  formationNodes: Formation["nodes"],
+  canvasSize: number,
+): FormationFlowNode[] {
+  const canvasOffset = (canvasSize - FORMATION_CANVAS_SIZE) / 2;
+  return formationNodes.map<FormationFlowNode>((node) => {
+    const position = formationNodePositionForCanvas(node);
+    return {
+      id: node.id,
+      type: "formationNode",
+      position: {
+        x: position.x + canvasOffset,
+        y: position.y + canvasOffset,
+      },
+      data: {
+        title: node.name,
+        kind: node.kind,
+        role: node.role,
+        glyph: node.glyph,
+        color: node.color,
+        size: node.size,
+        element: node.element,
+        nodeStyle: node.nodeStyle,
+      },
+      style: { width: node.size, height: node.size, zIndex: 3 },
+      zIndex: 3,
+      ariaLabel: `阵元：${node.name}`,
+    };
+  });
+}
+
+function buildFormationCanvasNodes(
+  formation: Formation,
+  motionEnabled: boolean,
+): FormationCanvasNode[] {
+  const canvasSize = getFormationCanvasSize(formation.design);
+  return [
+    buildFormationBackdropNode(
+      formation.id,
+      formation.design,
+      formation.nodes,
+      motionEnabled,
+    ),
+    ...buildFormationFlowNodes(formation.nodes, canvasSize),
+  ];
+}
+
+function buildFormationCanvasEdges(
+  formationEdges: Formation["edges"],
+  formationNodes: Formation["nodes"],
+): FormationCanvasEdge[] {
+  return formationEdges
+    .filter(
+      (edge) =>
+        formationNodes.some((node) => node.id === edge.fromNodeId) &&
+        formationNodes.some((node) => node.id === edge.toNodeId),
+    )
+    .map((edge) => ({
+      id: edge.id,
+      source: edge.fromNodeId,
+      target: edge.toNodeId,
+      sourceHandle: edge.fromHandleId,
+      targetHandle: edge.toHandleId,
+      type: edge.lineStyle === "bezier" ? "default" : edge.lineStyle,
+      animated: edge.animated,
+      className: "ce-formation-canvas-edge",
+      label: edge.name || edge.flowType,
+      labelStyle: { fill: "#f2e8cb", fontSize: 12, fontWeight: 650 },
+      labelBgStyle: {
+        fill: "#100e12",
+        fillOpacity: 0.92,
+        stroke: edge.color,
+        strokeWidth: 0.7,
+      },
+      labelBgPadding: [7, 4],
+      labelBgBorderRadius: 2,
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: edge.color,
+        width: 17,
+        height: 17,
+      },
+      style: { stroke: edge.color, strokeWidth: 2 },
+      zIndex: 2,
+      data: {
+        edgeId: edge.id,
+        name: edge.name,
+        flowType: edge.flowType,
+        rule: edge.rule,
+      },
+    }));
+}
+
+function FormationDesignCanvas({
+  system,
+  formation,
+  onChange,
+  onSelect,
+  mode = "editor",
+  onOpenEditor,
+}: {
+  system: CultivationSystem;
+  formation: Formation;
+  onChange: (system: CultivationSystem) => void;
+  onSelect: (selection: Selection) => void;
+  mode?: FormationDesignerMode;
+  onOpenEditor?: () => void;
+}) {
+  const editable = mode === "editor";
+  const backdropLayerSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+  const [connecting, setConnecting] = useState(false);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<
+    FormationCanvasNode,
+    FormationCanvasEdge
+  > | null>(null);
+  const flowSurfaceRef = useRef<HTMLDivElement>(null);
+  const reconnectingEdgeIdRef = useRef<string | null>(null);
+  const formationCanvasSize = getFormationCanvasSize(formation.design);
+  const [nodes, setNodes, onNodesChange] = useNodesState<FormationCanvasNode>(
+    buildFormationCanvasNodes(formation, editable),
+  );
+  const [edges, setEdges, onEdgesChange] = useEdgesState<FormationCanvasEdge>(
+    buildFormationCanvasEdges(formation.edges, formation.nodes),
+  );
+
+  useEffect(() => {
+    const backdrop = buildFormationBackdropNode(
+      formation.id,
+      formation.design,
+      formation.nodes,
+      editable,
+    );
+    setNodes((current) => [
+      backdrop,
+      ...current.filter((node) => node.type === "formationNode"),
+    ]);
+  }, [editable, formation.design, formation.id, formation.nodes, setNodes]);
+
+  useEffect(() => {
+    const flowNodes = buildFormationFlowNodes(
+      formation.nodes,
+      formationCanvasSize,
+    );
+    setNodes((current) => {
+      const backdrop = current.find(
+        (node): node is FormationBackdropNode =>
+          node.type === "formationBackdrop",
+      );
+      return backdrop ? [backdrop, ...flowNodes] : current;
+    });
+  }, [formation.nodes, formationCanvasSize, setNodes]);
+
+  useEffect(() => {
+    setEdges(buildFormationCanvasEdges(formation.edges, formation.nodes));
+  }, [formation.edges, formation.nodes, setEdges]);
+
+  useEffect(() => {
+    const surface = flowSurfaceRef.current;
+    if (!flowInstance || !surface) return;
+    let resizeTimer: number | undefined;
+    const observer = new ResizeObserver(() => {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        void flowInstance.fitView({ padding: 0.05 });
+      }, 120);
+    });
+    observer.observe(surface);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(resizeTimer);
+    };
+  }, [flowInstance]);
+
+  useEffect(() => {
+    if (!flowInstance) return;
+    const fitTimer = window.setTimeout(() => {
+      void flowInstance.fitView({ padding: 0.05 });
+    }, 120);
+    return () => window.clearTimeout(fitTimer);
+  }, [flowInstance, formationCanvasSize]);
+
+  const updateFormation = (update: (current: Formation) => Formation) => {
+    onChange({
+      ...system,
+      formations: updateById(system.formations, formation.id, update),
+    });
+  };
+  const nodeName = (nodeId: string) =>
+    formation.nodes.find((node) => node.id === nodeId)?.name || nodeId;
+  const sortedBackdropLayers = useMemo(
+    () =>
+      [...formation.design.backdropLayers].sort(
+        (left, right) => left.order - right.order,
+      ),
+    [formation.design.backdropLayers],
+  );
+  const applyBackdropPreset = (presetId: FormationBackdropPresetId) => {
+    const preset = createFormationBackdropPreset(presetId, () =>
+      newEcologyId("formation-backdrop"),
+    );
+    updateFormation((current) => ({
+      ...current,
+      design: { ...current.design, ...preset },
+    }));
+    onSelect(null);
+  };
+  const addBackdropLayer = () => {
+    if (formation.design.backdropLayers.length >= MAX_FORMATION_BACKDROP_LAYERS)
+      return;
+    const next = createDefaultFormationBackdropLayer(
+      "ring",
+      newEcologyId("formation-backdrop"),
+      formation.design.backdropLayers.length,
+      formation.design.palette,
+    );
+    updateFormation((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        presetId: "custom",
+        backdropLayers: [...current.design.backdropLayers, next],
+      },
+    }));
+    onSelect({
+      kind: "formation-backdrop-layer",
+      id: next.id,
+      parentId: formation.id,
+      parentKind: "formation",
+    });
+  };
+  const toggleBackdropLayer = (layerId: string) => {
+    updateFormation((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        presetId: "custom",
+        backdropLayers: updateById(
+          current.design.backdropLayers,
+          layerId,
+          (layer) => ({ ...layer, visible: !layer.visible }),
+        ),
+      },
+    }));
+  };
+  const toggleBackdropLayerRotation = (layerId: string) => {
+    updateFormation((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        presetId: "custom",
+        backdropLayers: updateById(
+          current.design.backdropLayers,
+          layerId,
+          (layer) => ({ ...layer, rotating: !layer.rotating }),
+        ),
+      },
+    }));
+  };
+  const handleBackdropLayerDragEnd = (event: DragEndEvent) => {
+    if (!event.over || event.active.id === event.over.id) return;
+    const oldIndex = sortedBackdropLayers.findIndex(
+      (layer) => layer.id === event.active.id,
+    );
+    const newIndex = sortedBackdropLayers.findIndex(
+      (layer) => layer.id === event.over?.id,
+    );
+    if (oldIndex < 0 || newIndex < 0) return;
+    const next = arrayMove(sortedBackdropLayers, oldIndex, newIndex).map(
+      (layer, order) => ({ ...layer, order }),
+    );
+    updateFormation((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        presetId: "custom",
+        backdropLayers: next,
+      },
+    }));
+  };
+  const isValidConnection = (connection: Connection | FormationCanvasEdge) => {
+    if (!connection.source || !connection.target) return false;
+    if (connection.source === connection.target) return false;
+    return !formation.edges.some(
+      (edge) =>
+        edge.id !== reconnectingEdgeIdRef.current &&
+        edge.fromNodeId === connection.source &&
+        edge.toNodeId === connection.target,
+    );
+  };
+  const addRing = () => {
+    const lastRadius = Math.max(
+      40,
+      ...formation.design.rings.map((ring) => ring.radius),
+    );
+    const next: Formation["design"]["rings"][number] = {
+      id: newEcologyId("formation-ring"),
+      name: `环层 ${formation.design.rings.length + 1}`,
+      radius: Math.min(FORMATION_MAX_RADIUS, lastRadius + 70),
+      style: formation.design.rings.length % 2 === 0 ? "runic" : "double",
+      color: formation.design.rings.length % 2 === 0 ? "#77aeb9" : "#c7aa69",
+      strokeWidth: 1.5,
+      rotation: 0,
+      rotating: false,
+      runes: "道纹流转 · 生生不息 · ",
+      visible: true,
+      order: formation.design.rings.length,
+    };
+    updateFormation((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        rings: [...current.design.rings, next],
+      },
+    }));
+    onSelect({
+      kind: "formation-ring",
+      id: next.id,
+      parentId: formation.id,
+      parentKind: "formation",
+    });
+  };
+  const toggleRingRotation = (ringId: string) => {
+    updateFormation((current) => ({
+      ...current,
+      design: {
+        ...current.design,
+        presetId: "custom",
+        rings: updateById(current.design.rings, ringId, (ring) => ({
+          ...ring,
+          rotating: !ring.rotating,
+        })),
+      },
+    }));
+  };
+  const addNode = () => {
+    const elements: Array<Formation["nodes"][number]["element"]> = [
+      "source",
+      "foundation",
+      "pattern",
+      "domain",
+      "law",
+    ];
+    const element = elements[formation.nodes.length % elements.length];
+    const rings = [...formation.design.rings].sort(
+      (left, right) => left.radius - right.radius,
+    );
+    const ring = rings[formation.nodes.length % Math.max(1, rings.length)];
+    const angle = (formation.nodes.length * 47) % 360;
+    const size = 72;
+    const canvasPosition = formationCanvasPosition(
+      angle,
+      ring?.radius ?? 180,
+      size,
+    );
+    const theoryNode =
+      system.theoryModel.nodeCatalog[
+        formation.nodes.length %
+          Math.max(1, system.theoryModel.nodeCatalog.length)
+      ];
+    const next: Formation["nodes"][number] = {
+      id: newEcologyId("formation-node"),
+      name: `${FORMATION_ELEMENT_LABELS[element]} ${formation.nodes.length + 1}`,
+      kind: "阵元",
+      role: FORMATION_ELEMENT_LABELS[element],
+      theoryNodeId: theoryNode?.id ?? null,
+      position: {
+        x: ((canvasPosition.x + size / 2) / FORMATION_CANVAS_SIZE) * 100,
+        y: ((canvasPosition.y + size / 2) / FORMATION_CANVAS_SIZE) * 100,
+      },
+      canvasPosition,
+      ringId: ring?.id ?? null,
+      angle,
+      size,
+      color: FORMATION_ELEMENT_COLORS[element],
+      glyph: FORMATION_ELEMENT_LABELS[element].slice(-1),
+      element,
+      nodeStyle: "seal",
+    };
+    updateFormation((current) => ({
+      ...current,
+      nodes: [...current.nodes, next],
+    }));
+    onSelect({
+      kind: "formation-node",
+      id: next.id,
+      parentId: formation.id,
+      parentKind: "formation",
+    });
+  };
+  const addEdge = () => {
+    if (formation.nodes.length < 2) return;
+    const source = formation.nodes[0];
+    const target = formation.nodes[1];
+    const next: Formation["edges"][number] = {
+      id: newEcologyId("formation-edge"),
+      name: `${source.name} · ${target.name}`,
+      fromNodeId: source.id,
+      toNodeId: target.id,
+      fromHandleId: "east-north",
+      toHandleId: "west-north",
+      order: formation.edges.length,
+      rule: "",
+      flowType: "灵流",
+      lineStyle: "bezier",
+      color: source.color,
+      animated: true,
+    };
+    updateFormation((current) => ({
+      ...current,
+      edges: [...current.edges, next],
+    }));
+    onSelect({
+      kind: "formation-edge",
+      id: next.id,
+      parentId: formation.id,
+      parentKind: "formation",
+    });
+  };
+  const handleConnect = (connection: Connection) => {
+    if (
+      !isValidConnection(connection) ||
+      !connection.source ||
+      !connection.target
+    )
+      return;
+    const source = formation.nodes.find(
+      (node) => node.id === connection.source,
+    );
+    const next: Formation["edges"][number] = {
+      id: newEcologyId("formation-edge"),
+      name: `${nodeName(connection.source)} · ${nodeName(connection.target)}`,
+      fromNodeId: connection.source,
+      toNodeId: connection.target,
+      fromHandleId: connection.sourceHandle ?? undefined,
+      toHandleId: connection.targetHandle ?? undefined,
+      order: formation.edges.length,
+      rule: "",
+      flowType: "灵流",
+      lineStyle: "bezier",
+      color: source?.color ?? "#d9b86c",
+      animated: true,
+    };
+    updateFormation((current) => ({
+      ...current,
+      edges: [...current.edges, next],
+    }));
+    onSelect({
+      kind: "formation-edge",
+      id: next.id,
+      parentId: formation.id,
+      parentKind: "formation",
+    });
+  };
+  const handleReconnect = (
+    oldEdge: FormationCanvasEdge,
+    connection: Connection,
+  ) => {
+    if (
+      !isValidConnection(connection) ||
+      !connection.source ||
+      !connection.target
+    )
+      return;
+    const edgeId = oldEdge.data?.edgeId ?? oldEdge.id;
+    setEdges((current) => reconnectEdge(oldEdge, connection, current));
+    updateFormation((current) => ({
+      ...current,
+      edges: updateById(current.edges, edgeId, (edge) => ({
+        ...edge,
+        fromNodeId: connection.source as string,
+        toNodeId: connection.target as string,
+        fromHandleId: connection.sourceHandle ?? undefined,
+        toHandleId: connection.targetHandle ?? undefined,
+      })),
+    }));
+  };
+  const handleNodeDragStop = (_event: unknown, node: FormationCanvasNode) => {
+    if (node.type !== "formationNode") return;
+    const source = formation.nodes.find((item) => item.id === node.id);
+    if (!source) return;
+    const canvasOffset = (formationCanvasSize - FORMATION_CANVAS_SIZE) / 2;
+    const logicalPosition = {
+      x: node.position.x - canvasOffset,
+      y: node.position.y - canvasOffset,
+    };
+    const centerX = logicalPosition.x + source.size / 2;
+    const centerY = logicalPosition.y + source.size / 2;
+    const angle =
+      ((Math.atan2(
+        centerY - FORMATION_CANVAS_CENTER,
+        centerX - FORMATION_CANVAS_CENTER,
+      ) *
+        180) /
+        Math.PI +
+        90 +
+        360) %
+      360;
+    updateFormation((current) => ({
+      ...current,
+      nodes: updateById(current.nodes, node.id, (currentNode) => ({
+        ...currentNode,
+        canvasPosition: logicalPosition,
+        position: {
+          x: (centerX / FORMATION_CANVAS_SIZE) * 100,
+          y: (centerY / FORMATION_CANVAS_SIZE) * 100,
+        },
+        angle,
+      })),
+    }));
+  };
+  const handleNodesDelete = (deletedNodes: FormationCanvasNode[]) => {
+    const deletedIds = new Set(
+      deletedNodes
+        .filter((node) => node.type === "formationNode")
+        .map((node) => node.id),
+    );
+    if (deletedIds.size === 0) return;
+    updateFormation((current) => ({
+      ...current,
+      nodes: current.nodes.filter((node) => !deletedIds.has(node.id)),
+      edges: current.edges.filter(
+        (edge) =>
+          !deletedIds.has(edge.fromNodeId) && !deletedIds.has(edge.toNodeId),
+      ),
+    }));
+    onSelect(null);
+  };
+  const handleEdgesDelete = (deletedEdges: FormationCanvasEdge[]) => {
+    const deletedIds = new Set(deletedEdges.map((edge) => edge.id));
+    updateFormation((current) => ({
+      ...current,
+      edges: current.edges.filter((edge) => !deletedIds.has(edge.id)),
+    }));
+    onSelect(null);
+  };
+  const handleLayout = () => {
+    const ringGroups = new Map<string | null, Formation["nodes"]>();
+    formation.nodes.forEach((node) => {
+      const group = ringGroups.get(node.ringId) ?? [];
+      group.push(node);
+      ringGroups.set(node.ringId, group);
+    });
+    const ringById = new Map(
+      formation.design.rings.map((ring) => [ring.id, ring] as const),
+    );
+    const nextNodes = formation.nodes.map((node) => {
+      if (node.element === "eye") {
+        const canvasPosition = formationCanvasPosition(0, 0, node.size);
+        return {
+          ...node,
+          angle: 0,
+          ringId: null,
+          canvasPosition,
+          position: { x: 50, y: 50 },
+        };
+      }
+      const group = ringGroups.get(node.ringId) ?? [];
+      const index = Math.max(
+        0,
+        group.findIndex((item) => item.id === node.id),
+      );
+      const angle = (index / Math.max(1, group.length)) * 360;
+      const radius =
+        (node.ringId ? ringById.get(node.ringId)?.radius : undefined) ?? 180;
+      const canvasPosition = formationCanvasPosition(angle, radius, node.size);
+      return {
+        ...node,
+        angle,
+        canvasPosition,
+        position: {
+          x: ((canvasPosition.x + node.size / 2) / FORMATION_CANVAS_SIZE) * 100,
+          y: ((canvasPosition.y + node.size / 2) / FORMATION_CANVAS_SIZE) * 100,
+        },
+      };
+    });
+    updateFormation((current) => ({ ...current, nodes: nextNodes }));
+    window.setTimeout(() => flowInstance?.fitView({ padding: 0.05 }), 0);
+  };
+
+  return (
+    <div className={`ce-formation-designer is-${mode}`}>
+      <div className="ce-formation-canvas-toolbar">
+        <div className="ce-formation-canvas-stats">
+          <span>{formation.design.rings.length} 层阵环</span>
+          <span>{formation.nodes.length} 个阵元</span>
+          <span>{formation.edges.length} 条流向</span>
+        </div>
+        {editable && (
+          <div
+            className="ce-formation-preset-switch"
+            role="group"
+            aria-label="阵法底图预设"
+          >
+            {FORMATION_BACKDROP_PRESETS.map((preset) => (
+              <button
+                type="button"
+                key={preset.id}
+                className={
+                  formation.design.presetId === preset.id ? "is-active" : ""
+                }
+                onClick={() => applyBackdropPreset(preset.id)}
+                title={`${preset.name}：${preset.description}`}
+                aria-pressed={formation.design.presetId === preset.id}
+              >
+                <i
+                  style={{
+                    background: `linear-gradient(135deg, ${preset.palette.primary}, ${preset.palette.secondary})`,
+                  }}
+                />
+                {preset.name}
+              </button>
+            ))}
+          </div>
+        )}
+        {editable ? (
+          <>
+            <Button variant="ghost" onClick={addRing}>
+              <Plus className="h-3.5 w-3.5" />
+              新增环层
+            </Button>
+            <Button variant="secondary" onClick={addNode}>
+              <Plus className="h-3.5 w-3.5" />
+              新增阵元
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={addEdge}
+              disabled={formation.nodes.length < 2}
+              title={
+                formation.nodes.length < 2 ? "至少需要两个阵元" : undefined
+              }
+            >
+              <GitBranch className="h-3.5 w-3.5" />
+              新增流向
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={handleLayout}
+              title="按环层自动排列阵元"
+            >
+              <Route className="h-3.5 w-3.5" />
+              同心布局
+            </Button>
+          </>
+        ) : (
+          <Button variant="primary" onClick={onOpenEditor}>
+            <Maximize2 className="h-3.5 w-3.5" />
+            全屏编辑
+          </Button>
+        )}
+      </div>
+      <div
+        ref={flowSurfaceRef}
+        className={`ce-formation-flow-surface is-${formation.design.canvasStyle} is-${mode} ${connecting ? "is-connecting" : ""}`}
+      >
+        <ReactFlow<FormationCanvasNode, FormationCanvasEdge>
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={formationCanvasNodeTypes}
+          onNodesChange={editable ? onNodesChange : undefined}
+          onEdgesChange={editable ? onEdgesChange : undefined}
+          onNodeClick={
+            editable
+              ? (_event, node) => {
+                  if (node.type !== "formationNode") return;
+                  onSelect({
+                    kind: "formation-node",
+                    id: node.id,
+                    parentId: formation.id,
+                    parentKind: "formation",
+                  });
+                }
+              : undefined
+          }
+          onEdgeClick={
+            editable
+              ? (_event, edge) =>
+                  onSelect({
+                    kind: "formation-edge",
+                    id: edge.id,
+                    parentId: formation.id,
+                    parentKind: "formation",
+                  })
+              : undefined
+          }
+          onNodeDragStop={editable ? handleNodeDragStop : undefined}
+          onNodesDelete={editable ? handleNodesDelete : undefined}
+          onEdgesDelete={editable ? handleEdgesDelete : undefined}
+          onConnect={editable ? handleConnect : undefined}
+          onConnectStart={editable ? () => setConnecting(true) : undefined}
+          onConnectEnd={editable ? () => setConnecting(false) : undefined}
+          onReconnect={editable ? handleReconnect : undefined}
+          onReconnectStart={
+            editable
+              ? (_event, edge) => {
+                  reconnectingEdgeIdRef.current = edge.id;
+                  setConnecting(true);
+                }
+              : undefined
+          }
+          onReconnectEnd={
+            editable
+              ? () => {
+                  reconnectingEdgeIdRef.current = null;
+                  setConnecting(false);
+                }
+              : undefined
+          }
+          isValidConnection={editable ? isValidConnection : undefined}
+          connectionMode={ConnectionMode.Loose}
+          connectionLineType={ConnectionLineType.Bezier}
+          connectionRadius={30}
+          connectionDragThreshold={0}
+          nodesDraggable={editable}
+          nodesConnectable={editable}
+          edgesReconnectable={editable}
+          reconnectRadius={30}
+          elementsSelectable={editable}
+          connectOnClick={editable}
+          onInit={setFlowInstance}
+          fitView
+          fitViewOptions={{ padding: 0.05 }}
+          minZoom={0.1}
+          maxZoom={2.5}
+          snapToGrid
+          snapGrid={[10, 10]}
+          deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={24}
+            size={1}
+            color={
+              formation.design.canvasStyle === "mystic" ? "#3f3528" : "#48535b"
+            }
+          />
+          {editable && (
+            <MiniMap
+              pannable
+              zoomable
+              nodeStrokeWidth={2}
+              nodeColor={(node) =>
+                node.type === "formationBackdrop"
+                  ? formation.design.backgroundColor
+                  : (node.data as FormationCanvasNodeData).color
+              }
+            />
+          )}
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </div>
+      {editable && (
+        <div className="ce-formation-object-rail">
+          <div className="ce-formation-object-group">
+            <div className="ce-formation-object-head">
+              <span>底纹</span>
+              <button
+                type="button"
+                onClick={addBackdropLayer}
+                disabled={
+                  formation.design.backdropLayers.length >=
+                  MAX_FORMATION_BACKDROP_LAYERS
+                }
+                title={
+                  formation.design.backdropLayers.length >=
+                  MAX_FORMATION_BACKDROP_LAYERS
+                    ? `底纹最多 ${MAX_FORMATION_BACKDROP_LAYERS} 层`
+                    : "新增底纹"
+                }
+                aria-label="新增底纹"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <DndContext
+              sensors={backdropLayerSensors}
+              onDragEnd={handleBackdropLayerDragEnd}
+            >
+              <SortableContext
+                items={sortedBackdropLayers.map((layer) => layer.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <div className="ce-formation-object-list">
+                  {sortedBackdropLayers.map((layer) => (
+                    <FormationBackdropLayerRow
+                      key={layer.id}
+                      layer={layer}
+                      onSelect={() =>
+                        onSelect({
+                          kind: "formation-backdrop-layer",
+                          id: layer.id,
+                          parentId: formation.id,
+                          parentKind: "formation",
+                        })
+                      }
+                      onToggle={() => toggleBackdropLayer(layer.id)}
+                      onRotationToggle={() =>
+                        toggleBackdropLayerRotation(layer.id)
+                      }
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          </div>
+          <div className="ce-formation-object-group">
+            <div className="ce-formation-object-head">
+              <span>阵环</span>
+              <button
+                type="button"
+                onClick={addRing}
+                title="新增环层"
+                aria-label="新增环层"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="ce-formation-object-list">
+              {[...formation.design.rings]
+                .sort((left, right) => left.order - right.order)
+                .map((ring) => (
+                  <div
+                    className="ce-formation-layer-row ce-formation-ring-row"
+                    key={ring.id}
+                  >
+                    <button
+                      type="button"
+                      className="ce-formation-layer-main"
+                      onClick={() =>
+                        onSelect({
+                          kind: "formation-ring",
+                          id: ring.id,
+                          parentId: formation.id,
+                          parentKind: "formation",
+                        })
+                      }
+                    >
+                      <i style={{ background: ring.color }} />
+                      <span>{ring.name}</span>
+                      <small>{ring.radius}px</small>
+                    </button>
+                    <FormationRotationToggle
+                      name={ring.name}
+                      checked={ring.rotating}
+                      onChange={() => toggleRingRotation(ring.id)}
+                    />
+                  </div>
+                ))}
+            </div>
+          </div>
+          <div className="ce-formation-object-group">
+            <div className="ce-formation-object-head">
+              <span>阵元</span>
+              <button
+                type="button"
+                onClick={addNode}
+                title="新增阵元"
+                aria-label="新增阵元"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="ce-formation-object-list">
+              {formation.nodes.map((node) => (
+                <button
+                  type="button"
+                  key={node.id}
+                  onClick={() =>
+                    onSelect({
+                      kind: "formation-node",
+                      id: node.id,
+                      parentId: formation.id,
+                      parentKind: "formation",
+                    })
+                  }
+                >
+                  <i style={{ background: node.color }} />
+                  <span>{node.name}</span>
+                  <small>{FORMATION_ELEMENT_LABELS[node.element]}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="ce-formation-object-group">
+            <div className="ce-formation-object-head">
+              <span>流向</span>
+              <button
+                type="button"
+                onClick={addEdge}
+                disabled={formation.nodes.length < 2}
+                title="新增流向"
+                aria-label="新增流向"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="ce-formation-object-list">
+              {formation.edges.map((edge) => (
+                <button
+                  type="button"
+                  key={edge.id}
+                  onClick={() =>
+                    onSelect({
+                      kind: "formation-edge",
+                      id: edge.id,
+                      parentId: formation.id,
+                      parentKind: "formation",
+                    })
+                  }
+                >
+                  <i style={{ background: edge.color }} />
+                  <span>
+                    {edge.name ||
+                      `${nodeName(edge.fromNodeId)} · ${nodeName(edge.toNodeId)}`}
+                  </span>
+                  <small>{edge.flowType}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FormationWorkspace({
   system,
   onChange,
   onSelect,
+  onOpenEditor,
 }: {
   system: CultivationSystem;
   onChange: (system: CultivationSystem) => void;
   onSelect: (selection: Selection) => void;
+  onOpenEditor: (formationId: string) => void;
 }) {
   const [formationId, setFormationId] = useState(
     system.formations[0]?.id ?? "",
   );
+  const [view, setView] = useState<FormationViewMode>("overview");
   const formation =
     system.formations.find((item) => item.id === formationId) ??
     system.formations[0];
@@ -3439,25 +5150,35 @@ function FormationWorkspace({
     const item = createFormation();
     onChange({ ...system, formations: [...system.formations, item] });
     setFormationId(item.id);
+    setView("canvas");
     onSelect({ kind: "formation", id: item.id });
   };
   const addNode = () => {
     if (!formation) return;
-    const theoryNode =
-      system.theoryModel.nodeCatalog[
-        formation.nodes.length %
-          Math.max(1, system.theoryModel.nodeCatalog.length)
-      ];
-    const next = {
+    const size = 72;
+    const canvasPosition = formationCanvasPosition(
+      formation.nodes.length * 45,
+      210,
+      size,
+    );
+    const next: Formation["nodes"][number] = {
       id: newEcologyId("formation-node"),
       name: `阵元 ${formation.nodes.length + 1}`,
-      kind: "节点",
+      kind: "阵元",
       role: "运行",
-      theoryNodeId: theoryNode?.id ?? null,
+      theoryNodeId: system.theoryModel.nodeCatalog[0]?.id ?? null,
       position: {
-        x: 20 + (formation.nodes.length % 4) * 20,
-        y: 25 + (Math.floor(formation.nodes.length / 4) % 3) * 25,
+        x: ((canvasPosition.x + size / 2) / FORMATION_CANVAS_SIZE) * 100,
+        y: ((canvasPosition.y + size / 2) / FORMATION_CANVAS_SIZE) * 100,
       },
+      canvasPosition,
+      ringId: formation.design.rings[1]?.id ?? null,
+      angle: (formation.nodes.length * 45) % 360,
+      size,
+      color: FORMATION_ELEMENT_COLORS.pattern,
+      glyph: "纹",
+      element: "pattern",
+      nodeStyle: "seal",
     };
     onChange({
       ...system,
@@ -3475,12 +5196,19 @@ function FormationWorkspace({
   };
   const addEdge = () => {
     if (!formation || formation.nodes.length < 2) return;
-    const next = {
+    const source = formation.nodes[0];
+    const target = formation.nodes[1];
+    const next: Formation["edges"][number] = {
       id: newEcologyId("formation-edge"),
-      fromNodeId: formation.nodes[0].id,
-      toNodeId: formation.nodes[1].id,
+      name: `${source.name} · ${target.name}`,
+      fromNodeId: source.id,
+      toNodeId: target.id,
       order: formation.edges.length,
       rule: "",
+      flowType: "灵流",
+      lineStyle: "bezier",
+      color: source.color,
+      animated: true,
     };
     onChange({
       ...system,
@@ -3496,6 +5224,28 @@ function FormationWorkspace({
       parentKind: "formation",
     });
   };
+  const viewSwitch = (
+    <div className="ce-topology-view-switch" role="group" aria-label="阵法视图">
+      <button
+        type="button"
+        className={view === "overview" ? "is-active" : ""}
+        aria-pressed={view === "overview"}
+        onClick={() => setView("overview")}
+      >
+        <FileText className="h-3.5 w-3.5" />
+        总览
+      </button>
+      <button
+        type="button"
+        className={view === "canvas" ? "is-active" : ""}
+        aria-pressed={view === "canvas"}
+        onClick={() => setView("canvas")}
+      >
+        <Waypoints className="h-3.5 w-3.5" />
+        阵图
+      </button>
+    </div>
+  );
   if (!formation)
     return (
       <>
@@ -3518,7 +5268,7 @@ function FormationWorkspace({
       <PageHeader
         eyebrow="体系内部 / 07 阵法与部署"
         title="阵法与部署"
-        description="阵法是独立的部署拓扑，引用理论节点、法门、能力和资源，承担区域放大、控制、防护或仪式功能。"
+        description="以六元结构定义局部法则，通过阵盘骨架、阵元与灵流共同完成可运行的阵法设计。"
         action={
           <Button variant="primary" onClick={add}>
             <Plus className="h-3.5 w-3.5" />
@@ -3529,187 +5279,226 @@ function FormationWorkspace({
       <div className="ce-formation-workspace">
         <div className="ce-formation-list">
           {system.formations.map((item) => (
-            <button
-              type="button"
+            <div
               key={item.id}
-              className={item.id === formation.id ? "is-active" : ""}
-              onClick={() => {
-                setFormationId(item.id);
-                onSelect({ kind: "formation", id: item.id });
-              }}
+              className={`ce-formation-list-item ${item.id === formation.id ? "is-active" : ""}`}
             >
-              <Hexagon className="h-4 w-4" />
-              <span>
-                <strong>{item.name}</strong>
-                <small>{item.category}</small>
-              </span>
-            </button>
+              <button
+                type="button"
+                className="ce-formation-list-item-trigger"
+                onClick={() => setFormationId(item.id)}
+              >
+                <Hexagon className="h-4 w-4" />
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>{item.category}</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="ce-formation-list-item-edit"
+                title={`编辑${item.name}`}
+                aria-label={`编辑${item.name}`}
+                onClick={() => onSelect({ kind: "formation", id: item.id })}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            </div>
           ))}
         </div>
         <div className="ce-formation-detail">
           <Section
             title={formation.name}
             eyebrow={`${formation.structure} · ${formation.scale || "规模未定"}`}
-            action={
+            action={viewSwitch}
+          >
+            {view === "canvas" ? (
+              <FormationDesignCanvas
+                system={system}
+                formation={formation}
+                onChange={onChange}
+                onSelect={onSelect}
+                mode="preview"
+                onOpenEditor={() => onOpenEditor(formation.id)}
+              />
+            ) : (
               <>
-                <Button variant="secondary" onClick={addNode}>
-                  <Plus className="h-3.5 w-3.5" />
-                  新增阵元
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={addEdge}
-                  disabled={formation.nodes.length < 2}
-                  title={
-                    formation.nodes.length < 2
-                      ? "至少需要两个阵元"
-                      : "新增阵法流向"
-                  }
-                >
-                  <GitBranch className="h-3.5 w-3.5" />
-                  新增流向
-                </Button>
-              </>
-            }
-          >
-            <div className="ce-formation-map">
-              <svg
-                className="ce-formation-edges"
-                aria-hidden="true"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-              >
-                <defs>
-                  <marker
-                    id="ce-formation-arrow"
-                    markerWidth="5"
-                    markerHeight="5"
-                    refX="4"
-                    refY="2.5"
-                    orient="auto"
-                    markerUnits="strokeWidth"
+                <div className="ce-formation-overview-actions">
+                  <Button variant="secondary" onClick={addNode}>
+                    <Plus className="h-3.5 w-3.5" />
+                    新增阵元
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={addEdge}
+                    disabled={formation.nodes.length < 2}
+                    title={
+                      formation.nodes.length < 2
+                        ? "至少需要两个阵元"
+                        : undefined
+                    }
                   >
-                    <path d="M 0 0 L 5 2.5 L 0 5 z" fill="var(--accent-warm)" />
-                  </marker>
-                </defs>
-                {formation.edges.map((edge) => {
-                  const from = formation.nodes.find(
-                    (node) => node.id === edge.fromNodeId,
-                  );
-                  const to = formation.nodes.find(
-                    (node) => node.id === edge.toNodeId,
-                  );
-                  if (!from || !to) return null;
-                  return (
-                    <line
+                    <GitBranch className="h-3.5 w-3.5" />
+                    新增流向
+                  </Button>
+                </div>
+                <div className="ce-formation-map">
+                  <svg
+                    className="ce-formation-edges"
+                    aria-hidden="true"
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                  >
+                    <defs>
+                      <marker
+                        id={`ce-formation-arrow-${formation.id}`}
+                        markerWidth="5"
+                        markerHeight="5"
+                        refX="4"
+                        refY="2.5"
+                        orient="auto"
+                        markerUnits="strokeWidth"
+                      >
+                        <path
+                          d="M 0 0 L 5 2.5 L 0 5 z"
+                          fill="var(--accent-warm)"
+                        />
+                      </marker>
+                    </defs>
+                    {formation.edges.map((edge) => {
+                      const from = formation.nodes.find(
+                        (node) => node.id === edge.fromNodeId,
+                      );
+                      const to = formation.nodes.find(
+                        (node) => node.id === edge.toNodeId,
+                      );
+                      if (!from || !to) return null;
+                      return (
+                        <line
+                          key={edge.id}
+                          x1={from.position.x}
+                          y1={from.position.y}
+                          x2={to.position.x}
+                          y2={to.position.y}
+                          markerEnd={`url(#ce-formation-arrow-${formation.id})`}
+                        />
+                      );
+                    })}
+                  </svg>
+                  <div className="ce-formation-center">
+                    <Hexagon className="h-8 w-8" />
+                    <span>阵眼</span>
+                  </div>
+                  {formation.nodes.map((node) => (
+                    <button
+                      type="button"
+                      key={node.id}
+                      className="ce-formation-node"
+                      style={{
+                        left: `${node.position.x}%`,
+                        top: `${node.position.y}%`,
+                      }}
+                      onClick={() =>
+                        onSelect({
+                          kind: "formation-node",
+                          id: node.id,
+                          parentId: formation.id,
+                          parentKind: "formation",
+                        })
+                      }
+                    >
+                      <CircleDot className="h-3.5 w-3.5" />
+                      <span>{node.name}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="ce-formation-six-grid">
+                  {(
+                    Object.keys(FORMATION_ELEMENT_LABELS) as Array<
+                      keyof Formation["sixElements"]
+                    >
+                  ).map((key) => (
+                    <button
+                      type="button"
+                      key={key}
+                      onClick={() =>
+                        onSelect({ kind: "formation", id: formation.id })
+                      }
+                    >
+                      <span>{FORMATION_ELEMENT_LABELS[key]}</span>
+                      <strong>{formation.sixElements[key] || "未定义"}</strong>
+                    </button>
+                  ))}
+                </div>
+                <div className="ce-formation-meta">
+                  <div>
+                    <span>用途</span>
+                    <strong>{formation.purpose || "未定义"}</strong>
+                  </div>
+                  <div>
+                    <span>激活</span>
+                    <strong>{formation.activation || "未定义"}</strong>
+                  </div>
+                  <div>
+                    <span>边界</span>
+                    <strong>{formation.boundary || "未定义"}</strong>
+                  </div>
+                  <div>
+                    <span>风险</span>
+                    <strong>{formation.risks.join("、") || "未定义"}</strong>
+                  </div>
+                </div>
+                <div className="ce-edge-list">
+                  {formation.edges.map((edge) => (
+                    <button
+                      type="button"
                       key={edge.id}
-                      x1={from.position.x}
-                      y1={from.position.y}
-                      x2={to.position.x}
-                      y2={to.position.y}
-                      markerEnd="url(#ce-formation-arrow)"
-                    />
-                  );
-                })}
-              </svg>
-              <div className="ce-formation-center">
-                <Hexagon className="h-8 w-8" />
-                <span>阵眼</span>
-              </div>
-              {formation.nodes.map((node) => (
-                <button
-                  type="button"
-                  key={node.id}
-                  className="ce-formation-node"
-                  style={{
-                    left: `${node.position.x}%`,
-                    top: `${node.position.y}%`,
-                  }}
-                  onClick={() =>
-                    onSelect({
-                      kind: "formation-node",
-                      id: node.id,
-                      parentId: formation.id,
-                      parentKind: "formation",
-                    })
-                  }
-                >
-                  <CircleDot className="h-3.5 w-3.5" />
-                  <span>{node.name}</span>
-                </button>
-              ))}
-            </div>
-            <div className="ce-formation-meta">
-              <div>
-                <span>用途</span>
-                <strong>{formation.purpose || "未定义"}</strong>
-              </div>
-              <div>
-                <span>激活</span>
-                <strong>{formation.activation || "未定义"}</strong>
-              </div>
-              <div>
-                <span>边界</span>
-                <strong>{formation.boundary || "未定义"}</strong>
-              </div>
-              <div>
-                <span>风险</span>
-                <strong>{formation.risks.join("、") || "未定义"}</strong>
-              </div>
-            </div>
-            <div className="ce-edge-list">
-              {formation.edges.map((edge) => (
-                <button
-                  type="button"
-                  key={edge.id}
-                  onClick={() =>
-                    onSelect({
-                      kind: "formation-edge",
-                      id: edge.id,
-                      parentId: formation.id,
-                      parentKind: "formation",
-                    })
-                  }
-                >
-                  <GitBranch className="h-3.5 w-3.5" />
-                  <span>
-                    {formation.nodes.find((node) => node.id === edge.fromNodeId)
-                      ?.name || edge.fromNodeId}{" "}
-                    →{" "}
-                    {formation.nodes.find((node) => node.id === edge.toNodeId)
-                      ?.name || edge.toNodeId}
-                  </span>
-                  <small>{edge.rule || "未定义流向规则"}</small>
-                </button>
-              ))}
-            </div>
+                      onClick={() =>
+                        onSelect({
+                          kind: "formation-edge",
+                          id: edge.id,
+                          parentId: formation.id,
+                          parentKind: "formation",
+                        })
+                      }
+                    >
+                      <GitBranch className="h-3.5 w-3.5" />
+                      <span>{edge.name}</span>
+                      <small>{edge.rule || "未定义流向规则"}</small>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </Section>
-          <Section
-            title="部署索引"
-            eyebrow={`${formation.nodes.length} 个节点 · ${formation.edges.length} 条边`}
-          >
-            <div className="ce-deployment-list">
-              {formation.nodes.map((node) => (
-                <button
-                  type="button"
-                  key={node.id}
-                  onClick={() =>
-                    onSelect({
-                      kind: "formation-node",
-                      id: node.id,
-                      parentId: formation.id,
-                      parentKind: "formation",
-                    })
-                  }
-                >
-                  <span>{node.name}</span>
-                  <small>
-                    {node.kind} · {node.role}
-                  </small>
-                </button>
-              ))}
-            </div>
-          </Section>
+          {view === "overview" && (
+            <Section
+              title="部署索引"
+              eyebrow={`${formation.nodes.length} 个节点 · ${formation.edges.length} 条边`}
+            >
+              <div className="ce-deployment-list">
+                {formation.nodes.map((node) => (
+                  <button
+                    type="button"
+                    key={node.id}
+                    onClick={() =>
+                      onSelect({
+                        kind: "formation-node",
+                        id: node.id,
+                        parentId: formation.id,
+                        parentKind: "formation",
+                      })
+                    }
+                  >
+                    <span>{node.name}</span>
+                    <small>
+                      {FORMATION_ELEMENT_LABELS[node.element]} · {node.role}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            </Section>
+          )}
         </div>
       </div>
     </>
@@ -3728,13 +5517,25 @@ function Assets({
     references.set(id, [...(references.get(id) ?? []), label]);
   system.progressionTracks.forEach((track) => {
     track.levels.forEach((level) => {
-      level.methodIds.forEach((id) => addReference(id, `阶段 · ${level.name}`));
+      level.methodIds.forEach((id) => addReference(id, `境界 · ${level.name}`));
       level.naturalAbilityIds.forEach((id) =>
-        addReference(id, `阶段 · ${level.name}`),
+        addReference(id, `境界 · ${level.name}`),
       );
       level.resourceRequirements.forEach((requirement) =>
-        addReference(requirement.resourceId, `阶段 · ${level.name}`),
+        addReference(requirement.resourceId, `境界 · ${level.name}`),
       );
+      level.subStages.forEach((stage) => {
+        const label = `${level.name} · ${stage.name}`;
+        stage.methodIds.forEach((id) =>
+          addReference(id, `境内阶段 · ${label}`),
+        );
+        stage.naturalAbilityIds.forEach((id) =>
+          addReference(id, `境内阶段 · ${label}`),
+        );
+        stage.resourceRequirements.forEach((requirement) =>
+          addReference(requirement.resourceId, `境内阶段 · ${label}`),
+        );
+      });
     });
     track.transitions.forEach((transition) => {
       transition.methodIds.forEach((id) =>
@@ -3836,7 +5637,7 @@ function Assets({
       <PageHeader
         eyebrow="体系内部 / 08 资产索引"
         title="资产索引"
-        description="所有资产只定义一次，再通过阶段、法门、能力和阵法建立关联；从任一资产都能回到它覆盖的成长阶段。"
+        description="所有资产只定义一次，再通过境界、境内阶段、法门、能力和阵法建立关联；从任一资产都能回到对应成长位置。"
       />
       <Section title="体系资产" eyebrow="反向引用">
         <div className="ce-asset-index">
@@ -3915,7 +5716,7 @@ function FoundationDirectory({
       <PageHeader
         eyebrow="体系内部 / 09 根基与质量"
         title="根基与质量"
-        description="根骨、血脉、灵魂资质、元素亲和或改造程度会跨多个阶段影响速度、质量、上限和突破。"
+        description="根骨、血脉、灵魂资质、元素亲和或改造程度会跨多个境界影响速度、质量、上限和突破。"
         action={
           <Button variant="primary" onClick={add}>
             <Plus className="h-3.5 w-3.5" />
@@ -4107,7 +5908,7 @@ function AuditDirectory({
       <PageHeader
         eyebrow="体系内部 / 12 审查"
         title="结构审查"
-        description="定位无效引用、缺失消耗、拓扑断路、阶段冲突和跨体系转换风险。审查结果可以直接跳回对应模块。"
+        description="定位无效引用、缺失消耗、拓扑断路、境界冲突和跨体系转换风险。审查结果可以直接跳回对应模块。"
       />
       <div className="ce-audit-score">
         <div>
@@ -4163,7 +5964,8 @@ function AuditDirectory({
                     : item.targetType === "method" ||
                         item.targetType === "topology"
                       ? "methods"
-                      : item.targetType === "level" ||
+                    : item.targetType === "level" ||
+                        item.targetType === "level-stage" ||
                           item.targetType === "transition"
                         ? "progression"
                         : item.targetType === "resource"
@@ -4309,11 +6111,6 @@ function OriginCanvasNodeView({ data, selected }: NodeProps<OriginCanvasNode>) {
       title={data.subtitle}
       style={style}
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="ce-origin-flow-handle"
-      />
       {data.kind === "system" ? (
         <>
           <span className="ce-origin-flow-node-icon">
@@ -4332,13 +6129,17 @@ function OriginCanvasNodeView({ data, selected }: NodeProps<OriginCanvasNode>) {
           <small>{data.badge}</small>
         </div>
       )}
-      {data.kind !== "system" && (
+      {TOPOLOGY_HANDLE_POINTS.map((handle) => (
         <Handle
+          key={handle.id}
+          id={handle.id}
           type="source"
-          position={Position.Right}
+          position={handle.position}
+          style={handle.style}
+          isConnectable
           className="ce-origin-flow-handle"
         />
-      )}
+      ))}
     </div>
   );
 }
@@ -4441,79 +6242,92 @@ function buildOriginCanvasEdges(
     origin.id,
     ...origin.manifestations.map((item) => item.id),
   ]);
+  const nodePositions = new Map(
+    buildOriginCanvasNodes(origin, systems).map(
+      (node) => [node.id, node.position] as const,
+    ),
+  );
+  const handleToward = (sourceId: string, targetId: string) => ({
+    sourceHandle: topologyHandleToward(
+      nodePositions.get(sourceId) ?? { x: 0, y: 0 },
+      nodePositions.get(targetId) ?? { x: 1, y: 0 },
+    ),
+    targetHandle: topologyHandleToward(
+      nodePositions.get(targetId) ?? { x: 1, y: 0 },
+      nodePositions.get(sourceId) ?? { x: 0, y: 0 },
+    ),
+  });
   const relationEdges: OriginCanvasEdge[] = origin.relations
     .filter(
       (relation) =>
         localNodeIds.has(relation.sourceId) &&
         localNodeIds.has(relation.targetId),
     )
-    .map((relation) => ({
-      id: `relation-${relation.id}`,
-      source: relation.sourceId,
-      target: relation.targetId,
-      type: "smoothstep",
-      animated: true,
-      className: "ce-origin-flow-edge is-relation",
-      label: originRelationLabels[relation.relation],
-      markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b" },
-      data: { kind: "relation", relationId: relation.id },
-      style: { stroke: "#f59e0b", strokeWidth: 1.8 },
-      labelStyle: { fill: "#fff2ff", fontSize: 11, fontWeight: 650 },
-      labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
-      labelBgPadding: [5, 3],
-      labelBgBorderRadius: 3,
-    }));
-  const projectionEdges: OriginCanvasEdge[] = [];
-  systems.forEach((system) => {
-    if (system.projection.originIds.includes(origin.id)) {
-      projectionEdges.push({
-        id: `projection-${origin.id}-${system.id}`,
-        source: origin.id,
-        target: system.id,
+    .map((relation) => {
+      const automaticHandles = handleToward(
+        relation.sourceId,
+        relation.targetId,
+      );
+      return {
+        id: `relation-${relation.id}`,
+        source: relation.sourceId,
+        target: relation.targetId,
+        sourceHandle: relation.sourceHandleId ?? automaticHandles.sourceHandle,
+        targetHandle: relation.targetHandleId ?? automaticHandles.targetHandle,
         type: "smoothstep",
         animated: true,
-        className: "ce-origin-flow-edge is-projection",
-        label: "投影",
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#22d3ee" },
-        data: { kind: "projection", systemId: system.id, sourceId: origin.id },
-        style: {
-          stroke: "#22d3ee",
-          strokeDasharray: "6 5",
-          strokeWidth: 1.5,
-        },
-        labelStyle: { fill: "#fff2ff", fontSize: 11, fontWeight: 650 },
+        className: "ce-origin-flow-edge is-relation",
+        label: originRelationLabels[relation.relation],
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b" },
+        data: { kind: "relation", relationId: relation.id },
+        style: { stroke: "#f59e0b", strokeWidth: 1.8 },
+        labelStyle: { fill: "#fff2ff", fontSize: 12, fontWeight: 650 },
         labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
         labelBgPadding: [5, 3],
         labelBgBorderRadius: 3,
-      });
+      };
+    });
+  const projectionEdges: OriginCanvasEdge[] = [];
+  const pushProjectionEdge = (
+    system: CultivationSystem,
+    sourceId: string,
+    label: string,
+  ) => {
+    const binding = system.projection.originBindings?.find(
+      (candidate) => candidate.sourceId === sourceId,
+    );
+    const automaticHandles = handleToward(sourceId, system.id);
+    projectionEdges.push({
+      id: `projection-${sourceId}-${system.id}`,
+      source: sourceId,
+      target: system.id,
+      sourceHandle: binding?.sourceHandleId ?? automaticHandles.sourceHandle,
+      targetHandle: binding?.targetHandleId ?? automaticHandles.targetHandle,
+      type: "smoothstep",
+      animated: true,
+      className: "ce-origin-flow-edge is-projection",
+      label,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#22d3ee" },
+      data: { kind: "projection", systemId: system.id, sourceId },
+      style: {
+        stroke: "#22d3ee",
+        strokeDasharray: "6 5",
+        strokeWidth: 1.5,
+      },
+      labelStyle: { fill: "#fff2ff", fontSize: 12, fontWeight: 650 },
+      labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
+      labelBgPadding: [5, 3],
+      labelBgBorderRadius: 3,
+    });
+  };
+  systems.forEach((system) => {
+    if (system.projection.originIds.includes(origin.id)) {
+      pushProjectionEdge(system, origin.id, "投影");
     }
     origin.manifestations.forEach((manifestation) => {
       if (!system.projection.manifestationIds.includes(manifestation.id))
         return;
-      projectionEdges.push({
-        id: `projection-${manifestation.id}-${system.id}`,
-        source: manifestation.id,
-        target: system.id,
-        type: "smoothstep",
-        animated: true,
-        className: "ce-origin-flow-edge is-projection",
-        label: "接入",
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#22d3ee" },
-        data: {
-          kind: "projection",
-          systemId: system.id,
-          sourceId: manifestation.id,
-        },
-        style: {
-          stroke: "#22d3ee",
-          strokeDasharray: "6 5",
-          strokeWidth: 1.5,
-        },
-        labelStyle: { fill: "#fff2ff", fontSize: 11, fontWeight: 650 },
-        labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
-        labelBgPadding: [5, 3],
-        labelBgBorderRadius: 3,
-      });
+      pushProjectionEdge(system, manifestation.id, "接入");
     });
   });
   return [...relationEdges, ...projectionEdges];
@@ -4542,6 +6356,7 @@ function WorldOriginCanvasEditor({
     OriginCanvasNode,
     OriginCanvasEdge
   > | null>(null);
+  const reconnectingEdgeRef = useRef<OriginCanvasEdge | null>(null);
 
   useEffect(() => {
     setNodes(buildOriginCanvasNodes(origin, ecology.systems));
@@ -4626,18 +6441,37 @@ function WorldOriginCanvasEditor({
     const target = connection.target;
     if (!source || !target || source === target || !localNodeIds.has(source))
       return false;
+    const reconnectingEdge = reconnectingEdgeRef.current;
     if (localNodeIds.has(target)) {
+      if (reconnectingEdge?.data?.kind === "projection") return false;
+      const reconnectingRelationId =
+        reconnectingEdge?.data?.kind === "relation"
+          ? reconnectingEdge.data.relationId
+          : null;
       return !origin.relations.some(
         (relation) =>
-          relation.sourceId === source && relation.targetId === target,
+          relation.id !== reconnectingRelationId &&
+          relation.sourceId === source &&
+          relation.targetId === target,
       );
     }
     if (!systemIds.has(target)) return false;
+    if (reconnectingEdge?.data?.kind === "relation") return false;
     const system = ecology.systems.find((candidate) => candidate.id === target);
     if (!system) return false;
-    return source === origin.id
-      ? !system.projection.originIds.includes(source)
-      : !system.projection.manifestationIds.includes(source);
+    const isCurrentProjection =
+      reconnectingEdge?.data?.kind === "projection" &&
+      reconnectingEdge.data.systemId === target &&
+      reconnectingEdge.data.sourceId === source;
+    const alreadyProjected =
+      (source === origin.id
+        ? system.projection.originIds.includes(source)
+        : system.projection.manifestationIds.includes(source)) ||
+      (system.projection.originBindings?.some(
+        (binding) => binding.sourceId === source,
+      ) ??
+        false);
+    return isCurrentProjection || !alreadyProjected;
   };
 
   const handleConnect = (connection: Connection) => {
@@ -4672,6 +6506,8 @@ function WorldOriginCanvasEditor({
                     ...bindings,
                     {
                       sourceId: source,
+                      sourceHandleId: connection.sourceHandle ?? undefined,
+                      targetHandleId: connection.targetHandle ?? undefined,
                       role: bindingRole,
                       purpose: "",
                       weight: "",
@@ -4699,6 +6535,8 @@ function WorldOriginCanvasEditor({
       summary: "",
       sourceId: source,
       targetId: target,
+      sourceHandleId: connection.sourceHandle ?? undefined,
+      targetHandleId: connection.targetHandle ?? undefined,
       relation: relationType,
       conditions: [],
       cost: "",
@@ -4716,6 +6554,107 @@ function WorldOriginCanvasEditor({
       id: relation.id,
       parentId: origin.id,
       parentKind: "world-origin",
+    });
+  };
+
+  const handleReconnect = (
+    oldEdge: OriginCanvasEdge,
+    connection: Connection,
+  ) => {
+    const source = connection.source;
+    const target = connection.target;
+    if (!source || !target || !isValidConnection(connection) || !oldEdge.data)
+      return;
+    setEdges((current) => reconnectEdge(oldEdge, connection, current));
+
+    if (oldEdge.data.kind === "relation") {
+      onChange({
+        ...ecology,
+        worldOrigins: updateById(
+          ecology.worldOrigins,
+          origin.id,
+          (current) => ({
+            ...current,
+            relations: updateById(
+              current.relations,
+              oldEdge.data?.kind === "relation" ? oldEdge.data.relationId : "",
+              (relation) => ({
+                ...relation,
+                sourceId: source,
+                targetId: target,
+                sourceHandleId: connection.sourceHandle ?? undefined,
+                targetHandleId: connection.targetHandle ?? undefined,
+              }),
+            ),
+          }),
+        ),
+      });
+      return;
+    }
+
+    const oldSystemId = oldEdge.data.systemId;
+    const oldSourceId = oldEdge.data.sourceId;
+    const oldSystem = ecology.systems.find(
+      (system) => system.id === oldSystemId,
+    );
+    const previousBinding = oldSystem?.projection.originBindings?.find(
+      (binding) => binding.sourceId === oldSourceId,
+    );
+    const sourceIsOrigin = source === origin.id;
+    const bindingRole: OriginBinding["role"] = sourceIsOrigin
+      ? previousBinding?.role === "secondary"
+        ? "secondary"
+        : "primary"
+      : "manifestation";
+    onChange({
+      ...ecology,
+      systems: ecology.systems.map((system) => {
+        const removesOldProjection = system.id === oldSystemId;
+        const addsNewProjection = system.id === target;
+        if (!removesOldProjection && !addsNewProjection) return system;
+
+        let originIds = system.projection.originIds;
+        let manifestationIds = system.projection.manifestationIds;
+        let originBindings = system.projection.originBindings ?? [];
+        if (removesOldProjection) {
+          originIds = originIds.filter((id) => id !== oldSourceId);
+          manifestationIds = manifestationIds.filter(
+            (id) => id !== oldSourceId,
+          );
+          originBindings = originBindings.filter(
+            (binding) => binding.sourceId !== oldSourceId,
+          );
+        }
+        if (addsNewProjection) {
+          originIds = sourceIsOrigin
+            ? Array.from(new Set([...originIds, source]))
+            : originIds.filter((id) => id !== source);
+          manifestationIds = sourceIsOrigin
+            ? manifestationIds.filter((id) => id !== source)
+            : Array.from(new Set([...manifestationIds, source]));
+          originBindings = [
+            ...originBindings.filter((binding) => binding.sourceId !== source),
+            {
+              sourceId: source,
+              sourceHandleId: connection.sourceHandle ?? undefined,
+              targetHandleId: connection.targetHandle ?? undefined,
+              role: bindingRole,
+              purpose: previousBinding?.purpose ?? "",
+              weight: previousBinding?.weight ?? "",
+              sideEffects: previousBinding?.sideEffects ?? [],
+            },
+          ];
+        }
+        return {
+          ...system,
+          projection: {
+            ...system.projection,
+            originIds,
+            manifestationIds,
+            originBindings,
+          },
+        };
+      }),
     });
   };
 
@@ -4815,8 +6754,22 @@ function WorldOriginCanvasEditor({
           onEdgeClick={handleEdgeClick}
           onNodeDragStop={handleNodeDragStop}
           onConnect={handleConnect}
+          onReconnect={handleReconnect}
+          onReconnectStart={(_event, edge) => {
+            reconnectingEdgeRef.current = edge;
+          }}
+          onReconnectEnd={() => {
+            reconnectingEdgeRef.current = null;
+          }}
           onEdgesDelete={handleEdgesDelete}
           isValidConnection={isValidConnection}
+          connectionMode={ConnectionMode.Loose}
+          connectionLineType={ConnectionLineType.Bezier}
+          connectionRadius={30}
+          connectionDragThreshold={0}
+          edgesReconnectable
+          reconnectRadius={30}
+          connectOnClick
           onInit={setFlowInstance}
           fitView
           fitViewOptions={{ padding: 0.16 }}
@@ -6038,7 +7991,13 @@ function OriginBindingsField({
                 label: `${node.name} · ${node.id}`,
               })),
             ]}
-            onChange={(sourceId) => update(index, { sourceId })}
+            onChange={(sourceId) =>
+              update(index, {
+                sourceId,
+                sourceHandleId: undefined,
+                targetHandleId: undefined,
+              })
+            }
           />
           <SelectField
             label="绑定角色"
@@ -6861,13 +8820,17 @@ function InspectorV2({
           label="来源节点"
           value={item.sourceId}
           options={nodes.map((node) => ({ value: node.id, label: node.name }))}
-          onChange={(value) => update({ sourceId: value })}
+          onChange={(value) =>
+            update({ sourceId: value, sourceHandleId: undefined })
+          }
         />
         <SelectField
           label="目标节点"
           value={item.targetId}
           options={nodes.map((node) => ({ value: node.id, label: node.name }))}
-          onChange={(value) => update({ targetId: value })}
+          onChange={(value) =>
+            update({ targetId: value, targetHandleId: undefined })
+          }
         />
         <Field
           label="成立条件（一行一条）"
@@ -6988,10 +8951,16 @@ function InspectorV2({
               value: asset.id,
               label: `${candidate.name} / 指标 · ${asset.name}`,
             })),
-            ...track.levels.map((asset) => ({
-              value: asset.id,
-              label: `${candidate.name} / 阶段 · ${asset.name}`,
-            })),
+            ...track.levels.flatMap((level) => [
+              {
+                value: level.id,
+                label: `${candidate.name} / 境界 · ${level.name}`,
+              },
+              ...level.subStages.map((stage) => ({
+                value: stage.id,
+                label: `${candidate.name} / 境内阶段 · ${level.name} / ${stage.name}`,
+              })),
+            ]),
             ...track.transitions.map((asset) => ({
               value: asset.id,
               label: `${candidate.name} / 轨道转换 · ${asset.name}`,
@@ -7340,7 +9309,7 @@ function InspectorV2({
             <strong>{theoryNodes.length}</strong>
           </div>
           <div>
-            <span>成长阶段</span>
+            <span>成长境界</span>
             <strong>{levels.length}</strong>
           </div>
           <div>
@@ -7545,13 +9514,13 @@ function InspectorV2({
           onChange={(grades) => update({ grades })}
         />
         <SelectField
-          label="最佳适用阶段"
+          label="最佳适用境界"
           value={item.bestLevelId ?? ""}
           options={[{ value: "", label: "未指定" }, ...listOptions(levels)]}
           onChange={(value) => update({ bestLevelId: value || null })}
         />
         <SystemMultiSelectField
-          label="可用阶段"
+          label="可用境界"
           value={item.usableLevelIds}
           options={listOptions(levels)}
           onChange={(value) => update({ usableLevelIds: value })}
@@ -7640,7 +9609,7 @@ function InspectorV2({
           multiline
         />
         <Field
-          label="覆盖阶段 ID（起始 / 稳定 / 理论 / 绝对）"
+          label="覆盖境界 ID（起始 / 稳定 / 理论 / 绝对）"
           value={[
             item.coverage.startLevelId,
             item.coverage.stableLimitId,
@@ -8105,7 +10074,7 @@ function InspectorV2({
           }}
         />
         <SelectField
-          label="解锁阶段"
+          label="解锁境界"
           value={item.unlockLevelId ?? ""}
           options={[{ value: "", label: "未指定" }, ...listOptions(levels)]}
           onChange={(value) => update({ unlockLevelId: value || null })}
@@ -8171,7 +10140,7 @@ function InspectorV2({
           }
         />
         <SelectField
-          label="完整发挥阶段"
+          label="完整发挥境界"
           value={item.cast.fullPowerLevelId ?? ""}
           options={[{ value: "", label: "未指定" }, ...listOptions(levels)]}
           onChange={(fullPowerLevelId) =>
@@ -8522,6 +10491,12 @@ function InspectorV2({
                   metricThresholds: level.metricThresholds.filter(
                     (threshold) => threshold.metricId !== item.id,
                   ),
+                  subStages: level.subStages.map((stage) => ({
+                    ...stage,
+                    metricThresholds: stage.metricThresholds.filter(
+                      (threshold) => threshold.metricId !== item.id,
+                    ),
+                  })),
                 })),
               }),
             ),
@@ -8576,6 +10551,143 @@ function InspectorV2({
       </InspectorEditor>
     );
   }
+  if (selection?.kind === "level-stage") {
+    const track =
+      system.progressionTracks.find(
+        (candidate) => candidate.id === selection.grandParentId,
+      ) ??
+      system.progressionTracks.find((candidate) =>
+        candidate.levels.some((level) =>
+          level.subStages.some((stage) => stage.id === selected),
+        ),
+      );
+    const level =
+      track?.levels.find((candidate) => candidate.id === selection.parentId) ??
+      track?.levels.find((candidate) =>
+        candidate.subStages.some((stage) => stage.id === selected),
+      );
+    const item = level?.subStages.find((stage) => stage.id === selected);
+    if (!track || !level || !item) return <InspectorMissing />;
+    const update = (patch: Partial<CultivationLevelSubStage>) =>
+      patchSystem({
+        progressionTracks: updateById(
+          system.progressionTracks,
+          track.id,
+          (current) => ({
+            ...current,
+            levels: updateById(current.levels, level.id, (currentLevel) => ({
+              ...currentLevel,
+              subStages: updateById(
+                currentLevel.subStages,
+                item.id,
+                (stage) => ({ ...stage, ...patch }),
+              ),
+            })),
+          }),
+        ),
+      });
+    return (
+      <InspectorEditor
+        title={item.name}
+        type={`境内阶段 / ${level.name}`}
+        onDelete={() => {
+          patchSystem({
+            progressionTracks: updateById(
+              system.progressionTracks,
+              track.id,
+              (current) => ({
+                ...current,
+                levels: updateById(
+                  current.levels,
+                  level.id,
+                  (currentLevel) => ({
+                    ...currentLevel,
+                    subStages: currentLevel.subStages
+                      .filter((stage) => stage.id !== item.id)
+                      .map((stage, order) => ({ ...stage, order })),
+                  }),
+                ),
+              }),
+            ),
+          });
+          onSelect?.({
+            kind: "level",
+            id: level.id,
+            parentId: track.id,
+            parentKind: "track",
+          });
+        }}
+      >
+        <Field
+          label="阶段名称"
+          value={item.name}
+          onChange={(name) => update({ name })}
+        />
+        <Field
+          label="阶段顺序"
+          value={String(item.order)}
+          type="number"
+          min={0}
+          step={1}
+          onChange={(value) =>
+            update({
+              order: boundedNumber(
+                value,
+                0,
+                Number.MAX_SAFE_INTEGER,
+                item.order,
+              ),
+            })
+          }
+        />
+        <Field
+          label="阶段摘要"
+          value={item.summary}
+          onChange={(summary) => update({ summary })}
+          multiline
+        />
+        <MetricThresholdsField
+          label="阶段指标门槛"
+          value={item.metricThresholds}
+          metrics={track.metrics}
+          onChange={(metricThresholds) => update({ metricThresholds })}
+        />
+        <Field
+          label="进入条件（一行一条）"
+          value={item.entryConditions.join("\n")}
+          onChange={(value) => update({ entryConditions: textList(value) })}
+          multiline
+        />
+        <Field
+          label="完成条件（一行一条）"
+          value={item.completionConditions.join("\n")}
+          onChange={(value) =>
+            update({ completionConditions: textList(value) })
+          }
+          multiline
+        />
+        <ResourceRequirementsField
+          label="阶段资源需求"
+          value={item.resourceRequirements}
+          resources={system.resources}
+          defaultPurpose="train"
+          onChange={(resourceRequirements) => update({ resourceRequirements })}
+        />
+        <SystemMultiSelectField
+          label="阶段自然能力"
+          value={item.naturalAbilityIds}
+          options={listOptions(abilities)}
+          onChange={(naturalAbilityIds) => update({ naturalAbilityIds })}
+        />
+        <SystemMultiSelectField
+          label="阶段可用法门"
+          value={item.methodIds}
+          options={listOptions(methods)}
+          onChange={(methodIds) => update({ methodIds })}
+        />
+      </InspectorEditor>
+    );
+  }
   if (selection?.kind === "level") {
     const track =
       system.progressionTracks.find(
@@ -8600,10 +10712,36 @@ function InspectorV2({
           }),
         ),
       });
+    const insertLevel = (position: "before" | "after") => {
+      const currentIndex = track.levels.findIndex(
+        (level) => level.id === item.id,
+      );
+      if (currentIndex < 0) return;
+      const insertionIndex = currentIndex + (position === "after" ? 1 : 0);
+      const nextLevel = createLevel(insertionIndex);
+      const levels = [...track.levels];
+      levels.splice(insertionIndex, 0, nextLevel);
+      patchSystem({
+        progressionTracks: updateById(
+          system.progressionTracks,
+          track.id,
+          (current) => ({
+            ...current,
+            levels: levels.map((level, order) => ({ ...level, order })),
+          }),
+        ),
+      });
+      onSelect?.({
+        kind: "level",
+        id: nextLevel.id,
+        parentId: track.id,
+        parentKind: "track",
+      });
+    };
     return (
       <InspectorEditor
         title={item.name}
-        type="境界 / 成长阶段"
+        type="成长境界"
         onDelete={() => {
           const next = removeLevelReferences(system, new Set([item.id]));
           patchSystem({
@@ -8620,13 +10758,27 @@ function InspectorV2({
           onSelect?.(null);
         }}
       >
+        <div
+          className="ce-inspector-insert-actions"
+          role="group"
+          aria-label="插入成长境界"
+        >
+          <Button variant="secondary" onClick={() => insertLevel("before")}>
+            <Plus className="h-3.5 w-3.5" />
+            前插境界
+          </Button>
+          <Button variant="secondary" onClick={() => insertLevel("after")}>
+            <Plus className="h-3.5 w-3.5" />
+            后插境界
+          </Button>
+        </div>
         <Field
-          label="阶段名称"
+          label="境界名称"
           value={item.name}
           onChange={(value) => update({ name: value })}
         />
         <Field
-          label="阶段顺序"
+          label="境界顺序"
           value={String(item.order)}
           onChange={(value) =>
             update({
@@ -8643,18 +10795,18 @@ function InspectorV2({
           step={1}
         />
         <Field
-          label="阶段类型"
+          label="境界类型"
           value={item.stageType}
           onChange={(value) => update({ stageType: value })}
         />
         <Field
-          label="阶段摘要"
+          label="境界摘要"
           value={item.summary}
           onChange={(value) => update({ summary: value })}
           multiline
         />
         <Field
-          label="阶段质量"
+          label="境界质量"
           value={item.quality}
           onChange={(value) => update({ quality: value })}
         />
@@ -8705,7 +10857,7 @@ function InspectorV2({
           multiline
         />
         <ResourceRequirementsField
-          label="阶段资源需求"
+          label="境界资源需求"
           value={item.resourceRequirements}
           resources={system.resources}
           defaultPurpose="breakthrough"
@@ -8737,6 +10889,25 @@ function InspectorV2({
           ...current,
           ...patch,
         })),
+      });
+    const applyBackdropPreset = (value: string) => {
+      if (value === "custom") {
+        update({ design: { ...item.design, presetId: "custom" } });
+        return;
+      }
+      const preset = createFormationBackdropPreset(
+        value as FormationBackdropPresetId,
+        () => newEcologyId("formation-backdrop"),
+      );
+      update({ design: { ...item.design, ...preset } });
+    };
+    const updateBackdropDesign = (
+      patch: Partial<
+        Pick<Formation["design"], "backgroundColor" | "palette" | "effects">
+      >,
+    ) =>
+      update({
+        design: { ...item.design, ...patch, presetId: "custom" },
       });
     return (
       <InspectorEditor
@@ -8781,6 +10952,147 @@ function InspectorV2({
             update({ structure: value as Formation["structure"] })
           }
         />
+        <SelectField
+          label="阵图布局"
+          value={item.design.layout}
+          options={[
+            { value: "free", label: "自由布局" },
+            { value: "radial", label: "放射布局" },
+            { value: "concentric", label: "同心布局" },
+          ]}
+          onChange={(value) =>
+            update({
+              design: {
+                ...item.design,
+                layout: value as Formation["design"]["layout"],
+              },
+            })
+          }
+        />
+        <SelectField
+          label="底图预设"
+          value={item.design.presetId}
+          options={FORMATION_BACKDROP_PRESET_OPTIONS}
+          onChange={applyBackdropPreset}
+        />
+        <SelectField
+          label="阵盘风格"
+          value={item.design.canvasStyle}
+          options={[
+            { value: "mystic", label: "玄纹拟真" },
+            { value: "technical", label: "结构详图" },
+          ]}
+          onChange={(value) =>
+            update({
+              design: {
+                ...item.design,
+                canvasStyle: value as Formation["design"]["canvasStyle"],
+              },
+            })
+          }
+        />
+        <TopologyColorField
+          label="阵盘底色"
+          value={item.design.backgroundColor}
+          onChange={(backgroundColor) =>
+            updateBackdropDesign({ backgroundColor })
+          }
+        />
+        <TopologyColorField
+          label="底纹主色"
+          value={item.design.palette.primary}
+          onChange={(primary) =>
+            updateBackdropDesign({
+              palette: { ...item.design.palette, primary },
+            })
+          }
+        />
+        <TopologyColorField
+          label="底纹辅色"
+          value={item.design.palette.secondary}
+          onChange={(secondary) =>
+            updateBackdropDesign({
+              palette: { ...item.design.palette, secondary },
+            })
+          }
+        />
+        <TopologyColorField
+          label="底纹强调色"
+          value={item.design.palette.accent}
+          onChange={(accent) =>
+            updateBackdropDesign({
+              palette: { ...item.design.palette, accent },
+            })
+          }
+        />
+        <TopologyColorField
+          label="发光颜色"
+          value={item.design.palette.glow}
+          onChange={(glow) =>
+            updateBackdropDesign({
+              palette: { ...item.design.palette, glow },
+            })
+          }
+        />
+        <Field
+          label="发光强度"
+          value={String(item.design.effects.glowStrength)}
+          onChange={(value) =>
+            updateBackdropDesign({
+              effects: {
+                ...item.design.effects,
+                glowStrength: boundedNumber(
+                  value,
+                  0,
+                  1,
+                  item.design.effects.glowStrength,
+                ),
+              },
+            })
+          }
+          type="number"
+          min={0}
+          max={1}
+          step={0.05}
+        />
+        <Field
+          label="整体线条透明度"
+          value={String(item.design.effects.lineOpacity)}
+          onChange={(value) =>
+            updateBackdropDesign({
+              effects: {
+                ...item.design.effects,
+                lineOpacity: boundedNumber(
+                  value,
+                  0.15,
+                  1,
+                  item.design.effects.lineOpacity,
+                ),
+              },
+            })
+          }
+          type="number"
+          min={0.15}
+          max={1}
+          step={0.05}
+        />
+        <SelectField
+          label="底纹动效"
+          value={item.design.effects.motion}
+          options={[
+            { value: "still", label: "静止" },
+            { value: "rotate", label: "缓慢旋转" },
+            { value: "pulse", label: "灵光呼吸" },
+          ]}
+          onChange={(value) =>
+            updateBackdropDesign({
+              effects: {
+                ...item.design.effects,
+                motion: value as Formation["design"]["effects"]["motion"],
+              },
+            })
+          }
+        />
         <Field
           label="用途"
           value={item.purpose}
@@ -8791,6 +11103,54 @@ function InspectorV2({
           label="规模"
           value={item.scale}
           onChange={(scale) => update({ scale })}
+        />
+        <Field
+          label="阵源：能量从何而来"
+          value={item.sixElements.source}
+          onChange={(source) =>
+            update({ sixElements: { ...item.sixElements, source } })
+          }
+          multiline
+        />
+        <Field
+          label="阵基：能量依附于何物"
+          value={item.sixElements.foundation}
+          onChange={(foundation) =>
+            update({ sixElements: { ...item.sixElements, foundation } })
+          }
+          multiline
+        />
+        <Field
+          label="阵纹：能量如何流动"
+          value={item.sixElements.pattern}
+          onChange={(pattern) =>
+            update({ sixElements: { ...item.sixElements, pattern } })
+          }
+          multiline
+        />
+        <Field
+          label="阵眼：谁来控制"
+          value={item.sixElements.eye}
+          onChange={(eye) =>
+            update({ sixElements: { ...item.sixElements, eye } })
+          }
+          multiline
+        />
+        <Field
+          label="阵域：影响范围"
+          value={item.sixElements.domain}
+          onChange={(domain) =>
+            update({ sixElements: { ...item.sixElements, domain } })
+          }
+          multiline
+        />
+        <Field
+          label="阵则：局部覆写规则"
+          value={item.sixElements.law}
+          onChange={(law) =>
+            update({ sixElements: { ...item.sixElements, law } })
+          }
+          multiline
         />
         <Field
           label="反制措施"
@@ -8816,7 +11176,7 @@ function InspectorV2({
           onChange={(theoryNodeIds) => update({ theoryNodeIds })}
         />
         <SystemMultiSelectField
-          label="所需阶段"
+          label="所需境界"
           value={item.requiredLevelIds}
           options={listOptions(levels)}
           onChange={(requiredLevelIds) => update({ requiredLevelIds })}
@@ -8857,6 +11217,12 @@ function InspectorV2({
           multiline
         />
         <Field
+          label="激活方式"
+          value={item.activation}
+          onChange={(activation) => update({ activation })}
+          multiline
+        />
+        <Field
           label="维护规则"
           value={item.maintenance}
           onChange={(value) => update({ maintenance: value })}
@@ -8879,6 +11245,527 @@ function InspectorV2({
           value={item.risks.join("\n")}
           onChange={(value) => update({ risks: textList(value) })}
           multiline
+        />
+      </InspectorEditor>
+    );
+  }
+  if (selection?.kind === "formation-backdrop-layer") {
+    const formation = system.formations.find(
+      (candidate) => candidate.id === selection.parentId,
+    );
+    const item = formation?.design.backdropLayers.find(
+      (layer) => layer.id === selected,
+    );
+    if (!formation || !item) return <InspectorMissing />;
+    const update = (patch: Partial<FormationBackdropLayer>) =>
+      patchSystem({
+        formations: updateById(system.formations, formation.id, (current) => ({
+          ...current,
+          design: {
+            ...current.design,
+            presetId: "custom",
+            backdropLayers: updateById(
+              current.design.backdropLayers,
+              item.id,
+              (layer) => ({ ...layer, ...patch }),
+            ),
+          },
+        })),
+      });
+    const countMaximum =
+      item.type === "ring"
+        ? 8
+        : item.type === "star"
+          ? 32
+          : item.type === "arc-petals"
+            ? 12
+            : item.type === "ornament-ring"
+              ? 32
+              : 96;
+    const countLabel =
+      item.type === "ring"
+        ? "环线数量"
+        : item.type === "star"
+          ? "星芒数量"
+          : item.type === "radial-rays"
+            ? "射线数量"
+            : item.type === "arc-petals"
+              ? "弧阵数量"
+              : "饰件数量";
+    const hasCount = [
+      "ring",
+      "star",
+      "radial-rays",
+      "arc-petals",
+      "ornament-ring",
+    ].includes(item.type);
+    const canDuplicate =
+      formation.design.backdropLayers.length < MAX_FORMATION_BACKDROP_LAYERS;
+    return (
+      <InspectorEditor
+        title={item.name}
+        type="阵法底纹"
+        onDelete={() => {
+          patchSystem({
+            formations: updateById(
+              system.formations,
+              formation.id,
+              (current) => ({
+                ...current,
+                design: {
+                  ...current.design,
+                  presetId: "custom",
+                  backdropLayers: current.design.backdropLayers
+                    .filter((layer) => layer.id !== item.id)
+                    .sort((left, right) => left.order - right.order)
+                    .map((layer, order) => ({ ...layer, order })),
+                },
+              }),
+            ),
+          });
+          onSelect?.(null);
+        }}
+      >
+        <Button
+          variant="secondary"
+          disabled={!canDuplicate}
+          title={
+            canDuplicate
+              ? "复制当前底纹"
+              : `底纹最多 ${MAX_FORMATION_BACKDROP_LAYERS} 层`
+          }
+          onClick={() => {
+            if (!canDuplicate) return;
+            const duplicate: FormationBackdropLayer = {
+              ...item,
+              id: newEcologyId("formation-backdrop"),
+              name: `${item.name} 副本`,
+              order: formation.design.backdropLayers.length,
+            };
+            patchSystem({
+              formations: updateById(
+                system.formations,
+                formation.id,
+                (current) => ({
+                  ...current,
+                  design: {
+                    ...current.design,
+                    presetId: "custom",
+                    backdropLayers: [
+                      ...current.design.backdropLayers,
+                      duplicate,
+                    ],
+                  },
+                }),
+              ),
+            });
+            onSelect?.({
+              kind: "formation-backdrop-layer",
+              id: duplicate.id,
+              parentId: formation.id,
+              parentKind: "formation",
+            });
+          }}
+        >
+          <Copy className="h-3.5 w-3.5" />
+          复制底纹
+        </Button>
+        <Field
+          label="底纹名称"
+          value={item.name}
+          onChange={(name) => update({ name })}
+        />
+        <SelectField
+          label="底纹类型"
+          value={item.type}
+          options={FORMATION_BACKDROP_LAYER_TYPE_OPTIONS}
+          onChange={(value) =>
+            update({ type: value as FormationBackdropLayer["type"] })
+          }
+        />
+        <Field
+          label={item.type === "radial-rays" ? "外半径" : "基准半径"}
+          value={String(item.radius)}
+          onChange={(value) =>
+            update({
+              radius: boundedNumber(
+                value,
+                20,
+                FORMATION_MAX_RADIUS,
+                item.radius,
+              ),
+            })
+          }
+          type="number"
+          min={20}
+          max={FORMATION_MAX_RADIUS}
+          step={1}
+        />
+        {item.type === "radial-rays" && (
+          <Field
+            label="内半径"
+            value={String(item.innerRadius)}
+            onChange={(value) =>
+              update({
+                innerRadius: boundedNumber(
+                  value,
+                  0,
+                  Math.min(FORMATION_MAX_RADIUS, item.radius),
+                  item.innerRadius,
+                ),
+              })
+            }
+            type="number"
+            min={0}
+            max={Math.min(FORMATION_MAX_RADIUS, item.radius)}
+            step={1}
+          />
+        )}
+        {hasCount && (
+          <Field
+            label={countLabel}
+            value={String(item.count)}
+            onChange={(value) =>
+              update({
+                count: Math.round(
+                  boundedNumber(value, 1, countMaximum, item.count),
+                ),
+              })
+            }
+            type="number"
+            min={1}
+            max={countMaximum}
+            step={1}
+          />
+        )}
+        {item.type === "ring" && (
+          <Field
+            label="环线间距"
+            value={String(item.spacing)}
+            onChange={(value) =>
+              update({
+                spacing: boundedNumber(value, 0, 48, item.spacing),
+              })
+            }
+            type="number"
+            min={0}
+            max={48}
+            step={1}
+          />
+        )}
+        {item.type === "polygon" && (
+          <>
+            <Field
+              label="多边形边数"
+              value={String(item.sides)}
+              onChange={(value) =>
+                update({
+                  sides: Math.round(boundedNumber(value, 3, 24, item.sides)),
+                })
+              }
+              type="number"
+              min={3}
+              max={24}
+              step={1}
+            />
+            <Field
+              label="顶点跨步"
+              value={String(item.step)}
+              onChange={(value) =>
+                update({
+                  step: Math.round(
+                    boundedNumber(
+                      value,
+                      1,
+                      Math.min(12, item.sides - 1),
+                      item.step,
+                    ),
+                  ),
+                })
+              }
+              type="number"
+              min={1}
+              max={Math.min(12, item.sides - 1)}
+              step={1}
+            />
+          </>
+        )}
+        {item.type === "star" && (
+          <Field
+            label="内外半径比例"
+            value={String(item.innerRatio)}
+            onChange={(value) =>
+              update({
+                innerRatio: boundedNumber(value, 0.08, 0.92, item.innerRatio),
+              })
+            }
+            type="number"
+            min={0.08}
+            max={0.92}
+            step={0.02}
+          />
+        )}
+        {item.type === "arc-petals" && (
+          <Field
+            label="弧线曲率"
+            value={String(item.curvature)}
+            onChange={(value) =>
+              update({
+                curvature: boundedNumber(value, 0.1, 1.5, item.curvature),
+              })
+            }
+            type="number"
+            min={0.1}
+            max={1.5}
+            step={0.05}
+          />
+        )}
+        {item.type === "rune-band" && (
+          <>
+            <Field
+              label="环绕铭文"
+              value={item.text}
+              onChange={(text) => update({ text })}
+              multiline
+            />
+            <Field
+              label="铭文重复次数"
+              value={String(item.repeat)}
+              onChange={(value) =>
+                update({
+                  repeat: Math.round(boundedNumber(value, 1, 16, item.repeat)),
+                })
+              }
+              type="number"
+              min={1}
+              max={16}
+              step={1}
+            />
+          </>
+        )}
+        {(item.type === "ornament-ring" || item.type === "core-symbol") && (
+          <SelectField
+            label="图腾符号"
+            value={item.symbol}
+            options={FORMATION_BACKDROP_SYMBOL_OPTIONS}
+            onChange={(value) =>
+              update({
+                symbol: value as FormationBackdropLayer["symbol"],
+              })
+            }
+          />
+        )}
+        <Field
+          label="旋转角度"
+          value={String(item.rotation)}
+          onChange={(value) =>
+            update({ rotation: boundedNumber(value, -360, 360, item.rotation) })
+          }
+          type="number"
+          min={-360}
+          max={360}
+          step={1}
+        />
+        <SwitchField
+          label="旋转动效"
+          checked={item.rotating}
+          onChange={(rotating) => update({ rotating })}
+        />
+        <Field
+          label="线条宽度"
+          value={String(item.strokeWidth)}
+          onChange={(value) =>
+            update({
+              strokeWidth: boundedNumber(value, 0.5, 8, item.strokeWidth),
+            })
+          }
+          type="number"
+          min={0.5}
+          max={8}
+          step={0.5}
+        />
+        <Field
+          label="图层透明度"
+          value={String(item.opacity)}
+          onChange={(value) =>
+            update({ opacity: boundedNumber(value, 0.05, 1, item.opacity) })
+          }
+          type="number"
+          min={0.05}
+          max={1}
+          step={0.05}
+        />
+        <TopologyColorField
+          label="图层主色"
+          value={item.color}
+          onChange={(color) => update({ color })}
+        />
+        <TopologyColorField
+          label="图层辅色"
+          value={item.secondaryColor}
+          onChange={(secondaryColor) => update({ secondaryColor })}
+        />
+        <SelectField
+          label="显示状态"
+          value={item.visible ? "visible" : "hidden"}
+          options={[
+            { value: "visible", label: "显示" },
+            { value: "hidden", label: "隐藏" },
+          ]}
+          onChange={(value) => update({ visible: value === "visible" })}
+        />
+      </InspectorEditor>
+    );
+  }
+  if (selection?.kind === "formation-ring") {
+    const formation = system.formations.find(
+      (candidate) => candidate.id === selection.parentId,
+    );
+    const item = formation?.design.rings.find((ring) => ring.id === selected);
+    if (!formation || !item) return <InspectorMissing />;
+    const update = (patch: Partial<typeof item>) =>
+      patchSystem({
+        formations: updateById(system.formations, formation.id, (current) => ({
+          ...current,
+          design: {
+            ...current.design,
+            rings: updateById(current.design.rings, item.id, (ring) => ({
+              ...ring,
+              ...patch,
+            })),
+          },
+        })),
+      });
+    return (
+      <InspectorEditor
+        title={item.name}
+        type="阵法环层"
+        onDelete={() => {
+          patchSystem({
+            formations: updateById(
+              system.formations,
+              formation.id,
+              (current) => ({
+                ...current,
+                design: {
+                  ...current.design,
+                  rings: current.design.rings.filter(
+                    (ring) => ring.id !== item.id,
+                  ),
+                },
+                nodes: current.nodes.map((node) =>
+                  node.ringId === item.id ? { ...node, ringId: null } : node,
+                ),
+              }),
+            ),
+          });
+          onSelect?.(null);
+        }}
+      >
+        <Field
+          label="环层名称"
+          value={item.name}
+          onChange={(name) => update({ name })}
+        />
+        <SelectField
+          label="环层样式"
+          value={item.style}
+          options={[
+            { value: "solid", label: "单实线" },
+            { value: "double", label: "双重环" },
+            { value: "dashed", label: "断续环" },
+            { value: "runic", label: "符文环" },
+            { value: "polygon", label: "多边环" },
+          ]}
+          onChange={(value) =>
+            update({
+              style: value as Formation["design"]["rings"][number]["style"],
+            })
+          }
+        />
+        <Field
+          label="半径"
+          value={String(item.radius)}
+          onChange={(value) =>
+            update({
+              radius: boundedNumber(
+                value,
+                40,
+                FORMATION_MAX_RADIUS,
+                item.radius,
+              ),
+            })
+          }
+          type="number"
+          min={40}
+          max={FORMATION_MAX_RADIUS}
+          step={1}
+        />
+        <Field
+          label="线宽"
+          value={String(item.strokeWidth)}
+          onChange={(value) =>
+            update({
+              strokeWidth: boundedNumber(value, 0.5, 12, item.strokeWidth),
+            })
+          }
+          type="number"
+          min={0.5}
+          max={12}
+          step={0.5}
+        />
+        <Field
+          label="旋转角度"
+          value={String(item.rotation)}
+          onChange={(value) =>
+            update({ rotation: boundedNumber(value, -360, 360, item.rotation) })
+          }
+          type="number"
+          min={-360}
+          max={360}
+          step={1}
+        />
+        <SwitchField
+          label="旋转动效"
+          checked={item.rotating}
+          onChange={(rotating) => update({ rotating })}
+        />
+        <TopologyColorField
+          label="环层颜色"
+          value={item.color}
+          onChange={(color) => update({ color })}
+        />
+        <Field
+          label="符文铭文"
+          value={item.runes}
+          onChange={(runes) => update({ runes })}
+          multiline
+        />
+        <SelectField
+          label="显示状态"
+          value={item.visible ? "visible" : "hidden"}
+          options={[
+            { value: "visible", label: "显示" },
+            { value: "hidden", label: "隐藏" },
+          ]}
+          onChange={(value) => update({ visible: value === "visible" })}
+        />
+        <Field
+          label="层级顺序"
+          value={String(item.order)}
+          onChange={(value) =>
+            update({
+              order: boundedNumber(
+                value,
+                0,
+                Number.MAX_SAFE_INTEGER,
+                item.order,
+              ),
+            })
+          }
+          type="number"
+          min={0}
+          step={1}
         />
       </InspectorEditor>
     );
@@ -8937,6 +11824,80 @@ function InspectorV2({
           onChange={(value) => update({ role: value })}
         />
         <SelectField
+          label="六元角色"
+          value={item.element}
+          options={(
+            Object.keys(FORMATION_ELEMENT_LABELS) as Array<
+              Formation["nodes"][number]["element"]
+            >
+          ).map((value) => ({
+            value,
+            label: FORMATION_ELEMENT_LABELS[value],
+          }))}
+          onChange={(value) =>
+            update({
+              element: value as Formation["nodes"][number]["element"],
+            })
+          }
+        />
+        <SelectField
+          label="所属环层"
+          value={item.ringId ?? ""}
+          options={[
+            { value: "", label: "不归环 / 自由阵元" },
+            ...formation.design.rings.map((ring) => ({
+              value: ring.id,
+              label: ring.name,
+            })),
+          ]}
+          onChange={(value) => {
+            const ring = formation.design.rings.find(
+              (candidate) => candidate.id === value,
+            );
+            const canvasPosition = formationCanvasPosition(
+              item.angle,
+              ring?.radius ?? 0,
+              item.size,
+            );
+            update({
+              ringId: value || null,
+              canvasPosition,
+              position: {
+                x:
+                  ((canvasPosition.x + item.size / 2) / FORMATION_CANVAS_SIZE) *
+                  100,
+                y:
+                  ((canvasPosition.y + item.size / 2) / FORMATION_CANVAS_SIZE) *
+                  100,
+              },
+            });
+          }}
+        />
+        <SelectField
+          label="阵元样式"
+          value={item.nodeStyle}
+          options={[
+            { value: "seal", label: "印章" },
+            { value: "orb", label: "光球" },
+            { value: "sigil", label: "符印" },
+          ]}
+          onChange={(value) =>
+            update({
+              nodeStyle: value as Formation["nodes"][number]["nodeStyle"],
+            })
+          }
+        />
+        <Field
+          label="阵元符号"
+          value={item.glyph}
+          onChange={(glyph) => update({ glyph: glyph.slice(0, 4) })}
+        />
+        <TopologyColorField
+          label="阵元颜色"
+          value={item.color}
+          onChange={(color) => update({ color })}
+        />
+        <SelectField
           label="理论节点"
           value={item.theoryNodeId ?? ""}
           options={[
@@ -8946,16 +11907,71 @@ function InspectorV2({
           onChange={(value) => update({ theoryNodeId: value || null })}
         />
         <Field
+          label="阵元尺寸"
+          value={String(item.size)}
+          onChange={(value) => {
+            const size = boundedNumber(value, 36, 140, item.size);
+            const currentPosition = formationNodePositionForCanvas(item);
+            const centerX = currentPosition.x + item.size / 2;
+            const centerY = currentPosition.y + item.size / 2;
+            update({
+              size,
+              canvasPosition: {
+                x: centerX - size / 2,
+                y: centerY - size / 2,
+              },
+            });
+          }}
+          type="number"
+          min={36}
+          max={140}
+          step={2}
+        />
+        <Field
+          label="环上角度"
+          value={String(item.angle)}
+          onChange={(value) => {
+            const angle = boundedNumber(value, -360, 360, item.angle);
+            const radius = item.ringId
+              ? (formation.design.rings.find((ring) => ring.id === item.ringId)
+                  ?.radius ?? 0)
+              : 0;
+            const canvasPosition = formationCanvasPosition(
+              angle,
+              radius,
+              item.size,
+            );
+            update({
+              angle,
+              canvasPosition,
+              position: {
+                x:
+                  ((canvasPosition.x + item.size / 2) / FORMATION_CANVAS_SIZE) *
+                  100,
+                y:
+                  ((canvasPosition.y + item.size / 2) / FORMATION_CANVAS_SIZE) *
+                  100,
+              },
+            });
+          }}
+          type="number"
+          min={-360}
+          max={360}
+          step={1}
+        />
+        <Field
           label="位置 X（百分比）"
           value={String(item.position.x)}
-          onChange={(value) =>
+          onChange={(value) => {
+            const x = boundedNumber(value, 0, 100, item.position.x);
             update({
-              position: {
-                ...item.position,
-                x: boundedNumber(value, 0, 100, item.position.x),
+              position: { ...item.position, x },
+              canvasPosition: {
+                x: (x / 100) * FORMATION_CANVAS_SIZE - item.size / 2,
+                y: formationNodePositionForCanvas(item).y,
               },
-            })
-          }
+            });
+          }}
           type="number"
           min={0}
           max={100}
@@ -8964,14 +11980,16 @@ function InspectorV2({
         <Field
           label="位置 Y（百分比）"
           value={String(item.position.y)}
-          onChange={(value) =>
+          onChange={(value) => {
+            const y = boundedNumber(value, 0, 100, item.position.y);
             update({
-              position: {
-                ...item.position,
-                y: boundedNumber(value, 0, 100, item.position.y),
+              position: { ...item.position, y },
+              canvasPosition: {
+                x: formationNodePositionForCanvas(item).x,
+                y: (y / 100) * FORMATION_CANVAS_SIZE - item.size / 2,
               },
-            })
-          }
+            });
+          }}
           type="number"
           min={0}
           max={100}
@@ -8998,7 +12016,7 @@ function InspectorV2({
       });
     return (
       <InspectorEditor
-        title={item.id}
+        title={item.name || item.id}
         type="阵法流向"
         onDelete={() => {
           patchSystem({
@@ -9014,6 +12032,16 @@ function InspectorV2({
           onSelect?.(null);
         }}
       >
+        <Field
+          label="流向名称"
+          value={item.name}
+          onChange={(name) => update({ name })}
+        />
+        <Field
+          label="流动介质"
+          value={item.flowType}
+          onChange={(flowType) => update({ flowType })}
+        />
         <SelectField
           label="起点阵元"
           value={item.fromNodeId}
@@ -9031,6 +12059,58 @@ function InspectorV2({
             label: node.name,
           }))}
           onChange={(value) => update({ toNodeId: value })}
+        />
+        <SelectField
+          label="起点触点"
+          value={item.fromHandleId ?? ""}
+          options={[
+            { value: "", label: "自动选择" },
+            ...TOPOLOGY_HANDLE_POINTS.map((handle) => ({
+              value: handle.id,
+              label: handle.id,
+            })),
+          ]}
+          onChange={(value) => update({ fromHandleId: value || undefined })}
+        />
+        <SelectField
+          label="终点触点"
+          value={item.toHandleId ?? ""}
+          options={[
+            { value: "", label: "自动选择" },
+            ...TOPOLOGY_HANDLE_POINTS.map((handle) => ({
+              value: handle.id,
+              label: handle.id,
+            })),
+          ]}
+          onChange={(value) => update({ toHandleId: value || undefined })}
+        />
+        <SelectField
+          label="连线样式"
+          value={item.lineStyle}
+          options={[
+            { value: "bezier", label: "贝塞尔曲线" },
+            { value: "smoothstep", label: "圆角折线" },
+            { value: "straight", label: "直线" },
+          ]}
+          onChange={(value) =>
+            update({
+              lineStyle: value as Formation["edges"][number]["lineStyle"],
+            })
+          }
+        />
+        <SelectField
+          label="流动动画"
+          value={item.animated ? "animated" : "static"}
+          options={[
+            { value: "animated", label: "流动" },
+            { value: "static", label: "静止" },
+          ]}
+          onChange={(value) => update({ animated: value === "animated" })}
+        />
+        <TopologyColorField
+          label="流向颜色"
+          value={item.color}
+          onChange={(color) => update({ color })}
         />
         <Field
           label="顺序"
@@ -9136,13 +12216,13 @@ function InspectorV2({
           }
         />
         <SelectField
-          label="起始阶段"
+          label="起始境界"
           value={item.fromLevelId ?? ""}
           options={[{ value: "", label: "未指定" }, ...listOptions(levels)]}
           onChange={(value) => update({ fromLevelId: value || null })}
         />
         <SelectField
-          label="目标阶段"
+          label="目标境界"
           value={item.toLevelId ?? ""}
           options={[{ value: "", label: "未指定" }, ...listOptions(levels)]}
           onChange={(value) => update({ toLevelId: value || null })}
@@ -9486,34 +12566,43 @@ function InspectorEditor({
   children: ReactNode;
   onDelete?: () => void;
 }) {
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   return (
-    <div className="ce-inspector-content">
-      <div className="ce-inspector-label">{type}</div>
-      <div className="ce-inspector-focus">
-        <span className="ce-focus-icon">
-          <FileText className="h-4 w-4" />
-        </span>
-        <div>
-          <strong>{title}</strong>
-          <small>{type}</small>
+    <>
+      <div className="ce-inspector-content">
+        <div className="ce-inspector-label">{type}</div>
+        <div className="ce-inspector-focus">
+          <span className="ce-focus-icon">
+            <FileText className="h-4 w-4" />
+          </span>
+          <div>
+            <strong>{title}</strong>
+            <small>{type}</small>
+          </div>
         </div>
+        <div className="ce-inspector-rule" />
+        <div className="ce-inspector-form">{children}</div>
+        {onDelete && (
+          <Button variant="danger" onClick={() => setDeleteConfirmOpen(true)}>
+            <Trash2 className="h-3.5 w-3.5" />
+            删除对象
+          </Button>
+        )}
       </div>
-      <div className="ce-inspector-rule" />
-      <div className="ce-inspector-form">{children}</div>
-      {onDelete && (
-        <Button
-          variant="danger"
-          onClick={() => {
-            if (window.confirm("确认删除？此操作不可撤销。")) {
-              onDelete();
-            }
+      {deleteConfirmOpen && onDelete && (
+        <ConfirmDialog
+          title={`删除「${title}」`}
+          message={`确认删除「${title}」？此操作不可撤销。`}
+          confirmText="删除对象"
+          confirmVariant="danger"
+          onConfirm={() => {
+            setDeleteConfirmOpen(false);
+            onDelete();
           }}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          删除对象
-        </Button>
+          onCancel={() => setDeleteConfirmOpen(false)}
+        />
       )}
-    </div>
+    </>
   );
 }
 function InspectorMissing() {
