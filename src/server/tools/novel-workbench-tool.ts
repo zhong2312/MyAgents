@@ -106,6 +106,8 @@ type NarrativeArcKind =
 
 type NarrativeLineInput = {
   candidateId: string;
+  /** Existing line ID when this candidate revises a line instead of creating one. */
+  targetId?: string;
   title: string;
   kind?: NarrativeLineKind;
   storyRole?: NarrativeStoryRole;
@@ -118,6 +120,8 @@ type NarrativeLineInput = {
 
 type NarrativeStoryArcInput = {
   candidateId: string;
+  /** Existing story arc ID when this candidate revises an arc instead of creating one. */
+  targetId?: string;
   title: string;
   kind?: NarrativeArcKind;
   characterId?: string | null;
@@ -1402,6 +1406,32 @@ function narrativeRecords(
   return records.map((record, index) => narrativeRecord(record, `${key}[${index}]`));
 }
 
+function narrativeString(
+  record: Record<string, unknown> | undefined,
+  field: string,
+  fallback: string,
+): string {
+  const value = record?.[field];
+  return typeof value === "string" ? value : fallback;
+}
+
+function narrativeNullableId(
+  record: Record<string, unknown> | undefined,
+  field: string,
+): string | null {
+  const value = record?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+function narrativeIdList(
+  record: Record<string, unknown> | undefined,
+  field: string,
+): string[] {
+  return (arrayField(record, field) ?? []).filter(
+    (value): value is string => typeof value === "string",
+  );
+}
+
 function narrativeId(prefix: string, knownIds: ReadonlySet<string>): string {
   let id = "";
   do {
@@ -1457,12 +1487,28 @@ function validateNarrativeDraftPayload(
 ): string[] {
   const errors: string[] = [];
   if (!payload.title.trim()) errors.push("剧情提案标题不能为空");
+  const existingLineIds = new Set(
+    narrativeRecords(library, "lines").map((line) => String(line.id)),
+  );
+  const existingArcIds = new Set(
+    narrativeRecords(library, "arcs").map((arc) => String(arc.id)),
+  );
   const candidateIds = new Set<string>();
+  const targetLineIds = new Set<string>();
+  const targetArcIds = new Set<string>();
   for (const [index, line] of payload.lines.entries()) {
     if (!ID_PATTERN.test(line.candidateId) || candidateIds.has(line.candidateId))
       errors.push(`线路候选 ${index + 1} 的 candidateId 非法或重复`);
     candidateIds.add(line.candidateId);
     if (!line.title.trim()) errors.push(`线路候选 ${index + 1} 缺少标题`);
+    if (line.targetId) {
+      if (!existingLineIds.has(line.targetId)) {
+        errors.push(`线路候选 ${index + 1} 的 targetId 不存在：${line.targetId}`);
+      } else if (targetLineIds.has(line.targetId)) {
+        errors.push(`多个线路候选不能更新同一条线路：${line.targetId}`);
+      }
+      targetLineIds.add(line.targetId);
+    }
     errors.push(...narrativeKeyNodeErrors(line.keyNodes, library, `线路候选 ${index + 1} 的关键节点`));
   }
   for (const [index, arc] of payload.arcs.entries()) {
@@ -1470,14 +1516,22 @@ function validateNarrativeDraftPayload(
       errors.push(`故事弧候选 ${index + 1} 的 candidateId 非法或重复`);
     candidateIds.add(arc.candidateId);
     if (!arc.title.trim()) errors.push(`故事弧候选 ${index + 1} 缺少标题`);
+    if (arc.targetId) {
+      if (!existingArcIds.has(arc.targetId)) {
+        errors.push(`故事弧候选 ${index + 1} 的 targetId 不存在：${arc.targetId}`);
+      } else if (targetArcIds.has(arc.targetId)) {
+        errors.push(`多个故事弧候选不能更新同一条故事弧：${arc.targetId}`);
+      }
+      targetArcIds.add(arc.targetId);
+    }
     errors.push(...narrativeKeyNodeErrors(arc.keyNodes, library, `故事弧候选 ${index + 1} 的关键节点`));
   }
   if (payload.lines.length + payload.arcs.length === 0)
     errors.push("至少需要一条线路或一个故事弧候选");
-  const existingLineIds = new Set(
-    narrativeRecords(library, "lines").map((line) => String(line.id)),
-  );
-  const allLineIds = new Set([...existingLineIds, ...payload.lines.map((line) => line.candidateId)]);
+  const allLineIds = new Set([
+    ...existingLineIds,
+    ...payload.lines.map((line) => line.candidateId),
+  ]);
   payload.arcs.forEach((arc, index) => {
     const missing = [...new Set(arc.lineIds ?? [])].filter((id) => !allLineIds.has(id));
     if (missing.length > 0)
@@ -1489,37 +1543,63 @@ function validateNarrativeDraftPayload(
 function materializeNarrativeDraft(
   payload: NarrativeDraftPayload,
   library: Record<string, unknown>,
-): { lines: Record<string, unknown>[]; arcs: Record<string, unknown>[] } {
-  const knownLineIds = new Set(
-    narrativeRecords(library, "lines").map((line) => String(line.id)),
+): {
+  lines: Record<string, unknown>[];
+  arcs: Record<string, unknown>[];
+  updatedLineIds: readonly string[];
+  updatedArcIds: readonly string[];
+} {
+  const existingLines = narrativeRecords(library, "lines");
+  const existingArcs = narrativeRecords(library, "arcs");
+  const existingLinesById = new Map(
+    existingLines.map((line) => [String(line.id), line]),
   );
-  const knownArcIds = new Set(
-    narrativeRecords(library, "arcs").map((arc) => String(arc.id)),
+  const existingArcsById = new Map(
+    existingArcs.map((arc) => [String(arc.id), arc]),
   );
+  const knownLineIds = new Set(existingLinesById.keys());
+  const knownArcIds = new Set(existingArcsById.keys());
   const knownNodeIds = new Set<string>();
-  for (const owner of [
-    ...narrativeRecords(library, "lines"),
-    ...narrativeRecords(library, "arcs"),
-  ]) {
+  for (const owner of [...existingLines, ...existingArcs]) {
     for (const node of arrayField(owner, "keyNodes") ?? []) {
       if (node && typeof node === "object" && !Array.isArray(node))
         knownNodeIds.add(String((node as Record<string, unknown>).id));
     }
   }
   const lineIds = new Map<string, string>();
+  const updatedLineIds: string[] = [];
   const lines = payload.lines.map((input) => {
-    const id = narrativeId("line", knownLineIds);
-    knownLineIds.add(id);
+    const existing = input.targetId
+      ? existingLinesById.get(input.targetId)
+      : undefined;
+    if (input.targetId && !existing) {
+      throw new Error(`线路更新目标不存在：${input.targetId}`);
+    }
+    const id = input.targetId ?? narrativeId("line", knownLineIds);
+    if (existing) updatedLineIds.push(id);
+    else knownLineIds.add(id);
     lineIds.set(input.candidateId, id);
+    const kind = input.kind ?? narrativeString(existing, "kind", "custom");
     return {
       id,
       title: input.title.trim(),
-      kind: input.kind ?? "custom",
-      storyRole: input.storyRole ?? ((input.kind ?? "custom") === "main" ? "a" : "none"),
-      status: input.status ?? "idea",
-      color: NARRATIVE_LINE_COLORS[input.kind ?? "custom"],
-      premise: input.premise?.trim() ?? "",
-      protagonistCharacterId: input.protagonistCharacterId ?? null,
+      kind,
+      storyRole:
+        input.storyRole ??
+        narrativeString(existing, "storyRole", kind === "main" ? "a" : "none"),
+      status: input.status ?? narrativeString(existing, "status", "idea"),
+      color:
+        input.kind === undefined
+          ? narrativeString(existing, "color", NARRATIVE_LINE_COLORS[kind as NarrativeLineKind])
+          : NARRATIVE_LINE_COLORS[kind as NarrativeLineKind],
+      premise:
+        input.premise === undefined
+          ? narrativeString(existing, "premise", "")
+          : input.premise.trim(),
+      protagonistCharacterId:
+        input.protagonistCharacterId === undefined
+          ? narrativeNullableId(existing, "protagonistCharacterId")
+          : input.protagonistCharacterId,
       keyNodes: input.keyNodes.map((node, order) => ({
         id: narrativeId("node", knownNodeIds),
         title: node.title.trim(),
@@ -1531,31 +1611,64 @@ function materializeNarrativeDraft(
           sectionId: location.sectionId,
         })),
       })),
-      content: input.content ?? "",
+      content:
+        input.content === undefined
+          ? narrativeString(existing, "content", "")
+          : input.content,
     };
   });
-  const arcs = payload.arcs.map((input) => ({
-    id: narrativeId("arc", knownArcIds),
-    title: input.title.trim(),
-    kind: input.kind ?? "plot",
-    characterId: input.characterId ?? null,
-    characterArcStageId: input.characterArcStageId ?? null,
-    characterArcStageTitle: input.characterArcStageTitle?.trim() ?? "",
-    lineIds: [...new Set(input.lineIds ?? [])].map((id) => lineIds.get(id) ?? id),
-    keyNodes: input.keyNodes.map((node, order) => ({
-      id: narrativeId("node", knownNodeIds),
-      title: node.title.trim(),
-      content: node.content,
-      order,
-      locations: (node.locations ?? []).map((location) => ({
-        id: narrativeId("location", knownNodeIds),
-        chapterId: location.chapterId,
-        sectionId: location.sectionId,
+  const updatedArcIds: string[] = [];
+  const arcs = payload.arcs.map((input) => {
+    const existing = input.targetId
+      ? existingArcsById.get(input.targetId)
+      : undefined;
+    if (input.targetId && !existing) {
+      throw new Error(`故事弧更新目标不存在：${input.targetId}`);
+    }
+    const id = input.targetId ?? narrativeId("arc", knownArcIds);
+    if (existing) updatedArcIds.push(id);
+    else knownArcIds.add(id);
+    return {
+      id,
+      title: input.title.trim(),
+      kind: input.kind ?? narrativeString(existing, "kind", "plot"),
+      characterId:
+        input.characterId === undefined
+          ? narrativeNullableId(existing, "characterId")
+          : input.characterId,
+      characterArcStageId:
+        input.characterArcStageId === undefined
+          ? narrativeNullableId(existing, "characterArcStageId")
+          : input.characterArcStageId,
+      characterArcStageTitle:
+        input.characterArcStageTitle === undefined
+          ? narrativeString(existing, "characterArcStageTitle", "")
+          : input.characterArcStageTitle.trim(),
+      lineIds: [
+        ...new Set(
+          (input.lineIds ?? narrativeIdList(existing, "lineIds")).map(
+            (lineId) => lineIds.get(lineId) ?? lineId,
+          ),
+        ),
+      ],
+      keyNodes: input.keyNodes.map((node, order) => ({
+        id: narrativeId("node", knownNodeIds),
+        title: node.title.trim(),
+        content: node.content,
+        order,
+        locations: (node.locations ?? []).map((location) => ({
+          id: narrativeId("location", knownNodeIds),
+          chapterId: location.chapterId,
+          sectionId: location.sectionId,
+        })),
       })),
-    })),
-    content: input.content ?? "",
-  }));
-  return { lines, arcs };
+      content:
+        input.content === undefined
+          ? narrativeString(existing, "content", "")
+          : input.content,
+    };
+  });
+  return { lines, arcs, updatedLineIds, updatedArcIds };
 }
 
 async function readNarrativeSource(): Promise<{
@@ -1674,6 +1787,8 @@ async function submitNarrativeProposalHandler(args: {
   baseSourceHash: string;
   lines: Record<string, unknown>[];
   arcs: Record<string, unknown>[];
+  updatedLineIds: readonly string[];
+  updatedArcIds: readonly string[];
 }): Promise<{ proposalId: string; lineCount: number; arcCount: number }> {
   const { workspace, context } = requireDraftMode("narrative");
   const proposalDirectory = workspaceFile(workspace, `${NARRATIVE_PROPOSAL_ROOT}/${args.proposalId}`);
@@ -1688,8 +1803,18 @@ async function submitNarrativeProposalHandler(args: {
     createdAt: new Date().toISOString(),
     source: { kind: "agent", promptId: context.promptId, promptVersion: context.promptVersion },
     baseSourceHash: args.baseSourceHash,
-    lines: args.lines.map((value) => ({ candidateId: String(value.id), summary: `新增线路：${String(value.title)}`, status: "pending", value })),
-    arcs: args.arcs.map((value) => ({ candidateId: String(value.id), summary: `新增故事弧：${String(value.title)}`, status: "pending", value })),
+    lines: args.lines.map((value) => ({
+      candidateId: String(value.id),
+      summary: `${args.updatedLineIds.includes(String(value.id)) ? "更新" : "新增"}线路：${String(value.title)}`,
+      status: "pending",
+      value,
+    })),
+    arcs: args.arcs.map((value) => ({
+      candidateId: String(value.id),
+      summary: `${args.updatedArcIds.includes(String(value.id)) ? "更新" : "新增"}故事弧：${String(value.title)}`,
+      status: "pending",
+      value,
+    })),
   };
   await fs.writeFile(join(proposalDirectory, "proposal.json"), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   return { proposalId: args.proposalId, lineCount: args.lines.length, arcCount: args.arcs.length };
@@ -1708,7 +1833,16 @@ async function submitNarrativeDraftHandler(args: { draftId: string; validationTo
     const errors = validateNarrativeDraftPayload(draft.payload, source.library);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
     const materialized = materializeNarrativeDraft(draft.payload, source.library);
-    const persisted = await submitNarrativeProposalHandler({ proposalId, title: draft.payload.title, description: draft.payload.description, baseSourceHash: draft.payload.baseSourceHash, lines: materialized.lines, arcs: materialized.arcs });
+    const persisted = await submitNarrativeProposalHandler({
+      proposalId,
+      title: draft.payload.title,
+      description: draft.payload.description,
+      baseSourceHash: draft.payload.baseSourceHash,
+      lines: materialized.lines,
+      arcs: materialized.arcs,
+      updatedLineIds: materialized.updatedLineIds,
+      updatedArcIds: materialized.updatedArcIds,
+    });
     await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
     const status = await getNarrativeProposalStatusHandlerValue(proposalId);
     return result({ submitted: true, ...persisted, ...status, draftId: draft.draftId, reviewAction: "请作者在剧情工程的线路或故事弧页面点击“审阅提案”。" });
@@ -2530,6 +2664,11 @@ export async function createNovelWorkbenchServer() {
   });
   const narrativeLineInputSchema = z.object({
     candidateId: z.string().regex(ID_PATTERN),
+    targetId: z
+      .string()
+      .regex(ID_PATTERN)
+      .optional()
+      .describe("更新既有线路时填写其稳定 ID；省略则创建新线路"),
     title: z.string().trim().min(1).max(160),
     kind: z
       .enum(["main", "emotion", "mirror", "information", "theme", "custom"])
@@ -2543,6 +2682,11 @@ export async function createNovelWorkbenchServer() {
   });
   const narrativeStoryArcInputSchema = z.object({
     candidateId: z.string().regex(ID_PATTERN),
+    targetId: z
+      .string()
+      .regex(ID_PATTERN)
+      .optional()
+      .describe("更新既有故事弧时填写其稳定 ID；省略则创建新故事弧"),
     title: z.string().trim().min(1).max(160),
     kind: z
       .enum(["plot", "character", "relationship", "mystery", "theme", "custom"])
@@ -2756,7 +2900,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_upsert_draft_lines",
-        "向剧情工程草稿增量写入或替换线路候选；每条线路必须提供至少一个关键节点。",
+        "向剧情工程草稿增量写入线路候选。补充既有线路时必须填写 targetId，系统会保留该线路 ID 并更新内容；省略 targetId 才会创建新线路。每条线路必须提供至少一个关键节点。",
         {
           draftId: z.string().regex(ID_PATTERN),
           lines: z.array(narrativeLineInputSchema).min(1).max(MAX_NARRATIVE_CANDIDATES),
@@ -2765,7 +2909,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_upsert_draft_story_arcs",
-        "向剧情工程草稿增量写入或替换故事弧候选；每条故事弧必须提供至少一个关键节点。",
+        "向剧情工程草稿增量写入故事弧候选。补充既有故事弧时必须填写 targetId，系统会保留该故事弧 ID 并更新内容；省略 targetId 才会创建新故事弧。每条故事弧必须提供至少一个关键节点。",
         {
           draftId: z.string().regex(ID_PATTERN),
           arcs: z.array(narrativeStoryArcInputSchema).min(1).max(MAX_NARRATIVE_CANDIDATES),

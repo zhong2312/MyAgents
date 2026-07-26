@@ -268,16 +268,15 @@ function topology(
     role: order === 0 ? "起点" : order === route.length - 1 ? "收束" : "运行",
     operation,
   }));
-  const edges = nodes
-    .slice(0, -1)
-    .map((item, order) => ({
-      id: `${itemId}-edge-${order + 1}`,
-      fromNodeId: item.id,
-      toNodeId: nodes[order + 1].id,
-      order,
-      routeRule: "顺行，保持节点稳定度",
-      loss: "低",
-    }));
+  const edges = nodes.slice(0, -1).map((item, order) => ({
+    id: `${itemId}-edge-${order + 1}`,
+    name: `${item.operation} → ${nodes[order + 1]?.operation ?? "下一节点"}`,
+    fromNodeId: item.id,
+    toNodeId: nodes[order + 1].id,
+    order,
+    routeRule: "顺行，保持节点稳定度",
+    loss: "低",
+  }));
   return {
     ...named(itemId, name, "法门独有的能量运行线路，引用体系共有理论节点。"),
     nodes,

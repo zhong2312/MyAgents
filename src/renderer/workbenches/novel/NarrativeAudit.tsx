@@ -5,10 +5,12 @@ import {
   CircleAlert,
   Info,
   ListChecks,
+  Wrench,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { CharacterRecord } from "./characterLibrarySchema";
+import { planNarrativeDuplicateRepair } from "./narrativeDuplicateRepair";
 import type { NarrativeEngineering } from "./narrativeEngineeringSchema";
 import { orderedNarrativeChapters } from "./narrativePlanningModel";
 import type { LoadedNovelChapter } from "./repository";
@@ -58,6 +60,32 @@ export function buildNarrativeAuditFindings(
   const manuscriptIds = new Set(
     manuscriptChapters.map((chapter) => chapter.id),
   );
+  const duplicatePlan = planNarrativeDuplicateRepair(library);
+
+  duplicatePlan.lineIdMap.forEach((legacyId, duplicateId) => {
+    const legacy = library.lines.find((line) => line.id === legacyId);
+    if (!legacy) return;
+    addFinding(findings, {
+      id: `duplicate-ai-line-${duplicateId}`,
+      severity: "error",
+      title: `线路“${legacy.title}”存在 AI 审批产生的重复记录`,
+      detail: "旧记录缺少关键节点，重复记录包含节点。可在本页使用“修复重复记录”保留旧 ID 并合并节点。",
+      view: "lines",
+      entityId: legacyId,
+    });
+  });
+  duplicatePlan.arcIdMap.forEach((legacyId, duplicateId) => {
+    const legacy = library.arcs.find((arc) => arc.id === legacyId);
+    if (!legacy) return;
+    addFinding(findings, {
+      id: `duplicate-ai-arc-${duplicateId}`,
+      severity: "error",
+      title: `故事弧“${legacy.title}”存在 AI 审批产生的重复记录`,
+      detail: "旧记录缺少关键节点，重复记录包含节点。可在本页使用“修复重复记录”保留旧 ID 并合并节点。",
+      view: "arcs",
+      entityId: legacyId,
+    });
+  });
 
   const auditKeyNodes = (
     view: "lines" | "arcs",
@@ -407,9 +435,11 @@ const SEVERITY_META = {
 export default function NarrativeAudit({
   findings,
   onOpenFinding,
+  onRepairDuplicates,
 }: {
   readonly findings: readonly NarrativeAuditFinding[];
   readonly onOpenFinding: (finding: NarrativeAuditFinding) => void;
+  readonly onRepairDuplicates?: () => void;
 }) {
   const [filter, setFilter] = useState<NarrativeAuditSeverity | "all">("all");
   const visible = useMemo(
@@ -432,26 +462,38 @@ export default function NarrativeAudit({
               检查引用闭合与规划缺口；所有提示均不阻止保存。
             </p>
           </div>
-          <div className="flex items-center rounded-md bg-[var(--paper-inset)] p-0.5">
-            {(["all", "error", "warning", "info"] as const).map((severity) => {
-              const count =
-                severity === "all"
-                  ? findings.length
-                  : findings.filter((finding) => finding.severity === severity)
-                      .length;
-              const label =
-                severity === "all" ? "全部" : SEVERITY_META[severity].label;
-              return (
-                <button
-                  key={severity}
-                  type="button"
-                  className={`rounded px-2.5 py-1.5 text-xs font-medium ${filter === severity ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-xs" : "text-[var(--ink-muted)]"}`}
-                  onClick={() => setFilter(severity)}
-                >
-                  {label} {count}
-                </button>
-              );
-            })}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {onRepairDuplicates && (
+              <button
+                type="button"
+                className="ns-button"
+                onClick={onRepairDuplicates}
+              >
+                <Wrench className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
+                修复重复记录
+              </button>
+            )}
+            <div className="flex items-center rounded-md bg-[var(--paper-inset)] p-0.5">
+              {(["all", "error", "warning", "info"] as const).map((severity) => {
+                const count =
+                  severity === "all"
+                    ? findings.length
+                    : findings.filter((finding) => finding.severity === severity)
+                        .length;
+                const label =
+                  severity === "all" ? "全部" : SEVERITY_META[severity].label;
+                return (
+                  <button
+                    key={severity}
+                    type="button"
+                    className={`rounded px-2.5 py-1.5 text-xs font-medium ${filter === severity ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-xs" : "text-[var(--ink-muted)]"}`}
+                    onClick={() => setFilter(severity)}
+                  >
+                    {label} {count}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 

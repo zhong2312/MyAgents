@@ -8,6 +8,14 @@ const idSchema = z
   .regex(/^[a-z0-9][a-z0-9-]*$/u);
 const textSchema = z.string();
 const nameSchema = z.string().trim().min(1);
+export const cultivationOrbStyleSchema = z.enum([
+  "plasma",
+  "orbit",
+  "solar",
+  "corona",
+  "halo",
+  "vortex",
+]);
 
 const namedSchema = z.object({
   id: idSchema,
@@ -31,6 +39,7 @@ const worldOriginManifestationSchema = namedSchema.extend({
   generation: textSchema,
   conversion: textSchema,
   risks: z.array(textSchema),
+  orbStyle: cultivationOrbStyleSchema.optional(),
 });
 
 const worldOriginRelationSchema = namedSchema.extend({
@@ -54,10 +63,20 @@ export const worldOriginSchema = namedSchema.extend({
   kind: textSchema,
   ontologyStatement: textSchema,
   status: z.enum(["stable", "fragmented", "incomplete", "unstable"]),
+  orbStyle: cultivationOrbStyleSchema.optional(),
   scopes: z.array(textSchema),
   constraints: z.array(textSchema),
   manifestations: z.array(worldOriginManifestationSchema),
   relations: z.array(worldOriginRelationSchema),
+  canvasPositions: z
+    .record(
+      idSchema,
+      z.object({
+        x: z.number().finite(),
+        y: z.number().finite(),
+      }),
+    )
+    .optional(),
 });
 
 export const cultivationProjectionSchema = z.object({
@@ -190,12 +209,26 @@ export const topologyNodeSchema = z.object({
   order: z.number().int().nonnegative(),
   role: textSchema,
   operation: textSchema,
+  orbStyle: cultivationOrbStyleSchema.optional(),
+  color: z
+    .string()
+    .regex(/^#[0-9a-f]{6}$/iu)
+    .optional(),
+  position: z
+    .object({
+      x: z.number().finite(),
+      y: z.number().finite(),
+    })
+    .optional(),
 });
 
 export const topologyEdgeSchema = z.object({
   id: idSchema,
+  name: textSchema.optional(),
   fromNodeId: idSchema,
   toNodeId: idSchema,
+  fromHandleId: textSchema.optional(),
+  toHandleId: textSchema.optional(),
   order: z.number().int().nonnegative(),
   routeRule: textSchema,
   loss: textSchema,
@@ -428,6 +461,7 @@ export const cultivationEcologySchema = z.object({
 });
 
 export type CultivationEcology = z.infer<typeof cultivationEcologySchema>;
+export type CultivationOrbStyle = z.infer<typeof cultivationOrbStyleSchema>;
 export type CultivationSystem = z.infer<typeof cultivationSystemSchema>;
 export type WorldOrigin = z.infer<typeof worldOriginSchema>;
 export type WorldOriginManifestation = z.infer<

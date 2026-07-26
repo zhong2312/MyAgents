@@ -332,8 +332,11 @@ export function buildNarrativeAiAgentRequest({
     selection,
     hasUnsavedChanges,
   );
-  const instruction =
-    userInstruction.trim() || "请先给出最值得优先处理的三项建议。";
+  const proposalMutationRule =
+    "更新已有线路或故事弧（例如补充关键节点、修订内容）时，必须在 upsert 工具中填写 targetId，且 targetId 必须是上下文中已有对象的稳定 ID。只有作者明确要求新增独立线路或故事弧时，才省略 targetId。不得仅因标题相同而新建副本。";
+  const instruction = `${
+    userInstruction.trim() || "请先给出最值得优先处理的三项建议。"
+  }\n\n${proposalMutationRule}`;
   return {
     task,
     title: `剧情工程 · ${taskMeta.label}`,

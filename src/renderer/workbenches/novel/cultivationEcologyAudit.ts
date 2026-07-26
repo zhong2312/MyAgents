@@ -15,6 +15,7 @@ type IssueTarget =
   | "formation"
   | "transition"
   | "foundation"
+  | "constraint"
   | "relation";
 
 export interface CultivationAuditOptions {
@@ -44,7 +45,14 @@ export function calculateCultivationCompleteness(system: CultivationSystem): num
     system.methods.some((method) => method.courses.length > 0),
   ].filter(Boolean).length / 4;
   const narrative = system.summary.trim() && system.constraints.some((constraint) => constraint.narrativePrompt?.trim()) ? 1 : 0;
-  return Math.round((core * 40 + structure * 35 + extension * 15 + narrative * 10));
+  const fieldQuality = [
+    Boolean(system.projection.access.trim()),
+    Boolean(system.projection.translation.trim()),
+    system.methods.some((method) => method.formula.trim() && method.coverage.startLevelId),
+    system.abilities.some((ability) => ability.effect.trim() && ability.cast.amount.trim()),
+    system.resources.some((resource) => resource.summary.trim() && resource.supply.trim()),
+  ].filter(Boolean).length / 5;
+  return Math.round((core * 35 + structure * 30 + extension * 15 + fieldQuality * 10 + narrative * 10));
 }
 
 function buildIssue(
@@ -108,11 +116,6 @@ export function auditSystem(
       track.levels.map((level) => level.id),
     ),
   );
-  const metricIds = new Set(
-    system.progressionTracks.flatMap((track) =>
-      track.metrics.map((metric) => metric.id),
-    ),
-  );
   const methodIds = new Set(system.methods.map((method) => method.id));
   const resourceIds = new Set(system.resources.map((resource) => resource.id));
   const abilityIds = new Set(system.abilities.map((ability) => ability.id));
@@ -162,10 +165,45 @@ export function auditSystem(
       origin.manifestations.map((manifestation) => manifestation.id),
     ),
   );
+  const manifestationOwners = new Map(
+    ecology.worldOrigins.flatMap((origin) =>
+      origin.manifestations.map((manifestation) => [manifestation.id, origin.id] as const),
+    ),
+  );
   const originProjectionNodeIds = new Set([
     ...origins.keys(),
     ...manifestationIds,
   ]);
+  ecology.worldOrigins.forEach((origin) => {
+    const nodeIdsInOrigin = new Set([
+      origin.id,
+      ...origin.manifestations.map((manifestation) => manifestation.id),
+    ]);
+    origin.manifestations.forEach((manifestation) => {
+      if (manifestation.sourceId && !nodeIdsInOrigin.has(manifestation.sourceId))
+        add(
+          "error",
+          "system",
+          system.id,
+          "世界本源显化来源不存在",
+          `显化节点 ${manifestation.name} 的来源节点 ${manifestation.sourceId} 不属于其本源。`,
+          "选择同一本源下的节点，或清空来源节点。",
+          `origin:${origin.id}:manifestation:${manifestation.id}:source`,
+        );
+    });
+    origin.relations.forEach((relation) => {
+      if (!nodeIdsInOrigin.has(relation.sourceId) || !nodeIdsInOrigin.has(relation.targetId))
+        add(
+          "error",
+          "system",
+          system.id,
+          "世界本源关系端点不存在",
+          `本源关系 ${relation.name} 的来源或目标节点不属于 ${origin.name}。`,
+          "重新选择同一本源下的关系端点。",
+          `origin:${origin.id}:relation:${relation.id}:endpoint`,
+        );
+    });
+  });
   system.projection.originIds.forEach((id) => {
     if (!origins.has(id))
       add(
@@ -187,6 +225,15 @@ export function auditSystem(
         `本源投影引用了不存在的显化节点 ${id}。`,
         "从世界本源的显化节点中选择。",
       );
+    else if (!system.projection.originIds.includes(manifestationOwners.get(id) ?? ""))
+      add(
+        "error",
+        "system",
+        system.id,
+        "本源显化不属于已选本源",
+        `显化节点 ${id} 所属本源未包含在当前体系的本源投影中。`,
+        "同时选择显化节点所属的世界本源，或移除该显化节点。",
+      );
   });
   system.projection.originBindings?.forEach((binding) => {
     checkRefs(
@@ -196,6 +243,25 @@ export function auditSystem(
       system.id,
       "本源绑定",
     );
+    const ownerId = manifestationOwners.get(binding.sourceId);
+    if (ownerId && !system.projection.originIds.includes(ownerId))
+      add(
+        "error",
+        "system",
+        system.id,
+        "本源绑定所属本源未投影",
+        `绑定 ${binding.sourceId} 所属本源 ${ownerId} 未在当前体系本源列表中。`,
+        "补充所属本源投影，或改绑到当前体系已选择的节点。",
+      );
+    if (binding.role === "manifestation" && !manifestationOwners.has(binding.sourceId))
+      add(
+        "error",
+        "system",
+        system.id,
+        "显化绑定来源类型错误",
+        `绑定 ${binding.sourceId} 标记为显化节点，但来源不是显化节点。`,
+        "选择显化节点，或将绑定角色改为本源。",
+      );
   });
   if (system.theoryModel.nodeCatalog.length === 0)
     add(
@@ -208,9 +274,10 @@ export function auditSystem(
     );
 
   system.progressionTracks.forEach((track) => {
+    const trackMetricIds = new Set(track.metrics.map((metric) => metric.id));
     track.levels.forEach((level) => {
       level.metricThresholds.forEach((item) => {
-        if (!metricIds.has(item.metricId))
+        if (!trackMetricIds.has(item.metricId))
           add(
             "error",
             "level",
@@ -647,6 +714,36 @@ export function auditSystem(
       "突破替代资源",
     );
   });
+  system.constraints.forEach((constraint) => {
+    if (!constraint.trigger.trim())
+      add("warning", "constraint", constraint.id, "约束缺少触发条件", `约束 ${constraint.name} 尚未说明何时生效。`, "补充触发条件和适用范围。", `constraint:${constraint.id}:trigger`);
+    if (!constraint.consequence.trim())
+      add("warning", "constraint", constraint.id, "约束缺少后果", `约束 ${constraint.name} 尚未定义触发后的实际后果。`, "补充可观察、可执行的后果。", `constraint:${constraint.id}:consequence`);
+    if ((constraint.category === "world-rule" || constraint.category === "identity") && !constraint.target?.trim())
+      add("warning", "constraint", constraint.id, "约束作用对象未定义", `${constraint.name} 属于${constraint.category === "world-rule" ? "世界规则" : "身份限制"}，但没有声明作用对象。`, "填写受约束的对象、范围或身份条件。", `constraint:${constraint.id}:target`);
+    if (!constraint.reversible && !constraint.releaseMethod?.trim())
+      add("suggestion", "constraint", constraint.id, "不可逆约束缺少解除说明", `约束 ${constraint.name} 标记为不可逆，但没有记录是否存在特殊解除路径。`, "明确不可逆边界，或补充极端解除方式。", `constraint:${constraint.id}:release`);
+  });
+  const assetIdsForSystem = (candidate: CultivationSystem) =>
+    new Set([
+      ...candidate.theoryModel.nodeCatalog.map((node) => node.id),
+      ...candidate.progressionTracks.flatMap((track) => [
+        track.id,
+        ...track.metrics.map((metric) => metric.id),
+        ...track.levels.map((level) => level.id),
+        ...track.transitions.map((transition) => transition.id),
+      ]),
+      ...(candidate.trackInteractions ?? []).map((interaction) => interaction.id),
+      ...candidate.resources.map((resource) => resource.id),
+      ...candidate.methods.flatMap((method) => [
+        method.id,
+        ...method.operationTopologies.map((topology) => topology.id),
+      ]),
+      ...candidate.abilities.map((ability) => ability.id),
+      ...candidate.formations.map((formation) => formation.id),
+      ...candidate.foundations.map((foundation) => foundation.id),
+      ...candidate.transitions.map((transition) => transition.id),
+    ]);
   ecology.crossSystemRelations.forEach((relation) => {
     if (
       relation.sourceSystemId !== system.id &&
@@ -671,6 +768,19 @@ export function auditSystem(
       );
     if (relation.sourceSystemId === relation.targetSystemId)
       add("error", "relation", relation.id, "跨体系关系自引用", "源体系与目标体系不能是同一个体系。", "选择两个不同的修行体系。");
+    if (!relation.conversionRule.trim() && ["转换", "继承", "依赖"].includes(relation.relation))
+      add("warning", "relation", relation.id, "跨体系关系缺少规则", `${relation.relation}关系尚未定义转换或依赖规则。`, "补充条件、转换规则和风险边界。", `relation:${relation.id}:rule`);
+    if ((relation.affectedAssetIds ?? []).length > 0) {
+      const source = ecology.systems.find((candidate) => candidate.id === relation.sourceSystemId);
+      const target = ecology.systems.find((candidate) => candidate.id === relation.targetSystemId);
+      const valid = new Set<string>();
+      if (source) assetIdsForSystem(source).forEach((id) => valid.add(id));
+      if (target) assetIdsForSystem(target).forEach((id) => valid.add(id));
+      (relation.affectedAssetIds ?? []).forEach((assetId) => {
+        if (!valid.has(assetId))
+          add("error", "relation", relation.id, "跨体系关系资产引用不存在", `关系 ${relation.name} 关联了源体系或目标体系之外的资产 ${assetId}。`, "选择源体系或目标体系中的有效资产，或移除该引用。");
+      });
+    }
   });
   return issues;
 }

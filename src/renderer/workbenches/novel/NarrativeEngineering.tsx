@@ -43,6 +43,11 @@ import {
 import NarrativeChapters from "./NarrativeChapters";
 import type { NarrativeDirectorySelection } from "./NarrativeDirectoryTree";
 import {
+  applyNarrativeDuplicateRepair,
+  hasNarrativeDuplicateRepair,
+  planNarrativeDuplicateRepair,
+} from "./narrativeDuplicateRepair";
+import {
   createNarrativeEngineeringRepository,
   type LoadedNarrativeEngineering,
 } from "./narrativeEngineeringRepository";
@@ -50,7 +55,8 @@ import type { NarrativeEngineering as NarrativeEngineeringData } from "./narrati
 import NarrativeGantt from "./NarrativeGantt";
 import NarrativeOutline from "./NarrativeOutline";
 import NarrativeOverview from "./NarrativeOverview";
-import NarrativeProposalReview from "./NarrativeProposalReview";
+import WorldProposalReview from "./WorldProposalReview";
+import { createNarrativeFileProposalRepository } from "./narrativeProposalRepository";
 import NarrativeTracks from "./NarrativeTracks";
 import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
 import type { LoadedNovelChapter } from "./repository";
@@ -198,6 +204,17 @@ export default function NarrativeEngineering({
       draft ? buildNarrativeAuditFindings(draft, characters, chapters) : [],
     [chapters, characters, draft],
   );
+  const duplicateRepairPlan = useMemo(
+    () => (draft ? planNarrativeDuplicateRepair(draft) : null),
+    [draft],
+  );
+  const repairDuplicateRecords = useCallback(() => {
+    if (!draft || !duplicateRepairPlan) return;
+    const repaired = applyNarrativeDuplicateRepair(draft, duplicateRepairPlan);
+    if (repaired === draft) return;
+    setDraft(repaired);
+    setError("已将重复记录合并到原有线路和故事弧。请确认后点击保存。");
+  }, [draft, duplicateRepairPlan]);
   const errorCount = findings.filter(
     (finding) => finding.severity === "error",
   ).length;
@@ -493,7 +510,15 @@ export default function NarrativeEngineering({
           />
         )}
         {view === "audit" && (
-          <NarrativeAudit findings={findings} onOpenFinding={openFinding} />
+          <NarrativeAudit
+            findings={findings}
+            onOpenFinding={openFinding}
+            onRepairDuplicates={
+              duplicateRepairPlan && hasNarrativeDuplicateRepair(duplicateRepairPlan)
+                ? repairDuplicateRecords
+                : undefined
+            }
+          />
         )}
       </div>
       {aiDialogOpen && onOpenAiAgent && (
@@ -513,9 +538,12 @@ export default function NarrativeEngineering({
         />
       )}
       {proposalReviewOpen && (
-        <NarrativeProposalReview
+        <WorldProposalReview
           storage={storage}
           projectTitle={projectTitle}
+          repositoryFactory={createNarrativeFileProposalRepository}
+          reviewTitle="剧情工程提案"
+          proposalSubject="剧情工程"
           onClose={() => setProposalReviewOpen(false)}
           onApplied={() => {
             if (dirty) {

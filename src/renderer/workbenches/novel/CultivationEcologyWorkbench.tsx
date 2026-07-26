@@ -1,4 +1,23 @@
 import {
+  Background,
+  BackgroundVariant,
+  ConnectionLineType,
+  ConnectionMode,
+  Controls,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Position,
+  ReactFlow,
+  useEdgesState,
+  useNodesState,
+  type Connection,
+  type Edge,
+  type Node,
+  type NodeProps,
+  type ReactFlowInstance,
+} from "@xyflow/react";
+import {
   Activity,
   AlertTriangle,
   Atom,
@@ -14,6 +33,7 @@ import {
   Layers3,
   Link2,
   Loader2,
+  Pencil,
   Plus,
   Route,
   Save,
@@ -28,7 +48,13 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 import {
   CustomSelect,
@@ -40,6 +66,7 @@ import type {
   Ability,
   Constraint,
   CultivationEcology,
+  CultivationOrbStyle,
   CultivationLevel,
   CultivationMethod,
   CultivationResource,
@@ -67,6 +94,7 @@ import {
   rebuildCultivationAudits,
 } from "./cultivationEcologyAudit";
 
+import "@xyflow/react/dist/style.css";
 import "./CultivationEcologyPrototype.css";
 import "./CultivationEcologyWorkbench.css";
 
@@ -197,12 +225,14 @@ function Button({
   variant = "secondary",
   disabled,
   title,
+  ariaLabel,
 }: {
   children: ReactNode;
   onClick?: () => void;
   variant?: "primary" | "secondary" | "ghost" | "danger";
   disabled?: boolean;
   title?: string;
+  ariaLabel?: string;
 }) {
   return (
     <button
@@ -210,6 +240,7 @@ function Button({
       title={title}
       disabled={disabled}
       onClick={onClick}
+      aria-label={ariaLabel}
       className={`ce-button ce-button-${variant}`}
     >
       {children}
@@ -223,12 +254,20 @@ function Field({
   onChange,
   multiline = false,
   placeholder,
+  type = "text",
+  min,
+  max,
+  step,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   multiline?: boolean;
   placeholder?: string;
+  type?: "text" | "number";
+  min?: number;
+  max?: number;
+  step?: number;
 }) {
   return (
     <label className="ce-field">
@@ -241,12 +280,160 @@ function Field({
         />
       ) : (
         <input
+          type={type}
           value={value}
+          min={min}
+          max={max}
+          step={step}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
         />
       )}
     </label>
+  );
+}
+
+const TOPOLOGY_NODE_PALETTE = [
+  "#d946ef",
+  "#22d3ee",
+  "#f59e0b",
+  "#60a5fa",
+  "#f43f5e",
+  "#34d399",
+] as const;
+const CULTIVATION_ORB_STYLES: readonly CultivationOrbStyle[] = [
+  "plasma",
+  "orbit",
+  "solar",
+  "corona",
+  "halo",
+  "vortex",
+];
+const cultivationOrbStyleLabels: Record<CultivationOrbStyle, string> = {
+  plasma: "电浆",
+  orbit: "轨道",
+  solar: "恒星",
+  corona: "日冕",
+  halo: "光环",
+  vortex: "涡旋",
+};
+const CULTIVATION_ORB_PREVIEW_COLORS = [
+  "#22d3ee",
+  "#f59e0b",
+  "#f43f5e",
+  "#f59e0b",
+  "#d946ef",
+  "#60a5fa",
+] as const;
+
+function OrbVisual({
+  orbStyle,
+  className = "",
+}: {
+  orbStyle: CultivationOrbStyle;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`ce-topology-orb ce-orb-style-${orbStyle} ${className}`.trim()}
+    >
+      <span className="ce-topology-orb-filaments" aria-hidden="true" />
+      <span className="ce-topology-orb-core" aria-hidden="true" />
+      <span className="ce-orb-structure" aria-hidden="true" />
+    </div>
+  );
+}
+
+function OrbStyleField({
+  value,
+  onChange,
+}: {
+  value: CultivationOrbStyle;
+  onChange: (value: CultivationOrbStyle) => void;
+}) {
+  return (
+    <fieldset className="ce-orb-style-field">
+      <legend>光球风格</legend>
+      <div className="ce-orb-style-options">
+        {CULTIVATION_ORB_STYLES.map((style, index) => (
+          <button
+            type="button"
+            key={style}
+            className={value === style ? "is-active" : ""}
+            style={
+              {
+                "--topology-node-color": CULTIVATION_ORB_PREVIEW_COLORS[index],
+              } as CSSProperties
+            }
+            aria-pressed={value === style}
+            title={`${cultivationOrbStyleLabels[style]}光球`}
+            onClick={() => onChange(style)}
+          >
+            <OrbVisual orbStyle={style} className="ce-orb-style-preview" />
+            <span>{cultivationOrbStyleLabels[style]}</span>
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function topologyNodeColor(
+  node: OperationTopology["nodes"][number],
+  index: number,
+) {
+  return (
+    node.color ?? TOPOLOGY_NODE_PALETTE[index % TOPOLOGY_NODE_PALETTE.length]
+  );
+}
+
+function topologyNodeOrbStyle(
+  node: OperationTopology["nodes"][number],
+  index: number,
+): CultivationOrbStyle {
+  return (
+    node.orbStyle ??
+    CULTIVATION_ORB_STYLES[index % CULTIVATION_ORB_STYLES.length]
+  );
+}
+
+function TopologyColorField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const resolvedValue = /^#[0-9a-f]{6}$/iu.test(value)
+    ? value
+    : TOPOLOGY_NODE_PALETTE[0];
+  return (
+    <fieldset className="ce-topology-color-field">
+      <legend>节点颜色</legend>
+      <div className="ce-topology-color-control">
+        <input
+          type="color"
+          value={resolvedValue}
+          onChange={(event) => onChange(event.target.value)}
+          aria-label="自定义节点颜色"
+        />
+        <code>{resolvedValue.toUpperCase()}</code>
+      </div>
+      <div className="ce-topology-color-swatches">
+        {TOPOLOGY_NODE_PALETTE.map((color) => (
+          <button
+            type="button"
+            key={color}
+            className={resolvedValue.toLowerCase() === color ? "is-active" : ""}
+            style={{ "--topology-swatch-color": color } as CSSProperties}
+            onClick={() => onChange(color)}
+            title={color.toUpperCase()}
+            aria-label={`使用颜色 ${color.toUpperCase()}`}
+            aria-pressed={resolvedValue.toLowerCase() === color}
+          />
+        ))}
+      </div>
+    </fieldset>
   );
 }
 
@@ -311,7 +498,8 @@ function getPageMeta(
     return {
       eyebrow: "修行生态 / 项目全局",
       title: "跨体系关系",
-      description: "管理修行体系之间的兼容、克制、转换、依赖、继承、污染与冲突关系。",
+      description:
+        "管理修行体系之间的兼容、克制、转换、依赖、继承、污染与冲突关系。",
     };
   const meta = moduleMeta[module];
   return {
@@ -345,7 +533,18 @@ function getModuleSelection(
   }
   if (module === "progression") {
     const track = system.progressionTracks[0];
-    return track ? { kind: "track", id: track.id } : systemSelection;
+    if (track) {
+      const transition = track.transitions[0];
+      return transition
+        ? {
+            kind: "transition",
+            id: transition.id,
+            parentId: track.id,
+            parentKind: "track",
+          }
+        : { kind: "track", id: track.id };
+    }
+    return systemSelection;
   }
   if (module === "resources") {
     const resource = system.resources[0];
@@ -366,8 +565,18 @@ function getModuleSelection(
       : systemSelection;
   }
   const transition = system.transitions[0];
-  return transition
-    ? { kind: "transition", id: transition.id }
+  if (transition) return { kind: "transition", id: transition.id };
+  const nestedTrack = system.progressionTracks.find(
+    (candidate) => candidate.transitions.length > 0,
+  );
+  const nestedTransition = nestedTrack?.transitions[0];
+  return nestedTransition
+    ? {
+        kind: "transition",
+        id: nestedTransition.id,
+        parentId: nestedTrack.id,
+        parentKind: "track",
+      }
     : systemSelection;
 }
 
@@ -377,6 +586,258 @@ function updateById<T extends { id: string }>(
   update: (item: T) => T,
 ): T[] {
   return items.map((item) => (item.id === id ? update(item) : item));
+}
+
+function removeResourceFromRequirements(
+  requirements: readonly ResourceRequirement[],
+  resourceId: string,
+): ResourceRequirement[] {
+  return requirements
+    .filter((requirement) => requirement.resourceId !== resourceId)
+    .map((requirement) => ({
+      ...requirement,
+      substituteResourceIds: requirement.substituteResourceIds.filter(
+        (id) => id !== resourceId,
+      ),
+    }));
+}
+
+function removeResourceReferences(
+  system: CultivationSystem,
+  resourceId: string,
+): CultivationSystem {
+  const clean = (requirements: readonly ResourceRequirement[]) =>
+    removeResourceFromRequirements(requirements, resourceId);
+  return {
+    ...system,
+    progressionTracks: system.progressionTracks.map((track) => ({
+      ...track,
+      levels: track.levels.map((level) => ({
+        ...level,
+        resourceRequirements: clean(level.resourceRequirements),
+      })),
+      transitions: track.transitions.map((transition) => ({
+        ...transition,
+        resourceRequirements: clean(transition.resourceRequirements),
+      })),
+    })),
+    methods: system.methods.map((method) => ({
+      ...method,
+      courses: method.courses.map((course) => ({
+        ...course,
+        resourceRequirements: clean(course.resourceRequirements),
+      })),
+    })),
+    abilities: system.abilities.map((ability) => ({
+      ...ability,
+      trainingRequirements: {
+        ...ability.trainingRequirements,
+        resourceRequirements: clean(
+          ability.trainingRequirements.resourceRequirements,
+        ),
+      },
+    })),
+    formations: system.formations.map((formation) => ({
+      ...formation,
+      resourceRequirements: clean(formation.resourceRequirements),
+    })),
+    transitions: system.transitions.map((transition) => ({
+      ...transition,
+      resourceRequirements: clean(transition.resourceRequirements),
+    })),
+  };
+}
+
+function removeTheoryNodeReferences(
+  system: CultivationSystem,
+  nodeId: string,
+): CultivationSystem {
+  return {
+    ...system,
+    methods: system.methods.map((method) => ({
+      ...method,
+      operationTopologies: method.operationTopologies.map((topology) => {
+        const removedNodeIds = new Set(
+          topology.nodes
+            .filter((node) => node.theoryNodeId === nodeId)
+            .map((node) => node.id),
+        );
+        return {
+          ...topology,
+          nodes: topology.nodes.filter((node) => node.theoryNodeId !== nodeId),
+          edges: topology.edges.filter(
+            (edge) =>
+              !removedNodeIds.has(edge.fromNodeId) &&
+              !removedNodeIds.has(edge.toNodeId),
+          ),
+        };
+      }),
+    })),
+    formations: system.formations.map((formation) => ({
+      ...formation,
+      theoryNodeIds: formation.theoryNodeIds.filter((id) => id !== nodeId),
+      nodes: formation.nodes.map((node) =>
+        node.theoryNodeId === nodeId ? { ...node, theoryNodeId: null } : node,
+      ),
+    })),
+  };
+}
+
+function removeMethodReferences(
+  system: CultivationSystem,
+  methodId: string,
+): CultivationSystem {
+  const topologyIds = new Set(
+    system.methods
+      .find((method) => method.id === methodId)
+      ?.operationTopologies.map((topology) => topology.id) ?? [],
+  );
+  return {
+    ...system,
+    progressionTracks: system.progressionTracks.map((track) => ({
+      ...track,
+      levels: track.levels.map((level) => ({
+        ...level,
+        methodIds: level.methodIds.filter((id) => id !== methodId),
+      })),
+      transitions: track.transitions.map((transition) => ({
+        ...transition,
+        methodIds: transition.methodIds.filter((id) => id !== methodId),
+      })),
+    })),
+    abilities: system.abilities.map((ability) => ({
+      ...ability,
+      scriptureSource:
+        ability.scriptureSource?.methodId === methodId
+          ? { ...ability.scriptureSource, methodId: null }
+          : ability.scriptureSource,
+      trainingRequirements: {
+        ...ability.trainingRequirements,
+        methodIds: ability.trainingRequirements.methodIds.filter(
+          (id) => id !== methodId,
+        ),
+      },
+    })),
+    formations: system.formations.map((formation) => ({
+      ...formation,
+      methodIds: formation.methodIds.filter((id) => id !== methodId),
+      operationTopologyIds: formation.operationTopologyIds?.filter(
+        (id) => !topologyIds.has(id),
+      ),
+    })),
+    transitions: system.transitions.map((transition) => ({
+      ...transition,
+      methodIds: transition.methodIds.filter((id) => id !== methodId),
+    })),
+  };
+}
+
+function removeAbilityReferences(
+  system: CultivationSystem,
+  abilityId: string,
+): CultivationSystem {
+  return {
+    ...system,
+    progressionTracks: system.progressionTracks.map((track) => ({
+      ...track,
+      levels: track.levels.map((level) => ({
+        ...level,
+        naturalAbilityIds: level.naturalAbilityIds.filter(
+          (id) => id !== abilityId,
+        ),
+      })),
+    })),
+    formations: system.formations.map((formation) => ({
+      ...formation,
+      abilityIds: formation.abilityIds.filter((id) => id !== abilityId),
+    })),
+  };
+}
+
+function removeLevelReferences(
+  system: CultivationSystem,
+  levelIds: ReadonlySet<string>,
+): CultivationSystem {
+  const cleanLevel = (id: string | null | undefined) => {
+    if (!id || levelIds.has(id)) return null;
+    return id;
+  };
+  return {
+    ...system,
+    progressionTracks: system.progressionTracks.map((track) => ({
+      ...track,
+      transitions: track.transitions.map((transition) => ({
+        ...transition,
+        fromLevelId: cleanLevel(transition.fromLevelId),
+        toLevelId: cleanLevel(transition.toLevelId),
+      })),
+    })),
+    resources: system.resources.map((resource) => ({
+      ...resource,
+      bestLevelId: cleanLevel(resource.bestLevelId),
+      usableLevelIds: resource.usableLevelIds.filter((id) => !levelIds.has(id)),
+    })),
+    methods: system.methods.map((method) => ({
+      ...method,
+      coverage: {
+        startLevelId: cleanLevel(method.coverage.startLevelId),
+        stableLimitId: cleanLevel(method.coverage.stableLimitId),
+        theoryLimitId: cleanLevel(method.coverage.theoryLimitId),
+        absoluteLimitId: cleanLevel(method.coverage.absoluteLimitId),
+      },
+      courses: method.courses.map((course) => ({
+        ...course,
+        levelId: cleanLevel(course.levelId),
+      })),
+    })),
+    abilities: system.abilities.map((ability) => ({
+      ...ability,
+      unlockLevelId: cleanLevel(ability.unlockLevelId),
+      cast: {
+        ...ability.cast,
+        fullPowerLevelId: cleanLevel(ability.cast.fullPowerLevelId),
+      },
+    })),
+    formations: system.formations.map((formation) => ({
+      ...formation,
+      requiredLevelIds: formation.requiredLevelIds.filter(
+        (id) => !levelIds.has(id),
+      ),
+    })),
+    transitions: system.transitions.map((transition) => ({
+      ...transition,
+      fromLevelId: cleanLevel(transition.fromLevelId),
+      toLevelId: cleanLevel(transition.toLevelId),
+    })),
+  };
+}
+
+function removeTrackReferences(
+  system: CultivationSystem,
+  trackId: string,
+): CultivationSystem {
+  const track = system.progressionTracks.find((item) => item.id === trackId);
+  const levelIds = new Set(track?.levels.map((level) => level.id) ?? []);
+  return removeLevelReferences(
+    {
+      ...system,
+      progressionTracks: system.progressionTracks.filter(
+        (item) => item.id !== trackId,
+      ),
+      trackInteractions: (system.trackInteractions ?? []).filter(
+        (interaction) =>
+          interaction.sourceTrackId !== trackId &&
+          interaction.targetTrackId !== trackId,
+      ),
+      foundations: system.foundations.map((foundation) => ({
+        ...foundation,
+        affectedTracks: foundation.affectedTracks.filter(
+          (id) => id !== trackId,
+        ),
+      })),
+    },
+    levelIds,
+  );
 }
 
 function createSystem(): CultivationSystem {
@@ -499,7 +960,10 @@ function createTrack(): ProgressionTrack {
     transitions: [],
   };
 }
-function createTrackInteraction(sourceTrackId: string, targetTrackId: string): TrackInteraction {
+function createTrackInteraction(
+  sourceTrackId: string,
+  targetTrackId: string,
+): TrackInteraction {
   return {
     id: newEcologyId("track-interaction"),
     name: "新轨道交叉规则",
@@ -512,6 +976,24 @@ function createTrackInteraction(sourceTrackId: string, targetTrackId: string): T
     consequence: "",
     resourcePolicy: "",
     reversible: true,
+  };
+}
+function createTransition(): Transition {
+  return {
+    id: newEcologyId("transition"),
+    name: "新突破 / 转换",
+    summary: "",
+    fromLevelId: null,
+    toLevelId: null,
+    transitionType: "breakthrough",
+    methodIds: [],
+    conditions: [],
+    resourceRequirements: [],
+    successRule: "",
+    successResult: "",
+    failureResult: "",
+    permanentConsequence: "",
+    reversible: false,
   };
 }
 function createResource(): CultivationResource {
@@ -653,6 +1135,7 @@ export default function CultivationEcologyWorkbench({
   const [scope, setScope] = useState<Scope>("system");
   const [module, setModule] = useState<ModuleId>("overview");
   const [selection, setSelection] = useState<Selection>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
@@ -661,6 +1144,15 @@ export default function CultivationEcologyWorkbench({
   const [itemLibraryLoading, setItemLibraryLoading] = useState(false);
   const [itemLibraryReady, setItemLibraryReady] = useState(false);
   const [itemLibraryError, setItemLibraryError] = useState("");
+
+  useEffect(() => {
+    if (!inspectorOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setInspectorOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [inspectorOpen]);
 
   useEffect(() => {
     let disposed = false;
@@ -762,9 +1254,9 @@ export default function CultivationEcologyWorkbench({
       );
       return currentAuditSignature === nextAuditSignature ? current : next;
     });
-  // ecology は setEcology の functional updater 内で読むため依存配列から除外する。
-  // 含めると commit() → setEcology → effect 再実行 のループが発生し毎編集で余分な
-  // audit rebuild が走る。
+    // ecology は setEcology の functional updater 内で読むため依存配列から除外する。
+    // 含めると commit() → setEcology → effect 再実行 のループが発生し毎編集で余分な
+    // audit rebuild が走る。
   }, [availableItemIds, itemLibraryReady]);
   const save = async (): Promise<boolean> => {
     if (!ecology || !dirty) return true;
@@ -793,6 +1285,7 @@ export default function CultivationEcologyWorkbench({
     setScope("system");
     setModule("overview");
     setSelection({ kind: "system", id: system.id });
+    setInspectorOpen(true);
   };
   const deleteSystem = () => {
     if (!ecology || !activeSystem) return;
@@ -808,6 +1301,14 @@ export default function CultivationEcologyWorkbench({
     commit({
       ...ecology,
       systems: nextSystems,
+      worldOrigins: ecology.worldOrigins.map((origin) => ({
+        ...origin,
+        canvasPositions: Object.fromEntries(
+          Object.entries(origin.canvasPositions ?? {}).filter(
+            ([id]) => id !== activeSystem.id,
+          ),
+        ),
+      })),
       crossSystemRelations: ecology.crossSystemRelations.filter(
         (item) =>
           item.sourceSystemId !== activeSystem.id &&
@@ -817,15 +1318,23 @@ export default function CultivationEcologyWorkbench({
     const next = nextSystems[0];
     setActiveSystemId(next?.id ?? null);
     setSelection(next ? { kind: "system", id: next.id } : null);
+    setInspectorOpen(false);
   };
+  const selectAndOpenInspector = (nextSelection: Selection) => {
+    setSelection(nextSelection);
+    setInspectorOpen(Boolean(nextSelection));
+  };
+  const closeInspector = () => setInspectorOpen(false);
   const openModule = (nextModule: ModuleId, nextSelection?: Selection) => {
     setScope("system");
     setModule(nextModule);
-    setSelection(nextSelection ?? getModuleSelection(activeSystem, nextModule));
+    selectAndOpenInspector(
+      nextSelection ?? getModuleSelection(activeSystem, nextModule),
+    );
   };
   const openRelations = (nextSelection?: Selection) => {
     setScope("relations");
-    setSelection(nextSelection ?? null);
+    selectAndOpenInspector(nextSelection ?? null);
   };
 
   if (loading)
@@ -893,6 +1402,7 @@ export default function CultivationEcologyWorkbench({
               onClick={() => {
                 setScope("origins");
                 setSelection(null);
+                setInspectorOpen(false);
               }}
             >
               <Sparkles className="h-4 w-4" />
@@ -907,6 +1417,7 @@ export default function CultivationEcologyWorkbench({
               onClick={() => {
                 setScope("relations");
                 setSelection(null);
+                setInspectorOpen(false);
               }}
             >
               <Link2 className="h-4 w-4" />
@@ -933,6 +1444,7 @@ export default function CultivationEcologyWorkbench({
                     setScope("system");
                     setModule("overview");
                     setSelection({ kind: "system", id: system.id });
+                    setInspectorOpen(false);
                   }}
                 >
                   <span className="cp-system-icon">
@@ -959,14 +1471,14 @@ export default function CultivationEcologyWorkbench({
           </div>
         </aside>
         <main className="ce-main cp-main">
-          <div
-            className={`ce-main-header cp-main-header ${scope === "origins" || scope === "system" ? "ce-main-header-compact" : ""}`}
-          >
-            <div>
-              <h1>{pageMeta.title}</h1>
-              <p>{pageMeta.description}</p>
+          {scope === "relations" && (
+            <div className="ce-main-header cp-main-header">
+              <div>
+                <h1>{pageMeta.title}</h1>
+                <p>{pageMeta.description}</p>
+              </div>
             </div>
-          </div>
+          )}
           {scope === "system" && (
             <nav
               className="ce-module-nav cp-module-nav"
@@ -982,6 +1494,7 @@ export default function CultivationEcologyWorkbench({
                     onClick={() => {
                       setModule(item.id);
                       setSelection(getModuleSelection(activeSystem, item.id));
+                      setInspectorOpen(false);
                     }}
                     aria-pressed={module === item.id}
                   >
@@ -992,55 +1505,89 @@ export default function CultivationEcologyWorkbench({
               })}
             </nav>
           )}
-          <div
-            className={`ce-main-scroll cp-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""}`}
-          >
-            {scope === "origins" ? (
-              <WorldOriginWorkspace
-                ecology={ecology}
-                selection={selection}
-                onChange={commit}
-                onSelect={setSelection}
-              />
-            ) : scope === "relations" ? (
-              <Relations
-                ecology={ecology}
-                onChange={commit}
-                onSelect={setSelection}
-              />
-            ) : activeSystem ? (
-              <SystemModule
-                system={activeSystem}
-                module={module}
-                selection={selection}
-                onChange={updateSystem}
-                onSelect={setSelection}
-                onOpenModule={openModule}
-                onOpenRelations={openRelations}
-                onDeleteSystem={deleteSystem}
-              />
-            ) : (
-              <Empty text="请先创建一个修行体系" />
+          <div className="ce-page-stage">
+            <div
+              className={`ce-main-scroll cp-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""}`}
+            >
+              {scope === "origins" ? (
+                <WorldOriginWorkspace
+                  ecology={ecology}
+                  selection={selection}
+                  onChange={commit}
+                  onSelect={selectAndOpenInspector}
+                />
+              ) : scope === "relations" ? (
+                <Relations
+                  ecology={ecology}
+                  onChange={commit}
+                  onSelect={selectAndOpenInspector}
+                />
+              ) : activeSystem ? (
+                <SystemModule
+                  system={activeSystem}
+                  module={module}
+                  selection={selection}
+                  onChange={updateSystem}
+                  onSelect={selectAndOpenInspector}
+                  onOpenModule={openModule}
+                  onOpenRelations={openRelations}
+                  onDeleteSystem={deleteSystem}
+                />
+              ) : (
+                <Empty text="请先创建一个修行体系" />
+              )}
+            </div>
+            {inspectorOpen && selection && (
+              <div className="ce-inspector-layer">
+                <button
+                  type="button"
+                  className="ce-inspector-backdrop"
+                  aria-label="关闭检查器"
+                  onClick={closeInspector}
+                />
+                <aside
+                  className="ce-inspector ce-inspector-drawer"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="ce-inspector-drawer-title"
+                >
+                  <div className="ce-inspector-drawer-header">
+                    <h2 id="ce-inspector-drawer-title">
+                      {scope === "origins"
+                        ? "本源检查"
+                        : scope === "relations"
+                          ? "关系检查"
+                          : "对象检查"}
+                    </h2>
+                    <Button
+                      variant="ghost"
+                      onClick={closeInspector}
+                      title="关闭检查器"
+                      ariaLabel="关闭检查器"
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="ce-inspector-drawer-body">
+                    <InspectorV2
+                      scope={scope}
+                      ecology={ecology}
+                      system={activeSystem}
+                      selection={selection}
+                      onChange={commit}
+                      onChangeSystem={updateSystem}
+                      onDeleteSystem={deleteSystem}
+                      onSelect={selectAndOpenInspector}
+                      itemEntries={itemEntries}
+                      itemLibraryLoading={itemLibraryLoading}
+                      itemLibraryError={itemLibraryError}
+                    />
+                  </div>
+                </aside>
+              </div>
             )}
           </div>
         </main>
-        {scope !== "origins" && (
-          <aside className="ce-inspector cp-inspector">
-            <InspectorV2
-              scope={scope}
-              ecology={ecology}
-              system={activeSystem}
-              selection={selection}
-              onChange={commit}
-              onChangeSystem={updateSystem}
-              onDeleteSystem={deleteSystem}
-              onSelect={setSelection}
-              itemEntries={itemEntries}
-              itemLibraryLoading={itemLibraryLoading}
-              itemLibraryError={itemLibraryError}
-            />
-          </aside>
-        )}
       </div>
     </div>
   );
@@ -1224,7 +1771,11 @@ function Overview({
           <strong>{calculateCultivationCompleteness(system)}</strong>
           <small>/ 100</small>
         </div>
-        <div className="ce-progress"><i style={{ width: `${calculateCultivationCompleteness(system)}%` }} /></div>
+        <div className="ce-progress">
+          <i
+            style={{ width: `${calculateCultivationCompleteness(system)}%` }}
+          />
+        </div>
         <Button variant="ghost" onClick={() => onOpenModule("audit")}>
           {system.audit.filter((item) => !item.resolved).length} 项待处理
           <ChevronRight className="h-3.5 w-3.5" />
@@ -1235,7 +1786,11 @@ function Overview({
           title="本源投影"
           eyebrow="01 / 接入方式"
           action={
-            <Button variant="ghost" title="打开本源投影" onClick={() => onOpenModule("projection")}>
+            <Button
+              variant="ghost"
+              title="打开本源投影"
+              onClick={() => onOpenModule("projection")}
+            >
               <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           }
@@ -1253,7 +1808,11 @@ function Overview({
           title="理论共有结构"
           eyebrow="02 / 法门共同底座"
           action={
-            <Button variant="ghost" title="打开理论模型" onClick={() => onOpenModule("theory")}>
+            <Button
+              variant="ghost"
+              title="打开理论模型"
+              onClick={() => onOpenModule("theory")}
+            >
               <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           }
@@ -1301,7 +1860,11 @@ function Overview({
           title="体系约束"
           eyebrow="04 / 叙事张力"
           action={
-            <Button variant="ghost" title="打开体系约束" onClick={() => onOpenModule("constraints")}>
+            <Button
+              variant="ghost"
+              title="打开体系约束"
+              onClick={() => onOpenModule("constraints")}
+            >
               <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           }
@@ -1508,7 +2071,32 @@ function Progression({
   const track =
     system.progressionTracks.find((item) => item.id === trackId) ??
     system.progressionTracks[0];
-  if (!track) return <Empty text="尚未建立成长轨道" />;
+  const addTrack = () => {
+    const item = createTrack();
+    onChange({
+      ...system,
+      progressionTracks: [...system.progressionTracks, item],
+    });
+    setTrackId(item.id);
+    onSelect({ kind: "track", id: item.id });
+  };
+  if (!track)
+    return (
+      <>
+        <PageHeader
+          eyebrow="体系内部 / 03 成长轨道"
+          title="境界层级与数值模型"
+          description="一条体系可以有多条成长轨道；每个阶段定义指标门槛、资源需求、自然能力和突破失败语义。"
+          action={
+            <Button variant="primary" onClick={addTrack}>
+              <Plus className="h-3.5 w-3.5" />
+              新增轨道
+            </Button>
+          }
+        />
+        <Empty text="尚未建立成长轨道" />
+      </>
+    );
   const addLevel = () => {
     const item = createLevel(track.levels.length);
     onChange({
@@ -1525,15 +2113,6 @@ function Progression({
       parentId: track.id,
       parentKind: "track",
     });
-  };
-  const addTrack = () => {
-    const item = createTrack();
-    onChange({
-      ...system,
-      progressionTracks: [...system.progressionTracks, item],
-    });
-    setTrackId(item.id);
-    onSelect({ kind: "track", id: item.id });
   };
   const addMetric = () => {
     const item = {
@@ -1562,9 +2141,35 @@ function Progression({
   };
   const addInteraction = () => {
     if (system.progressionTracks.length < 2) return;
-    const item = createTrackInteraction(system.progressionTracks[0].id, system.progressionTracks[1].id);
-    onChange({ ...system, trackInteractions: [...(system.trackInteractions ?? []), item] });
+    const item = createTrackInteraction(
+      system.progressionTracks[0].id,
+      system.progressionTracks[1].id,
+    );
+    onChange({
+      ...system,
+      trackInteractions: [...(system.trackInteractions ?? []), item],
+    });
     onSelect({ kind: "track-interaction", id: item.id });
+  };
+  const addTransition = () => {
+    const item = createTransition();
+    onChange({
+      ...system,
+      progressionTracks: updateById(
+        system.progressionTracks,
+        track.id,
+        (current) => ({
+          ...current,
+          transitions: [...current.transitions, item],
+        }),
+      ),
+    });
+    onSelect({
+      kind: "transition",
+      id: item.id,
+      parentId: track.id,
+      parentKind: "track",
+    });
   };
   return (
     <>
@@ -1663,7 +2268,16 @@ function Progression({
           ))}
         </div>
       </Section>
-      <Section title="突破关系" eyebrow={`${track.transitions.length} 条转换`}>
+      <Section
+        title="突破关系"
+        eyebrow={`${track.transitions.length} 条转换`}
+        action={
+          <Button variant="secondary" onClick={addTransition}>
+            <Plus className="h-3.5 w-3.5" />
+            新增转换
+          </Button>
+        }
+      >
         <div className="ce-transition-list">
           {track.transitions.map((item) => (
             <button
@@ -1687,26 +2301,58 @@ function Progression({
             </button>
           ))}
         </div>
+        {track.transitions.length === 0 && (
+          <Empty text="当前轨道尚未定义转换" />
+        )}
       </Section>
       <Section
         title="多轨道交叉规则"
         eyebrow={`${system.trackInteractions?.length ?? 0} 条同步 / 协同 / 竞争规则`}
         action={
-          <Button variant="secondary" onClick={addInteraction} disabled={system.progressionTracks.length < 2} title={system.progressionTracks.length < 2 ? "至少需要两条成长轨道" : "新增轨道交叉规则"}>
-            <Plus className="h-3.5 w-3.5" />新增规则
+          <Button
+            variant="secondary"
+            onClick={addInteraction}
+            disabled={system.progressionTracks.length < 2}
+            title={
+              system.progressionTracks.length < 2
+                ? "至少需要两条成长轨道"
+                : "新增轨道交叉规则"
+            }
+          >
+            <Plus className="h-3.5 w-3.5" />
+            新增规则
           </Button>
         }
       >
         <div className="ce-transition-list">
           {(system.trackInteractions ?? []).map((item) => (
-            <button type="button" key={item.id} onClick={() => onSelect({ kind: "track-interaction", id: item.id })}>
+            <button
+              type="button"
+              key={item.id}
+              onClick={() =>
+                onSelect({ kind: "track-interaction", id: item.id })
+              }
+            >
               <GitBranch className="h-4 w-4" />
-              <span><strong>{item.name}</strong><small>{item.kind} · {item.rule || "尚未定义规则"}</small></span>
+              <span>
+                <strong>{item.name}</strong>
+                <small>
+                  {item.kind} · {item.rule || "尚未定义规则"}
+                </small>
+              </span>
               <ChevronRight className="h-3.5 w-3.5" />
             </button>
           ))}
         </div>
-        {(system.trackInteractions?.length ?? 0) === 0 && <Empty text={system.progressionTracks.length < 2 ? "建立第二条轨道后才能配置交叉规则" : "尚未定义轨道交叉规则"} />}
+        {(system.trackInteractions?.length ?? 0) === 0 && (
+          <Empty
+            text={
+              system.progressionTracks.length < 2
+                ? "建立第二条轨道后才能配置交叉规则"
+                : "尚未定义轨道交叉规则"
+            }
+          />
+        )}
       </Section>
     </>
   );
@@ -1724,12 +2370,65 @@ function ResourceDirectory({
   const assetReferences = useMemo(() => {
     const references = new Map<string, string[]>();
     const addReference = (resourceId: string, reference: string) => {
-      references.set(resourceId, [...(references.get(resourceId) ?? []), reference]);
+      references.set(resourceId, [
+        ...(references.get(resourceId) ?? []),
+        reference,
+      ]);
     };
-    system.progressionTracks.forEach((track) => track.levels.forEach((level) => level.resourceRequirements.forEach((requirement) => addReference(requirement.resourceId, `阶段 · ${level.name}`))));
-    system.methods.forEach((method) => method.courses.forEach((course) => course.resourceRequirements.forEach((requirement) => addReference(requirement.resourceId, `课程 · ${course.title}`))));
-    system.abilities.forEach((ability) => ability.trainingRequirements.resourceRequirements.forEach((requirement) => addReference(requirement.resourceId, `能力 · ${ability.name}`)));
-    system.formations.forEach((formation) => formation.resourceRequirements.forEach((requirement) => addReference(requirement.resourceId, `阵法 · ${formation.name}`)));
+    system.progressionTracks.forEach((track) => {
+      track.levels.forEach((level) =>
+        level.resourceRequirements.forEach((requirement) => {
+          addReference(requirement.resourceId, `阶段 · ${level.name}`);
+          requirement.substituteResourceIds.forEach((id) =>
+            addReference(id, `阶段替代 · ${level.name}`),
+          );
+        }),
+      );
+      track.transitions.forEach((transition) =>
+        transition.resourceRequirements.forEach((requirement) => {
+          addReference(requirement.resourceId, `轨道转换 · ${transition.name}`);
+          requirement.substituteResourceIds.forEach((id) =>
+            addReference(id, `轨道转换替代 · ${transition.name}`),
+          );
+        }),
+      );
+    });
+    system.methods.forEach((method) =>
+      method.courses.forEach((course) =>
+        course.resourceRequirements.forEach((requirement) => {
+          addReference(requirement.resourceId, `课程 · ${course.title}`);
+          requirement.substituteResourceIds.forEach((id) =>
+            addReference(id, `课程替代 · ${course.title}`),
+          );
+        }),
+      ),
+    );
+    system.abilities.forEach((ability) =>
+      ability.trainingRequirements.resourceRequirements.forEach(
+        (requirement) => {
+          addReference(requirement.resourceId, `能力 · ${ability.name}`);
+          requirement.substituteResourceIds.forEach((id) =>
+            addReference(id, `能力替代 · ${ability.name}`),
+          );
+        },
+      ),
+    );
+    system.formations.forEach((formation) =>
+      formation.resourceRequirements.forEach((requirement) => {
+        addReference(requirement.resourceId, `阵法 · ${formation.name}`);
+        requirement.substituteResourceIds.forEach((id) =>
+          addReference(id, `阵法替代 · ${formation.name}`),
+        );
+      }),
+    );
+    system.transitions.forEach((transition) =>
+      transition.resourceRequirements.forEach((requirement) => {
+        addReference(requirement.resourceId, `转换 · ${transition.name}`);
+        requirement.substituteResourceIds.forEach((id) =>
+          addReference(id, `转换替代 · ${transition.name}`),
+        );
+      }),
+    );
     return references;
   }, [system]);
   const add = () => {
@@ -1766,7 +2465,9 @@ function ResourceDirectory({
                 {item.category} · 最佳阶段 {item.bestLevelId || "未指定"}
               </small>
               <em>{item.summary || "暂无说明"}</em>
-              <small className="ce-directory-references">被引用 {assetReferences.get(item.id)?.length ?? 0} 处</small>
+              <small className="ce-directory-references">
+                被引用 {assetReferences.get(item.id)?.length ?? 0} 处
+              </small>
             </span>
             <ChevronRight className="h-4 w-4" />
           </button>
@@ -1788,7 +2489,31 @@ function MethodWorkspace({
   onSelect: (selection: Selection) => void;
   selection: Selection;
 }) {
-  const [methodId, setMethodId] = useState(system.methods[0]?.id ?? "");
+  const requestedTopologyId =
+    selection?.kind === "topology"
+      ? selection.id
+      : selection?.parentKind === "topology"
+        ? (selection.parentId ?? "")
+        : "";
+  const requestedMethodId =
+    selection?.kind === "method"
+      ? selection.id
+      : (system.methods.find((item) =>
+          item.operationTopologies.some(
+            (topology) => topology.id === requestedTopologyId,
+          ),
+        )?.id ?? "");
+  const initialMethod =
+    system.methods.find((item) => item.id === requestedMethodId) ??
+    system.methods[0];
+  const [methodId, setMethodId] = useState(initialMethod?.id ?? "");
+  const [topologyId, setTopologyId] = useState(
+    initialMethod?.operationTopologies.some(
+      (item) => item.id === requestedTopologyId,
+    )
+      ? requestedTopologyId
+      : (initialMethod?.operationTopologies[0]?.id ?? ""),
+  );
   const method =
     system.methods.find((item) => item.id === methodId) ?? system.methods[0];
   const add = () => {
@@ -1815,7 +2540,7 @@ function MethodWorkspace({
       </>
     );
   const topology =
-    method.operationTopologies.find((item) => item.id === selection?.id) ??
+    method.operationTopologies.find((item) => item.id === topologyId) ??
     method.operationTopologies[0];
   const addTopology = () => {
     const item: OperationTopology = {
@@ -1835,6 +2560,7 @@ function MethodWorkspace({
         operationTopologies: [...current.operationTopologies, item],
       })),
     });
+    setTopologyId(item.id);
     onSelect({
       kind: "topology",
       id: item.id,
@@ -1870,6 +2596,7 @@ function MethodWorkspace({
               className={item.id === method.id ? "is-active" : ""}
               onClick={() => {
                 setMethodId(item.id);
+                setTopologyId(item.operationTopologies[0]?.id ?? "");
                 onSelect({ kind: "method", id: item.id });
               }}
             >
@@ -1918,22 +2645,36 @@ function MethodWorkspace({
           >
             <div className="ce-topology-tabs">
               {method.operationTopologies.map((item) => (
-                <button
-                  type="button"
+                <div
                   key={item.id}
-                  className={topology?.id === item.id ? "is-active" : ""}
-                  onClick={() =>
-                    onSelect({
-                      kind: "topology",
-                      id: item.id,
-                      parentId: method.id,
-                      parentKind: "method",
-                    })
-                  }
+                  className={`ce-topology-tab ${topology?.id === item.id ? "is-active" : ""}`}
                 >
-                  {item.name}
-                  <small>{item.nodes.length} 节点</small>
-                </button>
+                  <button
+                    type="button"
+                    className="ce-topology-tab-trigger"
+                    aria-pressed={topology?.id === item.id}
+                    onClick={() => setTopologyId(item.id)}
+                  >
+                    {item.name}
+                    <small>{item.nodes.length} 节点</small>
+                  </button>
+                  <button
+                    type="button"
+                    className="ce-topology-tab-edit"
+                    title={`编辑拓扑：${item.name}`}
+                    aria-label={`编辑拓扑：${item.name}`}
+                    onClick={() =>
+                      onSelect({
+                        kind: "topology",
+                        id: item.id,
+                        parentId: method.id,
+                        parentKind: "method",
+                      })
+                    }
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
             {topology ? (
@@ -1954,6 +2695,218 @@ function MethodWorkspace({
   );
 }
 
+type TopologyCanvasMode = "immersive" | "detail";
+type TopologyCanvasNodeData = {
+  title: string;
+  role: string;
+  operation: string;
+  order: number;
+  color: string;
+  orbStyle: CultivationOrbStyle;
+  mode: TopologyCanvasMode;
+};
+type TopologyCanvasNode = Node<TopologyCanvasNodeData, "topologyCanvas">;
+type TopologyCanvasEdgeData = {
+  edgeId: string;
+  name: string;
+  routeRule: string;
+  loss: string;
+};
+type TopologyCanvasEdge = Edge<TopologyCanvasEdgeData>;
+
+function topologyNodePosition(index: number, count: number) {
+  if (count <= 1) return { x: 360, y: 220 };
+  const angle = -Math.PI / 2 + (index / count) * Math.PI * 2;
+  const radiusX = Math.min(430, Math.max(250, count * 62));
+  const radiusY = Math.min(300, Math.max(170, count * 42));
+  return {
+    x: 460 + Math.cos(angle) * radiusX,
+    y: 300 + Math.sin(angle) * radiusY,
+  };
+}
+
+function topologyHandleToward(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    if (dx >= 0) return dy >= 0 ? "east-south" : "east-north";
+    return dy >= 0 ? "west-south" : "west-north";
+  }
+  if (dy >= 0) return dx >= 0 ? "south-east" : "south-west";
+  return dx >= 0 ? "north-east" : "north-west";
+}
+
+const TOPOLOGY_HANDLE_POINTS: Array<{
+  id: string;
+  position: Position;
+  style: CSSProperties;
+}> = [
+  { id: "north-west", position: Position.Top, style: { left: "28%" } },
+  { id: "north-east", position: Position.Top, style: { left: "72%" } },
+  { id: "east-north", position: Position.Right, style: { top: "28%" } },
+  { id: "east-south", position: Position.Right, style: { top: "72%" } },
+  { id: "south-east", position: Position.Bottom, style: { left: "72%" } },
+  { id: "south-west", position: Position.Bottom, style: { left: "28%" } },
+  { id: "west-south", position: Position.Left, style: { top: "72%" } },
+  { id: "west-north", position: Position.Left, style: { top: "28%" } },
+];
+
+function TopologyCanvasNodeView({
+  data,
+  selected,
+}: NodeProps<TopologyCanvasNode>) {
+  const style = { "--topology-node-color": data.color } as CSSProperties;
+  return (
+    <div
+      className={`ce-topology-flow-node is-${data.mode} ${selected ? "is-selected" : ""}`}
+      style={style}
+      title={`${data.title} · ${data.role}`}
+    >
+      {data.mode === "immersive" ? (
+        <div className="ce-topology-orb-node">
+          <OrbVisual orbStyle={data.orbStyle} />
+          <strong>{data.title}</strong>
+          <small>
+            {String(data.order + 1).padStart(2, "0")} ·{" "}
+            {data.role || "运行节点"}
+          </small>
+        </div>
+      ) : (
+        <div className="ce-topology-detail-node">
+          <div className="ce-topology-detail-node-head">
+            <span>{String(data.order + 1).padStart(2, "0")}</span>
+            <em>{data.role || "运行节点"}</em>
+          </div>
+          <strong>{data.title}</strong>
+          <p>{data.operation || "尚未填写运行操作"}</p>
+        </div>
+      )}
+      {TOPOLOGY_HANDLE_POINTS.map((handle) => (
+        <Handle
+          key={handle.id}
+          id={handle.id}
+          type="source"
+          position={handle.position}
+          style={handle.style}
+          isConnectable
+          className="ce-topology-flow-handle"
+        />
+      ))}
+    </div>
+  );
+}
+
+const topologyCanvasNodeTypes = { topologyCanvas: TopologyCanvasNodeView };
+
+function buildTopologyCanvasNodes(
+  topology: OperationTopology,
+  theoryNames: ReadonlyMap<string, string>,
+  mode: TopologyCanvasMode,
+): TopologyCanvasNode[] {
+  return topology.nodes.map((node, index) => ({
+    id: node.id,
+    type: "topologyCanvas",
+    position:
+      node.position ?? topologyNodePosition(index, topology.nodes.length),
+    data: {
+      title: theoryNames.get(node.theoryNodeId) || node.theoryNodeId,
+      role: node.role,
+      operation: node.operation,
+      order: node.order,
+      color: topologyNodeColor(node, index),
+      orbStyle: topologyNodeOrbStyle(node, index),
+      mode,
+    },
+    ariaLabel: `拓扑节点：${theoryNames.get(node.theoryNodeId) || node.theoryNodeId}`,
+  }));
+}
+
+function buildTopologyCanvasEdges(
+  topology: OperationTopology,
+  theoryNames: ReadonlyMap<string, string>,
+  mode: TopologyCanvasMode,
+): TopologyCanvasEdge[] {
+  const nodeIndex = new Map(
+    topology.nodes.map((node, index) => [node.id, index] as const),
+  );
+  const nodePositions = new Map(
+    topology.nodes.map((node, index) => [
+      node.id,
+      node.position ?? topologyNodePosition(index, topology.nodes.length),
+    ]),
+  );
+  return topology.edges
+    .filter(
+      (edge) => nodeIndex.has(edge.fromNodeId) && nodeIndex.has(edge.toNodeId),
+    )
+    .map((edge) => {
+      const sourceIndex = nodeIndex.get(edge.fromNodeId) ?? 0;
+      const sourceNode = topology.nodes[sourceIndex];
+      const color = sourceNode
+        ? topologyNodeColor(sourceNode, sourceIndex)
+        : TOPOLOGY_NODE_PALETTE[0];
+      const sourcePosition = nodePositions.get(edge.fromNodeId) ?? {
+        x: 0,
+        y: 0,
+      };
+      const targetPosition = nodePositions.get(edge.toNodeId) ?? {
+        x: 1,
+        y: 0,
+      };
+      const targetNode = topology.nodes[nodeIndex.get(edge.toNodeId) ?? -1];
+      const edgeName =
+        edge.name?.trim() ||
+        `${theoryNames.get(sourceNode?.theoryNodeId ?? "") || edge.fromNodeId} → ${theoryNames.get(targetNode?.theoryNodeId ?? "") || edge.toNodeId}`;
+      return {
+        id: edge.id,
+        source: edge.fromNodeId,
+        target: edge.toNodeId,
+        sourceHandle:
+          edge.fromHandleId ??
+          topologyHandleToward(sourcePosition, targetPosition),
+        targetHandle:
+          edge.toHandleId ??
+          topologyHandleToward(targetPosition, sourcePosition),
+        type: "default",
+        animated: mode === "immersive",
+        className: `ce-topology-flow-edge is-${mode}`,
+        label: edgeName,
+        labelStyle: {
+          fill: mode === "immersive" ? "#fff2ff" : "var(--ink-muted)",
+          fontSize: 11,
+          fontWeight: 650,
+        },
+        labelBgStyle: {
+          fill: mode === "immersive" ? "#16091a" : "var(--paper-elevated)",
+          fillOpacity: 0.94,
+          stroke: mode === "immersive" ? color : "var(--line-strong)",
+          strokeWidth: 0.6,
+        },
+        labelBgPadding: [6, 4],
+        labelBgBorderRadius: 2,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color,
+          width: 16,
+          height: 16,
+        },
+        style: {
+          stroke: color,
+          strokeWidth: mode === "immersive" ? 2.25 : 1.5,
+        },
+        data: {
+          edgeId: edge.id,
+          name: edgeName,
+          routeRule: edge.routeRule,
+          loss: edge.loss,
+        },
+      };
+    });
+}
+
 function TopologyCard({
   system,
   method,
@@ -1967,19 +2920,34 @@ function TopologyCard({
   onChange: (system: CultivationSystem) => void;
   onSelect: (selection: Selection) => void;
 }) {
-  const theoryNames = new Map(
-    system.theoryModel.nodeCatalog.map((item) => [item.id, item.name]),
+  const [mode, setMode] = useState<TopologyCanvasMode>("immersive");
+  const [connecting, setConnecting] = useState(false);
+  const theoryNames = useMemo(
+    () =>
+      new Map(
+        system.theoryModel.nodeCatalog.map((item) => [item.id, item.name]),
+      ),
+    [system.theoryModel.nodeCatalog],
   );
-  const addNode = () => {
-    const theoryNode = system.theoryModel.nodeCatalog[0];
-    if (!theoryNode) return;
-    const next = {
-      id: newEcologyId("topology-node"),
-      theoryNodeId: theoryNode.id,
-      order: topology.nodes.length,
-      role: "运行",
-      operation: "",
-    };
+  const [nodes, setNodes, onNodesChange] = useNodesState<TopologyCanvasNode>(
+    buildTopologyCanvasNodes(topology, theoryNames, mode),
+  );
+  const [edges, setEdges, onEdgesChange] = useEdgesState<TopologyCanvasEdge>(
+    buildTopologyCanvasEdges(topology, theoryNames, mode),
+  );
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<
+    TopologyCanvasNode,
+    TopologyCanvasEdge
+  > | null>(null);
+
+  useEffect(() => {
+    setNodes(buildTopologyCanvasNodes(topology, theoryNames, mode));
+    setEdges(buildTopologyCanvasEdges(topology, theoryNames, mode));
+  }, [mode, setEdges, setNodes, theoryNames, topology]);
+
+  const updateTopology = (
+    update: (current: OperationTopology) => OperationTopology,
+  ) => {
     onChange({
       ...system,
       methods: updateById(system.methods, method.id, (item) => ({
@@ -1987,10 +2955,45 @@ function TopologyCard({
         operationTopologies: updateById(
           item.operationTopologies,
           topology.id,
-          (current) => ({ ...current, nodes: [...current.nodes, next] }),
+          update,
         ),
       })),
     });
+  };
+
+  const topologyNodeName = (nodeId: string) => {
+    const node = topology.nodes.find((candidate) => candidate.id === nodeId);
+    return node
+      ? theoryNames.get(node.theoryNodeId) || node.theoryNodeId
+      : nodeId;
+  };
+
+  const addNode = () => {
+    const theoryNode = system.theoryModel.nodeCatalog[0];
+    if (!theoryNode) return;
+    const next: OperationTopology["nodes"][number] = {
+      id: newEcologyId("topology-node"),
+      theoryNodeId: theoryNode.id,
+      order: topology.nodes.length,
+      role: "运行",
+      operation: "",
+      color:
+        TOPOLOGY_NODE_PALETTE[
+          topology.nodes.length % TOPOLOGY_NODE_PALETTE.length
+        ],
+      orbStyle:
+        CULTIVATION_ORB_STYLES[
+          topology.nodes.length % CULTIVATION_ORB_STYLES.length
+        ],
+      position: topologyNodePosition(
+        topology.nodes.length,
+        topology.nodes.length + 1,
+      ),
+    };
+    updateTopology((current) => ({
+      ...current,
+      nodes: [...current.nodes, next],
+    }));
     onSelect({
       kind: "topology-node",
       id: next.id,
@@ -1998,27 +3001,24 @@ function TopologyCard({
       parentKind: "topology",
     });
   };
+
   const addEdge = () => {
     if (topology.nodes.length < 2) return;
-    const next = {
+    const next: OperationTopology["edges"][number] = {
       id: newEcologyId("topology-edge"),
+      name: `${topologyNodeName(topology.nodes[0].id)} → ${topologyNodeName(topology.nodes[1].id)}`,
       fromNodeId: topology.nodes[0].id,
       toNodeId: topology.nodes[1].id,
+      fromHandleId: "east-north",
+      toHandleId: "west-north",
       order: topology.edges.length,
       routeRule: "",
       loss: "",
     };
-    onChange({
-      ...system,
-      methods: updateById(system.methods, method.id, (item) => ({
-        ...item,
-        operationTopologies: updateById(
-          item.operationTopologies,
-          topology.id,
-          (current) => ({ ...current, edges: [...current.edges, next] }),
-        ),
-      })),
-    });
+    updateTopology((current) => ({
+      ...current,
+      edges: [...current.edges, next],
+    }));
     onSelect({
       kind: "topology-edge",
       id: next.id,
@@ -2026,60 +3026,214 @@ function TopologyCard({
       parentKind: "topology",
     });
   };
+
+  const isValidConnection = (connection: Connection | TopologyCanvasEdge) => {
+    if (!connection.source || !connection.target) return false;
+    if (connection.source === connection.target) return false;
+    return !topology.edges.some(
+      (edge) =>
+        edge.fromNodeId === connection.source &&
+        edge.toNodeId === connection.target,
+    );
+  };
+
+  const handleConnect = (connection: Connection) => {
+    if (
+      !isValidConnection(connection) ||
+      !connection.source ||
+      !connection.target
+    )
+      return;
+    const next: OperationTopology["edges"][number] = {
+      id: newEcologyId("topology-edge"),
+      name: `${topologyNodeName(connection.source)} → ${topologyNodeName(connection.target)}`,
+      fromNodeId: connection.source,
+      toNodeId: connection.target,
+      fromHandleId: connection.sourceHandle ?? undefined,
+      toHandleId: connection.targetHandle ?? undefined,
+      order: topology.edges.length,
+      routeRule: "",
+      loss: "",
+    };
+    updateTopology((current) => ({
+      ...current,
+      edges: [...current.edges, next],
+    }));
+    onSelect({
+      kind: "topology-edge",
+      id: next.id,
+      parentId: topology.id,
+      parentKind: "topology",
+    });
+  };
+
+  const handleNodeDragStop = (_event: unknown, node: TopologyCanvasNode) => {
+    updateTopology((current) => ({
+      ...current,
+      nodes: updateById(current.nodes, node.id, (currentNode) => ({
+        ...currentNode,
+        position: node.position,
+      })),
+    }));
+  };
+
+  const handleNodesDelete = (deletedNodes: TopologyCanvasNode[]) => {
+    const deletedIds = new Set(deletedNodes.map((node) => node.id));
+    updateTopology((current) => ({
+      ...current,
+      nodes: current.nodes.filter((node) => !deletedIds.has(node.id)),
+      edges: current.edges.filter(
+        (edge) =>
+          !deletedIds.has(edge.fromNodeId) && !deletedIds.has(edge.toNodeId),
+      ),
+    }));
+    onSelect(null);
+  };
+
+  const handleEdgesDelete = (deletedEdges: TopologyCanvasEdge[]) => {
+    const deletedIds = new Set(deletedEdges.map((edge) => edge.id));
+    updateTopology((current) => ({
+      ...current,
+      edges: current.edges.filter((edge) => !deletedIds.has(edge.id)),
+    }));
+    onSelect(null);
+  };
+
+  const handleLayout = () => {
+    const layoutedNodes = nodes.map((node, index) => ({
+      ...node,
+      position: topologyNodePosition(index, nodes.length),
+    }));
+    setNodes(layoutedNodes);
+    const positions = new Map(
+      layoutedNodes.map((node) => [node.id, node.position] as const),
+    );
+    updateTopology((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => ({
+        ...node,
+        position: positions.get(node.id) ?? node.position,
+      })),
+    }));
+    window.setTimeout(() => flowInstance?.fitView({ padding: 0.18 }), 0);
+  };
+
   return (
     <div className="ce-topology-card">
-      <div className="ce-route-line">
-        {topology.nodes.map((item, index) => (
-          <span key={item.id}>
-            <button
-              type="button"
-              onClick={() =>
-                onSelect({
-                  kind: "topology-node",
-                  id: item.id,
-                  parentId: topology.id,
-                  parentKind: "topology",
-                })
-              }
-            >
-              {theoryNames.get(item.theoryNodeId) || item.theoryNodeId}
-              <small>{item.operation || "运行"}</small>
-            </button>
-            {index < topology.nodes.length - 1 && (
-              <ChevronRight className="h-4 w-4" />
-            )}
-          </span>
-        ))}
-      </div>
-      <div className="ce-edge-list">
-        {topology.edges.map((edge) => (
+      <div className="ce-topology-canvas-toolbar">
+        <div
+          className="ce-topology-view-switch"
+          role="group"
+          aria-label="运行拓扑视图风格"
+        >
           <button
             type="button"
-            key={edge.id}
-            onClick={() =>
-              onSelect({
-                kind: "topology-edge",
-                id: edge.id,
-                parentId: topology.id,
-                parentKind: "topology",
-              })
-            }
+            className={mode === "immersive" ? "is-active" : ""}
+            aria-pressed={mode === "immersive"}
+            onClick={() => setMode("immersive")}
           >
-            <GitBranch className="h-3.5 w-3.5" />
-            <span>
-              {theoryNames.get(
-                topology.nodes.find((node) => node.id === edge.fromNodeId)
-                  ?.theoryNodeId ?? "",
-              ) || edge.fromNodeId}{" "}
-              →{" "}
-              {theoryNames.get(
-                topology.nodes.find((node) => node.id === edge.toNodeId)
-                  ?.theoryNodeId ?? "",
-              ) || edge.toNodeId}
-            </span>
-            <small>{edge.routeRule || "未定义流向规则"}</small>
+            <CircleDot className="h-3.5 w-3.5" />
+            拟真
           </button>
-        ))}
+          <button
+            type="button"
+            className={mode === "detail" ? "is-active" : ""}
+            aria-pressed={mode === "detail"}
+            onClick={() => setMode("detail")}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            详细
+          </button>
+        </div>
+        <div className="ce-topology-canvas-stats">
+          <span>{topology.nodes.length} 个节点</span>
+          <span>{topology.edges.length} 条有向边</span>
+        </div>
+        <Button variant="ghost" onClick={handleLayout} title="重新排列节点">
+          <Route className="h-3.5 w-3.5" />
+          环形布局
+        </Button>
+      </div>
+      <div
+        className={`ce-topology-flow-surface is-${mode} ${connecting ? "is-connecting" : ""}`}
+      >
+        <ReactFlow<TopologyCanvasNode, TopologyCanvasEdge>
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={topologyCanvasNodeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeClick={(_event, node) =>
+            onSelect({
+              kind: "topology-node",
+              id: node.id,
+              parentId: topology.id,
+              parentKind: "topology",
+            })
+          }
+          onEdgeClick={(_event, edge) =>
+            onSelect({
+              kind: "topology-edge",
+              id: edge.id,
+              parentId: topology.id,
+              parentKind: "topology",
+            })
+          }
+          onPaneClick={() =>
+            onSelect({
+              kind: "topology",
+              id: topology.id,
+              parentId: method.id,
+              parentKind: "method",
+            })
+          }
+          onNodeDragStop={handleNodeDragStop}
+          onNodesDelete={handleNodesDelete}
+          onEdgesDelete={handleEdgesDelete}
+          onConnect={handleConnect}
+          onConnectStart={() => setConnecting(true)}
+          onConnectEnd={() => setConnecting(false)}
+          isValidConnection={isValidConnection}
+          connectionMode={ConnectionMode.Loose}
+          connectionLineType={ConnectionLineType.Bezier}
+          connectionRadius={28}
+          connectionDragThreshold={0}
+          nodesConnectable
+          connectOnClick
+          onInit={setFlowInstance}
+          fitView
+          fitViewOptions={{ padding: 0.18 }}
+          minZoom={0.2}
+          maxZoom={2}
+          snapToGrid
+          snapGrid={[20, 20]}
+          deleteKeyCode={["Backspace", "Delete"]}
+          defaultEdgeOptions={{ type: "default" }}
+        >
+          <Background
+            variant={
+              mode === "immersive"
+                ? BackgroundVariant.Dots
+                : BackgroundVariant.Lines
+            }
+            gap={mode === "immersive" ? 24 : 20}
+            size={1}
+            color={mode === "immersive" ? "#44234c" : "var(--line-strong)"}
+          />
+          <MiniMap
+            pannable
+            zoomable
+            nodeStrokeWidth={3}
+            nodeColor={(node) => (node.data as TopologyCanvasNodeData).color}
+          />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+        {topology.nodes.length === 0 && (
+          <div className="ce-topology-flow-empty">
+            <Waypoints className="h-5 w-5" />
+            <span>尚未建立运行节点</span>
+          </div>
+        )}
       </div>
       <div className="ce-topology-rule-grid">
         <div>
@@ -2096,9 +3250,7 @@ function TopologyCard({
         </div>
       </div>
       <div className="ce-topology-footer">
-        <span>
-          {topology.edges.length} 条有向边 · 运行拓扑属于法门，不属于体系顶层
-        </span>
+        <span>运行拓扑属于法门，不属于体系顶层</span>
         <Button
           variant="secondary"
           onClick={addNode}
@@ -2138,7 +3290,9 @@ function AbilityDirectory({
   const [filter, setFilter] = useState<"all" | Ability["acquisitionType"]>(
     "all",
   );
-  const [functionFilter, setFunctionFilter] = useState<"all" | Ability["functionType"]>("all");
+  const [functionFilter, setFunctionFilter] = useState<
+    "all" | Ability["functionType"]
+  >("all");
   const add = () => {
     const item = createAbility();
     onChange({ ...system, abilities: [...system.abilities, item] });
@@ -2199,8 +3353,19 @@ function AbilityDirectory({
           </small>
         </button>
         {(["all", "support", "mental", "offensive"] as const).map((value) => (
-          <button type="button" key={value} className={functionFilter === value ? "is-active" : ""} onClick={() => setFunctionFilter(value)}>
-            {value === "all" ? "全部功能" : value === "support" ? "辅助类" : value === "mental" ? "精神类" : "进攻类"}
+          <button
+            type="button"
+            key={value}
+            className={functionFilter === value ? "is-active" : ""}
+            onClick={() => setFunctionFilter(value)}
+          >
+            {value === "all"
+              ? "全部功能"
+              : value === "support"
+                ? "辅助类"
+                : value === "mental"
+                  ? "精神类"
+                  : "进攻类"}
           </button>
         ))}
       </div>
@@ -2395,17 +3560,43 @@ function FormationWorkspace({
             }
           >
             <div className="ce-formation-map">
-              <svg className="ce-formation-edges" aria-hidden="true" viewBox="0 0 100 100" preserveAspectRatio="none">
+              <svg
+                className="ce-formation-edges"
+                aria-hidden="true"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+              >
                 <defs>
-                  <marker id="ce-formation-arrow" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto" markerUnits="strokeWidth">
+                  <marker
+                    id="ce-formation-arrow"
+                    markerWidth="5"
+                    markerHeight="5"
+                    refX="4"
+                    refY="2.5"
+                    orient="auto"
+                    markerUnits="strokeWidth"
+                  >
                     <path d="M 0 0 L 5 2.5 L 0 5 z" fill="var(--accent-warm)" />
                   </marker>
                 </defs>
                 {formation.edges.map((edge) => {
-                  const from = formation.nodes.find((node) => node.id === edge.fromNodeId);
-                  const to = formation.nodes.find((node) => node.id === edge.toNodeId);
+                  const from = formation.nodes.find(
+                    (node) => node.id === edge.fromNodeId,
+                  );
+                  const to = formation.nodes.find(
+                    (node) => node.id === edge.toNodeId,
+                  );
                   if (!from || !to) return null;
-                  return <line key={edge.id} x1={from.position.x} y1={from.position.y} x2={to.position.x} y2={to.position.y} markerEnd="url(#ce-formation-arrow)" />;
+                  return (
+                    <line
+                      key={edge.id}
+                      x1={from.position.x}
+                      y1={from.position.y}
+                      x2={to.position.x}
+                      y2={to.position.y}
+                      markerEnd="url(#ce-formation-arrow)"
+                    />
+                  );
                 })}
               </svg>
               <div className="ce-formation-center">
@@ -2517,44 +3708,114 @@ function Assets({
   onOpenModule,
 }: {
   system: CultivationSystem;
-  onOpenModule: (module: ModuleId) => void;
+  onOpenModule: (module: ModuleId, selection?: Selection) => void;
 }) {
-  const rows = [
+  const references = new Map<string, string[]>();
+  const addReference = (id: string, label: string) =>
+    references.set(id, [...(references.get(id) ?? []), label]);
+  system.progressionTracks.forEach((track) => {
+    track.levels.forEach((level) => {
+      level.methodIds.forEach((id) => addReference(id, `阶段 · ${level.name}`));
+      level.naturalAbilityIds.forEach((id) =>
+        addReference(id, `阶段 · ${level.name}`),
+      );
+      level.resourceRequirements.forEach((requirement) =>
+        addReference(requirement.resourceId, `阶段 · ${level.name}`),
+      );
+    });
+    track.transitions.forEach((transition) => {
+      transition.methodIds.forEach((id) =>
+        addReference(id, `轨道转换 · ${transition.name}`),
+      );
+      transition.resourceRequirements.forEach((requirement) =>
+        addReference(requirement.resourceId, `轨道转换 · ${transition.name}`),
+      );
+    });
+  });
+  system.methods.forEach((method) => {
+    method.courses.forEach((course) =>
+      course.resourceRequirements.forEach((requirement) =>
+        addReference(requirement.resourceId, `课程 · ${course.title}`),
+      ),
+    );
+    method.operationTopologies.forEach((topology) =>
+      topology.nodes.forEach((node) =>
+        addReference(node.theoryNodeId, `拓扑 · ${topology.name}`),
+      ),
+    );
+  });
+  system.abilities.forEach((ability) => {
+    ability.trainingRequirements.methodIds.forEach((id) =>
+      addReference(id, `能力训练 · ${ability.name}`),
+    );
+    ability.trainingRequirements.resourceRequirements.forEach((requirement) =>
+      addReference(requirement.resourceId, `能力 · ${ability.name}`),
+    );
+  });
+  system.formations.forEach((formation) => {
+    formation.theoryNodeIds.forEach((id) =>
+      addReference(id, `阵法 · ${formation.name}`),
+    );
+    formation.methodIds.forEach((id) =>
+      addReference(id, `阵法 · ${formation.name}`),
+    );
+    formation.abilityIds.forEach((id) =>
+      addReference(id, `阵法 · ${formation.name}`),
+    );
+    formation.resourceRequirements.forEach((requirement) =>
+      addReference(requirement.resourceId, `阵法 · ${formation.name}`),
+    );
+  });
+  system.transitions.forEach((transition) => {
+    transition.methodIds.forEach((id) =>
+      addReference(id, `转换 · ${transition.name}`),
+    );
+    transition.resourceRequirements.forEach((requirement) =>
+      addReference(requirement.resourceId, `转换 · ${transition.name}`),
+    );
+  });
+  const groups = [
     {
       type: "理论节点",
-      count: system.theoryModel.nodeCatalog.length,
       module: "theory" as const,
+      kind: "theory-node",
       note: "体系共有结构",
+      items: system.theoryModel.nodeCatalog,
     },
     {
       type: "修行法门",
-      count: system.methods.length,
       module: "methods" as const,
+      kind: "method",
       note: "法诀、课程、独立拓扑",
+      items: system.methods,
     },
     {
       type: "资源",
-      count: system.resources.length,
       module: "resources" as const,
+      kind: "resource",
       note: "消耗、供给、替代",
+      items: system.resources,
     },
     {
       type: "能力",
-      count: system.abilities.length,
       module: "abilities" as const,
+      kind: "ability",
       note: "自动解锁、秘籍修炼",
+      items: system.abilities,
     },
     {
       type: "阵法",
-      count: system.formations.length,
       module: "formations" as const,
+      kind: "formation",
       note: "节点、边、部署边界",
+      items: system.formations,
     },
     {
       type: "突破与转换",
-      count: system.transitions.length,
       module: "transitions" as const,
+      kind: "transition",
       note: "成功、失败、不可逆后果",
+      items: system.transitions,
     },
   ];
   return (
@@ -2566,19 +3827,45 @@ function Assets({
       />
       <Section title="体系资产" eyebrow="反向引用">
         <div className="ce-asset-index">
-          {rows.map((row) => (
-            <button
-              type="button"
-              key={row.type}
-              onClick={() => onOpenModule(row.module)}
-            >
-              <span className="ce-index-count">{row.count}</span>
-              <span>
-                <strong>{row.type}</strong>
-                <small>{row.note}</small>
-              </span>
-              <ChevronRight className="h-4 w-4" />
-            </button>
+          {groups.map((group) => (
+            <div className="ce-asset-group" key={group.type}>
+              <button
+                type="button"
+                className="ce-asset-group-head"
+                onClick={() => onOpenModule(group.module)}
+              >
+                <span className="ce-index-count">{group.items.length}</span>
+                <span>
+                  <strong>{group.type}</strong>
+                  <small>{group.note}</small>
+                </span>
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              <div className="ce-asset-group-items">
+                {group.items.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    onClick={() =>
+                      onOpenModule(group.module, {
+                        kind: group.kind,
+                        id: item.id,
+                      })
+                    }
+                  >
+                    <span>
+                      <strong>{item.name}</strong>
+                      <small>{item.id}</small>
+                    </span>
+                    <em>
+                      {references.get(item.id)?.join("、") || "暂无反向引用"}
+                    </em>
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                ))}
+                {group.items.length === 0 && <small>暂无资产</small>}
+              </div>
+            </div>
           ))}
         </div>
       </Section>
@@ -2658,23 +3945,11 @@ function TransitionDirectory({
   onChange: (system: CultivationSystem) => void;
   onSelect: (selection: Selection) => void;
 }) {
+  const nestedTransitions = system.progressionTracks.flatMap((track) =>
+    track.transitions.map((transition) => ({ transition, track })),
+  );
   const add = () => {
-    const item: Transition = {
-      id: newEcologyId("transition"),
-      name: "新突破 / 转换",
-      summary: "",
-      fromLevelId: null,
-      toLevelId: null,
-      transitionType: "breakthrough",
-      methodIds: [],
-      conditions: [],
-      resourceRequirements: [],
-      successRule: "",
-      successResult: "",
-      failureResult: "",
-      permanentConsequence: "",
-      reversible: false,
-    };
+    const item = createTransition();
     onChange({ ...system, transitions: [...system.transitions, item] });
     onSelect({ kind: "transition", id: item.id });
   };
@@ -2709,8 +3984,33 @@ function TransitionDirectory({
             <ChevronRight className="h-4 w-4" />
           </button>
         ))}
+        {nestedTransitions.map(({ transition, track }) => (
+          <button
+            type="button"
+            key={transition.id}
+            onClick={() =>
+              onSelect({
+                kind: "transition",
+                id: transition.id,
+                parentId: track.id,
+                parentKind: "track",
+              })
+            }
+          >
+            <GitBranch className="h-4 w-4" />
+            <span>
+              <strong>{transition.name}</strong>
+              <small>
+                {track.name} · {transition.transitionType} ·{" "}
+                {transition.reversible ? "可逆" : "不可逆"}
+              </small>
+              <em>{transition.successResult || "未定义成功结果"}</em>
+            </span>
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        ))}
       </div>
-      {system.transitions.length === 0 && (
+      {system.transitions.length === 0 && nestedTransitions.length === 0 && (
         <Empty text="尚未定义突破或体系转换" />
       )}
     </>
@@ -2803,9 +4103,7 @@ function AuditDirectory({
           <small>/ 100</small>
         </div>
         <div className="ce-progress">
-          <i
-            style={{ width: `${completeness}%` }}
-          />
+          <i style={{ width: `${completeness}%` }} />
         </div>
         <span>{unresolved.length} 项待处理</span>
       </div>
@@ -2828,7 +4126,14 @@ function AuditDirectory({
               variant="ghost"
               onClick={() => {
                 if (item.resolved) {
-                  onChange({ ...system, audit: system.audit.map((candidate) => candidate.id === item.id ? { ...candidate, resolved: false } : candidate) });
+                  onChange({
+                    ...system,
+                    audit: system.audit.map((candidate) =>
+                      candidate.id === item.id
+                        ? { ...candidate, resolved: false }
+                        : candidate,
+                    ),
+                  });
                   return;
                 }
                 if (item.targetType === "relation") {
@@ -2874,7 +4179,16 @@ function AuditDirectory({
               <Button
                 variant="ghost"
                 title="保留问题记录但暂时隐藏"
-                onClick={() => onChange({ ...system, audit: system.audit.map((candidate) => candidate.id === item.id ? { ...candidate, resolved: true } : candidate) })}
+                onClick={() =>
+                  onChange({
+                    ...system,
+                    audit: system.audit.map((candidate) =>
+                      candidate.id === item.id
+                        ? { ...candidate, resolved: true }
+                        : candidate,
+                    ),
+                  })
+                }
               >
                 标记已处理
               </Button>
@@ -2898,6 +4212,14 @@ const manifestationTypeLabels: Record<
   information: "信息",
   medium: "介质",
 };
+const typeOrder: WorldOriginManifestation["type"][] = [
+  "division",
+  "law",
+  "energy",
+  "authority",
+  "information",
+  "medium",
+];
 const originRelationLabels: Record<WorldOriginRelation["relation"], string> = {
   differentiate: "分化",
   manifest: "显化",
@@ -2913,6 +4235,781 @@ const worldOriginStatusLabels: Record<WorldOrigin["status"], string> = {
   incomplete: "待完善",
   unstable: "不稳定",
 };
+const worldOriginStatusColors: Record<WorldOrigin["status"], string> = {
+  stable: "#f59e0b",
+  fragmented: "#d946ef",
+  incomplete: "#60a5fa",
+  unstable: "#f43f5e",
+};
+const worldOriginStatusOrbStyles: Record<
+  WorldOrigin["status"],
+  CultivationOrbStyle
+> = {
+  stable: "solar",
+  fragmented: "vortex",
+  incomplete: "orbit",
+  unstable: "corona",
+};
+const manifestationTypeColors: Record<
+  WorldOriginManifestation["type"],
+  string
+> = {
+  division: "#d946ef",
+  law: "#60a5fa",
+  energy: "#22d3ee",
+  authority: "#f59e0b",
+  information: "#34d399",
+  medium: "#f43f5e",
+};
+const manifestationTypeOrbStyles: Record<
+  WorldOriginManifestation["type"],
+  CultivationOrbStyle
+> = {
+  division: "vortex",
+  law: "orbit",
+  energy: "plasma",
+  authority: "solar",
+  information: "corona",
+  medium: "halo",
+};
+
+type OriginCanvasNodeData = {
+  kind: "origin" | "manifestation" | "system";
+  title: string;
+  subtitle: string;
+  badge: string;
+  color: string;
+  orbStyle: CultivationOrbStyle;
+  connected?: boolean;
+};
+type OriginCanvasNode = Node<OriginCanvasNodeData, "originCanvas">;
+type OriginCanvasEdgeData =
+  | { kind: "relation"; relationId: string }
+  | { kind: "projection"; systemId: string; sourceId: string };
+type OriginCanvasEdge = Edge<OriginCanvasEdgeData>;
+
+function OriginCanvasNodeView({ data, selected }: NodeProps<OriginCanvasNode>) {
+  const style = { "--topology-node-color": data.color } as CSSProperties;
+  return (
+    <div
+      className={`ce-origin-flow-node is-${data.kind} ${data.connected ? "is-connected" : ""} ${selected ? "is-selected" : ""}`}
+      title={data.subtitle}
+      style={style}
+    >
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="ce-origin-flow-handle"
+      />
+      {data.kind === "system" ? (
+        <>
+          <span className="ce-origin-flow-node-icon">
+            <Boxes className="h-4 w-4" />
+          </span>
+          <span className="ce-origin-flow-node-copy">
+            <small>{data.badge}</small>
+            <strong>{data.title}</strong>
+            <em>{data.subtitle}</em>
+          </span>
+        </>
+      ) : (
+        <div className="ce-origin-orb-node">
+          <OrbVisual orbStyle={data.orbStyle} className="ce-origin-orb" />
+          <strong>{data.title}</strong>
+          <small>{data.badge}</small>
+        </div>
+      )}
+      {data.kind !== "system" && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="ce-origin-flow-handle"
+        />
+      )}
+    </div>
+  );
+}
+
+const originCanvasNodeTypes = { originCanvas: OriginCanvasNodeView };
+
+function buildOriginCanvasNodes(
+  origin: WorldOrigin,
+  systems: readonly CultivationSystem[],
+): OriginCanvasNode[] {
+  const positions = origin.canvasPositions ?? {};
+  const positionFor = (id: string, fallback: { x: number; y: number }) =>
+    positions[id] ?? fallback;
+  const nodes: OriginCanvasNode[] = [
+    {
+      id: origin.id,
+      type: "originCanvas",
+      position: positionFor(origin.id, { x: 60, y: 300 }),
+      data: {
+        kind: "origin",
+        title: origin.name,
+        subtitle:
+          origin.ontologyStatement || origin.summary || "本体陈述未定义",
+        badge: `${origin.kind} · ${worldOriginStatusLabels[origin.status]}`,
+        color: worldOriginStatusColors[origin.status],
+        orbStyle: origin.orbStyle ?? worldOriginStatusOrbStyles[origin.status],
+      },
+      ariaLabel: `世界本源：${origin.name}`,
+      deletable: false,
+    },
+  ];
+
+  const typeCounters = new Map<WorldOriginManifestation["type"], number>();
+  origin.manifestations.forEach((manifestation) => {
+    const typeIndex = typeOrder.indexOf(manifestation.type);
+    const itemIndex = typeCounters.get(manifestation.type) ?? 0;
+    typeCounters.set(manifestation.type, itemIndex + 1);
+    nodes.push({
+      id: manifestation.id,
+      type: "originCanvas",
+      position: positionFor(manifestation.id, {
+        x: 390 + typeIndex * 250,
+        y: 70 + itemIndex * 130,
+      }),
+      data: {
+        kind: "manifestation",
+        title: manifestation.name,
+        subtitle:
+          manifestation.summary || manifestation.definition || "显化定义未填写",
+        badge: manifestationTypeLabels[manifestation.type],
+        color: manifestationTypeColors[manifestation.type],
+        orbStyle:
+          manifestation.orbStyle ??
+          manifestationTypeOrbStyles[manifestation.type],
+      },
+      ariaLabel: `${manifestationTypeLabels[manifestation.type]}显化：${manifestation.name}`,
+      deletable: false,
+    });
+  });
+
+  const projectionX = 390 + typeOrder.length * 250;
+  systems.forEach((system, index) => {
+    const sourceCount =
+      Number(system.projection.originIds.includes(origin.id)) +
+      system.projection.manifestationIds.filter((id) =>
+        origin.manifestations.some((item) => item.id === id),
+      ).length;
+    nodes.push({
+      id: system.id,
+      type: "originCanvas",
+      position: positionFor(system.id, {
+        x: projectionX,
+        y: 70 + index * 140,
+      }),
+      data: {
+        kind: "system",
+        title: system.name,
+        subtitle:
+          sourceCount > 0
+            ? `${sourceCount} 个本源入口 · ${system.projection.access || "接入方式未定义"}`
+            : "拖入连线以建立体系投影",
+        badge: sourceCount > 0 ? "已接入体系" : "待接入体系",
+        color: sourceCount > 0 ? "#22d3ee" : "#64748b",
+        orbStyle: "plasma",
+        connected: sourceCount > 0,
+      },
+      ariaLabel: `修行体系：${system.name}`,
+      deletable: false,
+    });
+  });
+
+  return nodes;
+}
+
+function buildOriginCanvasEdges(
+  origin: WorldOrigin,
+  systems: readonly CultivationSystem[],
+): OriginCanvasEdge[] {
+  const localNodeIds = new Set([
+    origin.id,
+    ...origin.manifestations.map((item) => item.id),
+  ]);
+  const relationEdges: OriginCanvasEdge[] = origin.relations
+    .filter(
+      (relation) =>
+        localNodeIds.has(relation.sourceId) &&
+        localNodeIds.has(relation.targetId),
+    )
+    .map((relation) => ({
+      id: `relation-${relation.id}`,
+      source: relation.sourceId,
+      target: relation.targetId,
+      type: "smoothstep",
+      animated: true,
+      className: "ce-origin-flow-edge is-relation",
+      label: originRelationLabels[relation.relation],
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b" },
+      data: { kind: "relation", relationId: relation.id },
+      style: { stroke: "#f59e0b", strokeWidth: 1.8 },
+      labelStyle: { fill: "#fff2ff", fontSize: 11, fontWeight: 650 },
+      labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
+      labelBgPadding: [5, 3],
+      labelBgBorderRadius: 3,
+    }));
+  const projectionEdges: OriginCanvasEdge[] = [];
+  systems.forEach((system) => {
+    if (system.projection.originIds.includes(origin.id)) {
+      projectionEdges.push({
+        id: `projection-${origin.id}-${system.id}`,
+        source: origin.id,
+        target: system.id,
+        type: "smoothstep",
+        animated: true,
+        className: "ce-origin-flow-edge is-projection",
+        label: "投影",
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#22d3ee" },
+        data: { kind: "projection", systemId: system.id, sourceId: origin.id },
+        style: {
+          stroke: "#22d3ee",
+          strokeDasharray: "6 5",
+          strokeWidth: 1.5,
+        },
+        labelStyle: { fill: "#fff2ff", fontSize: 11, fontWeight: 650 },
+        labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
+        labelBgPadding: [5, 3],
+        labelBgBorderRadius: 3,
+      });
+    }
+    origin.manifestations.forEach((manifestation) => {
+      if (!system.projection.manifestationIds.includes(manifestation.id))
+        return;
+      projectionEdges.push({
+        id: `projection-${manifestation.id}-${system.id}`,
+        source: manifestation.id,
+        target: system.id,
+        type: "smoothstep",
+        animated: true,
+        className: "ce-origin-flow-edge is-projection",
+        label: "接入",
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#22d3ee" },
+        data: {
+          kind: "projection",
+          systemId: system.id,
+          sourceId: manifestation.id,
+        },
+        style: {
+          stroke: "#22d3ee",
+          strokeDasharray: "6 5",
+          strokeWidth: 1.5,
+        },
+        labelStyle: { fill: "#fff2ff", fontSize: 11, fontWeight: 650 },
+        labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
+        labelBgPadding: [5, 3],
+        labelBgBorderRadius: 3,
+      });
+    });
+  });
+  return [...relationEdges, ...projectionEdges];
+}
+
+function WorldOriginCanvasEditor({
+  ecology,
+  origin,
+  onChange,
+  onSelect,
+  onAddManifestation,
+}: {
+  ecology: CultivationEcology;
+  origin: WorldOrigin;
+  onChange: (ecology: CultivationEcology) => void;
+  onSelect: (selection: Selection) => void;
+  onAddManifestation: (type: WorldOriginManifestation["type"]) => void;
+}) {
+  const [nodes, setNodes, onNodesChange] = useNodesState<OriginCanvasNode>(
+    buildOriginCanvasNodes(origin, ecology.systems),
+  );
+  const [edges, setEdges, onEdgesChange] = useEdgesState<OriginCanvasEdge>(
+    buildOriginCanvasEdges(origin, ecology.systems),
+  );
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<
+    OriginCanvasNode,
+    OriginCanvasEdge
+  > | null>(null);
+
+  useEffect(() => {
+    setNodes(buildOriginCanvasNodes(origin, ecology.systems));
+    setEdges(buildOriginCanvasEdges(origin, ecology.systems));
+  }, [ecology.systems, origin, setEdges, setNodes]);
+
+  const localNodeIds = new Set([
+    origin.id,
+    ...origin.manifestations.map((item) => item.id),
+  ]);
+  const systemIds = new Set(ecology.systems.map((system) => system.id));
+  const nodeName = (id: string) =>
+    id === origin.id
+      ? origin.name
+      : (origin.manifestations.find((item) => item.id === id)?.name ?? id);
+
+  const persistPositions = (nextNodes: readonly OriginCanvasNode[]) => {
+    const canvasPositions = Object.fromEntries(
+      nextNodes.map((node) => [
+        node.id,
+        { x: node.position.x, y: node.position.y },
+      ]),
+    );
+    onChange({
+      ...ecology,
+      worldOrigins: updateById(ecology.worldOrigins, origin.id, (current) => ({
+        ...current,
+        canvasPositions,
+      })),
+    });
+  };
+
+  const handleAutoLayout = () => {
+    const layoutedNodes = buildOriginCanvasNodes(
+      { ...origin, canvasPositions: {} },
+      ecology.systems,
+    );
+    setNodes(layoutedNodes);
+    persistPositions(layoutedNodes);
+    window.setTimeout(() => {
+      void flowInstance?.fitView({ padding: 0.16, duration: 240 });
+    }, 0);
+  };
+
+  const handleNodeDragStop = (_event: unknown, node: OriginCanvasNode) => {
+    onChange({
+      ...ecology,
+      worldOrigins: updateById(ecology.worldOrigins, origin.id, (current) => ({
+        ...current,
+        canvasPositions: {
+          ...(current.canvasPositions ?? {}),
+          [node.id]: { x: node.position.x, y: node.position.y },
+        },
+      })),
+    });
+  };
+
+  const handleNodeClick = (_event: unknown, node: OriginCanvasNode) => {
+    if (node.data.kind === "origin") {
+      onSelect({ kind: "world-origin", id: origin.id });
+      return;
+    }
+    if (node.data.kind === "manifestation") {
+      onSelect({
+        kind: "manifestation",
+        id: node.id,
+        parentId: origin.id,
+        parentKind: "world-origin",
+      });
+      return;
+    }
+    onSelect({
+      kind: "origin-projection",
+      id: node.id,
+      parentId: origin.id,
+      parentKind: "world-origin",
+    });
+  };
+
+  const isValidConnection = (connection: Connection | OriginCanvasEdge) => {
+    const source = connection.source;
+    const target = connection.target;
+    if (!source || !target || source === target || !localNodeIds.has(source))
+      return false;
+    if (localNodeIds.has(target)) {
+      return !origin.relations.some(
+        (relation) =>
+          relation.sourceId === source && relation.targetId === target,
+      );
+    }
+    if (!systemIds.has(target)) return false;
+    const system = ecology.systems.find((candidate) => candidate.id === target);
+    if (!system) return false;
+    return source === origin.id
+      ? !system.projection.originIds.includes(source)
+      : !system.projection.manifestationIds.includes(source);
+  };
+
+  const handleConnect = (connection: Connection) => {
+    const source = connection.source;
+    const target = connection.target;
+    if (!source || !target || !isValidConnection(connection)) return;
+    if (systemIds.has(target)) {
+      const sourceIsOrigin = source === origin.id;
+      onChange({
+        ...ecology,
+        systems: ecology.systems.map((system) => {
+          if (system.id !== target) return system;
+          const bindings = system.projection.originBindings ?? [];
+          const bindingRole: "primary" | "manifestation" = sourceIsOrigin
+            ? "primary"
+            : "manifestation";
+          return {
+            ...system,
+            projection: {
+              ...system.projection,
+              originIds: sourceIsOrigin
+                ? [...system.projection.originIds, source]
+                : system.projection.originIds,
+              manifestationIds: sourceIsOrigin
+                ? system.projection.manifestationIds
+                : [...system.projection.manifestationIds, source],
+              originBindings: bindings.some(
+                (binding) => binding.sourceId === source,
+              )
+                ? bindings
+                : [
+                    ...bindings,
+                    {
+                      sourceId: source,
+                      role: bindingRole,
+                      purpose: "",
+                      weight: "",
+                      sideEffects: [],
+                    },
+                  ],
+            },
+          };
+        }),
+      });
+      onSelect({
+        kind: "origin-projection",
+        id: target,
+        parentId: origin.id,
+        parentKind: "world-origin",
+      });
+      return;
+    }
+
+    const relationType: WorldOriginRelation["relation"] =
+      source === origin.id ? "manifest" : "generate";
+    const relation: WorldOriginRelation = {
+      id: newEcologyId("origin-relation"),
+      name: `${nodeName(source)}${originRelationLabels[relationType]}${nodeName(target)}`,
+      summary: "",
+      sourceId: source,
+      targetId: target,
+      relation: relationType,
+      conditions: [],
+      cost: "",
+      loss: "",
+    };
+    onChange({
+      ...ecology,
+      worldOrigins: updateById(ecology.worldOrigins, origin.id, (current) => ({
+        ...current,
+        relations: [...current.relations, relation],
+      })),
+    });
+    onSelect({
+      kind: "origin-relation",
+      id: relation.id,
+      parentId: origin.id,
+      parentKind: "world-origin",
+    });
+  };
+
+  const handleEdgesDelete = (deletedEdges: OriginCanvasEdge[]) => {
+    const relationIds = new Set(
+      deletedEdges.flatMap((edge) =>
+        edge.data?.kind === "relation" ? [edge.data.relationId] : [],
+      ),
+    );
+    const projectionSources = new Map<string, Set<string>>();
+    deletedEdges.forEach((edge) => {
+      if (edge.data?.kind !== "projection") return;
+      const sources = projectionSources.get(edge.data.systemId) ?? new Set();
+      sources.add(edge.data.sourceId);
+      projectionSources.set(edge.data.systemId, sources);
+    });
+    onChange({
+      ...ecology,
+      worldOrigins: updateById(ecology.worldOrigins, origin.id, (current) => ({
+        ...current,
+        relations: current.relations.filter(
+          (relation) => !relationIds.has(relation.id),
+        ),
+      })),
+      systems: ecology.systems.map((system) => {
+        const sources = projectionSources.get(system.id);
+        if (!sources) return system;
+        return {
+          ...system,
+          projection: {
+            ...system.projection,
+            originIds: system.projection.originIds.filter(
+              (id) => !sources.has(id),
+            ),
+            manifestationIds: system.projection.manifestationIds.filter(
+              (id) => !sources.has(id),
+            ),
+            originBindings: system.projection.originBindings?.filter(
+              (binding) => !sources.has(binding.sourceId),
+            ),
+          },
+        };
+      }),
+    });
+    onSelect(null);
+  };
+
+  const handleEdgeClick = (_event: unknown, edge: OriginCanvasEdge) => {
+    if (edge.data?.kind === "relation") {
+      onSelect({
+        kind: "origin-relation",
+        id: edge.data.relationId,
+        parentId: origin.id,
+        parentKind: "world-origin",
+      });
+      return;
+    }
+    if (edge.data?.kind === "projection") {
+      onSelect({
+        kind: "origin-projection",
+        id: edge.data.systemId,
+        parentId: origin.id,
+        parentKind: "world-origin",
+      });
+    }
+  };
+
+  return (
+    <section className="ce-origin-flow-editor" aria-label="世界本源关系画布">
+      <div className="ce-origin-flow-toolbar">
+        <div className="ce-origin-flow-additions">
+          {typeOrder.map((type) => (
+            <Button
+              key={type}
+              variant="ghost"
+              onClick={() => onAddManifestation(type)}
+              title={`新增${manifestationTypeLabels[type]}显化节点`}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {manifestationTypeLabels[type]}
+            </Button>
+          ))}
+        </div>
+        <Button variant="secondary" onClick={handleAutoLayout}>
+          <Route className="h-3.5 w-3.5" />
+          自动布局
+        </Button>
+      </div>
+      <div className="ce-origin-flow-surface">
+        <ReactFlow<OriginCanvasNode, OriginCanvasEdge>
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={originCanvasNodeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeClick={handleNodeClick}
+          onEdgeClick={handleEdgeClick}
+          onNodeDragStop={handleNodeDragStop}
+          onConnect={handleConnect}
+          onEdgesDelete={handleEdgesDelete}
+          isValidConnection={isValidConnection}
+          onInit={setFlowInstance}
+          fitView
+          fitViewOptions={{ padding: 0.16 }}
+          minZoom={0.2}
+          maxZoom={1.8}
+          snapToGrid
+          snapGrid={[20, 20]}
+          deleteKeyCode={["Backspace", "Delete"]}
+          defaultEdgeOptions={{ type: "smoothstep" }}
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={24}
+            size={1.2}
+            color="#34243d"
+          />
+          <MiniMap
+            pannable
+            zoomable
+            nodeStrokeWidth={3}
+            nodeColor={(node) =>
+              (node.data as OriginCanvasNodeData).color ?? "#64748b"
+            }
+          />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </div>
+      <div className="ce-origin-flow-legend" aria-hidden="true">
+        <span className="is-relation">本源关系</span>
+        <span className="is-projection">体系投影</span>
+        <small>拖动节点调整位置，从节点右侧连接点拖线到目标节点</small>
+      </div>
+    </section>
+  );
+}
+
+function WorldOriginStructureView({
+  origin,
+  systems,
+  onSelect,
+  onAddManifestation,
+}: {
+  origin: WorldOrigin;
+  systems: readonly CultivationSystem[];
+  onSelect: (selection: Selection) => void;
+  onAddManifestation: (type: WorldOriginManifestation["type"]) => void;
+}) {
+  const byType = new Map(
+    typeOrder.map((type) => [
+      type,
+      origin.manifestations.filter((item) => item.type === type),
+    ]),
+  );
+
+  return (
+    <div className="ce-origin-structure-view">
+      <div className="ce-world-origin-layers">
+        <div className="ce-world-origin-layer ce-world-origin-layer-ontology">
+          <span className="ce-world-origin-layer-label">本体层</span>
+          <p>
+            {origin.ontologyStatement || origin.summary || "尚未填写本体陈述"}
+          </p>
+        </div>
+        <div className="ce-world-origin-layer">
+          <span className="ce-world-origin-layer-label">分化与显化层</span>
+          <div className="ce-world-origin-manifestation-grid">
+            {typeOrder.map((type) => {
+              const items = byType.get(type) ?? [];
+              return (
+                <div
+                  className={`ce-world-origin-type-group type-${type}`}
+                  key={type}
+                >
+                  <div className="ce-world-origin-type-head">
+                    <span>{manifestationTypeLabels[type]}</span>
+                    <button
+                      type="button"
+                      onClick={() => onAddManifestation(type)}
+                      title={`新增${manifestationTypeLabels[type]}显化节点`}
+                      aria-label={`新增${manifestationTypeLabels[type]}显化节点`}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  {items.length === 0 ? (
+                    <small>未定义</small>
+                  ) : (
+                    items.map((item) => (
+                      <button
+                        type="button"
+                        key={item.id}
+                        onClick={() =>
+                          onSelect({
+                            kind: "manifestation",
+                            id: item.id,
+                            parentId: origin.id,
+                            parentKind: "world-origin",
+                          })
+                        }
+                      >
+                        <strong>{item.name}</strong>
+                        <small>
+                          {item.summary || item.definition || "点击编辑显化"}
+                        </small>
+                      </button>
+                    ))
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="ce-world-origin-layer ce-world-origin-projection-layer">
+          <span className="ce-world-origin-layer-label">修行体系投影层</span>
+          <div className="ce-world-origin-projections">
+            {systems.length === 0 ? (
+              <span className="ce-world-origin-muted">
+                尚无修行体系接入这个世界本源
+              </span>
+            ) : (
+              systems.map((system) => (
+                <button
+                  type="button"
+                  key={system.id}
+                  onClick={() =>
+                    onSelect({
+                      kind: "origin-projection",
+                      id: system.id,
+                      parentId: origin.id,
+                      parentKind: "world-origin",
+                    })
+                  }
+                >
+                  <Boxes className="h-4 w-4" />
+                  <span>
+                    <strong>{system.name}</strong>
+                    <small>
+                      {
+                        system.projection.manifestationIds.filter((id) =>
+                          origin.manifestations.some((item) => item.id === id),
+                        ).length
+                      }{" "}
+                      个显化入口 ·{" "}
+                      {system.projection.access || "接入方式未定义"}
+                    </small>
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="ce-world-origin-footer">
+        <div>
+          <span>作用域</span>
+          <strong>{origin.scopes.join("、") || "未定义"}</strong>
+        </div>
+        <div>
+          <span>约束</span>
+          <strong>{origin.constraints.length} 条</strong>
+        </div>
+        <div>
+          <span>关系</span>
+          <strong>{origin.relations.length} 条</strong>
+        </div>
+      </div>
+      <div className="ce-world-origin-relations">
+        <span className="ce-world-origin-relations-title">结构关系</span>
+        {origin.relations.map((relation) => (
+          <button
+            type="button"
+            key={relation.id}
+            onClick={() =>
+              onSelect({
+                kind: "origin-relation",
+                id: relation.id,
+                parentId: origin.id,
+                parentKind: "world-origin",
+              })
+            }
+          >
+            <span>
+              {origin.manifestations.find(
+                (item) => item.id === relation.sourceId,
+              )?.name || origin.name}
+            </span>
+            <ChevronRight className="h-3.5 w-3.5" />
+            <em>{originRelationLabels[relation.relation]}</em>
+            <ChevronRight className="h-3.5 w-3.5" />
+            <span>
+              {origin.manifestations.find(
+                (item) => item.id === relation.targetId,
+              )?.name ||
+                (relation.targetId === origin.id
+                  ? origin.name
+                  : relation.targetId)}
+            </span>
+          </button>
+        ))}
+        {origin.relations.length === 0 && (
+          <span className="ce-world-origin-muted">尚未定义结构关系</span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function WorldOriginWorkspace({
   ecology,
@@ -2926,6 +5023,9 @@ function WorldOriginWorkspace({
   onSelect: (selection: Selection) => void;
 }) {
   const [view, setView] = useState<"overview" | "origin">("overview");
+  const [originViewMode, setOriginViewMode] = useState<"structure" | "canvas">(
+    "canvas",
+  );
 
   const addOrigin = () => {
     const item: WorldOrigin = {
@@ -2935,21 +5035,27 @@ function WorldOriginWorkspace({
       kind: "复合本源",
       ontologyStatement: "",
       status: "incomplete",
+      orbStyle: "orbit",
       scopes: [],
       constraints: [],
       manifestations: [],
       relations: [],
+      canvasPositions: {},
     };
     onChange({ ...ecology, worldOrigins: [...ecology.worldOrigins, item] });
     onSelect({ kind: "world-origin", id: item.id });
     setView("origin");
   };
-  const addManifestation = (origin: WorldOrigin) => {
+  const addManifestation = (
+    origin: WorldOrigin,
+    type: WorldOriginManifestation["type"] = "law",
+  ) => {
     const item: WorldOriginManifestation = {
       id: newEcologyId("manifestation"),
-      name: "新显化节点",
+      name: `新${manifestationTypeLabels[type]}显化节点`,
       summary: "",
-      type: "law",
+      type,
+      orbStyle: manifestationTypeOrbStyles[type],
       definition: "",
       sourceId: origin.id,
       scope: "",
@@ -2992,14 +5098,6 @@ function WorldOriginWorkspace({
           origin.manifestations.some((item) => item.id === id),
         ),
     );
-  const typeOrder: WorldOriginManifestation["type"][] = [
-    "division",
-    "law",
-    "energy",
-    "authority",
-    "information",
-    "medium",
-  ];
   const selectedOriginId =
     selection?.kind === "world-origin"
       ? selection.id
@@ -3011,12 +5109,6 @@ function WorldOriginWorkspace({
       (candidate) => candidate.id === selectedOriginId,
     ) ?? ecology.worldOrigins[0];
   const systems = origin ? systemsUsing(origin) : [];
-  const byType = new Map(
-    typeOrder.map((type) => [
-      type,
-      origin?.manifestations.filter((item) => item.type === type) ?? [],
-    ]),
-  );
   const auditIssues = (origin ? [origin] : []).flatMap((origin) => {
     const issues: Array<{
       id: string;
@@ -3318,6 +5410,36 @@ function WorldOriginWorkspace({
                   <div className="ce-world-origin-panel-actions">
                     <span>{origin.manifestations.length} 个显化</span>
                     <span>{systems.length} 个投影体系</span>
+                    <div
+                      className="ce-origin-view-switch"
+                      role="group"
+                      aria-label="本源内容视图"
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={originViewMode === "structure"}
+                        className={
+                          originViewMode === "structure" ? "is-active" : ""
+                        }
+                        onClick={() => setOriginViewMode("structure")}
+                        title="结构视图"
+                      >
+                        <Layers3 className="h-3.5 w-3.5" />
+                        结构
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={originViewMode === "canvas"}
+                        className={
+                          originViewMode === "canvas" ? "is-active" : ""
+                        }
+                        onClick={() => setOriginViewMode("canvas")}
+                        title="画布视图"
+                      >
+                        <Waypoints className="h-3.5 w-3.5" />
+                        画布
+                      </button>
+                    </div>
                     <Button
                       variant="ghost"
                       onClick={() => addManifestation(origin)}
@@ -3327,150 +5449,26 @@ function WorldOriginWorkspace({
                     </Button>
                   </div>
                 </div>
-                <div className="ce-world-origin-layers">
-                  <div className="ce-world-origin-layer ce-world-origin-layer-ontology">
-                    <span className="ce-world-origin-layer-label">本体层</span>
-                    <p>
-                      {origin.ontologyStatement ||
-                        origin.summary ||
-                        "尚未填写本体陈述"}
-                    </p>
-                  </div>
-                  <div className="ce-world-origin-layer">
-                    <span className="ce-world-origin-layer-label">
-                      分化与显化层
-                    </span>
-                    <div className="ce-world-origin-manifestation-grid">
-                      {typeOrder.map((type) => {
-                        const items = byType.get(type) ?? [];
-                        return (
-                          <div
-                            className={`ce-world-origin-type-group type-${type}`}
-                            key={type}
-                          >
-                            <span>{manifestationTypeLabels[type]}</span>
-                            {items.length === 0 ? (
-                              <small>未定义</small>
-                            ) : (
-                              items.map((item) => (
-                                <button
-                                  type="button"
-                                  key={item.id}
-                                  onClick={() =>
-                                    onSelect({
-                                      kind: "manifestation",
-                                      id: item.id,
-                                      parentId: origin.id,
-                                      parentKind: "world-origin",
-                                    })
-                                  }
-                                >
-                                  <strong>{item.name}</strong>
-                                  <small>
-                                    {item.summary ||
-                                      item.definition ||
-                                      "点击编辑显化"}
-                                  </small>
-                                </button>
-                              ))
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="ce-world-origin-layer ce-world-origin-projection-layer">
-                    <span className="ce-world-origin-layer-label">
-                      修行体系投影层
-                    </span>
-                    <div className="ce-world-origin-projections">
-                      {systems.length === 0 ? (
-                        <span className="ce-world-origin-muted">
-                          尚无修行体系接入这个世界本源
-                        </span>
-                      ) : (
-                        systems.map((system) => (
-                          <button
-                            type="button"
-                            key={system.id}
-                            onClick={() =>
-                              onSelect({
-                                kind: "origin-projection",
-                                id: system.id,
-                                parentId: origin.id,
-                                parentKind: "world-origin",
-                              })
-                            }
-                          >
-                            <Boxes className="h-4 w-4" />
-                            <span>
-                              <strong>{system.name}</strong>
-                              <small>
-                                {
-                                  system.projection.manifestationIds.filter(
-                                    (id) =>
-                                      origin.manifestations.some(
-                                        (item) => item.id === id,
-                                      ),
-                                  ).length
-                                }{" "}
-                                个显化入口 ·{" "}
-                                {system.projection.access || "接入方式未定义"}
-                              </small>
-                            </span>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div className="ce-world-origin-footer">
-                  <div>
-                    <span>作用域</span>
-                    <strong>{origin.scopes.join("、") || "未定义"}</strong>
-                  </div>
-                  <div>
-                    <span>约束</span>
-                    <strong>{origin.constraints.length} 条</strong>
-                  </div>
-                  <div>
-                    <span>关系</span>
-                    <strong>{origin.relations.length} 条</strong>
-                  </div>
-                </div>
-                <div className="ce-world-origin-relations">
-                  <span className="ce-world-origin-relations-title">
-                    结构关系
-                  </span>
-                  {origin.relations.map((relation) => (
-                    <button
-                      type="button"
-                      key={relation.id}
-                      onClick={() =>
-                        onSelect({
-                          kind: "origin-relation",
-                          id: relation.id,
-                          parentId: origin.id,
-                          parentKind: "world-origin",
-                        })
-                      }
-                    >
-                      <span>
-                        {origin.manifestations.find(
-                          (item) => item.id === relation.sourceId,
-                        )?.name || origin.name}
-                      </span>
-                      <ChevronRight className="h-3.5 w-3.5" />
-                      <em>{originRelationLabels[relation.relation]}</em>
-                      <ChevronRight className="h-3.5 w-3.5" />
-                      <span>
-                        {origin.manifestations.find(
-                          (item) => item.id === relation.targetId,
-                        )?.name || relation.targetId}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                {originViewMode === "structure" ? (
+                  <WorldOriginStructureView
+                    origin={origin}
+                    systems={systems}
+                    onSelect={onSelect}
+                    onAddManifestation={(type) =>
+                      addManifestation(origin, type)
+                    }
+                  />
+                ) : (
+                  <WorldOriginCanvasEditor
+                    ecology={ecology}
+                    origin={origin}
+                    onChange={onChange}
+                    onSelect={onSelect}
+                    onAddManifestation={(type) =>
+                      addManifestation(origin, type)
+                    }
+                  />
+                )}
               </section>
             ) : (
               <Empty text="尚未定义世界本源" />
@@ -3506,35 +5504,6 @@ function WorldOriginWorkspace({
               </section>
             )}
           </div>
-          <aside className="ce-world-origin-inspector">
-            <div className="ce-world-origin-inspector-header">
-              <h2>本源检查</h2>
-              <span
-                className={
-                  auditIssues.length === 0 ? "is-complete" : "is-pending"
-                }
-              >
-                {origin
-                  ? auditIssues.length === 0
-                    ? "结构完整"
-                    : `${auditIssues.length} 项待完善`
-                  : "等待建立"}
-              </span>
-            </div>
-            <InspectorV2
-              scope="origins"
-              ecology={ecology}
-              system={null}
-              selection={selection}
-              onChange={onChange}
-              onChangeSystem={() => undefined}
-              onDeleteSystem={() => undefined}
-              onSelect={onSelect}
-              itemEntries={[]}
-              itemLibraryLoading={false}
-              itemLibraryError=""
-            />
-          </aside>
         </div>
       )}
     </div>
@@ -3678,9 +5647,7 @@ function SystemMultiSelectField({
               type="button"
               title={`移除 ${names.get(id) ?? id}`}
               aria-label={`移除 ${names.get(id) ?? id}`}
-              onClick={() =>
-                onChange(value.filter((itemId) => itemId !== id))
-              }
+              onClick={() => onChange(value.filter((itemId) => itemId !== id))}
             >
               <X className="h-3 w-3" />
             </button>
@@ -3721,7 +5688,9 @@ function MetricThresholdsField({
     index: number,
     patch: Partial<{ metricId: string; threshold: string }>,
   ) => {
-    const next = value.map((row, i) => (i === index ? { ...row, ...patch } : row));
+    const next = value.map((row, i) =>
+      i === index ? { ...row, ...patch } : row,
+    );
     onChange(next);
   };
   return (
@@ -3772,6 +5741,75 @@ function MetricThresholdsField({
   );
 }
 
+type ResourceGrade = CultivationResource["grades"][number];
+
+function ResourceGradesField({
+  value,
+  onChange,
+}: {
+  value: readonly ResourceGrade[];
+  onChange: (value: ResourceGrade[]) => void;
+}) {
+  const update = (id: string, patch: Partial<ResourceGrade>) =>
+    onChange(
+      value.map((grade) => (grade.id === id ? { ...grade, ...patch } : grade)),
+    );
+  return (
+    <div className="ce-field ce-resource-grades-field">
+      <span>品质等级</span>
+      {value.map((grade, index) => (
+        <div className="ce-resource-grade-row" key={grade.id}>
+          <Field
+            label={`等级 ${index + 1} 名称`}
+            value={grade.name}
+            onChange={(name) => update(grade.id, { name })}
+          />
+          <Field
+            label="摘要"
+            value={grade.summary}
+            onChange={(summary) => update(grade.id, { summary })}
+            multiline
+          />
+          <Field
+            label="效果"
+            value={grade.effect ?? ""}
+            onChange={(effect) => update(grade.id, { effect })}
+            multiline
+          />
+          <Button
+            variant="ghost"
+            title={`移除品质等级 ${grade.name}`}
+            onClick={() =>
+              onChange(value.filter((item) => item.id !== grade.id))
+            }
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ))}
+      {value.length === 0 && <small>尚未配置品质等级</small>}
+      <Button
+        variant="ghost"
+        title="添加品质等级"
+        onClick={() =>
+          onChange([
+            ...value,
+            {
+              id: newEcologyId("grade"),
+              name: `品质 ${value.length + 1}`,
+              summary: "",
+              effect: "",
+            },
+          ])
+        }
+      >
+        <Plus className="h-3.5 w-3.5" />
+        添加品质等级
+      </Button>
+    </div>
+  );
+}
+
 function ResourceRequirementsField({
   label,
   value,
@@ -3785,10 +5823,16 @@ function ResourceRequirementsField({
   defaultPurpose: ResourceRequirement["purpose"];
   onChange: (value: ResourceRequirement[]) => void;
 }) {
-  const names = new Map(resources.map((resource) => [resource.id, resource.name]));
-  const options = resources.map((resource) => ({ value: resource.id, label: `${resource.name} · ${resource.id}` }));
+  const names = new Map(
+    resources.map((resource) => [resource.id, resource.name]),
+  );
+  const options = resources.map((resource) => ({
+    value: resource.id,
+    label: `${resource.name} · ${resource.id}`,
+  }));
   const add = (resourceId: string) => {
-    if (!resourceId || value.some((item) => item.resourceId === resourceId)) return;
+    if (!resourceId || value.some((item) => item.resourceId === resourceId))
+      return;
     onChange([
       ...value,
       {
@@ -3803,16 +5847,36 @@ function ResourceRequirementsField({
     ]);
   };
   const update = (index: number, patch: Partial<ResourceRequirement>) =>
-    onChange(value.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
+    onChange(
+      value.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
   return (
     <div className="ce-field ce-resource-requirements-field">
       <span>{label}</span>
       {value.map((item, index) => (
-        <div className="ce-resource-requirement-row" key={`${item.resourceId}-${index}`}>
+        <div
+          className="ce-resource-requirement-row"
+          key={`${item.resourceId}-${index}`}
+        >
           <SelectField
             label="资源"
             value={item.resourceId}
-            options={options}
+            options={resources
+              .filter(
+                (resource) =>
+                  resource.id === item.resourceId ||
+                  !value.some(
+                    (candidate, candidateIndex) =>
+                      candidateIndex !== index &&
+                      candidate.resourceId === resource.id,
+                  ),
+              )
+              .map((resource) => ({
+                value: resource.id,
+                label: `${resource.name} · ${resource.id}`,
+              }))}
             onChange={(resourceId) => update(index, { resourceId })}
           />
           <SelectField
@@ -3825,28 +5889,82 @@ function ResourceRequirementsField({
               { value: "maintain", label: "维持" },
               { value: "recover", label: "恢复" },
             ]}
-            onChange={(purpose) => update(index, { purpose: purpose as ResourceRequirement["purpose"] })}
+            onChange={(purpose) =>
+              update(index, {
+                purpose: purpose as ResourceRequirement["purpose"],
+              })
+            }
           />
-          <Field label="数量" value={item.quantity} onChange={(quantity) => update(index, { quantity })} />
-          <Field label="品质" value={item.quality} onChange={(quality) => update(index, { quality })} />
+          <Field
+            label="数量"
+            value={item.quantity}
+            onChange={(quantity) => update(index, { quantity })}
+          />
+          <Field
+            label="品质"
+            value={item.quality}
+            onChange={(quality) => update(index, { quality })}
+          />
           <label className="ce-field ce-checkbox-field">
             <span>是否消耗</span>
-            <input type="checkbox" checked={item.consumed} onChange={(event) => update(index, { consumed: event.target.checked })} />
+            <input
+              type="checkbox"
+              checked={item.consumed}
+              onChange={(event) =>
+                update(index, { consumed: event.target.checked })
+              }
+            />
           </label>
-          <Field label="替代资源 ID（一行一个）" value={item.substituteResourceIds.join("\n")} onChange={(text) => update(index, { substituteResourceIds: idList(text) })} multiline />
-          <Field label="资源短缺后果" value={item.missingConsequence} onChange={(missingConsequence) => update(index, { missingConsequence })} multiline />
-          <Button variant="ghost" title={`移除${names.get(item.resourceId) ?? item.resourceId}`} onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>
+          <SystemMultiSelectField
+            label="替代资源"
+            value={item.substituteResourceIds}
+            options={resources
+              .filter((resource) => resource.id !== item.resourceId)
+              .map((resource) => ({
+                value: resource.id,
+                label: `${resource.name} · ${resource.id}`,
+              }))}
+            onChange={(substituteResourceIds) =>
+              update(index, { substituteResourceIds })
+            }
+          />
+          <Field
+            label="资源短缺后果"
+            value={item.missingConsequence}
+            onChange={(missingConsequence) =>
+              update(index, { missingConsequence })
+            }
+            multiline
+          />
+          <Button
+            variant="ghost"
+            title={`移除${names.get(item.resourceId) ?? item.resourceId}`}
+            onClick={() =>
+              onChange(value.filter((_, itemIndex) => itemIndex !== index))
+            }
+          >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </div>
       ))}
       {value.length === 0 && <small>尚未配置资源需求</small>}
-      <CustomSelect value="" options={options.filter((option) => !value.some((item) => item.resourceId === option.value))} onChange={add} ariaLabel={`添加${label}`} placeholder="添加资源需求" disabled={resources.length === 0} />
+      <CustomSelect
+        value=""
+        options={options.filter(
+          (option) => !value.some((item) => item.resourceId === option.value),
+        )}
+        onChange={add}
+        ariaLabel={`添加${label}`}
+        placeholder="添加资源需求"
+        disabled={resources.length === 0}
+      />
     </div>
   );
 }
 
-type OriginBinding = NonNullable<CultivationSystem["projection"]["originBindings"]>[number];
+type OriginBinding = NonNullable<
+  CultivationSystem["projection"]["originBindings"]
+>[number];
 type ReleaseCost = NonNullable<Ability["cast"]["releaseCosts"]>[number];
 
 function OriginBindingsField({
@@ -3859,7 +5977,8 @@ function OriginBindingsField({
   onChange: (value: OriginBinding[]) => void;
 }) {
   const add = (sourceId: string) => {
-    if (!sourceId || value.some((binding) => binding.sourceId === sourceId)) return;
+    if (!sourceId || value.some((binding) => binding.sourceId === sourceId))
+      return;
     onChange([
       ...value,
       {
@@ -3872,12 +5991,19 @@ function OriginBindingsField({
     ]);
   };
   const update = (index: number, patch: Partial<OriginBinding>) =>
-    onChange(value.map((binding, bindingIndex) => bindingIndex === index ? { ...binding, ...patch } : binding));
+    onChange(
+      value.map((binding, bindingIndex) =>
+        bindingIndex === index ? { ...binding, ...patch } : binding,
+      ),
+    );
   return (
     <div className="ce-field ce-resource-requirements-field">
       <span>本源语义绑定</span>
       {value.map((binding, index) => (
-        <div className="ce-resource-requirement-row" key={`${binding.sourceId}-${index}`}>
+        <div
+          className="ce-resource-requirement-row"
+          key={`${binding.sourceId}-${index}`}
+        >
           <SelectField
             label="来源节点"
             value={binding.sourceId}
@@ -3885,7 +6011,10 @@ function OriginBindingsField({
               ...(!nodes.some((node) => node.id === binding.sourceId)
                 ? [{ value: binding.sourceId, label: binding.sourceId }]
                 : []),
-              ...nodes.map((node) => ({ value: node.id, label: `${node.name} · ${node.id}` })),
+              ...nodes.map((node) => ({
+                value: node.id,
+                label: `${node.name} · ${node.id}`,
+              })),
             ]}
             onChange={(sourceId) => update(index, { sourceId })}
           />
@@ -3897,12 +6026,36 @@ function OriginBindingsField({
               { value: "secondary", label: "次本源" },
               { value: "manifestation", label: "显化节点" },
             ]}
-            onChange={(role) => update(index, { role: role as OriginBinding["role"] })}
+            onChange={(role) =>
+              update(index, { role: role as OriginBinding["role"] })
+            }
           />
-          <Field label="语义用途" value={binding.purpose} onChange={(purpose) => update(index, { purpose })} multiline />
-          <Field label="权重 / 优先级" value={binding.weight} onChange={(weight) => update(index, { weight })} />
-          <Field label="副作用（一行一条）" value={binding.sideEffects.join("\n")} onChange={(text) => update(index, { sideEffects: textList(text) })} multiline />
-          <Button variant="ghost" title="移除本源绑定" onClick={() => onChange(value.filter((_, bindingIndex) => bindingIndex !== index))}>
+          <Field
+            label="语义用途"
+            value={binding.purpose}
+            onChange={(purpose) => update(index, { purpose })}
+            multiline
+          />
+          <Field
+            label="权重 / 优先级"
+            value={binding.weight}
+            onChange={(weight) => update(index, { weight })}
+          />
+          <Field
+            label="副作用（一行一条）"
+            value={binding.sideEffects.join("\n")}
+            onChange={(text) => update(index, { sideEffects: textList(text) })}
+            multiline
+          />
+          <Button
+            variant="ghost"
+            title="移除本源绑定"
+            onClick={() =>
+              onChange(
+                value.filter((_, bindingIndex) => bindingIndex !== index),
+              )
+            }
+          >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -3910,7 +6063,11 @@ function OriginBindingsField({
       {value.length === 0 && <small>尚未配置本源语义绑定</small>}
       <CustomSelect
         value=""
-        options={nodes.filter((node) => !value.some((binding) => binding.sourceId === node.id)).map((node) => ({ value: node.id, label: `添加 ${node.name}` }))}
+        options={nodes
+          .filter(
+            (node) => !value.some((binding) => binding.sourceId === node.id),
+          )
+          .map((node) => ({ value: node.id, label: `添加 ${node.name}` }))}
         onChange={add}
         ariaLabel="添加本源语义绑定"
         placeholder="添加本源语义绑定"
@@ -3928,19 +6085,46 @@ function ReleaseCostsField({
   onChange: (value: ReleaseCost[]) => void;
 }) {
   const update = (index: number, patch: Partial<ReleaseCost>) =>
-    onChange(value.map((cost, costIndex) => costIndex === index ? { ...cost, ...patch } : cost));
+    onChange(
+      value.map((cost, costIndex) =>
+        costIndex === index ? { ...cost, ...patch } : cost,
+      ),
+    );
   return (
     <div className="ce-field ce-resource-requirements-field">
       <span>释放成本</span>
       {value.map((cost, index) => (
-        <div className="ce-resource-requirement-row" key={`${cost.label}-${index}`}>
-          <Field label="成本名称" value={cost.label} onChange={(label) => update(index, { label })} />
-          <Field label="数量 / 公式" value={cost.amount} onChange={(amount) => update(index, { amount })} />
+        <div
+          className="ce-resource-requirement-row"
+          key={`${cost.label}-${index}`}
+        >
+          <Field
+            label="成本名称"
+            value={cost.label}
+            onChange={(label) => update(index, { label })}
+          />
+          <Field
+            label="数量 / 公式"
+            value={cost.amount}
+            onChange={(amount) => update(index, { amount })}
+          />
           <label className="ce-field ce-checkbox-field">
             <span>是否消耗</span>
-            <input type="checkbox" checked={cost.consumed} onChange={(event) => update(index, { consumed: event.target.checked })} />
+            <input
+              type="checkbox"
+              checked={cost.consumed}
+              onChange={(event) =>
+                update(index, { consumed: event.target.checked })
+              }
+            />
           </label>
-          <Button variant="ghost" title="移除释放成本" onClick={() => onChange(value.filter((_, costIndex) => costIndex !== index))}>
+          <Button
+            variant="ghost"
+            title="移除释放成本"
+            onClick={() =>
+              onChange(value.filter((_, costIndex) => costIndex !== index))
+            }
+          >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -3949,7 +6133,9 @@ function ReleaseCostsField({
       <Button
         variant="ghost"
         title="添加释放成本"
-        onClick={() => onChange([...value, { label: "新成本", amount: "", consumed: true }])}
+        onClick={() =>
+          onChange([...value, { label: "新成本", amount: "", consumed: true }])
+        }
       >
         <Plus className="h-3.5 w-3.5" />
         添加释放成本
@@ -3969,21 +6155,30 @@ function CourseEditor({
   resources: readonly CultivationResource[];
   onChange: (value: MethodCourse[]) => void;
 }) {
-  const options = levels.map((level) => ({ value: level.id, label: `${level.name} · ${level.id}` }));
-  const add = () => onChange([
-    ...value,
-    {
-      id: newEcologyId("course"),
-      levelId: null,
-      title: `新课程 ${value.length + 1}`,
-      steps: [],
-      prerequisites: [],
-      resourceRequirements: [],
-      passCriteria: "",
-      failureRisk: "",
-    },
-  ]);
-  const update = (index: number, patch: Partial<MethodCourse>) => onChange(value.map((course, courseIndex) => courseIndex === index ? { ...course, ...patch } : course));
+  const options = levels.map((level) => ({
+    value: level.id,
+    label: `${level.name} · ${level.id}`,
+  }));
+  const add = () =>
+    onChange([
+      ...value,
+      {
+        id: newEcologyId("course"),
+        levelId: null,
+        title: `新课程 ${value.length + 1}`,
+        steps: [],
+        prerequisites: [],
+        resourceRequirements: [],
+        passCriteria: "",
+        failureRisk: "",
+      },
+    ]);
+  const update = (index: number, patch: Partial<MethodCourse>) =>
+    onChange(
+      value.map((course, courseIndex) =>
+        courseIndex === index ? { ...course, ...patch } : course,
+      ),
+    );
   return (
     <div className="ce-field ce-course-editor">
       <span>阶段课程</span>
@@ -3991,19 +6186,71 @@ function CourseEditor({
         <div className="ce-course-row" key={course.id}>
           <div className="ce-course-row-head">
             <strong>{course.title}</strong>
-            <Button variant="ghost" title="删除课程" onClick={() => onChange(value.filter((_, courseIndex) => courseIndex !== index))}><Trash2 className="h-3.5 w-3.5" /></Button>
+            <Button
+              variant="ghost"
+              title="删除课程"
+              onClick={() =>
+                onChange(
+                  value.filter((_, courseIndex) => courseIndex !== index),
+                )
+              }
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
           </div>
-          <Field label="课程标题" value={course.title} onChange={(title) => update(index, { title })} />
-          <SelectField label="对应阶段" value={course.levelId ?? ""} options={[{ value: "", label: "未指定" }, ...options]} onChange={(levelId) => update(index, { levelId: levelId || null })} />
-          <Field label="训练步骤（一行一条）" value={course.steps.join("\n")} onChange={(text) => update(index, { steps: textList(text) })} multiline />
-          <Field label="前置条件（一行一条）" value={course.prerequisites.join("\n")} onChange={(text) => update(index, { prerequisites: textList(text) })} multiline />
-          <ResourceRequirementsField label="课程资源需求" value={course.resourceRequirements} resources={resources} defaultPurpose="train" onChange={(resourceRequirements) => update(index, { resourceRequirements })} />
-          <Field label="通过标准" value={course.passCriteria} onChange={(passCriteria) => update(index, { passCriteria })} multiline />
-          <Field label="失败风险" value={course.failureRisk} onChange={(failureRisk) => update(index, { failureRisk })} multiline />
+          <Field
+            label="课程标题"
+            value={course.title}
+            onChange={(title) => update(index, { title })}
+          />
+          <SelectField
+            label="对应阶段"
+            value={course.levelId ?? ""}
+            options={[{ value: "", label: "未指定" }, ...options]}
+            onChange={(levelId) => update(index, { levelId: levelId || null })}
+          />
+          <Field
+            label="训练步骤（一行一条）"
+            value={course.steps.join("\n")}
+            onChange={(text) => update(index, { steps: textList(text) })}
+            multiline
+          />
+          <Field
+            label="前置条件（一行一条）"
+            value={course.prerequisites.join("\n")}
+            onChange={(text) =>
+              update(index, { prerequisites: textList(text) })
+            }
+            multiline
+          />
+          <ResourceRequirementsField
+            label="课程资源需求"
+            value={course.resourceRequirements}
+            resources={resources}
+            defaultPurpose="train"
+            onChange={(resourceRequirements) =>
+              update(index, { resourceRequirements })
+            }
+          />
+          <Field
+            label="通过标准"
+            value={course.passCriteria}
+            onChange={(passCriteria) => update(index, { passCriteria })}
+            multiline
+          />
+          <Field
+            label="失败风险"
+            value={course.failureRisk}
+            onChange={(failureRisk) => update(index, { failureRisk })}
+            multiline
+          />
         </div>
       ))}
       {value.length === 0 && <small>尚未配置课程</small>}
-      <Button variant="secondary" onClick={add}><Plus className="h-3.5 w-3.5" />新增课程</Button>
+      <Button variant="secondary" onClick={add}>
+        <Plus className="h-3.5 w-3.5" />
+        新增课程
+      </Button>
     </div>
   );
 }
@@ -4118,10 +6365,20 @@ function textList(value: string): string[] {
     .map((item) => item.trim())
     .filter(Boolean);
 }
-function idList(value: string): string[] {
-  return textList(value);
+function fixedLineValues(value: string, count: number): string[] {
+  const lines = value.split("\n").map((item) => item.trim());
+  return Array.from({ length: count }, (_, index) => lines[index] ?? "");
 }
-
+function boundedNumber(
+  value: string,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
 function InspectorV2({
   scope,
   ecology,
@@ -4164,9 +6421,6 @@ function InspectorV2({
   const abilities = system?.abilities ?? [];
   const theoryNodes = system?.theoryModel.nodeCatalog ?? [];
   const worldOrigins = ecology.worldOrigins;
-  const manifestations = ecology.worldOrigins.flatMap(
-    (origin) => origin.manifestations,
-  );
 
   if (!selection && scope === "origins")
     return (
@@ -4215,7 +6469,9 @@ function InspectorV2({
               (id) => !manifestationIds.has(id),
             ),
             originBindings: candidate.projection.originBindings?.filter(
-              (binding) => binding.sourceId !== item.id && !manifestationIds.has(binding.sourceId),
+              (binding) =>
+                binding.sourceId !== item.id &&
+                !manifestationIds.has(binding.sourceId),
             ),
           },
         })),
@@ -4338,6 +6594,10 @@ function InspectorV2({
                 update({ status: value as WorldOrigin["status"] })
               }
             />
+            <OrbStyleField
+              value={item.orbStyle ?? worldOriginStatusOrbStyles[item.status]}
+              onChange={(orbStyle) => update({ orbStyle })}
+            />
             <Field
               label="摘要"
               value={item.summary}
@@ -4383,6 +6643,12 @@ function InspectorV2({
       (manifestation) => manifestation.id === selected,
     );
     if (!parent || !item) return <InspectorMissing />;
+    const sourceNodes = [
+      { id: parent.id, name: parent.name },
+      ...parent.manifestations.filter(
+        (manifestation) => manifestation.id !== item.id,
+      ),
+    ];
     const update = (patch: Partial<WorldOriginManifestation>) =>
       onChange({
         ...ecology,
@@ -4406,6 +6672,11 @@ function InspectorV2({
           relations: origin.relations.filter(
             (relation) =>
               relation.sourceId !== item.id && relation.targetId !== item.id,
+          ),
+          canvasPositions: Object.fromEntries(
+            Object.entries(origin.canvasPositions ?? {}).filter(
+              ([id]) => id !== item.id,
+            ),
           ),
         })),
         systems: ecology.systems.map((candidate) => ({
@@ -4445,6 +6716,10 @@ function InspectorV2({
             update({ type: value as WorldOriginManifestation["type"] })
           }
         />
+        <OrbStyleField
+          value={item.orbStyle ?? manifestationTypeOrbStyles[item.type]}
+          onChange={(orbStyle) => update({ orbStyle })}
+        />
         <Field
           label="摘要"
           value={item.summary}
@@ -4457,9 +6732,16 @@ function InspectorV2({
           onChange={(value) => update({ definition: value })}
           multiline
         />
-        <Field
-          label="来源节点 ID"
+        <SelectField
+          label="来源节点"
           value={item.sourceId ?? ""}
+          options={[
+            { value: "", label: "未指定" },
+            ...sourceNodes.map((node) => ({
+              value: node.id,
+              label: node.name,
+            })),
+          ]}
           onChange={(value) => update({ sourceId: value || null })}
         />
         <Field
@@ -4660,6 +6942,64 @@ function InspectorV2({
             (current) => ({ ...current, ...patch }),
           ),
         });
+      const affectedAssetOptions = ecology.systems
+        .filter(
+          (candidate) =>
+            candidate.id === item.sourceSystemId ||
+            candidate.id === item.targetSystemId,
+        )
+        .flatMap((candidate) => [
+          ...candidate.theoryModel.nodeCatalog.map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 理论节点 · ${asset.name}`,
+          })),
+          ...candidate.resources.map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 资源 · ${asset.name}`,
+          })),
+          ...candidate.progressionTracks.flatMap((track) => [
+            {
+              value: track.id,
+              label: `${candidate.name} / 轨道 · ${track.name}`,
+            },
+            ...track.metrics.map((asset) => ({
+              value: asset.id,
+              label: `${candidate.name} / 指标 · ${asset.name}`,
+            })),
+            ...track.levels.map((asset) => ({
+              value: asset.id,
+              label: `${candidate.name} / 阶段 · ${asset.name}`,
+            })),
+            ...track.transitions.map((asset) => ({
+              value: asset.id,
+              label: `${candidate.name} / 轨道转换 · ${asset.name}`,
+            })),
+          ]),
+          ...candidate.methods.map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 法门 · ${asset.name}`,
+          })),
+          ...candidate.abilities.map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 能力 · ${asset.name}`,
+          })),
+          ...candidate.formations.map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 阵法 · ${asset.name}`,
+          })),
+          ...candidate.foundations.map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 根基 · ${asset.name}`,
+          })),
+          ...(candidate.trackInteractions ?? []).map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 轨道规则 · ${asset.name}`,
+          })),
+          ...candidate.transitions.map((asset) => ({
+            value: asset.id,
+            label: `${candidate.name} / 转换 · ${asset.name}`,
+          })),
+        ]);
       return (
         <InspectorEditor
           title={item.name}
@@ -4682,9 +7022,15 @@ function InspectorV2({
           <SelectField
             label="关系类型"
             value={item.relation}
-            options={["兼容", "克制", "转换", "依赖", "继承", "污染", "冲突"].map(
-              (value) => ({ value, label: value }),
-            )}
+            options={[
+              "兼容",
+              "克制",
+              "转换",
+              "依赖",
+              "继承",
+              "污染",
+              "冲突",
+            ].map((value) => ({ value, label: value }))}
             onChange={(value) =>
               update({ relation: value as typeof item.relation })
             }
@@ -4725,9 +7071,24 @@ function InspectorV2({
             onChange={(value) => update({ risk: value })}
             multiline
           />
-          <Field label="转换结果" value={item.result ?? ""} onChange={(result) => update({ result })} multiline />
-          <Field label="影响资产 ID（一行一个）" value={(item.affectedAssetIds ?? []).join("\n")} onChange={(value) => update({ affectedAssetIds: idList(value) })} multiline />
-          <Field label="边界" value={item.boundary ?? ""} onChange={(boundary) => update({ boundary })} multiline />
+          <Field
+            label="转换结果"
+            value={item.result ?? ""}
+            onChange={(result) => update({ result })}
+            multiline
+          />
+          <SystemMultiSelectField
+            label="影响资产"
+            value={item.affectedAssetIds ?? []}
+            options={affectedAssetOptions}
+            onChange={(affectedAssetIds) => update({ affectedAssetIds })}
+          />
+          <Field
+            label="边界"
+            value={item.boundary ?? ""}
+            onChange={(boundary) => update({ boundary })}
+            multiline
+          />
         </InspectorEditor>
       );
     }
@@ -4746,30 +7107,86 @@ function InspectorV2({
           label="关联世界本源"
           value={system.projection.originIds}
           options={listOptions(worldOrigins)}
-          onChange={(value) =>
+          onChange={(value) => {
+            const allowedManifestationIds = new Set(
+              worldOrigins
+                .filter((origin) => value.includes(origin.id))
+                .flatMap((origin) =>
+                  origin.manifestations.map(
+                    (manifestation) => manifestation.id,
+                  ),
+                ),
+            );
+            const allowedSourceIds = new Set([
+              ...value,
+              ...allowedManifestationIds,
+            ]);
             patchSystem({
-              projection: { ...system.projection, originIds: value },
-            })
-          }
+              projection: {
+                ...system.projection,
+                originIds: value,
+                manifestationIds: system.projection.manifestationIds.filter(
+                  (id) => allowedManifestationIds.has(id),
+                ),
+                originBindings: system.projection.originBindings?.filter(
+                  (binding) => allowedSourceIds.has(binding.sourceId),
+                ),
+              },
+            });
+          }}
         />
         <SystemMultiSelectField
           label="关联显化节点"
           value={system.projection.manifestationIds}
-          options={listOptions(manifestations)}
+          options={listOptions(
+            worldOrigins
+              .filter((origin) =>
+                system.projection.originIds.includes(origin.id),
+              )
+              .flatMap((origin) => origin.manifestations),
+          )}
           onChange={(value) =>
             patchSystem({
-              projection: { ...system.projection, manifestationIds: value },
+              projection: {
+                ...system.projection,
+                manifestationIds: value.filter((id) =>
+                  worldOrigins
+                    .filter((origin) =>
+                      system.projection.originIds.includes(origin.id),
+                    )
+                    .some((origin) =>
+                      origin.manifestations.some(
+                        (manifestation) => manifestation.id === id,
+                      ),
+                    ),
+                ),
+              },
             })
           }
         />
         <OriginBindingsField
           value={system.projection.originBindings ?? []}
           nodes={[
-            ...worldOrigins.map((origin) => ({ id: origin.id, name: origin.name })),
-            ...manifestations.map((manifestation) => ({ id: manifestation.id, name: manifestation.name })),
+            ...worldOrigins
+              .filter((origin) =>
+                system.projection.originIds.includes(origin.id),
+              )
+              .map((origin) => ({ id: origin.id, name: origin.name })),
+            ...worldOrigins
+              .filter((origin) =>
+                system.projection.originIds.includes(origin.id),
+              )
+              .flatMap((origin) =>
+                origin.manifestations.map((manifestation) => ({
+                  id: manifestation.id,
+                  name: manifestation.name,
+                })),
+              ),
           ]}
           onChange={(originBindings) =>
-            patchSystem({ projection: { ...system.projection, originBindings } })
+            patchSystem({
+              projection: { ...system.projection, originBindings },
+            })
           }
         />
         <Field
@@ -4999,10 +7416,12 @@ function InspectorV2({
         title={item.name}
         type="理论节点"
         onDelete={() => {
+          const next = removeTheoryNodeReferences(system, item.id);
           patchSystem({
+            ...next,
             theoryModel: {
-              ...system.theoryModel,
-              nodeCatalog: system.theoryModel.nodeCatalog.filter(
+              ...next.theoryModel,
+              nodeCatalog: next.theoryModel.nodeCatalog.filter(
                 (node) => node.id !== item.id,
               ),
             },
@@ -5073,8 +7492,12 @@ function InspectorV2({
         title={item.name}
         type="资源"
         onDelete={() => {
+          const next = removeResourceReferences(system, item.id);
           patchSystem({
-            resources: resources.filter((resource) => resource.id !== item.id),
+            ...next,
+            resources: next.resources.filter(
+              (resource) => resource.id !== item.id,
+            ),
           });
           onSelect?.(null);
         }}
@@ -5095,25 +7518,9 @@ function InspectorV2({
           onChange={(value) => update({ summary: value })}
           multiline
         />
-        <Field
-          label="品质等级（名称=说明）"
-          value={item.grades
-            .map((grade) => `${grade.name}=${grade.summary}`)
-            .join("\n")}
-          onChange={(value) =>
-            update({
-              grades: textList(value).map((line, index) => {
-                const [name, ...summary] = line.split("=");
-                return {
-                  id: item.grades[index]?.id ?? newEcologyId("grade"),
-                  name: name.trim() || `品质 ${index + 1}`,
-                  summary: summary.join("=").trim(),
-                  effect: item.grades[index]?.effect ?? "",
-                };
-              }),
-            })
-          }
-          multiline
+        <ResourceGradesField
+          value={item.grades}
+          onChange={(grades) => update({ grades })}
         />
         <SelectField
           label="最佳适用阶段"
@@ -5168,8 +7575,10 @@ function InspectorV2({
         title={item.name}
         type="修行法门"
         onDelete={() => {
+          const next = removeMethodReferences(system, item.id);
           patchSystem({
-            methods: methods.filter((method) => method.id !== item.id),
+            ...next,
+            methods: next.methods.filter((method) => method.id !== item.id),
           });
           onSelect?.(null);
         }}
@@ -5224,7 +7633,7 @@ function InspectorV2({
               stableLimitId = "",
               theoryLimitId = "",
               absoluteLimitId = "",
-            ] = textList(value);
+            ] = fixedLineValues(value, 4);
             update({
               coverage: {
                 startLevelId: startLevelId || null,
@@ -5313,6 +7722,12 @@ function InspectorV2({
                 (topology) => topology.id !== item.id,
               ),
             })),
+            formations: system.formations.map((formation) => ({
+              ...formation,
+              operationTopologyIds: formation.operationTopologyIds?.filter(
+                (topologyId) => topologyId !== item.id,
+              ),
+            })),
           });
           onSelect?.(null);
         }}
@@ -5378,7 +7793,10 @@ function InspectorV2({
       });
     return (
       <InspectorEditor
-        title={item.id}
+        title={
+          theoryNodes.find((node) => node.id === item.theoryNodeId)?.name ??
+          item.id
+        }
         type="拓扑节点"
         onDelete={() => {
           patchSystem({
@@ -5412,7 +7830,19 @@ function InspectorV2({
         <Field
           label="节点顺序"
           value={String(item.order)}
-          onChange={(value) => update({ order: Number(value) || 0 })}
+          onChange={(value) =>
+            update({
+              order: boundedNumber(
+                value,
+                0,
+                Number.MAX_SAFE_INTEGER,
+                item.order,
+              ),
+            })
+          }
+          type="number"
+          min={0}
+          step={1}
         />
         <Field
           label="节点角色"
@@ -5424,6 +7854,26 @@ function InspectorV2({
           value={item.operation}
           onChange={(value) => update({ operation: value })}
           multiline
+        />
+        <TopologyColorField
+          value={topologyNodeColor(
+            item,
+            Math.max(
+              0,
+              topology.nodes.findIndex((node) => node.id === item.id),
+            ),
+          )}
+          onChange={(color) => update({ color })}
+        />
+        <OrbStyleField
+          value={topologyNodeOrbStyle(
+            item,
+            Math.max(
+              0,
+              topology.nodes.findIndex((node) => node.id === item.id),
+            ),
+          )}
+          onChange={(orbStyle) => update({ orbStyle })}
         />
       </InspectorEditor>
     );
@@ -5457,9 +7907,17 @@ function InspectorV2({
           ),
         })),
       });
+    const edgeNodeName = (nodeId: string) => {
+      const node = topology.nodes.find((candidate) => candidate.id === nodeId);
+      return node
+        ? theoryNodes.find((theoryNode) => theoryNode.id === node.theoryNodeId)
+            ?.name || node.id
+        : nodeId;
+    };
+    const fallbackName = `${edgeNodeName(item.fromNodeId)} → ${edgeNodeName(item.toNodeId)}`;
     return (
       <InspectorEditor
-        title={item.id}
+        title={item.name?.trim() || fallbackName}
         type="拓扑流向"
         onDelete={() => {
           patchSystem({
@@ -5480,28 +7938,56 @@ function InspectorV2({
           onSelect?.(null);
         }}
       >
+        <Field
+          label="连线名称"
+          value={item.name ?? ""}
+          placeholder={fallbackName}
+          onChange={(name) => update({ name })}
+        />
         <SelectField
           label="起点节点"
           value={item.fromNodeId}
           options={topology.nodes.map((node) => ({
             value: node.id,
-            label: node.id,
+            label:
+              theoryNodes.find(
+                (theoryNode) => theoryNode.id === node.theoryNodeId,
+              )?.name ?? node.id,
           }))}
-          onChange={(value) => update({ fromNodeId: value })}
+          onChange={(value) =>
+            update({ fromNodeId: value, fromHandleId: undefined })
+          }
         />
         <SelectField
           label="终点节点"
           value={item.toNodeId}
           options={topology.nodes.map((node) => ({
             value: node.id,
-            label: node.id,
+            label:
+              theoryNodes.find(
+                (theoryNode) => theoryNode.id === node.theoryNodeId,
+              )?.name ?? node.id,
           }))}
-          onChange={(value) => update({ toNodeId: value })}
+          onChange={(value) =>
+            update({ toNodeId: value, toHandleId: undefined })
+          }
         />
         <Field
           label="顺序"
           value={String(item.order)}
-          onChange={(value) => update({ order: Number(value) || 0 })}
+          onChange={(value) =>
+            update({
+              order: boundedNumber(
+                value,
+                0,
+                Number.MAX_SAFE_INTEGER,
+                item.order,
+              ),
+            })
+          }
+          type="number"
+          min={0}
+          step={1}
         />
         <Field
           label="流向规则"
@@ -5536,8 +8022,12 @@ function InspectorV2({
             : "秘籍修炼能力"
         }
         onDelete={() => {
+          const next = removeAbilityReferences(system, item.id);
           patchSystem({
-            abilities: abilities.filter((ability) => ability.id !== item.id),
+            ...next,
+            abilities: next.abilities.filter(
+              (ability) => ability.id !== item.id,
+            ),
           });
           onSelect?.(null);
         }}
@@ -5631,19 +8121,51 @@ function InspectorV2({
             update({ cast: { ...item.cast, cooldown: value } })
           }
         />
-        <Field label="最低储备" value={item.cast.reserve ?? ""} onChange={(reserve) => update({ cast: { ...item.cast, reserve } })} />
-        <Field label="持续消耗" value={item.cast.sustainedCost ?? ""} onChange={(sustainedCost) => update({ cast: { ...item.cast, sustainedCost } })} />
-        <Field label="欠费结果" value={item.cast.debtConsequence ?? ""} onChange={(debtConsequence) => update({ cast: { ...item.cast, debtConsequence } })} multiline />
-        <Field label="过载阈值" value={item.cast.overloadThreshold ?? ""} onChange={(overloadThreshold) => update({ cast: { ...item.cast, overloadThreshold } })} />
+        <Field
+          label="最低储备"
+          value={item.cast.reserve ?? ""}
+          onChange={(reserve) => update({ cast: { ...item.cast, reserve } })}
+        />
+        <Field
+          label="持续消耗"
+          value={item.cast.sustainedCost ?? ""}
+          onChange={(sustainedCost) =>
+            update({ cast: { ...item.cast, sustainedCost } })
+          }
+        />
+        <Field
+          label="欠费结果"
+          value={item.cast.debtConsequence ?? ""}
+          onChange={(debtConsequence) =>
+            update({ cast: { ...item.cast, debtConsequence } })
+          }
+          multiline
+        />
+        <Field
+          label="过载阈值"
+          value={item.cast.overloadThreshold ?? ""}
+          onChange={(overloadThreshold) =>
+            update({ cast: { ...item.cast, overloadThreshold } })
+          }
+        />
         <SelectField
           label="完整发挥阶段"
           value={item.cast.fullPowerLevelId ?? ""}
           options={[{ value: "", label: "未指定" }, ...listOptions(levels)]}
-          onChange={(fullPowerLevelId) => update({ cast: { ...item.cast, fullPowerLevelId: fullPowerLevelId || null } })}
+          onChange={(fullPowerLevelId) =>
+            update({
+              cast: {
+                ...item.cast,
+                fullPowerLevelId: fullPowerLevelId || null,
+              },
+            })
+          }
         />
         <ReleaseCostsField
           value={item.cast.releaseCosts ?? []}
-          onChange={(releaseCosts) => update({ cast: { ...item.cast, releaseCosts } })}
+          onChange={(releaseCosts) =>
+            update({ cast: { ...item.cast, releaseCosts } })
+          }
         />
         <Field
           label="作用范围"
@@ -5668,18 +8190,18 @@ function InspectorV2({
           }
           multiline
         />
-        <Field
-          label="训练法门 ID（一行一个）"
-          value={item.trainingRequirements.methodIds.join("\n")}
-          onChange={(value) =>
+        <SystemMultiSelectField
+          label="训练法门"
+          value={item.trainingRequirements.methodIds}
+          options={listOptions(methods)}
+          onChange={(methodIds) =>
             update({
               trainingRequirements: {
                 ...item.trainingRequirements,
-                methodIds: idList(value),
+                methodIds,
               },
             })
           }
-          multiline
         />
         <ResourceRequirementsField
           label="训练资源需求"
@@ -5687,7 +8209,12 @@ function InspectorV2({
           resources={system.resources}
           defaultPurpose="train"
           onChange={(resourceRequirements) =>
-            update({ trainingRequirements: { ...item.trainingRequirements, resourceRequirements } })
+            update({
+              trainingRequirements: {
+                ...item.trainingRequirements,
+                resourceRequirements,
+              },
+            })
           }
         />
         <Field
@@ -5793,11 +8320,7 @@ function InspectorV2({
         title={item.name}
         type="成长轨道"
         onDelete={() => {
-          patchSystem({
-            progressionTracks: system.progressionTracks.filter(
-              (track) => track.id !== item.id,
-            ),
-          });
+          patchSystem(removeTrackReferences(system, item.id));
           onSelect?.(null);
         }}
       >
@@ -5834,29 +8357,103 @@ function InspectorV2({
     );
   }
   if (selection?.kind === "track-interaction") {
-    const item = (system.trackInteractions ?? []).find((interaction) => interaction.id === selected);
+    const item = (system.trackInteractions ?? []).find(
+      (interaction) => interaction.id === selected,
+    );
     if (!item) return <InspectorMissing />;
     const update = (patch: Partial<TrackInteraction>) =>
-      patchSystem({ trackInteractions: (system.trackInteractions ?? []).map((interaction) => interaction.id === item.id ? { ...interaction, ...patch } : interaction) });
+      patchSystem({
+        trackInteractions: (system.trackInteractions ?? []).map(
+          (interaction) =>
+            interaction.id === item.id
+              ? { ...interaction, ...patch }
+              : interaction,
+        ),
+      });
     return (
       <InspectorEditor
         title={item.name}
         type="多轨道交叉规则"
         onDelete={() => {
-          patchSystem({ trackInteractions: (system.trackInteractions ?? []).filter((interaction) => interaction.id !== item.id) });
+          patchSystem({
+            trackInteractions: (system.trackInteractions ?? []).filter(
+              (interaction) => interaction.id !== item.id,
+            ),
+          });
           onSelect?.(null);
         }}
       >
-        <Field label="规则名称" value={item.name} onChange={(name) => update({ name })} />
-        <Field label="摘要" value={item.summary} onChange={(summary) => update({ summary })} multiline />
-        <SelectField label="源轨道" value={item.sourceTrackId} options={listOptions(system.progressionTracks)} onChange={(sourceTrackId) => update({ sourceTrackId })} />
-        <SelectField label="目标轨道" value={item.targetTrackId} options={listOptions(system.progressionTracks)} onChange={(targetTrackId) => update({ targetTrackId })} />
-        <SelectField label="规则类型" value={item.kind} options={[{ value: "synchronization", label: "同步约束" }, { value: "synergy", label: "协同效应" }, { value: "imbalance", label: "失衡惩罚" }, { value: "cross-breakthrough", label: "跨轨道突破" }, { value: "resource-competition", label: "资源竞争" }, { value: "dependency", label: "依赖" }]} onChange={(kind) => update({ kind: kind as TrackInteraction["kind"] })} />
-        <Field label="规则" value={item.rule} onChange={(rule) => update({ rule })} multiline />
-        <Field label="条件（一行一条）" value={item.conditions.join("\n")} onChange={(text) => update({ conditions: textList(text) })} multiline />
-        <Field label="结果 / 惩罚" value={item.consequence} onChange={(consequence) => update({ consequence })} multiline />
-        <Field label="资源分配策略" value={item.resourcePolicy} onChange={(resourcePolicy) => update({ resourcePolicy })} multiline />
-        <SelectField label="是否可逆" value={item.reversible ? "true" : "false"} options={[{ value: "true", label: "可逆" }, { value: "false", label: "不可逆" }]} onChange={(value) => update({ reversible: value === "true" })} />
+        <Field
+          label="规则名称"
+          value={item.name}
+          onChange={(name) => update({ name })}
+        />
+        <Field
+          label="摘要"
+          value={item.summary}
+          onChange={(summary) => update({ summary })}
+          multiline
+        />
+        <SelectField
+          label="源轨道"
+          value={item.sourceTrackId}
+          options={listOptions(system.progressionTracks)}
+          onChange={(sourceTrackId) => update({ sourceTrackId })}
+        />
+        <SelectField
+          label="目标轨道"
+          value={item.targetTrackId}
+          options={listOptions(system.progressionTracks)}
+          onChange={(targetTrackId) => update({ targetTrackId })}
+        />
+        <SelectField
+          label="规则类型"
+          value={item.kind}
+          options={[
+            { value: "synchronization", label: "同步约束" },
+            { value: "synergy", label: "协同效应" },
+            { value: "imbalance", label: "失衡惩罚" },
+            { value: "cross-breakthrough", label: "跨轨道突破" },
+            { value: "resource-competition", label: "资源竞争" },
+            { value: "dependency", label: "依赖" },
+          ]}
+          onChange={(kind) =>
+            update({ kind: kind as TrackInteraction["kind"] })
+          }
+        />
+        <Field
+          label="规则"
+          value={item.rule}
+          onChange={(rule) => update({ rule })}
+          multiline
+        />
+        <Field
+          label="条件（一行一条）"
+          value={item.conditions.join("\n")}
+          onChange={(text) => update({ conditions: textList(text) })}
+          multiline
+        />
+        <Field
+          label="结果 / 惩罚"
+          value={item.consequence}
+          onChange={(consequence) => update({ consequence })}
+          multiline
+        />
+        <Field
+          label="资源分配策略"
+          value={item.resourcePolicy}
+          onChange={(resourcePolicy) => update({ resourcePolicy })}
+          multiline
+        />
+        <SelectField
+          label="是否可逆"
+          value={item.reversible ? "true" : "false"}
+          options={[
+            { value: "true", label: "可逆" },
+            { value: "false", label: "不可逆" },
+          ]}
+          onChange={(value) => update({ reversible: value === "true" })}
+        />
       </InspectorEditor>
     );
   }
@@ -5898,6 +8495,12 @@ function InspectorV2({
                 metrics: current.metrics.filter(
                   (metric) => metric.id !== item.id,
                 ),
+                levels: current.levels.map((level) => ({
+                  ...level,
+                  metricThresholds: level.metricThresholds.filter(
+                    (threshold) => threshold.metricId !== item.id,
+                  ),
+                })),
               }),
             ),
           });
@@ -5976,7 +8579,25 @@ function InspectorV2({
         ),
       });
     return (
-      <InspectorEditor title={item.name} type="境界 / 成长阶段">
+      <InspectorEditor
+        title={item.name}
+        type="境界 / 成长阶段"
+        onDelete={() => {
+          const next = removeLevelReferences(system, new Set([item.id]));
+          patchSystem({
+            ...next,
+            progressionTracks: updateById(
+              next.progressionTracks,
+              track.id,
+              (current) => ({
+                ...current,
+                levels: current.levels.filter((level) => level.id !== item.id),
+              }),
+            ),
+          });
+          onSelect?.(null);
+        }}
+      >
         <Field
           label="阶段名称"
           value={item.name}
@@ -5985,7 +8606,19 @@ function InspectorV2({
         <Field
           label="阶段顺序"
           value={String(item.order)}
-          onChange={(value) => update({ order: Number(value) || 0 })}
+          onChange={(value) =>
+            update({
+              order: boundedNumber(
+                value,
+                0,
+                Number.MAX_SAFE_INTEGER,
+                item.order,
+              ),
+            })
+          }
+          type="number"
+          min={0}
+          step={1}
         />
         <Field
           label="阶段类型"
@@ -6132,37 +8765,51 @@ function InspectorV2({
           onChange={(value) => update({ purpose: value })}
           multiline
         />
-        <Field label="规模" value={item.scale} onChange={(scale) => update({ scale })} />
-        <Field label="反制措施" value={item.countermeasures} onChange={(countermeasures) => update({ countermeasures })} multiline />
+        <Field
+          label="规模"
+          value={item.scale}
+          onChange={(scale) => update({ scale })}
+        />
+        <Field
+          label="反制措施"
+          value={item.countermeasures}
+          onChange={(countermeasures) => update({ countermeasures })}
+          multiline
+        />
         <SystemMultiSelectField
           label="引用法门运行拓扑"
           value={item.operationTopologyIds ?? []}
-          options={methods.flatMap((method) => method.operationTopologies.map((topology) => ({ value: topology.id, label: `${method.name} · ${topology.name}` })))}
+          options={methods.flatMap((method) =>
+            method.operationTopologies.map((topology) => ({
+              value: topology.id,
+              label: `${method.name} · ${topology.name}`,
+            })),
+          )}
           onChange={(operationTopologyIds) => update({ operationTopologyIds })}
         />
-        <Field
-          label="理论节点 ID（一行一个）"
-          value={item.theoryNodeIds.join("\n")}
-          onChange={(value) => update({ theoryNodeIds: idList(value) })}
-          multiline
+        <SystemMultiSelectField
+          label="理论节点"
+          value={item.theoryNodeIds}
+          options={listOptions(theoryNodes)}
+          onChange={(theoryNodeIds) => update({ theoryNodeIds })}
         />
-        <Field
-          label="所需阶段 ID（一行一个）"
-          value={item.requiredLevelIds.join("\n")}
-          onChange={(value) => update({ requiredLevelIds: idList(value) })}
-          multiline
+        <SystemMultiSelectField
+          label="所需阶段"
+          value={item.requiredLevelIds}
+          options={listOptions(levels)}
+          onChange={(requiredLevelIds) => update({ requiredLevelIds })}
         />
-        <Field
-          label="法门 ID（一行一个）"
-          value={item.methodIds.join("\n")}
-          onChange={(value) => update({ methodIds: idList(value) })}
-          multiline
+        <SystemMultiSelectField
+          label="关联法门"
+          value={item.methodIds}
+          options={listOptions(methods)}
+          onChange={(methodIds) => update({ methodIds })}
         />
-        <Field
-          label="能力 ID（一行一个）"
-          value={item.abilityIds.join("\n")}
-          onChange={(value) => update({ abilityIds: idList(value) })}
-          multiline
+        <SystemMultiSelectField
+          label="关联能力"
+          value={item.abilityIds}
+          options={listOptions(abilities)}
+          onChange={(abilityIds) => update({ abilityIds })}
         />
         <ResourceRequirementsField
           label="阵法资源需求"
@@ -6280,15 +8927,33 @@ function InspectorV2({
           label="位置 X（百分比）"
           value={String(item.position.x)}
           onChange={(value) =>
-            update({ position: { ...item.position, x: Number(value) || 0 } })
+            update({
+              position: {
+                ...item.position,
+                x: boundedNumber(value, 0, 100, item.position.x),
+              },
+            })
           }
+          type="number"
+          min={0}
+          max={100}
+          step={0.1}
         />
         <Field
           label="位置 Y（百分比）"
           value={String(item.position.y)}
           onChange={(value) =>
-            update({ position: { ...item.position, y: Number(value) || 0 } })
+            update({
+              position: {
+                ...item.position,
+                y: boundedNumber(value, 0, 100, item.position.y),
+              },
+            })
           }
+          type="number"
+          min={0}
+          max={100}
+          step={0.1}
         />
       </InspectorEditor>
     );
@@ -6348,7 +9013,19 @@ function InspectorV2({
         <Field
           label="顺序"
           value={String(item.order)}
-          onChange={(value) => update({ order: Number(value) || 0 })}
+          onChange={(value) =>
+            update({
+              order: boundedNumber(
+                value,
+                0,
+                Number.MAX_SAFE_INTEGER,
+                item.order,
+              ),
+            })
+          }
+          type="number"
+          min={0}
+          step={1}
         />
         <Field
           label="流向规则"
@@ -6485,8 +9162,18 @@ function InspectorV2({
           onChange={(value) => update({ permanentConsequence: value })}
           multiline
         />
-        <Field label="质量继承" value={item.qualityInheritance ?? ""} onChange={(qualityInheritance) => update({ qualityInheritance })} multiline />
-        <Field label="退化状态" value={item.degenerationState ?? ""} onChange={(degenerationState) => update({ degenerationState })} multiline />
+        <Field
+          label="质量继承"
+          value={item.qualityInheritance ?? ""}
+          onChange={(qualityInheritance) => update({ qualityInheritance })}
+          multiline
+        />
+        <Field
+          label="退化状态"
+          value={item.degenerationState ?? ""}
+          onChange={(degenerationState) => update({ degenerationState })}
+          multiline
+        />
         <SelectField
           label="是否可逆"
           value={item.reversible ? "true" : "false"}
@@ -6510,11 +9197,10 @@ function InspectorV2({
     if (!item) return <InspectorMissing />;
     const update = (patch: Partial<Foundation>) =>
       patchSystem({
-        foundations: updateById(
-          system.foundations,
-          item.id,
-          (current) => ({ ...current, ...patch }),
-        ),
+        foundations: updateById(system.foundations, item.id, (current) => ({
+          ...current,
+          ...patch,
+        })),
       });
     return (
       <InspectorEditor
@@ -6580,11 +9266,10 @@ function InspectorV2({
     if (!item) return <InspectorMissing />;
     const update = (patch: Partial<Constraint>) =>
       patchSystem({
-        constraints: updateById(
-          system.constraints,
-          item.id,
-          (current) => ({ ...current, ...patch }),
-        ),
+        constraints: updateById(system.constraints, item.id, (current) => ({
+          ...current,
+          ...patch,
+        })),
       });
     return (
       <InspectorEditor
@@ -6641,9 +9326,23 @@ function InspectorV2({
           onChange={(value) => update({ mitigation: value })}
           multiline
         />
-        <Field label="作用对象" value={item.target ?? ""} onChange={(target) => update({ target })} />
-        <Field label="解除方式" value={item.releaseMethod ?? ""} onChange={(releaseMethod) => update({ releaseMethod })} multiline />
-        <Field label="叙事提示" value={item.narrativePrompt ?? ""} onChange={(narrativePrompt) => update({ narrativePrompt })} multiline />
+        <Field
+          label="作用对象"
+          value={item.target ?? ""}
+          onChange={(target) => update({ target })}
+        />
+        <Field
+          label="解除方式"
+          value={item.releaseMethod ?? ""}
+          onChange={(releaseMethod) => update({ releaseMethod })}
+          multiline
+        />
+        <Field
+          label="叙事提示"
+          value={item.narrativePrompt ?? ""}
+          onChange={(narrativePrompt) => update({ narrativePrompt })}
+          multiline
+        />
         <SelectField
           label="是否可逆"
           value={item.reversible ? "true" : "false"}
