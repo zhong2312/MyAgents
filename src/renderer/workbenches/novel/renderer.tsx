@@ -1671,6 +1671,7 @@ ${JSON.stringify(injectedContext, null, 2)}
           <CultivationEcologyWorkbench
             storage={context.storage}
             projectTitle={project.metadata.title}
+            registerNavigationGuard={context.registerNavigationGuard}
           />
         </div>
       );

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CULTIVATION_ECOLOGY_SCHEMA_VERSION = 2 as const;
+export const CULTIVATION_ECOLOGY_SCHEMA_VERSION = 3 as const;
 
 const idSchema = z
   .string()
@@ -63,6 +63,18 @@ export const worldOriginSchema = namedSchema.extend({
 export const cultivationProjectionSchema = z.object({
   originIds: z.array(idSchema),
   manifestationIds: z.array(idSchema),
+  /** 体系对每个本源/显化节点的语义映射，兼容旧文件可暂不填写。 */
+  originBindings: z
+    .array(
+      z.object({
+        sourceId: idSchema,
+        role: z.enum(["primary", "secondary", "manifestation"]),
+        purpose: textSchema,
+        weight: textSchema,
+        sideEffects: z.array(textSchema),
+      }),
+    )
+    .optional(),
   access: textSchema,
   translation: textSchema,
   medium: textSchema,
@@ -139,6 +151,8 @@ export const transitionSchema = namedSchema.extend({
   failureResult: textSchema,
   permanentConsequence: textSchema,
   reversible: z.boolean(),
+  qualityInheritance: textSchema.optional(),
+  degenerationState: textSchema.optional(),
 });
 
 export const progressionTrackSchema = namedSchema.extend({
@@ -147,6 +161,27 @@ export const progressionTrackSchema = namedSchema.extend({
   metrics: z.array(metricSchema),
   levels: z.array(levelSchema),
   transitions: z.array(transitionSchema),
+});
+
+export const trackInteractionSchema = z.object({
+  id: idSchema,
+  name: nameSchema,
+  summary: textSchema,
+  sourceTrackId: idSchema,
+  targetTrackId: idSchema,
+  kind: z.enum([
+    "synchronization",
+    "synergy",
+    "imbalance",
+    "cross-breakthrough",
+    "resource-competition",
+    "dependency",
+  ]),
+  rule: textSchema,
+  conditions: z.array(textSchema),
+  consequence: textSchema,
+  resourcePolicy: textSchema,
+  reversible: z.boolean(),
 });
 
 export const topologyNodeSchema = z.object({
@@ -233,6 +268,20 @@ export const abilitySchema = namedSchema.extend({
     amount: textSchema,
     model: textSchema,
     cooldown: textSchema,
+    reserve: textSchema.optional(),
+    sustainedCost: textSchema.optional(),
+    debtConsequence: textSchema.optional(),
+    overloadThreshold: textSchema.optional(),
+    fullPowerLevelId: idSchema.nullable().optional(),
+    releaseCosts: z
+      .array(
+        z.object({
+          label: textSchema,
+          amount: textSchema,
+          consumed: z.boolean(),
+        }),
+      )
+      .optional(),
   }),
   effect: textSchema,
   amplificationModel: textSchema,
@@ -266,6 +315,7 @@ export const formationSchema = namedSchema.extend({
   theoryNodeIds: z.array(idSchema),
   requiredLevelIds: z.array(idSchema),
   methodIds: z.array(idSchema),
+  operationTopologyIds: z.array(idSchema).optional(),
   abilityIds: z.array(idSchema),
   itemIds: z.array(idSchema).default([]),
   activationConditions: z.array(textSchema),
@@ -319,9 +369,13 @@ export const constraintSchema = namedSchema.extend({
   consequence: textSchema,
   mitigation: textSchema,
   reversible: z.boolean(),
+  target: textSchema.optional(),
+  releaseMethod: textSchema.optional(),
+  narrativePrompt: textSchema.optional(),
 });
 export const auditIssueSchema = z.object({
   id: idSchema,
+  fingerprint: z.string().trim().min(1).optional(),
   severity: z.enum(["error", "warning", "suggestion"]),
   title: nameSchema,
   targetType: textSchema,
@@ -342,6 +396,7 @@ export const cultivationSystemSchema = namedSchema.extend({
   projection: cultivationProjectionSchema,
   theoryModel: theoryModelSchema,
   progressionTracks: z.array(progressionTrackSchema),
+  trackInteractions: z.array(trackInteractionSchema).default([]),
   resources: z.array(resourceSchema),
   methods: z.array(cultivationMethodSchema),
   abilities: z.array(abilitySchema),
@@ -355,10 +410,13 @@ export const cultivationSystemSchema = namedSchema.extend({
 export const crossSystemRelationSchema = namedSchema.extend({
   sourceSystemId: idSchema,
   targetSystemId: idSchema,
-  relation: z.enum(["兼容", "克制", "转换", "依赖", "污染", "冲突"]),
+  relation: z.enum(["兼容", "克制", "转换", "依赖", "继承", "污染", "冲突"]),
   conversionRule: textSchema,
   conditions: z.array(textSchema),
   risk: textSchema,
+  affectedAssetIds: z.array(idSchema).optional(),
+  result: textSchema.optional(),
+  boundary: textSchema.optional(),
 });
 
 export const cultivationEcologySchema = z.object({
@@ -379,8 +437,11 @@ export type WorldOriginRelation = z.infer<typeof worldOriginRelationSchema>;
 export type TheoryModel = z.infer<typeof theoryModelSchema>;
 export type TheoryNode = z.infer<typeof theoryNodeSchema>;
 export type ProgressionTrack = z.infer<typeof progressionTrackSchema>;
+export type TrackInteraction = z.infer<typeof trackInteractionSchema>;
 export type CultivationLevel = z.infer<typeof levelSchema>;
+export type ResourceRequirement = z.infer<typeof resourceRequirementSchema>;
 export type CultivationMethod = z.infer<typeof cultivationMethodSchema>;
+export type MethodCourse = z.infer<typeof methodCourseSchema>;
 export type OperationTopology = z.infer<typeof operationTopologySchema>;
 export type Ability = z.infer<typeof abilitySchema>;
 export type CultivationResource = z.infer<typeof resourceSchema>;

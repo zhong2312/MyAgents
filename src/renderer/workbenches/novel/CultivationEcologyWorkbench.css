@@ -1454,6 +1454,61 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* 统一键盘焦点和新增结构化编辑器的布局。 */
+.ce-shell button:focus-visible,
+.ce-shell [role="button"]:focus-visible,
+.ce-shell input:focus-visible,
+.ce-shell textarea:focus-visible,
+.ce-shell select:focus-visible {
+  outline: 2px solid var(--accent-warm);
+  outline-offset: 2px;
+}
+.ce-completeness-card {
+  display: grid;
+  grid-template-columns: auto minmax(10rem, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+.ce-completeness-card > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.ce-completeness-card strong { font-size: 1.35rem; }
+.ce-completeness-card small { color: var(--ink-muted); }
+.ce-resource-requirements-field { gap: 0.65rem; }
+.ce-resource-requirement-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--paper) 92%, var(--accent-warm) 8%);
+}
+.ce-resource-requirement-row > .ce-button { justify-self: start; }
+.ce-checkbox-field { display: flex; align-items: center; justify-content: space-between; }
+.ce-checkbox-field input { width: 1rem; height: 1rem; }
+.ce-directory-references { color: var(--ink-subtle); }
+.ce-course-editor { gap: 0.65rem; }
+.ce-course-row { display: grid; gap: 0.55rem; padding: 0.75rem; border: 1px solid var(--line); background: var(--paper); }
+.ce-course-row-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.ce-formation-map { position: relative; }
+.ce-formation-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.ce-formation-edges line { stroke: var(--accent-warm); stroke-width: 0.8; vector-effect: non-scaling-stroke; opacity: 0.65; }
+@media (min-width: 821px) and (max-width: 1180px) {
+  .ce-world-origin-layout { grid-template-columns: minmax(12rem, 15rem) minmax(0, 1fr); }
+  .ce-world-origin-inspector { grid-column: 1 / -1; }
+}
+@media (max-width: 820px) {
+  .ce-completeness-card { grid-template-columns: 1fr; align-items: stretch; }
+  .ce-resource-requirement-row { grid-template-columns: 1fr; }
+}
 .ce-relation-row {
   display: flex;
   flex-wrap: wrap;

@@ -28,13 +28,13 @@ import { createNovelWorldProposalRepository } from "./worldProposalRepository";
 
 const DiffViewer = lazy(() => import("@/workbench-sdk/DiffViewer"));
 
-type FileProposalStatus =
+export type FileProposalStatus =
   | "pending"
   | "partially-applied"
   | "applied"
   | "rejected";
 
-interface FileProposalChange {
+export interface FileProposalChange {
   readonly id: string;
   readonly targetPath: string;
   readonly operation: "create" | "modify";
@@ -47,7 +47,7 @@ interface FileProposalChange {
   readonly inferred?: boolean;
 }
 
-interface FileProposal {
+export interface FileProposal {
   readonly manifest: {
     readonly proposalId: string;
     readonly title: string;
@@ -60,7 +60,7 @@ interface FileProposal {
   readonly changes: readonly FileProposalChange[];
 }
 
-interface FileProposalLoadError {
+export interface FileProposalLoadError {
   readonly proposalId: string;
   readonly message: string;
 }
@@ -95,6 +95,8 @@ export interface WorldProposalReviewProps {
   ) => FileProposalRepository;
   readonly reviewTitle?: string;
   readonly proposalSubject?: string;
+  /** Runs after the domain repository has durably applied selected changes. */
+  readonly onApplied?: () => void;
 }
 
 const STATUS_LABELS: Record<FileProposalStatus, string> = {
@@ -158,6 +160,7 @@ export default function WorldProposalReview({
   repositoryFactory = createNovelWorldProposalRepository,
   reviewTitle = "世界架构提案",
   proposalSubject = "世界架构",
+  onApplied,
 }: WorldProposalReviewProps) {
   const repository = useMemo(
     () => repositoryFactory(storage),
@@ -359,6 +362,7 @@ export default function WorldProposalReview({
         projectTitle,
       );
       setProposals((current) => replaceProposal(current, next));
+      onApplied?.();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {

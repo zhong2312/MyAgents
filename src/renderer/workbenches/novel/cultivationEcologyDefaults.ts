@@ -386,6 +386,7 @@ function formation(
     theoryNodeIds: [theoryNodeId],
     requiredLevelIds,
     methodIds,
+    operationTopologyIds: [],
     abilityIds: [],
     itemIds: [],
     activationConditions: ["节点全部就位", "主阵眼保持稳定"],
@@ -698,6 +699,7 @@ function createTaixu(): CultivationSystem {
     projection: {
       originIds: ["origin-aven"],
       manifestationIds: ["law-yin-yang", "law-cause", "energy-spirit"],
+      originBindings: [],
       access: "先天灵根、后天吐纳、师承法诀、仪式接引",
       translation: "将大道翻译为精气神三元与经脉节点模型",
       medium: "经脉、丹田、关窍、神魂",
@@ -775,6 +777,7 @@ function createTaixu(): CultivationSystem {
         ],
       },
     ],
+    trackInteractions: [],
     resources: [
       {
         ...named(
@@ -995,6 +998,7 @@ function createGenericSystem(
     projection: {
       originIds: ["origin-aven"],
       manifestationIds: ["law-resonance", "energy-starlight"],
+      originBindings: [],
       access: "天赋、训练、设备或契约接入",
       translation: "将本源翻译为可计算的${energy}与节点规则",
       medium: "媒介、节点、回路与控制协议",
@@ -1038,6 +1042,7 @@ function createGenericSystem(
         transitions: [],
       },
     ],
+    trackInteractions: [],
     resources: [
       {
         ...named(
