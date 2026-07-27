@@ -69,6 +69,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -107,7 +108,6 @@ import type {
   WorldOriginManifestation,
   WorldOriginRelation,
 } from "../../../shared/novel-cultivation-ecology-schema";
-import { newEcologyId } from "./cultivationEcologyDefaults";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import type { ItemIndexEntry } from "./itemLibrarySchema";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
@@ -127,6 +127,12 @@ import {
   type FormationBackdropPresetId,
 } from "./formationBackdropPresets";
 import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
+import WorldProposalReview from "./WorldProposalReview";
+import { createNovelCultivationProposalRepository } from "./cultivationProposalRepository";
+
+function newEcologyId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
 import {
   calculateCultivationCompleteness,
   rebuildCultivationAudits,
@@ -158,6 +164,19 @@ type Selection = {
   parentKind?: string;
   grandParentId?: string;
 } | null;
+
+export interface CultivationAiRunRequest {
+  readonly sceneId: "cultivation.module";
+  readonly label: string;
+  readonly prompt: string;
+  readonly systemPrompt: string;
+}
+
+type CultivationAiTarget = {
+  readonly label: string;
+  readonly value: Record<string, unknown>;
+  readonly apply: (value: Record<string, unknown>) => void;
+};
 
 const modules: readonly { id: ModuleId; label: string; icon: LucideIcon }[] = [
   { id: "overview", label: "总览", icon: Compass },
@@ -752,6 +771,68 @@ function removeTheoryNodeReferences(
       ),
     })),
   };
+}
+
+function removeAssetFromCrossSystemRelations(
+  ecology: CultivationEcology,
+  assetIds: ReadonlySet<string>,
+): CultivationEcology {
+  return {
+    ...ecology,
+    crossSystemRelations: ecology.crossSystemRelations.map((relation) => {
+      if (!relation.affectedAssetIds?.length) return relation;
+      const affectedAssetIds = relation.affectedAssetIds.filter(
+        (assetId) => !assetIds.has(assetId),
+      );
+      return affectedAssetIds.length > 0
+        ? { ...relation, affectedAssetIds }
+        : { ...relation, affectedAssetIds: undefined };
+    }),
+  };
+}
+
+function collectSystemAssetIds(
+  system: CultivationSystem | undefined,
+): Set<string> {
+  if (!system) return new Set();
+  return new Set([
+    system.id,
+    ...system.theoryModel.nodeCatalog.map((node) => node.id),
+    ...system.progressionTracks.flatMap((track) => [
+      track.id,
+      ...track.metrics.map((metric) => metric.id),
+      ...track.levels.flatMap((level) => [
+        level.id,
+        ...level.subStages.map((stage) => stage.id),
+      ]),
+      ...track.transitions.map((transition) => transition.id),
+    ]),
+    ...(system.trackInteractions ?? []).map((interaction) => interaction.id),
+    ...system.resources.flatMap((resource) => [
+      resource.id,
+      ...resource.grades.map((grade) => grade.id),
+    ]),
+    ...system.methods.flatMap((method) => [
+      method.id,
+      ...method.operationTopologies.flatMap((topology) => [
+        topology.id,
+        ...topology.nodes.map((node) => node.id),
+        ...topology.edges.map((edge) => edge.id),
+      ]),
+      ...method.courses.map((course) => course.id),
+    ]),
+    ...system.abilities.map((ability) => ability.id),
+    ...system.formations.flatMap((formation) => [
+      formation.id,
+      ...formation.nodes.map((node) => node.id),
+      ...formation.edges.map((edge) => edge.id),
+      ...formation.design.rings.map((ring) => ring.id),
+      ...formation.design.backdropLayers.map((layer) => layer.id),
+    ]),
+    ...system.foundations.map((foundation) => foundation.id),
+    ...system.transitions.map((transition) => transition.id),
+    ...system.constraints.map((constraint) => constraint.id),
+  ]);
 }
 
 function removeMethodReferences(
@@ -1441,11 +1522,17 @@ export default function CultivationEcologyWorkbench({
   storage,
   projectTitle,
   headerActions,
+  onAiRun,
+  proposalReviewOpen = false,
+  onCloseProposalReview,
   registerNavigationGuard,
 }: {
   readonly storage: WorkbenchStorage;
   readonly projectTitle: string;
   readonly headerActions?: ReactNode;
+  readonly onAiRun?: (request: CultivationAiRunRequest) => Promise<string>;
+  readonly proposalReviewOpen?: boolean;
+  readonly onCloseProposalReview?: () => void;
   readonly registerNavigationGuard: (
     guard: WorkbenchNavigationGuard,
   ) => () => void;
@@ -1492,35 +1579,38 @@ export default function CultivationEcologyWorkbench({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [formationEditorId, inspectorOpen]);
 
-  useEffect(() => {
-    let disposed = false;
+  const reloadEcology = useCallback(async () => {
     setLoading(true);
-    void repository
-      .load()
-      .then(async (loaded) => loaded ?? repository.initialize())
-      .then((result) => {
-        if (disposed) return;
-        const audited = rebuildCultivationAudits(result.ecology);
-        setEcology(audited);
-        setContent(result.content);
-        setActiveSystemId(audited.systems[0]?.id ?? null);
-        setSelection(
-          audited.systems[0]
+    setError("");
+    try {
+      const loaded = await repository.load();
+      const result = loaded ?? (await repository.initialize());
+      const audited = rebuildCultivationAudits(result.ecology);
+      setEcology(audited);
+      setContent(result.content);
+      setActiveSystemId((current) =>
+        audited.systems.some((system) => system.id === current)
+          ? current
+          : (audited.systems[0]?.id ?? null),
+      );
+      setSelection((current) =>
+        current && audited.systems.some((system) => system.id === current.id)
+          ? current
+          : audited.systems[0]
             ? { kind: "system", id: audited.systems[0].id }
             : null,
-        );
-        setLoading(false);
-      })
-      .catch((cause: unknown) => {
-        if (!disposed) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-          setLoading(false);
-        }
-      });
-    return () => {
-      disposed = true;
-    };
+      );
+      setDirty(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
   }, [repository]);
+
+  useEffect(() => {
+    void reloadEcology();
+  }, [reloadEcology]);
 
   useEffect(() => {
     let disposed = false;
@@ -1572,10 +1662,200 @@ export default function CultivationEcologyWorkbench({
   };
   const updateSystem = (next: CultivationSystem) => {
     if (!ecology) return;
+    const previousIds = collectSystemAssetIds(
+      ecology.systems.find((candidate) => candidate.id === next.id),
+    );
+    const nextIds = collectSystemAssetIds(next);
+    const removedIds = new Set(
+      [...previousIds].filter((assetId) => !nextIds.has(assetId)),
+    );
+    const nextEcology = removeAssetFromCrossSystemRelations(
+      ecology,
+      removedIds,
+    );
     commit({
-      ...ecology,
-      systems: updateById(ecology.systems, next.id, () => next),
+      ...nextEcology,
+      systems: updateById(nextEcology.systems, next.id, () => next),
     });
+  };
+  const [isAiRunning, setIsAiRunning] = useState(false);
+  const getAiTarget = (): CultivationAiTarget | null => {
+    const currentEcology = ecology;
+    if (!currentEcology) return null;
+    const selectedId = selection?.id;
+    const selected = <T extends { id: string }>(items: readonly T[]) =>
+      items.find((item) => item.id === selectedId) ?? items[0];
+    const systemTarget = (
+      label: string,
+      value: Record<string, unknown>,
+      apply: (next: Record<string, unknown>) => void,
+    ): CultivationAiTarget => ({ label, value, apply });
+
+    if (scope === "origins") {
+      const origin = selected(currentEcology.worldOrigins);
+      if (!origin) return null;
+      return systemTarget("世界本源", origin as unknown as Record<string, unknown>, (next) =>
+        commit({
+          ...currentEcology,
+          worldOrigins: updateById(currentEcology.worldOrigins, origin.id, () =>
+            next as unknown as WorldOrigin,
+          ),
+        }),
+      );
+    }
+    if (scope === "relations") {
+      const relation = selected(currentEcology.crossSystemRelations);
+      if (!relation) return null;
+      return systemTarget(
+        "跨体系关系",
+        relation as unknown as Record<string, unknown>,
+        (next) =>
+          commit({
+            ...currentEcology,
+            crossSystemRelations: updateById(
+              currentEcology.crossSystemRelations,
+              relation.id,
+              () => next as unknown as typeof relation,
+            ),
+          }),
+      );
+    }
+    if (!activeSystem) return null;
+    if (module === "projection")
+      return systemTarget(
+        "本源投影",
+        activeSystem.projection as unknown as Record<string, unknown>,
+        (next) => updateSystem({ ...activeSystem, projection: next as typeof activeSystem.projection }),
+      );
+    if (module === "theory")
+      return systemTarget(
+        "理论模型",
+        activeSystem.theoryModel as unknown as Record<string, unknown>,
+        (next) => updateSystem({ ...activeSystem, theoryModel: next as typeof activeSystem.theoryModel }),
+      );
+
+    const target =
+      module === "resources"
+        ? selected(activeSystem.resources)
+        : module === "methods"
+          ? selected(activeSystem.methods)
+          : module === "abilities"
+            ? selected(activeSystem.abilities)
+            : module === "formations"
+              ? selected(activeSystem.formations)
+              : module === "foundations"
+                ? selected(activeSystem.foundations)
+                : module === "constraints"
+                  ? selected(activeSystem.constraints)
+                  : module === "transitions"
+                    ? selected([
+                        ...activeSystem.transitions,
+                        ...activeSystem.progressionTracks.flatMap((track) => track.transitions),
+                      ])
+                    : module === "progression"
+                      ? selected([
+                          ...activeSystem.progressionTracks,
+                          ...activeSystem.progressionTracks.flatMap((track) => [
+                            ...track.levels,
+                            ...track.levels.flatMap((level) => level.subStages),
+                            ...track.transitions,
+                          ]),
+                        ])
+                      : undefined;
+    if (target) {
+      return systemTarget(
+        moduleMeta[module].title,
+        target as unknown as Record<string, unknown>,
+        (next) => {
+          const replace = <T extends { id: string }>(items: readonly T[]) =>
+            updateById(items, target.id, () => next as unknown as T);
+          if (module === "resources") updateSystem({ ...activeSystem, resources: replace(activeSystem.resources) });
+          else if (module === "methods") updateSystem({ ...activeSystem, methods: replace(activeSystem.methods) });
+          else if (module === "abilities") updateSystem({ ...activeSystem, abilities: replace(activeSystem.abilities) });
+          else if (module === "formations") updateSystem({ ...activeSystem, formations: replace(activeSystem.formations) });
+          else if (module === "foundations") updateSystem({ ...activeSystem, foundations: replace(activeSystem.foundations) });
+          else if (module === "constraints") updateSystem({ ...activeSystem, constraints: replace(activeSystem.constraints) });
+          else if (module === "transitions") {
+            const rootTransitions = replace(activeSystem.transitions);
+            const tracks = activeSystem.progressionTracks.map((track) => ({
+              ...track,
+              transitions: replace(track.transitions),
+            }));
+            updateSystem({ ...activeSystem, transitions: rootTransitions, progressionTracks: tracks });
+          } else if (module === "progression") {
+            const tracks = activeSystem.progressionTracks.map((track) => ({
+              ...track,
+              ...(track.id === target.id ? (next as unknown as ProgressionTrack) : {}),
+              levels: updateById(track.levels, target.id, () => next as unknown as CultivationLevel).map((level) => ({
+                ...level,
+                subStages: updateById(level.subStages, target.id, () => next as unknown as CultivationLevelSubStage),
+              })),
+              transitions: updateById(track.transitions, target.id, () => next as unknown as Transition),
+            }));
+            updateSystem({ ...activeSystem, progressionTracks: tracks });
+          }
+        },
+      );
+    }
+    return systemTarget(
+      moduleMeta[module].title,
+      activeSystem as unknown as Record<string, unknown>,
+      (next) => updateSystem(next as unknown as CultivationSystem),
+    );
+  };
+  const runCultivationAi = async () => {
+    if (!onAiRun || isAiRunning) return;
+    const target = getAiTarget();
+    if (!target) {
+      setError("当前模块没有可供 AI 完善的对象");
+      return;
+    }
+    setIsAiRunning(true);
+    setError("");
+    try {
+      const output = await onAiRun({
+        sceneId: "cultivation.module",
+        label: `AI 完善${target.label}`,
+        systemPrompt:
+          "你是严谨的中文修行体系编辑。只输出严格 JSON 对象，不要 Markdown 围栏或解释。只能补充当前对象已有字段中的非空文本、数字、布尔值或嵌套对象字段；不得修改 id、名称、稳定引用数组、审查字段、schemaVersion、updatedAt，也不得删除已有内容。",
+        prompt: `请完善当前修行模块对象中空缺或明显薄弱的字段。只返回确实需要变化的字段，保留未变化字段不要重复返回。禁止返回数组字段，禁止修改任何 id 或引用关系。\n\n模块：${target.label}\n当前对象：\n${JSON.stringify(target.value, null, 2).slice(0, 24_000)}`,
+      });
+      let parsed: unknown;
+      try {
+        const trimmed = output.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
+        parsed = JSON.parse(trimmed);
+      } catch (cause) {
+        throw new Error(`AI 完善结果不是有效 JSON：${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        throw new Error("AI 完善结果必须是 JSON 对象");
+      const patchValue = parsed as Record<string, unknown>;
+      const merge = (base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> => {
+        const next = { ...base };
+        for (const [key, value] of Object.entries(patch)) {
+          if (!(key in base) || key === "id" || key === "name" || key === "audit" || key === "schemaVersion" || key === "updatedAt" || Array.isArray(value)) continue;
+          if (value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object" && !Array.isArray(base[key])) {
+            next[key] = merge(base[key] as Record<string, unknown>, value as Record<string, unknown>);
+          } else if (
+            value !== null &&
+            value !== undefined &&
+            base[key] !== null &&
+            typeof value === typeof base[key] &&
+            (typeof value !== "string" || value.trim())
+          ) {
+            next[key] = value;
+          }
+        }
+        return next;
+      };
+      const merged = merge(target.value, patchValue);
+      if (JSON.stringify(merged) === JSON.stringify(target.value)) throw new Error("AI 没有返回可应用的字段补全");
+      target.apply(merged);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsAiRunning(false);
+    }
   };
   useEffect(() => {
     if (!itemLibraryReady) return;
@@ -1633,11 +1913,19 @@ export default function CultivationEcologyWorkbench({
   const confirmDeleteSystem = () => {
     if (!ecology || !systemDeleteTarget) return;
     const deletedSystemId = systemDeleteTarget.id;
+    const deletedSystem = ecology.systems.find(
+      (item) => item.id === deletedSystemId,
+    );
+    const deletedAssetIds = collectSystemAssetIds(deletedSystem);
     const nextSystems = ecology.systems.filter(
       (item) => item.id !== deletedSystemId,
     );
+    const ecologyWithoutAssets = removeAssetFromCrossSystemRelations(
+      ecology,
+      deletedAssetIds,
+    );
     commit({
-      ...ecology,
+      ...ecologyWithoutAssets,
       systems: nextSystems,
       worldOrigins: ecology.worldOrigins.map((origin) => ({
         ...origin,
@@ -1647,7 +1935,7 @@ export default function CultivationEcologyWorkbench({
           ),
         ),
       })),
-      crossSystemRelations: ecology.crossSystemRelations.filter(
+      crossSystemRelations: ecologyWithoutAssets.crossSystemRelations.filter(
         (item) =>
           item.sourceSystemId !== deletedSystemId &&
           item.targetSystemId !== deletedSystemId,
@@ -1871,6 +2159,21 @@ export default function CultivationEcologyWorkbench({
             </nav>
           )}
           <div className="ce-page-stage">
+            {(scope === "system" || scope === "origins" || scope === "relations") && (
+              <div className="flex shrink-0 items-center justify-end gap-2 border-b border-[var(--line-subtle)] px-5 py-2">
+                {error && <span className="mr-auto truncate text-xs text-[var(--danger)]">{error}</span>}
+                <Button
+                  variant="ghost"
+                  disabled={!onAiRun || isAiRunning}
+                  onClick={() => void runCultivationAi()}
+                  title={onAiRun ? "使用轻量 AI 完善当前模块" : "轻量 AI 当前不可用"}
+                  ariaLabel="AI 完善当前模块"
+                >
+                  {isAiRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {isAiRunning ? "AI 完善中" : "AI 完善当前模块"}
+                </Button>
+              </div>
+            )}
             <div
               className={`ce-main-scroll cp-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""}`}
             >
@@ -1999,6 +2302,17 @@ export default function CultivationEcologyWorkbench({
           confirmVariant="danger"
           onConfirm={confirmDeleteSystem}
           onCancel={() => setSystemDeleteTarget(null)}
+        />
+      )}
+      {proposalReviewOpen && onCloseProposalReview && (
+        <WorldProposalReview
+          storage={storage}
+          projectTitle={projectTitle}
+          onClose={onCloseProposalReview}
+          repositoryFactory={createNovelCultivationProposalRepository}
+          reviewTitle="修行体系提案"
+          proposalSubject="修行体系"
+          onApplied={() => void reloadEcology()}
         />
       )}
     </div>
@@ -2691,7 +3005,8 @@ function Progression({
                 </span>
                 <strong>{item.name}</strong>
                 <small>
-                  {item.quality || "质量未定义"} · {item.subStages.length} 个阶段
+                  {item.quality || "质量未定义"} · {item.subStages.length}{" "}
+                  个阶段
                 </small>
               </button>
               <div className="ce-level-stage-panel">
@@ -5763,7 +6078,10 @@ function TransitionDirectory({
     track.transitions.map((transition) => ({ transition, track })),
   );
   const add = () => {
-    const item = createTransition();
+    const item = {
+      ...createTransition(),
+      transitionType: "conversion" as const,
+    };
     onChange({ ...system, transitions: [...system.transitions, item] });
     onSelect({ kind: "transition", id: item.id });
   };
@@ -5964,8 +6282,8 @@ function AuditDirectory({
                     : item.targetType === "method" ||
                         item.targetType === "topology"
                       ? "methods"
-                    : item.targetType === "level" ||
-                        item.targetType === "level-stage" ||
+                      : item.targetType === "level" ||
+                          item.targetType === "level-stage" ||
                           item.targetType === "transition"
                         ? "progression"
                         : item.targetType === "resource"
@@ -8647,13 +8965,17 @@ function InspectorV2({
         ...ecology,
         worldOrigins: updateById(ecology.worldOrigins, parent.id, (origin) => ({
           ...origin,
-          manifestations: origin.manifestations.filter(
-            (manifestation) => manifestation.id !== item.id,
-          ),
           relations: origin.relations.filter(
             (relation) =>
               relation.sourceId !== item.id && relation.targetId !== item.id,
           ),
+          manifestations: origin.manifestations
+            .filter((manifestation) => manifestation.id !== item.id)
+            .map((manifestation) =>
+              manifestation.sourceId === item.id
+                ? { ...manifestation, sourceId: null }
+                : manifestation,
+            ),
           canvasPositions: Object.fromEntries(
             Object.entries(origin.canvasPositions ?? {}).filter(
               ([id]) => id !== item.id,

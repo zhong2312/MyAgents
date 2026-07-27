@@ -45,6 +45,7 @@ const DIRECTORIES = [
   "world/setting-library/pages",
   "world/setting-library/entries",
   "world/setting-library/proposals",
+  "world/cultivation-proposals",
   "timeline",
   "simulation",
   "research/notes",

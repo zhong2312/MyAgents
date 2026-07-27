@@ -53,6 +53,36 @@ export type CharacterInventoryItem = z.infer<
   typeof characterInventoryItemSchema
 >;
 
+export const characterCultivationProfileSchema = z
+  .object({
+    systemId: characterLibraryIdSchema.nullable(),
+    trackId: characterLibraryIdSchema.nullable(),
+    levelId: characterLibraryIdSchema.nullable(),
+    methodIds: z.array(characterLibraryIdSchema),
+    abilityIds: z.array(characterLibraryIdSchema),
+    resourceBalances: z.record(
+      characterLibraryIdSchema,
+      z.object({
+        quantity: z.number().finite(),
+        quality: textSchema,
+      }),
+    ),
+    activeConstraintIds: z.array(characterLibraryIdSchema),
+    breakthroughHistory: z.array(
+      z.object({
+        transitionId: characterLibraryIdSchema,
+        occurredAt: textSchema,
+        result: textSchema,
+        consequence: textSchema,
+      }),
+    ),
+  })
+  .strict();
+
+export type CharacterCultivationProfile = z.infer<
+  typeof characterCultivationProfileSchema
+>;
+
 export const characterArcStageSchema = z
   .object({
     id: characterLibraryIdSchema.optional(),
@@ -93,6 +123,16 @@ export const characterRecordSchema = z
     spiritRoot: textSchema.default(""),
     daoBody: textSchema.default(""),
     cultivationMethod: textSchema.default(""),
+    cultivationProfile: characterCultivationProfileSchema.default({
+      systemId: null,
+      trackId: null,
+      levelId: null,
+      methodIds: [],
+      abilityIds: [],
+      resourceBalances: {},
+      activeConstraintIds: [],
+      breakthroughHistory: [],
+    }),
     gender: textSchema,
     raceId: characterLibraryIdSchema.or(z.literal("")),
     soulId: characterLibraryIdSchema.or(z.literal("")),

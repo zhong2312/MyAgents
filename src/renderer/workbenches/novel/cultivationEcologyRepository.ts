@@ -2,10 +2,10 @@ import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
   CULTIVATION_ECOLOGY_SCHEMA_VERSION,
+  createEmptyCultivationEcology,
   cultivationEcologySchema,
   type CultivationEcology,
 } from "../../../shared/novel-cultivation-ecology-schema";
-import { cloneDefaultCultivationEcology } from "./cultivationEcologyDefaults";
 import { rebuildCultivationAudits } from "./cultivationEcologyAudit";
 import { createFormationBackdropPreset } from "./formationBackdropPresets";
 
@@ -384,7 +384,7 @@ export function createCultivationEcologyInitializationFiles(): readonly {
   return [
     {
       path: CULTIVATION_ECOLOGY_PATH,
-      content: serialize(cloneDefaultCultivationEcology()),
+      content: serialize(createEmptyCultivationEcology()),
     },
   ];
 }
@@ -435,7 +435,7 @@ export function createCultivationEcologyRepository(storage: WorkbenchStorage) {
     async initialize() {
       const [entry] = await storage.stat([CULTIVATION_ECOLOGY_PATH]);
       if (entry?.exists) return loadExisting();
-      const ecology = cloneDefaultCultivationEcology();
+      const ecology = createEmptyCultivationEcology();
       const audited = rebuildCultivationAudits(ecology);
       const content = serialize(audited);
       await storage.createText(CULTIVATION_ECOLOGY_PATH, content, {

@@ -8,6 +8,7 @@ import {
   characterSoulDefinitionSchema,
   raceDefinitionSchema,
 } from "../../shared/novel-character-library-schema";
+import { cultivationEcologySchema } from "../../shared/novel-cultivation-ecology-schema";
 import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
@@ -80,6 +81,8 @@ const MAX_ITEM_DESCRIPTION_BYTES = 512 * 1024;
 const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const CHARACTER_LIBRARY_ROOT = "characters";
 const CHARACTER_PROPOSAL_ROOT = `${CHARACTER_LIBRARY_ROOT}/proposals`;
+const CULTIVATION_ECOLOGY_PATH = "world/cultivation-ecology.json";
+const CULTIVATION_PROPOSAL_ROOT = "world/cultivation-proposals";
 const MAX_CHARACTER_OPERATIONS = 40;
 const NARRATIVE_PROPOSAL_ROOT = "narrative/proposals";
 const MAX_NARRATIVE_CANDIDATES = 30;
@@ -154,6 +157,13 @@ type CharacterProposalOperation = {
   targetId?: string;
   summary: string;
   value: Record<string, unknown>;
+};
+
+type CultivationDraftPayload = {
+  title: string;
+  description: string;
+  baseSourceHash: string;
+  content: string;
 };
 
 function result(value: unknown, isError = false): CallToolResult {
@@ -1078,7 +1088,17 @@ async function validateCharacterProposal(
       id,
     };
     validateCharacterDefinition(operation.kind, next, errors);
-    map.set(id, next);
+    if (operation.kind === "character") {
+      const parsedCharacter = characterRecordSchema.safeParse(next);
+      map.set(
+        id,
+        parsedCharacter.success
+          ? (parsedCharacter.data as unknown as Record<string, unknown>)
+          : next,
+      );
+    } else {
+      map.set(id, next);
+    }
   }
 
   for (const character of characters.values()) {
@@ -1107,6 +1127,11 @@ async function validateCharacterProposal(
       }
     }
   }
+  await validateCharacterCultivationProfiles(
+    workspace,
+    [...characters.values()],
+    errors,
+  );
   return errors;
 }
 
@@ -1154,6 +1179,7 @@ async function getCharacterContextHandler(args: {
           groupIds: character.groupIds,
           storyRole: character.storyRole,
           arc: character.arc,
+          cultivationProfile: character.cultivationProfile,
         };
       }),
       selectedCharacter: selected,
@@ -1166,6 +1192,526 @@ async function getCharacterContextHandler(args: {
     });
   } catch (error) {
     return result({ error: message(error) }, true);
+  }
+}
+
+async function validateCharacterCultivationProfiles(
+  workspace: string,
+  characters: readonly Record<string, unknown>[],
+  errors: string[],
+): Promise<void> {
+  const content = await readOptional(
+    workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
+  );
+  if (content === null) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    errors.push("修行生态事实源无法解析，不能校验角色修行引用");
+    return;
+  }
+  const ecology = cultivationEcologySchema.safeParse(parsed);
+  if (!ecology.success) {
+    errors.push("修行生态事实源格式无效，不能校验角色修行引用");
+    return;
+  }
+  const systemIds = new Set(ecology.data.systems.map((system) => system.id));
+  const trackToSystem = new Map(
+    ecology.data.systems.flatMap((system) =>
+      system.progressionTracks.map((track) => [track.id, system.id] as const),
+    ),
+  );
+  const levelToTrack = new Map(
+    ecology.data.systems.flatMap((system) =>
+      system.progressionTracks.flatMap((track) =>
+        track.levels.map((level) => [level.id, track.id] as const),
+      ),
+    ),
+  );
+  const methodIds = new Set(
+    ecology.data.systems.flatMap((system) =>
+      system.methods.map((method) => method.id),
+    ),
+  );
+  const abilityIds = new Set(
+    ecology.data.systems.flatMap((system) =>
+      system.abilities.map((ability) => ability.id),
+    ),
+  );
+  const constraintIds = new Set(
+    ecology.data.systems.flatMap((system) =>
+      system.constraints.map((constraint) => constraint.id),
+    ),
+  );
+  const resourceIds = new Set(
+    ecology.data.systems.flatMap((system) =>
+      system.resources.map((resource) => resource.id),
+    ),
+  );
+  const transitionIds = new Set(
+    ecology.data.systems.flatMap((system) => [
+      ...system.transitions.map((transition) => transition.id),
+      ...system.progressionTracks.flatMap((track) =>
+        track.transitions.map((transition) => transition.id),
+      ),
+    ]),
+  );
+  for (const character of characters) {
+    const name =
+      typeof character.name === "string" ? character.name : "未命名角色";
+    const profile = character.cultivationProfile;
+    if (!profile || typeof profile !== "object" || Array.isArray(profile))
+      continue;
+    const value = profile as Record<string, unknown>;
+    const systemId = typeof value.systemId === "string" ? value.systemId : null;
+    const trackId = typeof value.trackId === "string" ? value.trackId : null;
+    const levelId = typeof value.levelId === "string" ? value.levelId : null;
+    const hasBoundAssets =
+      Boolean(trackId || levelId) ||
+      (Array.isArray(value.methodIds) && value.methodIds.length > 0) ||
+      (Array.isArray(value.abilityIds) && value.abilityIds.length > 0) ||
+      (Array.isArray(value.activeConstraintIds) && value.activeConstraintIds.length > 0) ||
+      (Array.isArray(value.breakthroughHistory) && value.breakthroughHistory.length > 0) ||
+      (value.resourceBalances && typeof value.resourceBalances === "object" && Object.keys(value.resourceBalances).length > 0);
+    if (!systemId && hasBoundAssets)
+      errors.push(`角色“${name}”的修行档案存在资产，但未绑定修行体系`);
+    if (systemId && !systemIds.has(systemId))
+      errors.push(`角色“${name}”引用了不存在的修行体系：${systemId}`);
+    if (trackId && !trackToSystem.has(trackId))
+      errors.push(`角色“${name}”引用了不存在的成长轨道：${trackId}`);
+    if (levelId && !levelToTrack.has(levelId))
+      errors.push(`角色“${name}”引用了不存在的修行阶段：${levelId}`);
+    if (systemId && trackId && trackToSystem.get(trackId) !== systemId)
+      errors.push(`角色“${name}”的成长轨道不属于所选修行体系`);
+    if (trackId && levelId && levelToTrack.get(levelId) !== trackId)
+      errors.push(`角色“${name}”的修行阶段不属于所选成长轨道`);
+    for (const [field, ids, label] of [
+      ["methodIds", value.methodIds, "法门"],
+      ["abilityIds", value.abilityIds, "能力"],
+      ["activeConstraintIds", value.activeConstraintIds, "活跃约束"],
+    ] as const) {
+      if (!Array.isArray(ids)) continue;
+      const valid =
+        label === "法门"
+          ? methodIds
+          : label === "能力"
+            ? abilityIds
+            : constraintIds;
+      ids.forEach((id) => {
+        if (typeof id === "string" && !valid.has(id))
+          errors.push(`角色“${name}”的 ${field} 引用了不存在的修行资产：${id}`);
+      });
+    }
+    if (value.resourceBalances && typeof value.resourceBalances === "object") {
+      Object.keys(value.resourceBalances).forEach((id) => {
+        if (!resourceIds.has(id))
+          errors.push(`角色“${name}”的内部资源引用了不存在的修行资产：${id}`);
+      });
+    }
+    if (systemId) {
+      const system = ecology.data.systems.find((candidate) => candidate.id === systemId);
+      if (system) {
+        const belongsToSystem = (id: string, kind: "method" | "ability" | "constraint" | "resource" | "transition") => {
+          const collection =
+            kind === "method"
+              ? system.methods
+              : kind === "ability"
+                ? system.abilities
+                : kind === "constraint"
+                  ? system.constraints
+                  : kind === "resource"
+                    ? system.resources
+                    : [
+                        ...system.transitions,
+                        ...system.progressionTracks.flatMap((track) => track.transitions),
+                      ];
+          return collection.some((item) => item.id === id);
+        };
+        for (const id of Array.isArray(value.methodIds) ? value.methodIds : [])
+          if (typeof id === "string" && !belongsToSystem(id, "method"))
+            errors.push(`角色“${name}”的法门不属于所选修行体系：${id}`);
+        for (const id of Array.isArray(value.abilityIds) ? value.abilityIds : [])
+          if (typeof id === "string" && !belongsToSystem(id, "ability"))
+            errors.push(`角色“${name}”的能力不属于所选修行体系：${id}`);
+        for (const id of Array.isArray(value.activeConstraintIds) ? value.activeConstraintIds : [])
+          if (typeof id === "string" && !belongsToSystem(id, "constraint"))
+            errors.push(`角色“${name}”的活跃约束不属于所选修行体系：${id}`);
+        if (value.resourceBalances && typeof value.resourceBalances === "object")
+          for (const id of Object.keys(value.resourceBalances))
+            if (!belongsToSystem(id, "resource"))
+              errors.push(`角色“${name}”的内部资源不属于所选修行体系：${id}`);
+        if (Array.isArray(value.breakthroughHistory))
+          for (const entry of value.breakthroughHistory) {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+            const transitionId = (entry as Record<string, unknown>).transitionId;
+            if (typeof transitionId === "string" && !belongsToSystem(transitionId, "transition"))
+              errors.push(`角色“${name}”的突破记录不属于所选修行体系：${transitionId}`);
+          }
+      }
+    }
+    if (Array.isArray(value.breakthroughHistory)) {
+      value.breakthroughHistory.forEach((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+        const transitionId = (entry as Record<string, unknown>).transitionId;
+        if (
+          typeof transitionId === "string" &&
+          !transitionIds.has(transitionId)
+        )
+          errors.push(
+            `角色“${name}”的突破记录引用了不存在的跃迁：${transitionId}`,
+          );
+      });
+    }
+  }
+}
+
+async function getCultivationContextHandler(args: {
+  systemId?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const content = await readOptional(
+      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
+    );
+    if (content === null)
+      return result({
+        sourcePath: CULTIVATION_ECOLOGY_PATH,
+        sourceHash: hashNovelWorkbenchDraftPayload(""),
+        systems: [],
+        worldOrigins: [],
+        crossSystemRelations: [],
+      });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return result({ error: "修行生态事实源无法解析" }, true);
+    }
+    const ecology = cultivationEcologySchema.safeParse(parsed);
+    if (!ecology.success)
+      return result({ error: "修行生态事实源格式无效" }, true);
+    const selected = args.systemId
+      ? ecology.data.systems.find((system) => system.id === args.systemId)
+      : undefined;
+    if (args.systemId && !selected)
+      return result({ error: `不存在修行体系：${args.systemId}` }, true);
+    const systems = (selected ? [selected] : ecology.data.systems).map(
+      (system) => ({
+        id: system.id,
+        name: system.name,
+        kind: system.kind,
+        summary: system.summary,
+        terminology: system.terminology,
+        projection: system.projection,
+        theoryModel: {
+          statement: system.theoryModel.statement,
+          invariants: system.theoryModel.invariants,
+          nodeCatalog: system.theoryModel.nodeCatalog,
+        },
+        progressionTracks: system.progressionTracks.map((track) => ({
+          id: track.id,
+          name: track.name,
+          mode: track.mode,
+          structure: track.structure,
+          metrics: track.metrics,
+          levels: track.levels.map((level) => ({
+            id: level.id,
+            name: level.name,
+            order: level.order,
+            quality: level.quality,
+            entryConditions: level.entryConditions,
+            maintenanceConditions: level.maintenanceConditions,
+            breakthroughConditions: level.breakthroughConditions,
+            resourceRequirements: level.resourceRequirements,
+            naturalAbilityIds: level.naturalAbilityIds,
+            methodIds: level.methodIds,
+            subStages: level.subStages,
+          })),
+          transitions: track.transitions,
+        })),
+        trackInteractions: system.trackInteractions,
+        resources: system.resources,
+        methods: system.methods,
+        abilities: system.abilities,
+        formations: system.formations,
+        foundations: system.foundations,
+        transitions: system.transitions,
+        constraints: system.constraints,
+      }),
+    );
+    return result({
+      schemaVersion: ecology.data.schemaVersion,
+      sourcePath: CULTIVATION_ECOLOGY_PATH,
+      sourceHash: hashNovelWorkbenchDraftPayload(content),
+      worldOrigins: ecology.data.worldOrigins,
+      systems,
+      crossSystemRelations: ecology.data.crossSystemRelations,
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+function parseCultivationDraftContent(content: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    return { ecology: null, errors: [`修行生态草稿不是有效 JSON：${message(error)}`] };
+  }
+  const checked = cultivationEcologySchema.safeParse(parsed);
+  if (!checked.success) {
+    return {
+      ecology: null,
+      errors: checked.error.issues.map(
+        (issue) => `${issue.path.join(".") || "root"}：${issue.message}`,
+      ),
+    };
+  }
+  return { ecology: checked.data, errors: [] as string[] };
+}
+
+async function createCultivationDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+  baseSourceHash: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("cultivation");
+    const current = await readOptional(
+      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
+    );
+    if (current === null) throw new Error("修行体系事实源不存在");
+    const currentHash = hashNovelWorkbenchDraftPayload(current ?? "");
+    if (args.baseSourceHash !== currentHash) {
+      throw new Error("修行体系事实源已变化，请重新读取上下文后创建草稿");
+    }
+    const draft = await createNovelWorkbenchDraft<CultivationDraftPayload>(
+      workspace,
+      "cultivation",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        baseSourceHash: args.baseSourceHash,
+        content: current ?? "",
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getCultivationDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("cultivation");
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<CultivationDraftPayload>(
+          workspace,
+          "cultivation",
+          args.draftId,
+        ),
+      ),
+    );
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertCultivationDraftHandler(args: {
+  draftId: string;
+  content: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("cultivation");
+    const draft = await updateNovelWorkbenchDraft<CultivationDraftPayload>(
+      workspace,
+      "cultivation",
+      args.draftId,
+      (payload) => ({ ...payload, content: args.content }),
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validateCultivationDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("cultivation");
+    const draft = await loadNovelWorkbenchDraft<CultivationDraftPayload>(
+      workspace,
+      "cultivation",
+      args.draftId,
+    );
+    const current = await readOptional(
+      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
+    );
+    const currentHash = hashNovelWorkbenchDraftPayload(current ?? "");
+    if (draft.payload.baseSourceHash !== currentHash) {
+      return result(
+        { valid: false, errors: ["修行体系事实源已变化，请重新读取上下文并创建草稿"] },
+        true,
+      );
+    }
+    const parsed = parseCultivationDraftContent(draft.payload.content);
+    if (parsed.errors.length > 0) {
+      return result({ valid: false, errors: parsed.errors }, true);
+    }
+    const canonicalContent = `${JSON.stringify(parsed.ecology, null, 2)}\n`;
+    if (canonicalContent !== draft.payload.content) {
+      return result(
+        {
+          valid: false,
+          errors: ["修行生态 JSON 未规范化，请先用规范化内容更新草稿"],
+        },
+        true,
+      );
+    }
+    const saved = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      hashNovelWorkbenchDraftPayload(draft.payload),
+    );
+    return result({
+      valid: true,
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
+    });
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitCultivationDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
+  let proposalDirectory = "";
+  let createdProposalDirectory = false;
+  try {
+    const { workspace, context } = requireDraftMode("cultivation");
+    const draft = await loadNovelWorkbenchDraft<CultivationDraftPayload>(
+      workspace,
+      "cultivation",
+      args.draftId,
+    );
+    const hash = hashNovelWorkbenchDraftPayload(draft.payload);
+    if (draft.submittedProposalId) {
+      return result(
+        await getProposalStatus(
+          CULTIVATION_PROPOSAL_ROOT,
+          draft.submittedProposalId,
+          "changes",
+        ),
+      );
+    }
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !== hash
+    ) {
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    }
+    const beforeContent = await readOptional(
+      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
+    );
+    if (beforeContent === null) throw new Error("修行体系事实源不存在");
+    if (hashNovelWorkbenchDraftPayload(beforeContent) !== draft.payload.baseSourceHash) {
+      throw new Error("修行体系事实源已变化，请重新读取上下文并创建草稿");
+    }
+    const parsed = parseCultivationDraftContent(draft.payload.content);
+    if (parsed.errors.length > 0) throw new Error(parsed.errors.join("；"));
+    const proposalId = `cultivation-${draft.draftId}`;
+    proposalDirectory = workspaceFile(
+      workspace,
+      `${CULTIVATION_PROPOSAL_ROOT}/${proposalId}`,
+    );
+    const proposalFile = join(proposalDirectory, "proposal.json");
+    if (await readOptional(proposalFile)) {
+      await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+      return result(
+        await getProposalStatus(CULTIVATION_PROPOSAL_ROOT, proposalId, "changes"),
+      );
+    }
+    await fs.mkdir(join(workspace, CULTIVATION_PROPOSAL_ROOT), { recursive: true });
+    await fs.mkdir(join(proposalDirectory, "before"), { recursive: true });
+    await fs.mkdir(join(proposalDirectory, "after"), { recursive: true });
+    createdProposalDirectory = true;
+    const manifest = {
+      schemaVersion: 1,
+      proposalId,
+      title: draft.payload.title,
+      description: draft.payload.description,
+      createdAt: new Date().toISOString(),
+      source: {
+        kind: "agent" as const,
+        promptId: context.promptId,
+        promptVersion: context.promptVersion,
+      },
+      changes: [
+        {
+          id: `cultivation-change-${draft.draftId}`,
+          targetPath: CULTIVATION_ECOLOGY_PATH,
+          operation: "modify" as const,
+          summary: draft.payload.description || "完善修行体系生态事实源",
+          status: "pending" as const,
+        },
+      ],
+    };
+    await fs.writeFile(proposalFile, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    await fs.writeFile(
+      join(proposalDirectory, "before", "cultivation-ecology.json"),
+      beforeContent,
+      { encoding: "utf8", flag: "wx" },
+    );
+    await fs.writeFile(
+      join(proposalDirectory, "after", "cultivation-ecology.json"),
+      `${JSON.stringify(parsed.ecology, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    return result({
+      submitted: true,
+      proposalId,
+      reviewAction: "请作者在修行体系页面打开“审阅提案”并审批。",
+    });
+  } catch (error) {
+    if (createdProposalDirectory) {
+      await fs.rm(proposalDirectory, { recursive: true, force: true }).catch(() => {});
+    }
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getCultivationProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
+  try {
+    requireDraftMode("cultivation");
+    return result(
+      await getProposalStatus(
+        CULTIVATION_PROPOSAL_ROOT,
+        args.proposalId,
+        "changes",
+      ),
+    );
+  } catch (error) {
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
   }
 }
 
@@ -1390,7 +1936,10 @@ function narrativeSourceHash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function narrativeRecord(value: unknown, label: string): Record<string, unknown> {
+function narrativeRecord(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label}格式错误`);
   }
@@ -1403,7 +1952,9 @@ function narrativeRecords(
 ): Record<string, unknown>[] {
   const records = arrayField(library, key);
   if (!records) throw new Error(`剧情工程事实源缺少${key}数组`);
-  return records.map((record, index) => narrativeRecord(record, `${key}[${index}]`));
+  return records.map((record, index) =>
+    narrativeRecord(record, `${key}[${index}]`),
+  );
 }
 
 function narrativeString(
@@ -1460,7 +2011,9 @@ function narrativeKeyNodeErrors(
     for (const location of node.locations ?? []) {
       const chapter = chapterById.get(location.chapterId);
       if (!chapter) {
-        errors.push(`${label}[${index}] 关联了不存在的章节：${location.chapterId}`);
+        errors.push(
+          `${label}[${index}] 关联了不存在的章节：${location.chapterId}`,
+        );
         continue;
       }
       if (
@@ -1473,7 +2026,9 @@ function narrativeKeyNodeErrors(
             (section as Record<string, unknown>).id === location.sectionId,
         )
       ) {
-        errors.push(`${label}[${index}] 关联的节不属于章节：${location.sectionId}`);
+        errors.push(
+          `${label}[${index}] 关联的节不属于章节：${location.sectionId}`,
+        );
       }
     }
   });
@@ -1497,19 +2052,30 @@ function validateNarrativeDraftPayload(
   const targetLineIds = new Set<string>();
   const targetArcIds = new Set<string>();
   for (const [index, line] of payload.lines.entries()) {
-    if (!ID_PATTERN.test(line.candidateId) || candidateIds.has(line.candidateId))
+    if (
+      !ID_PATTERN.test(line.candidateId) ||
+      candidateIds.has(line.candidateId)
+    )
       errors.push(`线路候选 ${index + 1} 的 candidateId 非法或重复`);
     candidateIds.add(line.candidateId);
     if (!line.title.trim()) errors.push(`线路候选 ${index + 1} 缺少标题`);
     if (line.targetId) {
       if (!existingLineIds.has(line.targetId)) {
-        errors.push(`线路候选 ${index + 1} 的 targetId 不存在：${line.targetId}`);
+        errors.push(
+          `线路候选 ${index + 1} 的 targetId 不存在：${line.targetId}`,
+        );
       } else if (targetLineIds.has(line.targetId)) {
         errors.push(`多个线路候选不能更新同一条线路：${line.targetId}`);
       }
       targetLineIds.add(line.targetId);
     }
-    errors.push(...narrativeKeyNodeErrors(line.keyNodes, library, `线路候选 ${index + 1} 的关键节点`));
+    errors.push(
+      ...narrativeKeyNodeErrors(
+        line.keyNodes,
+        library,
+        `线路候选 ${index + 1} 的关键节点`,
+      ),
+    );
   }
   for (const [index, arc] of payload.arcs.entries()) {
     if (!ID_PATTERN.test(arc.candidateId) || candidateIds.has(arc.candidateId))
@@ -1518,13 +2084,21 @@ function validateNarrativeDraftPayload(
     if (!arc.title.trim()) errors.push(`故事弧候选 ${index + 1} 缺少标题`);
     if (arc.targetId) {
       if (!existingArcIds.has(arc.targetId)) {
-        errors.push(`故事弧候选 ${index + 1} 的 targetId 不存在：${arc.targetId}`);
+        errors.push(
+          `故事弧候选 ${index + 1} 的 targetId 不存在：${arc.targetId}`,
+        );
       } else if (targetArcIds.has(arc.targetId)) {
         errors.push(`多个故事弧候选不能更新同一条故事弧：${arc.targetId}`);
       }
       targetArcIds.add(arc.targetId);
     }
-    errors.push(...narrativeKeyNodeErrors(arc.keyNodes, library, `故事弧候选 ${index + 1} 的关键节点`));
+    errors.push(
+      ...narrativeKeyNodeErrors(
+        arc.keyNodes,
+        library,
+        `故事弧候选 ${index + 1} 的关键节点`,
+      ),
+    );
   }
   if (payload.lines.length + payload.arcs.length === 0)
     errors.push("至少需要一条线路或一个故事弧候选");
@@ -1533,9 +2107,13 @@ function validateNarrativeDraftPayload(
     ...payload.lines.map((line) => line.candidateId),
   ]);
   payload.arcs.forEach((arc, index) => {
-    const missing = [...new Set(arc.lineIds ?? [])].filter((id) => !allLineIds.has(id));
+    const missing = [...new Set(arc.lineIds ?? [])].filter(
+      (id) => !allLineIds.has(id),
+    );
     if (missing.length > 0)
-      errors.push(`故事弧候选 ${index + 1} 关联了不存在的线路：${missing.join(", ")}`);
+      errors.push(
+        `故事弧候选 ${index + 1} 关联了不存在的线路：${missing.join(", ")}`,
+      );
   });
   return errors;
 }
@@ -1590,7 +2168,11 @@ function materializeNarrativeDraft(
       status: input.status ?? narrativeString(existing, "status", "idea"),
       color:
         input.kind === undefined
-          ? narrativeString(existing, "color", NARRATIVE_LINE_COLORS[kind as NarrativeLineKind])
+          ? narrativeString(
+              existing,
+              "color",
+              NARRATIVE_LINE_COLORS[kind as NarrativeLineKind],
+            )
           : NARRATIVE_LINE_COLORS[kind as NarrativeLineKind],
       premise:
         input.premise === undefined
@@ -1686,7 +2268,8 @@ async function readNarrativeSource(): Promise<{
   narrativeRecords(library, "arcs");
   narrativeRecords(library, "directories");
   narrativeRecords(library, "chapters");
-  if (library.schemaVersion !== 3) throw new Error("请先在剧情工程页面保存一次，以完成旧数据迁移");
+  if (library.schemaVersion !== 3)
+    throw new Error("请先在剧情工程页面保存一次，以完成旧数据迁移");
   return { workspace, content, library };
 }
 
@@ -1721,10 +2304,20 @@ async function createNarrativeDraftHandler(args: {
   }
 }
 
-async function getNarrativeDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+async function getNarrativeDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("narrative");
-    return result(summarizeNovelWorkbenchDraft(await loadNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId)));
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<NarrativeDraftPayload>(
+          workspace,
+          "narrative",
+          args.draftId,
+        ),
+      ),
+    );
   } catch (error) {
     return result({ error: message(error) }, true);
   }
@@ -1736,11 +2329,18 @@ async function upsertNarrativeDraftLinesHandler(args: {
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("narrative");
-    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId, (payload) => {
-      const lines = new Map(payload.lines.map((line) => [line.candidateId, line]));
-      args.lines.forEach((line) => lines.set(line.candidateId, line));
-      return { ...payload, lines: [...lines.values()] };
-    });
+    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
+      workspace,
+      "narrative",
+      args.draftId,
+      (payload) => {
+        const lines = new Map(
+          payload.lines.map((line) => [line.candidateId, line]),
+        );
+        args.lines.forEach((line) => lines.set(line.candidateId, line));
+        return { ...payload, lines: [...lines.values()] };
+      },
+    );
     return result(summarizeNovelWorkbenchDraft(draft));
   } catch (error) {
     return result({ error: message(error) }, true);
@@ -1753,28 +2353,47 @@ async function upsertNarrativeDraftArcsHandler(args: {
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("narrative");
-    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId, (payload) => {
-      const arcs = new Map(payload.arcs.map((arc) => [arc.candidateId, arc]));
-      args.arcs.forEach((arc) => arcs.set(arc.candidateId, arc));
-      return { ...payload, arcs: [...arcs.values()] };
-    });
+    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
+      workspace,
+      "narrative",
+      args.draftId,
+      (payload) => {
+        const arcs = new Map(payload.arcs.map((arc) => [arc.candidateId, arc]));
+        args.arcs.forEach((arc) => arcs.set(arc.candidateId, arc));
+        return { ...payload, arcs: [...arcs.values()] };
+      },
+    );
     return result(summarizeNovelWorkbenchDraft(draft));
   } catch (error) {
     return result({ error: message(error) }, true);
   }
 }
 
-async function validateNarrativeDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+async function validateNarrativeDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("narrative");
-    const draft = await loadNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId);
+    const draft = await loadNovelWorkbenchDraft<NarrativeDraftPayload>(
+      workspace,
+      "narrative",
+      args.draftId,
+    );
     const source = await readNarrativeSource();
     if (narrativeSourceHash(source.content) !== draft.payload.baseSourceHash)
       throw new Error("剧情工程事实源已变化，请重新读取上下文并创建新草稿");
     const errors = validateNarrativeDraftPayload(draft.payload, source.library);
     if (errors.length > 0) return result({ valid: false, errors }, true);
-    const saved = await saveNovelWorkbenchDraftValidation(workspace, draft, hashNovelWorkbenchDraftPayload(draft.payload));
-    return result({ valid: true, ...summarizeNovelWorkbenchDraft(saved), validationToken: saved.validation?.token });
+    const saved = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      hashNovelWorkbenchDraftPayload(draft.payload),
+    );
+    return result({
+      valid: true,
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
+    });
   } catch (error) {
     return result({ valid: false, errors: [message(error)] }, true);
   }
@@ -1791,9 +2410,16 @@ async function submitNarrativeProposalHandler(args: {
   updatedArcIds: readonly string[];
 }): Promise<{ proposalId: string; lineCount: number; arcCount: number }> {
   const { workspace, context } = requireDraftMode("narrative");
-  const proposalDirectory = workspaceFile(workspace, `${NARRATIVE_PROPOSAL_ROOT}/${args.proposalId}`);
+  const proposalDirectory = workspaceFile(
+    workspace,
+    `${NARRATIVE_PROPOSAL_ROOT}/${args.proposalId}`,
+  );
   if (await readOptional(join(proposalDirectory, "proposal.json")))
-    return { proposalId: args.proposalId, lineCount: args.lines.length, arcCount: args.arcs.length };
+    return {
+      proposalId: args.proposalId,
+      lineCount: args.lines.length,
+      arcCount: args.arcs.length,
+    };
   await fs.mkdir(proposalDirectory, { recursive: true });
   const manifest = {
     schemaVersion: 1,
@@ -1801,7 +2427,11 @@ async function submitNarrativeProposalHandler(args: {
     title: args.title.trim(),
     description: args.description?.trim() ?? "",
     createdAt: new Date().toISOString(),
-    source: { kind: "agent", promptId: context.promptId, promptVersion: context.promptVersion },
+    source: {
+      kind: "agent",
+      promptId: context.promptId,
+      promptVersion: context.promptVersion,
+    },
     baseSourceHash: args.baseSourceHash,
     lines: args.lines.map((value) => ({
       candidateId: String(value.id),
@@ -1816,23 +2446,47 @@ async function submitNarrativeProposalHandler(args: {
       value,
     })),
   };
-  await fs.writeFile(join(proposalDirectory, "proposal.json"), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-  return { proposalId: args.proposalId, lineCount: args.lines.length, arcCount: args.arcs.length };
+  await fs.writeFile(
+    join(proposalDirectory, "proposal.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    { encoding: "utf8", flag: "wx" },
+  );
+  return {
+    proposalId: args.proposalId,
+    lineCount: args.lines.length,
+    arcCount: args.arcs.length,
+  };
 }
 
-async function submitNarrativeDraftHandler(args: { draftId: string; validationToken: string }): Promise<CallToolResult> {
+async function submitNarrativeDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("narrative");
-    const draft = await loadNovelWorkbenchDraft<NarrativeDraftPayload>(workspace, "narrative", args.draftId);
+    const draft = await loadNovelWorkbenchDraft<NarrativeDraftPayload>(
+      workspace,
+      "narrative",
+      args.draftId,
+    );
     const proposalId = narrativeProposalId(draft.draftId);
-    if (draft.submittedProposalId) return result(await getNarrativeProposalStatusHandlerValue(proposalId));
-    if (draft.validation?.token !== args.validationToken || draft.validation.contentHash !== hashNovelWorkbenchDraftPayload(draft.payload))
+    if (draft.submittedProposalId)
+      return result(await getNarrativeProposalStatusHandlerValue(proposalId));
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !==
+        hashNovelWorkbenchDraftPayload(draft.payload)
+    )
       throw new Error("校验令牌无效或草稿已经变化，请重新校验");
     const source = await readNarrativeSource();
-    if (narrativeSourceHash(source.content) !== draft.payload.baseSourceHash) throw new Error("剧情工程事实源已变化，请重新读取上下文");
+    if (narrativeSourceHash(source.content) !== draft.payload.baseSourceHash)
+      throw new Error("剧情工程事实源已变化，请重新读取上下文");
     const errors = validateNarrativeDraftPayload(draft.payload, source.library);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
-    const materialized = materializeNarrativeDraft(draft.payload, source.library);
+    const materialized = materializeNarrativeDraft(
+      draft.payload,
+      source.library,
+    );
     const persisted = await submitNarrativeProposalHandler({
       proposalId,
       title: draft.payload.title,
@@ -1845,27 +2499,59 @@ async function submitNarrativeDraftHandler(args: { draftId: string; validationTo
     });
     await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
     const status = await getNarrativeProposalStatusHandlerValue(proposalId);
-    return result({ submitted: true, ...persisted, ...status, draftId: draft.draftId, reviewAction: "请作者在剧情工程的线路或故事弧页面点击“审阅提案”。" });
+    return result({
+      submitted: true,
+      ...persisted,
+      ...status,
+      draftId: draft.draftId,
+      reviewAction: "请作者在剧情工程的线路或故事弧页面点击“审阅提案”。",
+    });
   } catch (error) {
     return result({ submitted: false, error: message(error) }, true);
   }
 }
 
-async function getNarrativeProposalStatusHandlerValue(proposalId: string): Promise<Record<string, unknown>> {
+async function getNarrativeProposalStatusHandlerValue(
+  proposalId: string,
+): Promise<Record<string, unknown>> {
   const { workspace } = requireDraftMode("narrative");
-  const content = await readOptional(workspaceFile(workspace, `${NARRATIVE_PROPOSAL_ROOT}/${proposalId}/proposal.json`));
+  const content = await readOptional(
+    workspaceFile(
+      workspace,
+      `${NARRATIVE_PROPOSAL_ROOT}/${proposalId}/proposal.json`,
+    ),
+  );
   if (!content) return { exists: false, proposalId };
   const manifest = narrativeRecord(JSON.parse(content), "剧情提案");
-  const candidates = [...(arrayField(manifest, "lines") ?? []), ...(arrayField(manifest, "arcs") ?? [])];
-  const statuses = candidates.map((candidate) => String(narrativeRecord(candidate, "剧情提案候选").status));
-  return { exists: true, proposalId, title: manifest.title, pending: statuses.filter((status) => status === "pending").length, applied: statuses.filter((status) => status === "applied").length, rejected: statuses.filter((status) => status === "rejected").length };
+  const candidates = [
+    ...(arrayField(manifest, "lines") ?? []),
+    ...(arrayField(manifest, "arcs") ?? []),
+  ];
+  const statuses = candidates.map((candidate) =>
+    String(narrativeRecord(candidate, "剧情提案候选").status),
+  );
+  return {
+    exists: true,
+    proposalId,
+    title: manifest.title,
+    pending: statuses.filter((status) => status === "pending").length,
+    applied: statuses.filter((status) => status === "applied").length,
+    rejected: statuses.filter((status) => status === "rejected").length,
+  };
 }
 
-async function getNarrativeProposalStatusHandler(args: { proposalId: string }): Promise<CallToolResult> {
+async function getNarrativeProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
   try {
-    return result(await getNarrativeProposalStatusHandlerValue(args.proposalId));
+    return result(
+      await getNarrativeProposalStatusHandlerValue(args.proposalId),
+    );
   } catch (error) {
-    return result({ exists: false, proposalId: args.proposalId, error: message(error) }, true);
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
   }
 }
 
@@ -2015,7 +2701,6 @@ async function submitHandler(args: {
   }
 }
 
-
 type WorldDraftPayload = {
   title: string;
   description: string;
@@ -2117,7 +2802,7 @@ function createCharacterDraftValue(
 }
 
 function requireDraftMode(
-  expected: "world" | "characters" | "items" | "narrative",
+  expected: "world" | "characters" | "items" | "narrative" | "cultivation",
 ): ReturnType<typeof requireWorkspace> {
   const allowed =
     expected === "world"
@@ -2903,7 +3588,10 @@ export async function createNovelWorkbenchServer() {
         "向剧情工程草稿增量写入线路候选。补充既有线路时必须填写 targetId，系统会保留该线路 ID 并更新内容；省略 targetId 才会创建新线路。每条线路必须提供至少一个关键节点。",
         {
           draftId: z.string().regex(ID_PATTERN),
-          lines: z.array(narrativeLineInputSchema).min(1).max(MAX_NARRATIVE_CANDIDATES),
+          lines: z
+            .array(narrativeLineInputSchema)
+            .min(1)
+            .max(MAX_NARRATIVE_CANDIDATES),
         },
         upsertNarrativeDraftLinesHandler,
       ),
@@ -2912,7 +3600,10 @@ export async function createNovelWorkbenchServer() {
         "向剧情工程草稿增量写入故事弧候选。补充既有故事弧时必须填写 targetId，系统会保留该故事弧 ID 并更新内容；省略 targetId 才会创建新故事弧。每条故事弧必须提供至少一个关键节点。",
         {
           draftId: z.string().regex(ID_PATTERN),
-          arcs: z.array(narrativeStoryArcInputSchema).min(1).max(MAX_NARRATIVE_CANDIDATES),
+          arcs: z
+            .array(narrativeStoryArcInputSchema)
+            .min(1)
+            .max(MAX_NARRATIVE_CANDIDATES),
         },
         upsertNarrativeDraftArcsHandler,
       ),
@@ -2992,6 +3683,59 @@ export async function createNovelWorkbenchServer() {
         "读取人物库中的种族、角色分组、角色灵魂、物品库摘要和角色摘要；传 characterId 时返回完整角色卡。",
         { characterId: z.string().regex(ID_PATTERN).optional() },
         getCharacterContextHandler,
+      ),
+      tool(
+        "novel_cultivation_get_context",
+        "读取修行体系事实源。默认返回所有体系的完整结构；传 systemId 可限定单个体系，并返回绑定当前事实源的 sourceHash。该工具只读，不会修改正式设定。",
+        { systemId: z.string().regex(ID_PATTERN).optional() },
+        getCultivationContextHandler,
+      ),
+      tool(
+        "novel_cultivation_create_draft",
+        "创建绑定当前事实源的可恢复修行体系草稿。草稿只保存候选生态 JSON，不会修改正式文件。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().trim().min(1).max(160),
+          description: z.string().max(20_000).optional(),
+          baseSourceHash: z.string().regex(/^[a-f0-9]{64}$/u),
+        },
+        createCultivationDraftHandler,
+      ),
+      tool(
+        "novel_cultivation_get_draft",
+        "读取修行体系草稿的完整 JSON、revision、校验令牌和提交状态。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getCultivationDraftHandler,
+      ),
+      tool(
+        "novel_cultivation_upsert_draft",
+        "把完整的修行生态 JSON 写入草稿。不会直接写入正式事实源；更新后必须重新校验。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          content: z.string().min(2).max(8 * 1024 * 1024),
+        },
+        upsertCultivationDraftHandler,
+      ),
+      tool(
+        "novel_cultivation_validate_draft",
+        "校验修行生态草稿的 Schema、稳定 ID、引用关系和当前事实源版本；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateCultivationDraftHandler,
+      ),
+      tool(
+        "novel_cultivation_submit_draft",
+        "使用 validationToken 提交修行体系草稿为待作者审批的 before/after 提案，不修改正式事实源。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitCultivationDraftHandler,
+      ),
+      tool(
+        "novel_cultivation_get_proposal_status",
+        "从磁盘确认修行体系提案是否真实存在及其审批状态。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getCultivationProposalStatusHandler,
       ),
       tool(
         "novel_characters_validate_proposal",

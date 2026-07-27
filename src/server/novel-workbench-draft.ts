@@ -9,7 +9,8 @@ export type NovelWorkbenchDraftDomain =
   | "characters"
   | "items"
   | "factions"
-  | "narrative";
+  | "narrative"
+  | "cultivation";
 
 export interface NovelWorkbenchDraftSource {
   readonly promptId: string;
@@ -43,6 +44,7 @@ const DRAFT_ROOTS: Readonly<Record<NovelWorkbenchDraftDomain, string>> = {
   items: "world/items/drafts",
   factions: "world/factions/drafts",
   narrative: "narrative/drafts",
+  cultivation: "world/cultivation-drafts",
 };
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;

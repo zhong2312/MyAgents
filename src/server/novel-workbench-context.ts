@@ -13,7 +13,7 @@ export const NOVEL_WORKBENCH_SDK_INSTRUCTIONS = `这些工具是 MyAgents 小说
 向用户描述时统一称为“小说工作台内置工具”，不得暴露 mcp__ 前缀、novel-workbench 适配器名称或底层传输协议。
 不得建议用户前往 MCP 设置、开关 MCP 服务、检查 MCP 连接或通过重启应用恢复这些工具。
 如果工具调用失败，只能如实说明小说工作台内置工具本次执行失败；不要臆测网络连接、服务进程或用户配置原因。
-可根据当前任务自主选择剧情、人物、世界或物品的上下文读取工具，不要为了遍历工具而进行无目的调用。
+可根据当前任务自主选择剧情、人物、世界、物品或修行体系的上下文读取工具，不要为了遍历工具而进行无目的调用。
 跨领域上下文工具只用于读取事实；草稿、校验和提交工具仍受当前会话领域约束，不得尝试跨领域写入。
 工具失败或暂时不可用时，仍然不得请求或尝试改用 Write、Edit、Bash、Task、Agent 或其他原始文件路径修改小说项目；只能停止本次写回并说明提案尚未提交。`;
 
@@ -25,7 +25,8 @@ export type NovelWorkbenchMode =
   | "inspiration"
   | "items"
   | "characters"
-  | "factions";
+  | "factions"
+  | "cultivation";
 
 export interface NovelWorkbenchContext {
   readonly mode: NovelWorkbenchMode;
@@ -51,6 +52,7 @@ const NOVEL_WORKBENCH_TOOL_PREFIXES: Readonly<
   items: ["novel_items_"],
   characters: ["novel_characters_"],
   factions: [],
+  cultivation: ["novel_cultivation_"],
 };
 
 const NOVEL_WORKBENCH_CROSS_DOMAIN_READ_TOOLS = new Set([
@@ -58,6 +60,7 @@ const NOVEL_WORKBENCH_CROSS_DOMAIN_READ_TOOLS = new Set([
   "novel_narrative_get_context",
   "novel_items_get_context",
   "novel_characters_get_context",
+  "novel_cultivation_get_context",
 ]);
 
 function normalizeNovelWorkbenchToolName(toolName: string): string {
@@ -101,10 +104,11 @@ export function configureNovelWorkbenchRequest(
     mode !== "inspiration" &&
     mode !== "items" &&
     mode !== "characters" &&
-    mode !== "factions"
+    mode !== "factions" &&
+    mode !== "cultivation"
   ) {
     throw new Error(
-      "toolset.context.mode must be world, template, assist, narrative, inspiration, items, characters or factions",
+      "toolset.context.mode must be world, template, assist, narrative, inspiration, items, characters, factions or cultivation",
     );
   }
   if (typeof promptId !== "string" || !promptId.trim()) {

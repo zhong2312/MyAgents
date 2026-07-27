@@ -1,6 +1,7 @@
 import type {
   AuditIssue,
   CultivationEcology,
+  ResourceRequirement,
   CultivationSystem,
 } from "../../../shared/novel-cultivation-ecology-schema";
 
@@ -110,6 +111,52 @@ function buildIssue(
   };
 }
 
+function collectCultivationSystemAssetIds(
+  system: CultivationSystem,
+): ReadonlySet<string> {
+  return new Set([
+    system.id,
+    ...system.theoryModel.nodeCatalog.map((node) => node.id),
+    ...system.progressionTracks.flatMap((track) => [
+      track.id,
+      ...track.metrics.map((metric) => metric.id),
+      ...track.levels.flatMap((level) => [
+        level.id,
+        ...level.subStages.map((stage) => stage.id),
+      ]),
+      ...track.transitions.flatMap((transition) => [
+        transition.id,
+        ...transition.methodIds,
+      ]),
+    ]),
+    ...(system.trackInteractions ?? []).map((interaction) => interaction.id),
+    ...system.resources.flatMap((resource) => [
+      resource.id,
+      ...resource.grades.map((grade) => grade.id),
+    ]),
+    ...system.methods.flatMap((method) => [
+      method.id,
+      ...method.operationTopologies.flatMap((topology) => [
+        topology.id,
+        ...topology.nodes.map((node) => node.id),
+        ...topology.edges.map((edge) => edge.id),
+      ]),
+      ...method.courses.map((course) => course.id),
+    ]),
+    ...system.abilities.map((ability) => ability.id),
+    ...system.formations.flatMap((formation) => [
+      formation.id,
+      ...formation.nodes.map((node) => node.id),
+      ...formation.edges.map((edge) => edge.id),
+      ...formation.design.rings.map((ring) => ring.id),
+      ...formation.design.backdropLayers.map((layer) => layer.id),
+    ]),
+    ...system.foundations.map((foundation) => foundation.id),
+    ...system.transitions.map((transition) => transition.id),
+    ...system.constraints.map((constraint) => constraint.id),
+  ]);
+}
+
 export function auditSystem(
   system: CultivationSystem,
   ecology: CultivationEcology,
@@ -139,8 +186,31 @@ export function auditSystem(
       ),
     );
   };
+  const seenIds = new Set<string>();
+  const registerId = (
+    id: string,
+    label: string,
+    targetType: IssueTarget,
+    targetId: string,
+  ) => {
+    if (seenIds.has(id))
+      add(
+        "error",
+        targetType,
+        targetId,
+        "体系内稳定 ID 重复",
+        `${label} 使用了已被其他资产占用的稳定 ID ${id}。`,
+        "为该资产生成新的稳定 ID，保证引用唯一。",
+        `duplicate-id:${id}`,
+      );
+    else seenIds.add(id);
+  };
+  registerId(system.id, "体系", "system", system.id);
   const nodeIds = new Set(
     system.theoryModel.nodeCatalog.map((item) => item.id),
+  );
+  system.theoryModel.nodeCatalog.forEach((node) =>
+    registerId(node.id, "理论节点", "theory", node.id),
   );
   const levelIds = new Set(
     system.progressionTracks.flatMap((track) =>
@@ -327,6 +397,19 @@ export function auditSystem(
     );
 
   system.progressionTracks.forEach((track) => {
+    registerId(track.id, "成长轨道", "system", system.id);
+    track.metrics.forEach((metric) =>
+      registerId(metric.id, "成长指标", "system", system.id),
+    );
+    track.levels.forEach((level) => {
+      registerId(level.id, "境界", "level", level.id);
+      level.subStages.forEach((stage) =>
+        registerId(stage.id, "境内阶段", "level-stage", stage.id),
+      );
+    });
+    track.transitions.forEach((transition) =>
+      registerId(transition.id, "轨道转换", "transition", transition.id),
+    );
     const trackMetricIds = new Set(track.metrics.map((metric) => metric.id));
     track.levels.forEach((level) => {
       level.metricThresholds.forEach((item) => {
@@ -389,6 +472,16 @@ export function auditSystem(
       });
     });
     track.transitions.forEach((transition) => {
+      if (transition.transitionType === "conversion")
+        add(
+          "warning",
+          "transition",
+          transition.id,
+          "体系转换放置在成长轨道内",
+          `转换 ${transition.name} 位于成长轨道内，轨道内跃迁应表达突破、觉醒或退化。`,
+          "将体系级转换移动到“突破与转换”目录，或改为轨道内突破。",
+          `transition:${transition.id}:track-scope`,
+        );
       checkRefs(
         [transition.fromLevelId, transition.toLevelId].filter(
           (id): id is string => Boolean(id),
@@ -413,6 +506,10 @@ export function auditSystem(
       );
     });
   });
+
+  (system.trackInteractions ?? []).forEach((interaction) =>
+    registerId(interaction.id, "轨道交叉规则", "system", system.id),
+  );
 
   const interactionGraph = new Map<string, string[]>();
   (system.trackInteractions ?? []).forEach((interaction) => {
@@ -443,7 +540,8 @@ export function auditSystem(
     }
     if (
       interaction.kind === "dependency" ||
-      interaction.kind === "cross-breakthrough"
+      interaction.kind === "cross-breakthrough" ||
+      interaction.kind === "synchronization"
     )
       interactionGraph.set(interaction.sourceTrackId, [
         ...(interactionGraph.get(interaction.sourceTrackId) ?? []),
@@ -473,6 +571,19 @@ export function auditSystem(
   }
 
   system.methods.forEach((method) => {
+    registerId(method.id, "法门", "method", method.id);
+    method.operationTopologies.forEach((topology) => {
+      registerId(topology.id, "运行拓扑", "topology", topology.id);
+      topology.nodes.forEach((node) =>
+        registerId(node.id, "拓扑节点", "topology", topology.id),
+      );
+      topology.edges.forEach((edge) =>
+        registerId(edge.id, "拓扑边", "topology", topology.id),
+      );
+    });
+    method.courses.forEach((course) =>
+      registerId(course.id, "法门课程", "method", method.id),
+    );
     if (options.itemIds)
       method.itemIds.forEach((itemId) => {
         if (!options.itemIds?.has(itemId))
@@ -506,6 +617,97 @@ export function auditSystem(
         "法门只有法诀，没有可验证的运行线路。",
         "至少添加一条法门运行拓扑。",
       );
+    const coverageBoundaryEntries = [
+      ["startLevelId", method.coverage.startLevelId],
+      ["stableLimitId", method.coverage.stableLimitId],
+      ["theoryLimitId", method.coverage.theoryLimitId],
+      ["absoluteLimitId", method.coverage.absoluteLimitId],
+    ] as const;
+    const coverageBoundaries = coverageBoundaryEntries
+      .filter((entry) => Boolean(entry[1]))
+      .map(([kind, levelId]) => [kind, levelId as string] as const);
+    const coverageLevelIds = new Set<string>();
+    if (coverageBoundaries.length > 0) {
+      const boundaryTracks = system.progressionTracks.filter((track) =>
+        track.levels.some((level) =>
+          coverageBoundaries.some(([, levelId]) => level.id === levelId),
+        ),
+      );
+      if (boundaryTracks.length > 1)
+        add(
+          "error",
+          "method",
+          method.id,
+          "法门 coverage 跨越多个成长轨道",
+          `法门 ${method.name} 的 coverage 边界分布在多个成长轨道，无法形成单一阶段区间。`,
+          "将 coverage 边界限制在同一成长轨道，或拆分为多部法门。",
+          `method:${method.id}:coverage-track-scope`,
+        );
+      const boundaryTrack = boundaryTracks[0];
+      if (boundaryTrack) {
+        const orderedLevels = boundaryTrack.levels
+          .slice()
+          .sort((left, right) => left.order - right.order);
+        const boundaryOrders = coverageBoundaries.map(([kind, levelId]) => ({
+          kind,
+          levelId,
+          order: orderedLevels.find((level) => level.id === levelId)?.order,
+        }));
+        boundaryOrders.forEach((entry, index) => {
+          const next = boundaryOrders[index + 1];
+          if (entry.order === undefined || next?.order === undefined) return;
+          if (entry.order > next.order)
+            add(
+              "error",
+              "method",
+              method.id,
+              "法门 coverage 上限顺序错误",
+              `法门 ${method.name} 的 ${entry.kind} 高于 ${next.kind}，覆盖区间无法按成长顺序解释。`,
+              "按成长轨道顺序重新设置起始、稳定、理论和绝对上限。",
+              `method:${method.id}:coverage-order:${entry.kind}:${next.kind}`,
+            );
+        });
+        // 只有同时存在下界和上界时，才把 coverage 解释成完整的阶段区间。
+        // 仅填写一个边界不能推断另一端，避免误报阶段侧法门关联。
+        const lower = boundaryOrders.find((entry) => entry.kind === "startLevelId");
+        const upper = boundaryOrders
+          .filter((entry) => entry.kind !== "startLevelId")
+          .at(-1);
+        if (lower?.order !== undefined && upper?.order !== undefined) {
+          orderedLevels
+            .filter(
+              (level) =>
+                level.order >= lower.order! && level.order <= upper.order!,
+            )
+            .forEach((level) => coverageLevelIds.add(level.id));
+        }
+      }
+      coverageBoundaries.forEach(([, levelId]) => coverageLevelIds.add(levelId));
+    }
+    const levelSideReferences = system.progressionTracks.flatMap((track) =>
+      track.levels.flatMap((level) => [
+        ...(level.methodIds.includes(method.id) ? [level.id] : []),
+        ...level.subStages.flatMap((stage) =>
+          stage.methodIds.includes(method.id) ? [level.id] : [],
+        ),
+      ]),
+    );
+    levelSideReferences.forEach((levelId) => {
+      if (
+        coverageBoundaries.length >= 2 &&
+        coverageLevelIds.size > 0 &&
+        !coverageLevelIds.has(levelId)
+      )
+        add(
+          "warning",
+          "method",
+          method.id,
+          "法门阶段关联超出覆盖范围",
+          `法门 ${method.name} 在阶段 ${levelId} 被直接关联，但 coverage 未声明该阶段。`,
+          "让 coverage 与阶段法门关联保持一致，或移除阶段侧关联。",
+          `method:${method.id}:stage-coverage:${levelId}`,
+        );
+    });
     method.courses.forEach((course) => {
       checkRefs(
         course.levelId ? [course.levelId] : [],
@@ -571,6 +773,7 @@ export function auditSystem(
   });
 
   system.abilities.forEach((ability) => {
+    registerId(ability.id, "能力", "ability", ability.id);
     if (options.itemIds && ability.scriptureSource)
       ability.scriptureSource.itemIds.forEach((itemId) => {
         if (!options.itemIds?.has(itemId))
@@ -622,6 +825,27 @@ export function auditSystem(
       ability.id,
       "能力完整发挥阶段",
     );
+    const levelSideAbilityReferences = system.progressionTracks.flatMap(
+      (track) =>
+        track.levels
+          .filter((level) => level.naturalAbilityIds.includes(ability.id))
+          .map((level) => level.id),
+    );
+    if (
+      ability.acquisitionType === "natural" &&
+      ability.unlockLevelId &&
+      levelSideAbilityReferences.length > 0 &&
+      !levelSideAbilityReferences.includes(ability.unlockLevelId)
+    )
+      add(
+        "warning",
+        "ability",
+        ability.id,
+        "能力解锁阶段与境界关联不一致",
+        `能力 ${ability.name} 的 unlockLevelId 与阶段侧 naturalAbilityIds 不一致。`,
+        "统一能力解锁阶段和境界自然能力关联。",
+        `ability:${ability.id}:unlock-stage`,
+      );
     checkRefs(
       ability.scriptureSource?.methodId
         ? [ability.scriptureSource.methodId]
@@ -695,6 +919,19 @@ export function auditSystem(
     ),
   );
   system.formations.forEach((formation) => {
+    registerId(formation.id, "阵法", "formation", formation.id);
+    formation.nodes.forEach((node) =>
+      registerId(node.id, "阵法节点", "formation", formation.id),
+    );
+    formation.edges.forEach((edge) =>
+      registerId(edge.id, "阵法边", "formation", formation.id),
+    );
+    formation.design.rings.forEach((ring) =>
+      registerId(ring.id, "阵环", "formation", formation.id),
+    );
+    formation.design.backdropLayers.forEach((layer) =>
+      registerId(layer.id, "阵法底纹", "formation", formation.id),
+    );
     if (options.itemIds)
       formation.itemIds.forEach((itemId) => {
         if (!options.itemIds?.has(itemId))
@@ -856,16 +1093,58 @@ export function auditSystem(
       );
   });
 
-  system.foundations.forEach((foundation) =>
-    checkRefs(
-      foundation.affectedTracks,
-      trackIds,
-      "foundation",
-      foundation.id,
-      "根基影响轨道",
+  system.foundations.forEach(
+    (foundation) => (
+      registerId(foundation.id, "根基", "foundation", foundation.id),
+      checkRefs(
+        foundation.affectedTracks,
+        trackIds,
+        "foundation",
+        foundation.id,
+        "根基影响轨道",
+      )
     ),
   );
+  const resourceConsumers: Array<{
+    levelId: string | null;
+    requirements: readonly ResourceRequirement[];
+  }> = system.progressionTracks.flatMap((track) =>
+    track.levels.flatMap((level) => [
+      {
+        levelId: level.id,
+        requirements: level.resourceRequirements,
+      },
+      ...level.subStages.map((stage) => ({
+        levelId: level.id,
+        requirements: stage.resourceRequirements,
+      })),
+    ]),
+  );
+  system.methods.forEach((method) =>
+    method.courses.forEach((course) =>
+      resourceConsumers.push({
+        levelId: course.levelId,
+        requirements: course.resourceRequirements,
+      }),
+    ),
+  );
+  system.abilities.forEach((ability) =>
+    resourceConsumers.push({
+      levelId: ability.unlockLevelId,
+      requirements: ability.trainingRequirements.resourceRequirements,
+    }),
+  );
+  system.formations.forEach((formation) =>
+    resourceConsumers.push({
+      levelId: formation.requiredLevelIds[0] ?? null,
+      requirements: formation.resourceRequirements,
+    }),
+  );
   system.resources.forEach((resource) => {
+    registerId(resource.id, "资源", "resource", resource.id);
+    resource.grades.forEach((grade) =>
+      registerId(grade.id, "资源品阶", "resource", resource.id),
+    );
     checkRefs(
       resource.bestLevelId ? [resource.bestLevelId] : [],
       levelIds,
@@ -880,8 +1159,40 @@ export function auditSystem(
       resource.id,
       "资源可用阶段",
     );
+    if (resource.usableLevelIds.length > 0)
+      resourceConsumers.forEach(({ levelId, requirements }) => {
+        if (
+          requirements.some(
+            (requirement) =>
+              requirement.resourceId === resource.id ||
+              requirement.substituteResourceIds.includes(resource.id),
+          ) &&
+          levelId &&
+          !resource.usableLevelIds.includes(levelId)
+        )
+          add(
+            "warning",
+            "resource",
+            resource.id,
+            "资源需求超出适用阶段",
+            `资源 ${resource.name} 在阶段或课程 ${levelId} 被要求使用，但该阶段不在 usableLevelIds 中。`,
+            "扩大资源适用阶段，或调整阶段、课程和能力的资源需求。",
+            `resource:${resource.id}:level:${levelId}`,
+          );
+      });
   });
   system.transitions.forEach((transition) => {
+    if (transition.transitionType !== "conversion")
+      add(
+        "warning",
+        "transition",
+        transition.id,
+        "轨道跃迁放置在体系级容器",
+        `体系级跃迁 ${transition.name} 当前类型为 ${transition.transitionType}，体系级容器只承载跨体系或跨轨道转换。`,
+        "将其移动到对应成长轨道，或改为体系级转换。",
+        `transition:${transition.id}:system-scope`,
+      );
+    registerId(transition.id, "体系转换", "transition", transition.id);
     checkRefs(
       [transition.fromLevelId, transition.toLevelId].filter(
         (id): id is string => Boolean(id),
@@ -916,6 +1227,7 @@ export function auditSystem(
     );
   });
   system.constraints.forEach((constraint) => {
+    registerId(constraint.id, "约束", "constraint", constraint.id);
     if (!constraint.trigger.trim())
       add(
         "warning",
@@ -961,45 +1273,30 @@ export function auditSystem(
         `constraint:${constraint.id}:release`,
       );
   });
-  const assetIdsForSystem = (candidate: CultivationSystem) =>
-    new Set([
-      ...candidate.theoryModel.nodeCatalog.map((node) => node.id),
-      ...candidate.progressionTracks.flatMap((track) => [
-        track.id,
-        ...track.metrics.map((metric) => metric.id),
-        ...track.levels.flatMap((level) => [
-          level.id,
-          ...level.subStages.map((stage) => stage.id),
-        ]),
-        ...track.transitions.map((transition) => transition.id),
-      ]),
-      ...(candidate.trackInteractions ?? []).map(
-        (interaction) => interaction.id,
-      ),
-      ...candidate.resources.map((resource) => resource.id),
-      ...candidate.methods.flatMap((method) => [
-        method.id,
-        ...method.operationTopologies.map((topology) => topology.id),
-      ]),
-      ...candidate.abilities.map((ability) => ability.id),
-      ...candidate.formations.map((formation) => formation.id),
-      ...candidate.foundations.map((foundation) => foundation.id),
-      ...candidate.transitions.map((transition) => transition.id),
-    ]);
   ecology.crossSystemRelations.forEach((relation) => {
+    const sourceExists = ecology.systems.some(
+      (candidate) => candidate.id === relation.sourceSystemId,
+    );
+    const targetExists = ecology.systems.some(
+      (candidate) => candidate.id === relation.targetSystemId,
+    );
+    const belongsToSystem =
+      relation.sourceSystemId === system.id ||
+      relation.targetSystemId === system.id;
+    // 两端都存在时，只在关联体系上展示一次；悬空关系则归档到首个体系，
+    // 避免删除体系后关系完全失去审查归属。
     if (
-      relation.sourceSystemId !== system.id &&
-      relation.targetSystemId !== system.id
+      !belongsToSystem &&
+      sourceExists &&
+      targetExists
     )
       return;
     if (
-      !ecology.systems.some(
-        (candidate) => candidate.id === relation.sourceSystemId,
-      ) ||
-      !ecology.systems.some(
-        (candidate) => candidate.id === relation.targetSystemId,
-      )
+      !belongsToSystem &&
+      system.id !== ecology.systems[0]?.id
     )
+      return;
+    if (!sourceExists || !targetExists)
       add(
         "error",
         "relation",
@@ -1038,8 +1335,10 @@ export function auditSystem(
         (candidate) => candidate.id === relation.targetSystemId,
       );
       const valid = new Set<string>();
-      if (source) assetIdsForSystem(source).forEach((id) => valid.add(id));
-      if (target) assetIdsForSystem(target).forEach((id) => valid.add(id));
+      if (source)
+        collectCultivationSystemAssetIds(source).forEach((id) => valid.add(id));
+      if (target)
+        collectCultivationSystemAssetIds(target).forEach((id) => valid.add(id));
       (relation.affectedAssetIds ?? []).forEach((assetId) => {
         if (!valid.has(assetId))
           add(
@@ -1065,6 +1364,17 @@ export function rebuildCultivationAudits(
     `${issue.targetType}:${issue.targetId ?? ""}:${issue.title}:${issue.message}`;
   const legacyIssueKey = (issue: AuditIssue) =>
     `${issue.targetType}:${issue.targetId ?? ""}:${issue.title}`;
+  const globalOwners = new Map<string, string[]>();
+  ecology.systems.forEach((system) => {
+    collectCultivationSystemAssetIds(system).forEach((id) => {
+      globalOwners.set(id, [...(globalOwners.get(id) ?? []), system.id]);
+    });
+  });
+  const globalDuplicates = new Map<string, string[]>();
+  globalOwners.forEach((owners, id) => {
+    const uniqueOwners = [...new Set(owners)];
+    if (uniqueOwners.length > 1) globalDuplicates.set(id, uniqueOwners);
+  });
   return {
     ...ecology,
     systems: ecology.systems.map((system) => {
@@ -1073,9 +1383,25 @@ export function rebuildCultivationAudits(
         previous.set(issueKey(issue), issue.resolved);
         previous.set(legacyIssueKey(issue), issue.resolved);
       });
+      const audited = auditSystem(system, ecology, options);
+      const duplicateIssues = [...globalDuplicates.entries()]
+        .filter(([, owners]) => owners.includes(system.id))
+        .map(([id, owners], index) =>
+          buildIssue(
+            system.id,
+            audited.length + index + 1,
+            "error",
+            "system",
+            system.id,
+            "体系间稳定 ID 重复",
+            `稳定 ID ${id} 同时出现在多个修行体系（${owners.join("、")}）中，角色和跨体系关系将无法唯一解析。`,
+            "为其中一个体系的资产重新生成稳定 ID，并同步更新所有引用。",
+            `global-duplicate-id:${id}`,
+          ),
+        );
       return {
         ...system,
-        audit: auditSystem(system, ecology, options).map((issue) => ({
+        audit: [...audited, ...duplicateIssues].map((issue) => ({
           ...issue,
           resolved:
             previous.get(issueKey(issue)) ??

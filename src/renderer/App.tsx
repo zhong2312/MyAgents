@@ -5878,9 +5878,11 @@ export default function App() {
           ? "open-item-proposal-review"
           : mode === "characters"
             ? "open-character-proposal-review"
-            : mode === "world" || mode === "template" || mode === "assist"
-              ? "open-proposal-review"
-              : null;
+            : mode === "cultivation"
+              ? "open-cultivation-proposal-review"
+              : mode === "world" || mode === "template" || mode === "assist"
+                ? "open-proposal-review"
+                : null;
       if (!action) return;
       window.setTimeout(() => {
         dispatchWorkbenchHostAction({

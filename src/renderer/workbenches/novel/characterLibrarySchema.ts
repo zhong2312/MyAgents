@@ -15,6 +15,7 @@ export {
   createLegacyCharacterArcStageId,
   characterAppearanceSchema,
   characterArcStageSchema,
+  characterCultivationProfileSchema,
   characterGroupDefinitionSchema,
   characterInventoryItemSchema,
   characterRelationSchema,
@@ -26,6 +27,7 @@ export {
 export type {
   CharacterAppearance,
   CharacterArcStage,
+  CharacterCultivationProfile,
   CharacterGroupDefinition,
   CharacterInventoryItem,
   CharacterRelation,

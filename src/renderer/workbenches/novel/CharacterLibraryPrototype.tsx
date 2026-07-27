@@ -64,6 +64,11 @@ import { Popover } from "@/components/ui/Popover";
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
+  cultivationEcologySchema,
+  type CultivationEcology,
+} from "../../../shared/novel-cultivation-ecology-schema";
+
+import {
   createNovelCharacterLibraryRepository,
   type LoadedCharacterLibrary,
 } from "./characterLibraryRepository";
@@ -107,6 +112,49 @@ interface CharacterInventoryItem {
   description: string;
 }
 
+interface CharacterCultivationProfile {
+  systemId: string | null;
+  trackId: string | null;
+  levelId: string | null;
+  methodIds: string[];
+  abilityIds: string[];
+  resourceBalances: Record<string, { quantity: number; quality: string }>;
+  activeConstraintIds: string[];
+  breakthroughHistory: {
+    transitionId: string;
+    occurredAt: string;
+    result: string;
+    consequence: string;
+  }[];
+}
+
+const EMPTY_CULTIVATION_PROFILE: CharacterCultivationProfile = {
+  systemId: null,
+  trackId: null,
+  levelId: null,
+  methodIds: [],
+  abilityIds: [],
+  resourceBalances: {},
+  activeConstraintIds: [],
+  breakthroughHistory: [],
+};
+
+function ensureCharacterCultivationProfile(
+  character: CharacterRecord,
+): CharacterRecord & { cultivationProfile: CharacterCultivationProfile } {
+  return {
+    ...character,
+    cultivationProfile: character.cultivationProfile ?? {
+      ...EMPTY_CULTIVATION_PROFILE,
+      methodIds: [],
+      abilityIds: [],
+      activeConstraintIds: [],
+      breakthroughHistory: [],
+      resourceBalances: {},
+    },
+  };
+}
+
 interface CharacterRecord {
   readonly id: string;
   name: string;
@@ -125,6 +173,7 @@ interface CharacterRecord {
   spiritRoot: string;
   daoBody: string;
   cultivationMethod: string;
+  cultivationProfile?: CharacterCultivationProfile;
   gender: string;
   raceId: string;
   soulId: string;
@@ -1272,6 +1321,111 @@ function ReadField({
   );
 }
 
+type CultivationReferenceOption = {
+  readonly value: string;
+  readonly label: string;
+};
+
+function CultivationReferenceField({
+  label,
+  value,
+  options,
+  editing,
+  onChange,
+}: {
+  readonly label: string;
+  readonly value: string | null;
+  readonly options: readonly CultivationReferenceOption[];
+  readonly editing: boolean;
+  readonly onChange: (value: string | null) => void;
+}) {
+  if (!editing)
+    return (
+      <ReadField
+        label={label}
+        value={options.find((option) => option.value === value)?.label ?? value ?? ""}
+        editing={false}
+        multiline={false}
+        onChange={() => undefined}
+      />
+    );
+  return (
+    <label className="grid gap-1.5 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+      <span className="pt-1 text-xs font-medium text-[var(--ink-muted)]">{label}</span>
+      <CustomSelect
+        value={value ?? ""}
+        options={[{ value: "", label: "未绑定" }, ...options]}
+        onChange={(next) => onChange(next || null)}
+        ariaLabel={label}
+        size="md"
+      />
+    </label>
+  );
+}
+
+function CultivationIdListField({
+  label,
+  ids,
+  options,
+  editing,
+  onChange,
+}: {
+  readonly label: string;
+  readonly ids: readonly string[];
+  readonly options: readonly CultivationReferenceOption[];
+  readonly editing: boolean;
+  readonly onChange: (ids: string[]) => void;
+}) {
+  const optionMap = new Map(options.map((option) => [option.value, option.label]));
+  if (!editing)
+    return (
+      <ReadField
+        label={label}
+        value={ids
+          .map((id) => optionMap.get(id) ?? `${id}（失效引用）`)
+          .join("、")}
+        editing={false}
+        multiline={false}
+        onChange={() => undefined}
+      />
+    );
+  const available = options.filter((option) => !ids.includes(option.value));
+  return (
+    <div className="grid gap-1.5 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+      <span className="pt-1 text-xs font-medium text-[var(--ink-muted)]">{label}</span>
+      <div className="space-y-2">
+        {ids.map((id) => (
+          <div key={id} className="flex items-center justify-between gap-2 rounded-md border border-[var(--line-subtle)] bg-[var(--paper-inset)] px-2.5 py-1.5 text-sm">
+            <span className="min-w-0 truncate text-[var(--ink-secondary)]">
+              {optionMap.get(id) ?? `${id}（失效引用）`}
+            </span>
+            <button
+              type="button"
+              onClick={() => onChange(ids.filter((candidate) => candidate !== id))}
+              aria-label={`移除${label}${optionMap.get(id) ?? id}`}
+              title="移除"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--ink-subtle)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+        <CustomSelect
+          value=""
+          options={available}
+          onChange={(id) => {
+            if (id) onChange([...ids, id]);
+          }}
+          ariaLabel={`添加${label}`}
+          placeholder={available.length > 0 ? `添加${label}` : "没有可添加的选项"}
+          disabled={available.length === 0}
+          size="md"
+        />
+      </div>
+    </div>
+  );
+}
+
 function IdentityListField({
   values,
   editing,
@@ -1750,13 +1904,32 @@ function RealmProgressNodesField({
 
 function CultivationTab({
   character,
+  ecology,
   editing,
   onChange,
 }: {
   readonly character: CharacterRecord;
+  readonly ecology: CultivationEcology | null;
   readonly editing: boolean;
   readonly onChange: CharacterChangeHandler;
 }) {
+  const profile = character.cultivationProfile ?? EMPTY_CULTIVATION_PROFILE;
+  const updateProfile = (patch: Partial<CharacterCultivationProfile>) =>
+    onChange({ cultivationProfile: { ...profile, ...patch } });
+  const selectedSystem = ecology?.systems.find(
+    (system) => system.id === profile.systemId,
+  );
+  const tracks = selectedSystem?.progressionTracks ?? [];
+  const selectedTrack = tracks.find((track) => track.id === profile.trackId);
+  const levels = selectedTrack?.levels ?? [];
+  const reference = (items: readonly { id: string; name: string }[]) =>
+    items.map((item) => ({ value: item.id, label: `${item.name} · ${item.id}` }));
+  const systemOptions = reference(ecology?.systems ?? []);
+  const trackOptions = reference(tracks);
+  const levelOptions = reference(levels);
+  const methodOptions = reference(selectedSystem?.methods ?? []);
+  const abilityOptions = reference(selectedSystem?.abilities ?? []);
+  const constraintOptions = reference(selectedSystem?.constraints ?? []);
   return (
     <div className="grid min-h-0 grid-cols-2 gap-x-8 gap-y-7 px-6 py-6 max-xl:grid-cols-1">
       <section className="space-y-4">
@@ -1821,6 +1994,59 @@ function CultivationTab({
           value={character.cultivationMethod}
           editing={editing}
           onChange={(cultivationMethod) => onChange({ cultivationMethod })}
+        />
+        <CultivationReferenceField
+          label="修行体系"
+          value={profile.systemId}
+          options={systemOptions}
+          editing={editing}
+          onChange={(systemId) =>
+            updateProfile({
+              systemId,
+              trackId: null,
+              levelId: null,
+              methodIds: [],
+              abilityIds: [],
+              activeConstraintIds: [],
+              resourceBalances: {},
+              breakthroughHistory: [],
+            })
+          }
+        />
+        <CultivationReferenceField
+          label="成长轨道"
+          value={profile.trackId}
+          options={trackOptions}
+          editing={editing}
+          onChange={(trackId) => updateProfile({ trackId, levelId: null })}
+        />
+        <CultivationReferenceField
+          label="当前阶段"
+          value={profile.levelId}
+          options={levelOptions}
+          editing={editing}
+          onChange={(levelId) => updateProfile({ levelId })}
+        />
+        <CultivationIdListField
+          label="已掌握法门"
+          ids={profile.methodIds}
+          options={methodOptions}
+          editing={editing}
+          onChange={(methodIds) => updateProfile({ methodIds })}
+        />
+        <CultivationIdListField
+          label="已掌握能力"
+          ids={profile.abilityIds}
+          options={abilityOptions}
+          editing={editing}
+          onChange={(abilityIds) => updateProfile({ abilityIds })}
+        />
+        <CultivationIdListField
+          label="活跃约束"
+          ids={profile.activeConstraintIds}
+          options={constraintOptions}
+          editing={editing}
+          onChange={(activeConstraintIds) => updateProfile({ activeConstraintIds })}
         />
       </section>
     </div>
@@ -4182,6 +4408,8 @@ export default function CharacterLibraryPrototype({
   const [races, setRaces] = useState<RaceDefinition[]>([]);
   const [souls, setSouls] = useState<CharacterSoulDefinition[]>([]);
   const [groups, setGroups] = useState<CharacterGroupDefinition[]>([]);
+  const [cultivationEcology, setCultivationEcology] =
+    useState<CultivationEcology | null>(null);
   const [ungroupedGroup, setUngroupedGroup] =
     useState<CharacterGroupDefinition>({
       id: UNGROUPED_FILTER,
@@ -4279,18 +4507,27 @@ export default function CharacterLibraryPrototype({
     const activeLibrary = libraryRef.current;
     if (!activeLibrary || !isDirtyRef.current) return true;
     const snapshot = charactersRef.current;
+    const normalizedSnapshot = snapshot.map(ensureCharacterCultivationProfile);
     const operation = (async () => {
       setIsSaving(true);
       setError(null);
       try {
-        const saved = await repository.saveCharacters(activeLibrary, snapshot);
+        const saved = await repository.saveCharacters(
+          activeLibrary,
+          normalizedSnapshot,
+        );
         const latestCharacters = charactersRef.current;
         const next =
           latestCharacters === snapshot
             ? saved
             : {
                 ...saved,
-                index: { ...saved.index, characters: latestCharacters },
+                index: {
+                  ...saved.index,
+                  characters: latestCharacters.map(
+                    ensureCharacterCultivationProfile,
+                  ),
+                },
               };
         libraryRef.current = next;
         setLibrary(next);
@@ -4344,6 +4581,39 @@ export default function CharacterLibraryPrototype({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let disposed = false;
+    if (!storage.isAvailable) {
+      setCultivationEcology(null);
+      return () => {
+        disposed = true;
+      };
+    }
+    void storage
+      .stat(["world/cultivation-ecology.json"])
+      .then(async ([entry]) => {
+        if (!entry?.exists) return null;
+        const file = await storage.readText("world/cultivation-ecology.json");
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(file.content);
+        } catch {
+          return null;
+        }
+        const result = cultivationEcologySchema.safeParse(parsed);
+        return result.success ? result.data : null;
+      })
+      .then((next) => {
+        if (!disposed) setCultivationEcology(next);
+      })
+      .catch(() => {
+        if (!disposed) setCultivationEcology(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [storage]);
 
   const wasActiveRef = useRef(isActive);
   useEffect(() => {
@@ -4665,6 +4935,7 @@ export default function CharacterLibraryPrototype({
       spiritRoot: "",
       daoBody: "",
       cultivationMethod: "",
+      cultivationProfile: { ...EMPTY_CULTIVATION_PROFILE },
       gender: "",
       raceId: races[0]?.id ?? "",
       soulId: "",
@@ -5413,6 +5684,7 @@ export default function CharacterLibraryPrototype({
             {detailTab === "cultivation" && (
               <CultivationTab
                 character={selectedCharacter}
+                ecology={cultivationEcology}
                 editing={editing}
                 onChange={updateCharacter}
               />

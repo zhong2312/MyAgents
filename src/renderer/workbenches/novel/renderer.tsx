@@ -51,7 +51,9 @@ import SettingLibrary from "./SettingLibrary";
 import ItemLibrary from "./ItemLibrary";
 import FactionLibrary, { type FactionAiTarget } from "./FactionLibrary";
 import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
-import CultivationEcologyWorkbench from "./CultivationEcologyWorkbench";
+import CultivationEcologyWorkbench, {
+  type CultivationAiRunRequest,
+} from "./CultivationEcologyWorkbench";
 import KnowledgeBase from "./KnowledgeBase";
 import TimelineLibrary from "./TimelineLibrary";
 import NarrativeEngineering from "./NarrativeEngineering";
@@ -833,6 +835,8 @@ export default function NovelWorkbenchRenderer({
   const [isItemAgentLaunching, setIsItemAgentLaunching] = useState(false);
   const [isCharacterAgentLaunching, setIsCharacterAgentLaunching] =
     useState(false);
+  const [isCultivationAgentLaunching, setIsCultivationAgentLaunching] =
+    useState(false);
   const [factionAgentLaunchMode, setFactionAgentLaunchMode] = useState<
     "single" | "batch" | null
   >(null);
@@ -840,6 +844,8 @@ export default function NovelWorkbenchRenderer({
   const [isItemProposalReviewOpen, setIsItemProposalReviewOpen] =
     useState(false);
   const [isCharacterProposalReviewOpen, setIsCharacterProposalReviewOpen] =
+    useState(false);
+  const [isCultivationProposalReviewOpen, setIsCultivationProposalReviewOpen] =
     useState(false);
   const [knowledgeSourceFocus, setKnowledgeSourceFocus] =
     useState<KnowledgeSourceRef | null>(null);
@@ -889,6 +895,22 @@ export default function NovelWorkbenchRenderer({
         () => {
           navigateWorkbench("characters");
           setIsCharacterProposalReviewOpen(true);
+        },
+      ),
+    [context.manifest.id, context.workspacePath, navigateWorkbench],
+  );
+
+  useEffect(
+    () =>
+      subscribeWorkbenchHostAction(
+        {
+          workbenchId: context.manifest.id,
+          workspacePath: context.workspacePath,
+          action: "open-cultivation-proposal-review",
+        },
+        () => {
+          navigateWorkbench("powers");
+          setIsCultivationProposalReviewOpen(true);
         },
       ),
     [context.manifest.id, context.workspacePath, navigateWorkbench],
@@ -1103,7 +1125,7 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
 作者要求：${target.requirements || "请先通过简洁对话确认本次设计的必要约束。"}
 
 执行协议：
-1. 首先调用 novel_characters_get_context，读取已有角色、种族、分组、灵魂，以及当前范围的必要信息。
+1. 首先调用 novel_characters_get_context，读取已有角色、种族、分组、灵魂，以及当前范围的必要信息；涉及角色修行、境界、法门、能力或修行限制时，再调用 novel_cultivation_get_context 读取稳定 ID 和规则，禁止用自由文本臆造修行引用。
 2. 通过简洁对话确认叙事功能、避免重复的约束和本次生成数量；一次只追问影响结果的关键问题。若作者已给出充分要求，可直接生成候选。
 3. 只生成与“${focus}”相关的候选。允许新增或更新，但禁止删除既有角色、种族、分组或灵魂。
 4. 每次只处理少量候选。新角色、种族、分组和灵魂可先提交本次确认的字段，服务端会补齐可编辑的基础骨架；如需补充同一候选，使用同一个 candidateId 再次写入草稿。提交前仍必须补齐关系和物品引用：raceId、soulId、groupIds、关系 targetId 只能引用已有记录或同一草稿候选；物品栏关联物品库时 itemId 必须存在，不关联时设为 null。
@@ -1137,6 +1159,55 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
       });
     } finally {
       setIsCharacterAgentLaunching(false);
+    }
+  };
+
+  const launchCultivationAgent = async () => {
+    if (isCultivationAgentLaunching) return;
+    if (!context.agentSessions.isAvailable) {
+      throw new Error("MyAgents Agent Session 当前不可用");
+    }
+    setOperationError(null);
+    setIsCultivationAgentLaunching(true);
+    try {
+      const initialMessage = `## 小说工作台修行体系逻辑审查与提案任务
+
+你正在协助作者审查和共创修行生态。修行生态正式事实源是 world/cultivation-ecology.json；你不能直接修改正式文件，只能通过修行草稿和待审批提案协议写回。
+
+执行协议：
+1. 首先调用 novel_cultivation_get_context，读取当前修行生态和 sourceHash；不要用自由文本臆造体系、轨道、阶段、法门、能力、资源、阵法、跃迁或约束 ID。
+2. 按“世界本源投影 -> 理论节点 -> 成长轨道/阶段 -> 资源与法门课程 -> 能力训练与释放 -> 阵法部署 -> 突破/转换 -> 体系约束 -> 角色引用”的逻辑链检查闭合关系。
+3. 明确区分事实、结构问题、语义冲突和可选创作建议；每条问题写清影响对象、稳定 ID、原因和建议动作。
+4. 重点检查阶段侧法门/能力/资源关联与资产侧 coverage、unlock、usableLevelIds 是否一致，运行拓扑是否只引用理论节点，跨体系关系是否声明转换规则、边界和风险。
+5. 作者确认修改范围后，调用 novel_cultivation_create_draft 创建草稿，再用 novel_cultivation_upsert_draft 写入完整且规范化的生态 JSON；调用 novel_cultivation_validate_draft 成功后，只能使用返回的 validationToken 调用 novel_cultivation_submit_draft。
+6. 提交后必须调用 novel_cultivation_get_proposal_status 确认 exists=true，再告知作者点击“审阅提案”审批；在审批前不得声称正式事实源已经更新。
+7. 禁止调用 Bash、Write、Edit 等原始文件工具修改小说项目。`;
+      const modelSelection = await resolveSceneModelSelection(
+        "cultivation.assist",
+      );
+      await context.agentSessions.open({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `修行体系逻辑共创 · ${project.metadata.title}`,
+        promptId: "novel.cultivation.assist",
+        initialMessage,
+        presentation: "dialog",
+        conversationKey: "novel.cultivation.assist",
+        historyGroupPath: ["修行体系", "逻辑共创"],
+        forceNew: true,
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "cultivation",
+            promptId: "novel.cultivation.assist",
+            promptVersion: "1.0.0",
+          },
+        },
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsCultivationAgentLaunching(false);
     }
   };
 
@@ -1461,6 +1532,27 @@ ${JSON.stringify(injectedContext, null, 2)}
       </>
     ) : undefined;
 
+  const cultivationToolbarActions = (
+    <>
+      <WorldAgentButton
+        disabled={!context.agentSessions.isAvailable}
+        isLaunching={isCultivationAgentLaunching}
+        label="AI 逻辑共创"
+        title="打开修行体系逻辑共创 Agent"
+        onClick={() => void launchCultivationAgent()}
+      />
+      <button
+        type="button"
+        onClick={() => setIsCultivationProposalReviewOpen(true)}
+        className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+        title="审阅修行体系待审批提案"
+      >
+        <GitCompareArrows className="h-4 w-4" />
+        <span className="max-lg:hidden">审阅提案</span>
+      </button>
+    </>
+  );
+
   let content: ReactNode;
   switch (context.route) {
     case "manuscript":
@@ -1671,6 +1763,25 @@ ${JSON.stringify(injectedContext, null, 2)}
           <CultivationEcologyWorkbench
             storage={context.storage}
             projectTitle={project.metadata.title}
+            headerActions={cultivationToolbarActions}
+            onAiRun={
+              context.aiRuns.isAvailable
+                ? async (request: CultivationAiRunRequest) => {
+                    const modelSelection = await resolveSceneModelSelection(
+                      request.sceneId,
+                    );
+                    return (
+                      await context.aiRuns.run({
+                        version: WORKBENCH_AI_RUN_REQUEST_VERSION,
+                        ...request,
+                        ...(modelSelection ? { modelSelection } : {}),
+                      })
+                    ).output;
+                  }
+                : undefined
+            }
+            proposalReviewOpen={isCultivationProposalReviewOpen}
+            onCloseProposalReview={() => setIsCultivationProposalReviewOpen(false)}
             registerNavigationGuard={context.registerNavigationGuard}
           />
         </div>
