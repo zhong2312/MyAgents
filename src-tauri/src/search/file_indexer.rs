@@ -336,9 +336,7 @@ impl FileIndexManager {
                 return Ok((total, 0));
             }
 
-            let index_dir = self.index_dir_for_workspace(workspace);
-            let mut writer =
-                create_file_index_writer(&ws_index.index, &index_dir, 30_000_000, "refresh")?;
+            let mut writer = create_file_index_writer(&ws_index.index, 30_000_000, "refresh")?;
 
             let path_field = ws_index.fields.path;
             for (rel, _) in &to_reindex {
@@ -550,7 +548,7 @@ impl FileIndexManager {
         // tokenizer and jieba would never run.
         register_file_tokenizer(&index);
 
-        let mut writer = create_file_index_writer(&index, &index_dir, 30_000_000, "initial build")?;
+        let mut writer = create_file_index_writer(&index, 30_000_000, "initial build")?;
 
         // Walk the tree metadata-first, then read + index each discovered file.
         let ws_path = Path::new(workspace);
@@ -987,35 +985,12 @@ fn open_regular_file_no_follow(abs_path: &Path) -> Option<File> {
 
 fn create_file_index_writer(
     index: &Index,
-    index_dir: &Path,
     heap_size: usize,
     context: &str,
 ) -> Result<IndexWriter, String> {
-    match index.writer(heap_size) {
-        Ok(writer) => Ok(writer),
-        Err(first_err) => {
-            let lock_path = index_dir.join(".tantivy-writer.lock");
-            if lock_path.exists() {
-                let _ = fs::remove_file(&lock_path);
-                ulog_warn!(
-                    "[search] Recovered stale workspace Tantivy writer lock during {} at {:?}",
-                    context,
-                    lock_path
-                );
-                index.writer(heap_size).map_err(|e| {
-                    format!(
-                        "Failed to create file index writer for {} after lock recovery: {}",
-                        context, e
-                    )
-                })
-            } else {
-                Err(format!(
-                    "Failed to create file index writer for {}: {}",
-                    context, first_err
-                ))
-            }
-        }
-    }
+    index
+        .writer(heap_size)
+        .map_err(|e| format!("Failed to create file index writer for {}: {}", context, e))
 }
 
 fn register_file_tokenizer(index: &Index) {
@@ -1049,6 +1024,23 @@ mod tests {
 
     fn workspace_path(path: &Path) -> String {
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn active_workspace_writer_lock_is_never_deleted_as_stale() {
+        let temp = tempfile::tempdir().unwrap();
+        let index_dir = temp.path().join("index");
+        fs::create_dir_all(&index_dir).unwrap();
+        let (schema, _) = schema::file_schema();
+        let index = Index::create_in_dir(&index_dir, schema).unwrap();
+        let first = create_file_index_writer(&index, 30_000_000, "first writer").unwrap();
+        let lock_path = index_dir.join(".tantivy-writer.lock");
+
+        assert!(create_file_index_writer(&index, 30_000_000, "second writer").is_err());
+        assert!(lock_path.exists());
+
+        drop(first);
+        create_file_index_writer(&index, 30_000_000, "replacement writer").unwrap();
     }
 
     #[test]

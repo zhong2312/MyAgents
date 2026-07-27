@@ -184,7 +184,7 @@ export function PanelFooter({
           type="button"
           onClick={onSubmit}
           disabled={blocked}
-          className="rounded-[var(--radius-md)] bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-[var(--radius-md)] bg-[var(--button-primary-bg)] px-5 py-2 text-sm font-medium text-[var(--button-primary-text)] transition hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {submitLabel}
         </button>

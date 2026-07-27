@@ -1009,7 +1009,7 @@ function InputView({
           type="button"
           onClick={onSubmit}
           disabled={submitting || !sourceUrl.trim()}
-          className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
         >
           {submitting && <Loader2 className="h-3 w-3 animate-spin" />}
           {t('plugins.install.input.start')}
@@ -1147,7 +1147,7 @@ function SelectingView({
             type="button"
             onClick={onConfirm}
             disabled={selected.size === 0}
-            className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
           >
             {t('plugins.install.select.installSelected', { count: selected.size })}
           </button>
@@ -1246,7 +1246,7 @@ function InstallingView({
           type="button"
           onClick={onClose}
           disabled={!done}
-          className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-4 py-1.5 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
         >
           {!done && <Loader2 className="h-3 w-3 animate-spin" />}
           {done ? t('plugins.install.progress.close') : t('plugins.install.progress.installing')}

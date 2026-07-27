@@ -36,6 +36,7 @@ import { TaskDetailOverlay } from './TaskDetailOverlay';
 import { TaskCardItem } from './views/TaskCardItem';
 import { TaskListRow } from './views/TaskListRow';
 import { SearchPill } from './SearchPill';
+import { shouldAddOrphanWorkspacePath } from './taskListPanelWorkspace';
 import { ViewToggle, type TaskView } from './views/ViewToggle';
 import type { LegacyCronRow } from './views/types';
 
@@ -43,16 +44,6 @@ import type { LegacyCronRow } from './views/types';
 type TaskCardLike =
   | { kind: 'task'; task: Task }
   | { kind: 'legacy-cron'; legacy: LegacyCronRow };
-
-export function shouldAddOrphanWorkspacePath(
-  path: string,
-  coveredIds: ReadonlySet<string>,
-  knownProjectIds: ReadonlySet<string>,
-  seenOrphan: ReadonlySet<string>,
-): boolean {
-  const id = normalizeWorkspacePathIdentity(path);
-  return !coveredIds.has(id) && !knownProjectIds.has(id) && !seenOrphan.has(id);
-}
 
 interface Props {
   highlightTaskId?: string | null;

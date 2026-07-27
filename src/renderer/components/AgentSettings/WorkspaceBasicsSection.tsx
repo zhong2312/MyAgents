@@ -9,7 +9,7 @@ import { ChevronRight } from 'lucide-react';
 import { useConfig } from '@/hooks/useConfig';
 import { useAvailableProviders } from '@/hooks/useAvailableProviders';
 import { getAllMcpServers, getEnabledMcpServerIds } from '@/config/configService';
-import { patchAgentConfig } from '@/config/services/agentConfigService';
+import { patchAgentConfig, patchAgentProjectConfig } from '@/config/services/agentConfigService';
 import { isProviderAvailable } from '@/config/services/providerService';
 import { CUSTOM_EVENTS } from '@/../shared/constants';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, PERMISSION_MODES, type Project, type McpServerDefinition } from '@/config/types';
@@ -139,14 +139,13 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   // Save workspace metadata (name, icon) to Project + AgentConfig
   const saveProjectMeta = useCallback(async (updates: Partial<Pick<Project, 'displayName' | 'icon'>>) => {
     if (!project) return;
-    await patchProject(project.id, updates);
-    if (agent) {
-      const agentPatch: Record<string, unknown> = {};
-      if (updates.displayName !== undefined) agentPatch.name = updates.displayName || project.name;
-      if (updates.icon !== undefined) agentPatch.icon = updates.icon;
-      if (Object.keys(agentPatch).length > 0) {
-        await patchAgentConfig(agent.id, agentPatch as Partial<Omit<AgentConfig, 'id'>>);
-      }
+    const agentPatch: Partial<Omit<AgentConfig, 'id'>> = {};
+    if (updates.displayName !== undefined) agentPatch.name = updates.displayName || project.name;
+    if (updates.icon !== undefined) agentPatch.icon = updates.icon;
+    if (agent && Object.keys(agentPatch).length > 0) {
+      await patchAgentProjectConfig(agent.id, agentPatch, project.id, updates);
+    } else {
+      await patchProject(project.id, updates);
     }
     await refreshConfig();
   }, [project, agent, patchProject, refreshConfig]);
@@ -154,21 +153,19 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   // Save AI config (model, provider, permission, mcp, plugins).
   // AgentConfig is the single source of truth when available; fallback to Project for non-agent workspaces.
   const saveAgentConfig = useCallback(async (updates: Partial<Omit<AgentConfig, 'id'>>) => {
-    if (agent) {
-      // patchAgentConfig auto-resolves providerEnvJson when providerId changes
-      await patchAgentConfig(agent.id, updates);
+    const projectSync: Partial<Omit<Project, 'id'>> = {};
+    if (updates.providerId !== undefined) projectSync.providerId = updates.providerId;
+    if (updates.model !== undefined) projectSync.model = updates.model;
+    if (updates.permissionMode !== undefined) {
+      projectSync.permissionMode = updates.permissionMode as Project['permissionMode'];
     }
-    // Always sync to Project (Launcher compat + non-agent workspace fallback)
-    if (project) {
-      const projectSync: Record<string, unknown> = {};
-      if (updates.providerId !== undefined) projectSync.providerId = updates.providerId;
-      if (updates.model !== undefined) projectSync.model = updates.model;
-      if (updates.permissionMode !== undefined) projectSync.permissionMode = updates.permissionMode;
-      if (updates.mcpEnabledServers !== undefined) projectSync.mcpEnabledServers = updates.mcpEnabledServers;
-      if (updates.enabledPluginIds !== undefined) projectSync.enabledPluginIds = updates.enabledPluginIds;
-      if (Object.keys(projectSync).length > 0) {
-        await patchProject(project.id, projectSync);
-      }
+    if (updates.mcpEnabledServers !== undefined) projectSync.mcpEnabledServers = updates.mcpEnabledServers;
+    if (updates.enabledPluginIds !== undefined) projectSync.enabledPluginIds = updates.enabledPluginIds;
+    if (agent && project && Object.keys(projectSync).length > 0) {
+      await patchAgentProjectConfig(agent.id, updates, project.id, projectSync);
+    } else {
+      if (agent) await patchAgentConfig(agent.id, updates);
+      if (project && Object.keys(projectSync).length > 0) await patchProject(project.id, projectSync);
     }
     await refreshConfig();
   }, [agent, project, patchProject, refreshConfig]);

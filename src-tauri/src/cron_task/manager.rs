@@ -451,10 +451,14 @@ fn task_update_from_cron_patch(
         "runtime",
         "runtimeConfig",
         "mcpEnabledServers",
-        "intervalMinutes",
     ] {
         if let Some(value) = source.get(key) {
             target.insert(key.to_string(), value.clone());
+        }
+    }
+    if !source.contains_key("schedule") {
+        if let Some(value) = source.get("intervalMinutes") {
+            target.insert("intervalMinutes".to_string(), value.clone());
         }
     }
     if let Some(value) = source.get("prompt") {
@@ -792,6 +796,46 @@ mod tests {
         assert!(notification.desktop);
         assert_eq!(notification.bot_channel_id, None);
         assert_eq!(notification.bot_thread, None);
+    }
+
+    #[test]
+    fn compatibility_cron_schedule_patch_drops_stale_interval() {
+        let update = task_update_from_cron_patch(
+            &task(),
+            serde_json::json!({
+                "schedule": { "kind": "cron", "expr": "30 6 * * *", "tz": "Asia/Shanghai" },
+                "intervalMinutes": 60
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            update.execution_mode,
+            Some(crate::task::TaskExecutionMode::Recurring)
+        );
+        assert_eq!(update.cron_expression.as_deref(), Some("30 6 * * *"));
+        assert_eq!(update.cron_timezone.as_deref(), Some("Asia/Shanghai"));
+        assert_eq!(update.interval_minutes, None);
+    }
+
+    #[test]
+    fn compatibility_every_schedule_patch_owns_interval() {
+        let update = task_update_from_cron_patch(
+            &task(),
+            serde_json::json!({
+                "schedule": { "kind": "every", "minutes": 15 },
+                "intervalMinutes": 60
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            update.execution_mode,
+            Some(crate::task::TaskExecutionMode::Recurring)
+        );
+        assert_eq!(update.interval_minutes, Some(15));
+        assert_eq!(update.cron_expression.as_deref(), Some(""));
+        assert_eq!(update.cron_timezone.as_deref(), Some(""));
     }
 
     #[test]

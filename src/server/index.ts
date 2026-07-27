@@ -88,8 +88,9 @@ import {
 } from '../shared/slashCommands';
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
 import {
-  isRequiredMemorySystemSkill,
-  type RequiredMemorySystemSkill,
+  isRequiredSystemSkill,
+  type RequiredSystemSkill,
+  withoutRequiredSystemSkills,
 } from '../shared/systemSkills';
 import { resolveSkillUrl, type ResolvedSkillSource } from './skills/url-resolver';
 import { fetchSkillZip, TarballFetchError } from './skills/tarball-fetcher';
@@ -723,9 +724,11 @@ import {
   getActiveRuntimeType,
 } from './runtimes/external-session';
 import {
+  beginTaskSessionBirth,
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
   getSessionEngine,
+  runTaskSessionBirthAdmission,
   stopActiveTurn,
   stopOwnedTurn,
   stopOwnedTurnByQueueId,
@@ -1160,7 +1163,7 @@ function createTaskDispatchGuard(
   return guard;
 }
 
-function requiredMemorySystemSkill(managedKind: string | undefined): RequiredMemorySystemSkill | undefined {
+function requiredMemorySystemSkill(managedKind: string | undefined): RequiredSystemSkill | undefined {
   switch (managedKind) {
     case 'memory_auto_update_batch': return 'myagents-memory-update';
     case 'memory_gardener': return 'myagents-memory-gardener';
@@ -1175,7 +1178,7 @@ function requiredMemorySystemSkill(managedKind: string | undefined): RequiredMem
  * but before any model sees the managed prompt.
  */
 function createRequiredSystemSkillDispatchGuard(
-  skillName: RequiredMemorySystemSkill,
+  skillName: RequiredSystemSkill,
   workspacePath: string,
   preceding?: import('./session-core/turn-queue').DispatchGuard,
 ): import('./session-core/turn-queue').DispatchGuard {
@@ -1313,13 +1316,11 @@ function readSkillsConfig(): SkillsConfig {
       const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
       return {
         seeded: Array.isArray(raw?.seeded) ? raw.seeded : defaults.seeded,
-        // Managed memory workflows depend on these official contracts. Heal
-        // historical disabled entries at read time so they remain exposed;
-        // the toggle route also rejects future disable attempts.
+        // Required product contracts remain exposed even if an older config
+        // contains stale disabled entries. The toggle route rejects new
+        // attempts and writes canonicalize the persisted list.
         disabled: Array.isArray(raw?.disabled)
-          ? raw.disabled.filter((name: unknown): name is string => (
-              typeof name === 'string' && !isRequiredMemorySystemSkill(name)
-            ))
+          ? withoutRequiredSystemSkills(raw.disabled)
           : defaults.disabled,
         generation: typeof raw?.generation === 'number' ? raw.generation : 0,
       };
@@ -1335,6 +1336,7 @@ function writeSkillsConfig(config: SkillsConfig): void {
   try {
     const dir = dirname(configPath);
     ensureDirSync(dir);
+    config.disabled = withoutRequiredSystemSkills(config.disabled);
     // Auto-increment generation on every write — signals Tab Sidecars to re-sync symlinks
     config.generation = (config.generation || 0) + 1;
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
@@ -2039,7 +2041,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/issue-comment-get') return await api.handleSpaceIssueCommentGet(payload as Parameters<typeof api.handleSpaceIssueCommentGet>[0]);
   if (route === 'space/issue-status') return await api.handleSpaceIssueStatus(payload as Parameters<typeof api.handleSpaceIssueStatus>[0]);
   if (route === 'space/issue-claim') return await api.handleSpaceIssueClaim(payload as Parameters<typeof api.handleSpaceIssueClaim>[0]);
-  if (route === 'space/issue-delivery-ignore') return await api.handleSpaceIssueDeliveryIgnore(payload as Parameters<typeof api.handleSpaceIssueDeliveryIgnore>[0]);
   if (route === 'space/issue-close') return await api.handleSpaceIssueClose(payload as Parameters<typeof api.handleSpaceIssueClose>[0]);
   if (route === 'space/issue-complete') return await api.handleSpaceIssueComplete(payload as Parameters<typeof api.handleSpaceIssueComplete>[0]);
   if (route === 'space/issue-cancel-claim') return await api.handleSpaceIssueCancelClaim(payload as Parameters<typeof api.handleSpaceIssueCancelClaim>[0]);
@@ -3143,6 +3144,21 @@ async function main() {
           return jsonResponse({ success: false, error: 'Task id, queue id, session id, and prompt are required.' }, 400);
         }
 
+        const taskDispatchGuard = createTaskDispatchGuard(taskId, queueId, sessionId);
+        const sessionBirthLease = payload.initializeSession
+          ? beginTaskSessionBirth(
+              taskId,
+              queueId,
+              () => { void taskDispatchGuard.cancel?.(); },
+            )
+          : null;
+        if (payload.initializeSession && !sessionBirthLease) {
+          return jsonResponse({
+            success: false,
+            error: `Task Session creation is already registered for queue ${queueId}`,
+          }, 409);
+        }
+
         // Serialize scheduled turns so two background dispatches
         // concurrent ticks within a single sidecar can't interleave on
         // shared global state — `currentMcpServers`, the active session,
@@ -3150,7 +3166,8 @@ async function main() {
         // A's session switch / scenario could be silently overwritten by
         // request B before A reaches `enqueueUserMessage`. PRD 0.2.4 §3.6
         // (cross-review B7).
-        return await withScheduledTurnDispatchLock(async () => {
+        try {
+          return await withScheduledTurnDispatchLock(async () => {
         // Handle session setup based on runMode
         const effectiveRunMode = runMode ?? 'single_session';
         const { agentDir } = getAgentState();
@@ -3248,7 +3265,19 @@ async function main() {
           if (sessionId) {
             taskSnapshot.id = sessionId;
           }
-          const newSession = await createSession(agentDir, taskSnapshot);
+          const birthAdmission = await runTaskSessionBirthAdmission(
+            sessionBirthLease!,
+            taskDispatchGuard,
+            () => createSession(agentDir, taskSnapshot),
+          );
+          if (!birthAdmission.accepted) {
+            return jsonResponse({
+              success: false,
+              error: birthAdmission.error,
+              ...(birthAdmission.code ? { code: birthAdmission.code } : {}),
+            }, 409);
+          }
+          const newSession = birthAdmission.value;
           const switched = await switchToSession(newSession.id);
           if (!switched) {
             console.error(`[cron] execute-sync taskId=${taskId} failed to switch to new session ${newSession.id}`);
@@ -3529,7 +3558,6 @@ async function main() {
             timeoutMs: 3_600_000,
             pollMs: 1000,
           } satisfies import('./session-engine').InjectedTurnRequest;
-          const taskDispatchGuard = createTaskDispatchGuard(taskId, queueId, sessionId);
           const requiredSkill = requiredMemorySystemSkill(payload.managedKind);
           const turnResult = await engine.runInjectedTurn({
             ...injectedTurn,
@@ -3607,7 +3635,10 @@ async function main() {
           console.log(`[cron] execute-sync taskId=${taskId} returning error response:`, JSON.stringify(errorResponse));
           return jsonResponse(errorResponse, 500);
         }
-        }); // end scheduled-turn dispatch lock
+          }); // end scheduled-turn dispatch lock
+        } finally {
+          sessionBirthLease?.settle();
+        }
       }
 
       // ============= GLOBAL STATS API =============
@@ -3893,21 +3924,24 @@ async function main() {
       // DELETE /sessions/:id - Delete a session
       if (pathname.startsWith('/sessions/') && request.method === 'DELETE') {
         const sessionId = pathname.replace('/sessions/', '');
-        if (!sessionId) {
-          return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
+        if (!/^[A-Za-z0-9-]{1,99}$/.test(sessionId)) {
+          return jsonResponse({ success: false, reason: 'invalid-session-id', error: 'Invalid session ID.' }, 400);
+        }
+        const expectedAuthority = process.env.MYAGENTS_SESSION_DELETE_AUTHORITY;
+        const providedAuthority = request.headers.get('X-MyAgents-Session-Delete-Authority');
+        if (!expectedAuthority || providedAuthority !== expectedAuthority) {
+          return jsonResponse({ success: false, reason: 'missing-authority', error: 'Session deletion requires the Rust lifecycle authority.' }, 403);
         }
 
-        const existingMeta = getSessionMetadata(sessionId);
-        if (!existingMeta) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
-        }
-        if (isSystemMaintenanceSession(existingMeta)) {
-          return jsonResponse({ success: false, error: 'System maintenance session is not user-editable.' }, 403);
-        }
-
-        const deleted = await deleteSession(sessionId, current => !isSystemMaintenanceSession(current));
-        if (!deleted) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+        const deletion = await deleteSession(sessionId, { kind: 'user-delete' });
+        if (!deletion.deleted) {
+          if (deletion.reason === 'protected-session') {
+            return jsonResponse({ success: false, reason: deletion.reason, error: 'System maintenance session is not user-editable.' }, 403);
+          }
+          if (deletion.reason === 'io-error') {
+            return jsonResponse({ success: false, reason: deletion.reason, error: 'Failed to delete session.' }, 500);
+          }
+          return jsonResponse({ success: false, reason: deletion.reason, error: 'Session not found.' }, 404);
         }
 
         return jsonResponse({ success: true });
@@ -5844,7 +5878,9 @@ async function main() {
             path: string;
             folderName: string;
             author?: string;
-            enabled?: boolean;
+            systemOwned: boolean;
+            required: boolean;
+            enabled: boolean;
           }> = [];
 
           const scanSkills = (dir: string, scopeType: 'user' | 'project') => {
@@ -5860,6 +5896,8 @@ async function main() {
 
                 const content = readFileSync(skillMdPath, 'utf-8');
                 const { name, description, author } = parseSkillFrontmatter(content);
+                const systemOwned = scopeType === 'user' && SYSTEM_SKILLS.includes(folder.name);
+                const required = scopeType === 'user' && isRequiredSystemSkill(folder.name);
                 skills.push({
                   name: name || folder.name,
                   description: description || '',
@@ -5867,10 +5905,11 @@ async function main() {
                   path: skillMdPath,
                   folderName: folder.name,
                   author,
+                  systemOwned,
+                  required,
                   enabled: scopeType === 'project'
-                    ? true
-                    : isRequiredMemorySystemSkill(folder.name)
-                      || !skillsConfigForList.disabled.includes(folder.name),
+                    || required
+                    || !skillsConfigForList.disabled.includes(folder.name),
                 });
               }
             } catch (scanError) {
@@ -5904,10 +5943,13 @@ async function main() {
           if (!folderName || typeof folderName !== 'string') {
             return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
           }
-          if (!enabled && isRequiredMemorySystemSkill(folderName)) {
+          if (typeof enabled !== 'boolean') {
+            return jsonResponse({ success: false, error: 'Invalid enabled state' }, 400);
+          }
+          if (!enabled && isRequiredSystemSkill(folderName)) {
             return jsonResponse({
               success: false,
-              error: `${folderName} is required by MyAgents managed memory workflows and cannot be disabled`,
+              error: `${folderName} is a required MyAgents system skill and cannot be disabled`,
             }, 409);
           }
           const config = readSkillsConfig();
@@ -9564,8 +9606,21 @@ description: >
             const sessionId = getRuntimeSessionIdForRequest();
             const sessionMeta = getSessionMetadata(sessionId);
             const inboxOrigin: SessionOrigin = options?.scenario?.type === 'registeredAgent'
-              ? { kind: 'registered-agent', surface: 'space_issue_delivery' }
+              ? {
+                  kind: 'registered-agent',
+                  surface: 'space_issue_delivery',
+                  context: {
+                    spaceId: options.scenario.spaceId,
+                    registeredAgentId: options.scenario.registeredAgentId,
+                  },
+                }
               : { kind: 'session-inbox', surface: 'session_send' };
+            if (inboxOrigin.kind === 'registered-agent') {
+              const originBinding = await engine.ensureRegisteredAgentSessionOrigin(sessionId, inboxOrigin);
+              if (!originBinding.success) {
+                return { queued: false, error: originBinding.error };
+              }
+            }
             return engine.enqueueInboxMessage({
               text,
               sessionId,
@@ -9574,6 +9629,7 @@ description: >
               inboxMeta,
               allowLazySessionMaterialization: options?.allowLazySessionMaterialization,
               analyticsOrigin: inboxOrigin,
+              birthOrigin: inboxOrigin,
             });
           };
           const result = await handleInboxDrain(

@@ -877,7 +877,7 @@ const ModelSettingsEditor = function ModelSettingsEditor({
           type="button"
           onClick={handleSave}
           disabled={!canSave}
-          className="rounded-lg bg-[var(--button-primary-bg)] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-40"
+          className="rounded-lg bg-[var(--button-primary-bg)] px-4 py-1.5 text-xs font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-40"
         >
           {saving ? t('providers.models.saving') : t('providers.models.save')}
         </button>

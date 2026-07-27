@@ -42,9 +42,12 @@
     "defaultWorkspaceBrowse": "Choose folder...",
     "defaultWorkspacePickTitle": "Choose default workspace",
     "defaultWorkspaceSaved": "Default workspace saved",
+    "appearanceModeTitle": "Appearance mode",
+    "appearanceModeDescription": "Set the app light and dark appearance mode",
     "themeTitle": "Theme",
-    "themeDescription": "Set the app appearance mode",
-    "theme": {
+    "themeDescription": "Switch the app-wide visual theme",
+    "themeSaveFailed": "Failed to switch Theme: {{message}}",
+    "appearanceMode": {
       "system": "System",
       "light": "Light",
       "dark": "Dark"
@@ -274,9 +277,13 @@
       "remoteTitle": "Remote or browserless environment",
       "codexRemoteDescription": "If this machine has no available browser, log in with a device code in that environment's terminal:",
       "claudeRemoteDescription": "If this machine has no available browser, log in from that environment's terminal:",
+      "codexReadyTitle": "ChatGPT Codex is ready",
+      "codexReadyDescription": "You can now choose ChatGPT Codex-supported models from the model selector.",
+      "codexModelSelectorAlt": "Location of ChatGPT Codex models in the model selector",
       "completed": "Login is complete. You can close this window.",
       "notCompleted": "Login did not complete. You can start login again.",
       "close": "Close",
+      "done": "Done",
       "retryLogin": "Log in again"
     },
     "custom": {

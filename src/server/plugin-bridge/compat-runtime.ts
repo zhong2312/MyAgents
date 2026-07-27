@@ -19,6 +19,7 @@ import { ensureDir } from '../utils/fs-utils';
 import { registerPendingDispatch, rejectPendingDispatch, type PendingDispatchCallbacks } from './pending-dispatch';
 import { cancellableFetch } from '../utils/cancellation';
 import { getOpenClawConfigSnapshot, setOpenClawConfigSnapshot } from './openclaw-config';
+import { markCurrentLarkInboundAccepted } from './lark-admission';
 import {
   createReplyDispatcherWithTyping as createShimReplyDispatcherWithTyping,
   observeReplyDispatcherIdle,
@@ -541,6 +542,11 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
               const body = await resp.text();
               throw new Error(`Rust returned ${resp.status}: ${body}`);
             }
+            // The official Lark plugin keeps this request's dispatcher alive
+            // until its AI reply and CardKit delivery settle. Only release its
+            // private same-chat ingress lease here, after Rust has taken durable
+            // ownership in the bot's bounded mpsc queue.
+            markCurrentLarkInboundAccepted();
             // Pattern 4: record a successful forward for /health/functional.
             (globalThis as { __pluginBridgeLastForwardAt?: number }).__pluginBridgeLastForwardAt = Date.now();
           } catch (err) {

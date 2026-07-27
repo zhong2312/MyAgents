@@ -36,10 +36,8 @@ import {
 } from './services/appConfigService';
 import {
     getAllProviders,
-    loadApiKeys as loadApiKeysService,
     saveApiKey as saveApiKeyService,
     deleteApiKey as deleteApiKeyService,
-    loadProviderVerifyStatus as loadProviderVerifyStatusService,
     saveProviderVerifyStatus as saveProviderVerifyStatusService,
     saveCustomProvider as saveCustomProviderService,
     deleteCustomProvider as deleteCustomProviderService,
@@ -72,6 +70,32 @@ import { removeProviderFromProxySettingsScope } from '../../shared/proxyScope';
 interface ManagedCodexStatusResult {
     runtimeInstall: ManagedCodexRuntimeInstallState;
     auth: ManagedCodexAuthState;
+}
+
+interface ConfigDiskSnapshot {
+    config: AppConfig;
+    projects: Project[];
+    providers: Provider[];
+    apiKeys: Record<string, string>;
+    verifyStatus: Record<string, ProviderVerifyStatus>;
+}
+
+async function loadConfigDiskSnapshot(): Promise<ConfigDiskSnapshot> {
+    // config.json is the authority for provider gates, credentials, and
+    // verification. Read it once, then derive every provider-facing state
+    // slice from that same snapshot so a refresh cannot mix generations.
+    const config = await loadAppConfig();
+    const [projects, providers] = await Promise.all([
+        loadProjects(),
+        getAllProviders(config),
+    ]);
+    return {
+        config,
+        projects,
+        providers,
+        apiKeys: config.providerApiKeys ?? {},
+        verifyStatus: config.providerVerifyStatus ?? {},
+    };
 }
 
 // Main-window process scope: an App launch may make at most one background
@@ -314,6 +338,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     // Mount guard
     const isMountedRef = useRef(true);
     const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
+    const diskSnapshotRevisionRef = useRef(0);
     useEffect(() => {
         isMountedRef.current = true;
         return () => { isMountedRef.current = false; };
@@ -321,6 +346,28 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     useEffect(() => {
         configRef.current = config;
     }, [config]);
+
+    const commitConfigDiskSnapshot = useCallback(async (): Promise<ConfigDiskSnapshot | null> => {
+        const snapshotRevision = ++diskSnapshotRevisionRef.current;
+        const snapshot = await loadConfigDiskSnapshot();
+        normalizeAgents(snapshot.config);
+        if (!isMountedRef.current || snapshotRevision !== diskSnapshotRevisionRef.current) return null;
+        configRef.current = snapshot.config;
+        setConfig(snapshot.config);
+        setProjects(snapshot.projects);
+        setRawProviders(snapshot.providers);
+        setApiKeys(snapshot.apiKeys);
+        setProviderVerifyStatus(snapshot.verifyStatus);
+        return snapshot;
+    }, []);
+
+    // Local disk commits share the snapshot revision owner. Advancing it
+    // before mirroring the write into React prevents an older in-flight read
+    // from overwriting newer local authority.
+    const acceptLocalDiskWrite = useCallback((): boolean => {
+        diskSnapshotRevisionRef.current += 1;
+        return isMountedRef.current;
+    }, []);
 
     // ============= Load All Data =============
 
@@ -356,12 +403,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 console.warn('[ConfigProvider] Managed Codex provider default migration failed:', e);
             }
 
-            const [rawConfig, loadedProjects, loadedProviders, loadedApiKeys, loadedVerifyStatus] = await Promise.all([
+            const [rawConfig, loadedProjects] = await Promise.all([
                 loadAppConfig(),
                 loadProjects(),
-                getAllProviders(),
-                loadApiKeysService(),
-                loadProviderVerifyStatusService(),
             ]);
 
             // Migrate legacy imBotConfigs → agents (one-time, skipped if already migrated)
@@ -455,15 +499,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 console.log('[ConfigProvider] Created basicAgent(s) for projects without AgentConfig');
             }
 
-            if (!isMountedRef.current) return;
-            configRef.current = loadedConfig;
-            setConfig(loadedConfig);
-            setProjects(loadedProjects);
-            setRawProviders(loadedProviders);
-            setApiKeys(loadedApiKeys);
-            setProviderVerifyStatus(loadedVerifyStatus);
-            void reconcileMemoryAutoUpdateTasks(loadedConfig.agents);
-            void reconcileMemoryEvolutionTasks(loadedConfig.agents, loadedProjects);
+            const snapshot = await commitConfigDiskSnapshot();
+            if (!snapshot) return;
+            void reconcileMemoryAutoUpdateTasks(snapshot.config.agents);
+            void reconcileMemoryEvolutionTasks(snapshot.config.agents, snapshot.projects);
         } catch (err) {
             console.error('Failed to load config:', err);
             if (isMountedRef.current) {
@@ -474,7 +513,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 setIsLoading(false);
             }
         }
-    }, []);
+    }, [commitConfigDiskSnapshot]);
 
     // Initial load
     useEffect(() => {
@@ -521,24 +560,16 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     ) => {
         try {
             const previousUiLanguage = normalizeUiLanguage(configRef.current.uiLanguage);
-            const [latest, latestProjects] = await Promise.all([
-                loadAppConfig(),
-                loadProjects(),
-            ]);
-            normalizeAgents(latest);
-            const nextUiLanguage = normalizeUiLanguage(latest.uiLanguage);
-            if (isMountedRef.current) {
-                configRef.current = latest;
-                setConfig(latest);
-                setProjects(latestProjects);
-            }
+            const snapshot = await commitConfigDiskSnapshot();
+            if (!snapshot) return;
+            const nextUiLanguage = normalizeUiLanguage(snapshot.config.uiLanguage);
             if (options.syncNativeUiLanguage && previousUiLanguage !== nextUiLanguage) {
                 await syncNativeUiLanguageFromConfig();
             }
         } catch (err) {
             console.error(`[ConfigProvider] Failed to refresh config after ${reason}:`, err);
         }
-    }, [syncNativeUiLanguageFromConfig]);
+    }, [commitConfigDiskSnapshot, syncNativeUiLanguageFromConfig]);
 
     // ============= Listen for im:bot-config-changed =============
 
@@ -557,6 +588,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
         void listenWithCleanup<{ botId: string }>('im:bot-config-changed', refreshOnConfigEvent, ac.signal);
         void listenWithCleanup('agent:config-changed', refreshOnConfigEvent, ac.signal);
+        void listenWithCleanup('app:config-changed', refreshOnConfigEvent, ac.signal);
         // PRD 0.2.35 — the Rust `cmd_set_force_wake_lock` command (called from
         // Settings.tsx OR triggered by the tray CheckMenuItem click) writes
         // disk and emits this event. We re-read disk so the React state
@@ -589,7 +621,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 try {
                     const { invoke } = await import('@tauri-apps/api/core');
                     await invoke('cmd_set_ui_language', { value });
-                    setConfig(prev => ({ ...prev, uiLanguage: value }));
+                    if (acceptLocalDiskWrite()) {
+                        setConfig(prev => ({ ...prev, uiLanguage: value }));
+                    }
                 } catch (err) {
                     console.error('[ConfigProvider] cmd_set_ui_language failed:', err);
                     throw err;
@@ -616,7 +650,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 // Optimistic local mirror: snappy UI; the
                 // `force-wake-lock-changed` listener will re-read disk and
                 // arrive at the same value (no-op).
-                setConfig(prev => ({ ...prev, forceWakeLock: value }));
+                if (acceptLocalDiskWrite()) {
+                    setConfig(prev => ({ ...prev, forceWakeLock: value }));
+                }
             } catch (err) {
                 console.error('[ConfigProvider] cmd_set_force_wake_lock failed:', err);
                 throw err;
@@ -626,9 +662,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             updates = rest;
         }
         const newConfig = await atomicModifyConfig(c => ({ ...c, ...updates }));
-        setConfig(newConfig);
+        if (acceptLocalDiskWrite()) setConfig(newConfig);
         // No more CONFIG_CHANGED event — all consumers share this Context
-    }, []);
+    }, [acceptLocalDiskWrite]);
 
     // #230: Merge-aware proxy patch. Callers pass only the field(s) they changed;
     // the merge happens against `c` (the disk-latest config) INSIDE the
@@ -650,25 +686,26 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 ...partial,
             },
         }));
-        setConfig(newConfig);
-    }, []);
+        if (acceptLocalDiskWrite()) setConfig(newConfig);
+    }, [acceptLocalDiskWrite]);
 
     const refreshConfig = useCallback(async () => {
         await refreshConfigFromDisk('manual refresh', { syncNativeUiLanguage: true });
     }, [refreshConfigFromDisk]);
 
     const applyManagedCodexStatus = useCallback((status: ManagedCodexStatusResult) => {
-        if (!isMountedRef.current) return;
-        setConfig(previous => {
-            const next = {
-                ...previous,
-                managedCodexRuntimeInstall: status.runtimeInstall,
-                managedCodexAuth: status.auth,
-            };
-            configRef.current = next;
-            return next;
-        });
-    }, []);
+        if (acceptLocalDiskWrite()) {
+            setConfig(previous => {
+                const next = {
+                    ...previous,
+                    managedCodexRuntimeInstall: status.runtimeInstall,
+                    managedCodexAuth: status.auth,
+                };
+                configRef.current = next;
+                return next;
+            });
+        }
+    }, [acceptLocalDiskWrite]);
 
     const observeManagedCodexRuntimeUpdate = useCallback(async (
         request: Promise<ManagedCodexStatusResult>,
@@ -770,28 +807,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     ]);
 
     const refreshProviderData = useCallback(async () => {
-        try {
-            const [loadedApiKeys, loadedVerifyStatus] = await Promise.all([
-                loadApiKeysService(),
-                loadProviderVerifyStatusService(),
-            ]);
-            if (isMountedRef.current) {
-                setApiKeys(loadedApiKeys);
-                setProviderVerifyStatus(loadedVerifyStatus);
-            }
-        } catch (err) {
-            console.error('[ConfigProvider] Failed to refresh provider data:', err);
-        }
-    }, []);
+        await refreshConfigFromDisk('provider data refresh', { syncNativeUiLanguage: false });
+    }, [refreshConfigFromDisk]);
 
     const refreshProviders = useCallback(async () => {
-        try {
-            const loadedProviders = await getAllProviders();
-            if (isMountedRef.current) setRawProviders(loadedProviders);
-        } catch (err) {
-            console.error('[ConfigProvider] Failed to refresh providers:', err);
-        }
-    }, []);
+        await refreshConfigFromDisk('provider catalogue refresh', { syncNativeUiLanguage: false });
+    }, [refreshConfigFromDisk]);
 
     // --- Projects ---
 
@@ -837,36 +858,46 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 }
             }
             // Update config state so agent is immediately available
-            setConfig(prev => ({ ...prev, agents: [...(prev.agents ?? []), basicAgent] }));
+            if (acceptLocalDiskWrite()) {
+                setConfig(prev => ({ ...prev, agents: [...(prev.agents ?? []), basicAgent] }));
+            }
         }
 
-        setProjects((prev) => {
-            const filtered = prev.filter((p) => p.id !== project.id);
-            return [project, ...filtered];
-        });
+        if (acceptLocalDiskWrite()) {
+            setProjects((prev) => {
+                const filtered = prev.filter((p) => p.id !== project.id);
+                return [project, ...filtered];
+            });
+        }
         return project;
-    }, [config.defaultPermissionMode]);
+    }, [acceptLocalDiskWrite, config.defaultPermissionMode]);
 
     const updateProject = useCallback(async (project: Project) => {
         await updateProjectService(project);
-        setProjects((prev) => prev.map((p) => (p.id === project.id ? project : p)));
-    }, []);
+        if (acceptLocalDiskWrite()) {
+            setProjects((prev) => prev.map((p) => (p.id === project.id ? project : p)));
+        }
+    }, [acceptLocalDiskWrite]);
 
     const patchProject = useCallback(async (projectId: string, updates: Partial<Omit<Project, 'id'>>) => {
         const updated = await patchProjectService(projectId, updates);
         if (updated) {
-            setProjects((prev) => prev.map((p) => (p.id === projectId ? updated : p)));
+            if (acceptLocalDiskWrite()) {
+                setProjects((prev) => prev.map((p) => (p.id === projectId ? updated : p)));
+            }
         }
-    }, []);
+    }, [acceptLocalDiskWrite]);
 
     const removeProject = useCallback(async (projectId: string) => {
         const result = await removeOrHideProjectService(projectId);
         if (!result) return;
 
-        if (result.action === 'hidden') {
-            setProjects((prev) => prev.map((p) => (p.id === projectId ? result.project : p)));
-        } else {
-            setProjects((prev) => prev.filter((p) => p.id !== projectId));
+        if (acceptLocalDiskWrite()) {
+            if (result.action === 'hidden') {
+                setProjects((prev) => prev.map((p) => (p.id === projectId ? result.project : p)));
+            } else {
+                setProjects((prev) => prev.filter((p) => p.id !== projectId));
+            }
         }
 
         const newConfig = await atomicModifyConfig(c => (
@@ -874,41 +905,47 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 ? { ...c, defaultWorkspacePath: undefined }
                 : c
         ));
-        setConfig(newConfig);
-    }, []);
+        if (acceptLocalDiskWrite()) setConfig(newConfig);
+    }, [acceptLocalDiskWrite]);
 
     const touchProject = useCallback(async (projectId: string) => {
         const updated = await touchProjectService(projectId);
         if (updated) {
-            setProjects((prev) => {
-                const filtered = prev.filter((p) => p.id !== projectId);
-                return [updated, ...filtered];
-            });
+            if (acceptLocalDiskWrite()) {
+                setProjects((prev) => {
+                    const filtered = prev.filter((p) => p.id !== projectId);
+                    return [updated, ...filtered];
+                });
+            }
         }
-    }, []);
+    }, [acceptLocalDiskWrite]);
 
     // --- API Keys ---
 
     const saveApiKey = useCallback(async (providerId: string, apiKey: string) => {
         await saveApiKeyService(providerId, apiKey);
-        setApiKeys((prev) => ({ ...prev, [providerId]: apiKey }));
         await rebuildAndPersistAvailableProviders();
-    }, []);
+        if (acceptLocalDiskWrite()) {
+            setApiKeys((prev) => ({ ...prev, [providerId]: apiKey }));
+        }
+    }, [acceptLocalDiskWrite]);
 
     const deleteApiKey = useCallback(async (providerId: string) => {
         await deleteApiKeyService(providerId);
-        setApiKeys((prev) => {
-            const next = { ...prev };
-            delete next[providerId];
-            return next;
-        });
-        setProviderVerifyStatus((prev) => {
-            const next = { ...prev };
-            delete next[providerId];
-            return next;
-        });
         await rebuildAndPersistAvailableProviders();
-    }, []);
+        if (acceptLocalDiskWrite()) {
+            setApiKeys((prev) => {
+                const next = { ...prev };
+                delete next[providerId];
+                return next;
+            });
+            setProviderVerifyStatus((prev) => {
+                const next = { ...prev };
+                delete next[providerId];
+                return next;
+            });
+        }
+    }, [acceptLocalDiskWrite]);
 
     // --- Verify Status ---
 
@@ -919,50 +956,41 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         metadata?: Pick<ProviderVerifyStatus, 'invalidReason' | 'error'>,
     ) => {
         await saveProviderVerifyStatusService(providerId, status, accountEmail, metadata);
-        setProviderVerifyStatus((prev) => ({
-            ...prev,
-            [providerId]: {
-                status,
-                verifiedAt: new Date().toISOString(),
-                accountEmail,
-                ...(metadata?.invalidReason ? { invalidReason: metadata.invalidReason } : {}),
-                ...(metadata?.error ? { error: metadata.error } : {}),
-            },
-        }));
         // Rebuild availableProvidersJson so IM /provider command sees the updated status.
         // Without this, subscription verification changes don't propagate to the on-disk
         // cache until some other action (API key change, provider add) triggers a rebuild.
         await rebuildAndPersistAvailableProviders();
-    }, []);
+        if (acceptLocalDiskWrite()) {
+            setProviderVerifyStatus((prev) => ({
+                ...prev,
+                [providerId]: {
+                    status,
+                    verifiedAt: new Date().toISOString(),
+                    accountEmail,
+                    ...(metadata?.invalidReason ? { invalidReason: metadata.invalidReason } : {}),
+                    ...(metadata?.error ? { error: metadata.error } : {}),
+                },
+            }));
+        }
+    }, [acceptLocalDiskWrite]);
 
     // --- Custom Providers ---
 
     const addCustomProvider = useCallback(async (provider: Provider) => {
         await saveCustomProviderService(provider);
-        await refreshProviders();
         await rebuildAndPersistAvailableProviders();
+        await refreshProviders();
     }, [refreshProviders]);
 
     const updateCustomProvider = useCallback(async (provider: Provider) => {
         await saveCustomProviderService(provider);
-        await refreshProviders();
         await rebuildAndPersistAvailableProviders();
+        await refreshProviders();
     }, [refreshProviders]);
 
     const deleteCustomProvider = useCallback(async (providerId: string) => {
         await deleteCustomProviderService(providerId);
         await deleteApiKeyService(providerId);
-        await refreshProviders();
-        setApiKeys((prev) => {
-            const next = { ...prev };
-            delete next[providerId];
-            return next;
-        });
-        setProviderVerifyStatus((prev) => {
-            const next = { ...prev };
-            delete next[providerId];
-            return next;
-        });
         // Scrub the deleted id from enablement/order arrays so they don't grow
         // unbounded across delete-and-re-add cycles (helpers strip unknown ids
         // at read time, but persisted disk state would otherwise accumulate).
@@ -978,6 +1006,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             };
         });
         await rebuildAndPersistAvailableProviders();
+        await refreshProviders();
     }, [refreshProviders]);
 
     // --- Preset Custom Models ---
@@ -993,9 +1022,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             }
             return { ...c, presetCustomModels: newPresetCustomModels };
         });
-        setConfig(newConfig);
         await rebuildAndPersistAvailableProviders();
-    }, []);
+        if (acceptLocalDiskWrite()) setConfig(newConfig);
+    }, [acceptLocalDiskWrite]);
 
     const removePresetCustomModel = useCallback(async (providerId: string, modelId: string) => {
         const newConfig = await atomicModifyConfig(c => {
@@ -1007,17 +1036,18 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             }
             return { ...c, presetCustomModels: newPresetCustomModels };
         });
-        setConfig(newConfig);
-    }, []);
+        await rebuildAndPersistAvailableProviders();
+        if (acceptLocalDiskWrite()) setConfig(newConfig);
+    }, [acceptLocalDiskWrite]);
 
     const savePrimaryModel = useCallback(async (providerId: string, modelId: string) => {
         const newConfig = await atomicModifyConfig(c => ({
             ...c,
             providerPrimaryModels: { ...c.providerPrimaryModels, [providerId]: modelId },
         }));
-        setConfig(newConfig);
         await rebuildAndPersistAvailableProviders();
-    }, []);
+        if (acceptLocalDiskWrite()) setConfig(newConfig);
+    }, [acceptLocalDiskWrite]);
 
     const saveProviderModelAliases = useCallback(async (providerId: string, aliases: ModelAliases) => {
         // Strip empty strings — prevent sending model: "" upstream
@@ -1030,9 +1060,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             const newAliases = { ...c.providerModelAliases, [providerId]: cleaned };
             return { ...c, providerModelAliases: newAliases };
         });
-        setConfig(newConfig);
         await rebuildAndPersistAvailableProviders();
-    }, []);
+        if (acceptLocalDiskWrite()) setConfig(newConfig);
+    }, [acceptLocalDiskWrite]);
 
     // ============= Memoized Context Values =============
 

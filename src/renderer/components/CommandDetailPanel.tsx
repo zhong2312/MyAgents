@@ -356,7 +356,7 @@ const CommandDetailPanel = forwardRef<CommandDetailPanelRef, CommandDetailPanelP
                                 key="view"
                                 type="button"
                                 onClick={() => handleEdit('name')}
-                                className="flex items-center gap-1.5 rounded-lg bg-[var(--button-dark-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
+                                className="flex items-center gap-1.5 rounded-lg bg-[var(--button-dark-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-dark-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
                             >
                                 <Edit2 className="h-4 w-4" />
                                 {t('resourceDetail.common.edit')}

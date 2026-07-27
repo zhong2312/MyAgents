@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use tauri::{AppHandle, Manager};
@@ -6,7 +7,7 @@ use uuid::Uuid;
 use crate::cron_task::CronDelivery;
 use crate::sidecar::{
     execute_cron_task, release_session_sidecar, CronExecutePayload, ManagedSidecarManager,
-    SidecarOwner,
+    SessionLifecycleGuard, SidecarOwner,
 };
 use crate::task::{Task, TaskExecutionMode, TaskRunMode, TaskStatus};
 use crate::{ulog_error, ulog_warn};
@@ -77,33 +78,41 @@ fn release_task_owner(sidecar: &ManagedSidecarManager, task_id: &str, session_id
     }
 }
 
-pub async fn execute_task(
+pub(crate) async fn execute_managed_task(
     handle: &AppHandle,
     task: &Task,
     queue_id: &str,
-    session_id: Option<String>,
-    initialize_session: bool,
 ) -> Result<TaskExecutionOutcome, String> {
     let started = Instant::now();
-
-    if task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH) {
-        let batch =
-            crate::memory_auto_update::run_managed_task_batch(handle, task, queue_id).await?;
-        return Ok(TaskExecutionOutcome {
-            success: batch.success,
-            termination_unconfirmed: batch.termination_unconfirmed,
-            error: batch
-                .termination_unconfirmed
-                .then(|| "Memory update turn termination was not confirmed".to_string()),
-            ai_exit_reason: None,
-            output_text: Some(batch.output_text),
-            session_id: None,
-            duration_ms: started.elapsed().as_millis() as u64,
-        });
+    if task.managed_kind.as_deref() != Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH) {
+        return Err(format!(
+            "task {} requires a reserved execution Session",
+            task.id
+        ));
     }
+    let batch = crate::memory_auto_update::run_managed_task_batch(handle, task, queue_id).await?;
+    Ok(TaskExecutionOutcome {
+        success: batch.success,
+        termination_unconfirmed: batch.termination_unconfirmed,
+        error: batch
+            .termination_unconfirmed
+            .then(|| "Memory update turn termination was not confirmed".to_string()),
+        ai_exit_reason: None,
+        output_text: Some(batch.output_text),
+        session_id: None,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
 
-    let session_id =
-        session_id.ok_or_else(|| format!("task {} requires an execution Session", task.id))?;
+pub(crate) async fn execute_task(
+    handle: &AppHandle,
+    task: &Task,
+    queue_id: &str,
+    session_id: String,
+    initialize_session: bool,
+    session_lifecycle: Arc<SessionLifecycleGuard>,
+) -> Result<TaskExecutionOutcome, String> {
+    let started = Instant::now();
 
     if matches!(
         task.managed_kind.as_deref(),
@@ -156,7 +165,14 @@ pub async fn execute_task(
         schedule_kind: schedule_kind(task),
     };
 
-    let result = execute_cron_task(handle, &sidecar, &task.workspace_path, payload).await;
+    let result = execute_cron_task(
+        handle,
+        &sidecar,
+        &task.workspace_path,
+        payload,
+        session_lifecycle,
+    )
+    .await;
     // A creator can fail before /cron/execute-sync materializes SessionStore
     // metadata. Keeping its Sidecar owner in that state would make every
     // subsequent shared-session Task an `isNew=false` adopter of an unindexed

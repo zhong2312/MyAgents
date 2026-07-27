@@ -1,5 +1,5 @@
 // Provider management — custom providers, API keys, verify status, provider availability
-import { exists, readDir, readTextFile, remove } from '@tauri-apps/plugin-fs';
+import { exists, lstat, readDir, readTextFile, remove } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
 
 import type { Provider, ProviderVerifyStatus, AppConfig, Project } from '../types';
@@ -12,16 +12,17 @@ import {
 } from '../types';
 import type { AgentConfig } from '../../../shared/types/agent';
 import {
-    isBuiltinExecutionProvider,
     isRuntimeBackedProvider,
     isRuntimeBackedProviderId,
 } from '../../../shared/providerExecution';
+import { buildAvailableProvidersJson } from '../../../shared/availableProvidersProjection';
 import {
     isBrowserDevMode,
     ensureConfigDir,
     getConfigDir,
     PROVIDERS_DIR,
     safeWriteJson,
+    withFileLock,
 } from './configStore';
 import {
     loadAppConfig,
@@ -34,6 +35,23 @@ import { isDebugMode } from '@/utils/debug';
 export { mergePresetCustomModels };
 
 // ============= Custom Providers =============
+
+async function writeProviderJson(providerPath: string, provider: Provider): Promise<void> {
+    await withFileLock(providerPath, async () => {
+        try {
+            const metadata = await lstat(providerPath);
+            if (metadata.isDirectory) {
+                throw new Error(`Provider path is a directory: ${providerPath}`);
+            }
+            if (metadata.isSymlink) await remove(providerPath);
+        } catch (error) {
+            // Missing paths are safe to create; an existing path with
+            // unreadable metadata must fail closed.
+            if (await exists(providerPath)) throw error;
+        }
+        await safeWriteJson(providerPath, provider);
+    });
+}
 
 export async function loadCustomProviders(): Promise<Provider[]> {
     if (isBrowserDevMode()) {
@@ -73,7 +91,7 @@ export async function loadCustomProviders(): Promise<Provider[]> {
                             }
                             try {
                                 const providerPath = await join(providersDir, entry.name);
-                                await safeWriteJson(providerPath, p);
+                                await writeProviderJson(providerPath, p);
                             } catch (e) {
                                 console.warn('[configService] Failed to persist primaryModel fix:', e);
                             }
@@ -96,14 +114,14 @@ export async function loadCustomProviders(): Promise<Provider[]> {
     }
 }
 
-export async function getAllProviders(): Promise<Provider[]> {
-    const config = await loadAppConfig();
+export async function getAllProviders(config?: AppConfig): Promise<Provider[]> {
+    const effectiveConfig = config ?? await loadAppConfig();
     if (isBrowserDevMode()) {
-        return withManagedCodexProviderCatalog(PRESET_PROVIDERS, config);
+        return withManagedCodexProviderCatalog(PRESET_PROVIDERS, effectiveConfig);
     }
 
     const customProviders = await loadCustomProviders();
-    return withManagedCodexProviderCatalog([...PRESET_PROVIDERS, ...customProviders], config);
+    return withManagedCodexProviderCatalog([...PRESET_PROVIDERS, ...customProviders], effectiveConfig);
 }
 
 export async function saveCustomProvider(provider: Provider): Promise<void> {
@@ -116,7 +134,7 @@ export async function saveCustomProvider(provider: Provider): Promise<void> {
         await ensureConfigDir();
         const dir = await getConfigDir();
         const providerPath = await join(dir, PROVIDERS_DIR, `${provider.id}.json`);
-        await safeWriteJson(providerPath, provider);
+        await writeProviderJson(providerPath, provider);
         if (isDebugMode()) {
             console.log('[configService] Saved custom provider:', provider.id);
         }
@@ -136,12 +154,14 @@ export async function deleteCustomProvider(providerId: string): Promise<void> {
         const dir = await getConfigDir();
         const providerPath = await join(dir, PROVIDERS_DIR, `${providerId}.json`);
 
-        if (await exists(providerPath)) {
-            await remove(providerPath);
-            if (isDebugMode()) {
-                console.log('[configService] Deleted custom provider:', providerId);
+        await withFileLock(providerPath, async () => {
+            if (await exists(providerPath)) {
+                await remove(providerPath);
+                if (isDebugMode()) {
+                    console.log('[configService] Deleted custom provider:', providerId);
+                }
             }
-        }
+        });
     } catch (error) {
         console.error('[configService] Failed to delete custom provider:', error);
         throw error;
@@ -216,11 +236,9 @@ export async function deleteProviderVerifyStatus(providerId: string): Promise<vo
 
 export async function rebuildAndPersistAvailableProviders(): Promise<void> {
     try {
-        const [allProviders, apiKeys, config] = await Promise.all([
-            getAllProviders(),
-            loadApiKeys(),
-            loadAppConfig(),
-        ]);
+        const config = await loadAppConfig();
+        const allProviders = await getAllProviders(config);
+        const apiKeys = config.providerApiKeys ?? {};
         const verifyStatus = config.providerVerifyStatus ?? {};
 
         const mergedProviders = applyManagedCodexProviderReadiness(
@@ -234,28 +252,16 @@ export async function rebuildAndPersistAvailableProviders(): Promise<void> {
             ),
             config,
         );
-        // Apply user primary model overrides
-        const primaryOverrides = config.providerPrimaryModels as Record<string, string> | undefined;
-        // Only include providers with valid credentials (see isProviderAvailable)
-        const availableProviders = mergedProviders
-            .filter(p => isBuiltinExecutionProvider(p) && isProviderAvailable(p, apiKeys, verifyStatus))
-            .map(p => {
-                const userPrimary = primaryOverrides?.[p.id];
-                const effectivePrimary = (userPrimary && p.models?.some(m => m.model === userPrimary))
-                    ? userPrimary : p.primaryModel;
-                return {
-                id: p.id, name: p.name, primaryModel: effectivePrimary,
-                baseUrl: p.config.baseUrl, authType: p.authType,
-                apiProtocol: p.apiProtocol,
-                apiKey: p.type !== 'subscription' ? apiKeys[p.id] : undefined,
-                models: p.models.map(m => ({ model: m.model, modelName: m.modelName })),
-            };
-            });
-
-        const json = availableProviders.length > 0 ? JSON.stringify(availableProviders) : undefined;
+        const json = buildAvailableProvidersJson({
+            providers: mergedProviders,
+            apiKeys,
+            verifyStatus,
+            primaryModels: config.providerPrimaryModels,
+        });
         await atomicModifyConfig(c => ({ ...c, availableProvidersJson: json }));
     } catch (err) {
         console.warn('[configService] Failed to rebuild availableProvidersJson:', err);
+        throw err;
     }
 }
 

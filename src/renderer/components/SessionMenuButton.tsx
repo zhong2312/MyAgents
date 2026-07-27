@@ -38,6 +38,7 @@ import { useTranslation } from 'react-i18next';
 import { deleteSession, updateSession, type SessionMetadata } from '@/api/sessionClient';
 import { handoverSessionToChannel } from '@/api/sessionHandoverClient';
 import { exportSessionAsMarkdown } from '@/utils/sessionExport';
+import { copyPlainText } from '@/utils/clipboard';
 import type { ChannelSurface } from '@/hooks/useSessionSurfaces';
 
 import ConfirmDialog from './ConfirmDialog';
@@ -157,7 +158,7 @@ export default function SessionMenuButton({
     const handleCopySessionId = useCallback(async () => {
         const text = `SessionID: ${sessionId}`;
         try {
-            await navigator.clipboard.writeText(text);
+            await copyPlainText(text);
             setSessionIdCopied(true);
             if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
             copyResetTimerRef.current = setTimeout(() => setSessionIdCopied(false), 1600);

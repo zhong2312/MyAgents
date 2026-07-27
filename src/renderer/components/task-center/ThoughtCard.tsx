@@ -309,7 +309,7 @@ export function ThoughtCard({
                     {t('thoughts.aiDiscuss')}
                   </button>
                   {!showWorkspacePicker && (
-                    <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-primary-text)] opacity-0 shadow-lg transition-opacity group-hover/discuss:opacity-100">
+                    <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-dark-text)] opacity-0 shadow-lg transition-opacity group-hover/discuss:opacity-100">
                       {t('thoughts.aiDiscussTooltip')}
                     </span>
                   )}
@@ -325,7 +325,7 @@ export function ThoughtCard({
                     <Zap className="h-3.5 w-3.5" strokeWidth={1.5} />
                     {t('thoughts.dispatch')}
                   </button>
-                  <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-primary-text)] opacity-0 shadow-lg transition-opacity group-hover/dispatch:opacity-100">
+                  <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-dark-text)] opacity-0 shadow-lg transition-opacity group-hover/dispatch:opacity-100">
                     {t('thoughts.dispatchTooltip')}
                   </span>
                 </div>
@@ -504,7 +504,7 @@ export function ThoughtCard({
           <div
             className={`flex h-5 w-5 items-center justify-center rounded-full border transition-colors ${
               selected
-                ? 'border-[var(--accent-warm)] bg-[var(--accent-warm)] text-white'
+                ? 'border-[var(--accent-warm)] bg-[var(--accent-warm)] text-[var(--on-accent)]'
                 : 'border-[var(--line-strong)] bg-[var(--paper-elevated)] text-transparent'
             }`}
           >
@@ -548,7 +548,7 @@ export function ThoughtCard({
             type="button"
             onClick={() => void handleSave()}
             disabled={busy}
-            className="rounded-[var(--radius-md)] bg-[var(--accent-warm)] px-2.5 py-1 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)]"
+            className="rounded-[var(--radius-md)] bg-[var(--accent-warm)] px-2.5 py-1 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)]"
           >
             {t('common.save')}
           </button>

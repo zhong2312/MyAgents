@@ -30,7 +30,8 @@ export function createAsyncLock() {
     };
 }
 
-export const withProjectsLock = createAsyncLock();
+const withProjectsProcessLock = createAsyncLock();
+const withAgentConfigIntentProcessLock = createAsyncLock();
 const withConfigProcessLock = createAsyncLock();
 
 const CONFIG_LOCK_TIMEOUT_MS = 5000;
@@ -59,6 +60,36 @@ export async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
         const dir = await getConfigDir();
         const configPath = await join(dir, CONFIG_FILE);
         return withFileLock(configPath, fn);
+    });
+}
+
+/**
+ * Serialize a projects.json read-modify-write across renderer and Sidecar
+ * processes. Callers still own the in-lock read and write; this helper owns
+ * both the in-process queue and the shared mkdir lock.
+ */
+export async function withProjectsLock<T>(fn: () => Promise<T>): Promise<T> {
+    return withProjectsProcessLock(async () => {
+        if (typeof window === 'undefined' || isBrowserDevMode()) return fn();
+        await ensureConfigDir();
+        const dir = await getConfigDir();
+        const projectsPath = await join(dir, PROJECTS_FILE);
+        return withFileLock(projectsPath, fn);
+    });
+}
+
+/**
+ * Serialize one logical Agent-default intent across config.json and the
+ * projects.json compatibility mirror. This path intentionally matches the
+ * Sidecar lock (`~/.myagents/agent-config-intent.lock`).
+ */
+export async function withAgentConfigIntentLock<T>(fn: () => Promise<T>): Promise<T> {
+    return withAgentConfigIntentProcessLock(async () => {
+        if (typeof window === 'undefined' || isBrowserDevMode()) return fn();
+        await ensureConfigDir();
+        const dir = await getConfigDir();
+        const intentPath = await join(dir, 'agent-config-intent');
+        return withFileLock(intentPath, fn);
     });
 }
 
@@ -170,27 +201,31 @@ export async function ensureConfigDir(): Promise<void> {
     }
 }
 
-async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+export async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
     const lockDir = filePath + '.lock';
-    await acquireFileLock(lockDir);
+    const ownerToken = await acquireFileLock(lockDir);
     try {
         return await fn();
     } finally {
-        await releaseFileLock(lockDir);
+        await releaseFileLock(lockDir, ownerToken);
     }
 }
 
-async function acquireFileLock(lockDir: string): Promise<void> {
+async function acquireFileLock(lockDir: string): Promise<string> {
     const start = Date.now();
     while (true) {
         try {
             await mkdir(lockDir);
+            const ownerToken = `renderer:${Date.now()}:${crypto.randomUUID()}`;
             try {
-                await writeTextFile(await join(lockDir, 'owner'), `renderer:${Date.now()}\n`);
-            } catch {
-                // Owner file is diagnostic only.
+                await writeTextFile(await join(lockDir, 'owner'), `${ownerToken}\n`);
+            } catch (error) {
+                // Owner identity is part of safe release, not merely
+                // diagnostic. Never retain a lock we cannot prove is ours.
+                await remove(lockDir, { recursive: true }).catch(() => undefined);
+                throw error;
             }
-            return;
+            return ownerToken;
         } catch {
             // mkdir failed — lock dir already exists. Try stale-recovery before
             // sleeping. The renderer can't observe other processes' pids, so it
@@ -251,7 +286,7 @@ async function tryBreakStaleLock(lockDir: string): Promise<boolean> {
     // lockdir itself. In all cases the owner string also gates whether we're
     // willing to break this kind of owner at all.
     let ageMs: number | null = null;
-    const rendererMatch = /^renderer:(\d+)$/.exec(owner);
+    const rendererMatch = /^renderer:(\d+)(?::[0-9a-f-]+)?$/i.exec(owner);
     if (rendererMatch) {
         const ts = Number(rendererMatch[1]);
         if (Number.isFinite(ts)) ageMs = Date.now() - ts;
@@ -272,16 +307,23 @@ async function tryBreakStaleLock(lockDir: string): Promise<boolean> {
     if (!shouldBreakStaleLock(ageMs, owner, CONFIG_LOCK_STALE_MS)) return false;
 
     console.warn(`[configStore] Breaking stale lock ${lockDir} (age=${ageMs}ms owner=${owner})`);
+    const tombstone = `${lockDir}.stale-renderer-${crypto.randomUUID()}`;
     try {
-        await remove(lockDir, { recursive: true });
+        await rename(lockDir, tombstone);
+        await remove(tombstone, { recursive: true }).catch(() => undefined);
         return true;
     } catch {
         return false;
     }
 }
 
-async function releaseFileLock(lockDir: string): Promise<void> {
+async function releaseFileLock(lockDir: string, ownerToken: string): Promise<void> {
     try {
+        const currentOwner = (await readTextFile(await join(lockDir, 'owner'))).trim();
+        if (currentOwner !== ownerToken) {
+            console.warn(`[configStore] Lock owner changed before release; preserving successor lock ${lockDir}`);
+            return;
+        }
         await remove(lockDir, { recursive: true });
     } catch {
         // Best-effort unlock. Timeout errors on future acquisitions make this visible.

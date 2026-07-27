@@ -31,11 +31,11 @@ export default function Tip({
       {children}
       {!disabled && (
         <span
-          className={`pointer-events-none absolute z-50 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)]/90 px-2.5 py-1.5 text-xs leading-tight text-[var(--button-primary-text)] opacity-0 transition-opacity group-hover/tip:opacity-100 ${posClass} ${alignClass}`}
+          className={`pointer-events-none absolute z-50 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)]/90 px-2.5 py-1.5 text-xs leading-tight text-[var(--button-dark-text)] opacity-0 transition-opacity group-hover/tip:opacity-100 ${posClass} ${alignClass}`}
         >
           {label}
           {shortcut && (
-            <span className="mt-0.5 block text-xs text-white/70">
+            <span className="mt-0.5 block text-xs text-[var(--button-dark-text)]/70">
               {shortcut}
             </span>
           )}

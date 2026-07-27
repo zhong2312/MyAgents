@@ -191,7 +191,7 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
                         onClick={() => updateConfig({ intervalHours: hours })}
                         className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                           intervalHours === hours
-                            ? 'bg-[var(--accent)] text-white'
+                            ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                             : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:bg-[var(--paper-hover)]'
                         }`}
                       >

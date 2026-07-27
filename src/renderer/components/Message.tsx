@@ -16,6 +16,7 @@ import { buildReplyMarkdown, downloadMarkdown, localDateStr } from '@/utils/mark
 import { formatDuration, formatTokens } from '@/utils/formatTokens';
 import { groupContentBlocksForDisplay } from '@/utils/contentBlockDisplay';
 import { parseBackgroundTaskNotificationContent } from '@/utils/backgroundTaskStatus';
+import { copyPlainText } from '@/utils/clipboard';
 import { useImagePreview } from '@/context/ImagePreviewContext';
 import type { ContentBlock, Message as MessageType } from '@/types/chat';
 import { SOURCE_LABELS, type MessageSource } from '../../shared/types/im';
@@ -23,8 +24,10 @@ import {
   FLOATING_BALL_CONTEXT_TAG,
   GOAL_CONTEXT_TAG,
   GOAL_CONTINUATION_TAG,
+  SESSION_EVENT_TAG,
   SPACE_ISSUE_CONTEXT_TAG,
   parseLeadingSystemReminder,
+  parseSessionSendRequestDisplay,
 } from '../../shared/systemReminder';
 
 interface MessageProps {
@@ -201,12 +204,17 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
       <Tip label={copied ? t('message.actions.copied') : t('message.actions.copy')}>
         <button type="button"
           aria-label={t('message.actions.copy')}
-          onClick={() => {
-            navigator.clipboard.writeText(text).catch(() => {});
-            track('message_copy', {});
-            setCopied(true);
-            if (timerRef.current) clearTimeout(timerRef.current);
-            timerRef.current = setTimeout(() => setCopied(false), 1500);
+          onClick={async () => {
+            try {
+              await copyPlainText(text);
+              track('message_copy', {});
+              setCopied(true);
+              if (timerRef.current) clearTimeout(timerRef.current);
+              timerRef.current = setTimeout(() => setCopied(false), 1500);
+            } catch (error) {
+              console.warn('[Message] Failed to copy assistant message:', error);
+              toast?.error(t('fileActions.copyFailed'));
+            }
           }}
           className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
@@ -294,6 +302,7 @@ function renderWidgetSegments(text: string, isLoading: boolean): ReactNode {
 const Message = memo(function Message({ message, isLoading = false, onRewind, onRetry, onFork, exitPlanModeSlot, initialUserCollapsed = false }: MessageProps) {
   const { t } = useTranslation('app');
   const { openPreview } = useImagePreview();
+  const toast = useToastOptional();
   const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -342,22 +351,29 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
     const rawUserContent = typeof message.content === 'string' ? message.content : '';
 
     const reminder = parseLeadingSystemReminder(rawUserContent);
+    const sessionSendRequest = parseSessionSendRequestDisplay(reminder);
 
     // Detect system injection type from <system-reminder><TAG> wrapper (whitelist)
     let systemTag: string | null = null;
     if (reminder.kind) systemTag = systemTagLabel(reminder.kind, t);
+    if (reminder.kind === SESSION_EVENT_TAG && sessionSendRequest) {
+      const sourceSuffix = sessionSendRequest.sourceLabel ? ` · ${sessionSendRequest.sourceLabel}` : '';
+      systemTag = `${t('message.systemTags.sessionRequest')}${sourceSuffix}`;
+    }
 
     const hasAttachments = Boolean(message.attachments?.length);
 
     // Pure hidden reminders are transport/control messages, not user chat.
     // If a visible tail exists, render only that tail plus a small badge.
-    if (reminder.hasReminder && !reminder.visibleText.trim() && !hasAttachments) {
+    if (reminder.hasReminder && !reminder.visibleText.trim() && !sessionSendRequest && !hasAttachments) {
       return null;
     }
 
     // Strip system injection tags that wrap delivered content. These HTML-like tags trigger
     // Markdown's HTML block mode, breaking \n rendering and Markdown syntax.
-    const displaySource = reminder.hasReminder ? reminder.visibleText : rawUserContent;
+    const displaySource = reminder.hasReminder
+      ? (reminder.visibleText || sessionSendRequest?.payload || '')
+      : rawUserContent;
     const userContent = displaySource
       .replace(/<\/?system-reminder>/g, '')
       .replace(/<\/?HEARTBEAT>/g, '')
@@ -488,11 +504,16 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               <Tip label={copied ? t('message.actions.copied') : t('message.actions.copy')}>
                 <button type="button"
                   aria-label={t('message.actions.copy')}
-                  onClick={() => {
-                    navigator.clipboard.writeText(userContent).catch(() => {});
-                    setCopied(true);
-                    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-                    copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
+                  onClick={async () => {
+                    try {
+                      await copyPlainText(userContent);
+                      setCopied(true);
+                      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+                      copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
+                    } catch (error) {
+                      console.warn('[Message] Failed to copy user message:', error);
+                      toast?.error(t('fileActions.copyFailed'));
+                    }
                   }}
                   className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
                   {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}

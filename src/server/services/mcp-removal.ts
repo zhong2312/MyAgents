@@ -5,6 +5,7 @@ import {
   atomicModifyProjects,
   loadConfig,
   type ProjectSlim,
+  withAgentConfigIntentLock,
 } from '../utils/admin-config';
 import { managementApi } from '../utils/management-api-client';
 import { removeMcpServerFromSessionSnapshots } from '../SessionStore';
@@ -48,14 +49,35 @@ function countAndRemoveFromProjects(projects: ProjectSlim[], serverId: string): 
   return { projects: nextProjects, updated };
 }
 
-async function removeMcpServerFromProjects(serverId: string): Promise<number> {
+interface ProjectMcpRemoval {
+  updated: number;
+  projectIds: string[];
+}
+
+async function removeMcpServerFromProjects(serverId: string): Promise<ProjectMcpRemoval> {
   let updated = 0;
+  let projectIds: string[] = [];
   await atomicModifyProjects(projects => {
     const result = countAndRemoveFromProjects(projects, serverId);
     updated = result.updated;
+    projectIds = projects
+      .filter(project => Array.isArray(project.mcpEnabledServers)
+        && project.mcpEnabledServers.includes(serverId))
+      .map(project => project.id);
     return result.projects;
   });
-  return updated;
+  return { updated, projectIds };
+}
+
+async function restoreMcpServerToProjects(serverId: string, projectIds: string[]): Promise<void> {
+  if (projectIds.length === 0) return;
+  const affected = new Set(projectIds);
+  await atomicModifyProjects(projects => projects.map(project => {
+    if (!affected.has(project.id)) return project;
+    const enabled = project.mcpEnabledServers ?? [];
+    if (enabled.includes(serverId)) return project;
+    return { ...project, mcpEnabledServers: [...enabled, serverId] };
+  }));
 }
 
 function readCount(value: unknown): number {
@@ -93,19 +115,38 @@ export async function removeCustomMcpServerCascade(serverId: string): Promise<Mc
   const customDefinitionExisted = Array.isArray(config.mcpServers)
     && config.mcpServers.some(server => server.id === serverId);
 
-  const projectUpdated = await removeMcpServerFromProjects(serverId);
   const sessionUpdated = await removeMcpServerFromSessionSnapshots(serverId);
   const rustUpdated = await removeMcpServerFromRustStores(serverId);
+  let projectUpdated = 0;
 
-  await atomicModifyConfig(c => {
-    const latestHasDefinition = Array.isArray(c.mcpServers)
-      && c.mcpServers.some(server => server.id === serverId);
-    if (!customDefinitionExisted && latestHasDefinition) {
-      throw new McpRemovalError(
-        `MCP server '${serverId}' was re-added during cleanup-only remove; retry remove if you want to delete the new identity.`,
-      );
+  await withAgentConfigIntentLock(async () => {
+    const projectRemoval = await removeMcpServerFromProjects(serverId);
+    projectUpdated = projectRemoval.updated;
+    try {
+      await atomicModifyConfig(c => {
+        const latestHasDefinition = Array.isArray(c.mcpServers)
+          && c.mcpServers.some(server => server.id === serverId);
+        if (!customDefinitionExisted && latestHasDefinition) {
+          throw new McpRemovalError(
+            `MCP server '${serverId}' was re-added during cleanup-only remove; retry remove if you want to delete the new identity.`,
+          );
+        }
+        return removeMcpServerFromAppConfig(c, serverId);
+      });
+    } catch (error) {
+      try {
+        await restoreMcpServerToProjects(serverId, projectRemoval.projectIds);
+      } catch (rollbackError) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const rollbackReason = rollbackError instanceof Error
+          ? rollbackError.message
+          : String(rollbackError);
+        throw new McpRemovalError(
+          `AppConfig MCP cleanup failed (${reason}) and Project rollback also failed (${rollbackReason})`,
+        );
+      }
+      throw error;
     }
-    return removeMcpServerFromAppConfig(c, serverId);
   });
 
   return {

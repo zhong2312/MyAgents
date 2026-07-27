@@ -28,6 +28,8 @@ import 'monaco-editor/min/vs/editor/editor.main.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useResolvedTheme } from '@/theme';
+import { copyPlainText } from '@/utils/clipboard';
 import type { FilePreviewFocusTarget } from '@/types/filePreview';
 
 // Configure Monaco Environment for bundled workers (required for Tauri CSP)
@@ -52,9 +54,9 @@ self.MonacoEnvironment = {
 // Configure Monaco to use local bundle instead of CDN
 loader.config({ monaco });
 
-// Custom theme names
-const LIGHT_THEME_NAME = 'warmLight';
-const DARK_THEME_NAME = 'warmDark';
+function safeMonacoThemeSegment(value: string): string {
+    return value.replace(/[^a-zA-Z0-9_-]/g, '-');
+}
 
 // Re-export language utilities from shared module for backward compatibility
 export { getMonacoLanguage, shouldShowLineNumbers } from '@/utils/languageUtils';
@@ -113,132 +115,24 @@ export default function MonacoEditor({
         onChange(newValue ?? '');
     }, [onChange]);
 
-    // Register custom theme in beforeMount using the callback's monaco instance
-    // This ensures we're defining the theme on the exact instance the Editor will use
-    // Colors are aligned with Prism oneLight theme for consistency between preview and edit modes
-    // Detect dark mode from <html> class and watch for changes
-    const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
-
-    useEffect(() => {
-        const htmlEl = document.documentElement;
-        const observer = new MutationObserver(() => {
-            setIsDark(htmlEl.classList.contains('dark'));
-        });
-        observer.observe(htmlEl, { attributes: true, attributeFilter: ['class'] });
-        return () => observer.disconnect();
-    }, []);
-
-    const activeTheme = isDark ? DARK_THEME_NAME : LIGHT_THEME_NAME;
+    const resolvedTheme = useResolvedTheme();
+    const monacoTheme = resolvedTheme.adapters.monaco;
+    const activeTheme = useMemo(
+        () => `myagents-${safeMonacoThemeSegment(resolvedTheme.themeId)}-${safeMonacoThemeSegment(monacoTheme.name)}`,
+        [monacoTheme.name, resolvedTheme.themeId],
+    );
 
     const handleBeforeMount = useCallback((monacoInstance: Monaco) => {
-        monacoInstance.editor.defineTheme(LIGHT_THEME_NAME, {
-            base: 'vs',
-            inherit: true,
-            rules: [
-                // Prism oneLight colors (with warm background adaptation)
-                { token: 'comment', foreground: '9ea1a7', fontStyle: 'italic' },  // hsl(230, 4%, 64%)
-                { token: 'keyword', foreground: 'a626a4' },                        // hsl(301, 63%, 40%) - purple
-                { token: 'keyword.control', foreground: 'a626a4' },
-                { token: 'storage', foreground: 'a626a4' },
-                { token: 'storage.type', foreground: 'a626a4' },
-                { token: 'string', foreground: '50a14f' },                         // hsl(119, 34%, 47%) - green
-                { token: 'string.quoted', foreground: '50a14f' },
-                { token: 'number', foreground: 'b76b01' },                         // hsl(35, 99%, 36%) - orange
-                { token: 'constant', foreground: 'b76b01' },
-                { token: 'constant.numeric', foreground: 'b76b01' },
-                { token: 'type', foreground: 'b76b01' },                           // class-name color
-                { token: 'type.identifier', foreground: 'b76b01' },
-                { token: 'class', foreground: 'b76b01' },
-                { token: 'function', foreground: '4078f2' },                       // hsl(221, 87%, 60%) - blue
-                { token: 'function.call', foreground: '4078f2' },
-                { token: 'variable', foreground: '4078f2' },
-                { token: 'variable.other', foreground: '4078f2' },
-                { token: 'operator', foreground: '4078f2' },
-                { token: 'tag', foreground: 'e45649' },                            // hsl(5, 74%, 59%) - red
-                { token: 'attribute.name', foreground: 'b76b01' },
-                { token: 'attribute.value', foreground: '50a14f' },
-                { token: 'delimiter', foreground: '383a42' },                      // punctuation
-                { token: 'delimiter.bracket', foreground: '383a42' },
-            ],
-            colors: {
-                // Editor background - matching preview warm tone
-                'editor.background': '#f8f5ef',
-                'editor.foreground': '#383a42',  // Prism oneLight foreground
-                'editor.lineHighlightBackground': '#f3f0ea',
-                'editor.selectionBackground': '#e5e5e6',  // hsl(230, 1%, 90%)
-                'editor.inactiveSelectionBackground': '#f0ede6',
-                // Line numbers
-                'editorLineNumber.foreground': '#9ea1a7',  // match comment color
-                'editorLineNumber.activeForeground': '#383a42',
-                // Scrollbar - subtle to match preview
-                'scrollbar.shadow': '#00000000',
-                'scrollbarSlider.background': '#c8b8a840',
-                'scrollbarSlider.hoverBackground': '#b8a08860',
-                'scrollbarSlider.activeBackground': '#a0906880',
-                // Gutter and margins - matching preview exactly
-                'editorGutter.background': '#f8f5ef',
-                // Cursor
-                'editorCursor.foreground': '#383a42',
-                // Indent guides
-                'editorIndentGuide.background': '#e8e4db',
-                'editorIndentGuide.activeBackground': '#d8d4cb',
-            }
-        });
+        monacoInstance.editor.defineTheme(activeTheme, monacoTheme.data);
+    }, [activeTheme, monacoTheme.data]);
 
-        monacoInstance.editor.defineTheme(DARK_THEME_NAME, {
-            base: 'vs-dark',
-            inherit: true,
-            rules: [
-                // oneDark-inspired colors adapted for warm dark theme
-                { token: 'comment', foreground: '685c52', fontStyle: 'italic' },  // --code-line-number
-                { token: 'keyword', foreground: 'c678dd' },                        // purple
-                { token: 'keyword.control', foreground: 'c678dd' },
-                { token: 'storage', foreground: 'c678dd' },
-                { token: 'storage.type', foreground: 'c678dd' },
-                { token: 'string', foreground: '98c379' },                         // green
-                { token: 'string.quoted', foreground: '98c379' },
-                { token: 'number', foreground: 'd19a66' },                         // orange
-                { token: 'constant', foreground: 'd19a66' },
-                { token: 'constant.numeric', foreground: 'd19a66' },
-                { token: 'type', foreground: 'e5c07b' },                           // yellow
-                { token: 'type.identifier', foreground: 'e5c07b' },
-                { token: 'class', foreground: 'e5c07b' },
-                { token: 'function', foreground: '61afef' },                       // blue
-                { token: 'function.call', foreground: '61afef' },
-                { token: 'variable', foreground: 'e06c75' },                       // red
-                { token: 'variable.other', foreground: 'e06c75' },
-                { token: 'operator', foreground: '56b6c2' },                       // cyan
-                { token: 'tag', foreground: 'e06c75' },                            // red
-                { token: 'attribute.name', foreground: 'd19a66' },
-                { token: 'attribute.value', foreground: '98c379' },
-                { token: 'delimiter', foreground: 'abb2bf' },                      // punctuation
-                { token: 'delimiter.bracket', foreground: 'abb2bf' },
-            ],
-            colors: {
-                // Dark warm background matching --code-bg / --paper dark vars
-                'editor.background': '#141210',           // --code-bg (dark)
-                'editor.foreground': '#d4d4d4',           // --code-text
-                'editor.lineHighlightBackground': '#1e1a16', // --code-header-bg (dark)
-                'editor.selectionBackground': '#3a342c',  // muted warm selection
-                'editor.inactiveSelectionBackground': '#302a22',
-                // Line numbers
-                'editorLineNumber.foreground': '#685c52', // --code-line-number (dark)
-                'editorLineNumber.activeForeground': '#cfc5ba', // --ink-secondary (dark)
-                // Scrollbar
-                'scrollbar.shadow': '#00000000',
-                'scrollbarSlider.background': '#4a403840',
-                'scrollbarSlider.hoverBackground': '#5a504860',
-                'scrollbarSlider.activeBackground': '#6a605880',
-                // Gutter
-                'editorGutter.background': '#141210',
-                // Cursor
-                'editorCursor.foreground': '#e4dcd4',     // --ink (dark)
-                // Indent guides
-                'editorIndentGuide.background': '#2a2420',
-                'editorIndentGuide.activeBackground': '#3a342c',
-            }
-        });
-    }, []);
+    // Monaco's registry is process-global. Redefine + select the resolved
+    // adapter in place so open editors retain their model, selection and undo
+    // stack across Theme changes.
+    useEffect(() => {
+        monaco.editor.defineTheme(activeTheme, monacoTheme.data);
+        monaco.editor.setTheme(activeTheme);
+    }, [activeTheme, monacoTheme.data]);
 
     // Stable ref for onSave to avoid re-registering keybinding on every render
     const onSaveRef = useRef(onSave);
@@ -590,8 +484,8 @@ export default function MonacoEditor({
     // below) — it ships English labels and Monaco's own theme, and on macOS its
     // clipboard actions historically leaned on the native menu. We render the app's
     // shared <ContextMenu> instead (Chinese labels, design tokens) and drive the editor
-    // through reliable APIs: model edits for cut/paste and the async Clipboard API
-    // (the menu click is a user gesture, so read/write are permitted). This restores the
+    // through reliable APIs: model edits for cut/paste and the shared clipboard writer
+    // (the menu click is a user gesture). This restores the
     // right-click fallback that was missing alongside the ⌘A fix.
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -600,7 +494,7 @@ export default function MonacoEditor({
         const model = editor?.getModel();
         const sel = editor?.getSelection();
         if (!editor || !model || !sel || sel.isEmpty()) return;
-        void navigator.clipboard.writeText(model.getValueInRange(sel)).catch(() => {});
+        void copyPlainText(model.getValueInRange(sel)).catch(() => {});
         editor.focus();
     }, []);
 
@@ -613,7 +507,7 @@ export default function MonacoEditor({
         // Delete ONLY after the clipboard write succeeds — otherwise a denied
         // write would remove the text without copying it (silent data loss).
         // The captured `sel` range stays valid: nothing mutates the model in between.
-        void navigator.clipboard.writeText(text).then(() => {
+        void copyPlainText(text).then(() => {
             editorRef.current?.executeEdits('ctx-cut', [{ range: sel, text: '' }]);
             editorRef.current?.focus();
         }).catch(() => {});
@@ -686,11 +580,11 @@ export default function MonacoEditor({
         // - Single-line: line bounces vertically during composition
         // See: https://github.com/microsoft/monaco-editor/issues/4270
         accessibilitySupport: 'off' as const,
-        fontSize: 14,
-        lineHeight: 22,
-        // Use expanded font stack for Chinese character support in comments
-        // Note: Monaco doesn't support CSS variables, so we inline the --font-code equivalent
-        fontFamily: "ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', monospace",
+        fontSize: monacoTheme.fontSize,
+        lineHeight: monacoTheme.lineHeight,
+        // Monaco cannot resolve host CSS variables reliably inside its canvas
+        // measurement path, so the resolved Theme adapter supplies the stack.
+        fontFamily: monacoTheme.fontFamily,
         tabSize: 2,
         automaticLayout: true,
         padding: { top: 16, bottom: 16 },
@@ -746,7 +640,7 @@ export default function MonacoEditor({
         // text stops at `，` `。` etc. instead of swallowing whole paragraphs. Monaco's
         // default list only includes ASCII punctuation, which never appears mid-Chinese.
         wordSeparators: '~!@#$%^&*()-=+[{]}\\|;:\'",.<>/?，。！？；：“”‘’「」『』（）【】《》、…—·',
-    }), [readOnly, wordWrap]);
+    }), [monacoTheme.fontFamily, monacoTheme.fontSize, monacoTheme.lineHeight, readOnly, wordWrap]);
 
     // Wrapper class `monaco-editor-host` is targeted by index.css to add visual right
     // padding on the wrapper itself; Monaco's `automaticLayout: true` watches the

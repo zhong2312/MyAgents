@@ -6,10 +6,12 @@ import {
   spaceCommentIssue,
   spaceCreateGoal,
   spaceCompleteIssue,
+  spaceCreateRegisteredAgentSubscription,
   spaceCreateIssue,
   spaceCancelIssueClaim,
   spaceCancelIssueAssignee,
   spaceDeleteSkill,
+  spaceDeleteRegisteredAgentSubscription,
   spaceDownloadIssueAttachment,
   spaceGetIssue,
   spaceGetOfficial,
@@ -29,6 +31,7 @@ import {
   spaceListSkills,
   spaceLogout,
   spaceRegisterAgent,
+  spaceReevaluateRegisteredAgent,
   spaceRevokeRegisteredAgent,
   spaceRollbackSkill,
   spaceSetActiveSpace,
@@ -47,6 +50,7 @@ import {
   type SpaceDownloadAttachmentResult,
   type SpaceEvent,
   type SpaceGoal,
+  type SpaceGoalSubscription,
   type SpaceIssue,
   type SpaceIdentitySummary,
   type SpaceIssueDetail,
@@ -307,6 +311,7 @@ export interface SpaceActions {
   }>;
   registerAgent: (input: {
     displayName: string;
+    instruction: string;
     workspaceId: string;
     workspacePath: string;
     workspaceLabel?: string;
@@ -317,6 +322,8 @@ export interface SpaceActions {
   updateRegisteredAgent: (input: {
     id: string;
     displayName?: string;
+    instruction?: string;
+    expectedInstructionRevision?: number;
     workspaceId?: string;
     workspacePath?: string;
     workspaceLabel?: string;
@@ -325,6 +332,13 @@ export interface SpaceActions {
     status?: "active" | "disabled";
     issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
   }) => Promise<LocalRegisteredAgent>;
+  createRegisteredAgentSubscription: (input: {
+    registeredAgentId: string;
+    goalId: string;
+    stateFilter: string[];
+  }) => Promise<SpaceGoalSubscription>;
+  deleteRegisteredAgentSubscription: (subscriptionId: string) => Promise<void>;
+  reevaluateRegisteredAgent: (id: string) => Promise<number>;
   updateRegisteredAgentAvatar: (input: {
     id: string;
     avatarFilePath?: string | null;
@@ -868,27 +882,15 @@ function localAgentToRegisteredAgent(
     localWorkspaceId: agent.localWorkspaceId,
     localAgentId: agent.localAgentId,
     displayName: agent.displayName,
+    instruction: agent.instruction ?? null,
+    instructionRevision: agent.instructionRevision,
     workspacePath: agent.workspacePath,
     workspaceLabel: agent.workspaceLabel,
     avatarUrl: agent.avatarUrl ?? null,
     avatarSource: agent.avatarSource ?? null,
     avatarPresetId: agent.avatarPresetId ?? null,
     avatarUrls: agent.avatarUrls ?? null,
-    subscriptions: agent.goalId
-      ? [
-          {
-            id: `local:${agent.id}:${agent.goalId}`,
-            spaceId: agent.spaceId,
-            actorType: "registered_agent",
-            actorId: agent.id,
-            goalId: agent.goalId,
-            includeSubtree: true,
-            stateFilter: agent.stateFilter,
-            goalPathLabel: agent.goalPathLabel,
-            createdAt: agent.createdAt,
-          },
-        ]
-      : [],
+    subscriptions: agent.subscriptions,
     goalMd: agent.goalMd,
     issueSubscriptionRunMode: agent.issueSubscriptionRunMode,
     status: agent.status,
@@ -2307,7 +2309,14 @@ export const actions: SpaceActions = {
           error: null,
           items: state.registeredAgents.items.map((item) =>
             item.id === registeredAgent.id
-              ? { ...item, ...registeredAgent }
+              ? {
+                  ...item,
+                  ...registeredAgent,
+                  // PATCH does not mutate or project the Subscription
+                  // collection.  In particular, a remote Agent has no local
+                  // row from which the Rust bridge could reconstruct it.
+                  subscriptions: item.subscriptions ?? [],
+                }
               : item,
           ),
         },
@@ -2338,6 +2347,85 @@ export const actions: SpaceActions = {
         ),
       });
       return agent;
+    }),
+
+  createRegisteredAgentSubscription: (input) =>
+    withSpaceMutationMetric("agent.subscription.create", async () => {
+      const result = await spaceCreateRegisteredAgentSubscription({
+        spaceId: activeSpaceId(),
+        registeredAgentId: input.registeredAgentId,
+        goalId: input.goalId,
+        stateFilter: input.stateFilter,
+      });
+      const subscription = result.subscription;
+      invalidateRegisteredAgentReads();
+      setState({
+        localAgents: {
+          ...state.localAgents,
+          items: state.localAgents.items.map((agent) =>
+            agent.id === input.registeredAgentId
+              ? {
+                  ...agent,
+                  subscriptions: [
+                    ...agent.subscriptions.filter(
+                      (item) => item.id !== subscription.id,
+                    ),
+                    subscription,
+                  ],
+                }
+              : agent,
+          ),
+        },
+        registeredAgents: {
+          ...state.registeredAgents,
+          items: state.registeredAgents.items.map((agent) =>
+            agent.id === input.registeredAgentId
+              ? {
+                  ...agent,
+                  subscriptions: [
+                    ...(agent.subscriptions ?? []).filter(
+                      (item) => item.id !== subscription.id,
+                    ),
+                    subscription,
+                  ],
+                }
+              : agent,
+          ),
+        },
+      });
+      return subscription;
+    }),
+
+  deleteRegisteredAgentSubscription: (subscriptionId) =>
+    withSpaceMutationMetric("agent.subscription.delete", async () => {
+      await spaceDeleteRegisteredAgentSubscription(subscriptionId);
+      invalidateRegisteredAgentReads();
+      setState({
+        localAgents: {
+          ...state.localAgents,
+          items: state.localAgents.items.map((agent) => ({
+            ...agent,
+            subscriptions: agent.subscriptions.filter(
+              (item) => item.id !== subscriptionId,
+            ),
+          })),
+        },
+        registeredAgents: {
+          ...state.registeredAgents,
+          items: state.registeredAgents.items.map((agent) => ({
+            ...agent,
+            subscriptions: (agent.subscriptions ?? []).filter(
+              (item) => item.id !== subscriptionId,
+            ),
+          })),
+        },
+      });
+    }),
+
+  reevaluateRegisteredAgent: (id) =>
+    withSpaceMutationMetric("agent.scope.reevaluate", async () => {
+      const result = await spaceReevaluateRegisteredAgent(id);
+      return result.subscriptionCount;
     }),
 
   updateRegisteredAgentAvatar: (input) =>

@@ -36,7 +36,7 @@ export default function AudioPlayerBar({ filePath }: { filePath: string }) {
       <button
         type="button"
         onClick={handleToggle}
-        className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-warm-hover)]"
+        className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)]"
       >
         {isPlaying
           ? <Pause className="size-3 fill-current" />

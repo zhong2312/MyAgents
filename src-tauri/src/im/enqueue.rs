@@ -291,16 +291,10 @@ mod tests {
     }
 
     #[test]
-    fn host_interaction_marks_native_and_openclaw_feishu_as_native_card() {
+    fn host_interaction_only_marks_native_feishu_as_native_card() {
         assert_eq!(ask_cap(ImPlatform::Feishu), "native-card");
-        assert_eq!(
-            ask_cap(ImPlatform::OpenClaw("feishu".to_string())),
-            "native-card"
-        );
-        assert_eq!(
-            ask_cap(ImPlatform::OpenClaw("lark".to_string())),
-            "native-card"
-        );
+        assert_eq!(ask_cap(ImPlatform::OpenClaw("feishu".to_string())), "none");
+        assert_eq!(ask_cap(ImPlatform::OpenClaw("lark".to_string())), "none");
         assert_eq!(ask_cap(ImPlatform::OpenClaw("qqbot".to_string())), "none");
         assert_eq!(ask_cap(ImPlatform::Telegram), "none");
     }

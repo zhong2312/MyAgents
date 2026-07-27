@@ -40,7 +40,7 @@ function AudioPlayButton({ filePath }: { filePath: string }) {
         <button
             type="button"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggle(); }}
-            className="ml-1 inline-flex size-[18px] shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-warm-hover)] align-middle"
+            className="ml-1 inline-flex size-[18px] shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)] align-middle"
             title={isPlaying ? t('inlineCode.pause') : t('inlineCode.playAudio')}
         >
             {isPlaying

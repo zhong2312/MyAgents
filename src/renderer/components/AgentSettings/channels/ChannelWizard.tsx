@@ -7,6 +7,7 @@ import QRCode from 'qrcode';
 import { track } from '@/analytics';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
+import { copyPlainText } from '@/utils/clipboard';
 import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
 import { patchAgentConfig, invokeStartAgentChannel } from '@/config/services/agentConfigService';
@@ -879,7 +880,7 @@ export default function ChannelWizard({
 
     const handleCopyPermJson = useCallback(async () => {
         try {
-            await navigator.clipboard.writeText(FEISHU_PERMISSIONS_JSON);
+            await copyPlainText(FEISHU_PERMISSIONS_JSON);
             setPermJsonCopied(true);
             if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
             copyTimeoutRef.current = setTimeout(() => setPermJsonCopied(false), 2000);

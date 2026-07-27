@@ -10,6 +10,7 @@ import { createExternalSessionEngine } from './external-adapter';
 import type { SessionEngine, SessionEngineKind } from './types';
 import type { TurnOwner } from '../session-core/turn-queue';
 import { managementApi } from '../utils/management-api-client';
+import { cancelTaskSessionBirth } from './task-session-birth';
 
 const builtinEngine = createBuiltinSessionEngine();
 const externalEngine = createExternalSessionEngine();
@@ -88,38 +89,47 @@ export async function stopOwnedTurnByQueueId(
   owner: TurnOwner,
   queueId: string,
 ): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
+  // A Task stop must also settle a `/cron/execute-sync` request that reached
+  // Node but has not published Session metadata or registered a runtime queue
+  // item yet. `not_found` is authoritative only after this barrier.
+  const sessionBirthSettlement = owner.kind === 'task'
+    ? cancelTaskSessionBirth(owner.id, queueId)
+    : null;
   const engine = getSessionEngine();
   const canceled = await engine.cancelQueuedMessage(queueId);
+  let result: { success: boolean; alreadyStopped?: boolean; error?: string };
   if (canceled.status === 'cancelled') {
-    return { success: true };
-  }
-  const current = engine.getCurrentTurnIdentity();
-  if (
-    current?.queueId === queueId
-    && current.owner.kind === owner.kind
-    && current.owner.id === owner.id
-  ) {
-    const stopped = await engine.stopTurn({ preserveQueue: true });
-    if (stopped.success && stopped.alreadyStopped) {
-      return {
+    result = { success: true };
+  } else {
+    const current = engine.getCurrentTurnIdentity();
+    if (
+      current?.queueId === queueId
+      && current.owner.kind === owner.kind
+      && current.owner.id === owner.id
+    ) {
+      const stopped = await engine.stopTurn({ preserveQueue: true });
+      result = stopped.success && stopped.alreadyStopped
+        ? {
+            success: false,
+            error: 'Exact turn stop was not confirmed: the current runtime turn did not stop',
+          }
+        : stopped;
+    } else if (canceled.status === 'not_found') {
+      result = { success: true, alreadyStopped: true };
+    } else {
+      const reason = canceled.status === 'not_cancelled'
+        ? 'the runtime already accepted the queued turn and did not cancel it'
+        : canceled.status === 'unavailable'
+          ? 'queue cancellation is unavailable for this session'
+          : 'queue cancellation failed';
+      result = {
         success: false,
-        error: 'Exact turn stop was not confirmed: the current runtime turn did not stop',
+        error: `Exact turn stop was not confirmed: ${reason}`,
       };
     }
-    return stopped;
   }
-  if (canceled.status === 'not_found') {
-    return { success: true, alreadyStopped: true };
-  }
-  const reason = canceled.status === 'not_cancelled'
-    ? 'the runtime already accepted the queued turn and did not cancel it'
-    : canceled.status === 'unavailable'
-      ? 'queue cancellation is unavailable for this session'
-      : 'queue cancellation failed';
-  return {
-    success: false,
-    error: `Exact turn stop was not confirmed: ${reason}`,
-  };
+  await sessionBirthSettlement;
+  return result;
 }
 
 /**

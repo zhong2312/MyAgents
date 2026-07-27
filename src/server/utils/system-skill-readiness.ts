@@ -3,13 +3,13 @@ import { join, normalize } from 'node:path';
 
 import {
   SYSTEM_SKILLS_VERSION,
-  type RequiredMemorySystemSkill,
+  type RequiredSystemSkill,
 } from '../../shared/systemSkills';
 import { getHomeDirOrNull } from './platform';
 
 export interface SystemSkillExposureInput {
   workspacePath: string;
-  skillName: RequiredMemorySystemSkill;
+  skillName: RequiredSystemSkill;
   /** Test seam; production defaults to ~/.myagents. */
   myagentsRoot?: string;
 }

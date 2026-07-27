@@ -179,7 +179,7 @@ export function ExitPlanModePrompt({ request, onApprove, onReject }: ExitPlanMod
                     <div className="mt-3 space-y-2">
                         <button
                             onClick={onApprove}
-                            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[var(--success)] px-3 py-2 text-sm font-medium text-white transition-colors hover:brightness-110"
+                            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[var(--success)] px-3 py-2 text-sm font-medium text-[var(--on-success)] transition-colors hover:brightness-110"
                         >
                             <Check className="h-4 w-4" />
                             {t('shell.planPrompt.approve')}
@@ -203,7 +203,7 @@ export function ExitPlanModePrompt({ request, onApprove, onReject }: ExitPlanMod
                                 aria-label={submitTitle}
                                 className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors ${
                                     trimmed
-                                        ? 'bg-[var(--success)] text-white hover:brightness-110'
+                                        ? 'bg-[var(--success)] text-[var(--on-success)] hover:brightness-110'
                                         : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]'
                                 }`}
                             >

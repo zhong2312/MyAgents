@@ -963,8 +963,7 @@ export default function FilePreviewModal({
     }, [localPath, path, workspacePath]);
 
     const handleCopyFilePath = useCallback(() => {
-        navigator.clipboard
-            .writeText(absolutePathForDisplay)
+        copyPlainText(absolutePathForDisplay)
             .then(() => toastRef.current.success(tRef.current('workspaceFiles.filePreview.toasts.copiedFilePath')))
             .catch(() => toastRef.current.error(tRef.current('workspaceFiles.common.copyFailed')));
     }, [absolutePathForDisplay]);

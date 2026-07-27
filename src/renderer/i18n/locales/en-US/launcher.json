@@ -1,6 +1,5 @@
 {
   "brand": {
-    "slogan": "Your intent, amplified",
     "providerPrompt": {
       "prefix": "✨ One step to start your AI journey —",
       "configure": "Configure a model provider →"

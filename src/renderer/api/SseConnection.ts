@@ -75,6 +75,7 @@ const JSON_EVENTS = new Set([
     'chat:attachments-filtered', // Sidecar stripped image/video/audio attachments because the resolved model lacks the modality (see modelSupportsModality)
     'chat:attachments-fallback', // Sidecar wrote unsupported-modality attachments to <agentDir>/myagents_files/ and appended @<path> refs to the user text (see PRD prd_0.2.3_image_modality_file_fallback.md)
     'chat:runtime-diagnostics', // Issue #194 — external-runtime self-report (auth/features/MCP/apps/effective env)
+    'chat:runtime-tool-catalog', // #474 — external runtime's ready MCP tool catalog
     'plugin:install-progress', // PRD 0.2.17 — Claude plugin install progress phases
     'plugins:changed', // PRD 0.2.17 — plugin install/uninstall/toggle invalidation signal
     'chat:messages-retracted', // SDK refusal-fallback retraction (0.3.162+ protocol) — evict refused-leg bubbles by message id

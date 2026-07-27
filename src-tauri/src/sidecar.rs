@@ -95,16 +95,19 @@ pub use runtime_identity::{
     resolve_session_runtime_identity, resolve_session_runtime_identity_full,
 };
 pub(crate) use session_lifecycle::{
-    acquire_session_lifecycle, has_persisted_session_owner, SessionLifecycleGuard,
+    acquire_session_lifecycle, ensure_session_sidecar_with_lifecycle,
+    ensure_session_sidecar_with_runtime_identity_override,
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle,
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle_held,
+    has_persisted_session_owner, SessionLifecycleGuard,
 };
 #[allow(unused_imports)]
 pub use session_lifecycle::{
     cmd_delete_session_if_unowned, cmd_ensure_session_sidecar, cmd_get_session_generation,
     cmd_get_session_port, cmd_has_session_sidecar, cmd_release_session_sidecar,
     cmd_release_tab_session, cmd_session_has_persistent_owners, cmd_upgrade_session_id,
-    ensure_session_sidecar, ensure_session_sidecar_with_runtime_identity_override,
-    ensure_session_sidecar_with_runtime_override, get_session_generation, get_session_sidecar_port,
-    has_session_sidecar, release_session_sidecar, EnsureSidecarResult,
+    get_session_generation, get_session_sidecar_port, has_session_sidecar, release_session_sidecar,
+    EnsureSidecarResult,
 };
 pub use shutdown::{
     begin_update_shutdown, begin_update_spawn_permit, is_update_shutdown_in_progress,
@@ -215,6 +218,8 @@ pub const GLOBAL_SIDECAR_ID: &str = "__global__";
 // Process identification marker (used to identify our sidecar processes)
 // This marker is added to all sidecar commands for reliable process identification
 const SIDECAR_MARKER: &str = "--myagents-sidecar";
+const SESSION_DELETE_AUTHORITY_ENV: &str = "MYAGENTS_SESSION_DELETE_AUTHORITY";
+const SESSION_DELETE_AUTHORITY_HEADER: &str = "X-MyAgents-Session-Delete-Authority";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidecarProcessRole {
@@ -233,6 +238,18 @@ impl SidecarProcessRole {
 
 fn append_sidecar_role_arg(cmd: &mut std::process::Command, role: SidecarProcessRole) {
     cmd.arg("--sidecar-role").arg(role.as_str());
+}
+
+fn configure_session_delete_authority(
+    cmd: &mut std::process::Command,
+    role: SidecarProcessRole,
+) -> Option<String> {
+    if role != SidecarProcessRole::Global {
+        return None;
+    }
+    let token = uuid::Uuid::new_v4().to_string();
+    cmd.env(SESSION_DELETE_AUTHORITY_ENV, &token);
+    Some(token)
 }
 
 /// Append the shared Node entrypoint argv used by both generic/global and
@@ -256,7 +273,10 @@ fn append_sidecar_entrypoint_args(
 
 #[cfg(test)]
 mod sidecar_process_role_tests {
-    use super::{append_sidecar_entrypoint_args, append_sidecar_role_arg, SidecarProcessRole};
+    use super::{
+        append_sidecar_entrypoint_args, append_sidecar_role_arg,
+        configure_session_delete_authority, SidecarProcessRole, SESSION_DELETE_AUTHORITY_ENV,
+    };
     use std::path::Path;
 
     fn role_args(role: SidecarProcessRole) -> Vec<String> {
@@ -314,6 +334,27 @@ mod sidecar_process_role_tests {
         assert!(session_args
             .windows(2)
             .any(|pair| pair == ["--import", "tsx/esm"]));
+    }
+
+    #[test]
+    fn only_global_sidecar_receives_session_delete_authority() {
+        let mut global = crate::process_cmd::new("node");
+        let global_token =
+            configure_session_delete_authority(&mut global, SidecarProcessRole::Global)
+                .expect("global authority token");
+        assert!(!global_token.is_empty());
+        assert!(global.get_envs().any(|(key, value)| {
+            key == SESSION_DELETE_AUTHORITY_ENV
+                && value.and_then(|value| value.to_str()) == Some(global_token.as_str())
+        }));
+
+        let mut session = crate::process_cmd::new("node");
+        assert!(
+            configure_session_delete_authority(&mut session, SidecarProcessRole::Session).is_none()
+        );
+        assert!(!session
+            .get_envs()
+            .any(|(key, _)| key == SESSION_DELETE_AUTHORITY_ENV));
     }
 }
 

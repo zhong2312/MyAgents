@@ -33,7 +33,7 @@ export function TodoCompletedIcon({ className = '' }: IconProps) {
   return (
     <span
       aria-hidden
-      className={`inline-flex size-3.5 shrink-0 items-center justify-center rounded-[3px] bg-[var(--success)] text-white ${className}`}
+      className={`inline-flex size-3.5 shrink-0 items-center justify-center rounded-[3px] bg-[var(--success)] text-[var(--on-success)] ${className}`}
     >
       <Check className="size-2.5" strokeWidth={3} />
     </span>

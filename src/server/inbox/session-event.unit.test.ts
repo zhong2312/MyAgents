@@ -76,6 +76,8 @@ describe('Session Event Protocol v1 renderer', () => {
     expect(() => renderSessionEventPrompt({
       version: 1,
       type: 'space.issue_delivery',
+      spaceId: 'space-1',
+      registeredAgentId: 'ra-1',
       eventId: 'evt-space-1',
       sourceSessionId: 'myagents-space',
       sourceLabel: 'MyAgents Space',

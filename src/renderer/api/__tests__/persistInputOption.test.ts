@@ -3,9 +3,20 @@ import { describe, expect, it, vi } from 'vitest';
 import { persistInputOptionChange } from '../persistInputOption';
 
 function makeMocks() {
+  const patchProject = vi.fn().mockResolvedValue(undefined);
+  const patchAgentConfig = vi.fn().mockResolvedValue(undefined);
   return {
-    patchProject: vi.fn().mockResolvedValue(undefined),
-    patchAgentConfig: vi.fn().mockResolvedValue(undefined),
+    patchProject,
+    patchAgentConfig,
+    patchAgentProjectConfig: vi.fn(async (
+      agentId: string,
+      agentPatch: Record<string, unknown>,
+      projectId: string,
+      projectPatch: Record<string, unknown>,
+    ) => {
+      await patchAgentConfig(agentId, agentPatch);
+      await patchProject(projectId, projectPatch);
+    }),
     patchSnapshot: vi.fn().mockResolvedValue(undefined),
     pushMcpToSidecar: vi.fn().mockResolvedValue(undefined),
     pushRuntimeConfigToSidecar: vi.fn().mockResolvedValue(undefined),
@@ -24,6 +35,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { providerId: 'deepseek', builtinModel: 'deepseek-chat' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -58,6 +70,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { permissionMode: 'plan' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
       snapshotWriteMode: 'required',
     });
@@ -80,6 +93,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { permissionMode: 'plan' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -100,6 +114,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { providerId: 'skywork-ai', builtinModel: 'skywork-ai/skyclaw-v1' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith({
@@ -124,6 +139,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -159,6 +175,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -182,6 +199,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -220,6 +238,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
       pushRuntimeConfigToSidecar: m.pushRuntimeConfigToSidecar,
     });
@@ -272,6 +291,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -308,6 +328,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -340,6 +361,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -361,6 +383,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { builtinModel: 'deepseek-v4-pro' }, // no providerId → provider unchanged
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     const snapshotArg = m.patchSnapshot.mock.calls[0][0];
@@ -377,6 +400,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { permissionMode: 'plan' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
     });
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
       permissionMode: 'plan',
@@ -396,6 +420,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { permissionMode: 'plan' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
     });
 
     // Project does NOT get permissionMode for external runtimes.
@@ -418,6 +443,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { permissionMode: 'full-auto' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
 
@@ -433,6 +459,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { runtimeModel: 'sonnet' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
     });
     // Project doesn't track runtimeModel — only the agent does.
     expect(m.patchProject).not.toHaveBeenCalled();
@@ -454,6 +481,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { runtimeModel: 'sonnet' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith({ model: 'sonnet' });
@@ -470,6 +498,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { builtinModel: 'deepseek-chat', runtimeModel: 'sonnet' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith({ model: 'sonnet' });
@@ -484,6 +513,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { mcpEnabledServers: ['playwright', 'im-cron'] },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchProject).toHaveBeenCalledWith('ws-1', {
@@ -506,6 +536,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { enabledPluginIds: ['planner@local', 'reviewer@local'] },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchProject).toHaveBeenCalledWith('ws-1', {
@@ -528,6 +559,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { providerId: 'p1' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       // no patchSnapshot
     });
     // patchSnapshot was never wired, so calling it counts as 0.
@@ -543,6 +575,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { providerId: 'p1' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
     });
     expect(m.patchProject).toHaveBeenCalled();
     expect(m.patchAgentConfig).not.toHaveBeenCalled();
@@ -558,6 +591,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { providerId: 'p1' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
     });
     expect(res.ok).toBe(false);
     expect(res.snapshotWriteFailed).toBe(false);
@@ -582,6 +616,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { mcpEnabledServers: ['a', 'c'] },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       pushMcpToSidecar: m.pushMcpToSidecar,
       getAllMcpServers: m.getAllMcpServers,
       getGlobalMcpEnabled: m.getGlobalMcpEnabled,
@@ -599,6 +634,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { mcpEnabledServers: ['a'] },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       // no sidecar push trio
     });
     expect(m.pushMcpToSidecar).not.toHaveBeenCalled();
@@ -613,6 +649,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { runtimeModel: 'gpt-5.2-codex', permissionMode: 'no-restrictions' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       pushRuntimeConfigToSidecar: m.pushRuntimeConfigToSidecar,
     });
     expect(m.pushRuntimeConfigToSidecar).toHaveBeenCalledWith({
@@ -630,6 +667,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       fields: { builtinModel: 'claude-sonnet-4-6', permissionMode: 'auto' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       pushRuntimeConfigToSidecar: m.pushRuntimeConfigToSidecar,
     });
     expect(m.pushRuntimeConfigToSidecar).not.toHaveBeenCalled();
@@ -646,6 +684,7 @@ describe('persistInputOptionChange — reasoning effort routing (#324)', () => {
       fields: { reasoningEffort: 'max' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', { reasoningEffort: 'max' });
@@ -664,6 +703,7 @@ describe('persistInputOptionChange — reasoning effort routing (#324)', () => {
       fields: { reasoningEffort: 'xhigh' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
@@ -681,6 +721,7 @@ describe('persistInputOptionChange — reasoning effort routing (#324)', () => {
       fields: { reasoningEffort: 'default' },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
       patchSnapshot: m.patchSnapshot,
     });
     expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', { reasoningEffort: 'default' });

@@ -152,11 +152,6 @@ impl HostInteractionCapability {
     pub fn for_platform(platform: &ImPlatform) -> Self {
         match platform {
             ImPlatform::Feishu => Self::native_card(),
-            ImPlatform::OpenClaw(id)
-                if id.eq_ignore_ascii_case("feishu") || id.eq_ignore_ascii_case("lark") =>
-            {
-                Self::native_card()
-            }
             _ => Self::none(),
         }
     }

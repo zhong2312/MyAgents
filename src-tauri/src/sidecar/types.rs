@@ -553,6 +553,60 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
+    fn owner_release_during_restart_updates_recovery_authority() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("dead sidecar")
+            .owners
+            .insert(SidecarOwner::Goal("goal-a".to_string()));
+        let dead = manager.remove_sidecar("session-a").expect("dead sidecar");
+        manager
+            .recovering_sidecars
+            .insert("session-a".to_string(), dead);
+
+        // The monitor's replacement initially owns only the owner chosen to
+        // start it; the retained dead object still carries every owner.
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Starting);
+        assert_eq!(
+            manager.remove_session_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),),
+            (true, false),
+        );
+        assert!(manager.sidecars.contains_key("session-a"));
+        assert!(manager.session_has_persistent_owners("session-a"));
+
+        assert_eq!(
+            manager.remove_session_owner("session-a", &SidecarOwner::Goal("goal-a".to_string()),),
+            (true, true),
+        );
+        assert!(!manager.sidecars.contains_key("session-a"));
+        assert!(!manager.recovering_sidecars.contains_key("session-a"));
+    }
+
+    #[test]
+    fn every_sidecar_owner_variant_blocks_session_deletion() {
+        let owner_variants = vec![
+            SidecarOwner::Tab("tab-a".to_string()),
+            SidecarOwner::Task("task-a".to_string()),
+            SidecarOwner::Goal("goal-a".to_string()),
+            SidecarOwner::BackgroundCompletion("session-a".to_string()),
+            SidecarOwner::Agent("agent-a".to_string()),
+        ];
+
+        for owner in owner_variants {
+            let mut manager = SidecarManager::new();
+            insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+            manager
+                .get_session_sidecar_mut("session-a")
+                .expect("session sidecar")
+                .owners = owners(vec![owner]);
+
+            assert!(manager.session_has_owners("session-a"));
+        }
+    }
+
+    #[test]
     fn generation_for_requires_current_sidecar_entry() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
@@ -688,6 +742,9 @@ pub struct SidecarInstance {
     pub healthy: bool,
     /// Whether this is a global sidecar (uses temp directory)
     pub is_global: bool,
+    /// Per-process capability proving a Session DELETE request came from the
+    /// Rust lifecycle owner after it fenced every live/durable owner.
+    pub session_delete_authority: Option<String>,
     /// When this instance was created — used by health monitor to apply startup grace period.
     /// During the grace window the monitor skips health checks, preventing false "unhealthy"
     /// verdicts while the sidecar is still initialising (TCP check, Bun startup, Plugin Bridge…).

@@ -14,7 +14,7 @@ const desktop: SessionActivityTurnFacts = {
 describe('session activity policy', () => {
   it.each([
     ['desktop', desktop],
-    ['Space issue delivery', { origin: { kind: 'registered-agent', surface: 'space_issue_delivery' }, inputText: '<system-reminder>hidden</system-reminder>Issue ready' }],
+    ['Space issue delivery', { origin: { kind: 'registered-agent', surface: 'space_issue_delivery', context: { spaceId: 'space-1', registeredAgentId: 'ra-1' } }, inputText: '<system-reminder>hidden</system-reminder>Issue ready' }],
     ['cron', { origin: { kind: 'automation', surface: 'cron' }, inputText: '<system-reminder><CRON_TASK>run</CRON_TASK></system-reminder>' }],
     ['task', { origin: { kind: 'automation', surface: 'task_run' }, inputText: 'run task' }],
     ['Goal', { origin: { kind: 'desktop', surface: 'task_center' }, inputText: '<system-reminder><GOAL_CONTEXT>goal</GOAL_CONTEXT></system-reminder>Advance goal' }],

@@ -32,6 +32,7 @@ import {
   resolveFileLinkTarget,
   type FileActionTarget,
 } from '@/utils/workspaceFileLinks';
+import { copyPlainText } from '@/utils/clipboard';
 
 // Lazy load FilePreviewModal (heavy: includes SyntaxHighlighter + Monaco)
 const FilePreviewModal = lazy(() => import('@/components/FilePreviewModal'));
@@ -553,7 +554,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
   // whatever the model wrote (relative or absolute). The menu's `path` is the
   // normalized action form; copy uses the separate `displayPath` instead.
   const handleCopyPath = useCallback((displayPath: string) => {
-    void navigator.clipboard.writeText(displayPath).then(
+    void copyPlainText(displayPath).then(
       () => toastRef.current?.success(t('fileActions.copied')),
       () => toastRef.current?.error(t('fileActions.copyFailed')),
     );

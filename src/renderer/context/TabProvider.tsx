@@ -754,9 +754,8 @@ export default function TabProvider({
         setContextUsage(null);
         if (!shouldPreservePendingBirthSnapshots) {
             setAgentPlanTodos(null);
-        }
-        if (!shouldPreservePendingBirthSnapshots) {
             setSdkSlashCommands([]);
+            setSystemInitInfo(null);
         }
     }, [sessionId]);
 
@@ -942,6 +941,7 @@ export default function TabProvider({
         setLogs([]);
         setSessionMeta(null);
         setSessionRuntimeSource(null);
+        setSystemInitInfo(null);
         // Issue #194 (Codex review #6) — clear runtime diagnostics on reset so
         // a stale Codex banner from the previous session doesn't leak into a
         // new one (or a Tab that just switched to builtin runtime).
@@ -2780,6 +2780,28 @@ export default function TabProvider({
                     break;
                 }
                 setSdkSlashCommands(Array.isArray(payload?.commands) ? payload.commands : []);
+                break;
+            }
+
+            case 'chat:runtime-tool-catalog': {
+                const payload = data as { sessionId?: string; tools?: string[] } | null;
+                const payloadSessionId = payload?.sessionId;
+                const currentId = currentSessionIdRef.current;
+                const connectedId = connectedSseSessionIdRef.current;
+                if (!shouldAcceptSessionScopedSseSnapshot({
+                    connectedSessionId: connectedId,
+                    currentSessionId: currentId,
+                    payloadSessionId,
+                    isConnectedSessionPending: connectedId ? isPendingSessionId(connectedId) : false,
+                    isCurrentSessionPending: currentId ? isPendingSessionId(currentId) : false,
+                })) {
+                    console.log(`[TabProvider ${tabId}] Ignoring runtime tool catalog for stale session ${payloadSessionId}`);
+                    break;
+                }
+                const tools = Array.isArray(payload?.tools)
+                    ? payload.tools.filter((tool): tool is string => typeof tool === 'string')
+                    : [];
+                setSystemInitInfo(previous => previous ? { ...previous, tools } : previous);
                 break;
             }
 
@@ -4840,10 +4862,17 @@ export default function TabProvider({
     // Cancel a queued message — returns the original text (for restoring to input)
     const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
         try {
-            const response = await postJson<{ success: boolean; cancelledText?: string }>('/chat/queue/cancel', { queueId });
+            const response = await postJson<{ success: boolean; stale?: boolean; cancelledText?: string }>('/chat/queue/cancel', { queueId });
             if (response.success) {
                 setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
                 return response.cancelledText ?? null;
+            }
+            if (response.stale) {
+                // The queue owner no longer has this ID (usually because a
+                // terminal SSE event was lost or rejected during a session
+                // transition). Reconcile the local replica; restoring text
+                // here could duplicate an already-executed request.
+                setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
             }
             return null;
         } catch (error) {
@@ -4857,7 +4886,13 @@ export default function TabProvider({
     // Does NOT optimistically remove from queue — queue:started SSE is the single source of truth
     const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
         try {
-            const response = await postJson<{ success: boolean }>('/chat/queue/force', { queueId });
+            const response = await postJson<{ success: boolean; stale?: boolean }>('/chat/queue/force', { queueId });
+            if (response.stale) {
+                // A not-found authority response is terminal for this local
+                // queue replica. Never retry as a new send: that risks running
+                // a request twice if it was already consumed.
+                setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
+            }
             return response.success;
         } catch (error) {
             console.error(`[TabProvider ${tabId}] Force execute queue item failed:`, error);

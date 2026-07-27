@@ -243,6 +243,9 @@ $fastConfigJson = @'
 {
   "build": {
     "beforeBuildCommand": null
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
   }
 }
 '@
@@ -254,14 +257,8 @@ $fastConfigJson = @'
 
 try {
     if ($BundleNsis) {
-        # 如果没有设置 TAURI_SIGNING_PRIVATE_KEY，跳过签名错误
-        # (App 本身会正常构建，只是 updater 签名会失败)
-        if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-            Write-ColorOutput "⚠ 未设置 TAURI_SIGNING_PRIVATE_KEY，更新签名将被跳过" "Yellow"
-        }
-
         & npm run tauri:build -- --debug --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config $fastConfig
-        if ($LASTEXITCODE -ne 0 -and $env:TAURI_SIGNING_PRIVATE_KEY) {
+        if ($LASTEXITCODE -ne 0) {
             throw "Tauri build failed"
         }
     } else {
@@ -269,12 +266,6 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Tauri build failed"
         }
-    }
-} catch {
-    if ($BundleNsis -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
-        Write-ColorOutput "⚠ 构建完成（签名跳过）" "Yellow"
-    } else {
-        throw
     }
 } finally {
     Remove-Item $fastConfig -Force -ErrorAction SilentlyContinue

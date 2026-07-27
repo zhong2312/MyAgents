@@ -16,7 +16,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::im::adapter::{AdapterResult, ImAdapter, ImStreamAdapter};
-use crate::im::types::{AskUserQuestionPayload, ImMessage, ImSourceType};
+use crate::im::types::ImMessage;
 use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 // Note: ulog_* macros write to BOTH system log AND unified log (~/.myagents/logs/unified-*.log)
 // This is critical for bridge stdout/stderr — using log::info! only writes to system log.
@@ -309,72 +309,6 @@ impl BridgeAdapter {
     /// Get registered commands for /help display.
     pub fn get_commands(&self) -> &[(String, String)] {
         &self.commands
-    }
-
-    fn format_question_content(
-        payload: &AskUserQuestionPayload,
-        source_type: &ImSourceType,
-    ) -> String {
-        let mut lines = vec!["请回答下面的问题。".to_string()];
-        if payload.questions.iter().any(|q| q.is_secret) {
-            let scope = if matches!(source_type, ImSourceType::Group) {
-                "群聊"
-            } else {
-                "IM"
-            };
-            lines.push(format!(
-                "其中包含敏感输入，{} 不支持安全收集。请取消后在桌面端继续。",
-                scope
-            ));
-            return lines.join("\n");
-        }
-
-        for (idx, q) in payload.questions.iter().enumerate() {
-            lines.push(format!(
-                "\n**{}. {}**\n{}{}",
-                idx + 1,
-                q.header,
-                q.question,
-                if q.required { "" } else { "\n（可跳过）" },
-            ));
-            if q.options.is_empty() {
-                lines.push("请直接回复文本。".to_string());
-            } else {
-                let option_lines = q
-                    .options
-                    .iter()
-                    .enumerate()
-                    .map(|(opt_idx, opt)| {
-                        if opt.description.is_empty() {
-                            format!("{}. {}", opt_idx + 1, opt.label)
-                        } else {
-                            format!("{}. {} — {}", opt_idx + 1, opt.label, opt.description)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                lines.push(option_lines);
-                if q.multi_select {
-                    lines.push("多选请回复编号或选项名，用逗号分隔。".to_string());
-                } else {
-                    lines.push("请回复编号或选项名。".to_string());
-                }
-            }
-        }
-        if payload.questions.len() > 1 {
-            lines.push("\n多题请按顺序逐行回复；可选题留空表示跳过。".to_string());
-        }
-        lines.push("回复「取消」可取消本次提问。".to_string());
-        lines.join("\n")
-    }
-
-    fn format_question_status(status: &str) -> &'static str {
-        match status {
-            "submitted" => "提问已提交",
-            "cancelled" => "提问已取消",
-            "expired" => "提问已失效",
-            _ => "提问已处理",
-        }
     }
 
     /// Fetch bot display name from bridge's `/identity` endpoint.
@@ -812,41 +746,6 @@ impl ImStreamAdapter for BridgeAdapter {
         Ok(())
     }
 
-    async fn send_question_card(
-        &self,
-        chat_id: &str,
-        payload: &AskUserQuestionPayload,
-        source_type: &ImSourceType,
-    ) -> AdapterResult<Option<String>> {
-        let text = format!(
-            "请选择或填写\n\n{}",
-            Self::format_question_content(payload, source_type)
-        );
-        self.send_message_returning_id(chat_id, &text).await
-    }
-
-    async fn update_question_status(
-        &self,
-        chat_id: &str,
-        message_id: &str,
-        status: &str,
-    ) -> AdapterResult<()> {
-        if message_id.is_empty() {
-            return Ok(());
-        }
-        let text = Self::format_question_status(status);
-        if !self.supports_edit {
-            return self.send_message(chat_id, text).await;
-        }
-        match self.edit_message(chat_id, message_id, text).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.starts_with("status:501:") || e.starts_with("status:405:") => {
-                self.send_message(chat_id, text).await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     async fn send_photo(
         &self,
         chat_id: &str,
@@ -1232,7 +1131,6 @@ fn path_env_value(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::im::types::{AskUserQuestionItem, AskUserQuestionOption};
 
     #[test]
     fn openclaw_bridge_state_env_scopes_runtime_files_under_channel_dir() {
@@ -1251,42 +1149,6 @@ mod tests {
         assert_eq!(env.config_path, env.state_dir.join("openclaw.json"));
         assert_eq!(env.oauth_dir, env.state_dir.join("credentials"));
         assert!(!path_env_value(&env.state_dir).contains(".openclaw"));
-    }
-
-    #[test]
-    fn bridge_question_text_renders_options_and_cancel_hint() {
-        let payload = AskUserQuestionPayload {
-            request_id: "ask-1".to_string(),
-            session_id: None,
-            questions: vec![AskUserQuestionItem {
-                id: Some("choice".to_string()),
-                header: "选择模式".to_string(),
-                question: "要继续吗？".to_string(),
-                options: vec![
-                    AskUserQuestionOption {
-                        label: "继续".to_string(),
-                        description: "执行下一步".to_string(),
-                        preview: None,
-                    },
-                    AskUserQuestionOption {
-                        label: "取消".to_string(),
-                        description: String::new(),
-                        preview: None,
-                    },
-                ],
-                multi_select: false,
-                required: true,
-                is_secret: false,
-            }],
-            preview_format: None,
-        };
-
-        let text = BridgeAdapter::format_question_content(&payload, &ImSourceType::Private);
-
-        assert!(text.contains("选择模式"));
-        assert!(text.contains("1. 继续 — 执行下一步"));
-        assert!(text.contains("2. 取消"));
-        assert!(text.contains("回复「取消」可取消本次提问。"));
     }
 }
 

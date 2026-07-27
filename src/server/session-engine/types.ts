@@ -12,7 +12,7 @@ import type { InboxTurnMeta } from '../inbox/types';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
-import type { SessionOrigin } from '../../shared/session-origin';
+import type { RegisteredAgentSessionOrigin, SessionOrigin } from '../../shared/session-origin';
 import type { SessionCompletionTerminal } from '../../shared/sessionCompletion';
 import type {
   DispatchGuard,
@@ -108,6 +108,7 @@ export type InboxMessageRequest = {
   inboxMeta?: InboxTurnMeta;
   allowLazySessionMaterialization?: boolean;
   analyticsOrigin?: SessionOrigin;
+  birthOrigin?: SessionOrigin;
 };
 
 export type BackgroundMessageRequest = {
@@ -296,6 +297,11 @@ export interface SessionEngine {
   getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   getCurrentSessionContext(): SessionEngineCurrentContext;
+  getSessionOrigin(sessionId: string): SessionOrigin | undefined;
+  ensureRegisteredAgentSessionOrigin(
+    sessionId: string,
+    expected: RegisteredAgentSessionOrigin,
+  ): Promise<{ success: boolean; metadataExists?: boolean; adoptedLegacyOrigin?: boolean; error?: string }>;
   getCurrentTurnIdentity(): TurnIdentity | null;
   getSessionCompletionTerminal(): SessionCompletionTerminal | null;
   hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;

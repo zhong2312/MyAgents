@@ -252,13 +252,7 @@ export async function getSessionDetails(sessionId: string): Promise<SessionData 
  */
 export async function deleteSession(sessionId: string): Promise<boolean> {
     try {
-        if (isTauri()) {
-            return await deleteSessionIfUnowned(sessionId);
-        }
-
-        const response = await apiFetch(`/sessions/${sessionId}`, { method: 'DELETE' });
-        if (!response.ok) return false;
-        return true;
+        return await deleteSessionIfUnowned(sessionId);
     } catch {
         return false;
     }

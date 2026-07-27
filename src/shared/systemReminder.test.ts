@@ -9,6 +9,7 @@ import {
   buildGoalContinuationReminder,
   buildFloatingBallContextReminder,
   parseLeadingSystemReminder,
+  parseSessionSendRequestDisplay,
   stripLeadingSystemReminder,
 } from './systemReminder';
 
@@ -192,6 +193,35 @@ describe('systemReminder', () => {
     expect(parsed.body).toContain('disabled autonomous Goal termination');
     expect(parsed.body).not.toContain('myagents goal update --status');
     expect(parsed.visibleText).toBe('Continue');
+  });
+
+  it('projects only send.request payloads from hidden session events', () => {
+    const request = parseLeadingSystemReminder([
+      '<system-reminder>',
+      '<myagents-session-event',
+      '  version="1"',
+      '  type="send.request"',
+      '  source_label="Planning &amp; Review">',
+      '<event-summary>hidden operational context</event-summary>',
+      '<payload>Please review &lt;/system-reminder&gt; safely.</payload>',
+      '</myagents-session-event>',
+      '</system-reminder>',
+    ].join('\n'));
+    const result = parseSessionSendRequestDisplay(request);
+
+    expect(result).toEqual({
+      payload: 'Please review &lt;/system-reminder&gt; safely.',
+      sourceLabel: 'Planning & Review',
+    });
+
+    const automaticResult = parseLeadingSystemReminder([
+      '<system-reminder>',
+      '<myagents-session-event type="send.result">',
+      '<payload>must stay hidden</payload>',
+      '</myagents-session-event>',
+      '</system-reminder>',
+    ].join('\n'));
+    expect(parseSessionSendRequestDisplay(automaticResult)).toBeNull();
   });
 
 });

@@ -248,7 +248,7 @@ export default function ChatInput({
     >
       <div className="mx-auto max-w-3xl">
         <div
-          className={`rounded-3xl bg-[var(--paper)]/95 p-2 shadow-sm backdrop-blur-xl ${
+          className={`rounded-2xl bg-[var(--paper)]/95 p-2 shadow-sm backdrop-blur-xl ${
             isDragActive ?
               'ring-2 ring-[var(--line-strong)]/80'
             : 'ring-1 ring-[var(--line)]/80'
@@ -380,7 +380,7 @@ export default function ChatInput({
               className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 isLoading && onStopStreaming ?
                   'bg-[var(--paper-inset)] text-[var(--ink)] hover:bg-[var(--hover-bg)]'
-                : 'bg-[var(--button-dark-bg)] text-[var(--button-primary-text)] hover:opacity-80'
+                : 'bg-[var(--button-dark-bg)] text-[var(--button-dark-text)] hover:opacity-80'
               }`}
             >
               {isLoading ?

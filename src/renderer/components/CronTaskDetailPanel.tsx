@@ -44,6 +44,7 @@ interface CronTaskDetailPanelProps {
     onDelete: (taskId: string) => Promise<void>;
     onResume: (taskId: string) => Promise<void>;
     onStop?: (taskId: string) => Promise<void>;
+    onUpdated?: (task: CronTask) => void;
     /** Open a session in a new tab (for execution history click) */
     onOpenSession?: (sessionId: string) => void;
 }
@@ -75,7 +76,7 @@ function ToggleSwitch({ enabled, onChange }: { enabled: boolean; onChange: (v: b
 function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
     return (
         <button type="button" onClick={() => onChange(!checked)} className="flex items-center gap-2.5 text-sm text-[var(--ink)]">
-            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${checked ? 'border-[var(--accent)] bg-[var(--accent)] text-white' : 'border-[var(--line-strong)] bg-transparent'}`}>
+            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${checked ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]' : 'border-[var(--line-strong)] bg-transparent'}`}>
                 {checked && <Check className="h-2.5 w-2.5" />}
             </span>
             {label}
@@ -83,7 +84,7 @@ function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v
     );
 }
 
-export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, onResume, onStop, onOpenSession }: CronTaskDetailPanelProps) {
+export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, onResume, onStop, onUpdated, onOpenSession }: CronTaskDetailPanelProps) {
     const { t, i18n } = useTranslation('task');
     const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
     useCloseLayer(() => { onClose(); return true; }, 50);
@@ -175,17 +176,24 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                 // User explicitly selected "桌面通知" (empty value) — clear delivery
                 deliveryFields.clearDelivery = true;
             }
-            await cronClient.updateCronTaskFields(task.id, {
+            const scheduleFields = editSchedule
+                ? {
+                    schedule: editSchedule,
+                    ...(editSchedule.kind === 'every' ? { intervalMinutes: editSchedule.minutes } : {}),
+                }
+                : { intervalMinutes: editInterval };
+            const updatedTask = await cronClient.updateCronTaskFields(task.id, {
                 name: editName.trim() || undefined, prompt: editPrompt.trim(),
-                schedule: editSchedule ?? undefined, intervalMinutes: editSchedule?.kind === 'every' ? editSchedule.minutes : editInterval,
+                ...scheduleFields,
                 endConditions, notifyEnabled: editNotify,
                 ...deliveryFields,
             });
             if (!isMountedRef.current) return;
+            onUpdated?.(updatedTask);
             toast.success(t('cron.detail.updateSuccess')); onClose(); // Close to refresh — cron:task-updated event triggers parent list reload
         } catch (err) { if (!isMountedRef.current) return; toast.error(t('cron.detail.updateFailed', { message: err instanceof Error ? err.message : String(err) })); }
         finally { if (isMountedRef.current) setIsSaving(false); }
-    }, [task.id, editName, editPrompt, editSchedule, editInterval, editEndMode, editDeadline, editMaxExec, editAiCanExit, editNotify, editDeliveryBotId, resolveDelivery, isAtSchedule, toast, onClose, t]);
+    }, [task.id, editName, editPrompt, editSchedule, editInterval, editEndMode, editDeadline, editMaxExec, editAiCanExit, editNotify, editDeliveryBotId, resolveDelivery, isAtSchedule, toast, onClose, onUpdated, t]);
 
     const handleDelete = useCallback(async () => {
         setIsDeleting(true); try { await onDelete(task.id); onClose(); } catch { /* caller handles */ } finally { if (isMountedRef.current) { setIsDeleting(false); setShowDeleteConfirm(false); } }
@@ -464,7 +472,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                 <div className="flex items-center gap-2.5">
                                     <button onClick={() => setIsEditing(false)} className="rounded-lg px-4 py-2 text-sm font-medium text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] transition-colors">{t('cron.detail.cancel')}</button>
                                     <button onClick={handleSave} disabled={editErrors.length > 0 || isSaving}
-                                        className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 disabled:cursor-not-allowed">
+                                        className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] transition hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 disabled:cursor-not-allowed">
                                         {isSaving ? t('cron.detail.saving') : t('cron.detail.save')}
                                     </button>
                                 </div>
@@ -499,7 +507,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                     )}
                                     {!isManagedTask && task.status === 'stopped' && (!resumeBlockReason ? (
                                         <button onClick={handleResume} disabled={isResuming}
-                                            className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 transition-colors">
+                                            className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 transition-colors">
                                             <Play className="h-3.5 w-3.5" />{isResuming ? t('cron.detail.resuming') : t('cron.detail.resume')}
                                         </button>
                                     ) : <span className="text-xs text-[var(--ink-muted)]/50">{resumeBlockReason}</span>)}

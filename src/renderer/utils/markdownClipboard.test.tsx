@@ -125,6 +125,23 @@ describe('markdownClipboard', () => {
     expect(execCommand).toHaveBeenCalledWith('copy');
   });
 
+  it('rejects when both clipboard paths fail instead of reporting false success', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    const execCommand = vi.fn().mockReturnValue(false);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    });
+
+    await expect(copyPlainText('raw text')).rejects.toThrow('Clipboard write is unavailable');
+    expect(writeText).toHaveBeenCalledWith('raw text');
+    expect(execCommand).toHaveBeenCalledWith('copy');
+  });
+
   it('falls back to selection-based rich copy when ClipboardItem is unavailable', async () => {
     const execCommand = vi.fn().mockReturnValue(true);
     Object.defineProperty(navigator, 'clipboard', {

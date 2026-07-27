@@ -42,9 +42,12 @@
     "defaultWorkspaceBrowse": "选择文件夹...",
     "defaultWorkspacePickTitle": "选择默认工作区",
     "defaultWorkspaceSaved": "已设置默认工作区",
+    "appearanceModeTitle": "外观模式",
+    "appearanceModeDescription": "设置应用的明暗外观模式",
     "themeTitle": "主题",
-    "themeDescription": "设置应用外观模式",
-    "theme": {
+    "themeDescription": "切换应用的全局界面视觉风格",
+    "themeSaveFailed": "切换主题失败：{{message}}",
+    "appearanceMode": {
       "system": "跟随系统",
       "light": "日间模式",
       "dark": "夜间模式"
@@ -274,9 +277,13 @@
       "remoteTitle": "远程或无浏览器环境",
       "codexRemoteDescription": "如果当前机器没有可用浏览器，请在对应环境的终端中使用设备码登录：",
       "claudeRemoteDescription": "如果当前机器没有可用浏览器，请在对应环境的终端中登录：",
+      "codexReadyTitle": "ChatGPT Codex 已就绪",
+      "codexReadyDescription": "您已经可以在模型选择器中选择 ChatGPT Codex 支持的模型了。",
+      "codexModelSelectorAlt": "ChatGPT Codex 模型在模型选择器中的位置",
       "completed": "登录已完成，可以关闭此窗口。",
       "notCompleted": "登录没有完成，可以重新发起登录。",
       "close": "关闭",
+      "done": "完成",
       "retryLogin": "重新登录"
     },
     "custom": {

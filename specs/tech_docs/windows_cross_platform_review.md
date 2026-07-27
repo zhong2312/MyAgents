@@ -3,6 +3,8 @@
 > **日期**：2026-06-06 · **分支**：`dev/0.2.31`
 > **用途**：在 **Windows 真机**上实测确认本文列出的跨端兼容问题。Windows 跑 **WebView2（Chromium/Edge，Evergreen）**；本仓库长期只在 **macOS（WKWebView/WebKit）** 开发与度量，二者在 CSP 继承、滚动条布局、原生子 webview 合成、DPR 等处系统性发散。
 > **重要**：以下结论是 macOS 主机上的**静态源码分析 + WebKit-vs-Chromium 行为推理**得出的，**未在 Windows 实跑过**。标 `需实测` 的项，请按本文「验证步骤」在真机 WebView2 build 上先确认现象，再决定修复。
+
+普通文本复制统一走 `src/renderer/utils/clipboard.ts::copyPlainText`：WebView2 的 Async Clipboard 即使存在也可能因焦点/权限 reject，helper 会在同一用户动作内退回隐藏 textarea selection copy，并且两路都失败时 reject，调用方不得显示“已复制”。Windows 真机回归必须覆盖“Async Clipboard reject + fallback 成功”和“双路径失败不误报”两种场景。
 > **配套**：完整 PRD 在 `specs/prd/prd_0.2.31_windows_cross_platform_review.md`（注意 `specs/prd/` 被 `.gitignore`，**不会同步到 Windows 机器** —— 故本 tech_doc 自包含全部信息）。相关 memory：见 `project_windows_cross_platform_review.md`。
 > **修复判据（第零原则）**：架构正确 + 零技术债 + Δcomplexity≤0；归位 ownership / 复用既有原语，不叠 band-aid。所有修复 MUST 保持 **macOS 行为逐像素不回退**。
 

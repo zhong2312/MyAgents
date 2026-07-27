@@ -17,7 +17,7 @@ use serde_json::json;
 use tauri::{AppHandle, Runtime};
 
 use crate::sidecar::{
-    ensure_session_sidecar_with_runtime_identity_override, release_session_sidecar,
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle, release_session_sidecar,
     resolve_session_runtime_identity_full, ManagedSidecarManager, RuntimeDriftResult, SidecarOwner,
 };
 
@@ -506,19 +506,16 @@ impl SessionRouter {
         let runtime_override = info.runtime_override.clone();
         let runtime_source_override = info.runtime_source_override.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            ensure_session_sidecar_with_runtime_identity_override(
-                &app_clone,
-                &manager_clone,
-                &sid,
-                &ws,
-                owner,
-                runtime_override,
-                runtime_source_override,
-            )
-        })
+        let result = ensure_session_sidecar_with_runtime_identity_override_lifecycle(
+            app_clone,
+            manager_clone,
+            sid,
+            ws,
+            owner,
+            runtime_override,
+            runtime_source_override,
+        )
         .await
-        .map_err(|e| format!("spawn_blocking failed: {}", e))?
         .map_err(|e| format!("Failed to ensure Sidecar: {}", e))?;
 
         ulog_info!(

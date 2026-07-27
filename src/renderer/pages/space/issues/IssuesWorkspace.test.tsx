@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SpaceIssue } from "@/api/spaceCloud";
@@ -8,6 +14,7 @@ import {
   ALL_ISSUE_STATE_FILTER,
 } from "@/pages/space/spaceHelpers";
 import { formatFullTime } from "@/pages/space/spaceUi";
+import { dismissTopmost } from "@/utils/closeLayer";
 import { IssuesWorkspace } from "./IssuesWorkspace";
 
 const issue: SpaceIssue = {
@@ -40,6 +47,7 @@ describe("IssuesWorkspace", () => {
         issueQ=""
         selectedGoalId=""
         selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
+        selectedStatusPreset={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -64,7 +72,7 @@ describe("IssuesWorkspace", () => {
     ).not.toBeInTheDocument();
 
     const statusFilter = screen.getByRole("group", { name: "Issue status" });
-    expect(statusFilter).toHaveClass("h-9", "w-44", "grid-cols-2");
+    expect(statusFilter).toHaveClass("h-9", "w-52");
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
       "aria-pressed",
       "false",
@@ -73,6 +81,9 @@ describe("IssuesWorkspace", () => {
       "aria-pressed",
       "true",
     );
+    expect(
+      screen.getByRole("button", { name: "Choose issue status" }),
+    ).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.queryByRole("button", { name: "Active" }),
     ).not.toBeInTheDocument();
@@ -105,6 +116,7 @@ describe("IssuesWorkspace", () => {
         issueQ=""
         selectedGoalId=""
         selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
+        selectedStatusPreset={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -122,13 +134,10 @@ describe("IssuesWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Search issue" }));
 
     const search = screen.getByRole("textbox");
-    expect(search.closest("div")).toHaveClass(
-      "max-xl:w-40",
-      "max-xl:min-w-40",
-    );
-    expect(screen.getByRole("button", { name: "Create" }).parentElement).toHaveClass(
-      "max-xl:hidden",
-    );
+    expect(search.closest("div")).toHaveClass("max-xl:w-40", "max-xl:min-w-40");
+    expect(
+      screen.getByRole("button", { name: "Create" }).parentElement,
+    ).toHaveClass("max-xl:hidden");
   });
 
   it("maps the two status segments to all and incomplete query values", () => {
@@ -144,6 +153,7 @@ describe("IssuesWorkspace", () => {
         issueQ=""
         selectedGoalId=""
         selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
+        selectedStatusPreset={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -168,6 +178,132 @@ describe("IssuesWorkspace", () => {
     );
   });
 
+  it("keeps the remembered status behind All and exposes granular statuses from the arrow", () => {
+    const onStatusChange = vi.fn();
+    const props = {
+      admin: false,
+      issues: [issue],
+      issuesLoading: false,
+      issueError: null,
+      showingPreviousIssues: false,
+      hasMore: false,
+      issueQ: "",
+      selectedGoalId: "",
+      selectedStatus: ALL_ISSUE_STATE_FILTER,
+      selectedStatusPreset: "doing",
+      relatedToMe: false,
+      goalOptions: [{ value: "", label: "All goals" }],
+      activeIssueId: null,
+      onQueryChange: vi.fn(),
+      onGoalChange: vi.fn(),
+      onStatusChange,
+      onRelatedToMeChange: vi.fn(),
+      onRefresh: vi.fn().mockResolvedValue(undefined),
+      onLoadMore: vi.fn().mockResolvedValue(undefined),
+      onCreate: vi.fn(),
+      onOpenIssue: vi.fn(),
+    };
+    render(<IssuesWorkspace {...props} />);
+
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Doing" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Doing" }));
+    expect(onStatusChange).toHaveBeenLastCalledWith("doing");
+
+    const menuTrigger = screen.getByRole("button", {
+      name: "Choose issue status",
+    });
+    fireEvent.click(menuTrigger);
+
+    expect(menuTrigger).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("menu", { name: "Issue status" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitemradio", { name: "Doing" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.queryByRole("menuitemradio", { name: "All" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Todo" }));
+    expect(onStatusChange).toHaveBeenLastCalledWith("todo");
+    expect(menuTrigger).toHaveFocus();
+    expect(
+      screen.queryByRole("menu", { name: "Issue status" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("supports keyboard navigation and closes through the app layer stack", async () => {
+    render(
+      <IssuesWorkspace
+        admin={false}
+        issues={[issue]}
+        issuesLoading={false}
+        issueError={null}
+        showingPreviousIssues={false}
+        hasMore={false}
+        issueQ=""
+        selectedGoalId=""
+        selectedStatus="doing"
+        selectedStatusPreset="doing"
+        relatedToMe={false}
+        goalOptions={[{ value: "", label: "All goals" }]}
+        activeIssueId={null}
+        onQueryChange={vi.fn()}
+        onGoalChange={vi.fn()}
+        onStatusChange={vi.fn()}
+        onRelatedToMeChange={vi.fn()}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onLoadMore={vi.fn().mockResolvedValue(undefined)}
+        onCreate={vi.fn()}
+        onOpenIssue={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: "Choose issue status",
+    });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+
+    const doing = screen.getByRole("menuitemradio", { name: "Doing" });
+    await waitFor(() => expect(doing).toHaveFocus());
+    fireEvent.keyDown(doing, { key: "ArrowDown" });
+    expect(screen.getByRole("menuitemradio", { name: "Done" })).toHaveFocus();
+
+    fireEvent.keyDown(document.activeElement as Element, { key: "Tab" });
+    expect(
+      screen.queryByRole("menu", { name: "Issue status" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All goals" })).toHaveFocus();
+
+    fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "Doing" }), {
+      key: "Escape",
+    });
+    expect(trigger).toHaveFocus();
+    expect(
+      screen.queryByRole("menu", { name: "Issue status" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    act(() => {
+      expect(dismissTopmost()).toBe(true);
+    });
+    expect(trigger).toHaveFocus();
+    expect(
+      screen.queryByRole("menu", { name: "Issue status" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("exposes related-to-me as an independent toggle and renders updatedAt", () => {
     const onRelatedToMeChange = vi.fn();
     render(
@@ -181,6 +317,7 @@ describe("IssuesWorkspace", () => {
         issueQ=""
         selectedGoalId=""
         selectedStatus="open,todo,doing"
+        selectedStatusPreset={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -220,6 +357,7 @@ describe("IssuesWorkspace", () => {
         issueQ=""
         selectedGoalId=""
         selectedStatus="open,todo,doing"
+        selectedStatusPreset={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -253,6 +391,7 @@ describe("IssuesWorkspace", () => {
         issueQ="runtime"
         selectedGoalId=""
         selectedStatus="open,todo,doing"
+        selectedStatusPreset={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -291,6 +430,7 @@ describe("IssuesWorkspace", () => {
       issueQ: "",
       selectedGoalId: "",
       selectedStatus: "open,todo,doing",
+      selectedStatusPreset: ACTIVE_ISSUE_STATE_FILTER,
       relatedToMe: false,
       goalOptions: [{ value: "", label: "All goals" }],
       activeIssueId: null,

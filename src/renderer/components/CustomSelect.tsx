@@ -50,6 +50,8 @@ interface CustomSelectProps {
     onClick: () => void;
   };
   disabled?: boolean;
+  /** Mirror the selected option's right-aligned suffix in the closed trigger. */
+  showSelectedSuffix?: boolean;
 }
 
 export default function CustomSelect({
@@ -64,6 +66,7 @@ export default function CustomSelect({
   compact,
   footerAction,
   disabled = false,
+  showSelectedSuffix = false,
 }: CustomSelectProps) {
   const { t } = useTranslation("app");
   const resolvedPlaceholder = placeholder ?? t("common.selectPlaceholder");
@@ -90,7 +93,7 @@ export default function CustomSelect({
         onClick={() => {
           if (!disabled) setIsOpen(!isOpen);
         }}
-        className={`flex w-full items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] text-left transition-colors hover:border-[var(--ink-subtle)] disabled:cursor-not-allowed disabled:opacity-45 ${
+        className={`flex w-full items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] text-left transition-colors hover:border-[var(--ink-subtle)] disabled:cursor-not-allowed disabled:opacity-60 ${
           compact
             ? "px-2 py-1 text-xs"
             : size === "md"
@@ -121,6 +124,9 @@ export default function CustomSelect({
             </span>
           )}
         </span>
+        {showSelectedSuffix && selectedOption?.suffix && (
+          <span className="shrink-0">{selectedOption.suffix}</span>
+        )}
         <ChevronDown
           className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform ${isOpen ? "rotate-180" : ""}`}
         />
@@ -172,16 +178,17 @@ export default function CustomSelect({
                 }`}
               >
                 {option.icon && <span className="shrink-0">{option.icon}</span>}
-                <span className="min-w-0 flex-1">
+                <span className="min-w-0">
                   {option.content ?? (
                     <span className="block truncate">{option.label}</span>
                   )}
                 </span>
+                {option.value === value && (
+                  <Check data-selected-indicator className="h-3 w-3 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1" />
                 {option.suffix && (
                   <span className="shrink-0">{option.suffix}</span>
-                )}
-                {option.value === value && (
-                  <Check className="h-3 w-3 shrink-0" />
                 )}
               </button>
             ),

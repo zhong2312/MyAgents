@@ -257,6 +257,7 @@ describe('SSE event priority registration', () => {
   it('classifies streaming deltas as coalescible', () => {
     expect(SSE_EVENT_PRIORITIES['chat:message-chunk']).toBe('coalescible');
     expect(SSE_EVENT_PRIORITIES['chat:tool-result-delta']).toBe('coalescible');
+    expect(SSE_EVENT_PRIORITIES['chat:runtime-tool-catalog']).toBe('coalescible');
   });
 
   it('classifies error / completion / init events as critical', () => {

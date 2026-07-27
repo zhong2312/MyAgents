@@ -37,6 +37,8 @@ import {
 } from './openclaw-config';
 import { redactPluginBridgeSecrets } from './secret-redaction';
 import { sanitizeOutboundMediaFilename } from './media-filename';
+import { installLarkAdmissionRuntimeGlobals } from './lark-admission';
+import { patchLarkChatQueueSource } from './plugin-compat-patches';
 import {
   getGeneralRequestDispatcher,
   initializeProxyStateFromCurrentSettings,
@@ -87,12 +89,24 @@ import { parseArgs } from 'util';
 //    the broken pattern. See:
 //      - https://github.com/larksuite/node-sdk/issues/121
 //      - openclaw/extensions/feishu/src/media.ts (upstream canonical)
+//
+// 3. Official Lark same-chat queue lifecycle (v2026.7.9)
+//    The plugin serializes each account+chat/thread task until the entire AI
+//    reply and CardKit delivery finish. MyAgents already has a bounded Rust
+//    ingress queue plus request-scoped ReplyRouter ownership, so that private
+//    queue turns normal follow-ups into head-of-line blocking. The narrow
+//    structural patch below advances only after Bridge→Rust admission while
+//    keeping every dispatcher alive until its own delivery completes. Unknown
+//    upstream source shapes are left unchanged (fail closed).
 const PLUGIN_PATH_RE = /[/\\]openclaw-plugins[/\\][^/\\]+[/\\]node_modules[/\\]/;
 // Match the broken lark pattern, capturing the destination var name and the input arg name
 // so we can preserve them in the rewrite. The transform expression matches both upload sites
 // in one regex (image / file / any var). Whitespace is generous because plugins may republish
 // with prettier reformatted output.
 const LARK_BUFFER_STREAM_RE = /Buffer\.isBuffer\((\w+)\)\s*\?\s*[\w$.]+\.Readable\.from\(\1\)\s*:\s*fs\.createReadStream\(\1\)/g;
+const LARK_CHAT_QUEUE_PATH_RE = /[/\\]node_modules[/\\]@larksuite[/\\]openclaw-lark[/\\]src[/\\]channel[/\\]chat-queue\.js$/;
+
+installLarkAdmissionRuntimeGlobals();
 
 registerHooks({
   load(url, context, next) {
@@ -114,10 +128,15 @@ registerHooks({
     const needsCjsImportMetaPatch = hasImportMeta && hasCjsExports;
     const needsLarkBufferPatch = LARK_BUFFER_STREAM_RE.test(src);
     LARK_BUFFER_STREAM_RE.lastIndex = 0; // reset between calls (regex has /g flag)
-    if (!needsCjsImportMetaPatch && !needsLarkBufferPatch) {
+    const isLarkChatQueue = LARK_CHAT_QUEUE_PATH_RE.test(fileURLToPath(url));
+    const larkChatQueuePatched = isLarkChatQueue ? patchLarkChatQueueSource(src) : null;
+    if (isLarkChatQueue && !larkChatQueuePatched) {
+      console.warn('[plugin-bridge] official Lark chat queue shape is unknown; keeping upstream serialization unchanged');
+    }
+    if (!needsCjsImportMetaPatch && !needsLarkBufferPatch && !larkChatQueuePatched) {
       return next(url, context);
     }
-    let patched = src;
+    let patched = larkChatQueuePatched ?? src;
     if (needsCjsImportMetaPatch) {
       patched = patched
         .replace(/\(0,\s*[\w$.]+\.fileURLToPath\)\(import\.meta\.url\)/g, '__filename')

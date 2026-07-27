@@ -184,7 +184,7 @@ export default function CronTaskDebugPanel({ isOpen, onClose }: CronTaskDebugPan
                           <button
                             onClick={handleConfirmStop}
                             disabled={stoppingTaskId === task.id}
-                            className="rounded-lg bg-[var(--error)] px-2 py-1 text-xs font-medium text-white transition hover:bg-[var(--error)]/80 disabled:opacity-50"
+                            className="rounded-lg bg-[var(--error)] px-2 py-1 text-xs font-medium text-[var(--on-error)] transition hover:bg-[var(--error)]/80 disabled:opacity-50"
                           >
                             确认停止
                           </button>

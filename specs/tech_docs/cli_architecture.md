@@ -159,6 +159,17 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
 
+`agent set` 不是裸 JSON 属性写入：provider/model/permissionMode 属于配置 intent，
+必须在 Admin API 边界校验并同步 Agent 权威记录、Project 兼容镜像和运行中的
+Agent/IM Channel。Managed Codex 的 runtime permission 词汇会在写入时规范化为
+产品 permission（`suggest→plan`、`auto-edit→auto`、`no-restrictions→fullAgency`），
+`agent show` 再投影为 effective Codex runtime/permission。`full-auto` 保留
+workspace-write sandbox，无法无损存入现有产品 enum，因此必须拒绝而不是升级成
+`no-restrictions`。任何单字段更新不得重置未涉及的 provider/model/permission 字段。
+Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-intent.lock`
+保护的磁盘最新快照上完成；Admin API 与 Renderer 的 Agent/Project 双写路径共享同一把
+跨进程 intent lock，两个文件各自的原子锁只负责单文件 read-modify-write。
+
 ### Goal Mode 命令（0.3.0）
 
 `myagents goal --help` 是 Goal Mode 的内置 skill 文档。系统提示词只告诉模型在明确 User 要求“Goal Mode / Goal Loop / 目标模式 / 设立目标 / 持续执行直到完成”时先运行 help，再按 help 使用子命令；不要把 help 全量塞进主 system prompt。
@@ -168,17 +179,20 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 | 命令 | 何时调用 | 效果 |
 |------|----------|------|
 | `myagents goal get` / `list` | 查看当前 session 是否已有 Goal，或状态更新前确认 | 返回当前 session Goal，或 `goal: null` |
-| `myagents goal create --objective-file <path>` | 仅当 User 明确要求进入 Goal/目标模式 | 从 workspace 文本文件读取 objective，创建 current-session Goal，启动自动续跑，广播 `goal:changed` |
+| `myagents goal create --objective-file <path> [--deadline <ISO-with-offset>] [--max-executions <n>] [--ai-can-exit <bool>]` | 仅当 User 明确要求进入 Goal/目标模式 | 从本地普通文本文件读取 objective，创建 current-session Goal，启动自动续跑，广播 `goal:changed`；可为新 Goal 设置结束条件 |
 | `myagents goal update --status complete` | 当前证据证明 objective 全部完成且无剩余工作 | 停止自动续跑，标记 complete，终态通知 |
 | `myagents goal update --status blocked` | 同一 blocker 连续至少 3 个 Goal turn 仍无法推进 | 停止自动续跑，标记 blocked，终态通知 |
 
 边界：
 
 - Goal create/update 按当前 Sidecar session 解析 `sessionId + workspacePath`；不能跨 session 创建 Goal，也不能覆盖同 session 未完成 Goal。
+- `--objective-file` / `--reason-file` 可读取 workspace 外的本地普通文件（例如系统 temp）；相对路径仍以 CLI 当前目录解析。位置不做 containment，但保留 1 MB、NUL、regular-file、leaf symlink 与 open-time identity 检查。这个放宽仅属于 Goal；Space 等 workspace-scoped 输入不变。
+- `--deadline` 是“最晚停止时间”，不是“最早开始时间”，必须带显式时区偏移或 `Z`；`--max-executions` 是正整数；未传参数时仍使用 `deadline=None / maxExecutions=None / aiCanExit=true`。
 - `update` 只接受 `complete` / `blocked`。pause/resume/cancel 由用户或系统路径控制。
 - `aiCanExit=false` 时 Management API 从服务端拒绝模型 complete/blocked；不能只依赖 prompt 隐藏命令。
 - CLI 创建保留空 permission → runtime 最大权限的无人值守语义；model/provider/runtime/reasoning/MCP 不写入 Goal state，由当前 session 在每轮继续拥有。
 - 普通 Cron surface 不创建或管理 Goal。`myagents cron add --schedule '{"kind":"loop"}'` 会被拒绝；Goal 创建统一走 `myagents goal create --objective-file ...`。objective/reason 是 file-only 输入，不接受 inline 或 positional 文本。
+- `goal get` 的人类可读投影明确区分 `settled turns`（Rust 已 finalize 的 `turnCount`）与可选 `current turn`（`executionNumber`）；JSON 继续返回既有 `turnCount / isExecuting / executionNumber / endConditions` 字段。
 - current-session Goal 不附带 `CronDelivery`；IM / Agent Channel session 依赖当前 session 输出路由。
 
 ### Cron 兼容命令（0.3.0）
@@ -235,9 +249,11 @@ app 启动 → ConfigProvider → invoke('cmd_sync_cli')
 |------|---------|------|---------|
 | `CLI_VERSION` | CLI 脚本 (`myagents.ts`, `myagents.cmd`) | `~/.myagents/.cli-version` | `src-tauri/src/commands.rs` |
 | `ADMIN_AGENT_VERSION` | 小助理 CLAUDE.md + Skills | `~/.myagents/.admin-agent-version` | `src-tauri/src/commands.rs` |
-| `SYSTEM_SKILLS_VERSION` | 系统级 skills（task-alignment / task-implement） | `~/.myagents/.system-skills-version` | `src-tauri/src/commands.rs` |
+| `SYSTEM_SKILLS_VERSION` | `src-tauri/src/commands.rs::SYSTEM_SKILLS` 列出的版本化系统级 Skills；其中 Required 子集由 `src/shared/systemSkills.ts` 统一定义 | `~/.myagents/.system-skills-version` | `src-tauri/src/commands.rs` |
 
 三个版本门控**独立运作**，修改各自内容只需 bump 对应版本即可。
+
+`SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI 或其它模块再复制第三份。当前 Required 包括 `myagents-memory-update`、`myagents-memory-gardener`、`myagents-memory-molt`、`myagents-cli`、`myagents-docs`。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
 ## Rust CLI 入口（场景 2）
 
@@ -323,13 +339,14 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/reload` | 热重载配置 |
 | `/api/admin/help` | 命令帮助文本（子命令 help 来自这里） |
 
-### Cloud Space CLI 身份与错误边界（0.3.0）
+### Cloud Space CLI 身份与错误边界（0.3.2）
 
 - `space list` 是唯一不要求 `--space` 的发现命令；其它 Space 业务命令必须显式 canonical slug，不维护隐式默认 Space。
-- CLI 只解析参数，不接受 `--actor` 或 token。Sidecar Admin API 以当前 workspace path 查 `projects.json` 并补 stable `workspaceId`；Rust `SpaceCliContext` 刷新 `/api/me` 后，以 `(spaceId, workspaceId, session binding)` 解析 actor。现代登记以 workspace id 为权威，path 只兼容缺 id 的 legacy row。
-- delivery Session 除 `registered_agents.json` 外还以 `delivery_log.json` 作为独立绑定证据；绑定 Agent 丢失、失效、跨 Space/device/workspace 或重复时 fail closed，绝不降级为 User。普通未登记 workspace 才使用当前 User session token，与 UI 同权执行。
+- CLI 只解析参数，不接受 `--actor` 或 token。Sidecar Admin API 以当前 workspace path 查 `projects.json` 并补 stable `workspaceId`；Rust `SpaceCliContext` 刷新 `/api/me` 后，只在当前 Session origin 明确携带 exact `spaceId + registeredAgentId`（或显式 legacy `localAgentId` 精确命中）时使用 Agent token。workspace id/path 只做 containment 与 registration 校验，不参与 actor 推断。
+- delivery Session 以持久 Session origin 为 actor authority，并用 `registered_agents.json` 中该精确实例的 Space/device/workspace/owner/token 状态校验绑定；`delivery_log.json` 只保存 transport receipt，不参与 actor 选择。Agent 丢失、失效、跨 Space/device/workspace 或 ID 不一致时 fail closed，绝不降级为 User。没有 exact Agent origin 的普通 Session 始终使用当前 User session token，即使同 workspace 恰好存在一个 Agent。
 - Rust Management API 统一返回 `{ok:false,code,error,suggestion,suggestedCommand?}`；Node Admin API 原样保留，CLI human mode 渲染 `Error:`/`Suggestion:`，`--json` stdout 只输出一个可解析对象且本地参数/文件错误也走同一契约。
 - `myagents <exact leaf> --help` 是 Agent 的工具说明。每个 Space leaf 独立描述 WHEN TO CALL、EFFECT、REQUIRED CONTEXT、OPTIONS、ACTOR AND PERMISSIONS、FILE SAFETY、OUTPUT、EXAMPLES、RECOVERY，不能回落到泛化 group help。
+- `myagents space issue --help` 是 Issue 动作面的统一 discovery 入口；具体参数继续以下一级 leaf help 为权威。0.3.2 不再暴露 `space issue delivery ignore`：不行动是合法模型决策，不需要修改 Delivery；transport ACK 由 connector 自动维护。
 - Goal discovery 走 `space goal list --space <slug> [--include-archived]`，只把 active `data.items[].id` 用作 create/list/update 的 `--goal`。`myagents goal` 是本地 Session Goal Mode，`myagents space goal` 是 Cloud 组织 Goal，help 必须保持命名空间消歧。
 - Issue 元数据编辑走 `space issue update <issueId>`，只接受 title/body/Goal/humanOnly。省略 Goal 表示不变；`--clear-goal` 在 CLI→Rust 使用 tagged action，Rust 最后一跳才映射成 Cloud `goalId:null`。state、assignee、claim、comment 和 attachment 仍由各自命令拥有。
 - top help 不承诺全局 preview。所有 Space write-like command 携带 `--dry-run` 时，CLI 在端口发现、HTTP 与本地文件 IO 前返回 `DRY_RUN_UNSUPPORTED`；只读命令不会把无关 flag 描述成 preview。真正支持 dry-run 的配置类命令以各自精确 leaf help 为准。
@@ -352,15 +369,24 @@ session event 类型时必须同时更新该渲染层、目标 Sidecar 处理路
 
 ### 写入模式
 
-所有写操作遵循相同模式：
+AppConfig-backed 写操作的通用路径到当前 Sidecar 的兼容事件为止：
 
 ```
 CLI → Admin API → atomicModifyConfig() → 写 config.json（磁盘优先）
                 → 更新 Sidecar 内存状态（setMcpServers 等）
-                → broadcast() SSE 事件 → 前端 React 状态同步
+                → broadcast() SSE 事件（当前 Sidecar 兼容面）
 ```
 
-这确保了 CLI 修改和 GUI 修改产生完全相同的效果。
+只有 `model set-key / set-default / verify / add / remove` 在完成各自磁盘提交后额外调用
+`notifyModelConfigChanged()`：保留当前 Sidecar 的 `config:changed`，再经 Management API
+`/api/app/config-changed` 向所有 WebView 广播空 payload 的应用级失效信号；挂载 `ConfigProvider`
+的 renderer surface 收到后重读完整磁盘快照。浮球等轻量 WebView 不挂 `ConfigProvider`，不消费这条刷新链。
+普通 `config set`、MCP 等写操作不拥有这条 app-wide model refresh 路径；新增全窗口同步需求时必须先明确
+其磁盘 authority 与完整 snapshot owner，不能把局部 Sidecar broadcast 泛化成应用级协议。
+
+这确保了 CLI model mutation 和 GUI 模型配置产生相同的应用级效果。`model add/remove` 的 provider 文件必须持有 `${providerPath}.lock` 并原子替换；Provider 文件是定义权威，`availableProvidersJson` 只是 Rust IM 的派生投影。新增先提交可幂等重试的定义文件再重建投影；删除先提交 config 清理再删除定义文件，使 config 失败时定义天然保持不变，不引入跨文件伪事务。投影的 availability、primary 与 wire shape 只由 `src/shared/availableProvidersProjection.ts` 生成，renderer/Node 仅分别负责目录读取和持久化，禁止复制投影策略。GUI 不读取该投影作为 Provider authority，而是以一次 `config.json` 读取派生 credential/verify，并结合同代 projects/provider 文件形成完整 snapshot；所有磁盘 refresh 经 ConfigProvider 的同一个 snapshot commit owner，本地磁盘提交也推进同一 revision，拒绝旧读覆盖新写。应用级事件 payload 永远为空，不能把 API key/MCP env 放进 Tauri event；Management API 返回失败时 model mutation 必须向 CLI 报告“已写盘但 app-wide refresh 失败”，不得返回局部 success。
+
+`myagents model list` 的 JSON 与 human 输出都必须展示每个 Provider 的 `primaryModel` 和 `models`；human renderer 不能把 Admin 已返回的详情静默丢弃。
 
 ### 管理 API 转发（`/api/task/*` / `/api/cron/*` 等）
 

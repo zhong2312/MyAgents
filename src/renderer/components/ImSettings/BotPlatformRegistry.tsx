@@ -403,7 +403,7 @@ export default function BotPlatformRegistry() {
             {path1Steps.map((step, i) => (
               <div key={i}>
                 <p className="mb-2 text-xs font-medium text-[var(--ink-subtle)]">
-                  <span className="mr-1.5 inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[var(--accent-warm)] text-xs font-bold text-white">
+                  <span className="mr-1.5 inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[var(--accent-warm)] text-xs font-bold text-[var(--on-accent)]">
                     {i + 1}
                   </span>
                   {step.caption}
@@ -430,7 +430,7 @@ export default function BotPlatformRegistry() {
             {path2Steps.map((step, i) => (
               <div key={i}>
                 <p className="mb-2 text-xs font-medium text-[var(--ink-subtle)]">
-                  <span className="mr-1.5 inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[var(--accent-warm)] text-xs font-bold text-white">
+                  <span className="mr-1.5 inline-flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[var(--accent-warm)] text-xs font-bold text-[var(--on-accent)]">
                     {i + 1}
                   </span>
                   {step.caption}

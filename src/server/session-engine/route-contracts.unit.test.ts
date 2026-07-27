@@ -79,6 +79,9 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       engineMethod: 'stopOwnedTurnByQueueId',
       requiredFields: ['taskId', 'queueId'],
     });
+    expect(findSessionEngineRouteContract('/task/stop', 'POST')?.behavior).toContain(
+      'pre-metadata creator request to settle',
+    );
     expect(findSessionEngineRouteContract('/api/im/heartbeat', 'POST')).toMatchObject({
       engineMethod: 'runInjectedTurn',
       responseKeys: expect.arrayContaining(['messageEnqueued']),
@@ -89,6 +92,9 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
     );
     expect(findSessionEngineRouteContract('/cron/execute-sync', 'POST')?.behavior).toContain(
       'managed memory jobs also require their exact official system skill',
+    );
+    expect(findSessionEngineRouteContract('/cron/execute-sync', 'POST')?.behavior).toContain(
+      'Authorizes and settles Session metadata birth',
     );
   });
 });

@@ -39,7 +39,8 @@ import {
 function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     return {
         defaultPermissionMode: 'auto',
-        theme: 'system',
+        themeId: 'myagents-default',
+        appearanceMode: 'system',
         minimizeToTray: false,
         showDevTools: false,
         ...overrides,

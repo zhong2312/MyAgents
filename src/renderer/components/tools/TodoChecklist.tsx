@@ -48,7 +48,7 @@ export default function TodoChecklist({ items }: TodoChecklistProps) {
             >
               {/* Checkbox */}
               <div className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded border-2 transition-colors ${isCompleted
-                  ? 'border-[var(--success)] bg-[var(--success)] text-white'
+                  ? 'border-[var(--success)] bg-[var(--success)] text-[var(--on-success)]'
                   : isInProgress
                     ? 'border-[var(--accent)] bg-[var(--accent)]/10'
                     : 'border-[var(--line)]'

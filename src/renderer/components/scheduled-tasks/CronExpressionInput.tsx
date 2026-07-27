@@ -316,7 +316,7 @@ export default function CronExpressionInput({
                 onClick={() => handleFreqChange(opt.value)}
                 className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
                   freq === opt.value
-                    ? 'bg-[var(--accent)] text-white'
+                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                     : 'bg-[var(--paper)] text-[var(--ink)] hover:bg-[var(--paper-inset)]'
                 }`}
               >
@@ -368,7 +368,7 @@ export default function CronExpressionInput({
                         onClick={() => toggleWeekday(cronDay)}
                         className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium transition-colors ${
                           isSelected
-                            ? 'bg-[var(--accent)] text-white'
+                            ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                             : 'bg-[var(--paper)] border border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]'
                         }`}
                       >

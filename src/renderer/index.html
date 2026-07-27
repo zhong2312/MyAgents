@@ -4,14 +4,49 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MyAgents</title>
-    <!-- Prevent FOUC: apply dark class before React renders.
-         useThemeEffect mirrors config.theme to localStorage('theme'). -->
+    <!-- Theme bootstrap: apply the last non-sensitive Theme selection before
+         CSS/React paint. Durable AppConfig corrects this snapshot after load. -->
     <script>
-      try {
-        var t = localStorage.getItem('theme') || 'system';
-        if (t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme:dark)').matches))
-          document.documentElement.classList.add('dark');
-      } catch(e) {}
+      (function () {
+        var root = document.documentElement;
+        var themeId = 'default-black';
+        var appearanceMode = 'system';
+        function applySelection(id, mode) {
+          var systemDark = false;
+          try {
+            systemDark = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme:dark)').matches;
+          } catch (e) {}
+          var resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
+          root.dataset.themeId = id;
+          root.dataset.colorScheme = resolved;
+          root.classList.toggle('dark', resolved === 'dark');
+          root.style.colorScheme = resolved;
+        }
+
+        // A safe frame is established before touching storage. JSON parsing,
+        // private-mode storage and future/unknown IDs cannot leave root bare.
+        applySelection(themeId, appearanceMode);
+        try {
+          var raw = localStorage.getItem('myagents:theme-bootstrap');
+          if (raw) {
+            var snapshot = JSON.parse(raw);
+            if (snapshot && (snapshot.version === 1 || snapshot.version === 2)) {
+              var storedThemeId = typeof snapshot.themeId === 'string' ? snapshot.themeId.trim() : '';
+              var explicitTheme = snapshot.version === 2
+                ? snapshot.themeSelectionExplicit === true
+                : storedThemeId !== '' && storedThemeId !== 'myagents-default';
+              if (explicitTheme && storedThemeId) themeId = storedThemeId;
+              if (snapshot.appearanceMode === 'light' || snapshot.appearanceMode === 'dark' || snapshot.appearanceMode === 'system') {
+                appearanceMode = snapshot.appearanceMode;
+              }
+            }
+          } else {
+            var legacyMode = localStorage.getItem('theme');
+            if (legacyMode === 'light' || legacyMode === 'dark' || legacyMode === 'system') appearanceMode = legacyMode;
+          }
+          applySelection(themeId, appearanceMode);
+        } catch(e) {}
+      })();
     </script>
   </head>
   <body>

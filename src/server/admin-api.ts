@@ -14,7 +14,17 @@ import { execFile } from 'node:child_process';
 import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { splitProviderModelInput, type McpServerDefinition, type ProxySettings } from '../shared/config-types';
+import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  splitProviderModelInput,
+  type McpServerDefinition,
+  type PermissionMode,
+  type ProxySettings,
+} from '../shared/config-types';
+import {
+  managedCodexProviderPermissionToRuntimePermission,
+  managedCodexRuntimePermissionToProviderPermission,
+} from '../shared/providerExecution';
 import { deriveCliToolKind, type CliToolRegistryEntry } from '../shared/types/cliTools';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { IMAGE_UNDERSTANDING_TOOL_ID } from '../shared/official-tools';
@@ -37,6 +47,7 @@ import {
 import {
   loadConfig,
   atomicModifyConfig,
+  withAgentConfigIntentLock,
   getAllMcpServers,
   getEnabledMcpServerIds,
   loadProjects,
@@ -44,8 +55,12 @@ import {
   redactSecret,
   findProvider,
   getAllEffectiveProviders,
+  getProviderSelectionError,
   isProviderDisabled,
-  getProvidersDir,
+  resolveProviderEnv,
+  saveCustomProviderFile,
+  deleteCustomProviderFile,
+  withAvailableProvidersProjection,
   isCliToolRegistryEnabled,
   type AdminAppConfig,
   type AgentConfigSlim,
@@ -64,8 +79,6 @@ import { getSessionEngine } from './session-engine';
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
 // 30s buffer so the inner timeout always wins. Used by skill install routes.
 const SKILL_INSTALL_LOOPBACK_TIMEOUT_MS = 330_000;
-import { existsSync, writeFileSync, unlinkSync } from 'fs';
-import { ensureDirSync } from './utils/fs-utils';
 import { resolve } from 'path';
 import { setMcpServers, setAgents, getMcpServers, getAgentState, getSidecarPort, forceReloadActiveSession } from './agent-session';
 import { loadEnabledAgents } from './agents/agent-loader';
@@ -857,6 +870,22 @@ export function handleModelList(): AdminResponse {
   const data = allProviders.map(p => {
     const id = String(p.id);
     const cfg = p.config as Record<string, unknown> | undefined;
+    const models = (Array.isArray(p.models) ? p.models : []).flatMap(model => {
+      if (!model || typeof model !== 'object') return [];
+      const record = model as Record<string, unknown>;
+      const modelId = typeof record.model === 'string' ? record.model.trim() : '';
+      if (!modelId) return [];
+      return [{
+        model: modelId,
+        modelName: typeof record.modelName === 'string' && record.modelName.trim()
+          ? record.modelName
+          : modelId,
+      }];
+    });
+    const configuredPrimary = (config.providerPrimaryModels as Record<string, string> | undefined)?.[id];
+    const primaryModel = configuredPrimary && models.some(model => model.model === configuredPrimary)
+      ? configuredPrimary
+      : (typeof p.primaryModel === 'string' ? p.primaryModel : models[0]?.model);
     return {
       id,
       name: String(p.name),
@@ -867,10 +896,30 @@ export function handleModelList(): AdminResponse {
       enabled: p.enabled !== false,
       hasApiKey: !!apiKeys[id],
       status: (verifyStatus[id] as unknown as Record<string, unknown>)?.status ?? 'not-set',
+      primaryModel,
+      models,
     };
   });
 
   return { success: true, data };
+}
+
+async function notifyModelConfigChanged(action: string, id: string): Promise<void> {
+  // Preserve the current Sidecar-local event for tabs connected to this
+  // process, then fan out an app-scoped invalidation through Rust so every
+  // renderer reloads the disk authorities regardless of Sidecar ownership.
+  broadcast('config:changed', { section: 'model', action, id });
+  const result = await managementApi(
+    '/api/app/config-changed',
+    'POST',
+    {},
+    { timeoutMs: 2_000 },
+  );
+  if (result.ok !== true) {
+    throw new Error(
+      `Model configuration was saved, but app-wide refresh failed after ${action} '${id}': ${String(result.error ?? 'unknown Management API error')}. Restart MyAgents or retry the command to refresh every open window.`,
+    );
+  }
 }
 
 export async function handleModelSetKey(payload: { id: string; apiKey: string }): Promise<AdminResponse> {
@@ -878,12 +927,12 @@ export async function handleModelSetKey(payload: { id: string; apiKey: string })
   if (!id) return { success: false, error: 'Missing required field: id' };
   if (!apiKey) return { success: false, error: 'Missing required field: apiKey' };
 
-  await atomicModifyConfig(c => ({
+  await atomicModifyConfig(c => withAvailableProvidersProjection({
     ...c,
     providerApiKeys: { ...(c.providerApiKeys || {}), [id]: apiKey },
   }));
 
-  broadcast('config:changed', { section: 'model', action: 'set-key', id });
+  await notifyModelConfigChanged('set-key', id);
   return { success: true, data: { id }, hint: `API key saved for ${id}.` };
 }
 
@@ -899,7 +948,7 @@ export async function handleModelSetDefault(payload: { id: string }): Promise<Ad
     defaultProviderId: id,
   }));
 
-  broadcast('config:changed', { section: 'model', action: 'set-default', id });
+  await notifyModelConfigChanged('set-default', id);
   return { success: true, data: { id }, hint: `Default provider set to ${id}.` };
 }
 
@@ -939,14 +988,14 @@ export async function handleModelVerify(payload: { id: string; model?: string })
 
     if (result.success) {
       // Persist verify status
-      await atomicModifyConfig(c => ({
+      await atomicModifyConfig(c => withAvailableProvidersProjection({
         ...c,
         providerVerifyStatus: {
           ...(c.providerVerifyStatus ?? {}),
           [id]: { status: 'valid', verifiedAt: new Date().toISOString() },
         },
       }));
-      broadcast('config:changed', { section: 'model', action: 'verify', id });
+      await notifyModelConfigChanged('verify', id);
       return { success: true, data: { id, model: verifyModel }, hint: 'Verification successful.' };
     }
 
@@ -956,10 +1005,10 @@ export async function handleModelVerify(payload: { id: string; model?: string })
   }
 }
 
-export function handleModelAdd(payload: {
+export async function handleModelAdd(payload: {
   provider: Record<string, unknown>;
   dryRun?: boolean;
-}): AdminResponse {
+}): Promise<AdminResponse> {
   const { dryRun } = payload;
   const p = payload.provider;
 
@@ -1009,13 +1058,14 @@ export function handleModelAdd(payload: {
     modelAliases = { fable: modelIds[0], sonnet: modelIds[0], opus: modelIds[0], haiku: modelIds[0] };
   }
 
+  const requestedPrimaryModel = p.primaryModel ? String(p.primaryModel).trim() : '';
   const providerObj = {
     id: String(p.id),
     name: String(p.name),
     vendor: String(p.vendor ?? p.name),
     cloudProvider: String(p.cloudProvider ?? ''),
     type: 'api' as const,
-    primaryModel: p.primaryModel ? String(p.primaryModel).trim() || modelIds[0] : modelIds[0],
+    primaryModel: modelIds.includes(requestedPrimaryModel) ? requestedPrimaryModel : modelIds[0],
     isBuiltin: false,
     config: {
       baseUrl: String(p.baseUrl),
@@ -1038,9 +1088,11 @@ export function handleModelAdd(payload: {
     return { success: true, dryRun: true, preview: providerObj };
   }
 
-  // Write to ~/.myagents/providers/{id}.json
-  saveCustomProviderFile(providerObj);
-  broadcast('config:changed', { section: 'model', action: 'add', id: providerObj.id });
+  // The provider file is the definition authority. Projection is derived and
+  // this operation is idempotent, so retrying repairs a failed config commit.
+  await saveCustomProviderFile(providerObj);
+  await atomicModifyConfig(c => withAvailableProvidersProjection(c));
+  await notifyModelConfigChanged('add', providerObj.id);
   return {
     success: true,
     data: { id: providerObj.id, name: providerObj.name, models: modelIds },
@@ -1059,12 +1111,8 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
     return { success: false, error: `Cannot remove built-in provider '${id}'. Only custom providers can be removed.` };
   }
 
-  // Delete provider file
-  if (!deleteCustomProviderFile(id)) {
-    return { success: false, error: `Custom provider '${id}' not found.` };
-  }
-
-  // Clean up API key, verify status, and enablement/order stale IDs
+  // Commit config cleanup first. If it fails, the provider definition remains
+  // untouched and the user can retry without compensating rollback machinery.
   await atomicModifyConfig(c => {
     const apiKeys = { ...(c.providerApiKeys ?? {}) };
     delete apiKeys[id];
@@ -1080,7 +1128,7 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
       ? c.proxySettings as ProxySettings
       : undefined;
     const proxySettings = removeProviderFromProxySettingsScope(currentProxySettings, id);
-    return {
+    return withAvailableProvidersProjection({
       ...c,
       providerApiKeys: apiKeys,
       providerVerifyStatus: verifyStatus,
@@ -1088,10 +1136,13 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
       providerOrder: providerOrder && providerOrder.length > 0 ? providerOrder : undefined,
       disabledProviderIds: disabledProviderIds && disabledProviderIds.length > 0 ? disabledProviderIds : undefined,
       ...(proxySettings ? { proxySettings } : {}),
-    };
+    });
   });
+  if (!await deleteCustomProviderFile(id)) {
+    return { success: false, error: `Custom provider '${id}' not found.` };
+  }
 
-  broadcast('config:changed', { section: 'model', action: 'remove', id });
+  await notifyModelConfigChanged('remove', id);
   return { success: true, data: { id }, hint: 'Provider removed.' };
 }
 
@@ -1393,20 +1444,175 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
         error: `Unknown runtime: '${value}'. Valid: ${VALID_RUNTIMES.join(', ')}.`,
       };
     }
-    return modifyAgent(
+    return modifyAgentConfigIntent(
       id,
       agent => {
         const patch = buildRuntimeChangePatch(
           agent.runtimeConfig as RuntimeConfig | undefined,
           value as RuntimeType,
         );
-        return { ...agent, runtime: patch.runtime, runtimeConfig: patch.runtimeConfig };
+        return {
+          ok: true,
+          agent: { ...agent, runtime: patch.runtime, runtimeConfig: patch.runtimeConfig },
+          livePatch: { runtime: patch.runtime, runtimeConfig: patch.runtimeConfig ?? null },
+        };
       },
       'set',
     );
   }
 
-  return modifyAgent(id, agent => ({ ...agent, [key]: value }), 'set');
+  if (key === 'permissionMode') {
+    if (typeof value !== 'string') {
+      return { success: false, error: 'permissionMode must be a string' };
+    }
+  }
+
+  if ((key === 'providerId' || key === 'model')
+    && (typeof value !== 'string' || !value.trim())) {
+    return { success: false, error: `${key} must be a non-empty string` };
+  }
+
+  return modifyAgentConfigIntent(
+    id,
+    (agent, currentConfig) => {
+      let normalizedValue = value;
+      if (key === 'permissionMode') {
+        const requestedMode = (value as string).trim();
+        if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
+          // `full-auto` keeps Codex's workspace-write sandbox, while the product
+          // vocabulary has no lossless storage value for it. Mapping it to
+          // fullAgency would later project as danger-full-access
+          // (`no-restrictions`), silently escalating permissions.
+          if (requestedMode === 'full-auto') {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: "Managed Codex permissionMode 'full-auto' cannot be stored losslessly. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.",
+              },
+            };
+          }
+          const normalized = managedCodexRuntimePermissionToProviderPermission(requestedMode);
+          if (!normalized) {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: 'Invalid managed Codex permissionMode. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.',
+              },
+            };
+          }
+          normalizedValue = normalized;
+        } else {
+          const validModes: PermissionMode[] = ['auto', 'plan', 'fullAgency'];
+          if (!validModes.includes(requestedMode as PermissionMode)) {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: `Invalid permissionMode. Valid: ${validModes.join(', ')}.`,
+              },
+            };
+          }
+          normalizedValue = requestedMode;
+        }
+      }
+
+      if (key === 'providerId' || key === 'model') {
+        normalizedValue = (value as string).trim();
+      }
+
+      if (key === 'providerId') {
+        const provider = getAllEffectiveProviders(currentConfig)
+          .find(candidate => candidate.id === normalizedValue);
+        if (!provider) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: `Unknown providerId: '${normalizedValue}'. Run 'myagents model list' to inspect available providers.`,
+            },
+          };
+        }
+        const selectionError = getProviderSelectionError(provider, currentConfig);
+        if (selectionError) {
+          return { ok: false, response: { success: false, error: selectionError } };
+        }
+      }
+
+      if (key === 'model') {
+        const providerId = typeof agent.providerId === 'string'
+          ? agent.providerId
+          : currentConfig.defaultProviderId;
+        const provider = providerId
+          ? getAllEffectiveProviders(currentConfig).find(candidate => candidate.id === providerId)
+          : undefined;
+        if (!provider) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: 'Cannot validate model without an Agent providerId. Set providerId first.',
+            },
+          };
+        }
+        const selectionError = getProviderSelectionError(provider, currentConfig);
+        if (selectionError) {
+          return { ok: false, response: { success: false, error: selectionError } };
+        }
+        const registeredModels = Array.isArray(provider.models)
+          ? provider.models.flatMap(entry => {
+              if (!entry || typeof entry !== 'object') return [];
+              const model = (entry as Record<string, unknown>).model;
+              return typeof model === 'string' && model.trim() ? [model.trim()] : [];
+            })
+          : [];
+        // Runtime-backed providers discover models dynamically. An empty static
+        // catalogue means validation belongs to that runtime, not that no model
+        // is legal. Providers with a concrete catalogue fail closed on typos.
+        if (registeredModels.length > 0 && !registeredModels.includes(String(normalizedValue))) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: `Model '${normalizedValue}' is not registered for provider '${provider.id}'.`,
+            },
+          };
+        }
+      }
+
+      const projectMirrorFields = new Set([
+        'providerId',
+        'model',
+        'permissionMode',
+        'mcpEnabledServers',
+        'enabledPluginIds',
+      ]);
+      const liveReloadFields = new Set(['providerId', 'model', 'permissionMode']);
+      const providerEnvJson = key === 'providerId'
+        ? (() => {
+            const resolved = resolveProviderEnv(String(normalizedValue), currentConfig);
+            return resolved ? JSON.stringify(resolved) : undefined;
+          })()
+        : undefined;
+      return {
+        ok: true,
+        agent: {
+          ...agent,
+          [key]: normalizedValue,
+          ...(key === 'providerId' ? { providerEnvJson } : {}),
+        },
+        projectPatch: projectMirrorFields.has(key) ? { [key]: normalizedValue } : undefined,
+        livePatch: liveReloadFields.has(key)
+          ? {
+              [key]: normalizedValue,
+              ...(key === 'providerId' ? { providerEnvJson: providerEnvJson ?? null } : {}),
+            }
+          : undefined,
+      };
+    },
+    'set',
+  );
 }
 
 export function handleAgentChannelList(payload: { agentId: string }): AdminResponse {
@@ -1791,13 +1997,25 @@ Do not infer Goal Mode from an ordinary complex request.
 
 Commands:
   get | list                               Show the current session Goal
-  create --objective-file <path>            Create a Goal from workspace text
+  create --objective-file <path>            Create a Goal from a local text file
+         [--deadline <ISO-8601-with-offset>]
+         [--max-executions <positive-integer>]
+         [--ai-can-exit <true|false>]
   update --status complete                  Mark the active Goal complete
   update --status blocked                   Mark the active Goal blocked
 
 Use --reason-file <path> when a terminal reason is needed. Goal objective and
 reason text are file-only inputs so arbitrary user text never enters a shell
-command line.
+command line. Paths may point to local regular text files outside the current
+workspace, including the system temp directory; files remain size/NUL/symlink
+guarded.
+
+Create options:
+  --deadline       Latest time the Goal may keep running. Requires ISO-8601
+                   with an explicit offset or Z; it is not a delayed start.
+  --max-executions Maximum number of settled Goal turns (>= 1).
+  --ai-can-exit    Whether the AI may mark complete/blocked before the other
+                   end conditions are reached (default: true).
 
 When to call:
   get
@@ -1829,10 +2047,12 @@ Rules:
     controlled by the user/system.
   - Do not mark complete for partial progress, a stopped turn, or a plausible
     final answer without evidence.
+  - With --ai-can-exit false, complete/blocked updates from the AI are rejected;
+    the Goal runs until another end condition or user/system control stops it.
 
 Examples:
   myagents goal get
-  myagents goal create --objective-file myagents_files/goal-objective.txt
+  myagents goal create --objective-file goal-objective.txt --deadline 2026-07-22T09:00:00+08:00 --max-executions 12
   myagents goal update --status complete
   myagents goal update --status blocked`,
 
@@ -2312,27 +2532,6 @@ EXAMPLES
 RECOVERY
   Read the current Issue first; if attached Task creation fails, follow the returned rollback/recovery command.`,
 
-  'space/issue/delivery/ignore': `myagents space issue delivery ignore — Ignore one subscription delivery
-
-WHEN TO CALL
-  When an unassigned subscription delivery is not relevant to this Registered Agent.
-EFFECT
-  Marks only that delivery ignored; it does not hide the Issue from other Agents.
-REQUIRED CONTEXT
-  <deliveryId> and --space <slug> are required.
-OPTIONS
-  --issueId may add an ownership cross-check when known.
-ACTOR AND PERMISSIONS
-  Must run as the Registered Agent targeted by the delivery.
-FILE SAFETY
-  Does not access local files.
-OUTPUT
-  Updated delivery status.
-EXAMPLES
-  myagents space issue delivery ignore del_123 --space myagents --issueId iss_123 --json
-RECOVERY
-  Do not ignore assignment deliveries; read the Issue and claim assigned work instead.`,
-
   'space/issue/close': `myagents space issue close — Close an Issue without a completion payload
 
 WHEN TO CALL
@@ -2592,7 +2791,8 @@ Commands:
   disable <id>                    Disable an agent
   archive <id>                    Archive an Agent workspace and pause proactive channels
   unarchive <id>                  Restore an archived Agent workspace
-  set <id> <key> <value>          Set agent config field
+  set <id> <key> <value>          Set one Agent field; provider/model/permission
+                                  also sync the Project mirror and live channels
   runtime-status                  Runtime drift status across agents
   channel list <agent-id>         List channels
   channel add <agent-id>          Add a channel
@@ -2603,6 +2803,13 @@ Options for 'channel add':
   --token       Bot token (for telegram)
   --app-id      App ID (for feishu/dingtalk)
   --app-secret  App Secret (for feishu/dingtalk)
+
+Managed Codex permissionMode accepts either product values
+(auto | plan | fullAgency) or Codex values
+(auto-edit | suggest | no-restrictions); storage is normalized to
+the product vocabulary and 'show' reports the effective Codex value.
+Codex 'full-auto' is rejected because product storage cannot distinguish its
+workspace-write sandbox from unrestricted danger-full-access.
 
 Typical flow (AI preparing a task override):
   1. myagents agent show <id>          — learn current defaults
@@ -3002,7 +3209,14 @@ export async function handleGoalGet(): Promise<AdminResponse> {
   return mgmtError(resp, 'Failed to get Goal');
 }
 
-export async function handleGoalCreate(payload: { objective?: string }): Promise<AdminResponse> {
+export async function handleGoalCreate(payload: {
+  objective?: string;
+  endConditions?: {
+    deadline?: string;
+    maxExecutions?: number;
+    aiCanExit?: boolean;
+  };
+}): Promise<AdminResponse> {
   const objective = payload.objective?.trim();
   if (!objective) return { success: false, error: 'Missing required field: objective' };
   const ctx = currentGoalContext();
@@ -3011,6 +3225,7 @@ export async function handleGoalCreate(payload: { objective?: string }): Promise
     sessionId: ctx.sessionId,
     workspacePath: ctx.workspacePath,
     objective,
+    ...(payload.endConditions ? { endConditions: payload.endConditions } : {}),
   });
   if (resp.ok) {
     return { success: true, data: { goal: (resp as Record<string, unknown>).goal } };
@@ -3789,18 +4004,30 @@ WHEN TO CALL
   Do not file FYI remarks, brainstorming, or unsolicited ideas.`;
 
 async function spaceManagementResponse(path: string, payload: Record<string, unknown>, hint?: string): Promise<AdminResponse> {
-  const resp = await managementApi(path, 'POST', enrichSpaceWorkspaceContext(payload));
+  const resp = await managementApi(path, 'POST', await enrichSpaceWorkspaceContext(payload));
   if (!resp.ok) return mgmtError(resp, 'Space command failed');
   return { success: true, data: resp.data, ...(hint ? { hint } : {}) };
 }
 
-function enrichSpaceWorkspaceContext(payload: Record<string, unknown>): Record<string, unknown> {
+async function enrichSpaceWorkspaceContext(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const requestedPath = typeof payload.workspacePath === 'string' && payload.workspacePath.trim()
     ? payload.workspacePath.trim()
     : undefined;
   const currentPath = getCurrentWorkspacePath();
   const workspacePath = requestedPath ?? currentPath;
-  if (!workspacePath) return payload;
+  const sessionId = typeof payload.sessionId === 'string' && payload.sessionId.trim()
+    ? payload.sessionId.trim()
+    : undefined;
+  const origin = sessionId ? getSessionEngine().getSessionOrigin(sessionId) : undefined;
+  const sessionOrigin = origin?.kind === 'registered-agent'
+    ? {
+        spaceId: origin.context.spaceId,
+        registeredAgentId: origin.context.registeredAgentId,
+      }
+    : undefined;
+  if (!workspacePath) {
+    return { ...payload, ...(sessionOrigin ? { sessionOrigin } : {}) };
+  }
   const project = loadProjects().find(item => workspacePathsEqual(item.path, workspacePath));
   return {
     ...payload,
@@ -3809,6 +4036,7 @@ function enrichSpaceWorkspaceContext(payload: Record<string, unknown>): Record<s
     // so Rust can fail closed when it disagrees with a delivery-bound Agent;
     // only enrich legacy/path-only requests that omitted the stable id.
     workspaceId: payload.workspaceId ?? project?.id,
+    ...(sessionOrigin ? { sessionOrigin } : {}),
   };
 }
 
@@ -3870,10 +4098,6 @@ export async function handleSpaceIssueStatus(payload: Record<string, unknown>): 
 
 export async function handleSpaceIssueClaim(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-claim', payload, 'Issue claimed.');
-}
-
-export async function handleSpaceIssueDeliveryIgnore(payload: Record<string, unknown>): Promise<AdminResponse> {
-  return spaceManagementResponse('/api/space/issue-delivery-ignore', payload, 'Issue delivery ignored.');
 }
 
 export async function handleSpaceIssueClose(payload: Record<string, unknown>): Promise<AdminResponse> {
@@ -4606,7 +4830,10 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
   // AgentConfigSlim is intentionally permissive (`[key: string]: unknown`) —
   // runtime / permissionMode / runtimeConfig exist on the full AgentConfig
   // but not on the slim shape. Extract defensively.
-  const runtime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
+  const storedRuntime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
+  const usesManagedCodex = agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+    && storedRuntime === 'builtin';
+  const runtime: RuntimeType = usesManagedCodex ? 'codex' : storedRuntime;
   const agentPermissionMode = (agent.permissionMode as string | undefined) ?? '';
   const runtimeConfig = (agent.runtimeConfig as Record<string, unknown> | undefined) ?? undefined;
 
@@ -4626,8 +4853,12 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
   const rcPermissionMode = isExternal
     ? (runtimeConfig?.permissionMode as string | undefined)
     : undefined;
-  const effectiveModel = rcModel ?? (agent.model as string | undefined);
-  const effectivePermissionMode = rcPermissionMode ?? agentPermissionMode;
+  const effectiveModel = usesManagedCodex
+    ? (agent.model as string | undefined)
+    : (rcModel ?? (agent.model as string | undefined));
+  const effectivePermissionMode = usesManagedCodex
+    ? managedCodexProviderPermissionToRuntimePermission(agentPermissionMode)
+    : (rcPermissionMode ?? agentPermissionMode);
 
   return {
     success: true,
@@ -4638,6 +4869,7 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
       workspacePath: agent.workspacePath,
       effectiveDefaults: {
         runtime,
+        ...(usesManagedCodex ? { runtimeSource: 'managed-provider' } : {}),
         model: effectiveModel || null,
         permissionMode: effectivePermissionMode || null,
         providerId: agent.providerId ?? null,
@@ -4915,28 +5147,6 @@ function hasDangerousKeySegment(key: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Provider file I/O (~/.myagents/providers/{id}.json)
-// ---------------------------------------------------------------------------
-
-// findProvider, getProvidersDir, loadCustomProviderFiles → imported from admin-config.ts
-
-/** Save a custom provider JSON file */
-function saveCustomProviderFile(provider: Record<string, unknown>): void {
-  const dir = getProvidersDir();
-  ensureDirSync(dir);
-  const filePath = resolve(dir, `${provider.id}.json`);
-  writeFileSync(filePath, JSON.stringify(provider, null, 2), 'utf-8');
-}
-
-/** Delete a custom provider file. Returns true if file existed. */
-function deleteCustomProviderFile(id: string): boolean {
-  const filePath = resolve(getProvidersDir(), `${id}.json`);
-  if (!existsSync(filePath)) return false;
-  unlinkSync(filePath);
-  return true;
-}
-
-// ---------------------------------------------------------------------------
 // MCP helpers
 // ---------------------------------------------------------------------------
 
@@ -5060,6 +5270,123 @@ async function modifyAgent(
 
   broadcast('config:changed', { section: 'agent', action, id });
   return { success: true, data: { id } };
+}
+
+/**
+ * Commit a typed Agent configuration intent across the authoritative Agent
+ * record, the Launcher compatibility Project record, and any running Agent/IM
+ * instance. The Project mirror remains optional because archived/legacy Agents
+ * may not have one; the Agent record is always authoritative.
+ */
+type AgentConfigIntentResolution =
+  | {
+      ok: true;
+      agent: AgentConfigSlim;
+      projectPatch?: Record<string, unknown>;
+      livePatch?: Record<string, unknown>;
+    }
+  | { ok: false; response: AdminResponse };
+
+async function modifyAgentConfigIntent(
+  id: string,
+  resolveIntent: (agent: AgentConfigSlim, config: AdminAppConfig) => AgentConfigIntentResolution,
+  action: string,
+): Promise<AdminResponse> {
+  let committedLivePatch: Record<string, unknown> | undefined;
+  const commitResult = await withAgentConfigIntentLock(async (): Promise<AdminResponse | null> => {
+    let previousAgent: AgentConfigSlim | undefined;
+    let updatedAgent: AgentConfigSlim | undefined;
+    let projectPatch: Record<string, unknown> | undefined;
+    let rejected: AdminResponse | undefined;
+    await atomicModifyConfig(current => {
+      const agents = [...(current.agents ?? [])];
+      const index = agents.findIndex(agent => agent.id === id);
+      if (index < 0) return current;
+      const resolution = resolveIntent(agents[index], current);
+      if (!resolution.ok) {
+        rejected = resolution.response;
+        return current;
+      }
+      previousAgent = agents[index];
+      updatedAgent = resolution.agent;
+      projectPatch = resolution.projectPatch;
+      committedLivePatch = resolution.livePatch;
+      agents[index] = updatedAgent;
+      return { ...current, agents };
+    });
+
+    if (rejected) return rejected;
+    if (!previousAgent || !updatedAgent) {
+      return { success: false, error: `Agent '${id}' not found` };
+    }
+
+    if (projectPatch) {
+      try {
+        await atomicModifyProjects(projects => {
+          const entry = findProjectForAgent(projects, updatedAgent!);
+          if (!entry) return projects;
+          const next = [...projects];
+          next[entry.index] = { ...entry.project, ...projectPatch };
+          return next;
+        });
+      } catch (error) {
+        // The Agent record is authoritative, but this command promises a
+        // composite Agent+Project intent. Roll back only if the current record
+        // still equals our commit so an unrelated concurrent writer is never
+        // clobbered. The outer cross-process lock prevents other CLI Sidecars
+        // from reaching this branch concurrently.
+        let rolledBack = false;
+        try {
+          await atomicModifyConfig(current => {
+            const agents = [...(current.agents ?? [])];
+            const index = agents.findIndex(agent => agent.id === id);
+            if (index < 0 || JSON.stringify(agents[index]) !== JSON.stringify(updatedAgent)) {
+              return current;
+            }
+            agents[index] = previousAgent!;
+            rolledBack = true;
+            return { ...current, agents };
+          });
+        } catch (rollbackError) {
+          const rollbackReason = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          const reason = error instanceof Error ? error.message : String(error);
+          return {
+            success: false,
+            error: `Project mirror save failed (${reason}) and Agent rollback also failed (${rollbackReason}). Retry the same command to reconcile from Agent authority.`,
+          };
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+          success: false,
+          error: rolledBack
+            ? `Agent configuration was not changed because its Project mirror could not be saved: ${reason}`
+            : `Project mirror save failed after Agent configuration changed: ${reason}`,
+        };
+      }
+    }
+
+    return null;
+  });
+
+  if (commitResult) return commitResult;
+
+  let hint: string | undefined;
+  if (committedLivePatch) {
+    try {
+      const response = await managementApi('/api/agent/reload-config', 'POST', {
+        agentId: id,
+        patch: committedLivePatch,
+      });
+      if (response.ok === false) {
+        hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+      }
+    } catch {
+      hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+    }
+  }
+
+  broadcast('config:changed', { section: 'agent', action, id });
+  return { success: true, data: { id }, ...(hint ? { hint } : {}) };
 }
 
 /** Keys and patterns that contain secrets and must be redacted in config get */

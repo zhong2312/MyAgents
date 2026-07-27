@@ -42,7 +42,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Runtime};
 
 /// Log level enum
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Info,
@@ -91,6 +91,70 @@ impl Default for LogLevel {
     fn default() -> Self {
         LogLevel::Info
     }
+}
+
+const RENDERER_BOOT_STAGES: &[&str] = &[
+    "native-init-script",
+    "theme-native-bootstrap-skipped",
+    "theme-native-bootstrap-complete",
+    "theme-native-bootstrap-failed",
+    "renderer-uncaught-error",
+    "renderer-unhandled-rejection",
+    "renderer-entry-evaluated",
+    "theme-renderer-bootstrap-complete",
+    "theme-renderer-bootstrap-failed",
+    "react-root-created",
+    "react-commit",
+];
+
+fn format_renderer_boot_event(
+    stage: &str,
+    window_label: &str,
+    detail: Option<&str>,
+) -> Result<(LogLevel, String), String> {
+    if !RENDERER_BOOT_STAGES.contains(&stage) {
+        return Err(format!("Unknown renderer boot stage: {stage}"));
+    }
+    if window_label.is_empty()
+        || window_label.len() > 64
+        || !window_label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("Invalid renderer window label".to_owned());
+    }
+    let detail = detail.map(|value| {
+        value
+            .chars()
+            .take(2_000)
+            .collect::<String>()
+            .replace(['\r', '\n'], " ")
+    });
+    let level =
+        if stage.contains("failed") || stage.contains("error") || stage.contains("rejection") {
+            LogLevel::Error
+        } else {
+            LogLevel::Info
+        };
+    let message = match detail.filter(|value| !value.is_empty()) {
+        Some(detail) => format!("[boot] stage={stage} window={window_label} detail={detail}"),
+        None => format!("[boot] stage={stage} window={window_label}"),
+    };
+    Ok((level, message))
+}
+
+/// Pre-App renderer diagnostics ingress. It is deliberately stage-limited so
+/// initialization scripts can persist boot evidence through the canonical
+/// unified logger without exposing a second general-purpose logging surface.
+#[tauri::command]
+pub fn cmd_record_renderer_boot_event(
+    stage: String,
+    window_label: String,
+    detail: Option<String>,
+) -> Result<(), String> {
+    let (level, message) = format_renderer_boot_event(&stage, &window_label, detail.as_deref())?;
+    unified_log(level, message);
+    Ok(())
 }
 
 // ── Pattern 6: tokio task_local correlation context ────────────────────
@@ -651,4 +715,26 @@ macro_rules! __ulog_assign {
     (runtime, $val:expr, $sid:ident, $tid:ident, $oid:ident, $rid:ident, $turn:ident, $rt:ident) => {
         $rt = Some(::std::string::ToString::to_string(&$val));
     };
+}
+
+#[cfg(test)]
+mod renderer_boot_tests {
+    use super::{format_renderer_boot_event, LogLevel};
+
+    #[test]
+    fn renderer_boot_ingress_is_stage_limited_and_single_line() {
+        let (level, message) = format_renderer_boot_event(
+            "renderer-uncaught-error",
+            "main",
+            Some("Error: boom\nstack line"),
+        )
+        .expect("known boot event");
+        assert_eq!(level, LogLevel::Error);
+        assert_eq!(
+            message,
+            "[boot] stage=renderer-uncaught-error window=main detail=Error: boom stack line"
+        );
+        assert!(format_renderer_boot_event("arbitrary-log", "main", None).is_err());
+        assert!(format_renderer_boot_event("react-commit", "bad label", None).is_err());
+    }
 }

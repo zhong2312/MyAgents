@@ -18,7 +18,7 @@
  * sandbox. A guard test asserts the binding before anything destructive runs.
  */
 
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, linkSync, readFileSync, writeFileSync, mkdirSync, readdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -149,8 +149,11 @@ describe('issue #336 — delete vs persist resurrection', () => {
         const preserved = sessionMeta('44444444-4444-4444-4444-444444444444', '/tmp/workspace-preserved-noop');
         writeFileSync(sessionsJson(), JSON.stringify([preserved, null], null, 2), 'utf-8');
 
-        const deleted = await store.deleteSession('55555555-5555-5555-5555-555555555555');
-        expect(deleted).toBe(false);
+        const deletion = await store.deleteSession(
+            '55555555-5555-5555-5555-555555555555',
+            { kind: 'user-delete' },
+        );
+        expect(deletion).toEqual({ deleted: false, reason: 'not-found' });
 
         const backupNames = readdirSync(join(home, '.myagents'))
             .filter(name => name.startsWith('sessions.json.corrupt-'));
@@ -205,8 +208,8 @@ describe('issue #336 — delete vs persist resurrection', () => {
         expect(initialSave.ok).toBe(true);
         expect(existsSync(jsonlPath(meta.id))).toBe(true);
 
-        const deleted = await store.deleteSession(meta.id);
-        expect(deleted).toBe(true);
+        const deletion = await store.deleteSession(meta.id, { kind: 'user-delete' });
+        expect(deletion).toEqual({ deleted: true });
         expect(existsSync(jsonlPath(meta.id))).toBe(false);
         expect(store.getSessionMetadata(meta.id)).toBeNull();
 
@@ -246,7 +249,159 @@ describe('issue #336 — delete vs persist resurrection', () => {
         expect(lines).toHaveLength(2);
     });
 
-    it('deleteSession returns false for an unknown id', async () => {
-        expect(await store.deleteSession('99999999-9999-9999-9999-999999999999')).toBe(false);
+    it('deleteSession returns a typed not-found result for an unknown id', async () => {
+        expect(await store.deleteSession(
+            '99999999-9999-9999-9999-999999999999',
+            { kind: 'user-delete' },
+        )).toEqual({ deleted: false, reason: 'not-found' });
+    });
+
+    it('prepared rollback cannot delete a session once transcript data exists', async () => {
+        const prepared = sessionMeta('12121212-1212-4212-8212-121212121212', '/tmp/workspace-prepared');
+        prepared.materializationState = 'prepared';
+        prepared.materializationSourceSessionId = 'pending-source';
+        await store.saveSessionMetadata(prepared);
+        expect((await store.saveSessionMessages(prepared.id, [msg(0)])).ok).toBe(true);
+
+        const deletion = await store.deleteSession(prepared.id, {
+            kind: 'prepared-materialization-rollback',
+            sourceSessionId: 'pending-source',
+        });
+
+        expect(deletion).toEqual({ deleted: false, reason: 'data-present' });
+        expect(store.getSessionMetadata(prepared.id)?.id).toBe(prepared.id);
+        expect(existsSync(jsonlPath(prepared.id))).toBe(true);
+    });
+
+    it('pending identity migration atomically adopts an already-persisted transcript', async () => {
+        const pending = sessionMeta('pending-identity-source', '/tmp/workspace-pending');
+        const targetId = '13131313-1313-4313-8313-131313131313';
+        await store.saveSessionMetadata(pending);
+        expect((await store.saveSessionMessages(pending.id, [msg(0), msg(1)])).ok).toBe(true);
+
+        const migration = await store.migratePendingSessionIdentity(pending.id, targetId, {
+            sdkSessionId: targetId,
+            unifiedSession: true,
+        });
+
+        expect(migration).toMatchObject({ migrated: true });
+        expect(store.getSessionMetadata(pending.id)).toBeNull();
+        expect(store.getSessionMetadata(targetId)).toMatchObject({
+            id: targetId,
+            sdkSessionId: targetId,
+            unifiedSession: true,
+        });
+        expect(existsSync(jsonlPath(pending.id))).toBe(false);
+        expect(readFileSync(jsonlPath(targetId), 'utf-8').trim().split('\n')).toHaveLength(2);
+    });
+
+    it('pending identity migration refuses to overwrite an indexed target', async () => {
+        const pending = sessionMeta('pending-collision-source', '/tmp/workspace-pending');
+        const target = sessionMeta('14141414-1414-4414-8414-141414141414', '/tmp/workspace-other');
+        await store.saveSessionMetadata(pending);
+        await store.saveSessionMetadata(target);
+
+        expect(await store.migratePendingSessionIdentity(pending.id, target.id, {
+            sdkSessionId: target.id,
+            unifiedSession: true,
+        })).toEqual({ migrated: false, reason: 'target-exists' });
+        expect(store.getSessionMetadata(pending.id)?.id).toBe(pending.id);
+        expect(store.getSessionMetadata(target.id)?.agentDir).toBe('/tmp/workspace-other');
+    });
+
+    it('pending identity migration refuses to overwrite unindexed target data', async () => {
+        const pending = sessionMeta('pending-data-collision-source', '/tmp/workspace-pending');
+        const targetId = '16161616-1616-4616-8616-161616161616';
+        await store.saveSessionMetadata(pending);
+        expect((await store.saveSessionMessages(pending.id, [msg(0)])).ok).toBe(true);
+        writeFileSync(jsonlPath(targetId), JSON.stringify(msg(99)) + '\n', 'utf-8');
+
+        expect(await store.migratePendingSessionIdentity(pending.id, targetId, {
+            sdkSessionId: targetId,
+            unifiedSession: true,
+        })).toEqual({ migrated: false, reason: 'data-conflict' });
+        expect(store.getSessionMetadata(pending.id)?.id).toBe(pending.id);
+        expect(readFileSync(jsonlPath(pending.id), 'utf-8')).toContain('message 0');
+        expect(readFileSync(jsonlPath(targetId), 'utf-8')).toContain('message 99');
+    });
+
+    it('pending identity migration resumes from a same-inode target staged before a crash', async () => {
+        const pending = sessionMeta('pending-staged-source', '/tmp/workspace-pending');
+        const targetId = '17171717-1717-4717-8717-171717171717';
+        await store.saveSessionMetadata(pending);
+        expect((await store.saveSessionMessages(pending.id, [msg(0), msg(1)])).ok).toBe(true);
+
+        // Simulate a process crash after hard-link staging but before the
+        // sessions.json identity commit.
+        linkSync(jsonlPath(pending.id), jsonlPath(targetId));
+
+        const migration = await store.migratePendingSessionIdentity(pending.id, targetId, {
+            sdkSessionId: targetId,
+            unifiedSession: true,
+        });
+
+        expect(migration).toMatchObject({ migrated: true });
+        expect(store.getSessionMetadata(pending.id)).toBeNull();
+        expect(store.getSessionMetadata(targetId)?.id).toBe(targetId);
+        expect(existsSync(jsonlPath(pending.id))).toBe(false);
+        expect(readFileSync(jsonlPath(targetId), 'utf-8').trim().split('\n')).toHaveLength(2);
+    });
+
+    it('pending identity migration finishes cleanup after metadata publication survived a crash', async () => {
+        const pending = sessionMeta('pending-post-commit-source', '/tmp/workspace-pending');
+        const targetId = '18181818-1818-4818-8818-181818181818';
+        await store.saveSessionMetadata(pending);
+        expect((await store.saveSessionMessages(pending.id, [msg(0), msg(1)])).ok).toBe(true);
+        linkSync(jsonlPath(pending.id), jsonlPath(targetId));
+
+        // Simulate the exact durable state after the sessions.json identity
+        // commit and before source-link cleanup.
+        const all = JSON.parse(readFileSync(sessionsJson(), 'utf-8')) as SessionMetadata[];
+        const sourceIndex = all.findIndex(session => session.id === pending.id);
+        all[sourceIndex] = {
+            ...all[sourceIndex],
+            id: targetId,
+            sdkSessionId: targetId,
+            materializationSourceSessionId: pending.id,
+        };
+        writeFileSync(sessionsJson(), JSON.stringify(all, null, 2), 'utf-8');
+
+        const migration = await store.migratePendingSessionIdentity(pending.id, targetId, {
+            sdkSessionId: targetId,
+            unifiedSession: true,
+        });
+
+        expect(migration).toMatchObject({ migrated: true });
+        expect(existsSync(jsonlPath(pending.id))).toBe(false);
+        expect(readFileSync(jsonlPath(targetId), 'utf-8').trim().split('\n')).toHaveLength(2);
+        expect(store.getSessionMetadata(targetId)?.materializationSourceSessionId).toBeUndefined();
+    });
+
+    it('prepared admission and rollback linearize on the durable marker', async () => {
+        const prepared = sessionMeta('15151515-1515-4515-8515-151515151515', '/tmp/workspace-race');
+        prepared.materializationState = 'prepared';
+        prepared.materializationSourceSessionId = 'pending-race-source';
+        await store.saveSessionMetadata(prepared);
+
+        const [commit, deletion] = await Promise.all([
+            store.claimPreparedSessionForTurnAdmission(
+                prepared.id,
+                'pending-race-source',
+                { messageText: 'accepted turn' },
+            ),
+            store.deleteSession(prepared.id, {
+                kind: 'prepared-materialization-rollback',
+                sourceSessionId: 'pending-race-source',
+            }),
+        ]);
+
+        if (deletion.deleted) {
+            expect(commit).toEqual({ status: 'not-found' });
+            expect(store.getSessionMetadata(prepared.id)).toBeNull();
+        } else {
+            expect(deletion.reason).toBe('precondition-failed');
+            expect(commit.status).toBe('claimed');
+            expect(store.getSessionMetadata(prepared.id)?.materializationState).toBeUndefined();
+        }
     });
 });

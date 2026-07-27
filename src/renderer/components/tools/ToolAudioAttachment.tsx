@@ -176,7 +176,7 @@ export default function ToolAudioAttachment({ attachment }: Props) {
         type="button"
         aria-label={isPlaying ? t('shell.toolChrome.audio.pause') : t('shell.toolChrome.audio.play')}
         onClick={toggle}
-        className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-warm-hover)] active:scale-95"
+        className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)] active:scale-95"
       >
         {isPlaying
           ? <Pause className="size-4 fill-current" />

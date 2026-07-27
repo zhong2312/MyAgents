@@ -66,7 +66,11 @@ export function mockLoadConfig(): AppConfig {
     try {
         const stored = localStorage.getItem(STORAGE_KEYS.CONFIG);
         if (stored) {
-            return { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
+            // Return the persisted shape unchanged. loadAppConfig owns the
+            // same migration/default merge in browser and Tauri modes; merging
+            // defaults here would mask legacy fields such as `theme` before
+            // the migration can observe them.
+            return JSON.parse(stored) as AppConfig;
         }
     } catch (e) {
         console.warn('[browserMock] Failed to load config:', e);

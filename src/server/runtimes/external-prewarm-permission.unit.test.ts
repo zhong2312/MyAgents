@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { resolvePrewarmPermissionMode } from './external-session';
+import { resolvePrewarmModel, resolvePrewarmPermissionMode } from './external-session';
 
 describe('resolvePrewarmPermissionMode', () => {
   it('prefers the persisted session snapshot over the racy caller default', () => {
@@ -29,5 +29,17 @@ describe('resolvePrewarmPermissionMode', () => {
 
   it('honors any persisted mode, not just no-restrictions (e.g. a tightened session)', () => {
     expect(resolvePrewarmPermissionMode('suggest', 'auto')).toBe('suggest');
+  });
+});
+
+describe('resolvePrewarmModel', () => {
+  it('prefers the persisted session snapshot over a missing or racy caller model', () => {
+    expect(resolvePrewarmModel('gpt-5.6-sol', undefined)).toBe('gpt-5.6-sol');
+    expect(resolvePrewarmModel('gpt-5.6-sol', 'gpt-5.5')).toBe('gpt-5.6-sol');
+  });
+
+  it('falls back to the caller model for a brand-new session', () => {
+    expect(resolvePrewarmModel(undefined, 'gpt-5.6-sol')).toBe('gpt-5.6-sol');
+    expect(resolvePrewarmModel(undefined, undefined)).toBeUndefined();
   });
 });

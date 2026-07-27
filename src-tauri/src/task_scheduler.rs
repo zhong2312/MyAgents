@@ -24,6 +24,7 @@ struct ActiveTaskExecution {
     queue_id: String,
     canceled: bool,
     session_id: Option<String>,
+    pending_session_birth: Option<PendingSessionBirth>,
     state: TaskExecutionState,
     error: Option<String>,
 }
@@ -60,7 +61,21 @@ struct ReservedExecutionSession {
     // Session metadata birth must finish before a second Task sharing this
     // identity can enter the adopt path. The guard is released as soon as the
     // authoritative SessionStore row appears, not held for the whole AI turn.
-    birth_lifecycle: crate::sidecar::SessionLifecycleGuard,
+    birth_lifecycle: Arc<crate::sidecar::SessionLifecycleGuard>,
+}
+
+struct PendingSessionBirth {
+    session_id: String,
+    _lifecycle: Arc<crate::sidecar::SessionLifecycleGuard>,
+}
+
+impl std::fmt::Debug for PendingSessionBirth {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingSessionBirth")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
 }
 
 type ActiveExecutions = Arc<RwLock<HashMap<String, ActiveTaskExecution>>>;
@@ -471,6 +486,7 @@ async fn claim_execution(executions: &ActiveExecutions, task_id: &str) -> Result
             queue_id: queue_id.clone(),
             canceled: false,
             session_id: None,
+            pending_session_birth: None,
             state: TaskExecutionState::Running,
             error: None,
         },
@@ -541,6 +557,7 @@ async fn reserve_claimed_execution_session(
                 !selected_materialized,
             )
         };
+    let birth_lifecycle = Arc::new(lifecycle);
     {
         let mut active = executions.write().await;
         let Some(execution) = active.get_mut(&task.id) else {
@@ -550,11 +567,28 @@ async fn reserve_claimed_execution_session(
             return Err("Task execution was canceled before Session dispatch".to_string());
         }
         execution.session_id = Some(session_id.clone());
+        if initialize_session {
+            // The exact execution generation, not its worker future, owns the
+            // fail-closed metadata-birth authority. Worker abort/panic may
+            // mark this generation StopFailed but cannot release the lease.
+            execution.pending_session_birth = Some(PendingSessionBirth {
+                session_id: session_id.clone(),
+                _lifecycle: Arc::clone(&birth_lifecycle),
+            });
+        }
+    }
+    if initialize_session {
+        observe_reserved_session_birth(
+            Arc::clone(executions),
+            task.id.clone(),
+            queue_id.to_string(),
+            session_id.clone(),
+        );
     }
     Ok(Some(ReservedExecutionSession {
         session_id,
         initialize_session,
-        birth_lifecycle: lifecycle,
+        birth_lifecycle,
     }))
 }
 
@@ -568,58 +602,96 @@ async fn session_metadata_exists(session_id: &str) -> bool {
     .unwrap_or(false)
 }
 
-async fn wait_for_session_materialization(session_id: &str) {
-    loop {
-        if session_metadata_exists(session_id).await {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+async fn clear_pending_session_birth(
+    executions: &ActiveExecutions,
+    task_id: &str,
+    queue_id: &str,
+    session_id: &str,
+) -> bool {
+    let mut active = executions.write().await;
+    let Some(execution) = active
+        .get_mut(task_id)
+        .filter(|execution| execution.queue_id == queue_id)
+    else {
+        return false;
+    };
+    if execution
+        .pending_session_birth
+        .as_ref()
+        .is_some_and(|pending| pending.session_id == session_id)
+    {
+        execution.pending_session_birth = None;
+        true
+    } else {
+        false
     }
+}
+
+fn observe_reserved_session_birth(
+    executions: ActiveExecutions,
+    task_id: String,
+    queue_id: String,
+    session_id: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut polls = 0_u32;
+        loop {
+            if session_metadata_exists(&session_id).await {
+                clear_pending_session_birth(&executions, &task_id, &queue_id, &session_id).await;
+                return;
+            }
+            let exact_generation_still_owns_birth = executions
+                .read()
+                .await
+                .get(&task_id)
+                .filter(|execution| execution.queue_id == queue_id)
+                .and_then(|execution| execution.pending_session_birth.as_ref())
+                .is_some_and(|pending| pending.session_id == session_id);
+            if !exact_generation_still_owns_birth {
+                return;
+            }
+            polls = polls.saturating_add(1);
+            let delay_ms = if polls <= 50 { 20 } else { 250 };
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+    });
 }
 
 async fn execute_task_with_reservation(
     handle: &AppHandle,
     task: &Task,
     queue_id: &str,
+    executions: &ActiveExecutions,
     reservation: Option<ReservedExecutionSession>,
 ) -> Result<crate::task_execution::TaskExecutionOutcome, String> {
-    let (session_id, initialize_session, birth_lifecycle) = match reservation {
-        Some(reservation) => (
-            Some(reservation.session_id),
-            reservation.initialize_session,
-            Some(reservation.birth_lifecycle),
-        ),
-        None => (None, false, None),
+    let Some(reservation) = reservation else {
+        return crate::task_execution::execute_managed_task(handle, task, queue_id).await;
     };
-    let mut execution = Box::pin(crate::task_execution::execute_task(
+    let ReservedExecutionSession {
+        session_id,
+        initialize_session,
+        birth_lifecycle,
+    } = reservation;
+    let result = crate::task_execution::execute_task(
         handle,
         task,
         queue_id,
         session_id.clone(),
         initialize_session,
-    ));
-    let Some(birth_lifecycle) = birth_lifecycle else {
-        return execution.await;
-    };
-    let session_id = session_id.expect("Session reservation carries an id");
-    let mut materialization = Box::pin(wait_for_session_materialization(&session_id));
-
-    tokio::select! {
-        result = &mut execution => {
-            // Failure before metadata birth releases the creator lease. The
-            // Task execution path also drops an unmaterialized Sidecar owner,
-            // so the next reservation can become a new creator.
-            drop(birth_lifecycle);
-            result
-        }
-        () = &mut materialization => {
-            // Metadata is now the durable birth signal. Release before the
-            // potentially hour-long AI turn so same-Session tools (notably
-            // create-attached) never deadlock on the identity lifecycle.
-            drop(birth_lifecycle);
-            execution.await
-        }
+        birth_lifecycle,
+    )
+    .await;
+    if !result
+        .as_ref()
+        .is_ok_and(|outcome| outcome.termination_unconfirmed)
+    {
+        // Confirmed failure can retry as a new creator. Successful turns have
+        // already materialized; clearing here is an idempotent fast path for
+        // the observer. Ambiguous transport remains owned by the exact active
+        // execution until metadata birth or confirmed stop removes it.
+        clear_pending_session_birth(executions, &task.id, queue_id, &session_id).await;
     }
+    result
 }
 
 async fn release_execution(executions: &ActiveExecutions, task_id: &str, queue_id: &str) {
@@ -905,7 +977,8 @@ async fn run_one_claimed(
     .await;
     let execution = match handle.as_ref() {
         Ok(handle) => {
-            execute_task_with_reservation(handle, &task, queue_id, reserved_session).await
+            execute_task_with_reservation(handle, &task, queue_id, executions, reserved_session)
+                .await
         }
         Err(error) => Err(error.clone()),
     };
@@ -948,7 +1021,6 @@ async fn run_one_claimed(
         .await;
         emit_execution_state_event(executions, app_handle, task_id).await;
     }
-
     // The outcome commit and every externally visible consequence share the
     // same per-Task control epoch as Stop/Rerun. If control won first, the
     // exact queue check below rejects this worker. If this worker won first,
@@ -1472,7 +1544,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reservation_holds_session_lifecycle_through_dispatch_boundary() {
+    async fn metadata_birth_releases_lifecycle_while_execution_remains_active() {
         let session_id = format!("shared-session-{}", uuid::Uuid::new_v4());
         let task: Task = serde_json::from_value(serde_json::json!({
             "id": "task-shared-session",
@@ -1514,25 +1586,118 @@ mod tests {
             .iter()
             .any(|value| value == &reservation.session_id));
 
-        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let (acquired_tx, mut acquired_rx) = tokio::sync::mpsc::unbounded_channel();
         let session_for_waiter = reservation.session_id.clone();
         let waiter = tauri::async_runtime::spawn(async move {
             let _guard = crate::sidecar::acquire_session_lifecycle(&[&session_for_waiter]).await;
             let _ = acquired_tx.send(());
         });
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), acquired_rx)
+            tokio::time::timeout(std::time::Duration::from_millis(50), acquired_rx.recv())
                 .await
                 .is_err(),
             "a Starting joiner must remain behind the creator's metadata-birth boundary"
         );
 
+        let reservation_session_id = reservation.session_id.clone();
+        let dispatch_lifecycle = Arc::clone(&reservation.birth_lifecycle);
         drop(reservation);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), acquired_rx.recv())
+                .await
+                .is_err(),
+            "dispatch must share the reservation's existing lifecycle acquisition"
+        );
+        drop(dispatch_lifecycle);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), acquired_rx.recv())
+                .await
+                .is_err(),
+            "dropping the worker-side leases must not release exact-generation birth authority"
+        );
+        assert!(
+            clear_pending_session_birth(&executions, &task.id, &queue_id, &reservation_session_id)
+                .await,
+            "metadata birth must clear only the exact generation's long-lived lease"
+        );
+        assert!(
+            executions.read().await.contains_key(&task.id),
+            "the AI turn remains active after Session metadata is born"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), acquired_rx.recv())
+            .await
+            .expect("joiner should acquire after metadata birth, before the AI turn completes")
+            .expect("joiner should report its acquisition");
         tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
             .await
-            .expect("joiner should resume after creator dispatch")
+            .expect("joiner should resume after metadata birth")
             .expect("joiner task should not panic");
         release_execution(&executions, &task.id, &queue_id).await;
+    }
+
+    #[tokio::test]
+    async fn abandoned_worker_keeps_birth_lifecycle_until_metadata_observer_clears_it() {
+        let task_id = "task-abandoned-birth";
+        let session_id = format!("abandoned-birth-{}", uuid::Uuid::new_v4());
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let queue_id = claim_execution(&executions, task_id).await.unwrap();
+        let lifecycle = Arc::new(crate::sidecar::acquire_session_lifecycle(&[&session_id]).await);
+        {
+            let mut active = executions.write().await;
+            let execution = active.get_mut(task_id).unwrap();
+            execution.session_id = Some(session_id.clone());
+            execution.pending_session_birth = Some(PendingSessionBirth {
+                session_id: session_id.clone(),
+                _lifecycle: Arc::clone(&lifecycle),
+            });
+        }
+        drop(lifecycle);
+        let claim = ExecutionClaimGuard::new(
+            Arc::clone(&executions),
+            Arc::new(RwLock::new(None)),
+            task_id.to_string(),
+            queue_id.clone(),
+        );
+        drop(claim);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if executions
+                    .read()
+                    .await
+                    .get(task_id)
+                    .is_some_and(|execution| execution.state == TaskExecutionState::StopFailed)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("abandoned worker should become a visible StopFailed generation");
+
+        let (acquired_tx, mut acquired_rx) = tokio::sync::mpsc::unbounded_channel();
+        let session_for_waiter = session_id.clone();
+        let waiter = tauri::async_runtime::spawn(async move {
+            let _guard = crate::sidecar::acquire_session_lifecycle(&[&session_for_waiter]).await;
+            let _ = acquired_tx.send(());
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(75), acquired_rx.recv())
+                .await
+                .is_err(),
+            "worker loss must not release exact-generation birth authority"
+        );
+
+        assert!(clear_pending_session_birth(&executions, task_id, &queue_id, &session_id).await);
+        tokio::time::timeout(std::time::Duration::from_secs(2), acquired_rx.recv())
+            .await
+            .expect("metadata birth should release the exact generation's lease")
+            .expect("next creator should report its acquisition");
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("next creator should finish after metadata birth")
+            .expect("next creator should not panic");
+        release_execution(&executions, task_id, &queue_id).await;
     }
 
     #[tokio::test]
@@ -1587,6 +1752,7 @@ mod tests {
                 queue_id: "queue-1".to_string(),
                 canceled: false,
                 session_id: Some("session-1".to_string()),
+                pending_session_birth: None,
                 state: TaskExecutionState::Running,
                 error: None,
             },

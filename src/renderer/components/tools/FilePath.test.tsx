@@ -1,5 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { renderWithTheme as render } from '@/test/renderWithTheme';
 
 const mocks = vi.hoisted(() => ({
   checkPaths: vi.fn(),

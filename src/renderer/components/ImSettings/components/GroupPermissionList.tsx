@@ -66,7 +66,7 @@ export default function GroupPermissionList({
                                 <button
                                     onClick={() => handleAction(() => onApprove(g.groupId), g.groupId)}
                                     disabled={loading === g.groupId}
-                                    className="rounded-md bg-[var(--accent)] p-1.5 text-white transition-colors hover:brightness-110 disabled:opacity-50"
+                                    className="rounded-md bg-[var(--accent)] p-1.5 text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
                                     title={t('agentSettings.imComponents.allow')}
                                 >
                                     <Check className="h-3.5 w-3.5" />

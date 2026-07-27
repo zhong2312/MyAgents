@@ -44,6 +44,7 @@ import { useToast } from "@/components/Toast";
 import type { Project } from "@/config/types";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
+import { copyPlainText } from "@/utils/clipboard";
 import { AgentsWorkspace } from "@/pages/space/agents/AgentsWorkspace";
 import { SpaceAvatar, SpaceIcon } from "@/pages/space/SpaceAvatar";
 import { withSpaceMutationMetric } from "@/pages/space/spaceMetrics";
@@ -321,8 +322,12 @@ export function SpaceSettingsWorkspace({
   }, [pendingCount, section, t]);
 
   const copySlug = async () => {
-    await navigator.clipboard.writeText(session.space.slug || session.space.id);
-    toast.success(t("space.toasts.spaceSlugCopied"));
+    try {
+      await copyPlainText(session.space.slug || session.space.id);
+      toast.success(t("space.toasts.spaceSlugCopied"));
+    } catch (error) {
+      console.warn("[SpaceSettings] Failed to copy Space slug:", error);
+    }
   };
 
   const closeOverviewEditor = () => {

@@ -204,3 +204,35 @@ describe('Goal system-reminder user bubble', () => {
         expect(container).not.toHaveTextContent('Continue the active Goal');
     });
 });
+
+describe('Cross-session request system-reminder user bubble', () => {
+    it('renders the request payload without leaking protocol metadata', () => {
+        const content = [
+            '<system-reminder>',
+            '<myagents-session-event',
+            '  version="1"',
+            '  type="send.request"',
+            '  event_id="evt-visible-request"',
+            '  source_session_id="session-source"',
+            '  source_label="Planning &amp; Review"',
+            '  target_session_id="session-target"',
+            '  source_notification="auto">',
+            '<event-summary>',
+            'hidden delivery instructions',
+            '</event-summary>',
+            '<payload>',
+            'Please review the release checklist.',
+            '</payload>',
+            '</myagents-session-event>',
+            '</system-reminder>',
+        ].join('\n');
+
+        const { container } = render(<Message message={userMessage(content)} />);
+
+        expect(container.querySelector('[data-role="user"]')).not.toBeNull();
+        expect(container).toHaveTextContent('Please review the release checklist.');
+        expect(container).toHaveTextContent('Planning & Review');
+        expect(container).not.toHaveTextContent('hidden delivery instructions');
+        expect(container).not.toHaveTextContent('source_session_id');
+    });
+});

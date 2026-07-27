@@ -237,7 +237,8 @@
       "cronTask": "定时任务",
       "floatingContext": "悬浮上下文",
       "spaceIssue": "Space issue",
-      "goalMode": "目标模式"
+      "goalMode": "目标模式",
+      "sessionRequest": "跨会话请求"
     },
     "systemInfo": "系统信息",
     "expand": "展开"
@@ -440,6 +441,7 @@
     },
     "filters": {
       "issueStatus": "Issue 状态",
+      "chooseIssueStatus": "选择 Issue 状态",
       "allIssues": "全部",
       "incompleteIssues": "未完成",
       "allGoals": "全部目标",
@@ -777,7 +779,15 @@
       "agentId": "Agent ID",
       "createdAt": "创建时间",
       "updatedAt": "更新时间",
-      "displayNamePlaceholder": "Agent 展示名"
+      "displayNamePlaceholder": "Agent 展示名",
+      "instructionLabel": "目标与指令",
+      "instructionPlaceholder": "填写你希望该 Agent 实例收到 Issue 后如何响应与处理，并为它设定长期关注目标和判断方向。",
+      "instructionRequired": "请填写目标与指令。",
+      "instructionTooLong": "目标与指令最多 20,000 个字符。",
+      "instructionLegacyWarning": "这个旧 Agent 尚未设置目标与指令。你可以只修改其它设置；填写后将作为它长期使用的目标意图。",
+      "instructionConflict": "目标与指令已在别处更新。你的内容仍保留，请查看最新版本后再次保存。",
+      "subscriptions": "订阅规则",
+      "noSubscriptions": "当前无订阅；Agent 仍可接收明确指派的 Issue。"
     },
     "settings": {
       "overLimit": "超额",

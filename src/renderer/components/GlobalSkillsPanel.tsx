@@ -430,7 +430,7 @@ export default function GlobalSkillsPanel({
                                 key={skill.folderName}
                                 skill={skill}
                                 onClick={() => setViewState({ type: 'skill-detail', name: skill.folderName })}
-                                onToggleEnabled={handleToggleEnabled}
+                                onToggleEnabled={skill.required ? undefined : handleToggleEnabled}
                             />
                         ))}
                     </div>

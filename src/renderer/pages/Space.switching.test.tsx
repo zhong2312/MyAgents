@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
     refreshIssues: vi.fn().mockResolvedValue(undefined),
     refreshGoals: vi.fn().mockResolvedValue(undefined),
     refreshSkills: vi.fn().mockResolvedValue(undefined),
+    refreshLocalAgents: vi.fn().mockResolvedValue(undefined),
     refreshRegisteredAgents: vi.fn().mockResolvedValue(undefined),
     syncEvents: vi.fn().mockResolvedValue([]),
   },
@@ -71,6 +72,15 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
       <button type="button" onClick={() => onSpaceTabChange("skills")}>
         show skills
       </button>
+      <button type="button" onClick={() => onSpaceTabChange("goals")}>
+        show goals
+      </button>
+      <button type="button" onClick={() => onSpaceTabChange("settings")}>
+        show settings
+      </button>
+      <button type="button" onClick={() => onSpaceTabChange("issues")}>
+        show issues
+      </button>
       <button type="button" onClick={() => onSpaceSwitch("team", "skills")}>
         show team skills
       </button>
@@ -87,23 +97,56 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
 vi.mock("@/pages/space/issues/IssuesWorkspace", () => ({
   IssuesWorkspace: ({
     selectedStatus,
+    selectedStatusPreset,
     onStatusChange,
+    onOpenIssue,
   }: {
     selectedStatus: string;
+    selectedStatusPreset: string;
     onStatusChange: (value: string) => void;
+    onOpenIssue: (issueId: string) => void;
   }) => (
     <main>
       issues
       <output aria-label="selected issue status">
         {selectedStatus || "empty"}
       </output>
-      <button
-        type="button"
-        onClick={() => onStatusChange("open,todo,doing")}
-      >
+      <output aria-label="remembered issue status">
+        {selectedStatusPreset || "empty"}
+      </output>
+      <button type="button" onClick={() => onStatusChange("open,todo,doing")}>
         set incomplete
       </button>
-      <button type="button" onClick={() => onStatusChange("all")}>set all</button>
+      <button type="button" onClick={() => onStatusChange("doing")}>
+        set doing
+      </button>
+      <button type="button" onClick={() => onStatusChange("all")}>
+        set all
+      </button>
+      <button
+        type="button"
+        onClick={() => onStatusChange(selectedStatusPreset)}
+      >
+        restore remembered status
+      </button>
+      <button type="button" onClick={() => onOpenIssue("issue-1")}>
+        open issue detail
+      </button>
+    </main>
+  ),
+}));
+
+vi.mock("@/pages/space/goals/GoalsWorkspace", () => ({
+  GoalsWorkspace: ({
+    onOpenIssuesForGoal,
+  }: {
+    onOpenIssuesForGoal: (goalId: string) => void;
+  }) => (
+    <main>
+      goals
+      <button type="button" onClick={() => onOpenIssuesForGoal("goal-1")}>
+        open issues from goal
+      </button>
     </main>
   ),
 }));
@@ -113,11 +156,28 @@ vi.mock("@/pages/space/issues/CreateIssueDialog", () => ({
 }));
 
 vi.mock("@/pages/space/issues/IssueDetailDrawer", () => ({
-  IssueDetailDrawer: () => null,
+  IssueDetailDrawer: ({ onClose }: { onClose: () => void }) => (
+    <div role="dialog" aria-label="issue detail">
+      <button type="button" onClick={onClose}>
+        close issue detail
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("@/pages/space/skills/SkillsWorkspace", () => ({
   SkillsWorkspace: () => <main>skills</main>,
+}));
+
+vi.mock("@/pages/space/settings/SpaceSettingsWorkspace", () => ({
+  SpaceSettingsWorkspace: ({ onExit }: { onExit: () => void }) => (
+    <main>
+      settings
+      <button type="button" onClick={onExit}>
+        exit settings
+      </button>
+    </main>
+  ),
 }));
 
 vi.mock("@/api/spaceCloud", async (importOriginal) => {
@@ -132,6 +192,7 @@ function sessionFor(
   id: string,
   slug: string,
   baseUrl = "https://space.myagents.test",
+  role: "admin" | "member" = "member",
 ): SpaceSession {
   return {
     baseUrl,
@@ -142,13 +203,17 @@ function sessionFor(
       name: slug,
       joinPolicy: "open_join",
     },
-    membership: { id: `membership-${id}`, role: "member" },
+    membership: { id: `membership-${id}`, role },
     updatedAt: "2026-07-13T00:00:00.000Z",
   };
 }
 
-function snapshot(spaceId: string, baseUrl = "https://space.myagents.test") {
-  const session = sessionFor(`id-${spaceId}`, spaceId, baseUrl);
+function snapshot(
+  spaceId: string,
+  baseUrl = "https://space.myagents.test",
+  role: "admin" | "member" = "member",
+) {
+  const session = sessionFor(`id-${spaceId}`, spaceId, baseUrl, role);
   return {
     boot: "ready",
     bootError: null,
@@ -157,6 +222,7 @@ function snapshot(spaceId: string, baseUrl = "https://space.myagents.test") {
     spaceId,
     goals: [],
     skills: { items: [], lastFetchedAt: 0, isLoading: false, error: null },
+    issueDetails: {},
     localAgents: { items: [], lastFetchedAt: 0, isLoading: false, error: null },
     registeredAgents: {
       items: [],
@@ -176,6 +242,7 @@ describe("Space switching", () => {
     harness.actions.refreshIssues.mockClear();
     harness.actions.refreshGoals.mockClear();
     harness.actions.refreshSkills.mockClear();
+    harness.actions.refreshLocalAgents.mockClear();
     harness.actions.refreshRegisteredAgents.mockClear();
     harness.actions.syncEvents.mockClear();
     harness.data = snapshot("ma");
@@ -185,7 +252,7 @@ describe("Space switching", () => {
     vi.useRealTimers();
   });
 
-  it("loads Issues again when the active Space changes without changing boot or filters", async () => {
+  it("reloads Issues and resets the status when the active data scope changes", async () => {
     const view = render(<Space isActive />);
 
     await act(async () => {
@@ -201,8 +268,20 @@ describe("Space switching", () => {
       screen.getByRole("status", { name: "selected issue status" }),
     ).toHaveTextContent("open,todo,doing");
 
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("doing");
+
     harness.data = snapshot("myagents");
     view.rerender(<Space isActive />);
+
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
+    expect(
+      screen.getByRole("status", { name: "remembered issue status" }),
+    ).toHaveTextContent("open,todo,doing");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);
@@ -228,19 +307,92 @@ describe("Space switching", () => {
   });
 
   it("resets the Issue status to incomplete when entering another Space", () => {
-    render(<Space isActive />);
+    const view = render(<Space isActive />);
 
-    fireEvent.click(screen.getByRole("button", { name: "set all" }));
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "all",
-    );
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("doing");
 
     fireEvent.click(screen.getByRole("button", { name: "show team issues" }));
 
     expect(harness.actions.switchSpace).toHaveBeenCalledWith("team", undefined);
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "open,todo,doing",
+    harness.data = snapshot("team");
+    view.rerender(<Space isActive />);
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
+  });
+
+  it("remembers the right-hand status behind All but resets after leaving Issues", () => {
+    harness.data = snapshot("ma", undefined, "admin");
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+    fireEvent.click(screen.getByRole("button", { name: "open issue detail" }));
+    fireEvent.click(screen.getByRole("button", { name: "close issue detail" }));
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("doing");
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("all");
+    expect(
+      screen.getByRole("status", { name: "remembered issue status" }),
+    ).toHaveTextContent("doing");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "restore remembered status" }),
     );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("doing");
+
+    fireEvent.click(screen.getByRole("button", { name: "show skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "show issues" }));
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
+    expect(
+      screen.getByRole("status", { name: "remembered issue status" }),
+    ).toHaveTextContent("open,todo,doing");
+
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+    fireEvent.click(screen.getByRole("button", { name: "show goals" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "open issues from goal" }),
+    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
+
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+    fireEvent.click(screen.getByRole("button", { name: "show settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "exit settings" }));
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
+  });
+
+  it("resets when the Space page deactivates or Settings becomes inaccessible", () => {
+    harness.data = snapshot("ma", undefined, "admin");
+    const view = render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+    view.rerender(<Space isActive={false} />);
+    view.rerender(<Space isActive />);
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
+
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+    fireEvent.click(screen.getByRole("button", { name: "show settings" }));
+    harness.data = snapshot("ma", undefined, "member");
+    view.rerender(<Space isActive />);
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
   });
 
   it("resets the Issue status at the local logout boundary", async () => {
@@ -249,48 +401,50 @@ describe("Space switching", () => {
     render(<Space isActive />);
 
     fireEvent.click(screen.getByRole("button", { name: "set all" }));
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "all",
-    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("all");
 
     fireEvent.click(screen.getByRole("button", { name: "logout" }));
 
     expect(harness.actions.logout).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "open,todo,doing",
-    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
 
     fireEvent.click(screen.getByRole("button", { name: "set all" }));
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "all",
-    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("all");
 
     await act(async () => {
       remoteLogout.resolve();
       await remoteLogout.promise;
     });
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "all",
-    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("all");
     expect(harness.toast.success).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the incomplete default when remote logout fails after local sign-out", async () => {
-    harness.actions.logout.mockRejectedValueOnce(new Error("remote unavailable"));
+    harness.actions.logout.mockRejectedValueOnce(
+      new Error("remote unavailable"),
+    );
     render(<Space isActive />);
 
     fireEvent.click(screen.getByRole("button", { name: "set all" }));
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "all",
-    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("all");
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "logout" }));
     });
 
-    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "open,todo,doing",
-    );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
     expect(harness.toast.error).toHaveBeenCalledTimes(1);
   });
 
@@ -315,8 +469,14 @@ describe("Space switching", () => {
     });
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
 
+    fireEvent.click(screen.getByRole("button", { name: "set doing" }));
+
     harness.data = snapshot("official", "https://space-dev.myagents.test");
     view.rerender(<Space isActive />);
+
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);

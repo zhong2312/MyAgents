@@ -58,7 +58,7 @@ export function Checkbox({
       <span
         className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
           checked
-            ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+            ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]'
             : 'border-[var(--line-strong)] bg-transparent'
         }`}
       >
@@ -87,7 +87,7 @@ export function PillButton({
       disabled={disabled}
       className={`rounded-lg px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
         selected
-          ? 'bg-[var(--accent)] text-white'
+          ? 'bg-[var(--accent)] text-[var(--on-accent)]'
           : 'bg-[var(--paper)] text-[var(--ink)] hover:bg-[var(--paper-inset)]'
       }`}
     >

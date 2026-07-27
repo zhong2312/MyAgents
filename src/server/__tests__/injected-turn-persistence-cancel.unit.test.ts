@@ -17,12 +17,16 @@ import {
   cancelQueueItem,
   cancelQueuedTurnsByOwner,
   enqueueUserMessage,
+  getDispatchedTurnIdentity,
   initializeAgent,
+  interruptCurrentResponse,
 } from '../agent-session';
 import {
   beginPromotedItem,
   resetQueueForTest,
+  setCommittingTurnAdmissionQueueId,
 } from '../builtin-session/queue';
+import { isAbortRequested } from '../builtin-session/lifecycle';
 import type { MessageQueueItem } from '../builtin-session/types';
 import type { DispatchGuard } from '../session-core/turn-queue';
 
@@ -185,6 +189,37 @@ describe('injected-turn cancellation before user persistence', () => {
       accepted: false,
       error: 'Queue item was cancelled',
     });
+  });
+
+  it('does not report pre-dispatch cancellation after the durable admission CAS starts', async () => {
+    const item: MessageQueueItem = {
+      id: 'prepared-admission-commit',
+      message: { role: 'user', content: 'commit prepared session' },
+      messageText: 'commit prepared session',
+      wasQueued: false,
+      resolve: vi.fn(),
+    };
+    beginPromotedItem(item);
+    setCommittingTurnAdmissionQueueId(item.id);
+
+    await expect(cancelQueueItem(item.id)).resolves.toEqual({ status: 'not_cancelled' });
+    expect(getDispatchedTurnIdentity()).toEqual({ queueId: item.id });
+    expect(item.resolve).not.toHaveBeenCalled();
+  });
+
+  it('stops the session when a deadline expires during the durable admission CAS', async () => {
+    const item: MessageQueueItem = {
+      id: 'prepared-admission-timeout',
+      message: { role: 'user', content: 'commit prepared session' },
+      messageText: 'commit prepared session',
+      wasQueued: false,
+      resolve: vi.fn(),
+    };
+    beginPromotedItem(item);
+    setCommittingTurnAdmissionQueueId(item.id);
+
+    await expect(interruptCurrentResponse('timeout')).resolves.toBe(true);
+    expect(isAbortRequested()).toBe(true);
   });
 
   it('makes every concurrent infrastructure preflight addressable by owner before persistence', async () => {

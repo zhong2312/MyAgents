@@ -9,9 +9,10 @@
  * Chat launch flow. Switching back to 「对话」 restores the default behavior.
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import DropZoneOverlay from '@/components/DropZoneOverlay';
 import SimpleChatInput, { type ImageAttachment, type SimpleChatInputHandle } from '@/components/SimpleChatInput';
 import CronTaskSettingsModal, {
     GOAL_SLASH_PRESET,
@@ -27,12 +28,15 @@ import { useToast } from '@/components/Toast';
 import { track } from '@/analytics';
 import { thoughtList, taskCenterAvailable } from '@/api/taskCenter';
 import { useThoughtTagCandidates } from '@/hooks/useThoughtTagCandidates';
+import { useFileDropZone } from '@/hooks/useFileDropZone';
+import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { hasOverlayLayer } from '@/utils/closeLayer';
 import { CUSTOM_EVENTS } from '@/../shared/constants';
 import { type Project, type Provider, type PermissionMode, type ProviderVerifyStatus } from '@/config/types';
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode } from '../../../shared/types/runtime';
 import type { Thought } from '../../../shared/types/thought';
 import type { OfficialToolDefinition, OfficialToolId } from '../../../shared/official-tools';
+import { useResolvedTheme } from '@/theme';
 
 interface BrandSectionProps {
     // Workspace
@@ -99,7 +103,11 @@ interface BrandSectionProps {
     /** All runtimes (builtin + external) so the row's chip shows the full picture.
      *  Distinct from `runtime` which is the *external* runtime when in external mode. */
     activeRuntime?: RuntimeType;
+    /** Only the visible Launcher tab may respond to window-wide Tauri drag events. */
+    isActive: boolean;
 }
+
+const LAUNCHER_INPUT_DROP_ZONE_ID = 'launcher-input';
 
 export default memo(function BrandSection({
     projects,
@@ -143,8 +151,21 @@ export default memo(function BrandSection({
     runtimeDetections,
     onRuntimeChange,
     activeRuntime,
+    isActive,
 }: BrandSectionProps) {
-    const { t } = useTranslation('launcher');
+    const { t, i18n } = useTranslation('launcher');
+    const resolvedTheme = useResolvedTheme();
+    const sloganLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US';
+    const heroBackground = resolvedTheme.hero.background;
+    const heroAssetCssUrl = heroBackground.assetUrl ? JSON.stringify(heroBackground.assetUrl) : null;
+    const heroStyle = heroBackground.assetUrl ? {
+        backgroundImage: heroBackground.mask
+            ? `linear-gradient(${heroBackground.mask}, ${heroBackground.mask}), url(${heroAssetCssUrl})`
+            : `url(${heroAssetCssUrl})`,
+        backgroundPosition: heroBackground.position,
+        backgroundSize: heroBackground.size,
+        backgroundRepeat: heroBackground.repeat,
+    } : undefined;
     const toast = useToast();
     // Project convention: keep `toast` behind a ref so it stays out of
     // useCallback dep arrays and doesn't re-trigger memoization (see
@@ -231,6 +252,46 @@ export default memo(function BrandSection({
     // hand-off when a keyboard chord (Tab / Cmd+Shift+T) switches modes.
     const inputRef = useRef<SimpleChatInputHandle>(null);
     const thoughtInputRef = useRef<ThoughtInputHandle>(null);
+    const inputDropZoneRef = useRef<HTMLDivElement>(null);
+    const canAcceptFileDrop = isActive && mode === 'task';
+
+    const handleDroppedFiles = useCallback((files: File[]) => {
+        void inputRef.current?.processDroppedFiles(files);
+    }, []);
+    const handleDroppedFilePaths = useCallback((paths: string[]) => {
+        void inputRef.current?.processDroppedFilePaths?.(paths);
+    }, []);
+    const {
+        isDragActive: isHtmlFileDragActive,
+        dragHandlers: htmlFileDragHandlers,
+        resetDragState: resetHtmlFileDragState,
+    } = useFileDropZone({ onFilesDropped: handleDroppedFiles });
+    const {
+        isDragging: isNativeFileDragging,
+        activeZoneId: nativeDropZoneId,
+        registerZone,
+        unregisterZone,
+    } = useTauriFileDrop({ enabled: canAcceptFileDrop });
+
+    useLayoutEffect(() => {
+        registerZone(
+            LAUNCHER_INPUT_DROP_ZONE_ID,
+            inputDropZoneRef.current,
+            handleDroppedFilePaths,
+        );
+        return () => unregisterZone(LAUNCHER_INPUT_DROP_ZONE_ID);
+    }, [handleDroppedFilePaths, registerZone, unregisterZone]);
+
+    useEffect(() => {
+        if (canAcceptFileDrop) return;
+        resetHtmlFileDragState();
+    }, [canAcceptFileDrop, resetHtmlFileDragState]);
+
+    const showInputDropOverlay = canAcceptFileDrop
+        && (
+            isHtmlFileDragActive
+            || (isNativeFileDragging && nativeDropZoneId === LAUNCHER_INPUT_DROP_ZONE_ID)
+        );
     // Single helper for BOTH the segment click path (explicit mode) and
     // the keyboard paths (Tab / Cmd+Shift+T toggle). Without this the
     // two call sites diverged on `setMode(next)` vs `setMode((m) => …)`
@@ -482,7 +543,12 @@ export default memo(function BrandSection({
     ) : null;
 
     return (
-        <section ref={sectionRef} className="flex flex-1 flex-col items-center px-12">
+        <section
+            ref={sectionRef}
+            className="theme-launcher-hero flex flex-1 flex-col items-center px-12"
+            style={heroStyle}
+            data-theme-hero={resolvedTheme.themeId}
+        >
             {/* Upper area: Brand Name + Slogans as ONE visual group.
                 `mb-2` tightens the title↔slogan gap so they read as a
                 paired brand block rather than two free-floating lines;
@@ -490,14 +556,13 @@ export default memo(function BrandSection({
                 ModeSegment wrapper) separates "who we are" from "what
                 you're about to do". */}
             <div className="flex flex-1 flex-col items-center justify-center">
-                <h1 className="brand-title mb-2 text-[2.5rem] text-[var(--ink)] md:text-[3.5rem]">
-                    MyAgents
+                <h1 className="theme-launcher-hero-title">
+                    {resolvedTheme.hero.productName}
                 </h1>
-                {/* eslint-disable-next-line no-restricted-syntax -- 品牌 slogan
-                    15px/17px 是 DESIGN.md §15.2 立档的展示型字号（display 用途），
+                {/* 品牌 slogan 的 15px/17px 是 DESIGN.md §15.2 立档的展示型字号（display 用途），
                     不属于正文 Type Scale；这是全仓唯一豁免点（PRD 0.2.34）。 */}
-                <p className="brand-slogan text-center text-[15px] text-[var(--ink-muted)] md:text-[17px]">
-                    {t('brand.slogan')}
+                <p className="theme-launcher-hero-slogan">
+                    {resolvedTheme.hero.slogans[sloganLocale]}
                 </p>
             </div>
 
@@ -540,13 +605,16 @@ export default memo(function BrandSection({
                      */}
                     <div className="grid *:col-start-1 *:row-start-1">
                         <div
-                            className={mode === 'thought' ? 'hidden' : ''}
+                            ref={inputDropZoneRef}
+                            className={mode === 'thought' ? 'hidden' : 'relative'}
                             aria-hidden={mode === 'thought'}
                             inert={mode === 'thought'}
+                            {...(canAcceptFileDrop ? htmlFileDragHandlers : {})}
                         >
                             <SimpleChatInput
                                 ref={inputRef}
                                 mode="launcher"
+                                active={canAcceptFileDrop}
                                 onSend={handleSend}
                                 isLoading={!!isStarting}
                                 provider={provider}
@@ -590,6 +658,7 @@ export default memo(function BrandSection({
                                 /* PRD 0.2.7 Phase F: workspace + runtime selectors moved out of
                                  * the toolbar to the row below — toolbarPrefix dropped here. */
                             />
+                            <DropZoneOverlay isVisible={showInputDropOverlay} />
                         </div>
                         {modeSegmentEnabled && (
                             <div

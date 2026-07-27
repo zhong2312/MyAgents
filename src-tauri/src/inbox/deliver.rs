@@ -205,47 +205,26 @@ pub async fn deliver_with_resume(
         owner_id
     );
 
-    // spawn_blocking because ensure_session_sidecar uses blocking reqwest.
-    let app_handle_clone = app_handle.clone();
-    let manager_clone: ManagedSidecarManager = manager.clone();
-    let session_id_clone = to_sid.clone();
-    let owner_for_spawn = transient_owner.clone();
-    let resume_result = tokio::task::spawn_blocking(move || {
-        crate::sidecar::ensure_session_sidecar(
-            &app_handle_clone,
-            &manager_clone,
-            &session_id_clone,
-            &workspace_path,
-            owner_for_spawn,
-        )
-    })
+    let resume_result = crate::sidecar::ensure_session_sidecar_with_lifecycle(
+        app_handle.clone(),
+        manager.clone(),
+        to_sid.clone(),
+        workspace_path,
+        transient_owner.clone(),
+    )
     .await;
 
     match resume_result {
-        Ok(Ok(_)) => {
+        Ok(_) => {
             ulog_info!("[inbox] resume succeeded for {}", to_sid);
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             ulog_error!("[inbox] resume failed for {}: {}", to_sid, e);
             // ensure_session_sidecar may have inserted the owner on a partial
             // failure path; release defensively (idempotent — no-op if absent).
             release_transient_owner(manager, &to_sid, &transient_owner);
             return DeliverOutcome::DeliveryFailed {
                 reason: format!("resume failed: {}", e),
-            };
-        }
-        Err(e) => {
-            // Cross-review Codex Warning #2 — the spawn_blocking JoinError arm
-            // (fires when the resume thread panics, e.g. if the inner
-            // `cleanup_stale_sidecars` panics during ensure_session_sidecar)
-            // previously returned without releasing the transient owner. If
-            // the panic happened AFTER the owner was inserted but BEFORE
-            // delivery, the resumed sidecar would carry our transient owner
-            // forever (idempotent release is safe — no-op if owner is absent).
-            ulog_error!("[inbox] spawn_blocking for resume failed: {}", e);
-            release_transient_owner(manager, &to_sid, &transient_owner);
-            return DeliverOutcome::DeliveryFailed {
-                reason: format!("spawn_blocking failed: {}", e),
             };
         }
     }

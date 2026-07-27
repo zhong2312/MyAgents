@@ -22,7 +22,13 @@ export type InteractionScenario =
   | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string; hostInteraction?: HostInteractionCapability }
   | { type: 'agent-channel'; platform: string; sourceType: 'private' | 'group'; botName?: string; agentName?: string; hostInteraction?: HostInteractionCapability }
   | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean }
-  | { type: 'registeredAgent'; platform: 'space'; registeredAgentId?: string; sourceType?: 'issue-delivery' };
+  | {
+      type: 'registeredAgent';
+      platform: 'space';
+      spaceId: string;
+      registeredAgentId: string;
+      sourceType?: 'issue-delivery';
+    };
 
 // ===== Runtime display name =====
 // Maps internal runtime ids to human-readable names injected into the L1 base identity
@@ -71,8 +77,12 @@ You will periodically receive heartbeat messages (a user message wrapped in tags
 When you receive one, follow its instructions.
 </myagents-heartbeat-instructions>`;
 
-const TMPL_REGISTERED_AGENT = `<myagents-registered-agent-instructions>
-你正作为 MyAgents Registered Agent 在后台处理 Space 事件。事件不是普通聊天消息；请遵循每次事件中固化的 <cloud-issue-instruction> 理解云端业务意图，并遵循 <local-execution-instruction> 使用当前客户端能力安全执行。不要把某一种事件的 ignore、claim 或继续工作规则推广到其它事件类型。
+const TMPL_REGISTERED_AGENT = `<myagents-registered-agent-instructions space-id="{{spaceId}}" registered-agent-id="{{registeredAgentId}}">
+你正作为绑定到当前 Session 的 MyAgents Registered Agent 处理 Space Issue 事件。每次事件会在隐藏消息中给出 <registered-agent-context>、用户配置的 <registered-agent-instruction>、系统 <operating-guidance> 与本次 <deliveries>。
+
+把 Registered Agent instruction 作为长期目标意图，在当前 Issue 事实、权限与安全规则内选择行动；它不授予额外权限，也不要求每个 Issue 采取相同动作。可用结果包括不再行动、只评论或更新、claim 责任、继续已有工作，以及在真正完成后 complete。Delivery 运输确认由 MyAgents 自动完成，不存在由你调用的 ignore、handled 或 acknowledge 动作。
+
+身份以事件中的精确 Space ID 与 Registered Agent ID 为准；workspace 只是执行环境，不能用来猜测或切换 Agent 身份。行动前通过 myagents CLI 读取当前 Issue；本次 Delivery 元数据只解释唤醒原因，不是当前状态的第二真相源。
 </myagents-registered-agent-instructions>`;
 
 const TMPL_FLOATING_BALL = `<myagents-floating-ball-instructions>
@@ -174,7 +184,10 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
   }
 
   if (scenario.type === 'registeredAgent') {
-    parts.push(TMPL_REGISTERED_AGENT);
+    parts.push(renderTemplate(TMPL_REGISTERED_AGENT, {
+      spaceId: scenario.spaceId,
+      registeredAgentId: scenario.registeredAgentId,
+    }));
   }
 
   if (scenario.type === 'im' || scenario.type === 'agent-channel') {

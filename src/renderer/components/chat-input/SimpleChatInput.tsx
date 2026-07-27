@@ -70,6 +70,13 @@ function getCurrentModelLabel(
   return provider ? getModelDisplayName(provider, modelId) : modelId;
 }
 
+function runtimeMcpServerId(toolName: string): string | null {
+  if (!toolName.startsWith('mcp__')) return null;
+  const remainder = toolName.slice('mcp__'.length);
+  const separator = remainder.indexOf('__');
+  return separator > 0 ? remainder.slice(0, separator) : null;
+}
+
 // File search result type
 interface FileSearchResult {
   path: string;
@@ -122,6 +129,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   workspaceEnabledPlugins = [],
   onWorkspacePluginToggle,
   mcpServers = [],
+  runtimeMcpTools = [],
   onWorkspaceMcpToggle,
   onRefreshProviders,
   onOpenAgentSettings,
@@ -340,9 +348,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     ),
     [globalOfficialToolEnabled, officialToolNeedsConfig, officialTools],
   );
+  const runtimeMcpServers = useMemo(() => {
+    const configuredServers = new Map(mcpServers.map(server => [server.id, server]));
+    const ids = [...new Set(runtimeMcpTools.map(runtimeMcpServerId).filter((id): id is string => id !== null))];
+    return ids.map(id => configuredServers.get(id) ?? { id, name: id });
+  }, [mcpServers, runtimeMcpTools]);
   const effectiveToolCount = useMemo(() => {
     const effectiveMcpCount = isExternalRuntime
-      ? 0
+      ? runtimeMcpServers.length
       : workspaceMcpEnabled.filter(
         id => globalMcpEnabled.includes(id) && mcpServers.some(s => s.id === id),
       ).length;
@@ -350,7 +363,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       id => visibleOfficialTools.some(tool => tool.id === id),
     ).length;
     return effectiveMcpCount + effectiveOfficialCount;
-  }, [globalMcpEnabled, isExternalRuntime, mcpServers, visibleOfficialTools, workspaceMcpEnabled, workspaceOfficialToolEnabled]);
+  }, [globalMcpEnabled, isExternalRuntime, mcpServers, runtimeMcpServers.length, visibleOfficialTools, workspaceMcpEnabled, workspaceOfficialToolEnabled]);
 
   // #324 — 推理强度 submenu (fixed bottom row of the model menu). Opens on
   // hover/click of the row; 120ms close delay + an invisible hover bridge
@@ -1390,7 +1403,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   <button
                     type="button"
                     onClick={() => removeImage(img.id)}
-                    className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-[var(--error)] text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-[var(--error)] text-[var(--on-error)] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                     title={t('input.deleteImage')}
                   >
                     <X className="h-3 w-3" />
@@ -1860,7 +1873,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     <div className="px-3 py-2 text-xs font-medium text-[var(--ink-muted)] border-b border-[var(--line)]">
                       {t('input.toolsHeader')}
                     </div>
-                    {visibleOfficialTools.length > 0 || (!isExternalRuntime && mcpServers.some(s => globalMcpEnabled.includes(s.id))) ? (
+                    {visibleOfficialTools.length > 0 || runtimeMcpServers.length > 0 || (!isExternalRuntime && mcpServers.some(s => globalMcpEnabled.includes(s.id))) ? (
                       <>
                       {visibleOfficialTools.map((tool) => {
                         const isEnabled = workspaceOfficialToolEnabled.includes(tool.id);
@@ -1910,6 +1923,21 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                           </div>
                         );
                       })}
+                      {isExternalRuntime && runtimeMcpServers.map((server) => (
+                        <div
+                          key={server.id}
+                          className="px-3 py-2"
+                        >
+                          <div className="text-sm font-medium text-[var(--ink)] truncate">
+                            {server.name}
+                          </div>
+                          {server.description && (
+                            <div className="text-xs text-[var(--ink-muted)] truncate">
+                              {server.description}
+                            </div>
+                          )}
+                        </div>
+                      ))}
                       {mcpServers
                         .filter(s => !isExternalRuntime && globalMcpEnabled.includes(s.id))
                         .map((server) => {
@@ -2360,7 +2388,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 <button
                   type="button"
                   onClick={onStop}
-                  className="rounded-lg bg-[var(--error)] p-2 text-white transition-colors hover:brightness-110"
+                  className="rounded-lg bg-[var(--error)] p-2 text-[var(--on-error)] transition-colors hover:brightness-110"
                   title={systemStatus?.startsWith('api_retry:') ? t('input.stopRetry') : t('input.stop')}
                 >
                   <Square className="h-4 w-4" />
@@ -2370,7 +2398,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   type="button"
                   onClick={handleSend}
                   disabled={!canSendMessage || (!inputValue.trim() && images.length === 0)}
-                  className="rounded-lg bg-[var(--accent)] p-2 text-white transition-colors hover:bg-[var(--accent-warm-hover)] disabled:bg-[var(--ink-muted)]/15 disabled:text-[var(--ink-muted)]/60"
+                  className="rounded-lg bg-[var(--button-primary-bg)] p-2 text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:bg-[var(--ink-muted)]/15 disabled:text-[var(--ink-muted)]/60"
                   title={!canSendMessage
                     ? (providerUnavailableMessage ?? t('input.providerUnavailableDefault'))
                     : `${t('input.send')} (${sendKeyHint(sendShortcut, isMac).shortcut})`}

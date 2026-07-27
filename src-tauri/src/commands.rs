@@ -1044,7 +1044,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "37";
+const CLI_VERSION: &str = "42";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "35";
+const SYSTEM_SKILLS_VERSION: &str = "38";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1567,7 +1567,7 @@ mod system_skills_tests {
     use super::{
         all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
         is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
-        SystemSkillSync, ADMIN_AGENT_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
+        SystemSkillSync, ADMIN_AGENT_VERSION, CLI_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
     use std::fs;
 
@@ -1589,8 +1589,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v35_adds_myagents_docs_and_preserves_v34_contracts() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "35");
+    fn v37_updates_goal_cli_skill_and_preserves_v36_contracts() {
+        assert_eq!(CLI_VERSION, "42");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "38");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1599,12 +1600,21 @@ mod system_skills_tests {
         assert!(bundled.contains("--clear-goal"));
         assert!(bundled.contains("只有精确 leaf help 明确声明支持的命令才使用 `--dry-run`"));
         assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
+        assert!(bundled.contains("myagents goal create --objective-file goal-objective.txt"));
+        assert!(bundled.contains("workspace 或系统 temp 均可"));
+        assert!(bundled.contains("--max-executions <正整数>"));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
         assert!(memory_update
             .contains("仅当系统或用户明确指定完整名称 `myagents-memory-update` 时使用"));
         assert!(memory_update.contains("不要根据任务语义或相似表述自行触发"));
-        assert!(memory_update.contains("commit 并成功 push"));
+        assert!(memory_update.contains("错误的长期记忆通常比暂时缺失更有害"));
+        assert!(memory_update.contains("无法说明未来判断或行动差异的信息，不写"));
+        assert!(memory_update.contains("不置可否、忽略、换话题、未纠正或简单接受"));
+        assert!(memory_update.contains("明确限定为“本次/这次/单次”"));
+        assert!(memory_update.contains("不从已有 topic 名称或工作区结构猜测事件归属"));
+        assert!(memory_update.contains("不要落盘“未升级偏好”"));
+        assert!(memory_update.contains("commit 后 push 当前分支"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
 
         let product_docs = include_str!("../../bundled-skills/myagents-docs/SKILL.md");

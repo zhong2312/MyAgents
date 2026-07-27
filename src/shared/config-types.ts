@@ -1,17 +1,31 @@
 // Provider and permission configuration types
 
-import type { HeartbeatConfig, MemoryAutoUpdateConfig, MemoryEvolutionConfig } from './types/im';
-import type { RuntimeModelInfo, RuntimeSource, RuntimeType } from './types/runtime';
-import type { UiLanguage } from './i18n';
-import type { OfficialToolId, OfficialToolSettings } from './official-tools';
-import type { SubscriptionVerifyFailureKind } from './subscription';
-import { PLAYWRIGHT_MCP_PACKAGE_SPEC } from './mcpPackages';
-import managedCodexRuntimeLock from './managed-codex-runtime.json';
+import type {
+  HeartbeatConfig,
+  MemoryAutoUpdateConfig,
+  MemoryEvolutionConfig,
+} from "./types/im";
+import type {
+  RuntimeModelInfo,
+  RuntimeSource,
+  RuntimeType,
+} from "./types/runtime";
+import type { UiLanguage } from "./i18n";
+import type { OfficialToolId, OfficialToolSettings } from "./official-tools";
+import type { SubscriptionVerifyFailureKind } from "./subscription";
+import { PLAYWRIGHT_MCP_PACKAGE_SPEC } from "./mcpPackages";
+import managedCodexRuntimeLock from "./managed-codex-runtime.json";
+import {
+  DEFAULT_APPEARANCE_MODE,
+  DEFAULT_THEME_ID,
+  type AppearanceMode,
+  type ThemeId,
+} from "./theme";
 
 /**
  * Permission mode for agent behavior
  */
-export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
+export type PermissionMode = "auto" | "plan" | "fullAgency";
 
 /**
  * Background-agent permission policy (issue #264).
@@ -20,7 +34,7 @@ export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
  * - 'fullAgency' — background lane fully autonomous (non-interaction tools allowed).
  * See src/server/utils/background-agent-permission.ts for the decision core.
  */
-export type BackgroundAgentPermissionMode = 'inherit' | 'fullAgency';
+export type BackgroundAgentPermissionMode = "inherit" | "fullAgency";
 
 /**
  * Permission mode display configuration
@@ -33,46 +47,46 @@ export const PERMISSION_MODES: {
   description: string;
   sdkValue: string;
 }[] = [
-    {
-      value: 'auto',
-      label: '行动',
-      icon: '⚡',
-      description: 'Agent 在工作区内行动，使用工具需确认',
-      sdkValue: 'acceptEdits',
-    },
-    {
-      value: 'plan',
-      label: '规划',
-      icon: '📋',
-      description: 'Agent 仅研究信息并与您讨论规划',
-      sdkValue: 'plan',
-    },
-    {
-      value: 'fullAgency',
-      label: '自主行动',
-      icon: '🚀',
-      description: 'Agent 拥有完全自主权限，无需人工确认',
-      sdkValue: 'bypassPermissions',
-    },
-  ];
+  {
+    value: "auto",
+    label: "行动",
+    icon: "⚡",
+    description: "Agent 在工作区内行动，使用工具需确认",
+    sdkValue: "acceptEdits",
+  },
+  {
+    value: "plan",
+    label: "规划",
+    icon: "📋",
+    description: "Agent 仅研究信息并与您讨论规划",
+    sdkValue: "plan",
+  },
+  {
+    value: "fullAgency",
+    label: "自主行动",
+    icon: "🚀",
+    description: "Agent 拥有完全自主权限，无需人工确认",
+    sdkValue: "bypassPermissions",
+  },
+];
 
 /**
  * Model entity representing a single model configuration
  */
 export interface ModelEntity {
   // === 核心字段（必填）===
-  model: string;         // API 代码，如 "claude-sonnet-4-6"
-  modelName: string;     // 显示名称，如 "Claude Sonnet 4.6"
-  modelSeries: string;   // 品牌系列，如 "claude" | "deepseek" | "zhipu"
+  model: string; // API 代码，如 "claude-sonnet-4-6"
+  modelName: string; // 显示名称，如 "Claude Sonnet 4.6"
+  modelSeries: string; // 品牌系列，如 "claude" | "deepseek" | "zhipu"
 
   // === 元数据字段（可选，API 发现时填充）===
-  contextLength?: number;       // 上下文窗口（token 数）
-  maxOutputTokens?: number;     // 最大输出 token 数
-  inputModalities?: string[];   // 输入模态 ["text", "image", "video"]
-  outputModalities?: string[];  // 输出模态 ["text"]
+  contextLength?: number; // 上下文窗口（token 数）
+  maxOutputTokens?: number; // 最大输出 token 数
+  inputModalities?: string[]; // 输入模态 ["text", "image", "video"]
+  outputModalities?: string[]; // 输出模态 ["text"]
 
   // === 来源标记 ===
-  source?: 'preset' | 'discovered' | 'manual';
+  source?: "preset" | "discovered" | "manual";
 }
 
 /**
@@ -93,7 +107,7 @@ export function mergePresetModelWithCustomEntry(
 ): ModelEntity {
   if (!custom) return preset;
 
-  if (custom.source === 'discovered') {
+  if (custom.source === "discovered") {
     return {
       ...preset,
       contextLength: preset.contextLength ?? custom.contextLength,
@@ -122,7 +136,7 @@ export function splitProviderModelInput(value: string): string[] {
   if (!PROVIDER_MODEL_LIST_SEPARATOR_RE.test(trimmed)) return [trimmed];
   return trimmed
     .split(PROVIDER_MODEL_LIST_SEPARATOR_RE)
-    .map(part => part.trim())
+    .map((part) => part.trim())
     .filter(Boolean);
 }
 
@@ -138,20 +152,40 @@ export type ModelId = string;
  * the bridge translates them to the actual provider model via this mapping.
  */
 export interface ModelAliases {
-  fable?: string;  // e.g., 'deepseek-reasoner'
-  sonnet?: string;  // e.g., 'deepseek-chat'
-  opus?: string;    // e.g., 'deepseek-reasoner'
-  haiku?: string;   // e.g., 'deepseek-chat'
+  fable?: string; // e.g., 'deepseek-reasoner'
+  sonnet?: string; // e.g., 'deepseek-chat'
+  opus?: string; // e.g., 'deepseek-reasoner'
+  haiku?: string; // e.g., 'deepseek-chat'
 }
 
 export function completeModelAliases(
   aliases: ModelAliases | undefined,
   fallbackModel?: string,
 ): ModelAliases | undefined {
-  const fable = aliases?.fable ?? aliases?.opus ?? aliases?.sonnet ?? aliases?.haiku ?? fallbackModel;
-  const opus = aliases?.opus ?? aliases?.fable ?? aliases?.sonnet ?? aliases?.haiku ?? fallbackModel;
-  const sonnet = aliases?.sonnet ?? aliases?.opus ?? aliases?.fable ?? aliases?.haiku ?? fallbackModel;
-  const haiku = aliases?.haiku ?? aliases?.sonnet ?? aliases?.opus ?? aliases?.fable ?? fallbackModel;
+  const fable =
+    aliases?.fable ??
+    aliases?.opus ??
+    aliases?.sonnet ??
+    aliases?.haiku ??
+    fallbackModel;
+  const opus =
+    aliases?.opus ??
+    aliases?.fable ??
+    aliases?.sonnet ??
+    aliases?.haiku ??
+    fallbackModel;
+  const sonnet =
+    aliases?.sonnet ??
+    aliases?.opus ??
+    aliases?.fable ??
+    aliases?.haiku ??
+    fallbackModel;
+  const haiku =
+    aliases?.haiku ??
+    aliases?.sonnet ??
+    aliases?.opus ??
+    aliases?.fable ??
+    fallbackModel;
   const completed: ModelAliases = {};
   if (fable) completed.fable = fable;
   if (opus) completed.opus = opus;
@@ -166,14 +200,14 @@ export interface ProviderOrderSettings {
 }
 
 /** Subscription provider ID for verification caching */
-export const SUBSCRIPTION_PROVIDER_ID = 'anthropic-sub';
+export const SUBSCRIPTION_PROVIDER_ID = "anthropic-sub";
 
 /** Runtime-backed Codex subscription provider ID. */
-export const CODEX_SUBSCRIPTION_PROVIDER_ID = 'codex-sub';
+export const CODEX_SUBSCRIPTION_PROVIDER_ID = "codex-sub";
 
 /** Host-managed Grok subscription provider ID. */
-export const XAI_SUBSCRIPTION_PROVIDER_ID = 'xai-sub';
-export const XAI_SUBSCRIPTION_API_BASE_URL = 'https://api.x.ai/v1';
+export const XAI_SUBSCRIPTION_PROVIDER_ID = "xai-sub";
+export const XAI_SUBSCRIPTION_API_BASE_URL = "https://api.x.ai/v1";
 
 export type BuiltinSubscriptionProviderId =
   | typeof SUBSCRIPTION_PROVIDER_ID
@@ -182,8 +216,10 @@ export type BuiltinSubscriptionProviderId =
 export function isBuiltinSubscriptionProviderId(
   providerId: string | null | undefined,
 ): providerId is BuiltinSubscriptionProviderId {
-  return providerId === SUBSCRIPTION_PROVIDER_ID
-    || providerId === XAI_SUBSCRIPTION_PROVIDER_ID;
+  return (
+    providerId === SUBSCRIPTION_PROVIDER_ID ||
+    providerId === XAI_SUBSCRIPTION_PROVIDER_ID
+  );
 }
 
 type ProviderOrderable = {
@@ -196,7 +232,10 @@ const MISSING_PROVIDER_INSERT_AFTER: Record<string, string> = {
   [XAI_SUBSCRIPTION_PROVIDER_ID]: CODEX_SUBSCRIPTION_PROVIDER_ID,
 };
 
-export function normalizeProviderOrder(providerIds: string[], providerOrder?: string[]): string[] {
+export function normalizeProviderOrder(
+  providerIds: string[],
+  providerOrder?: string[],
+): string[] {
   const known = new Set(providerIds);
   const seen = new Set<string>();
   const ordered: string[] = [];
@@ -210,11 +249,12 @@ export function normalizeProviderOrder(providerIds: string[], providerOrder?: st
   for (const id of providerIds) {
     if (seen.has(id)) continue;
     seen.add(id);
-    const insertAfter = id === XAI_SUBSCRIPTION_PROVIDER_ID
-      ? (ordered.includes(CODEX_SUBSCRIPTION_PROVIDER_ID)
-        ? CODEX_SUBSCRIPTION_PROVIDER_ID
-        : SUBSCRIPTION_PROVIDER_ID)
-      : MISSING_PROVIDER_INSERT_AFTER[id];
+    const insertAfter =
+      id === XAI_SUBSCRIPTION_PROVIDER_ID
+        ? ordered.includes(CODEX_SUBSCRIPTION_PROVIDER_ID)
+          ? CODEX_SUBSCRIPTION_PROVIDER_ID
+          : SUBSCRIPTION_PROVIDER_ID
+        : MISSING_PROVIDER_INSERT_AFTER[id];
     const insertAfterIndex = insertAfter ? ordered.indexOf(insertAfter) : -1;
     if (insertAfterIndex >= 0) {
       ordered.splice(insertAfterIndex + 1, 0, id);
@@ -226,7 +266,10 @@ export function normalizeProviderOrder(providerIds: string[], providerOrder?: st
   return ordered;
 }
 
-export function normalizeDisabledProviderIds(providerIds: string[], disabledProviderIds?: string[]): string[] {
+export function normalizeDisabledProviderIds(
+  providerIds: string[],
+  disabledProviderIds?: string[],
+): string[] {
   const known = new Set(providerIds);
   const seen = new Set<string>();
   const disabled: string[] = [];
@@ -244,16 +287,26 @@ export function applyProviderEnablementAndOrder<T extends ProviderOrderable>(
   providers: T[],
   settings?: ProviderOrderSettings,
 ): T[] {
-  const byId = new Map(providers.map(provider => [provider.id, provider] as const));
-  const orderedIds = normalizeProviderOrder(providers.map(provider => provider.id), settings?.providerOrder);
-  const disabled = new Set(normalizeDisabledProviderIds(orderedIds, settings?.disabledProviderIds));
+  const byId = new Map(
+    providers.map((provider) => [provider.id, provider] as const),
+  );
+  const orderedIds = normalizeProviderOrder(
+    providers.map((provider) => provider.id),
+    settings?.providerOrder,
+  );
+  const disabled = new Set(
+    normalizeDisabledProviderIds(orderedIds, settings?.disabledProviderIds),
+  );
 
   return orderedIds
-    .map(id => {
+    .map((id) => {
       const provider = byId.get(id);
       if (!provider) return undefined;
       const nextEnabled = !disabled.has(id);
-      if (provider.enabled === nextEnabled || (nextEnabled && provider.enabled === undefined)) {
+      if (
+        provider.enabled === nextEnabled ||
+        (nextEnabled && provider.enabled === undefined)
+      ) {
         return provider;
       }
       return { ...provider, enabled: nextEnabled };
@@ -261,15 +314,20 @@ export function applyProviderEnablementAndOrder<T extends ProviderOrderable>(
     .filter((provider): provider is T => Boolean(provider));
 }
 
-export function isProviderEnabled(provider: { enabled?: unknown } | null | undefined): boolean {
+export function isProviderEnabled(
+  provider: { enabled?: unknown } | null | undefined,
+): boolean {
   return provider?.enabled !== false;
 }
 
 /**
  * Get the display name for a model
  */
-export function getModelDisplayName(provider: Provider, modelId: string): string {
-  const model = provider.models?.find(m => m.model === modelId);
+export function getModelDisplayName(
+  provider: Provider,
+  modelId: string,
+): string {
+  const model = provider.models?.find((m) => m.model === modelId);
   return model?.modelName ?? modelId;
 }
 
@@ -288,7 +346,7 @@ export function getEffectivePrimaryModel(
   providerPrimaryModels?: Record<string, string>,
 ): string {
   const userOverride = providerPrimaryModels?.[provider.id];
-  if (userOverride && provider.models?.some(m => m.model === userOverride)) {
+  if (userOverride && provider.models?.some((m) => m.model === userOverride)) {
     return userOverride;
   }
   return provider.primaryModel;
@@ -299,9 +357,11 @@ export function getEffectivePrimaryModel(
  * @param maxLength Maximum length before truncation (default 35)
  */
 export function getModelsDisplay(provider: Provider, maxLength = 35): string {
-  const models = provider.models?.map(m => m.model) ?? [];
-  const display = models.join(', ');
-  return display.length > maxLength ? display.slice(0, maxLength - 3) + '...' : display;
+  const models = provider.models?.map((m) => m.model) ?? [];
+  const display = models.join(", ");
+  return display.length > maxLength
+    ? display.slice(0, maxLength - 3) + "..."
+    : display;
 }
 
 /**
@@ -311,21 +371,25 @@ export function getModelsDisplay(provider: Provider, maxLength = 35): string {
  * - 'both': Set both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY (default for backward compatibility)
  * - 'auth_token_clear_api_key': Set AUTH_TOKEN and explicitly clear API_KEY (required by OpenRouter)
  */
-export type ProviderAuthType = 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
+export type ProviderAuthType =
+  | "auth_token"
+  | "api_key"
+  | "both"
+  | "auth_token_clear_api_key";
 
 /**
  * API protocol type for provider communication
  * - 'anthropic': Native Anthropic Messages API (default)
  * - 'openai': OpenAI Chat Completions API (translated via built-in bridge)
  */
-export type ApiProtocol = 'anthropic' | 'openai';
+export type ApiProtocol = "anthropic" | "openai";
 
 export type ProviderExecution =
-  | { kind: 'builtin' }
+  | { kind: "builtin" }
   | {
-      kind: 'runtime-backed';
-      runtime: Exclude<RuntimeType, 'builtin'>;
-      source: Extract<RuntimeSource, 'managed-provider'>;
+      kind: "runtime-backed";
+      runtime: Exclude<RuntimeType, "builtin">;
+      source: Extract<RuntimeSource, "managed-provider">;
     };
 
 /**
@@ -336,13 +400,13 @@ export type ProviderExecution =
  * lifecycle and therefore how builtin execution materializes it.
  */
 export type SubscriptionAuthPolicy =
-  | { kind: 'sdk-native' }
-  | { kind: 'host-managed-oauth' }
-  | { kind: 'runtime-managed' };
+  | { kind: "sdk-native" }
+  | { kind: "host-managed-oauth" }
+  | { kind: "runtime-managed" };
 
 /** Non-secret reference carried by builtin ProviderEnv for host-owned OAuth. */
 export type ManagedProviderCredential = {
-  kind: 'managed-oauth';
+  kind: "managed-oauth";
   providerId: typeof XAI_SUBSCRIPTION_PROVIDER_ID;
 };
 
@@ -353,20 +417,20 @@ export interface Provider {
   id: string;
   name: string;
   subtitle?: string;
-  vendor: string;           // 厂商名: 'Anthropic', 'DeepSeek', etc.
-  cloudProvider: string;    // 云服务商: '模型官方', '云服务商', etc.
-  type: 'subscription' | 'api';
+  vendor: string; // 厂商名: 'Anthropic', 'DeepSeek', etc.
+  cloudProvider: string; // 云服务商: '模型官方', '云服务商', etc.
+  type: "subscription" | "api";
   execution?: ProviderExecution; // undefined == { kind: 'builtin' }
   subscriptionAuth?: SubscriptionAuthPolicy;
-  primaryModel: string;     // 默认模型 API 代码
+  primaryModel: string; // 默认模型 API 代码
   isBuiltin: boolean;
-  enabled?: boolean;        // Runtime-derived: false when globally disabled by the user
-  runtimeReady?: boolean;   // Runtime-backed providers only: true when their managed runtime/auth preconditions are ready
+  enabled?: boolean; // Runtime-derived: false when globally disabled by the user
+  runtimeReady?: boolean; // Runtime-backed providers only: true when their managed runtime/auth preconditions are ready
 
   // API 配置
   config: {
-    baseUrl?: string;            // ANTHROPIC_BASE_URL
-    timeout?: number;            // API_TIMEOUT_MS
+    baseUrl?: string; // ANTHROPIC_BASE_URL
+    timeout?: number; // API_TIMEOUT_MS
     disableNonessential?: boolean; // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
   };
 
@@ -379,7 +443,7 @@ export interface Provider {
   // 上游 API 格式（仅 apiProtocol === 'openai' 时生效）
   // 'chat_completions' (默认): OpenAI Chat Completions API
   // 'responses': OpenAI Responses API
-  upstreamFormat?: 'chat_completions' | 'responses';
+  upstreamFormat?: "chat_completions" | "responses";
 
   // 最大输出 token 数限制（仅 apiProtocol === 'openai' 时生效）
   // 有值时 Bridge 向上游注入此 token limit；空/undefined = 不发送
@@ -388,7 +452,10 @@ export interface Provider {
   // 'max_tokens' (默认，兼容大多数 provider)
   // 'max_completion_tokens' (OpenAI o1/o3/GPT-5、vLLM、OpenRouter)
   // 'max_output_tokens' (OpenAI Responses API)
-  maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
+  maxOutputTokensParamName?:
+    | "max_tokens"
+    | "max_completion_tokens"
+    | "max_output_tokens";
 
   // 官网链接 (用于"去官网"入口)
   websiteUrl?: string;
@@ -410,53 +477,10 @@ export interface Provider {
 }
 
 /**
- * Apply the user's discovered/manual model catalogue edits to bundled providers.
- * Both renderer selection and sidecar validation must use this effective list.
- */
-export function mergePresetCustomModels(
-  providers: Provider[],
-  presetCustomModels: Record<string, ModelEntity[]> | undefined,
-  presetRemovedModels?: Record<string, string[]>,
-): Provider[] {
-  const hasCustom = Boolean(
-    presetCustomModels && Object.keys(presetCustomModels).length > 0,
-  );
-  const hasRemoved = Boolean(
-    presetRemovedModels && Object.keys(presetRemovedModels).length > 0,
-  );
-  if (!hasCustom && !hasRemoved) return providers;
-
-  return providers.map((provider) => {
-    if (!provider.isBuiltin) return provider;
-    const customModels = presetCustomModels?.[provider.id];
-    const removedIds = presetRemovedModels?.[provider.id];
-    if (!customModels?.length && !removedIds?.length) return provider;
-
-    const removedSet = new Set(removedIds ?? []);
-    const presetIds = new Set(provider.models.map((model) => model.model));
-    const enrichedPresets = provider.models
-      .filter((model) => !removedSet.has(model.model))
-      .map((preset) =>
-        mergePresetModelWithCustomEntry(
-          preset,
-          customModels?.find((custom) => custom.model === preset.model),
-        ),
-      );
-    const newModels =
-      customModels?.filter((custom) => !presetIds.has(custom.model)) ?? [];
-
-    return {
-      ...provider,
-      models: [...enrichedPresets, ...newModels],
-    };
-  });
-}
-
-/**
  * Project/workspace configuration
  */
-export type WorkspaceType = 'user' | 'system-preset';
-export type SystemPresetWorkspaceId = 'mino';
+export type WorkspaceType = "user" | "system-preset";
+export type SystemPresetWorkspaceId = "mino";
 
 export interface Project {
   id: string;
@@ -514,11 +538,11 @@ export interface Project {
   archivedAgentEnabledBeforeArchive?: boolean;
 }
 
-export type ProjectPatch = Partial<Omit<Project, 'id'>>;
+export type ProjectPatch = Partial<Omit<Project, "id">>;
 
 // ===== Workspace Template Types =====
 
-export type WorkspaceTemplateSource = 'builtin' | 'user';
+export type WorkspaceTemplateSource = "builtin" | "user";
 
 export interface WorkspaceTemplateAgentDefaults {
   /** Whether the created workspace's Agent starts in proactive mode. */
@@ -535,12 +559,12 @@ export interface WorkspaceTemplateAgentDefaults {
  * Workspace template definition
  */
 export interface WorkspaceTemplate {
-  id: string;           // kebab-case unique ID
-  name: string;         // Display name
-  description: string;  // Description (can be empty)
-  icon?: string;        // Phosphor icon ID (e.g. "sparkle") or emoji fallback; defaults to cube icon if absent
-  isBuiltin: boolean;   // true = preset template bundled with app
-  path?: string;        // User template: absolute path under ~/.myagents/templates/
+  id: string; // kebab-case unique ID
+  name: string; // Display name
+  description: string; // Description (can be empty)
+  icon?: string; // Phosphor icon ID (e.g. "sparkle") or emoji fallback; defaults to cube icon if absent
+  isBuiltin: boolean; // true = preset template bundled with app
+  path?: string; // User template: absolute path under ~/.myagents/templates/
   /** Product-level Agent defaults applied when creating a workspace from this template. */
   agentDefaults?: WorkspaceTemplateAgentDefaults;
   /** Workbench ownership stamped onto workspaces created from this template. */
@@ -549,29 +573,35 @@ export interface WorkspaceTemplate {
   workbenchRoute?: string;
 }
 
-export const DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID = 'mino';
-export const DEFAULT_SYSTEM_PRESET_WORKSPACE_ID: SystemPresetWorkspaceId = 'mino';
+export const DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID = "mino";
+export const DEFAULT_SYSTEM_PRESET_WORKSPACE_ID: SystemPresetWorkspaceId =
+  "mino";
 
 export function isSystemPresetProject(
-  project: Pick<Project, 'workspaceType' | 'systemPresetId'> | null | undefined,
+  project: Pick<Project, "workspaceType" | "systemPresetId"> | null | undefined,
 ): boolean {
-  return project?.workspaceType === 'system-preset' && !!project.systemPresetId;
+  return project?.workspaceType === "system-preset" && !!project.systemPresetId;
 }
 
 export function isProjectVisibleToUser(
-  project: Pick<Project, 'internal' | 'hidden'> | null | undefined,
+  project: Pick<Project, "internal" | "hidden"> | null | undefined,
 ): boolean {
   return !!project && project.internal !== true && project.hidden !== true;
 }
 
 export function isProjectArchived(
-  project: Pick<Project, 'archivedAt'> | null | undefined,
+  project: Pick<Project, "archivedAt"> | null | undefined,
 ): boolean {
-  return typeof project?.archivedAt === 'string' && project.archivedAt.length > 0;
+  return (
+    typeof project?.archivedAt === "string" && project.archivedAt.length > 0
+  );
 }
 
 export function isProjectActiveForUser(
-  project: Pick<Project, 'internal' | 'hidden' | 'archivedAt'> | null | undefined,
+  project:
+    | Pick<Project, "internal" | "hidden" | "archivedAt">
+    | null
+    | undefined,
 ): boolean {
   return isProjectVisibleToUser(project) && !isProjectArchived(project);
 }
@@ -580,14 +610,14 @@ export function getSystemPresetProjectMetadata(
   presetId: SystemPresetWorkspaceId,
 ): ProjectPatch {
   switch (presetId) {
-    case 'mino':
+    case "mino":
       return {
-        workspaceType: 'system-preset',
-        systemPresetId: 'mino',
-        icon: 'lightning',
-        displayName: 'Mino',
+        workspaceType: "system-preset",
+        systemPresetId: "mino",
+        icon: "lightning",
+        displayName: "Mino",
         templateId: DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID,
-        templateSource: 'builtin',
+        templateSource: "builtin",
       };
   }
 }
@@ -599,12 +629,26 @@ export function getSystemPresetProjectMetadataPatch(
   const metadata = getSystemPresetProjectMetadata(presetId);
   const patch: ProjectPatch = {};
 
-  if (metadata.workspaceType && project.workspaceType !== metadata.workspaceType) patch.workspaceType = metadata.workspaceType;
-  if (metadata.systemPresetId && project.systemPresetId !== metadata.systemPresetId) patch.systemPresetId = metadata.systemPresetId;
-  if (metadata.templateId && project.templateId !== metadata.templateId) patch.templateId = metadata.templateId;
-  if (metadata.templateSource && project.templateSource !== metadata.templateSource) patch.templateSource = metadata.templateSource;
+  if (
+    metadata.workspaceType &&
+    project.workspaceType !== metadata.workspaceType
+  )
+    patch.workspaceType = metadata.workspaceType;
+  if (
+    metadata.systemPresetId &&
+    project.systemPresetId !== metadata.systemPresetId
+  )
+    patch.systemPresetId = metadata.systemPresetId;
+  if (metadata.templateId && project.templateId !== metadata.templateId)
+    patch.templateId = metadata.templateId;
+  if (
+    metadata.templateSource &&
+    project.templateSource !== metadata.templateSource
+  )
+    patch.templateSource = metadata.templateSource;
   if (!project.icon && metadata.icon) patch.icon = metadata.icon;
-  if (!project.displayName && metadata.displayName) patch.displayName = metadata.displayName;
+  if (!project.displayName && metadata.displayName)
+    patch.displayName = metadata.displayName;
 
   return patch;
 }
@@ -615,9 +659,10 @@ export function getSystemPresetProjectMetadataPatch(
 export const PRESET_TEMPLATES: WorkspaceTemplate[] = [
   {
     id: DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID,
-    name: 'Mino',
-    description: '能记忆、会进化的 AI Agent。从 minimal 开始，长成你想要的样子。',
-    icon: 'lightning',
+    name: "Mino",
+    description:
+      "能记忆、会进化的 AI Agent。从 minimal 开始，长成你想要的样子。",
+    icon: "lightning",
     isBuiltin: true,
     agentDefaults: {
       enabled: true,
@@ -626,17 +671,17 @@ export const PRESET_TEMPLATES: WorkspaceTemplate[] = [
         intervalMinutes: 240,
         ackMaxChars: 300,
         activeHours: {
-          start: '09:00',
-          end: '21:00',
-          timezone: 'Asia/Shanghai',
+          start: "09:00",
+          end: "21:00",
+          timezone: "Asia/Shanghai",
         },
       },
       memoryAutoUpdate: {
         enabled: true,
         intervalHours: 24,
         queryThreshold: 3,
-        updateWindowStart: '21:00',
-        updateWindowEnd: '09:00',
+        updateWindowStart: "21:00",
+        updateWindowEnd: "09:00",
         updateWindowTimezone: undefined,
       },
       memoryEvolution: {
@@ -650,10 +695,13 @@ export const PRESET_TEMPLATES: WorkspaceTemplate[] = [
  * Provider verification status (with expiry support)
  */
 export interface ProviderVerifyStatus {
-  status: 'valid' | 'invalid';
+  status: "valid" | "invalid";
   verifiedAt: string; // ISO timestamp
   accountEmail?: string; // For subscription: detect account change
-  invalidReason?: SubscriptionVerifyFailureKind | 'provider_verify_failed' | 'network_error';
+  invalidReason?:
+    | SubscriptionVerifyFailureKind
+    | "provider_verify_failed"
+    | "network_error";
   error?: string;
 }
 
@@ -661,12 +709,12 @@ export interface ProviderVerifyStatus {
 export const VERIFY_EXPIRY_DAYS = 30;
 
 export type ManagedCodexInstallStatus =
-  | 'not-installed'
-  | 'checking'
-  | 'downloading'
-  | 'installed'
-  | 'update-required'
-  | 'error';
+  | "not-installed"
+  | "checking"
+  | "downloading"
+  | "installed"
+  | "update-required"
+  | "error";
 
 export interface ManagedCodexRuntimeInstallState {
   status: ManagedCodexInstallStatus;
@@ -684,31 +732,43 @@ export interface ManagedCodexRuntimeInstallState {
 }
 
 export interface ManagedCodexAuthState {
-  status: 'unknown' | 'valid' | 'invalid' | 'logging-in' | 'logged-out' | 'error';
-  authMethod?: 'chatgpt' | 'api-key' | 'access-token';
+  status:
+    | "unknown"
+    | "valid"
+    | "invalid"
+    | "logging-in"
+    | "logged-out"
+    | "error";
+  authMethod?: "chatgpt" | "api-key" | "access-token";
   accountEmail?: string;
   verifiedAt?: string;
   error?: string;
 }
 
 const MANAGED_CODEX_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-export function isCanonicalManagedCodexRuntimeVersion(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.trim() === value
-    && MANAGED_CODEX_VERSION_RE.test(value);
+export function isCanonicalManagedCodexRuntimeVersion(
+  value: unknown,
+): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() === value &&
+    MANAGED_CODEX_VERSION_RE.test(value)
+  );
 }
 const managedCodexVersion = managedCodexRuntimeLock.version;
 if (!isCanonicalManagedCodexRuntimeVersion(managedCodexVersion)) {
-  throw new Error('managed-codex-runtime.json requires a canonical semver version');
+  throw new Error(
+    "managed-codex-runtime.json requires a canonical semver version",
+  );
 }
 const managedCodexRuntimeSet = `codex-${managedCodexVersion}` as const;
 
 export const MANAGED_CODEX_REQUIRED_RUNTIME = {
-  component: 'codex',
+  component: "codex",
   version: managedCodexVersion,
   runtimeSet: managedCodexRuntimeSet,
   manifestBaseUrl: `https://download.myagents.io/runtimes/codex/sets/${managedCodexRuntimeSet}`,
-  manifestPublicKeyId: 'myagents-runtime-manifest-ed25519-2026-06',
+  manifestPublicKeyId: "myagents-runtime-manifest-ed25519-2026-06",
 } as const;
 
 /** Check if verification has expired */
@@ -719,21 +779,22 @@ export function isVerifyExpired(verifiedAt: string): boolean {
     return true;
   }
   const now = new Date();
-  const daysDiff = (now.getTime() - verifiedDate.getTime()) / (1000 * 60 * 60 * 24);
+  const daysDiff =
+    (now.getTime() - verifiedDate.getTime()) / (1000 * 60 * 60 * 24);
   return daysDiff > VERIFY_EXPIRY_DAYS;
 }
 
 /**
  * Network proxy protocol type
  */
-export type ProxyProtocol = 'http' | 'https' | 'socks5';
+export type ProxyProtocol = "http" | "https" | "socks5";
 
 /**
  * Network proxy default values
  */
 export const PROXY_DEFAULTS = {
-  protocol: 'http' as ProxyProtocol,
-  host: '127.0.0.1',
+  protocol: "http" as ProxyProtocol,
+  host: "127.0.0.1",
   port: 7897,
 } as const;
 
@@ -743,13 +804,15 @@ export const PROXY_DEFAULTS = {
 export function isValidProxyHost(host: string): boolean {
   if (!host || host.length > 253) return false;
   // localhost, IPv4, or valid hostname
-  return /^(localhost|(\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)*)$/.test(host);
+  return /^(localhost|(\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)*)$/.test(
+    host,
+  );
 }
 
 /**
  * Network proxy settings (General settings)
  */
-export type ProxyScopeMode = 'all' | 'custom';
+export type ProxyScopeMode = "all" | "custom";
 
 export interface ProxyScopeSettings {
   mode: ProxyScopeMode;
@@ -774,19 +837,24 @@ export interface ProxySettings {
  */
 export const DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS = 365;
 
-export type ChatQueueResponseMode = 'realtime' | 'turn';
-export type SpaceEnvironment = 'production' | 'dev';
+export type ChatQueueResponseMode = "realtime" | "turn";
+export type SpaceEnvironment = "production" | "dev";
 
-export function normalizeChatQueueResponseMode(value: unknown): ChatQueueResponseMode {
-  return value === 'turn' ? 'turn' : 'realtime';
+export function normalizeChatQueueResponseMode(
+  value: unknown,
+): ChatQueueResponseMode {
+  return value === "turn" ? "turn" : "realtime";
 }
 
-export function normalizeClaudeTranscriptCleanupPeriodDays(value: unknown): number {
-  const numericValue = typeof value === 'number'
-    ? value
-    : typeof value === 'string' && value.trim() !== ''
-      ? Number(value)
-      : Number.NaN;
+export function normalizeClaudeTranscriptCleanupPeriodDays(
+  value: unknown,
+): number {
+  const numericValue =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value)
+        : Number.NaN;
   if (!Number.isFinite(numericValue)) {
     return DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS;
   }
@@ -805,7 +873,12 @@ export interface AppConfig {
   // non-interaction tool allowed). Omitted/undefined ⇒ treated as 'inherit'.
   backgroundAgentPermissionMode?: BackgroundAgentPermissionMode;
   // UI preferences
-  theme: 'light' | 'dark' | 'system';
+  /** Complete visual language selected for the whole application. */
+  themeId: ThemeId;
+  /** False means themeId tracks the product DEFAULT_THEME_ID. */
+  themeSelectionExplicit?: boolean;
+  /** User preference for resolving the selected Theme's light/dark scheme. */
+  appearanceMode: AppearanceMode;
   /** Product UI language. Existing pre-i18n configs missing this field migrate
    *  to `zh-CN`; new installs default to `system`. */
   uiLanguage?: UiLanguage;
@@ -821,7 +894,7 @@ export interface AppConfig {
   /** 对话输入框发送键偏好。缺省视同 'enter'（Enter 发送，Shift+Enter 换行）。
    *  'modEnter' 则 ⌘/Ctrl+Enter 发送、Enter 换行。统一作用于全部"和 AI 对话"的
    *  输入：主对话框 / AI 小助理 / 问题反馈（见 utils/chatSendKey.ts）。 */
-  chatSendShortcut?: 'enter' | 'modEnter';
+  chatSendShortcut?: "enter" | "modEnter";
   /** 桌面 Chat 连续发送 query 时的队列投递策略。
    *  'realtime'（默认）= busy 时尽快交给可实时响应的 runtime
    *  （builtin SDK async queue；Codex app-server turn/steer）；
@@ -846,7 +919,7 @@ export interface AppConfig {
   /** 悬浮球本体显隐开关；由桌面宠物设置页顶部开关控制。默认关。 */
   floatingBallEnabled?: boolean;
   /** 悬浮球本体外观。缺省视同 'pet'（PRD 0.2.34 floating_ball_pet_mode Phase 1）。 */
-  floatingBallAppearance?: 'pet' | 'orb';
+  floatingBallAppearance?: "pet" | "orb";
   /** 当前选中的桌宠资源包。缺省视同内置 Mino。 */
   floatingBallPetId?: string;
   /** 桌面渠道持久 session id（伴侣窗自铸 UUID v4；轮换见下两个字段，PRD §6.2）。 */
@@ -976,13 +1049,13 @@ export interface AppConfig {
   };
 
   // ===== Agent Configuration (v0.1.41) =====
-  agents?: import('./types/agent').AgentConfig[];
+  agents?: import("./types/agent").AgentConfig[];
 
   // ===== Claude Plugin Configuration (PRD 0.2.17) =====
   /** Installed Claude plugins. Each entry's installPath points at a directory
    *  under ~/.myagents/plugins/<name>/ containing .claude-plugin/plugin.json.
    *  Disk is the source of truth; this is the index. */
-  plugins?: import('./types/plugin').PluginEntry[];
+  plugins?: import("./types/plugin").PluginEntry[];
   /** Global VISIBILITY gate keyed by PluginEntry.id ("<name>@local").
    *  - `true`  → plugin appears in workspace/Agent plugin selectors as a candidate.
    *  - missing / `false` → plugin is hidden from every workspace (effectively
@@ -1003,9 +1076,9 @@ export interface AppConfig {
 
   // ===== IM Bot Configuration (legacy) =====
   /** @deprecated Migrated to imBotConfigs[]. Only used for migration. */
-  imBotConfig?: import('./types/im').ImBotConfig;
+  imBotConfig?: import("./types/im").ImBotConfig;
   /** @deprecated Migrated to agents[]. Retained for migration detection + Phase 2 Rust shim. */
-  imBotConfigs?: import('./types/im').ImBotConfig[];
+  imBotConfigs?: import("./types/im").ImBotConfig[];
 
   // ===== Global Provider Cache (v0.1.26) =====
   /** Pre-built available providers JSON for IM Bot /provider and /model commands.
@@ -1021,9 +1094,9 @@ export interface AppConfig {
 export interface ProjectSettings {
   // Permission configuration
   permissions?: {
-    mode: string;       // SDK permission mode value
-    allow?: string[];   // Custom allowed tools
-    deny?: string[];    // Custom denied tools
+    mode: string; // SDK permission mode value
+    allow?: string[]; // Custom allowed tools
+    deny?: string[]; // Custom denied tools
   };
   // Provider environment variables
   env?: Record<string, string>;
@@ -1035,10 +1108,38 @@ export interface ProjectSettings {
  *  inputModalities：Anthropic current Claude models all support text+image input.
  *  contextLength > 200K 由 applyContextWindowSuffix 自动加 [1m] 走 SDK 1M 上下文路径。 */
 const ANTHROPIC_MODELS: ModelEntity[] = [
-  { model: 'claude-fable-5', modelName: 'Claude Fable 5', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-opus-4-8', modelName: 'Claude Opus 4.8', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-sonnet-5', modelName: 'Claude Sonnet 5', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-haiku-4-5', modelName: 'Claude Haiku 4.5', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+  {
+    model: "claude-fable-5",
+    modelName: "Claude Fable 5",
+    modelSeries: "claude",
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ["text", "image"],
+  },
+  {
+    model: "claude-opus-4-8",
+    modelName: "Claude Opus 4.8",
+    modelSeries: "claude",
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ["text", "image"],
+  },
+  {
+    model: "claude-sonnet-5",
+    modelName: "Claude Sonnet 5",
+    modelSeries: "claude",
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ["text", "image"],
+  },
+  {
+    model: "claude-haiku-4-5",
+    modelName: "Claude Haiku 4.5",
+    modelSeries: "claude",
+    contextLength: 200_000,
+    maxOutputTokens: 64_000,
+    inputModalities: ["text", "image"],
+  },
   // Legacy 4.x options kept selectable for users/accounts that have not moved yet.
   // contextLength: Anthropic Sonnet 4.6 / Opus 4.6 wire-default is 200K. The 1M
   // tier requires the `context-1m-2025-08-07` beta header AND either Tier-4 API
@@ -1048,18 +1149,39 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
   // claude.ai/settings/usage, or use --model to switch to standard context`
   // on every turn (reproduced 2026-05-07 / #392). Opus 4.7+ stays at 1M because
   // Anthropic enables those newer Opus variants on the 1M path by default.
-  { model: 'claude-sonnet-4-6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-opus-4-7', modelName: 'Claude Opus 4.7', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-opus-4-6', modelName: 'Claude Opus 4.6', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+  {
+    model: "claude-sonnet-4-6",
+    modelName: "Claude Sonnet 4.6",
+    modelSeries: "claude",
+    contextLength: 200_000,
+    maxOutputTokens: 64_000,
+    inputModalities: ["text", "image"],
+  },
+  {
+    model: "claude-opus-4-7",
+    modelName: "Claude Opus 4.7",
+    modelSeries: "claude",
+    contextLength: 1_000_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ["text", "image"],
+  },
+  {
+    model: "claude-opus-4-6",
+    modelName: "Claude Opus 4.6",
+    modelSeries: "claude",
+    contextLength: 200_000,
+    maxOutputTokens: 128_000,
+    inputModalities: ["text", "image"],
+  },
 ];
 
 /** Anthropic 官方默认别名（对齐 SDK 0.3.201 当前模型族：fable5/opus48/sonnet5/haiku45）。
  *  显式 pin 可避免未来 SDK 默认变动时用户体验突变。 */
 const ANTHROPIC_ALIASES = {
-  fable: 'claude-fable-5',
-  opus: 'claude-opus-4-8',
-  sonnet: 'claude-sonnet-5',
-  haiku: 'claude-haiku-4-5',
+  fable: "claude-fable-5",
+  opus: "claude-opus-4-8",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
 } as const;
 
 /** 小米 MiMo 开放平台模型目录（按量付费与 Token Plan 订阅共用，仅端点 / 计费不同）。
@@ -1069,12 +1191,30 @@ const ANTHROPIC_ALIASES = {
  *   SDK normalizeModelStringForAPI 在 wire 上再把 [1m] 剥掉，上游收到的是 mimo-v2.5-pro）。 */
 const MIMO_MODELS: ModelEntity[] = [
   // mimo-v2.5-pro：旗舰推理 / Agent 模型，官方模型卡 input modality = 纯文本。
-  { model: 'mimo-v2.5-pro', modelName: 'MiMo V2.5 Pro', modelSeries: 'xiaomi', contextLength: 1_048_576, maxOutputTokens: 131_072, inputModalities: ['text'] },
+  {
+    model: "mimo-v2.5-pro",
+    modelName: "MiMo V2.5 Pro",
+    modelSeries: "xiaomi",
+    contextLength: 1_048_576,
+    maxOutputTokens: 131_072,
+    inputModalities: ["text"],
+  },
   // mimo-v2.5：为 Agent 场景而生的原生全模态模型，可同时看 / 听 / 读（图像 / 音频 / 视频）。
-  { model: 'mimo-v2.5', modelName: 'MiMo V2.5', modelSeries: 'xiaomi', contextLength: 1_048_576, maxOutputTokens: 131_072, inputModalities: ['text', 'image', 'video', 'audio'] },
+  {
+    model: "mimo-v2.5",
+    modelName: "MiMo V2.5",
+    modelSeries: "xiaomi",
+    contextLength: 1_048_576,
+    maxOutputTokens: 131_072,
+    inputModalities: ["text", "image", "video", "audio"],
+  },
 ];
 
-const MIMO_ALIASES = { sonnet: 'mimo-v2.5-pro', opus: 'mimo-v2.5-pro', haiku: 'mimo-v2.5' } as const;
+const MIMO_ALIASES = {
+  sonnet: "mimo-v2.5-pro",
+  opus: "mimo-v2.5-pro",
+  haiku: "mimo-v2.5",
+} as const;
 
 export const MANAGED_CODEX_MODELS: ModelEntity[] = [];
 
@@ -1090,10 +1230,10 @@ export function managedCodexModelsFromRuntime(
     models.push({
       model,
       modelName: runtimeModel.displayName?.trim() || model,
-      modelSeries: 'codex',
-      inputModalities: ['text', 'image'],
-      outputModalities: ['text'],
-      source: 'discovered',
+      modelSeries: "codex",
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      source: "discovered",
     });
   }
   return models;
@@ -1104,10 +1244,13 @@ export function withManagedCodexRuntimeModels(
   runtimeModels: readonly RuntimeModelInfo[] | undefined,
 ): Provider {
   const models = managedCodexModelsFromRuntime(runtimeModels);
-  const defaultModel = runtimeModels?.find(model => model.isDefault && model.value.trim())?.value.trim();
-  const primaryModel = defaultModel && models.some(model => model.model === defaultModel)
-    ? defaultModel
-    : (models[0]?.model ?? '');
+  const defaultModel = runtimeModels
+    ?.find((model) => model.isDefault && model.value.trim())
+    ?.value.trim();
+  const primaryModel =
+    defaultModel && models.some((model) => model.model === defaultModel)
+      ? defaultModel
+      : (models[0]?.model ?? "");
   return {
     ...provider,
     primaryModel,
@@ -1117,31 +1260,35 @@ export function withManagedCodexRuntimeModels(
 
 export const MANAGED_CODEX_PROVIDER: Provider = {
   id: CODEX_SUBSCRIPTION_PROVIDER_ID,
-  name: 'Codex (订阅)',
-  subtitle: '使用 ChatGPT Codex 订阅账户',
-  vendor: 'OpenAI',
-  cloudProvider: 'ChatGPT Subscription',
-  type: 'subscription',
-  subscriptionAuth: { kind: 'runtime-managed' },
-  execution: { kind: 'runtime-backed', runtime: 'codex', source: 'managed-provider' },
-  primaryModel: '',
+  name: "Codex (订阅)",
+  subtitle: "使用 ChatGPT Codex 订阅账户",
+  vendor: "OpenAI",
+  cloudProvider: "ChatGPT Subscription",
+  type: "subscription",
+  subscriptionAuth: { kind: "runtime-managed" },
+  execution: {
+    kind: "runtime-backed",
+    runtime: "codex",
+    source: "managed-provider",
+  },
+  primaryModel: "",
   isBuiltin: true,
   config: {},
   models: MANAGED_CODEX_MODELS,
 };
 
 export type ManagedCodexProviderReadinessReason =
-  | 'developer-gate-off'
-  | 'runtime-not-installed'
-  | 'runtime-downloading'
-  | 'runtime-update-required'
-  | 'runtime-error'
-  | 'auth-missing'
-  | 'auth-logging-in'
-  | 'auth-invalid'
-  | 'auth-error'
-  | 'provider-disabled'
-  | 'ready';
+  | "developer-gate-off"
+  | "runtime-not-installed"
+  | "runtime-downloading"
+  | "runtime-update-required"
+  | "runtime-error"
+  | "auth-missing"
+  | "auth-logging-in"
+  | "auth-invalid"
+  | "auth-error"
+  | "provider-disabled"
+  | "ready";
 
 export interface ManagedCodexProviderReadiness {
   visible: boolean;
@@ -1150,34 +1297,38 @@ export interface ManagedCodexProviderReadiness {
   requiredVersion: string;
 }
 
-type ManagedCodexConfigLike = Pick<AppConfig,
-  | 'managedCodexProviderDevGate'
-  | 'disabledProviderIds'
-  | 'managedCodexRuntimeInstall'
-  | 'managedCodexAuth'
+type ManagedCodexConfigLike = Pick<
+  AppConfig,
+  | "managedCodexProviderDevGate"
+  | "disabledProviderIds"
+  | "managedCodexRuntimeInstall"
+  | "managedCodexAuth"
 >;
 
 export function isManagedCodexProviderGateEnabled(
-  config: Pick<AppConfig, 'managedCodexProviderDevGate'>,
+  config: Pick<AppConfig, "managedCodexProviderDevGate">,
 ): boolean {
   return config.managedCodexProviderDevGate === true;
 }
 
 export function shouldAutoUpdateManagedCodexRuntime(
-  config: Pick<AppConfig, 'managedCodexProviderDevGate' | 'managedCodexRuntimeInstall'>,
+  config: Pick<
+    AppConfig,
+    "managedCodexProviderDevGate" | "managedCodexRuntimeInstall"
+  >,
 ): boolean {
   if (!isManagedCodexProviderGateEnabled(config)) return false;
   const install = config.managedCodexRuntimeInstall;
   if (!install?.installedVersion) return false;
   if (
-    install.status === 'downloading'
-    || install.status === 'checking'
-    || install.status === 'update-required'
-    || install.status === 'error'
+    install.status === "downloading" ||
+    install.status === "checking" ||
+    install.status === "update-required" ||
+    install.status === "error"
   ) {
     return true;
   }
-  if (install.status === 'installed') {
+  if (install.status === "installed") {
     return install.installedVersion !== MANAGED_CODEX_REQUIRED_RUNTIME.version;
   }
   return false;
@@ -1192,17 +1343,22 @@ export function isManagedCodexRuntimeUsable(
 export function isManagedCodexRequiredRuntimeInstalled(
   state: ManagedCodexRuntimeInstallState | undefined,
 ): boolean {
-  if (!state || state.status !== 'installed') return false;
-  const requiredVersion = state.requiredVersion ?? MANAGED_CODEX_REQUIRED_RUNTIME.version;
-  return requiredVersion === MANAGED_CODEX_REQUIRED_RUNTIME.version
-    && state.installedVersion === MANAGED_CODEX_REQUIRED_RUNTIME.version;
+  if (!state || state.status !== "installed") return false;
+  const requiredVersion =
+    state.requiredVersion ?? MANAGED_CODEX_REQUIRED_RUNTIME.version;
+  return (
+    requiredVersion === MANAGED_CODEX_REQUIRED_RUNTIME.version &&
+    state.installedVersion === MANAGED_CODEX_REQUIRED_RUNTIME.version
+  );
 }
 
 export function isManagedCodexSubscriptionAuthValid(
   state: ManagedCodexAuthState | undefined,
 ): boolean {
-  return state?.status === 'valid'
-    && (state.authMethod === 'chatgpt' || state.authMethod === 'access-token');
+  return (
+    state?.status === "valid" &&
+    (state.authMethod === "chatgpt" || state.authMethod === "access-token")
+  );
 }
 
 export function getManagedCodexProviderReadiness(
@@ -1213,57 +1369,71 @@ export function getManagedCodexProviderReadiness(
     return {
       visible: false,
       selectable: false,
-      reason: 'developer-gate-off',
+      reason: "developer-gate-off",
       requiredVersion,
     };
   }
 
   const install = config.managedCodexRuntimeInstall;
   if (!isManagedCodexRuntimeUsable(install)) {
-    let reason: ManagedCodexProviderReadinessReason = 'runtime-not-installed';
-    if (install?.status === 'downloading' || install?.status === 'checking') {
-      reason = 'runtime-downloading';
+    let reason: ManagedCodexProviderReadinessReason = "runtime-not-installed";
+    if (install?.status === "downloading" || install?.status === "checking") {
+      reason = "runtime-downloading";
     } else if (
-      install?.status === 'update-required'
-      || (install?.installedVersion && install.installedVersion !== requiredVersion)
+      install?.status === "update-required" ||
+      (install?.installedVersion &&
+        install.installedVersion !== requiredVersion)
     ) {
-      reason = 'runtime-update-required';
-    } else if (install?.status === 'error') {
-      reason = 'runtime-error';
+      reason = "runtime-update-required";
+    } else if (install?.status === "error") {
+      reason = "runtime-error";
     }
     return { visible: true, selectable: false, reason, requiredVersion };
   }
 
   const auth = config.managedCodexAuth;
   if (!isManagedCodexSubscriptionAuthValid(auth)) {
-    let reason: ManagedCodexProviderReadinessReason = 'auth-missing';
-    if (auth?.status === 'logging-in') {
-      reason = 'auth-logging-in';
-    } else if (auth?.status === 'invalid' || auth?.status === 'logged-out') {
-      reason = 'auth-invalid';
-    } else if (auth?.status === 'error') {
-      reason = 'auth-error';
+    let reason: ManagedCodexProviderReadinessReason = "auth-missing";
+    if (auth?.status === "logging-in") {
+      reason = "auth-logging-in";
+    } else if (auth?.status === "invalid" || auth?.status === "logged-out") {
+      reason = "auth-invalid";
+    } else if (auth?.status === "error") {
+      reason = "auth-error";
     }
     return { visible: true, selectable: false, reason, requiredVersion };
   }
 
   if (config.disabledProviderIds?.includes(CODEX_SUBSCRIPTION_PROVIDER_ID)) {
-    return { visible: true, selectable: false, reason: 'provider-disabled', requiredVersion };
+    return {
+      visible: true,
+      selectable: false,
+      reason: "provider-disabled",
+      requiredVersion,
+    };
   }
 
-  return { visible: true, selectable: true, reason: 'ready', requiredVersion };
+  return { visible: true, selectable: true, reason: "ready", requiredVersion };
 }
 
 export function withManagedCodexProviderCatalog(
   providers: readonly Provider[],
-  config: Pick<AppConfig, 'managedCodexProviderDevGate'>,
+  config: Pick<AppConfig, "managedCodexProviderDevGate">,
   runtimeModels?: readonly RuntimeModelInfo[],
 ): Provider[] {
-  const withoutManagedCodex = providers.filter(provider => provider.id !== CODEX_SUBSCRIPTION_PROVIDER_ID);
+  const withoutManagedCodex = providers.filter(
+    (provider) => provider.id !== CODEX_SUBSCRIPTION_PROVIDER_ID,
+  );
   if (!isManagedCodexProviderGateEnabled(config)) return withoutManagedCodex;
-  const managedCodexProvider = withManagedCodexRuntimeModels(MANAGED_CODEX_PROVIDER, runtimeModels);
-  const insertAfterIndex = withoutManagedCodex.findIndex(provider => provider.id === SUBSCRIPTION_PROVIDER_ID);
-  if (insertAfterIndex < 0) return [...withoutManagedCodex, managedCodexProvider];
+  const managedCodexProvider = withManagedCodexRuntimeModels(
+    MANAGED_CODEX_PROVIDER,
+    runtimeModels,
+  );
+  const insertAfterIndex = withoutManagedCodex.findIndex(
+    (provider) => provider.id === SUBSCRIPTION_PROVIDER_ID,
+  );
+  if (insertAfterIndex < 0)
+    return [...withoutManagedCodex, managedCodexProvider];
   return [
     ...withoutManagedCodex.slice(0, insertAfterIndex + 1),
     managedCodexProvider,
@@ -1271,13 +1441,52 @@ export function withManagedCodexProviderCatalog(
   ];
 }
 
+/**
+ * Apply user additions/removals to bundled provider model catalogs.
+ * Kept in shared because provider selection and Admin/CLI validation must
+ * consume the same effective model set.
+ */
+export function mergePresetCustomModels(
+  providers: Provider[],
+  presetCustomModels: Record<string, ModelEntity[]> | undefined,
+  presetRemovedModels?: Record<string, string[]>,
+): Provider[] {
+  const hasCustom =
+    presetCustomModels && Object.keys(presetCustomModels).length > 0;
+  const hasRemoved =
+    presetRemovedModels && Object.keys(presetRemovedModels).length > 0;
+  if (!hasCustom && !hasRemoved) return providers;
+
+  return providers.map((provider) => {
+    if (!provider.isBuiltin) return provider;
+    const customModels = presetCustomModels?.[provider.id];
+    const removedIds = presetRemovedModels?.[provider.id];
+    if (!customModels?.length && !removedIds?.length) return provider;
+
+    const removedSet = new Set(removedIds ?? []);
+    const presetIds = new Set(provider.models.map((model) => model.model));
+    const enrichedPresets = provider.models
+      .filter((model) => !removedSet.has(model.model))
+      .map((preset) =>
+        mergePresetModelWithCustomEntry(
+          preset,
+          customModels?.find((candidate) => candidate.model === preset.model),
+        ),
+      );
+    const newModels =
+      customModels?.filter((model) => !presetIds.has(model.model)) ?? [];
+    return { ...provider, models: [...enrichedPresets, ...newModels] };
+  });
+}
+
 export function applyManagedCodexProviderReadiness(
   providers: readonly Provider[],
   config: ManagedCodexConfigLike,
 ): Provider[] {
   const readiness = getManagedCodexProviderReadiness(config);
-  const runtimeReady = readiness.reason === 'ready' || readiness.reason === 'provider-disabled';
-  return providers.map(provider => {
+  const runtimeReady =
+    readiness.reason === "ready" || readiness.reason === "provider-disabled";
+  return providers.map((provider) => {
     if (provider.id !== CODEX_SUBSCRIPTION_PROVIDER_ID) return provider;
     return {
       ...provider,
@@ -1288,13 +1497,13 @@ export function applyManagedCodexProviderReadiness(
 
 export const PRESET_PROVIDERS: Provider[] = [
   {
-    id: 'anthropic-sub',
-    name: 'Anthropic (订阅)',
-    vendor: 'Anthropic',
-    cloudProvider: '官方',
-    type: 'subscription',
-    subscriptionAuth: { kind: 'sdk-native' },
-    primaryModel: 'claude-sonnet-5',
+    id: "anthropic-sub",
+    name: "Anthropic (订阅)",
+    vendor: "Anthropic",
+    cloudProvider: "官方",
+    type: "subscription",
+    subscriptionAuth: { kind: "sdk-native" },
+    primaryModel: "claude-sonnet-5",
     isBuiltin: true,
     config: {},
     modelAliases: { ...ANTHROPIC_ALIASES },
@@ -1302,142 +1511,261 @@ export const PRESET_PROVIDERS: Provider[] = [
   },
   {
     id: XAI_SUBSCRIPTION_PROVIDER_ID,
-    name: 'Grok（订阅）',
-    subtitle: '使用 Grok 订阅账户额度',
-    vendor: 'xAI',
-    cloudProvider: '官方',
-    type: 'subscription',
-    subscriptionAuth: { kind: 'host-managed-oauth' },
-    execution: { kind: 'builtin' },
-    primaryModel: 'grok-4.5',
+    name: "Grok（订阅）",
+    subtitle: "使用 Grok 订阅账户额度",
+    vendor: "xAI",
+    cloudProvider: "官方",
+    type: "subscription",
+    subscriptionAuth: { kind: "host-managed-oauth" },
+    execution: { kind: "builtin" },
+    primaryModel: "grok-4.5",
     isBuiltin: true,
-    apiProtocol: 'openai',
-    upstreamFormat: 'responses',
+    apiProtocol: "openai",
+    upstreamFormat: "responses",
     modelListUrl: `${XAI_SUBSCRIPTION_API_BASE_URL}/models`,
     config: {
       baseUrl: XAI_SUBSCRIPTION_API_BASE_URL,
     },
     modelAliases: {
-      fable: 'grok-4.5',
-      sonnet: 'grok-4.5',
-      opus: 'grok-4.5',
-      haiku: 'grok-composer-2.5-fast',
+      fable: "grok-4.5",
+      sonnet: "grok-4.5",
+      opus: "grok-4.5",
+      haiku: "grok-composer-2.5-fast",
     },
     models: [
-      { model: 'grok-4.5', modelName: 'Grok 4.5', modelSeries: 'grok', contextLength: 500_000, inputModalities: ['text', 'image'], outputModalities: ['text'], source: 'preset' },
-      { model: 'grok-composer-2.5-fast', modelName: 'Grok Composer 2.5 Fast', modelSeries: 'grok', contextLength: 200_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
+      {
+        model: "grok-4.5",
+        modelName: "Grok 4.5",
+        modelSeries: "grok",
+        contextLength: 500_000,
+        inputModalities: ["text", "image"],
+        outputModalities: ["text"],
+        source: "preset",
+      },
+      {
+        model: "grok-composer-2.5-fast",
+        modelName: "Grok Composer 2.5 Fast",
+        modelSeries: "grok",
+        contextLength: 200_000,
+        inputModalities: ["text"],
+        outputModalities: ["text"],
+        source: "preset",
+      },
     ],
   },
   {
-    id: 'anthropic-api',
-    name: 'Anthropic (API)',
-    vendor: 'Anthropic',
-    cloudProvider: '官方',
-    type: 'api',
-    primaryModel: 'claude-sonnet-5',
+    id: "anthropic-api",
+    name: "Anthropic (API)",
+    vendor: "Anthropic",
+    cloudProvider: "官方",
+    type: "api",
+    primaryModel: "claude-sonnet-5",
     isBuiltin: true,
-    authType: 'both',
+    authType: "both",
     config: {
-      baseUrl: 'https://api.anthropic.com',
+      baseUrl: "https://api.anthropic.com",
     },
     modelAliases: { ...ANTHROPIC_ALIASES },
     models: ANTHROPIC_MODELS,
   },
   {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    vendor: 'DeepSeek',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'deepseek-v4-pro',
+    id: "deepseek",
+    name: "DeepSeek",
+    vendor: "DeepSeek",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "deepseek-v4-pro",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://platform.deepseek.com',
-    modelListUrl: 'https://api.deepseek.com/v1/models',
+    authType: "auth_token",
+    websiteUrl: "https://platform.deepseek.com",
+    modelListUrl: "https://api.deepseek.com/v1/models",
     config: {
-      baseUrl: 'https://api.deepseek.com/anthropic',
+      baseUrl: "https://api.deepseek.com/anthropic",
       timeout: 600000,
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'deepseek-v4-pro', opus: 'deepseek-v4-pro', haiku: 'deepseek-v4-flash' },
+    modelAliases: {
+      sonnet: "deepseek-v4-pro",
+      opus: "deepseek-v4-pro",
+      haiku: "deepseek-v4-flash",
+    },
     models: [
       // DeepSeek V4 系纯文本；视觉能力在独立的 DeepSeek-VL2 / Janus 模型族。
       // deepseek-chat / deepseek-reasoner 已退化为 v4-flash 的别名且 2026-07-24 硬下线，故移除。
-      { model: 'deepseek-v4-pro', modelName: 'DeepSeek V4 Pro', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
-      { model: 'deepseek-v4-flash', modelName: 'DeepSeek V4 Flash', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
+      {
+        model: "deepseek-v4-pro",
+        modelName: "DeepSeek V4 Pro",
+        modelSeries: "deepseek",
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "deepseek-v4-flash",
+        modelName: "DeepSeek V4 Flash",
+        modelSeries: "deepseek",
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
-    id: 'moonshot',
-    name: 'Moonshot AI',
-    vendor: 'Moonshot',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'kimi-k2.6',
+    id: "moonshot",
+    name: "Moonshot AI",
+    vendor: "Moonshot",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "kimi-k2.6",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://platform.moonshot.cn/console',
-    modelListUrl: 'https://api.moonshot.cn/v1/models',
+    authType: "auth_token",
+    websiteUrl: "https://platform.moonshot.cn/console",
+    modelListUrl: "https://api.moonshot.cn/v1/models",
     config: {
-      baseUrl: 'https://api.moonshot.cn/anthropic',
+      baseUrl: "https://api.moonshot.cn/anthropic",
     },
-    modelAliases: { sonnet: 'kimi-k2.6', opus: 'kimi-k2.6', haiku: 'kimi-k2-thinking-turbo' },
+    modelAliases: {
+      sonnet: "kimi-k2.6",
+      opus: "kimi-k2.6",
+      haiku: "kimi-k2-thinking-turbo",
+    },
     models: [
       // K2.5 引入视觉,K2.6 增加视频;K2-0711(原始 0711 release)在视觉之前,纯文本
-      { model: 'kimi-k2.6', modelName: 'Kimi K2.6', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image', 'video'] },
-      { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image'] },
-      { model: 'kimi-k2-thinking-turbo', modelName: 'Kimi K2 Thinking Turbo', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image'] },
+      {
+        model: "kimi-k2.6",
+        modelName: "Kimi K2.6",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "kimi-k2.5",
+        modelName: "Kimi K2.5",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "kimi-k2-thinking-turbo",
+        modelName: "Kimi K2 Thinking Turbo",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image"],
+      },
       // 官方 API id 必须带 -preview 后缀（kimi-k2-0711 会 model-not-found）
-      { model: 'kimi-k2-0711-preview', modelName: 'Kimi K2', modelSeries: 'moonshot', contextLength: 131_072, maxOutputTokens: 16_384, inputModalities: ['text'] },
+      {
+        model: "kimi-k2-0711-preview",
+        modelName: "Kimi K2",
+        modelSeries: "moonshot",
+        contextLength: 131_072,
+        maxOutputTokens: 16_384,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
-    id: 'moonshot-coding',
-    name: 'Kimi Code',
-    vendor: 'Moonshot',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'kimi-for-coding',
+    id: "moonshot-coding",
+    name: "Kimi Code",
+    vendor: "Moonshot",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "kimi-for-coding",
     isBuiltin: true,
-    authType: 'api_key',
-    websiteUrl: 'https://www.kimi.com/code',
+    authType: "api_key",
+    websiteUrl: "https://www.kimi.com/code",
     config: {
-      baseUrl: 'https://api.kimi.com/coding/',
+      baseUrl: "https://api.kimi.com/coding/",
     },
-    modelAliases: { sonnet: 'kimi-for-coding', opus: 'kimi-for-coding', haiku: 'kimi-for-coding' },
+    modelAliases: {
+      sonnet: "kimi-for-coding",
+      opus: "kimi-for-coding",
+      haiku: "kimi-for-coding",
+    },
     models: [
       // Kimi Code 由 K2.5 驱动，256K 上下文，支持 screenshot-to-code 等视觉工作流
       // (https://www.kimi.com/resources/kimi-code-introduction)
-      { model: 'kimi-for-coding', modelName: 'Kimi for Coding', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 65_536, inputModalities: ['text', 'image'] },
+      {
+        model: "kimi-for-coding",
+        modelName: "Kimi for Coding",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image"],
+      },
     ],
   },
   {
-    id: 'zhipu',
-    name: '智谱 Coding Plan',
-    vendor: 'Zhipu',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'glm-4.7',
+    id: "zhipu",
+    name: "智谱 Coding Plan",
+    vendor: "Zhipu",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "glm-4.7",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://bigmodel.cn/console/overview',
-    modelListUrl: 'https://open.bigmodel.cn/api/paas/v4/models',
+    authType: "auth_token",
+    websiteUrl: "https://bigmodel.cn/console/overview",
+    modelListUrl: "https://open.bigmodel.cn/api/paas/v4/models",
     config: {
-      baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
       timeout: 600000,
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'glm-5.1', opus: 'glm-5.2', haiku: 'glm-5.1' },
+    modelAliases: { sonnet: "glm-5.1", opus: "glm-5.2", haiku: "glm-5.1" },
     models: [
       // GLM-5.2 Coding Plan 官方接入文档公布 1M 上下文 / 131072 max tokens；
       // GLM-5.1 / 5-Turbo 官方公布 200K 上下文（docs.bigmodel.cn / z.ai），其余系列以 LiteLLM 数据为准
       // GLM-5.x / 4.x chat 端点为纯文本；视觉能力在独立的 GLM-4V / GLM-5V 模型族
-      { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-5.1', modelName: 'GLM 5.1', modelSeries: 'zhipu', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-5-turbo', modelName: 'GLM 5 Turbo', modelSeries: 'zhipu', contextLength: 202_752, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-4.7', modelName: 'GLM 4.7', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-5', modelName: 'GLM 5', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-4.5-air', modelName: 'GLM 4.5 Air', modelSeries: 'zhipu', contextLength: 128_000, maxOutputTokens: 32_000, inputModalities: ['text'] },
+      {
+        model: "glm-5.2",
+        modelName: "GLM 5.2",
+        modelSeries: "zhipu",
+        contextLength: 1_000_000,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-5.1",
+        modelName: "GLM 5.1",
+        modelSeries: "zhipu",
+        contextLength: 204_800,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-5-turbo",
+        modelName: "GLM 5 Turbo",
+        modelSeries: "zhipu",
+        contextLength: 202_752,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-4.7",
+        modelName: "GLM 4.7",
+        modelSeries: "zhipu",
+        contextLength: 200_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-5",
+        modelName: "GLM 5",
+        modelSeries: "zhipu",
+        contextLength: 200_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-4.5-air",
+        modelName: "GLM 4.5 Air",
+        modelSeries: "zhipu",
+        contextLength: 128_000,
+        maxOutputTokens: 32_000,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
@@ -1446,78 +1774,173 @@ export const PRESET_PROVIDERS: Provider[] = [
     // the distinction is protocol: Coding Plan uses the `/api/anthropic`
     // path (Anthropic-native), this one uses `/api/paas/v4/chat/completions`
     // via the Bridge's OpenAI translator (see src/server/openai-bridge).
-    id: 'zhipu-ai',
-    name: '智谱 AI',
-    vendor: 'Zhipu',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'glm-4.7',
+    id: "zhipu-ai",
+    name: "智谱 AI",
+    vendor: "Zhipu",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "glm-4.7",
     isBuiltin: true,
-    authType: 'api_key',
-    apiProtocol: 'openai',
-    websiteUrl: 'https://bigmodel.cn/console/overview',
-    modelListUrl: 'https://open.bigmodel.cn/api/paas/v4/models',
+    authType: "api_key",
+    apiProtocol: "openai",
+    websiteUrl: "https://bigmodel.cn/console/overview",
+    modelListUrl: "https://open.bigmodel.cn/api/paas/v4/models",
     config: {
-      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
       timeout: 600000,
     },
-    modelAliases: { sonnet: 'glm-5.1', opus: 'glm-5.2', haiku: 'glm-5.1' },
+    modelAliases: { sonnet: "glm-5.1", opus: "glm-5.2", haiku: "glm-5.1" },
     models: [
       // GLM-5.2 Coding Plan 官方接入文档公布 1M 上下文 / 131072 max tokens；
       // GLM-5.1 / 5-Turbo 官方公布 200K 上下文（docs.bigmodel.cn / z.ai），其余系列以 LiteLLM 数据为准
       // GLM-5.x / 4.x chat 端点为纯文本；视觉能力在独立的 GLM-4V / GLM-5V 模型族
-      { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-5.1', modelName: 'GLM 5.1', modelSeries: 'zhipu', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-5-turbo', modelName: 'GLM 5 Turbo', modelSeries: 'zhipu', contextLength: 202_752, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-4.7', modelName: 'GLM 4.7', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-5', modelName: 'GLM 5', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-4.5-air', modelName: 'GLM 4.5 Air', modelSeries: 'zhipu', contextLength: 128_000, maxOutputTokens: 32_000, inputModalities: ['text'] },
+      {
+        model: "glm-5.2",
+        modelName: "GLM 5.2",
+        modelSeries: "zhipu",
+        contextLength: 1_000_000,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-5.1",
+        modelName: "GLM 5.1",
+        modelSeries: "zhipu",
+        contextLength: 204_800,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-5-turbo",
+        modelName: "GLM 5 Turbo",
+        modelSeries: "zhipu",
+        contextLength: 202_752,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-4.7",
+        modelName: "GLM 4.7",
+        modelSeries: "zhipu",
+        contextLength: 200_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-5",
+        modelName: "GLM 5",
+        modelSeries: "zhipu",
+        contextLength: 200_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "glm-4.5-air",
+        modelName: "GLM 4.5 Air",
+        modelSeries: "zhipu",
+        contextLength: 128_000,
+        maxOutputTokens: 32_000,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
-    id: 'minimax',
-    name: 'MiniMax',
-    vendor: 'MiniMax',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'MiniMax-M2.7',
+    id: "minimax",
+    name: "MiniMax",
+    vendor: "MiniMax",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "MiniMax-M2.7",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://platform.minimaxi.com/docs/guides/models-intro',
+    authType: "auth_token",
+    websiteUrl: "https://platform.minimaxi.com/docs/guides/models-intro",
     config: {
-      baseUrl: 'https://api.minimaxi.com/anthropic',
+      baseUrl: "https://api.minimaxi.com/anthropic",
     },
-    modelAliases: { sonnet: 'MiniMax-M2.7', opus: 'MiniMax-M2.7', haiku: 'MiniMax-M2.7-highspeed' },
+    modelAliases: {
+      sonnet: "MiniMax-M2.7",
+      opus: "MiniMax-M2.7",
+      haiku: "MiniMax-M2.7-highspeed",
+    },
     models: [
       // MiniMax-M3（2026-06-01 发布）为新旗舰，原生多模态，官方上下文 1M（≥阈值 → 自动 [1m]）。
       // M2.x 全系上下文 = 204,800（200K，官方 api-overview；旧 196,608 与 LiteLLM 的 1M 均为错误值）。
       // 变体 API id 用 -highspeed（"Lightning" 仅营销名，API 不接受）。
       // max output 官方未逐一公布：M3 暂按 M2 系列 128K（待核），M2.5/M2.1 沿用历史值。
-      { model: 'MiniMax-M3', modelName: 'MiniMax M3', modelSeries: 'minimax', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text', 'image'] },
-      { model: 'MiniMax-M2.7', modelName: 'MiniMax M2.7', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.7-highspeed', modelName: 'MiniMax M2.7 Highspeed', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.5', modelName: 'MiniMax M2.5', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.5-highspeed', modelName: 'MiniMax M2.5 Highspeed', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.1', modelName: 'MiniMax M2.1', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.1-highspeed', modelName: 'MiniMax M2.1 Highspeed', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
+      {
+        model: "MiniMax-M3",
+        modelName: "MiniMax M3",
+        modelSeries: "minimax",
+        contextLength: 1_000_000,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "MiniMax-M2.7",
+        modelName: "MiniMax M2.7",
+        modelSeries: "minimax",
+        contextLength: 204_800,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "MiniMax-M2.7-highspeed",
+        modelName: "MiniMax M2.7 Highspeed",
+        modelSeries: "minimax",
+        contextLength: 204_800,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "MiniMax-M2.5",
+        modelName: "MiniMax M2.5",
+        modelSeries: "minimax",
+        contextLength: 204_800,
+        maxOutputTokens: 8_192,
+        inputModalities: ["text"],
+      },
+      {
+        model: "MiniMax-M2.5-highspeed",
+        modelName: "MiniMax M2.5 Highspeed",
+        modelSeries: "minimax",
+        contextLength: 204_800,
+        maxOutputTokens: 8_192,
+        inputModalities: ["text"],
+      },
+      {
+        model: "MiniMax-M2.1",
+        modelName: "MiniMax M2.1",
+        modelSeries: "minimax",
+        contextLength: 204_800,
+        maxOutputTokens: 8_192,
+        inputModalities: ["text"],
+      },
+      {
+        model: "MiniMax-M2.1-highspeed",
+        modelName: "MiniMax M2.1 Highspeed",
+        modelSeries: "minimax",
+        contextLength: 204_800,
+        maxOutputTokens: 8_192,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
     // 小米 MiMo —— 按量付费（pay-as-you-go）。sk- 形式的 ANTHROPIC_AUTH_TOKEN，按 token 计费走账户余额。
     // 与下方 Token Plan 订阅版拆成两个供应商：端点 / key 前缀 / 计费口径都不同，用户需明确区分。
-    id: 'xiaomi-mimo',
-    name: '小米 MiMo API',
-    vendor: 'Xiaomi',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'mimo-v2.5-pro',
+    id: "xiaomi-mimo",
+    name: "小米 MiMo API",
+    vendor: "Xiaomi",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "mimo-v2.5-pro",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://platform.xiaomimimo.com/console/api-keys',
+    authType: "auth_token",
+    websiteUrl: "https://platform.xiaomimimo.com/console/api-keys",
     // Anthropic 兼容路径不暴露 /v1/models，模型发现走 OpenAI 兼容路径（同 deepseek/moonshot）
-    modelListUrl: 'https://api.xiaomimimo.com/v1/models',
+    modelListUrl: "https://api.xiaomimimo.com/v1/models",
     config: {
-      baseUrl: 'https://api.xiaomimimo.com/anthropic',
+      baseUrl: "https://api.xiaomimimo.com/anthropic",
       timeout: 600000,
       disableNonessential: true,
     },
@@ -1527,18 +1950,18 @@ export const PRESET_PROVIDERS: Provider[] = [
   {
     // 小米 MiMo —— Token Plan 订阅套餐。tp- 形式的专属 key，消耗套餐额度而非账户余额。
     // 默认中国区端点；海外用户把 Base URL 改成 token-plan-sgp（新加坡）/ token-plan-ams（欧洲）。
-    id: 'xiaomi-mimo-token-plan',
-    name: '小米 MiMo Token Plan (CN)',
-    vendor: 'Xiaomi',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'mimo-v2.5-pro',
+    id: "xiaomi-mimo-token-plan",
+    name: "小米 MiMo Token Plan (CN)",
+    vendor: "Xiaomi",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "mimo-v2.5-pro",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://platform.xiaomimimo.com/console',
-    modelListUrl: 'https://token-plan-cn.xiaomimimo.com/v1/models',
+    authType: "auth_token",
+    websiteUrl: "https://platform.xiaomimimo.com/console",
+    modelListUrl: "https://token-plan-cn.xiaomimimo.com/v1/models",
     config: {
-      baseUrl: 'https://token-plan-cn.xiaomimimo.com/anthropic',
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/anthropic",
       timeout: 600000,
       disableNonessential: true,
     },
@@ -1546,204 +1969,575 @@ export const PRESET_PROVIDERS: Provider[] = [
     models: MIMO_MODELS,
   },
   {
-    id: 'google-gemini',
-    name: 'Google Gemini',
-    vendor: 'Google',
-    cloudProvider: '模型官方',
-    type: 'api',
-    primaryModel: 'gemini-2.5-flash',
+    id: "google-gemini",
+    name: "Google Gemini",
+    vendor: "Google",
+    cloudProvider: "模型官方",
+    type: "api",
+    primaryModel: "gemini-2.5-flash",
     isBuiltin: true,
-    authType: 'api_key',
-    apiProtocol: 'openai',
+    authType: "api_key",
+    apiProtocol: "openai",
     maxOutputTokens: 8192,
-    websiteUrl: 'https://aistudio.google.com/apikey',
+    websiteUrl: "https://aistudio.google.com/apikey",
     config: {
-      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     },
-    modelAliases: { sonnet: 'gemini-3.1-pro-preview', opus: 'gemini-3.1-pro-preview', haiku: 'gemini-3.5-flash' },
+    modelAliases: {
+      sonnet: "gemini-3.1-pro-preview",
+      opus: "gemini-3.1-pro-preview",
+      haiku: "gemini-3.5-flash",
+    },
     models: [
       // Gemini 全系原生多模态：text + image + video + audio
-      { model: 'gemini-2.5-pro', modelName: 'Gemini 2.5 Pro', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_535, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'gemini-2.5-flash', modelName: 'Gemini 2.5 Flash', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_535, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'gemini-2.5-flash-lite', modelName: 'Gemini 2.5 Flash-Lite', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_535, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'gemini-3.1-pro-preview', modelName: 'Gemini 3.1 Pro Preview', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
+      {
+        model: "gemini-2.5-pro",
+        modelName: "Gemini 2.5 Pro",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_535,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "gemini-2.5-flash",
+        modelName: "Gemini 2.5 Flash",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_535,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "gemini-2.5-flash-lite",
+        modelName: "Gemini 2.5 Flash-Lite",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_535,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "gemini-3.1-pro-preview",
+        modelName: "Gemini 3.1 Pro Preview",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
       // gemini-3.5-flash（2026-05 GA）为当前旗舰 Flash，取代 gemini-3-flash-preview
-      { model: 'gemini-3.5-flash', modelName: 'Gemini 3.5 Flash', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
+      {
+        model: "gemini-3.5-flash",
+        modelName: "Gemini 3.5 Flash",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
     ],
   },
   {
-    id: 'volcengine',
-    name: '火山方舟 Coding Plan',
-    vendor: '字节跳动',
-    cloudProvider: '云服务商',
-    type: 'api',
-    primaryModel: 'doubao-seed-2.0-code',
+    id: "volcengine",
+    name: "火山方舟 Coding Plan",
+    vendor: "字节跳动",
+    cloudProvider: "云服务商",
+    type: "api",
+    primaryModel: "doubao-seed-2.0-code",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://console.volcengine.com/',
+    authType: "auth_token",
+    websiteUrl: "https://console.volcengine.com/",
     config: {
-      baseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
+      baseUrl: "https://ark.cn-beijing.volces.com/api/coding",
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'doubao-seed-2.0-code', opus: 'doubao-seed-2.0-code', haiku: 'doubao-seed-2.0-code' },
+    modelAliases: {
+      sonnet: "doubao-seed-2.0-code",
+      opus: "doubao-seed-2.0-code",
+      haiku: "doubao-seed-2.0-code",
+    },
     models: [
       // doubao-seed-2.0-code: 256K (seed.bytedance.com); Doubao Seed 2.0 全系多模态(text/image/video)
       // 其余 Volcengine 转发上游模型，inputModalities 跟随上游原生能力
-      { model: 'doubao-seed-2.0-code', modelName: 'Doubao Seed 2.0 Code', modelSeries: 'volcengine', contextLength: 262_144, maxOutputTokens: 128_000, inputModalities: ['text', 'image', 'video'] },
-      { model: 'glm-4.7', modelName: 'GLM 4.7', modelSeries: 'volcengine', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'deepseek-v3.2', modelName: 'DeepSeek V3.2', modelSeries: 'volcengine', contextLength: 163_840, maxOutputTokens: 163_840, inputModalities: ['text'] },
-      { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'volcengine', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image'] },
+      {
+        model: "doubao-seed-2.0-code",
+        modelName: "Doubao Seed 2.0 Code",
+        modelSeries: "volcengine",
+        contextLength: 262_144,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "glm-4.7",
+        modelName: "GLM 4.7",
+        modelSeries: "volcengine",
+        contextLength: 200_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "deepseek-v3.2",
+        modelName: "DeepSeek V3.2",
+        modelSeries: "volcengine",
+        contextLength: 163_840,
+        maxOutputTokens: 163_840,
+        inputModalities: ["text"],
+      },
+      {
+        model: "kimi-k2.5",
+        modelName: "Kimi K2.5",
+        modelSeries: "volcengine",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image"],
+      },
     ],
   },
   {
-    id: 'volcengine-api',
-    name: '火山方舟 API调用',
-    vendor: '字节跳动',
-    cloudProvider: '云服务商',
-    type: 'api',
-    primaryModel: 'doubao-seed-2-0-pro-260215',
+    id: "volcengine-api",
+    name: "火山方舟 API调用",
+    vendor: "字节跳动",
+    cloudProvider: "云服务商",
+    type: "api",
+    primaryModel: "doubao-seed-2-0-pro-260215",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://console.volcengine.com/',
+    authType: "auth_token",
+    websiteUrl: "https://console.volcengine.com/",
     config: {
-      baseUrl: 'https://ark.cn-beijing.volces.com/api/compatible',
+      baseUrl: "https://ark.cn-beijing.volces.com/api/compatible",
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'doubao-seed-2-0-pro-260215', opus: 'doubao-seed-2-0-pro-260215', haiku: 'doubao-seed-2-0-lite-260428' },
+    modelAliases: {
+      sonnet: "doubao-seed-2-0-pro-260215",
+      opus: "doubao-seed-2-0-pro-260215",
+      haiku: "doubao-seed-2-0-lite-260428",
+    },
     models: [
       // Doubao Seed 2.0 全系多模态：text + image + video（ByteDance Seed 2.0 公告）
-      { model: 'doubao-seed-2-0-pro-260215', modelName: 'Doubao Seed 2.0 Pro', modelSeries: 'volcengine', contextLength: 256_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image', 'video'] },
-      { model: 'doubao-seed-2-0-code-preview-260215', modelName: 'Doubao Seed 2.0 Code Preview', modelSeries: 'volcengine', contextLength: 256_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image', 'video'] },
+      {
+        model: "doubao-seed-2-0-pro-260215",
+        modelName: "Doubao Seed 2.0 Pro",
+        modelSeries: "volcengine",
+        contextLength: 256_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "doubao-seed-2-0-code-preview-260215",
+        modelName: "Doubao Seed 2.0 Code Preview",
+        modelSeries: "volcengine",
+        contextLength: 256_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image", "video"],
+      },
       // Lite 升级到 0428（omni-modal 升级版，取代 -260215）
-      { model: 'doubao-seed-2-0-lite-260428', modelName: 'Doubao Seed 2.0 Lite', modelSeries: 'volcengine', contextLength: 256_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image', 'video'] },
+      {
+        model: "doubao-seed-2-0-lite-260428",
+        modelName: "Doubao Seed 2.0 Lite",
+        modelSeries: "volcengine",
+        contextLength: 256_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image", "video"],
+      },
     ],
   },
   {
-    id: 'siliconflow',
-    name: '硅基流动SiliconFlow',
-    vendor: 'SiliconFlow',
-    cloudProvider: '云服务商',
-    type: 'api',
-    primaryModel: 'Pro/zai-org/GLM-5.1',
+    id: "siliconflow",
+    name: "硅基流动SiliconFlow",
+    vendor: "SiliconFlow",
+    cloudProvider: "云服务商",
+    type: "api",
+    primaryModel: "Pro/zai-org/GLM-5.1",
     isBuiltin: true,
-    authType: 'api_key',
+    authType: "api_key",
     // SiliconFlow 的 Anthropic 兼容层（baseUrl '/'）对 Kimi K2.5 等模型返回非规范的
     // `thinking` content block，SDK 解析失败抛 'Content block is not a text block'
     // (issue #216, 报告者一日撞 43 次)。OpenAI 兼容层（baseUrl '/v1'）是
     // SiliconFlow 的主营路径，质量稳定，reasoning_content / tool_calls 都标准。
     // 走 OpenAI 协议 → 经 OpenAI Bridge 翻译 → SDK 拿到合法 Anthropic 响应，
     // 顺带复用 translate/messages.ts:33 已有的 Kimi K2.5 reasoning_content 适配。
-    apiProtocol: 'openai',
+    apiProtocol: "openai",
     // 32K 是横跨所有 6 个模型的安全上限（MiniMax M2.5 实际 cap 8K，会被上游
     // 静默截到 8K；Kimi K2.5/K2.6 用足）。SDK 默认会发 Claude-级 max_tokens
     // (≥128K)，Bridge 在 handler.ts:218 用这个值覆盖后再发上游——不配会导致
     // 上游用其默认（≈4K），长输出被截。
     maxOutputTokens: 32768,
-    websiteUrl: 'https://cloud.siliconflow.cn/me/models',
+    websiteUrl: "https://cloud.siliconflow.cn/me/models",
     config: {
-      baseUrl: 'https://api.siliconflow.cn/v1',
+      baseUrl: "https://api.siliconflow.cn/v1",
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'Pro/zai-org/GLM-5.1', opus: 'Pro/moonshotai/Kimi-K2.6', haiku: 'stepfun-ai/Step-3.5-Flash' },
+    modelAliases: {
+      sonnet: "Pro/zai-org/GLM-5.1",
+      opus: "Pro/moonshotai/Kimi-K2.6",
+      haiku: "stepfun-ai/Step-3.5-Flash",
+    },
     models: [
       // SiliconFlow 转发上游，上下文 + 模态都跟随上游原生
       // (Step-3.5-Flash 纯文本，Step3 才是多模态，stepfun.ai/research/step3)
       // 注：`Pro/` 是 SiliconFlow 计费分层前缀，仅部分模型有；上线前最好带 key GET /v1/models 核对 V4/M3 实际 id。
-      { model: 'Pro/moonshotai/Kimi-K2.6', modelName: 'Kimi K2.6', modelSeries: 'siliconflow', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image', 'video'] },
-      { model: 'Pro/moonshotai/Kimi-K2.5', modelName: 'Kimi K2.5', modelSeries: 'siliconflow', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image'] },
-      { model: 'Pro/zai-org/GLM-5.1', modelName: 'GLM 5.1', modelSeries: 'siliconflow', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'Pro/deepseek-ai/DeepSeek-V4-Pro', modelName: 'DeepSeek V4 Pro', modelSeries: 'siliconflow', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
-      { model: 'Pro/deepseek-ai/DeepSeek-V4-Flash', modelName: 'DeepSeek V4 Flash', modelSeries: 'siliconflow', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
-      { model: 'Pro/deepseek-ai/DeepSeek-V3.2', modelName: 'DeepSeek V3.2', modelSeries: 'siliconflow', contextLength: 163_840, maxOutputTokens: 163_840, inputModalities: ['text'] },
-      { model: 'Pro/MiniMaxAI/MiniMax-M3', modelName: 'MiniMax M3', modelSeries: 'siliconflow', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text', 'image'] },
-      { model: 'Pro/MiniMaxAI/MiniMax-M2.5', modelName: 'MiniMax M2.5', modelSeries: 'siliconflow', contextLength: 196_608, maxOutputTokens: 8_192, inputModalities: ['text'] },
-      { model: 'stepfun-ai/Step-3.5-Flash', modelName: 'Step 3.5 Flash', modelSeries: 'siliconflow', contextLength: 262_144, maxOutputTokens: 65_536, inputModalities: ['text'] },
+      {
+        model: "Pro/moonshotai/Kimi-K2.6",
+        modelName: "Kimi K2.6",
+        modelSeries: "siliconflow",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "Pro/moonshotai/Kimi-K2.5",
+        modelName: "Kimi K2.5",
+        modelSeries: "siliconflow",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "Pro/zai-org/GLM-5.1",
+        modelName: "GLM 5.1",
+        modelSeries: "siliconflow",
+        contextLength: 204_800,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
+      {
+        model: "Pro/deepseek-ai/DeepSeek-V4-Pro",
+        modelName: "DeepSeek V4 Pro",
+        modelSeries: "siliconflow",
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "Pro/deepseek-ai/DeepSeek-V4-Flash",
+        modelName: "DeepSeek V4 Flash",
+        modelSeries: "siliconflow",
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "Pro/deepseek-ai/DeepSeek-V3.2",
+        modelName: "DeepSeek V3.2",
+        modelSeries: "siliconflow",
+        contextLength: 163_840,
+        maxOutputTokens: 163_840,
+        inputModalities: ["text"],
+      },
+      {
+        model: "Pro/MiniMaxAI/MiniMax-M3",
+        modelName: "MiniMax M3",
+        modelSeries: "siliconflow",
+        contextLength: 1_000_000,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "Pro/MiniMaxAI/MiniMax-M2.5",
+        modelName: "MiniMax M2.5",
+        modelSeries: "siliconflow",
+        contextLength: 196_608,
+        maxOutputTokens: 8_192,
+        inputModalities: ["text"],
+      },
+      {
+        model: "stepfun-ai/Step-3.5-Flash",
+        modelName: "Step 3.5 Flash",
+        modelSeries: "siliconflow",
+        contextLength: 262_144,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
-    id: 'zenmux',
-    name: 'ZenMux',
-    vendor: 'ZenMux',
-    cloudProvider: '云服务商',
-    type: 'api',
-    primaryModel: 'anthropic/claude-sonnet-4.6',
+    id: "zenmux",
+    name: "ZenMux",
+    vendor: "ZenMux",
+    cloudProvider: "云服务商",
+    type: "api",
+    primaryModel: "anthropic/claude-sonnet-4.6",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://zenmux.ai',
+    authType: "auth_token",
+    websiteUrl: "https://zenmux.ai",
     config: {
-      baseUrl: 'https://zenmux.ai/api/anthropic',
+      baseUrl: "https://zenmux.ai/api/anthropic",
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'anthropic/claude-sonnet-4.6', opus: 'anthropic/claude-opus-4.8', haiku: 'bytedance/doubao-seed-2.0-lite' },
+    modelAliases: {
+      sonnet: "anthropic/claude-sonnet-4.6",
+      opus: "anthropic/claude-opus-4.8",
+      haiku: "bytedance/doubao-seed-2.0-lite",
+    },
     models: [
       // ZenMux 聚合路由，上下文 + 模态跟随上游原生；id 已对齐 zenmux.ai/api/v1/models 实测
       // （Doubao 在 ZenMux 的 vendor 前缀是 bytedance，不是 volcengine）。
-      { model: 'google/gemini-3.1-pro-preview', modelName: 'Gemini 3.1 Pro', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'anthropic/claude-sonnet-4.6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
-      { model: 'anthropic/claude-opus-4.8', modelName: 'Claude Opus 4.8', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-      { model: 'openai/gpt-5.4', modelName: 'GPT-5.4', modelSeries: 'openai', contextLength: 1_050_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-      { model: 'deepseek/deepseek-v4-pro', modelName: 'DeepSeek V4 Pro', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
-      { model: 'bytedance/doubao-seed-2.0-pro', modelName: 'Doubao Seed 2.0 Pro', modelSeries: 'volcengine', contextLength: 256_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image', 'video'] },
-      { model: 'bytedance/doubao-seed-2.0-lite', modelName: 'Doubao Seed 2.0 Lite', modelSeries: 'volcengine', contextLength: 256_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image', 'video'] },
-      { model: 'minimax/minimax-m3', modelName: 'MiniMax M3', modelSeries: 'minimax', contextLength: 512_000, maxOutputTokens: 131_072, inputModalities: ['text', 'image'] },
-      { model: 'moonshotai/kimi-k2.6', modelName: 'Kimi K2.6', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image', 'video'] },
-      { model: 'z-ai/glm-5.1', modelName: 'GLM 5.1', modelSeries: 'zhipu', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
+      {
+        model: "google/gemini-3.1-pro-preview",
+        modelName: "Gemini 3.1 Pro",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "anthropic/claude-sonnet-4.6",
+        modelName: "Claude Sonnet 4.6",
+        modelSeries: "claude",
+        contextLength: 1_000_000,
+        maxOutputTokens: 64_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "anthropic/claude-opus-4.8",
+        modelName: "Claude Opus 4.8",
+        modelSeries: "claude",
+        contextLength: 1_000_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "openai/gpt-5.4",
+        modelName: "GPT-5.4",
+        modelSeries: "openai",
+        contextLength: 1_050_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "deepseek/deepseek-v4-pro",
+        modelName: "DeepSeek V4 Pro",
+        modelSeries: "deepseek",
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "bytedance/doubao-seed-2.0-pro",
+        modelName: "Doubao Seed 2.0 Pro",
+        modelSeries: "volcengine",
+        contextLength: 256_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "bytedance/doubao-seed-2.0-lite",
+        modelName: "Doubao Seed 2.0 Lite",
+        modelSeries: "volcengine",
+        contextLength: 256_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "minimax/minimax-m3",
+        modelName: "MiniMax M3",
+        modelSeries: "minimax",
+        contextLength: 512_000,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "moonshotai/kimi-k2.6",
+        modelName: "Kimi K2.6",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "z-ai/glm-5.1",
+        modelName: "GLM 5.1",
+        modelSeries: "zhipu",
+        contextLength: 204_800,
+        maxOutputTokens: 131_072,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
-    id: 'aliyun-bailian-coding',
-    name: '阿里云百炼 Coding Plan',
-    vendor: '阿里云',
-    cloudProvider: '云服务商',
-    type: 'api',
-    primaryModel: 'qwen3.7-plus',
+    id: "aliyun-bailian-coding",
+    name: "阿里云百炼 Coding Plan",
+    vendor: "阿里云",
+    cloudProvider: "云服务商",
+    type: "api",
+    primaryModel: "qwen3.7-plus",
     isBuiltin: true,
-    authType: 'auth_token',
-    websiteUrl: 'https://bailian.console.aliyun.com/',
+    authType: "auth_token",
+    websiteUrl: "https://bailian.console.aliyun.com/",
     config: {
-      baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
+      baseUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
     },
-    modelAliases: { sonnet: 'qwen3.7-plus', opus: 'qwen3.7-plus', haiku: 'qwen3.7-plus' },
+    modelAliases: {
+      sonnet: "qwen3.7-plus",
+      opus: "qwen3.7-plus",
+      haiku: "qwen3.7-plus",
+    },
     models: [
       // qwen3.7-plus 为当前官方推荐旗舰（1M 上下文，原生多模态）；3.5-plus 落后两代但仍在白名单保留。
       // qwen3-coder-plus 为编码专用（1M）。其余为 Coding Plan 转发的三方模型，跟随上游原生模态。
-      { model: 'qwen3.7-plus', modelName: 'Qwen 3.7 Plus', modelSeries: 'aliyun', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video'] },
-      { model: 'qwen3-coder-plus', modelName: 'Qwen3 Coder Plus', modelSeries: 'aliyun', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text'] },
-      { model: 'qwen3.5-plus', modelName: 'Qwen 3.5 Plus', modelSeries: 'aliyun', contextLength: 991_808, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video'] },
-      { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'aliyun', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image'] },
-      { model: 'glm-5', modelName: 'GLM 5', modelSeries: 'aliyun', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.5', modelName: 'MiniMax M2.5', modelSeries: 'aliyun', contextLength: 196_608, maxOutputTokens: 8_192, inputModalities: ['text'] },
+      {
+        model: "qwen3.7-plus",
+        modelName: "Qwen 3.7 Plus",
+        modelSeries: "aliyun",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "qwen3-coder-plus",
+        modelName: "Qwen3 Coder Plus",
+        modelSeries: "aliyun",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text"],
+      },
+      {
+        model: "qwen3.5-plus",
+        modelName: "Qwen 3.5 Plus",
+        modelSeries: "aliyun",
+        contextLength: 991_808,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "kimi-k2.5",
+        modelName: "Kimi K2.5",
+        modelSeries: "aliyun",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "glm-5",
+        modelName: "GLM 5",
+        modelSeries: "aliyun",
+        contextLength: 200_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "MiniMax-M2.5",
+        modelName: "MiniMax M2.5",
+        modelSeries: "aliyun",
+        contextLength: 196_608,
+        maxOutputTokens: 8_192,
+        inputModalities: ["text"],
+      },
     ],
   },
   {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    vendor: 'OpenRouter',
-    cloudProvider: '云服务商',
-    type: 'api',
-    primaryModel: 'google/gemini-3.1-pro-preview',
+    id: "openrouter",
+    name: "OpenRouter",
+    vendor: "OpenRouter",
+    cloudProvider: "云服务商",
+    type: "api",
+    primaryModel: "google/gemini-3.1-pro-preview",
     isBuiltin: true,
-    authType: 'auth_token_clear_api_key',
-    websiteUrl: 'https://openrouter.ai/',
+    authType: "auth_token_clear_api_key",
+    websiteUrl: "https://openrouter.ai/",
     config: {
-      baseUrl: 'https://openrouter.ai/api',
+      baseUrl: "https://openrouter.ai/api",
     },
-    modelAliases: { sonnet: 'google/gemini-3.1-pro-preview', opus: 'google/gemini-3.1-pro-preview', haiku: 'google/gemini-3-flash-preview' },
+    modelAliases: {
+      sonnet: "google/gemini-3.1-pro-preview",
+      opus: "google/gemini-3.1-pro-preview",
+      haiku: "google/gemini-3-flash-preview",
+    },
     models: [
       // OpenRouter 自身路由，模态直接来自 OpenRouter `architecture.input_modalities`
-      { model: 'google/gemini-3.1-flash-lite-preview', modelName: 'Gemini 3.1 Flash Lite', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'google/gemini-3-flash-preview', modelName: 'Gemini 3 Flash', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_535, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'google/gemini-3.1-pro-preview', modelName: 'Gemini 3.1 Pro', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'anthropic/claude-sonnet-4.6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+      {
+        model: "google/gemini-3.1-flash-lite-preview",
+        modelName: "Gemini 3.1 Flash Lite",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "google/gemini-3-flash-preview",
+        modelName: "Gemini 3 Flash",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_535,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "google/gemini-3.1-pro-preview",
+        modelName: "Gemini 3.1 Pro",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "anthropic/claude-sonnet-4.6",
+        modelName: "Claude Sonnet 4.6",
+        modelSeries: "claude",
+        contextLength: 1_000_000,
+        maxOutputTokens: 64_000,
+        inputModalities: ["text", "image"],
+      },
       // claude-opus-4.6 已落后两代 → 升级到当前旗舰 4.8
-      { model: 'anthropic/claude-opus-4.8', modelName: 'Claude Opus 4.8', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-      { model: 'anthropic/claude-haiku-4.5', modelName: 'Claude Haiku 4.5', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
-      { model: 'openai/gpt-5.4', modelName: 'GPT-5.4', modelSeries: 'openai', contextLength: 1_050_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-      { model: 'openai/gpt-5.4-pro', modelName: 'GPT-5.4 Pro', modelSeries: 'openai', contextLength: 1_050_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-      { model: 'openai/gpt-5.3-codex', modelName: 'GPT-5.3 Codex', modelSeries: 'openai', contextLength: 272_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-      { model: 'openai/gpt-5.3-chat', modelName: 'GPT-5.3 Chat', modelSeries: 'openai', contextLength: 128_000, maxOutputTokens: 16_384, inputModalities: ['text', 'image'] },
-      { model: 'deepseek/deepseek-v4-pro', modelName: 'DeepSeek V4 Pro', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
-      { model: 'moonshotai/kimi-k2.6', modelName: 'Kimi K2.6', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image', 'video'] },
+      {
+        model: "anthropic/claude-opus-4.8",
+        modelName: "Claude Opus 4.8",
+        modelSeries: "claude",
+        contextLength: 1_000_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "anthropic/claude-haiku-4.5",
+        modelName: "Claude Haiku 4.5",
+        modelSeries: "claude",
+        contextLength: 200_000,
+        maxOutputTokens: 64_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "openai/gpt-5.4",
+        modelName: "GPT-5.4",
+        modelSeries: "openai",
+        contextLength: 1_050_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "openai/gpt-5.4-pro",
+        modelName: "GPT-5.4 Pro",
+        modelSeries: "openai",
+        contextLength: 1_050_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "openai/gpt-5.3-codex",
+        modelName: "GPT-5.3 Codex",
+        modelSeries: "openai",
+        contextLength: 272_000,
+        maxOutputTokens: 128_000,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "openai/gpt-5.3-chat",
+        modelName: "GPT-5.3 Chat",
+        modelSeries: "openai",
+        contextLength: 128_000,
+        maxOutputTokens: 16_384,
+        inputModalities: ["text", "image"],
+      },
+      {
+        model: "deepseek/deepseek-v4-pro",
+        modelName: "DeepSeek V4 Pro",
+        modelSeries: "deepseek",
+        contextLength: 1_000_000,
+        maxOutputTokens: 384_000,
+        inputModalities: ["text"],
+      },
+      {
+        model: "moonshotai/kimi-k2.6",
+        modelName: "Kimi K2.6",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        maxOutputTokens: 262_144,
+        inputModalities: ["text", "image", "video"],
+      },
     ],
   },
 ];
@@ -1753,32 +2547,32 @@ export const PRESET_PROVIDERS: Provider[] = [
 /**
  * MCP Server type
  */
-export type McpServerType = 'stdio' | 'sse' | 'http';
+export type McpServerType = "stdio" | "sse" | "http";
 
 /**
  * MCP Server definition - unified configuration for all MCP server types
  */
 export interface McpServerDefinition {
   id: string;
-  name: string;            // Display name
-  description?: string;    // Feature description
+  name: string; // Display name
+  description?: string; // Feature description
   type: McpServerType;
 
   // stdio configuration
-  command?: string;        // Command to run (e.g., 'npx')
-  args?: string[];         // Command arguments
-  env?: Record<string, string>;  // Environment variables
+  command?: string; // Command to run (e.g., 'npx')
+  args?: string[]; // Command arguments
+  env?: Record<string, string>; // Environment variables
 
   // sse/http configuration
   url?: string;
   headers?: Record<string, string>;
 
   // Metadata
-  isBuiltin: boolean;      // Is a preset MCP
-  isFree?: boolean;        // No API key / paid service required
-  requiresConfig?: string[];  // Required config fields (e.g., API keys)
-  websiteUrl?: string;     // Website for API key registration
-  configHint?: string;     // Help text shown in settings dialog (e.g., "去官网注册获取 API Key")
+  isBuiltin: boolean; // Is a preset MCP
+  isFree?: boolean; // No API key / paid service required
+  requiresConfig?: string[]; // Required config fields (e.g., API keys)
+  websiteUrl?: string; // Website for API key registration
+  configHint?: string; // Help text shown in settings dialog (e.g., "去官网注册获取 API Key")
   /**
    * Platforms this preset supports. Undefined = all platforms.
    * Values match `process.platform` / `NodeJS.Platform`
@@ -1793,12 +2587,23 @@ export interface McpServerDefinition {
 /**
  * MCP Server status (runtime)
  */
-export type McpServerStatus = 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled';
+export type McpServerStatus =
+  | "connected"
+  | "failed"
+  | "needs-auth"
+  | "pending"
+  | "disabled";
 
 /**
  * MCP enable error type (returned by /api/mcp/enable)
  */
-export type McpEnableErrorType = 'command_not_found' | 'warmup_failed' | 'package_not_found' | 'runtime_error' | 'connection_failed' | 'unknown';
+export type McpEnableErrorType =
+  | "command_not_found"
+  | "warmup_failed"
+  | "package_not_found"
+  | "runtime_error"
+  | "connection_failed"
+  | "unknown";
 
 /**
  * MCP enable error response
@@ -1816,70 +2621,73 @@ export interface McpEnableError {
  */
 export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
   {
-    id: 'playwright',
-    name: 'Playwright 浏览器',
-    description: '浏览器自动化能力，支持网页浏览、截图、表单填写等',
-    type: 'stdio',
-    command: 'npx',
+    id: "playwright",
+    name: "Playwright 浏览器",
+    description: "浏览器自动化能力，支持网页浏览、截图、表单填写等",
+    type: "stdio",
+    command: "npx",
     args: [PLAYWRIGHT_MCP_PACKAGE_SPEC],
     isBuiltin: true,
     isFree: true,
   },
   {
-    id: 'ddg-search',
-    name: 'DuckDuckGo 搜索引擎',
-    description: '无需 API Key。受 DuckDuckGo 频率限制（≤1次/秒，≤15000次/月），高频使用可能返回 400 错误',
-    type: 'stdio',
-    command: 'uvx',
-    args: ['duckduckgo-mcp-server'],
+    id: "ddg-search",
+    name: "DuckDuckGo 搜索引擎",
+    description:
+      "无需 API Key。受 DuckDuckGo 频率限制（≤1次/秒，≤15000次/月），高频使用可能返回 400 错误",
+    type: "stdio",
+    command: "uvx",
+    args: ["duckduckgo-mcp-server"],
     isBuiltin: true,
     isFree: true,
   },
   {
-    id: 'tavily-search',
-    name: 'Tavily 搜索引擎',
-    description: '专为 AI 优化的全网搜索，返回结构化结果。免费 1000 次/月，无需信用卡',
-    type: 'http',
-    url: 'https://mcp.tavily.com/mcp/?tavilyApiKey={{TAVILY_API_KEY}}',
+    id: "tavily-search",
+    name: "Tavily 搜索引擎",
+    description:
+      "专为 AI 优化的全网搜索，返回结构化结果。免费 1000 次/月，无需信用卡",
+    type: "http",
+    url: "https://mcp.tavily.com/mcp/?tavilyApiKey={{TAVILY_API_KEY}}",
     isBuiltin: true,
-    requiresConfig: ['TAVILY_API_KEY'],
-    websiteUrl: 'https://app.tavily.com/home',
-    configHint: '免费注册即可获取 API Key（1000 次/月，无需信用卡）',
+    requiresConfig: ["TAVILY_API_KEY"],
+    websiteUrl: "https://app.tavily.com/home",
+    configHint: "免费注册即可获取 API Key（1000 次/月，无需信用卡）",
   },
   {
-    id: 'gemini-image',
-    name: 'Nano Banana 图片生成',
-    description: '支持图片生成与多轮编辑（基于 Gemini Nano Banana）',
-    type: 'stdio',
-    command: '__builtin__',
+    id: "gemini-image",
+    name: "Nano Banana 图片生成",
+    description: "支持图片生成与多轮编辑（基于 Gemini Nano Banana）",
+    type: "stdio",
+    command: "__builtin__",
     args: [],
     isBuiltin: true,
-    requiresConfig: ['GEMINI_API_KEY'],
-    websiteUrl: 'https://aistudio.google.com/apikey',
-    configHint: '在 Google AI Studio 一键创建 API Key',
+    requiresConfig: ["GEMINI_API_KEY"],
+    websiteUrl: "https://aistudio.google.com/apikey",
+    configHint: "在 Google AI Studio 一键创建 API Key",
   },
   {
-    id: 'edge-tts',
-    name: 'Edge TTS 语音合成',
-    description: '免费文字转语音，支持 400+ 语音（基于 Microsoft Edge TTS，无需 API Key）',
-    type: 'stdio',
-    command: '__builtin__',
+    id: "edge-tts",
+    name: "Edge TTS 语音合成",
+    description:
+      "免费文字转语音，支持 400+ 语音（基于 Microsoft Edge TTS，无需 API Key）",
+    type: "stdio",
+    command: "__builtin__",
     args: [],
     isBuiltin: true,
     isFree: true,
   },
   {
-    id: 'cuse',
-    name: 'Cuse 电脑控制',
-    description: '让 AI 直接操作你的电脑：截图、点击、输入、滚动。',
-    type: 'stdio',
+    id: "cuse",
+    name: "Cuse 电脑控制",
+    description: "让 AI 直接操作你的电脑：截图、点击、输入、滚动。",
+    type: "stdio",
     // Sentinel resolved at MCP launch to the bundled cuse binary path —
     // see getBundledCusePath() in src/server/utils/runtime.ts.
-    command: '__bundled_cuse__',
-    args: ['mcp', '--caller-app', 'MyAgents'],
+    command: "__bundled_cuse__",
+    args: ["mcp", "--caller-app", "MyAgents"],
     isBuiltin: true,
     isFree: true,
-    platforms: ['darwin', 'win32'],
+    platforms: ["darwin", "win32"],
   },
 ];
 
@@ -1891,7 +2699,12 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
  */
 
 /** OAuth status for display in the UI */
-export type McpOAuthStatus = 'disconnected' | 'connecting' | 'connected' | 'expired' | 'error';
+export type McpOAuthStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "expired"
+  | "error";
 
 /** Result of probing an MCP server for OAuth requirements */
 export type OAuthProbeResult =
@@ -1912,15 +2725,17 @@ export interface ManualOAuthConfig {
  * MCP discovery links
  */
 export const MCP_DISCOVERY_LINKS = [
-  { name: 'MCP.SO', url: 'https://mcp.so/' },
-  { name: '智谱MCP', url: 'https://bigmodel.cn/marketplace/index/mcp' },
+  { name: "MCP.SO", url: "https://mcp.so/" },
+  { name: "智谱MCP", url: "https://bigmodel.cn/marketplace/index/mcp" },
 ];
 
 /**
  * Get preset MCP server by ID
  */
-export function getPresetMcpServer(id: string): McpServerDefinition | undefined {
-  return PRESET_MCP_SERVERS.find(s => s.id === id);
+export function getPresetMcpServer(
+  id: string,
+): McpServerDefinition | undefined {
+  return PRESET_MCP_SERVERS.find((s) => s.id === id);
 }
 
 /**
@@ -1932,7 +2747,8 @@ export function getEffectiveModelAliases(
   userOverrides?: Record<string, ModelAliases>,
 ): ModelAliases | undefined {
   // Anthropic providers don't need alias mapping
-  if (provider.id === 'anthropic-sub' || provider.id === 'anthropic-api') return undefined;
+  if (provider.id === "anthropic-sub" || provider.id === "anthropic-api")
+    return undefined;
   const defaults = provider.modelAliases ?? {};
   const overrides = userOverrides?.[provider.id];
   if (overrides) {
@@ -1950,33 +2766,36 @@ export function getEffectiveModelAliases(
 
 export const DEFAULT_CONFIG: AppConfig = {
   defaultProviderId: undefined, // No default — resolved at runtime from first available provider
-  defaultPermissionMode: 'auto',
-  backgroundAgentPermissionMode: 'inherit', // background agents inherit granted perms; nothing wider (#264)
-  theme: 'system',
-  uiLanguage: 'system',
-  minimizeToTray: true,   // 默认开启最小化到托盘
-  forceWakeLock: false,   // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）
-  chatQueueResponseMode: 'realtime',
+  defaultPermissionMode: "auto",
+  backgroundAgentPermissionMode: "inherit", // background agents inherit granted perms; nothing wider (#264)
+  themeId: DEFAULT_THEME_ID,
+  themeSelectionExplicit: false,
+  appearanceMode: DEFAULT_APPEARANCE_MODE,
+  uiLanguage: "system",
+  minimizeToTray: true, // 默认开启最小化到托盘
+  forceWakeLock: false, // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）
+  chatQueueResponseMode: "realtime",
   showDevTools: false,
   cliToolRegistryEnabled: false, // 默认关闭用户注册 CLI 工具注册表（实验室）
   teamSpaceEnabled: false, // 默认关闭实验室 Team Space 入口
-  spaceEnvironment: 'production',
+  spaceEnvironment: "production",
   managedCodexProviderDevGate: true, // 默认开放 Codex 订阅 Provider；只有显式 true 才启用
   floatingBallDevGate: true,
   floatingBallEnabled: false,
   floatingBallHoverPeekEnabled: true,
   liteLLMModelDataRefresh: true, // 默认开启 LiteLLM 模型数据兜底刷新（开发者可关）
-  claudeTranscriptCleanupPeriodDays: DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
-  autoStart: false,       // 默认不开启开机启动
-  osNotifications: true,  // 默认开启系统通知
+  claudeTranscriptCleanupPeriodDays:
+    DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
+  autoStart: false, // 默认不开启开机启动
+  osNotifications: true, // 默认开启系统通知
   notificationSound: true, // 默认开启通知声音
   notificationBadge: false, // 默认关闭通知数字提示（待验证稳定后再恢复默认开启）
   globalSummonShortcut: {
     enabled: true,
-    accelerator: 'CmdOrCtrl+Shift+M',
+    accelerator: "CmdOrCtrl+Shift+M",
   },
 };
 
 /** Default accelerator string for the global summon shortcut (PRD 0.2.16).
  *  Mirrors the Rust constant `global_shortcut::DEFAULT_ACCELERATOR`. */
-export const DEFAULT_SUMMON_ACCELERATOR = 'CmdOrCtrl+Shift+M';
+export const DEFAULT_SUMMON_ACCELERATOR = "CmdOrCtrl+Shift+M";

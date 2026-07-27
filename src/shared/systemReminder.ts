@@ -20,6 +20,11 @@ export interface ParsedLeadingSystemReminder {
   rawReminder: string;
 }
 
+export interface SessionSendRequestDisplay {
+  payload: string;
+  sourceLabel?: string;
+}
+
 export interface FloatingBallContextReminderInput {
   appName?: string | null;
   windowTitle?: string | null;
@@ -107,6 +112,44 @@ export function parseLeadingSystemReminder(raw: string | null | undefined): Pars
     visibleText = nested.visibleText;
   }
   return visibleText === outer.visibleText ? outer : { ...outer, visibleText };
+}
+
+function decodeSystemReminderAttribute(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function sessionEventAttribute(openingAttributes: string, name: string): string | undefined {
+  const match = openingAttributes.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
+  return decodeSystemReminderAttribute(match?.[1]);
+}
+
+/**
+ * Project a cross-session `send.request` into a user-facing bubble while the
+ * structured event itself remains hidden from chat rendering. Automatic
+ * results/watch events deliberately stay transport-only.
+ */
+export function parseSessionSendRequestDisplay(
+  reminder: ParsedLeadingSystemReminder,
+): SessionSendRequestDisplay | null {
+  if (!reminder.hasReminder || reminder.kind !== SESSION_EVENT_TAG) return null;
+
+  const openingTag = reminder.body.match(/^\s*<myagents-session-event\b([\s\S]*?)>/);
+  if (!openingTag || sessionEventAttribute(openingTag[1], 'type') !== 'send.request') return null;
+
+  const payload = reminder.body.match(/<payload>\s*([\s\S]*?)\s*<\/payload>/)?.[1]?.trim();
+  if (!payload) return null;
+
+  return {
+    payload,
+    sourceLabel: sessionEventAttribute(openingTag[1], 'source_label'),
+  };
 }
 
 /**

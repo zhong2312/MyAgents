@@ -260,7 +260,7 @@ export default function CustomTitleBar({
                         <button
                             onClick={updateInstalling ? undefined : onRestartAndUpdate}
                             disabled={updateInstalling}
-                            className="flex h-7 items-center gap-1.5 px-3 rounded-full text-xs font-medium text-white bg-[var(--success)] shadow-sm transition-all hover:bg-[var(--success)] active:scale-95 disabled:opacity-80 disabled:cursor-wait"
+                            className="flex h-7 items-center gap-1.5 px-3 rounded-full text-xs font-medium text-[var(--on-success)] bg-[var(--success)] shadow-sm transition-all hover:bg-[var(--success)] active:scale-95 disabled:opacity-80 disabled:cursor-wait"
                             title={updateInstalling
                                 ? t('titlebar.installingUpdate')
                                 : (updateVersion ? t('titlebar.updateToVersion', { version: updateVersion }) : t('titlebar.restartAndUpdate'))}
@@ -371,7 +371,7 @@ export default function CustomTitleBar({
                     </button>
                     <button
                         onClick={handleClose}
-                        className="flex w-11 items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--error)] hover:text-white transition-colors"
+                        className="flex w-11 items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--error)] hover:text-[var(--on-error)] transition-colors"
                         title={t('titlebar.close')}
                         data-no-drag
                     >

@@ -28,7 +28,7 @@ export async function handleSessionEngineQueueRoute(
       if (cancelResult.status === 'error') {
         return jsonResponse({ success: false, error: 'Queue cancellation failed' }, 500);
       }
-      return jsonResponse({ success: false, error: 'Queue item not found' }, 404);
+      return jsonResponse({ success: false, stale: true, error: 'Queue item not found' });
     }
     return jsonResponse({ success: true, cancelledText: cancelResult.cancelledText });
   }
@@ -42,7 +42,7 @@ export async function handleSessionEngineQueueRoute(
     try {
       const result = await getSessionEngine().forceQueuedMessage(queueId);
       if (!result) {
-        return jsonResponse({ success: false, error: 'Queue item not found' }, 404);
+        return jsonResponse({ success: false, stale: true, error: 'Queue item not found' });
       }
       return jsonResponse({ success: true });
     } catch (error) {

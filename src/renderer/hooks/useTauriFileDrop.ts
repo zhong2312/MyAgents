@@ -12,22 +12,27 @@
  * the mouse is over by using element position and Tauri's drop position.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { track } from '@/analytics';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { isDebugMode } from '@/utils/debug';
+import {
+  physicalPositionToCssPixels,
+  type DragDropPosition,
+} from './dragDropCoordinates';
 
 interface DragDropPayload {
   type: 'enter' | 'over' | 'drop' | 'leave' | 'cancelled';
-  position?: { x: number; y: number };
+  /** Tauri DragDropEvent.position is a PhysicalPosition. */
+  position?: DragDropPosition;
   paths?: string[];
 }
 
 interface DropZone {
   id: string;
   element: HTMLElement | null;
-  onDrop: (paths: string[], position?: { x: number; y: number }) => void;
+  onDrop: (paths: string[], position?: DragDropPosition) => void;
 }
 
 interface UseTauriFileDropOptions {
@@ -41,7 +46,7 @@ interface UseTauriFileDropOptions {
   onDrop?: (
     paths: string[],
     zoneId: string | null,
-    position?: { x: number; y: number },
+    position?: DragDropPosition,
   ) => void;
   /**
    * Whether this hook instance should respond to Tauri drag events. Default `true`.
@@ -77,10 +82,26 @@ function isPointInElement(x: number, y: number, element: HTMLElement): boolean {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
+function toCssPosition(position: DragDropPosition): DragDropPosition {
+  // Read the current scale for every event: a window can move between displays
+  // with different scaling while the app remains mounted.
+  return physicalPositionToCssPixels(position, window.devicePixelRatio);
+}
+
 export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTauriFileDropResult {
   const { onDragEnter, onDragLeave, onDrop, enabled = true } = options;
   const [isDragging, setIsDragging] = useState(false);
   const [activeZoneId, setActiveZoneId] = useState<string | null>(null);
+  const [stateEnabled, setStateEnabled] = useState(enabled);
+
+  // React's supported "adjust state when a prop changes" pattern. Reset in
+  // render so re-enabling a mounted tab cannot expose drag state left behind
+  // while its window-wide event listener was gated off.
+  if (stateEnabled !== enabled) {
+    setStateEnabled(enabled);
+    setIsDragging(false);
+    setActiveZoneId(null);
+  }
 
   // Store registered drop zones
   const zonesRef = useRef<Map<string, DropZone>>(new Map());
@@ -94,12 +115,18 @@ export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTaur
   // tab switch — we want listeners stable, just gated per-fire.
   const enabledRef = useRef(enabled);
 
+  // Native drag events are window-wide external events. Update their authority
+  // in the same commit as the visible/hidden DOM change, before the browser can
+  // dispatch another event; a passive effect leaves a post-commit race window.
+  useLayoutEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
+
   useEffect(() => {
     onDragEnterRef.current = onDragEnter;
     onDragLeaveRef.current = onDragLeave;
     onDropRef.current = onDrop;
-    enabledRef.current = enabled;
-  }, [onDragEnter, onDragLeave, onDrop, enabled]);
+  }, [onDragEnter, onDragLeave, onDrop]);
 
   /**
    * Find which drop zone contains the given position
@@ -143,7 +170,8 @@ export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTaur
       setIsDragging(true);
       onDragEnterRef.current?.();
       if (event.payload.position) {
-        const zoneId = findZoneAtPosition(event.payload.position.x, event.payload.position.y);
+        const position = toCssPosition(event.payload.position);
+        const zoneId = findZoneAtPosition(position.x, position.y);
         setActiveZoneId(zoneId);
       }
     }, ac.signal);
@@ -151,7 +179,11 @@ export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTaur
     void listenWithCleanup<DragDropPayload>('tauri://drag-over', (event) => {
       if (!enabledGate()) return;
       if (event.payload.position) {
-        const zoneId = findZoneAtPosition(event.payload.position.x, event.payload.position.y);
+        // A surface can become enabled while an OS drag is already in progress;
+        // in that case its first observable event is often `drag-over`, not enter.
+        setIsDragging(true);
+        const position = toCssPosition(event.payload.position);
+        const zoneId = findZoneAtPosition(position.x, position.y);
         setActiveZoneId(zoneId);
       }
     }, ac.signal);
@@ -169,9 +201,12 @@ export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTaur
         return;
       }
 
+      const position = event.payload.position
+        ? toCssPosition(event.payload.position)
+        : undefined;
       let zoneId: string | null = null;
-      if (event.payload.position) {
-        zoneId = findZoneAtPosition(event.payload.position.x, event.payload.position.y);
+      if (position) {
+        zoneId = findZoneAtPosition(position.x, position.y);
       }
 
       if (isDebugMode()) {
@@ -182,9 +217,9 @@ export function useTauriFileDrop(options: UseTauriFileDropOptions = {}): UseTaur
 
       if (zoneId) {
         const zone = zonesRef.current.get(zoneId);
-        zone?.onDrop(paths, event.payload.position);
+        zone?.onDrop(paths, position);
       }
-      onDropRef.current?.(paths, zoneId, event.payload.position);
+      onDropRef.current?.(paths, zoneId, position);
 
       setActiveZoneId(null);
     }, ac.signal);

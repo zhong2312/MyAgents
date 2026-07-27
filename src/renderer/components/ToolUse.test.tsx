@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
+import { renderWithTheme as render } from '@/test/renderWithTheme';
 import type { ToolUseSimple } from '@/types/chat';
 
 import ToolUse from './ToolUse';

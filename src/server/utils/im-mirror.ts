@@ -25,6 +25,8 @@
  * conversation continues regardless.
  */
 
+import { stripLeadingSystemReminder } from '../../shared/systemReminder';
+import type { ResolvedImagePayload } from '../runtimes/types';
 import { cancellableFetch } from './cancellation';
 
 export interface MirrorImage {
@@ -38,6 +40,52 @@ export interface MirrorPayload {
     role: 'user' | 'assistant';
     text?: string;
     images?: MirrorImage[];
+}
+
+/**
+ * Remove every leading hidden control envelope before a desktop message is
+ * copied to IM. Producers must emit one envelope, but historical or malformed
+ * input can contain several, so a single peel is not a sufficient disclosure
+ * boundary. The depth cap keeps malformed input bounded.
+ */
+export function visibleDesktopMirrorText(content: string): string {
+    let visibleContent = content;
+    for (let i = 0; i < 8; i += 1) {
+        const stripped = stripLeadingSystemReminder(visibleContent);
+        if (stripped === visibleContent) break;
+        visibleContent = stripped;
+    }
+    return visibleContent;
+}
+
+/** Convert resolved user images to MirrorImage[] keeping only PNG/JPG (Q5 lockdown). */
+// Pre-validation cap MUST stay in sync with Rust's
+// `MIRROR_IMAGE_MAX_BYTES = 5MB` in management_api.rs (and its
+// `MIRROR_IMAGE_MAX_BASE64_LEN` derivation). Base64 with padding inflates
+// to `4 * ceil(bytes / 3)` chars — using a strict `Math.ceil(bytes/3)*4`
+// formula matches Rust's exact bound, plus the same 64-char slack for any
+// trailing whitespace/newlines. Cap on the encoded length so the guard is
+// O(1) without decoding.
+const MIRROR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const MIRROR_IMAGE_MAX_BASE64_CHARS = Math.ceil(MIRROR_IMAGE_MAX_BYTES / 3) * 4 + 64;
+
+export function resolvedImagesToMirrorImages(
+    images: ResolvedImagePayload[] | undefined,
+): MirrorImage[] | undefined {
+    if (!images || images.length === 0) return undefined;
+    const out: MirrorImage[] = [];
+    for (const img of images) {
+        const mime = img.mimeType.toLowerCase();
+        if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/jpg') continue;
+        if (img.data.length > MIRROR_IMAGE_MAX_BASE64_CHARS) {
+            console.warn(
+                `[mirror] dropping oversize image: mime=${mime} base64Len=${img.data.length} cap=${MIRROR_IMAGE_MAX_BASE64_CHARS}`,
+            );
+            continue;
+        }
+        out.push({ mimeType: img.mimeType, dataBase64: img.data });
+    }
+    return out.length > 0 ? out : undefined;
 }
 
 /** Concise structural log marker so a quick `grep '\[mirror\]'` surfaces these

@@ -237,7 +237,8 @@
       "cronTask": "Scheduled task",
       "floatingContext": "Floating context",
       "spaceIssue": "Space issue",
-      "goalMode": "Goal Mode"
+      "goalMode": "Goal Mode",
+      "sessionRequest": "Session request"
     },
     "systemInfo": "System info",
     "expand": "Expand"
@@ -440,6 +441,7 @@
     },
     "filters": {
       "issueStatus": "Issue status",
+      "chooseIssueStatus": "Choose issue status",
       "allIssues": "All",
       "incompleteIssues": "Incomplete",
       "allGoals": "All goals",
@@ -777,7 +779,15 @@
       "agentId": "Agent ID",
       "createdAt": "Created",
       "updatedAt": "Updated",
-      "displayNamePlaceholder": "Agent display name"
+      "displayNamePlaceholder": "Agent display name",
+      "instructionLabel": "Goal and instructions",
+      "instructionPlaceholder": "Describe how this Agent instance should respond to and handle incoming Issues, including its standing focus and decision direction.",
+      "instructionRequired": "Enter a goal and instructions.",
+      "instructionTooLong": "Goal and instructions can contain at most 20,000 characters.",
+      "instructionLegacyWarning": "This legacy Agent does not have a goal and instructions yet. You can change other settings without adding one; once saved, it becomes the Agent's standing intent.",
+      "instructionConflict": "The goal and instructions changed elsewhere. Your draft is preserved; review the latest version before saving again.",
+      "subscriptions": "Subscription rules",
+      "noSubscriptions": "There are no subscriptions. The Agent can still receive explicitly assigned Issues."
     },
     "settings": {
       "overLimit": "Over",

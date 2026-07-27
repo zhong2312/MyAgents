@@ -11,8 +11,8 @@ import type { CSSProperties, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 
-import { codeBlockSyntaxTheme } from '@/components/markdown/CodeBlock';
 import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
+import { useResolvedTheme } from '@/theme';
 import type { ToolUseSimple } from '@/types/chat';
 
 import {
@@ -41,34 +41,6 @@ const INITIAL_VISIBLE_PRESENTATION_ROWS = 16;
 const SYNTAX_HIGHLIGHT_LINE_BUDGET = 1_000;
 const SYNTAX_HIGHLIGHT_CHARACTER_BUDGET = 100 * 1024;
 const SYNTAX_HIGHLIGHT_COMMAND_SEGMENT_BUDGET = 100;
-
-const TERMINAL_SYNTAX_THEME: Record<string, CSSProperties> = {
-  ...codeBlockSyntaxTheme,
-  'pre[class*="language-"]': {
-    ...codeBlockSyntaxTheme['pre[class*="language-"]'],
-    margin: 0,
-    padding: 0,
-    overflow: 'visible',
-    background: 'transparent',
-    textShadow: 'none',
-    borderRadius: 0,
-    fontFamily: 'var(--font-code)',
-    fontSize: 'var(--text-sm)',
-    lineHeight: '1.5rem',
-    whiteSpace: 'pre',
-  },
-  'code[class*="language-"]': {
-    ...codeBlockSyntaxTheme['code[class*="language-"]'],
-    display: 'block',
-    minWidth: 'max-content',
-    background: 'transparent',
-    textShadow: 'none',
-    fontFamily: 'var(--font-code)',
-    fontSize: 'var(--text-sm)',
-    lineHeight: '1.5rem',
-    whiteSpace: 'pre',
-  },
-};
 
 export default function BashTool({ tool }: BashToolProps) {
   const { t } = useTranslation('chat');
@@ -282,10 +254,38 @@ function TerminalOutput({ text, format }: { text: string; format: BashStreamForm
 }
 
 function TerminalSyntax({ text, language }: { text: string; language: 'bash' | 'json' | 'diff' }) {
+  const prismTheme = useResolvedTheme().adapters.prism;
+  const syntaxTheme = useMemo<Record<string, CSSProperties>>(() => ({
+    ...prismTheme,
+    'pre[class*="language-"]': {
+      ...prismTheme['pre[class*="language-"]'],
+      margin: 0,
+      padding: 0,
+      overflow: 'visible',
+      background: 'transparent',
+      textShadow: 'none',
+      borderRadius: 0,
+      fontFamily: 'var(--font-code)',
+      fontSize: 'var(--text-sm)',
+      lineHeight: '1.5rem',
+      whiteSpace: 'pre',
+    },
+    'code[class*="language-"]': {
+      ...prismTheme['code[class*="language-"]'],
+      display: 'block',
+      minWidth: 'max-content',
+      background: 'transparent',
+      textShadow: 'none',
+      fontFamily: 'var(--font-code)',
+      fontSize: 'var(--text-sm)',
+      lineHeight: '1.5rem',
+      whiteSpace: 'pre',
+    },
+  }), [prismTheme]);
   return (
     <SyntaxHighlighter
       language={language}
-      style={TERMINAL_SYNTAX_THEME}
+      style={syntaxTheme}
       PreTag="div"
       CodeTag="code"
       customStyle={{ margin: 0, padding: 0, overflow: 'visible', background: 'transparent' }}

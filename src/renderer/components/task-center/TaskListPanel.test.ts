@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
-import { shouldAddOrphanWorkspacePath } from './TaskListPanel';
+import { shouldAddOrphanWorkspacePath } from './taskListPanelWorkspace';
 
 describe('TaskListPanel workspace orphan filter', () => {
   it('does not add orphan options for any registered project, including hidden projects', () => {

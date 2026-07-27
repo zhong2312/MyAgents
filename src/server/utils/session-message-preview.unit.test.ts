@@ -70,7 +70,7 @@ describe('session-message-preview', () => {
     )).toBe(false);
     expect(isHumanUserMessage(
       { content: '<system-reminder><myagents-space-issue>issue</myagents-space-issue></system-reminder>Visible issue' },
-      { kind: 'registered-agent', surface: 'space_issue_delivery' },
+      { kind: 'registered-agent', surface: 'space_issue_delivery', context: { spaceId: 'space-1', registeredAgentId: 'ra-1' } },
     )).toBe(false);
   });
 

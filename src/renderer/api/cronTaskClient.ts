@@ -106,20 +106,37 @@ export const getCronRuns = (taskId: string, limit?: number): Promise<CronRunReco
 
 // ============= Cron Task Field Updates =============
 
+export interface CronTaskFieldUpdate {
+  name?: string;
+  prompt?: string;
+  schedule?: CronSchedule;
+  intervalMinutes?: number;
+  endConditions?: CronEndConditions;
+  notifyEnabled?: boolean;
+  model?: string;
+  permissionMode?: string;
+  delivery?: CronDelivery;
+  clearDelivery?: boolean;
+}
+
+export function normalizeCronTaskFieldUpdate(fields: CronTaskFieldUpdate): CronTaskFieldUpdate {
+  const normalized = { ...fields };
+  if (!normalized.schedule) {
+    return normalized;
+  }
+
+  if (normalized.schedule.kind === 'every') {
+    normalized.intervalMinutes = normalized.schedule.minutes;
+  } else {
+    delete normalized.intervalMinutes;
+  }
+
+  return normalized;
+}
+
 /** Update editable fields of a cron task */
 export const updateCronTaskFields = (
   taskId: string,
-  fields: {
-    name?: string;
-    prompt?: string;
-    schedule?: CronSchedule;
-    intervalMinutes?: number;
-    endConditions?: CronEndConditions;
-    notifyEnabled?: boolean;
-    model?: string;
-    permissionMode?: string;
-    delivery?: CronDelivery;
-    clearDelivery?: boolean;
-  }
+  fields: CronTaskFieldUpdate
 ): Promise<CronTask> =>
-  invokeCommand('cmd_update_cron_task_fields', { taskId, ...fields });
+  invokeCommand('cmd_update_cron_task_fields', { taskId, ...normalizeCronTaskFieldUpdate(fields) });

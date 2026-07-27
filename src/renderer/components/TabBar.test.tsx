@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TabBar from './TabBar';
@@ -110,6 +110,91 @@ describe('TabBar', () => {
         renderTabBar();
         expect((screen.getByText('Session 1').closest('[data-tab-id]') as HTMLElement).style.minWidth)
             .toBe(`${TAB_ITEM_MIN_WIDTH_PX}px`);
+    });
+
+    it('shows workspace context before a real chat title with a decorative divider', () => {
+        renderTabBar({ tabs: [makeTab('tab-1', 'Session 1')] });
+
+        const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        const workspace = within(tab).getByText('demo');
+        const sessionTitle = within(tab).getByText('Session 1');
+        const divider = tab.querySelector('[data-tab-title-divider]');
+        const titleHandle = workspace.parentElement as HTMLElement;
+
+        expect(tab).toHaveClass('text-[var(--ink)]');
+        expect(titleHandle.getAttribute('class')).toBe('flex min-w-0 flex-1 items-center text-xs font-medium select-none');
+        expect(titleHandle).not.toHaveAttribute('style');
+        expect(sessionTitle.parentElement).toBe(titleHandle);
+        expect(workspace.getAttribute('class')).toBe('max-w-[35%] flex-shrink-0 truncate');
+        expect(workspace).not.toHaveAttribute('style');
+        expect(sessionTitle.getAttribute('class')).toBe('min-w-0 truncate');
+        expect(sessionTitle).not.toHaveAttribute('style');
+        expect(divider).toHaveAttribute('aria-hidden', 'true');
+        expect(divider?.getAttribute('class')).toBe('mx-1.5 h-3 w-px flex-shrink-0 bg-[var(--line-strong)]/70');
+        expect(divider?.getAttribute('style')).toBeNull();
+        expect(divider?.textContent).toBe('');
+        expect(tab).toHaveAttribute('title', 'demo — Session 1');
+        expect(tab).toHaveAccessibleName('demo, Session 1');
+    });
+
+    it('lets both title segments inherit the inactive and hover colors from the tab', () => {
+        renderTabBar({ activeTabId: 'tab-2' });
+
+        const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        const workspace = within(tab).getByText('demo');
+        const sessionTitle = within(tab).getByText('Session 1');
+
+        expect(tab).toHaveClass('text-[var(--ink-muted)]', 'hover:text-[var(--ink)]');
+        expect(workspace.className).not.toContain('text-[var(--ink');
+        expect(sessionTitle.className).not.toContain('text-[var(--ink');
+    });
+
+    it('keeps workspace and session as separate identities when their labels match', () => {
+        const sameNameTab = {
+            ...makeTab('tab-1', 'demo'),
+            agentDir: '/workspace/demo',
+        };
+        renderTabBar({ tabs: [sameNameTab] });
+
+        const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        expect(within(tab).getAllByText('demo')).toHaveLength(2);
+        expect(tab.querySelector('[data-tab-title-divider]')).toHaveAttribute('aria-hidden', 'true');
+        expect(tab).toHaveAttribute('title', 'demo — demo');
+        expect(tab).toHaveAccessibleName('demo, demo');
+    });
+
+    it.each(['New Tab', 'New Chat'])('shows only the workspace before a session gets a real %s title', (title) => {
+        renderTabBar({ tabs: [makeTab('tab-1', title)] });
+
+        const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        expect(within(tab).getByText('demo')).toBeTruthy();
+        expect(within(tab).queryByText(title)).toBeNull();
+        expect(tab.querySelector('[data-tab-title-divider]')).toBeNull();
+        expect(tab).toHaveAttribute('title', 'demo');
+    });
+
+    it('does not prefix fixed product tabs with workspace context', () => {
+        const settingsTab = { ...makeTab('tab-1', 'Ignored session title'), view: 'settings' as const };
+        renderTabBar({ tabs: [settingsTab] });
+
+        const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        expect(within(tab).getByText('设置')).toBeTruthy();
+        expect(within(tab).queryByText('demo')).toBeNull();
+        expect(tab.querySelector('[data-tab-title-divider]')).toBeNull();
+    });
+
+    it('keeps long workspace and session labels independently truncatable', () => {
+        const tabWithLongLabels = {
+            ...makeTab('tab-1', 'A generated title that must keep the remaining tab width'),
+            agentDir: '/workspace/a-very-long-agent-workspace-name',
+        };
+        renderTabBar({ tabs: [tabWithLongLabels] });
+
+        const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        expect(within(tab).getByText('a-very-long-agent-workspace-name'))
+            .toHaveClass('max-w-[35%]', 'flex-shrink-0', 'truncate');
+        expect(within(tab).getByText('A generated title that must keep the remaining tab width'))
+            .toHaveClass('min-w-0', 'truncate');
     });
 
     it('selects tabs on mouse down so drag click capture cannot swallow tab switching', () => {

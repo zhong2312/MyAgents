@@ -125,15 +125,15 @@ Tauri setup()
 
 `SessionIndex` 作为 `Arc<SessionIndex>` 持有（**不是** `Arc<Mutex<SessionIndex>>`）：
 
-- 读路径（`search` / `doc_count`）完全 lock-free，Tantivy `IndexReader` 原生支持并发读
-- 写路径通过 `StdMutex<IndexWriter>` 序列化单写者不变性
-- 后果：用户搜索永远不会被后台索引阻塞
+- 正常读写共享当前 Tantivy state 的 `RwLock` 读锁；写路径另由 `StdMutex<IndexWriter>` 序列化
+- 只有确认 Tantivy 派生文件损坏时才获取写锁，丢弃整个 session index 并从 `sessions.json` + JSONL 重建
+- 后果：正常后台索引不阻塞搜索；恢复期间用一个 owner 完成一次有界替换
 
-### Stale Writer Lock 恢复
+### Writer Lock 与派生索引恢复
 
-进程崩溃可能留下 `.tantivy-writer.lock`，导致下次启动永远打不开 writer。`SessionIndex::new` 检测到错误时主动删除锁文件并重试。
+`.tantivy-writer.lock` 的路径存在不代表锁仍被占用：Tantivy 通过 OS 文件锁判定 owner，句柄关闭后锁自然释放。Session / workspace writer 创建失败时必须保留锁文件并返回真实错误，禁止在未证明无活跃 writer 时 unlink。
 
-工作区文件索引的冷建 / 增量刷新 writer 创建也采用同样的 stale-lock 恢复策略；否则持久 workspace index 会在崩溃后卡住后续 refresh。
+Session index 是完全派生数据。打开、commit、reload 或 search 遇到缺失 segment / Tantivy data corruption 时，`SessionIndex` 在唯一写锁下再次确认故障，然后删除 `search_index/sessions` 并从权威会话文件重建、重试原操作。`sessions.json` 与 JSONL 永不参与回滚或补偿事务。
 
 ## 文件系统观察者 (`watcher.rs`)
 
@@ -289,7 +289,8 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 | 多字节字符 panic | snippet 构建时 abort | 裸字节切片落在 codepoint 中间 | `floor/ceil_char_boundary` + `char_indices()` |
 | 升级版本后历史索引全丢 | 工作区索引全量重建 | 换了不稳定的 hasher | FNV-1a 64-bit 稳定哈希 |
 | 浏览器 dev 模式报错 | `invoke is not defined` | 搜索只存在于 Tauri 路径 | UI 入口按 Tauri 环境守卫 |
-| Writer 打不开 | `tantivy-writer.lock` 冲突 | 上次进程崩溃留下锁文件 | Session / workspace index writer 创建都会自动清理并重试 |
+| Writer 打不开 | `tantivy-writer.lock` 冲突 | 另一个活跃 writer 持有 OS lock | 保留锁文件并返回真实错误；禁止按路径存在与否猜测 stale |
+| Session 索引反复报 `FileDoesNotExist(.del)` | watcher 每批 commit 都失败 | Tantivy metadata 引用了缺失 segment | `SessionIndex` 单 owner 清空派生目录，从 `sessions.json` + JSONL 重建并重试一次 |
 | 重启后第一次文件搜索仍冷建 | 文件区显示长时间“搜索中” | 前台 `search` 错误调用了 cold build，或等待正在 cold build 的 workspace slot | `search` 只能用持久 index 或 direct scan fallback；cold build 只能由后台 `refresh_or_create` 触发 |
 | 文件 symlink 指到工作区外 | 搜索结果泄露外部文件片段 | 扫描或读取阶段跟随 symlink | `file_indexer` 扫描和读前都用 `symlink_metadata`，并按 discovery state 二次校验 |
 | 搜索命中同文件不跳转 | 右侧仍停在上一次行号 | 只依赖一次性的 `initialLineNumber` 或 remount editor | 使用 `FilePreviewFocusTarget` 事件驱动已 mount Monaco |

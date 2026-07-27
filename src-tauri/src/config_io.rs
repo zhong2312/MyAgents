@@ -28,6 +28,64 @@ pub fn cmd_get_myagents_data_dir() -> Result<String, String> {
         .ok_or_else(|| "[config-io] Cannot determine MyAgents data directory".to_string())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeBootstrapSelection {
+    pub appearance_mode: String,
+}
+
+impl Default for ThemeBootstrapSelection {
+    fn default() -> Self {
+        Self {
+            appearance_mode: "system".to_owned(),
+        }
+    }
+}
+
+fn normalize_theme_fields(config: &mut serde_json::Value) {
+    let Some(object) = config.as_object_mut() else {
+        return;
+    };
+
+    let current_mode = object
+        .get("appearanceMode")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| matches!(*value, "system" | "light" | "dark"));
+    let legacy_mode = object
+        .get("theme")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| matches!(*value, "system" | "light" | "dark"));
+    let appearance_mode = current_mode.or(legacy_mode).unwrap_or("system").to_owned();
+
+    let stored_theme_id = object
+        .get("themeId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let theme_selection_explicit = stored_theme_id.as_ref().is_some_and(|theme_id| {
+        object
+            .get("themeSelectionExplicit")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(theme_id != "myagents-default")
+    });
+    let theme_id = if theme_selection_explicit {
+        stored_theme_id.unwrap_or_else(|| "default-black".to_owned())
+    } else {
+        "default-black".to_owned()
+    };
+
+    object.insert(
+        "appearanceMode".to_owned(),
+        serde_json::Value::String(appearance_mode),
+    );
+    object.insert("themeId".to_owned(), serde_json::Value::String(theme_id));
+    object.insert(
+        "themeSelectionExplicit".to_owned(),
+        serde_json::Value::Bool(theme_selection_explicit),
+    );
+    object.remove("theme");
+}
+
 fn read_config_json(config_path: &Path) -> Result<serde_json::Value, String> {
     if !config_path.exists() {
         return Ok(serde_json::json!({}));
@@ -40,6 +98,21 @@ fn read_config_json(config_path: &Path) -> Result<serde_json::Value, String> {
     // at line 1 column 1" and the caller would fall back to .bak (issue #170 #6).
     serde_json::from_str(strip_bom(&content))
         .map_err(|e| format!("[config-io] Cannot parse config.json: {}", e))
+}
+
+/// Read only the non-sensitive Theme selection needed before the main WebView
+/// exists. This follows the same in-memory normalization as every config write,
+/// but deliberately does not heal disk on the read boundary.
+pub fn read_theme_bootstrap_selection(config_path: &Path) -> ThemeBootstrapSelection {
+    let mut config = read_config_json(config_path).unwrap_or_else(|_| serde_json::json!({}));
+    normalize_theme_fields(&mut config);
+    ThemeBootstrapSelection {
+        appearance_mode: config
+            .get("appearanceMode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("system")
+            .to_owned(),
+    }
 }
 
 fn write_all_synced(path: &Path, content: &str) -> Result<(), String> {
@@ -137,8 +210,10 @@ where
         FileLockOptions::default(),
         move || -> Result<serde_json::Value, FileLockError> {
             let mut config = read_config_json(&config_path_owned).map_err(to_io_err)?;
+            normalize_theme_fields(&mut config);
             let before = config.clone();
             mutator(&mut config).map_err(to_io_err)?;
+            normalize_theme_fields(&mut config);
 
             if config == before {
                 return Ok(config);
@@ -253,4 +328,67 @@ pub async fn cmd_fsync_path(path: String, directory: bool) -> Result<(), String>
     })
     .await
     .map_err(|e| format!("[config-io] fsync task failed: {}", e))?
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::{normalize_theme_fields, read_theme_bootstrap_selection};
+    use serde_json::json;
+    use std::fs;
+
+    #[test]
+    fn migrates_legacy_theme_without_overwriting_other_fields() {
+        let mut config = json!({ "theme": "dark", "other": 42 });
+        normalize_theme_fields(&mut config);
+        assert_eq!(
+            config,
+            json!({
+                "themeId": "default-black",
+                "themeSelectionExplicit": false,
+                "appearanceMode": "dark",
+                "other": 42
+            })
+        );
+    }
+
+    #[test]
+    fn current_fields_win_and_invalid_values_normalize() {
+        let mut current = json!({
+            "theme": "dark",
+            "themeId": " partner-theme ",
+            "appearanceMode": "light"
+        });
+        normalize_theme_fields(&mut current);
+        assert_eq!(current["appearanceMode"], "light");
+        assert_eq!(current["themeId"], "partner-theme");
+        assert_eq!(current["themeSelectionExplicit"], true);
+        assert!(current.get("theme").is_none());
+
+        let mut invalid = json!({ "theme": "sepia", "themeId": "" });
+        normalize_theme_fields(&mut invalid);
+        assert_eq!(invalid["appearanceMode"], "system");
+        assert_eq!(invalid["themeId"], "default-black");
+        assert_eq!(invalid["themeSelectionExplicit"], false);
+
+        let mut explicit_canonical = json!({
+            "themeId": "myagents-default",
+            "themeSelectionExplicit": true
+        });
+        normalize_theme_fields(&mut explicit_canonical);
+        assert_eq!(explicit_canonical["themeId"], "myagents-default");
+        assert_eq!(explicit_canonical["themeSelectionExplicit"], true);
+    }
+
+    #[test]
+    fn bootstrap_read_normalizes_without_mutating_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        let original = r#"{"theme":"dark","themeId":" partner-theme "}"#;
+        fs::write(&path, original).expect("write config");
+
+        let selection = read_theme_bootstrap_selection(&path);
+
+        assert_eq!(selection.appearance_mode, "dark");
+        assert_eq!(fs::read_to_string(path).expect("read config"), original);
+    }
 }

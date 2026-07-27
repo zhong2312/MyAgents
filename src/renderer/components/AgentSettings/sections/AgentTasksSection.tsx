@@ -130,6 +130,12 @@ export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
     }
   }, [loadTasks, t]);
 
+  const handleUpdated = useCallback((updatedTask: CronTask) => {
+    setTasks(current => current.map(task => task.id === updatedTask.id ? updatedTask : task));
+    setSelectedTask(updatedTask);
+    void loadTasks();
+  }, [loadTasks]);
+
   // Only show active (running) tasks, sorted by date descending (newest first)
   const activeTasks = useMemo(() =>
     tasks
@@ -191,6 +197,7 @@ export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
           onDelete={handleDelete}
           onResume={handleResume}
           onStop={handleStop}
+          onUpdated={handleUpdated}
         />
       )}
     </div>

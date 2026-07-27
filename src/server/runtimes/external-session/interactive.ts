@@ -48,6 +48,17 @@ export function finalizeExternalActiveRequest(status: 'completed' | 'failed'): v
   activeRequestId = null;
 }
 
+/** Settle one admitted-but-not-yet-running IM request by its own trace id. */
+export function finalizeExternalQueuedImRequest(
+  requestId: string,
+  terminal: 'cancelled' | 'failed',
+  eventData: unknown,
+): void {
+  imEventBus.emit(requestId, terminal === 'cancelled' ? 'cancelled' : 'error', eventData);
+  imRequestRegistry.setStatus(requestId, terminal);
+  imRequestRegistry.unregister(requestId);
+}
+
 export function setExternalTurnInboxMeta(meta: InboxTurnMeta | null): void {
   currentTurnInboxMeta = meta;
 }

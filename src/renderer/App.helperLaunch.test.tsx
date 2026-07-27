@@ -279,10 +279,6 @@ vi.mock("@/hooks/useConfig", () => ({
   }),
 }));
 
-vi.mock("@/hooks/useTheme", () => ({
-  useThemeEffect: vi.fn(),
-}));
-
 vi.mock("@/hooks/useTabSwipeGesture", () => ({
   useTabSwipeGesture: vi.fn(),
 }));

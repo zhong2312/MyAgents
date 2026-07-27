@@ -276,7 +276,7 @@ export default function SettingsHelperInbox({
                                     <button
                                         type="button"
                                         onClick={() => removeAt(img.id)}
-                                        className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--ink)]/70 text-white opacity-0 transition-all hover:bg-[var(--ink)] group-hover/thumb:opacity-100"
+                                        className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--ink)]/70 text-[var(--paper)] opacity-0 transition-all hover:bg-[var(--ink)] group-hover/thumb:opacity-100"
                                     >
                                         <X className="h-3 w-3" />
                                     </button>

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Check,
+  ChevronDown,
   CircleAlert,
   Loader2,
   Plus,
@@ -12,6 +14,8 @@ import {
 
 import type { SpaceIssue } from "@/api/spaceCloud";
 import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
+import { Popover } from "@/components/ui/Popover";
+import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { SpaceIdentityLine } from "@/pages/space/SpaceAvatar";
 import {
   ALL_ISSUE_STATE_FILTER,
@@ -32,10 +36,6 @@ import {
   statusPillClass,
 } from "@/pages/space/spaceUi";
 
-// Keep the granular status selector compile-live for a future product revisit.
-// The current Issue information architecture intentionally exposes only All and Incomplete.
-const ENABLE_GRANULAR_ISSUE_STATUS_FILTER = false;
-
 export function IssuesWorkspace({
   admin,
   issues,
@@ -46,6 +46,7 @@ export function IssuesWorkspace({
   issueQ,
   selectedGoalId,
   selectedStatus,
+  selectedStatusPreset,
   relatedToMe,
   goalOptions,
   activeIssueId,
@@ -67,6 +68,7 @@ export function IssuesWorkspace({
   issueQ: string;
   selectedGoalId: string;
   selectedStatus: string;
+  selectedStatusPreset: string;
   relatedToMe: boolean;
   goalOptions: SelectOption[];
   activeIssueId: string | null;
@@ -80,20 +82,20 @@ export function IssuesWorkspace({
   onOpenIssue: (id: string) => void;
 }) {
   const { t } = useTranslation("app");
+  const toolbarRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const statusMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const statusMenuItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const searchActive = searchOpen || issueQ.trim().length > 0;
-  const statusFilterOptions = useMemo<SelectOption[]>(
+  const statusMenuOptions = useMemo<SelectOption[]>(
     () => [
       {
-        value: ALL_ISSUE_STATE_FILTER,
-        label: t("space.filters.allIssues"),
-      },
-      {
         value: ACTIVE_ISSUE_STATE_FILTER,
-        label: t("space.filters.activeStatuses"),
+        label: t("space.filters.incompleteIssues"),
       },
       ...ISSUE_STATUSES.map((status) => ({
         value: status,
@@ -101,6 +103,37 @@ export function IssuesWorkspace({
       })),
     ],
     [t],
+  );
+  const selectedStatusOption =
+    statusMenuOptions.find((option) => option.value === selectedStatusPreset) ??
+    statusMenuOptions[0];
+  const statusModeActive = selectedStatus !== ALL_ISSUE_STATE_FILTER;
+
+  const focusAdjacentToolbarControl = (direction: 1 | -1) => {
+    const trigger = statusMenuTriggerRef.current;
+    const toolbar = toolbarRef.current;
+    if (!trigger || !toolbar) return;
+    const controls = Array.from(
+      toolbar.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    const triggerIndex = controls.indexOf(trigger);
+    controls[triggerIndex + direction]?.focus();
+  };
+
+  const closeStatusMenuAndRestoreFocus = () => {
+    setStatusMenuOpen(false);
+    statusMenuTriggerRef.current?.focus();
+  };
+
+  useCloseLayer(
+    () => {
+      if (!statusMenuOpen) return false;
+      closeStatusMenuAndRestoreFocus();
+      return true;
+    },
+    statusMenuOpen ? 260 : -1,
   );
 
   useEffect(() => {
@@ -113,6 +146,21 @@ export function IssuesWorkspace({
     if (!searchOpen) return;
     window.setTimeout(() => searchInputRef.current?.focus(), 0);
   }, [searchOpen]);
+
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    const selectedIndex = Math.max(
+      0,
+      statusMenuOptions.findIndex(
+        (option) => option.value === selectedStatusPreset,
+      ),
+    );
+    const handle = window.setTimeout(
+      () => statusMenuItemRefs.current[selectedIndex]?.focus(),
+      0,
+    );
+    return () => window.clearTimeout(handle);
+  }, [selectedStatusPreset, statusMenuOpen, statusMenuOptions]);
 
   useEffect(() => {
     setLoadMoreFailed(false);
@@ -138,7 +186,10 @@ export function IssuesWorkspace({
 
   return (
     <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
-      <section className="flex min-h-12 min-w-0 flex-nowrap items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-2 backdrop-blur-md">
+      <section
+        ref={toolbarRef}
+        className="flex min-h-12 min-w-0 flex-nowrap items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-2 backdrop-blur-md"
+      >
         <div
           className={
             searchActive
@@ -189,46 +240,150 @@ export function IssuesWorkspace({
           )}
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {ENABLE_GRANULAR_ISSUE_STATUS_FILTER ? (
-            <CustomSelect
-              value={selectedStatus}
-              options={statusFilterOptions}
-              onChange={onStatusChange}
-              size="toolbar"
-              className="w-40 min-w-0 shrink"
-            />
-          ) : (
+          <div
+            role="group"
+            aria-label={t("space.filters.issueStatus")}
+            className="flex h-9 w-52 shrink-0 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]/80 p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={selectedStatus === ALL_ISSUE_STATE_FILTER}
+              onClick={() => onStatusChange(ALL_ISSUE_STATE_FILTER)}
+              className={`w-20 shrink-0 rounded-lg px-2 text-sm font-medium transition-colors active:scale-[0.98] ${
+                selectedStatus === ALL_ISSUE_STATE_FILTER
+                  ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
+                  : "text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
+              }`}
+            >
+              {t("space.filters.allIssues")}
+            </button>
             <div
-              role="group"
-              aria-label={t("space.filters.issueStatus")}
-              className="grid h-9 w-44 shrink-0 grid-cols-2 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]/80 p-0.5"
+              className={`flex min-w-0 flex-1 overflow-hidden rounded-lg transition-colors ${
+                statusModeActive
+                  ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
+                  : "text-[var(--ink-muted)]"
+              }`}
             >
               <button
                 type="button"
-                aria-pressed={selectedStatus === ALL_ISSUE_STATE_FILTER}
-                onClick={() => onStatusChange(ALL_ISSUE_STATE_FILTER)}
-                className={`rounded-lg px-2 text-sm font-medium transition-colors active:scale-[0.98] ${
-                  selectedStatus === ALL_ISSUE_STATE_FILTER
-                    ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
-                    : "text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
+                aria-pressed={statusModeActive}
+                onClick={() => onStatusChange(selectedStatusPreset)}
+                className={`min-w-0 flex-1 truncate px-2 text-sm font-medium transition-colors active:scale-[0.98] ${
+                  statusModeActive
+                    ? "text-[var(--ink)]"
+                    : "hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
                 }`}
               >
-                {t("space.filters.allIssues")}
+                {selectedStatusOption.label}
               </button>
               <button
+                ref={statusMenuTriggerRef}
                 type="button"
-                aria-pressed={selectedStatus === ACTIVE_ISSUE_STATE_FILTER}
-                onClick={() => onStatusChange(ACTIVE_ISSUE_STATE_FILTER)}
-                className={`rounded-lg px-2 text-sm font-medium transition-colors active:scale-[0.98] ${
-                  selectedStatus === ACTIVE_ISSUE_STATE_FILTER
-                    ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
-                    : "text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
+                aria-label={t("space.filters.chooseIssueStatus")}
+                aria-haspopup="menu"
+                aria-expanded={statusMenuOpen}
+                onClick={() => setStatusMenuOpen((open) => !open)}
+                onKeyDown={(event) => {
+                  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+                    return;
+                  }
+                  event.preventDefault();
+                  setStatusMenuOpen(true);
+                }}
+                className={`grid w-8 shrink-0 place-items-center border-l border-[var(--line-subtle)] transition-colors active:scale-[0.96] ${
+                  statusModeActive
+                    ? "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                    : "hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
                 }`}
               >
-                {t("space.filters.incompleteIssues")}
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${statusMenuOpen ? "rotate-180" : ""}`}
+                />
               </button>
             </div>
-          )}
+          </div>
+          <Popover
+            open={statusMenuOpen}
+            onClose={() => setStatusMenuOpen(false)}
+            anchorRef={statusMenuTriggerRef}
+            placement="bottom-end"
+            className="min-w-44 py-1"
+          >
+            <div
+              role="menu"
+              aria-label={t("space.filters.issueStatus")}
+              onKeyDown={(event) => {
+                const currentIndex = statusMenuItemRefs.current.findIndex(
+                  (item) => item === document.activeElement,
+                );
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  const direction = event.key === "ArrowDown" ? 1 : -1;
+                  const nextIndex =
+                    currentIndex < 0
+                      ? direction === 1
+                        ? 0
+                        : statusMenuOptions.length - 1
+                      : (currentIndex + direction + statusMenuOptions.length) %
+                        statusMenuOptions.length;
+                  statusMenuItemRefs.current[nextIndex]?.focus();
+                  return;
+                }
+                if (event.key === "Home" || event.key === "End") {
+                  event.preventDefault();
+                  const nextIndex =
+                    event.key === "Home" ? 0 : statusMenuOptions.length - 1;
+                  statusMenuItemRefs.current[nextIndex]?.focus();
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeStatusMenuAndRestoreFocus();
+                  return;
+                }
+                if (event.key === "Tab") {
+                  event.preventDefault();
+                  setStatusMenuOpen(false);
+                  focusAdjacentToolbarControl(event.shiftKey ? -1 : 1);
+                }
+              }}
+            >
+              {statusMenuOptions.map((option, index) => (
+                <div key={option.value}>
+                  {index === 1 ? (
+                    <div className="my-1 border-t border-[var(--line-subtle)]" />
+                  ) : null}
+                  <button
+                    ref={(node) => {
+                      statusMenuItemRefs.current[index] = node;
+                    }}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={option.value === selectedStatusPreset}
+                    tabIndex={
+                      option.value === selectedStatusOption.value ? 0 : -1
+                    }
+                    onClick={() => {
+                      onStatusChange(option.value);
+                      closeStatusMenuAndRestoreFocus();
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
+                      option.value === selectedStatusPreset
+                        ? "text-[var(--accent-warm)]"
+                        : "text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {option.label}
+                    </span>
+                    {option.value === selectedStatusPreset ? (
+                      <Check className="h-3.5 w-3.5 shrink-0" />
+                    ) : null}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </Popover>
           <CustomSelect
             value={selectedGoalId}
             options={goalOptions}

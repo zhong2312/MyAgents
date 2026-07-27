@@ -117,19 +117,22 @@ pub async fn cmd_grok_verify_account(
     let ensure_manager = sidecar_manager.clone();
     let ensure_session = session_id.clone();
     let ensure_owner = owner.clone();
-    let ensure = tauri::async_runtime::spawn_blocking(move || {
+    let workspace = tauri::async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&workspace)
             .map_err(|error| format!("Cannot create verification workspace: {error}"))?;
-        crate::sidecar::ensure_session_sidecar(
-            &ensure_app,
-            &ensure_manager,
-            &ensure_session,
-            &workspace,
-            ensure_owner,
-        )
+        Ok::<_, String>(workspace)
     })
     .await
     .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "启动 Grok 验证 Sidecar 失败"))?
+    .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "无法创建 Grok 验证目录"))?;
+    let ensure = crate::sidecar::ensure_session_sidecar_with_lifecycle(
+        ensure_app,
+        ensure_manager,
+        ensure_session,
+        workspace,
+        ensure_owner,
+    )
+    .await
     .map_err(|_| GrokAuthError::new(GrokAuthErrorCode::Internal, "Grok 验证运行时暂不可用"))?;
 
     let verify_result = async {

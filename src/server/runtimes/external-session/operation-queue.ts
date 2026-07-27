@@ -20,7 +20,7 @@ let externalQueueSeq = 0;
 let externalConfigSeq = 0;
 let externalOperationDrainInFlight = false;
 let externalUserMsgSeq = 0;
-let externalDesktopSendTail: Promise<unknown> = Promise.resolve();
+let externalSendTail: Promise<unknown> | null = null;
 let externalOperationGeneration = 0;
 
 const EXTERNAL_MAX_QUEUE_SIZE = 50;
@@ -56,6 +56,12 @@ export function isExternalOperationDrainInFlight(): boolean {
   return externalOperationDrainInFlight;
 }
 
+/** Existing direct-send owner occupancy. IM admission uses this promise itself
+ * as the atomic signal that an earlier idle send already owns dispatch. */
+export function hasExternalSendInFlight(): boolean {
+  return externalSendTail !== null;
+}
+
 export function setExternalOperationDrainInFlight(value: boolean): void {
   externalOperationDrainInFlight = value;
 }
@@ -68,7 +74,7 @@ export function hasQueuedExternalConfigOperation(): boolean {
   return externalOperationQueue.some((item) => item.kind === 'config');
 }
 
-export function shouldQueueExternalDesktopSend(
+export function shouldQueueExternalOperation(
   state: ExternalSessionState,
   options?: {
     responseMode?: ChatQueueResponseMode;
@@ -146,15 +152,16 @@ export function enqueueExternalConfigOperation(
   return externalOperationQueue.length;
 }
 
-export function clearExternalQueueWithCancellation(): string[] {
+export function clearExternalQueueOperationsWithCancellation(): ExternalQueuedMessageOperation[] {
   const queuedMessages = externalOperationQueue
     .filter((item): item is ExternalQueuedMessageOperation => item.kind === 'message');
-  const cancelledQueueIds = queuedMessages.map((item) => item.queueId);
   for (const item of queuedMessages) {
+    item.context.beforeDispatch?.cancel?.();
     item.settleDispatchAcceptance({ queued: false });
   }
   if (externalReservedDrainOperation?.kind === 'message') {
-    cancelledQueueIds.push(externalReservedDrainOperation.queueId);
+    queuedMessages.push(externalReservedDrainOperation);
+    externalReservedDrainOperation.context.beforeDispatch?.cancel?.();
     externalReservedDrainOperation.settleDispatchAcceptance({
       queued: false,
     });
@@ -162,33 +169,33 @@ export function clearExternalQueueWithCancellation(): string[] {
   externalOperationQueue.length = 0;
   externalReservedDrainOperation = null;
   externalOperationDrainInFlight = false;
-  externalDesktopSendTail = Promise.resolve();
+  externalSendTail = null;
   externalOperationGeneration += 1;
-  return cancelledQueueIds;
+  return queuedMessages;
 }
 
-export function cancelExternalQueuedMessagesByOwner(owner: TurnOwner): string[] {
+export function clearExternalQueueWithCancellation(): string[] {
+  return clearExternalQueueOperationsWithCancellation().map((item) => item.queueId);
+}
+
+export function cancelExternalQueuedMessageOperationsByOwner(owner: TurnOwner): ExternalQueuedMessageOperation[] {
   const matches = (item: ExternalQueuedMessageOperation) =>
     item.context.turnOwner?.kind === owner.kind
       && item.context.turnOwner.id === owner.id;
-  const canceled: string[] = [];
+  const canceled: ExternalQueuedMessageOperation[] = [];
   for (let index = externalOperationQueue.length - 1; index >= 0; index -= 1) {
     const item = externalOperationQueue[index];
     if (item.kind !== 'message' || !matches(item)) continue;
     externalOperationQueue.splice(index, 1);
     item.context.beforeDispatch?.cancel?.();
     item.settleDispatchAcceptance({ queued: false });
-    canceled.push(item.queueId);
-  }
-  if (externalReservedDrainOperation?.kind === 'message' && matches(externalReservedDrainOperation)) {
-    const item = externalReservedDrainOperation;
-    externalReservedDrainOperation = null;
-    externalOperationDrainInFlight = false;
-    item.context.beforeDispatch?.cancel?.();
-    item.settleDispatchAcceptance({ queued: false });
-    canceled.push(item.queueId);
+    canceled.push(item);
   }
   return canceled;
+}
+
+export function cancelExternalQueuedMessagesByOwner(owner: TurnOwner): string[] {
+  return cancelExternalQueuedMessageOperationsByOwner(owner).map((item) => item.queueId);
 }
 
 export function hasExternalQueuedMessageByOwner(owner: TurnOwner): boolean {
@@ -244,12 +251,39 @@ export function moveExternalQueuedMessageToFront(queueId: string): boolean {
   return true;
 }
 
-export function cancelExternalQueuedMessage(queueId: string): string | null {
+export function cancelExternalQueuedMessageOperation(queueId: string): ExternalQueuedMessageOperation | null {
   const idx = externalOperationQueue.findIndex(q => q.kind === 'message' && q.queueId === queueId);
   if (idx < 0) return null;
   const [item] = externalOperationQueue.splice(idx, 1) as ExternalQueuedMessageOperation[];
+  item.context.beforeDispatch?.cancel?.();
   item.settleDispatchAcceptance({ queued: false });
-  return item.text;
+  return item;
+}
+
+export function cancelExternalQueuedMessage(queueId: string): string | null {
+  return cancelExternalQueuedMessageOperation(queueId)?.text ?? null;
+}
+
+export function cancelExternalQueuedMessageByRequestId(
+  requestId: string,
+): ExternalQueuedMessageOperation | null {
+  const item = externalOperationQueue.find(
+    (candidate): candidate is ExternalQueuedMessageOperation => (
+      candidate.kind === 'message' && candidate.context.requestId === requestId
+    ),
+  );
+  return item ? cancelExternalQueuedMessageOperation(item.queueId) : null;
+}
+
+/** A reserved item is already owned by the drain; callers may signal its
+ * dispatch guard/promotion, but must not remove or settle it themselves. */
+export function getExternalReservedMessageByRequestId(
+  requestId: string,
+): ExternalQueuedMessageOperation | null {
+  return externalReservedDrainOperation?.kind === 'message'
+    && externalReservedDrainOperation.context.requestId === requestId
+    ? externalReservedDrainOperation
+    : null;
 }
 
 export function settleExternalMessageOperation(
@@ -265,16 +299,31 @@ export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePre
     .map(q => ({ id: q.queueId, messagePreview: q.text.slice(0, 100) }));
 }
 
-export function chainExternalDesktopSend<T>(
+export function chainExternalSend<T>(
   dispatch: () => Promise<T>,
   generation = externalOperationGeneration,
 ): Promise<T> {
-  const task = externalDesktopSendTail.then(() => {
+  const run = (): Promise<T> => {
     if (!isCurrentExternalOperationGeneration(generation)) {
-      throw new ExternalQueueGenerationStaleError();
+      return Promise.reject(new ExternalQueueGenerationStaleError());
     }
-    return dispatch();
+    try {
+      return Promise.resolve(dispatch());
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  // Keep dispatch on the promise boundary: several callers finish binding
+  // request/turn ownership immediately after enqueue returns. The tail itself
+  // is assigned synchronously, which is the admission claim other IM calls see.
+  const predecessor = externalSendTail ?? Promise.resolve();
+  const task = predecessor.then(run);
+  const tracked = task.then(
+    () => undefined,
+    () => undefined,
+  ).finally(() => {
+    if (externalSendTail === tracked) externalSendTail = null;
   });
-  externalDesktopSendTail = task.catch(() => undefined);
+  externalSendTail = tracked;
   return task;
 }

@@ -252,6 +252,23 @@ for (const entry of entries) {
 
 **排查第一步**：`grep '[boot]' ./logs/unified-*.log`
 
+### 主窗口启动阶段
+
+白屏排查使用同一组稳定 `[boot] stage=...` 标签：
+
+| 阶段 | Owner | 说明 |
+|------|-------|------|
+| `native-page-load-started/finished` | Rust `on_page_load` | WebView 导航是否开始/完成 |
+| `native-init-script` | Tauri initialization script | HTML 模块执行前的最早 JS 证据 |
+| `renderer-entry-evaluated` | renderer | `main.tsx` 已开始执行 |
+| `theme-native-bootstrap-*` / `theme-renderer-bootstrap-*` | native bridge / ThemeRuntime | 首帧快照和 renderer prime 是否完成 |
+| `react-root-created` / `react-commit` | renderer | React root 创建与真实 effect commit |
+| `renderer-uncaught-error` / `renderer-unhandled-rejection` | initialization script | 模块加载或早期 promise 的有界错误 |
+
+所有阶段都带 `window=<label>`，并进入同一个 `~/.myagents/logs/unified-*.log`：Rust page-load 直接走 `ulog_*!`；initialization script 与 `main.tsx` 在 App/Sidecar logger 尚未可用时调用受限 Tauri command `cmd_record_renderer_boot_event`，由 Rust unified logger 持久化。该 command 只接受白名单 stage、有界单行 detail 和合法 window label，不是第二个通用日志 API；禁止绕回 raw `plugin:log|log`，否则阶段链会分裂到 OS LogDir。
+
+`tauri_plugin_log::Builder::default()` 已自带 `Stdout + LogDir`。应用自定义 target 时必须先 `clear_targets()` 再各注册一次；直接在 default builder 上追加同名 target 会让每条原生日志成倍输出。启动观测只能记录证据，不得据此自动 reload、retry 或切换 Theme。
+
 ## 日志降噪策略
 
 五层过滤将信噪比从 36% 提升到 ~85%：

@@ -18,6 +18,7 @@ import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { formatCalendarDate } from '@/i18n/format';
+import { copyPlainText } from '@/utils/clipboard';
 
 type CliToolView = CliToolRegistryEntry & {
     kind: 'api' | 'local';
@@ -77,9 +78,9 @@ export function CliToolsSection() {
     useEffect(() => { void refresh(); }, [refresh]);
 
     // 与兄弟组件（LinkContextMenuProvider / ProcessRow）同一形态：失败如实报错，
-    // 不走 deprecated execCommand fallback、不假报成功
+    // 且由统一 helper 处理 WebView 的 Async Clipboard 拒绝与 selection fallback。
     const copyText = useCallback((text: string) => {
-        navigator.clipboard.writeText(text).then(
+        copyPlainText(text).then(
             () => toastRef.current.success(t('toolbox.cliTools.copySuccess')),
             () => toastRef.current.error(t('toolbox.cliTools.copyFailed')),
         );

@@ -17,7 +17,13 @@ import { randomUUID } from 'crypto';
 import { stripBom } from '../../shared/utils';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 
-import { withConfigLock, loadConfig, type AdminAppConfig } from '../utils/admin-config';
+import {
+  atomicModifyProjects,
+  withAgentConfigIntentLock,
+  withConfigLock,
+  loadConfig,
+  type AdminAppConfig,
+} from '../utils/admin-config';
 import { getHomeDirOrNull } from '../utils/platform';
 import {
   makePluginId,
@@ -518,28 +524,67 @@ export async function setWorkspaceEnabledPlugins(
   }
   const dedup = Array.from(new Set(enabledIds));
   let scope: 'agent' | 'project' | 'none' = 'none';
-  await withConfigLock(async cfg => {
-    // AdminAppConfig.agents is AgentConfigSlim[] but Slim's index signature
-    // accepts arbitrary keys, so adding enabledPluginIds is structurally
-    // fine — TS just can't narrow through the `as` cast cleanly. Cast via
-    // `unknown` to express "we know this field exists on AgentConfig".
-    const agents = cfg.agents ?? [];
-    // #320 family: caller workspacePath (renderer/CLI, POSIX-style) vs config
-    // agent workspacePath (may be native Windows backslashes) — canonical identity.
-    const idx = agents.findIndex(a => workspacePathsEqual(a.workspacePath, workspacePath));
-    if (idx !== -1) {
+  await withAgentConfigIntentLock(async () => {
+    let agentId: string | undefined;
+    let previousAgentIds: string[] | undefined;
+    let agentCommitted = false;
+    await withConfigLock(async cfg => {
+      const agents = cfg.agents ?? [];
+      // #320 family: caller workspacePath (renderer/CLI, POSIX-style) vs config
+      // agent workspacePath (may be native Windows backslashes) — canonical identity.
+      const idx = agents.findIndex(a => workspacePathsEqual(a.workspacePath, workspacePath));
+      if (idx === -1) return cfg;
+      agentId = agents[idx].id;
+      previousAgentIds = agents[idx].enabledPluginIds;
       const next = { ...cfg };
       const newAgents = agents.slice();
-      newAgents[idx] = { ...agents[idx], enabledPluginIds: dedup } as typeof agents[number];
+      newAgents[idx] = { ...agents[idx], enabledPluginIds: dedup };
       next.agents = newAgents;
       scope = 'agent';
+      agentCommitted = JSON.stringify(previousAgentIds) !== JSON.stringify(dedup);
       return next;
+    });
+
+    try {
+      await atomicModifyProjects(projects => {
+        const idx = projects.findIndex(project =>
+          (agentId !== undefined && project.agentId === agentId)
+          || workspacePathsEqual(project.path, workspacePath));
+        if (idx === -1) return projects;
+        const next = [...projects];
+        next[idx] = { ...projects[idx], enabledPluginIds: dedup };
+        if (scope === 'none') scope = 'project';
+        return next;
+      });
+    } catch (error) {
+      if (agentCommitted && agentId) {
+        try {
+          await withConfigLock(async cfg => {
+            const agents = [...(cfg.agents ?? [])];
+            const idx = agents.findIndex(agent => agent.id === agentId);
+            if (idx < 0 || JSON.stringify(agents[idx].enabledPluginIds) !== JSON.stringify(dedup)) {
+              return cfg;
+            }
+            const restored = { ...agents[idx] };
+            if (previousAgentIds === undefined) delete restored.enabledPluginIds;
+            else restored.enabledPluginIds = previousAgentIds;
+            agents[idx] = restored;
+            return { ...cfg, agents };
+          });
+        } catch (rollbackError) {
+          const reason = error instanceof Error ? error.message : String(error);
+          const rollbackReason = rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError);
+          throw new PluginStoreError(
+            `Project plugin mirror save failed (${reason}) and Agent rollback also failed (${rollbackReason})`,
+            'PLUGIN_CONFIG_ROLLBACK_FAILED',
+            500,
+          );
+        }
+      }
+      throw error;
     }
-    // No Agent — falling through to none (Project lives in projects.json,
-    // a separate file with its own writer in src-tauri/. v0.2.17 keeps it
-    // simple: only Agent storage is supported; users without an upgraded
-    // Agent for the workspace need to upgrade first or use per-Tab override.
-    return cfg;
   });
   return { scope, ids: dedup };
 }

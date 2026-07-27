@@ -1,22 +1,33 @@
 /** Version shared with Rust's SYSTEM_SKILLS_VERSION contract. */
-export const SYSTEM_SKILLS_VERSION = '35';
+export const SYSTEM_SKILLS_VERSION = '38';
 
 /**
- * Product-owned skills required by managed memory workflows.
+ * Product-owned skills that are part of MyAgents' always-available runtime
+ * contract.
  *
- * These cannot be disabled as ordinary user skills: disabling one would leave
- * an enabled product automation without its versioned execution contract.
+ * These cannot be disabled as ordinary user skills. The memory skills back
+ * managed workflows, while myagents-cli and myagents-docs are the product's
+ * baseline operation and product-knowledge surfaces.
  */
-export const REQUIRED_MEMORY_SYSTEM_SKILLS = [
+export const REQUIRED_SYSTEM_SKILLS = [
   'myagents-memory-update',
   'myagents-memory-gardener',
   'myagents-memory-molt',
+  'myagents-cli',
+  'myagents-docs',
 ] as const;
 
-export type RequiredMemorySystemSkill = typeof REQUIRED_MEMORY_SYSTEM_SKILLS[number];
+export type RequiredSystemSkill = typeof REQUIRED_SYSTEM_SKILLS[number];
 
-const REQUIRED_MEMORY_SYSTEM_SKILL_SET = new Set<string>(REQUIRED_MEMORY_SYSTEM_SKILLS);
+const REQUIRED_SYSTEM_SKILL_SET = new Set<string>(REQUIRED_SYSTEM_SKILLS);
 
-export function isRequiredMemorySystemSkill(name: string): name is RequiredMemorySystemSkill {
-  return REQUIRED_MEMORY_SYSTEM_SKILL_SET.has(name);
+export function isRequiredSystemSkill(name: string): name is RequiredSystemSkill {
+  return REQUIRED_SYSTEM_SKILL_SET.has(name);
+}
+
+/** Canonicalize persisted disabled names so required contracts stay enabled. */
+export function withoutRequiredSystemSkills(names: readonly unknown[]): string[] {
+  return names.filter((name): name is string => (
+    typeof name === 'string' && !isRequiredSystemSkill(name)
+  ));
 }

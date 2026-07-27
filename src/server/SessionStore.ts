@@ -14,14 +14,20 @@
  * - Concurrent safety: append is atomic on most filesystems
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync } from 'fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
 import type { SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
+import { isPendingSessionId } from '../shared/constants';
 import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
+import {
+    normalizeSessionOrigin,
+    type RegisteredAgentSessionOrigin,
+    type SessionOrigin,
+} from '../shared/session-origin';
 import { stripBom } from '../shared/utils';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync } from './utils/fs-utils';
@@ -159,6 +165,17 @@ async function withSessionFileLock<T>(sessionId: string, fn: () => Promise<T>): 
         { lockPath, timeoutMs: LOCK_TIMEOUT_MS, staleMs: LOCK_STALE_MS },
         fn,
     );
+}
+
+async function withSessionFileLocks<T>(sessionIds: string[], fn: () => Promise<T>): Promise<T> {
+    const orderedIds = [...new Set(sessionIds)].sort();
+    const acquireNext = async (index: number): Promise<T> => {
+        if (index >= orderedIds.length) {
+            return fn();
+        }
+        return withSessionFileLock(orderedIds[index], () => acquireNext(index + 1));
+    };
+    return acquireNext(0);
 }
 
 /**
@@ -614,6 +631,74 @@ export function getSessionMetadata(sessionId: string): SessionMetadata | null {
     return all.find(s => s.id === sessionId) ?? null;
 }
 
+export function getPersistedSessionOrigin(sessionId: string): SessionOrigin | undefined {
+    return normalizeSessionOrigin(getSessionMetadata(sessionId)?.origin);
+}
+
+export type EnsureRegisteredAgentSessionOriginResult =
+    | { success: true; metadataExists: boolean; adoptedLegacyOrigin?: boolean }
+    | { success: false; error: string };
+
+/**
+ * Bind a delivery Session to one exact Registered Agent identity.
+ *
+ * Existing context-free registered-agent origins are upgraded in place for
+ * compatibility. Any other existing origin is an authority conflict and is
+ * rejected. Missing metadata is safe: the caller must pass the same exact
+ * origin as the birth origin when it materializes the Session.
+ */
+export async function ensureRegisteredAgentSessionOrigin(
+    sessionId: string,
+    expected: RegisteredAgentSessionOrigin,
+): Promise<EnsureRegisteredAgentSessionOriginResult> {
+    ensureStorageDir();
+    return withSessionsLock(async () => {
+        const all = readSessionsIndexForWrite();
+        const index = all.findIndex(session => session.id === sessionId);
+        if (index < 0) {
+            return { success: true, metadataExists: false };
+        }
+
+        const current = all[index];
+        const normalized = normalizeSessionOrigin(current.origin);
+        if (normalized) {
+            const matches = normalized.kind === 'registered-agent'
+                && normalized.surface === 'space_issue_delivery'
+                && normalized.context.spaceId === expected.context.spaceId
+                && normalized.context.registeredAgentId === expected.context.registeredAgentId;
+            return matches
+                ? { success: true, metadataExists: true }
+                : {
+                    success: false,
+                    error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.',
+                };
+        }
+
+        const raw = current.origin as {
+            kind?: unknown;
+            surface?: unknown;
+            context?: unknown;
+        } | undefined;
+        const isLegacyContextFreeRegisteredOrigin = raw?.kind === 'registered-agent'
+            && raw.surface === 'space_issue_delivery'
+            && !Object.prototype.hasOwnProperty.call(raw, 'context');
+        if (isLegacyContextFreeRegisteredOrigin) {
+            all[index] = { ...current, origin: expected };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return {
+                success: true,
+                metadataExists: true,
+                ...(isLegacyContextFreeRegisteredOrigin ? { adoptedLegacyOrigin: true } : {}),
+            };
+        }
+
+        return {
+            success: false,
+            error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.',
+        };
+    });
+}
+
 /**
  * Save session metadata (create or update)
  */
@@ -640,16 +725,40 @@ export async function saveSessionMetadata(session: SessionMetadata): Promise<voi
     });
 }
 
+export type SessionDeleteIntent =
+    | { kind: 'user-delete' }
+    | { kind: 'prepared-materialization-rollback'; sourceSessionId: string };
+
+export type SessionDeleteResult =
+    | { deleted: true }
+    | {
+        deleted: false;
+        reason: 'not-found' | 'protected-session' | 'precondition-failed' | 'data-present' | 'io-error';
+    };
+
+function rejectSessionDeletion(
+    sessionId: string,
+    intent: SessionDeleteIntent,
+    reason: Exclude<SessionDeleteResult, { deleted: true }>['reason'],
+    detail: string,
+): SessionDeleteResult {
+    console.warn(`[SessionStore] Refused session deletion id=${sessionId} intent=${intent.kind} reason=${reason}: ${detail}`);
+    return { deleted: false, reason };
+}
+
 /**
- * Delete session metadata and data.
+ * Delete session metadata and data for one of the explicitly supported
+ * lifecycle transitions. The intent is validated while both the per-session
+ * data lock and sessions-index lock are held, immediately before deletion.
  *
- * `precondition`, when provided, is evaluated inside the sessions lock against
- * the current metadata row before any files or index entries are removed.
+ * User deletion is additionally fenced by the Rust Sidecar lifecycle owner;
+ * prepared rollback can only remove transaction-owned metadata that has not
+ * admitted transcript data.
  */
 export async function deleteSession(
     sessionId: string,
-    precondition?: (current: SessionMetadata) => boolean,
-): Promise<boolean> {
+    intent: SessionDeleteIntent,
+): Promise<SessionDeleteResult> {
     ensureStorageDir();
 
     // Lock order matches saveSessionMessages: per-session file lock OUTER,
@@ -658,32 +767,69 @@ export async function deleteSession(
     // (cross-tab cron, background completion) — previously the unlink could
     // interleave with an append and leave either a half-deleted file or a
     // just-recreated one.
-    return withSessionFileLock(sessionId, async () => withSessionsLock(async () => {
-        const all = readSessionsIndexForWrite();
-        const index = all.findIndex(s => s.id === sessionId);
+    try {
+        return await withSessionFileLock(sessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(s => s.id === sessionId);
 
-        if (index < 0) {
-            return false; // Not found
-        }
-        if (precondition && !precondition(all[index])) {
-            return false;
-        }
+            if (index < 0) {
+                return { deleted: false, reason: 'not-found' };
+            }
+            const current = all[index];
+            const jsonlFile = getSessionFilePath(sessionId);
+            const legacyFile = getLegacySessionFilePath(sessionId);
+            const hasJsonl = existsSync(jsonlFile);
+            const hasLegacyData = existsSync(legacyFile);
 
-        const filtered = all.filter(s => s.id !== sessionId);
+            switch (intent.kind) {
+                case 'user-delete':
+                    if (isSystemMaintenanceSession(current)) {
+                        return rejectSessionDeletion(
+                            sessionId,
+                            intent,
+                            'protected-session',
+                            'system maintenance sessions are not user-editable',
+                        );
+                    }
+                    break;
+                case 'prepared-materialization-rollback':
+                    if (
+                        current.materializationState !== 'prepared'
+                        || current.materializationSourceSessionId !== intent.sourceSessionId
+                    ) {
+                        return rejectSessionDeletion(
+                            sessionId,
+                            intent,
+                            'precondition-failed',
+                            'the prepared row is not owned by this materialization transaction',
+                        );
+                    }
+                    if (hasJsonl || hasLegacyData) {
+                        return rejectSessionDeletion(
+                            sessionId,
+                            intent,
+                            'data-present',
+                            'prepared rollback cannot remove a session after transcript data exists',
+                        );
+                    }
+                    break;
+            }
 
-        try {
+            const filtered = all.filter(s => s.id !== sessionId);
+
             // Remove the data files FIRST, then the index entry. If we crash
             // between the two steps, the failure mode is "entry present, file
             // gone" — a visible empty session the user can still see and delete
             // again. The previous order (entry first) left "entry gone, file
             // present": an invisible orphan that no UI can reach (issue #336).
-            const jsonlFile = getSessionFilePath(sessionId);
-            const legacyFile = getLegacySessionFilePath(sessionId);
+            console.log(
+                `[SessionStore] Deleting session id=${sessionId} intent=${intent.kind} metadataState=${current.materializationState ?? 'committed'} jsonl=${hasJsonl} legacy=${hasLegacyData}`,
+            );
 
-            if (existsSync(jsonlFile)) {
+            if (hasJsonl) {
                 unlinkSync(jsonlFile);
             }
-            if (existsSync(legacyFile)) {
+            if (hasLegacyData) {
                 unlinkSync(legacyFile);
             }
 
@@ -692,12 +838,218 @@ export async function deleteSession(
 
             atomicWriteSessionsFile(JSON.stringify(filtered, null, 2));
 
-            return true;
-        } catch (error) {
-            console.error('[SessionStore] Failed to delete session:', error);
-            return false;
-        }
-    }));
+            return { deleted: true };
+        }));
+    } catch (error) {
+        console.error(`[SessionStore] Failed to delete session id=${sessionId} intent=${intent.kind}:`, error);
+        return { deleted: false, reason: 'io-error' };
+    }
+}
+
+export type PendingSessionIdentityMigrationResult =
+    | { migrated: true; metadata: SessionMetadata }
+    | {
+        migrated: false;
+        reason: 'source-not-found' | 'source-not-pending' | 'target-exists' | 'data-conflict' | 'io-error';
+    };
+
+function pathsReferToSameFile(firstPath: string, secondPath: string): boolean {
+    try {
+        const first = statSync(firstPath);
+        const second = statSync(secondPath);
+        return first.ino !== 0 && first.dev === second.dev && first.ino === second.ino;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Atomically hand a pending Session identity to the concrete SDK UUID without
+ * discarding a transcript that may already have been persisted under the
+ * pending ID. Source data remains authoritative until the target hard-link
+ * staging and the single sessions.json identity replacement have both
+ * succeeded.
+ */
+export async function migratePendingSessionIdentity(
+    sourceSessionId: string,
+    targetSessionId: string,
+    patch: Pick<SessionMetadata, 'sdkSessionId' | 'unifiedSession'>,
+): Promise<PendingSessionIdentityMigrationResult> {
+    ensureStorageDir();
+    if (!isPendingSessionId(sourceSessionId) || sourceSessionId === targetSessionId) {
+        return { migrated: false, reason: 'source-not-pending' };
+    }
+
+    try {
+        return await withSessionFileLocks(
+            [sourceSessionId, targetSessionId],
+            async () => withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const sourceIndex = all.findIndex(session => session.id === sourceSessionId);
+                if (sourceIndex < 0) {
+                    // Crash recovery: metadata publication is atomic, but the
+                    // process can die before the obsolete source hard-link is
+                    // removed. The target row carries the source identity as
+                    // provenance until cleanup finishes, so a retry can prove
+                    // ownership without accepting an unrelated target row.
+                    const targetIndex = all.findIndex(session => session.id === targetSessionId);
+                    const targetMetadata = targetIndex >= 0 ? all[targetIndex] : undefined;
+                    if (targetMetadata?.materializationSourceSessionId === sourceSessionId) {
+                        const sourceJsonl = getSessionFilePath(sourceSessionId);
+                        const targetJsonl = getSessionFilePath(targetSessionId);
+                        const sourceLegacy = getLegacySessionFilePath(sourceSessionId);
+                        const targetLegacy = getLegacySessionFilePath(targetSessionId);
+                        const sourceJsonlExists = existsSync(sourceJsonl);
+                        const targetJsonlExists = existsSync(targetJsonl);
+                        const sourceLegacyExists = existsSync(sourceLegacy);
+                        const targetLegacyExists = existsSync(targetLegacy);
+
+                        if (
+                            (sourceJsonlExists && targetJsonlExists && !pathsReferToSameFile(sourceJsonl, targetJsonl))
+                            || (sourceLegacyExists && targetLegacyExists && !pathsReferToSameFile(sourceLegacy, targetLegacy))
+                        ) {
+                            return { migrated: false, reason: 'data-conflict' };
+                        }
+                        if (sourceJsonlExists && !targetJsonlExists) linkSync(sourceJsonl, targetJsonl);
+                        if (sourceLegacyExists && !targetLegacyExists) linkSync(sourceLegacy, targetLegacy);
+                        if (sourceJsonlExists) unlinkSync(sourceJsonl);
+                        if (sourceLegacyExists) unlinkSync(sourceLegacy);
+
+                        // Prepared-session ownership uses this field until the
+                        // first turn commits. For an already-visible session it
+                        // was only the crash-recovery marker and can now retire.
+                        let recoveredMetadata = targetMetadata;
+                        if (targetMetadata.materializationState !== 'prepared') {
+                            recoveredMetadata = {
+                                ...targetMetadata,
+                                materializationSourceSessionId: undefined,
+                            };
+                            all[targetIndex] = recoveredMetadata;
+                            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                        }
+
+                        const cachedCount = lineCountCache.get(sourceSessionId);
+                        clearLineCountCache(sourceSessionId);
+                        if (cachedCount !== undefined) lineCountCache.set(targetSessionId, cachedCount);
+                        return { migrated: true, metadata: recoveredMetadata };
+                    }
+                    return { migrated: false, reason: 'source-not-found' };
+                }
+                if (all.some(session => session.id === targetSessionId)) {
+                    return { migrated: false, reason: 'target-exists' };
+                }
+
+                const sourceJsonl = getSessionFilePath(sourceSessionId);
+                const targetJsonl = getSessionFilePath(targetSessionId);
+                const sourceLegacy = getLegacySessionFilePath(sourceSessionId);
+                const targetLegacy = getLegacySessionFilePath(targetSessionId);
+                const hasSourceJsonl = existsSync(sourceJsonl);
+                const hasSourceLegacy = existsSync(sourceLegacy);
+
+                const hasTargetJsonl = existsSync(targetJsonl);
+                const hasTargetLegacy = existsSync(targetLegacy);
+                const jsonlStagedByThisSource = hasSourceJsonl
+                    && hasTargetJsonl
+                    && pathsReferToSameFile(sourceJsonl, targetJsonl);
+                const legacyStagedByThisSource = hasSourceLegacy
+                    && hasTargetLegacy
+                    && pathsReferToSameFile(sourceLegacy, targetLegacy);
+
+                if (
+                    (hasTargetJsonl && !jsonlStagedByThisSource)
+                    || (hasTargetLegacy && !legacyStagedByThisSource)
+                ) {
+                    console.warn(`[SessionStore] Refused pending identity migration source=${sourceSessionId} target=${targetSessionId}: target data exists without an indexed target`);
+                    return { migrated: false, reason: 'data-conflict' };
+                }
+
+                // Stage the target as a hard link before publishing metadata.
+                // Source remains authoritative until the index commit; a crash
+                // leaves a same-inode target that a retry can identify without
+                // overwriting unrelated orphan data.
+                if (hasSourceJsonl && !hasTargetJsonl) {
+                    linkSync(sourceJsonl, targetJsonl);
+                }
+                if (hasSourceLegacy && !hasTargetLegacy) {
+                    linkSync(sourceLegacy, targetLegacy);
+                }
+
+                const sourceMetadata = all[sourceIndex];
+                const metadata: SessionMetadata = {
+                    ...sourceMetadata,
+                    ...patch,
+                    id: targetSessionId,
+                    // Keep provenance durable until source-name cleanup has
+                    // completed. Prepared sessions already use the same marker
+                    // for their admission transaction, so no new state field is
+                    // needed.
+                    materializationSourceSessionId:
+                        sourceMetadata.materializationSourceSessionId ?? sourceSessionId,
+                };
+                all[sourceIndex] = metadata;
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+
+                // Metadata now points at the same inode. Remove the obsolete
+                // source name before releasing either file lock. If cleanup
+                // fails, roll the metadata identity back while both names still
+                // reference identical bytes; never publish a split-writable
+                // source/target pair.
+                try {
+                    if (hasSourceJsonl) unlinkSync(sourceJsonl);
+                    if (hasSourceLegacy) unlinkSync(sourceLegacy);
+                } catch (error) {
+                    try {
+                        // One source name may already have been removed before
+                        // another unlink failed. Recreate every missing source
+                        // name from its same-inode target before restoring the
+                        // original metadata row.
+                        if (hasSourceJsonl && !existsSync(sourceJsonl) && existsSync(targetJsonl)) {
+                            linkSync(targetJsonl, sourceJsonl);
+                        }
+                        if (hasSourceLegacy && !existsSync(sourceLegacy) && existsSync(targetLegacy)) {
+                            linkSync(targetLegacy, sourceLegacy);
+                        }
+                        all[sourceIndex] = sourceMetadata;
+                        atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+
+                        if (existsSync(targetJsonl)) unlinkSync(targetJsonl);
+                        if (existsSync(targetLegacy)) unlinkSync(targetLegacy);
+                    } catch (rollbackError) {
+                        console.error(`[SessionStore] Pending identity migration rollback could not fully restore source=${sourceSessionId} target=${targetSessionId}:`, rollbackError);
+                    }
+                    console.error(`[SessionStore] Pending identity migration source cleanup failed source=${sourceSessionId} target=${targetSessionId}:`, error);
+                    return { migrated: false, reason: 'io-error' };
+                }
+
+                // Transfer the process-local cache only after the source name
+                // has been retired successfully. A failed cleanup restores the
+                // source metadata identity, so moving the cache before this
+                // point would leave the authoritative source with stale count
+                // state after rollback.
+                const cachedCount = lineCountCache.get(sourceSessionId);
+                clearLineCountCache(sourceSessionId);
+                if (cachedCount !== undefined) {
+                    lineCountCache.set(targetSessionId, cachedCount);
+                }
+
+                let completedMetadata = metadata;
+                if (metadata.materializationState !== 'prepared') {
+                    completedMetadata = {
+                        ...metadata,
+                        materializationSourceSessionId: undefined,
+                    };
+                    all[sourceIndex] = completedMetadata;
+                    atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                }
+
+                console.log(`[SessionStore] Migrated pending session identity source=${sourceSessionId} target=${targetSessionId} jsonl=${hasSourceJsonl} legacy=${hasSourceLegacy}`);
+                return { migrated: true, metadata: completedMetadata };
+            }),
+        );
+    } catch (error) {
+        console.error(`[SessionStore] Failed pending identity migration source=${sourceSessionId} target=${targetSessionId}:`, error);
+        return { migrated: false, reason: 'io-error' };
+    }
 }
 
 /**
@@ -1152,6 +1504,78 @@ export async function commitPreparedSessionForFirstUserTurn(
     });
 
     return result;
+}
+
+export type PreparedSessionAdmissionClaimResult =
+    | { status: 'claimed'; metadata: SessionMetadata }
+    | { status: 'already-committed'; metadata: SessionMetadata }
+    | { status: 'not-found' }
+    | { status: 'source-mismatch' }
+    | { status: 'io-error' };
+
+/**
+ * Durable turn-admission compare-and-set for renderer-prepared sessions.
+ *
+ * This is deliberately a typed SessionStore operation instead of a caller-side
+ * `getSessionMetadata()` followed by `commitPrepared...()`: rollback and
+ * admission must decide against the same in-lock row. `expectedSourceSessionId`
+ * is supplied by the in-process preparation transaction when one exists; its
+ * absence supports crash/restart recovery of a still-prepared row without
+ * weakening an active transaction's ownership check.
+ */
+export async function claimPreparedSessionForTurnAdmission(
+    sessionId: string,
+    expectedSourceSessionId: string | undefined,
+    params: {
+        messageText?: string;
+        title?: string;
+        origin?: SessionMetadata['origin'];
+        lastMessagePreview?: string;
+    },
+): Promise<PreparedSessionAdmissionClaimResult> {
+    ensureStorageDir();
+    const title = params.title ?? generateSessionTitle(params.messageText ?? '');
+
+    try {
+        return await withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const idx = all.findIndex(session => session.id === sessionId);
+            if (idx < 0) return { status: 'not-found' };
+
+            const current = all[idx];
+            if (current.materializationState !== 'prepared') {
+                return { status: 'already-committed', metadata: current };
+            }
+            if (
+                expectedSourceSessionId !== undefined
+                && current.materializationSourceSessionId !== expectedSourceSessionId
+            ) {
+                return { status: 'source-mismatch' };
+            }
+
+            const patch: Partial<SessionMetadata> = {
+                materializationState: undefined,
+                materializationSourceSessionId: undefined,
+                lastMessagePreview: params.lastMessagePreview,
+            };
+            const canSetDefaultTitle = current.title === 'New Chat' && current.titleSource !== 'user';
+            if (canSetDefaultTitle && title && title !== current.title) {
+                patch.title = title;
+                patch.titleSource = 'default';
+            }
+            if (!current.origin && params.origin) {
+                patch.origin = params.origin;
+            }
+
+            const updated: SessionMetadata = { ...current, ...patch };
+            all[idx] = updated;
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { status: 'claimed', metadata: updated };
+        });
+    } catch (error) {
+        console.error(`[SessionStore] Failed prepared turn-admission claim for ${sessionId}:`, error);
+        return { status: 'io-error' };
+    }
 }
 
 export async function removeMcpServerFromSessionSnapshots(serverId: string): Promise<number> {

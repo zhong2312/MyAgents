@@ -7,6 +7,7 @@ import OverlayBackdrop from '@/components/OverlayBackdrop';
 import SubscriptionProviderCardContent from '@/components/SubscriptionProviderCardContent';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { openExternal } from '@/utils/openExternal';
+import { copyPlainText } from '@/utils/clipboard';
 import {
   cancelGrokLogin,
   getGrokAuthStatus,
@@ -391,7 +392,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                       <p className="text-xs text-[var(--ink-muted)]">{t('providers.grok.deviceCode')}</p>
                       <div className="mt-1 flex items-center gap-2">
                         <code className="flex-1 rounded-lg bg-[var(--paper)] px-3 py-2 text-lg font-semibold tracking-widest text-[var(--ink)]">{loginView.userCode}</code>
-                        <button type="button" onClick={() => { void navigator.clipboard.writeText(loginView.userCode ?? ''); }} className="rounded-lg p-2 text-[var(--ink-muted)] hover:bg-[var(--paper)] hover:text-[var(--ink)]" title={t('providers.grok.copyCode')}>
+                        <button type="button" onClick={() => { void copyPlainText(loginView.userCode ?? '').catch(error => console.warn('[Grok] Failed to copy device code:', error)); }} className="rounded-lg p-2 text-[var(--ink-muted)] hover:bg-[var(--paper)] hover:text-[var(--ink)]" title={t('providers.grok.copyCode')}>
                           <Copy className="h-4 w-4" />
                         </button>
                       </div>
@@ -406,7 +407,7 @@ export default function GrokSubscriptionProvider({ onAuthChanged }: GrokSubscrip
                       <button type="button" onClick={() => { void openExternal(loginUrl); }} className="min-w-0 flex-1 truncate rounded-lg border border-[var(--line)] px-3 py-2 text-left text-sm text-[var(--accent)] hover:bg-[var(--paper-inset)]">
                         {loginUrl}
                       </button>
-                      <button type="button" onClick={() => { void navigator.clipboard.writeText(loginUrl); }} className="rounded-lg border border-[var(--line)] p-2 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" title={t('providers.grok.copyUrl')}>
+                      <button type="button" onClick={() => { void copyPlainText(loginUrl).catch(error => console.warn('[Grok] Failed to copy login URL:', error)); }} className="rounded-lg border border-[var(--line)] p-2 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" title={t('providers.grok.copyUrl')}>
                         <Copy className="h-4 w-4" />
                       </button>
                     </div>

@@ -22,6 +22,7 @@ import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { useTabStateOptional } from '@/context/TabContext';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { useAttachmentUrl } from '@/utils/toolAttachment';
+import { copyPlainText } from '@/utils/clipboard';
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
 
 interface Props {
@@ -90,7 +91,7 @@ export default function ToolImageAttachment({ attachment }: Props) {
       toast?.error(t('shell.toolChrome.image.noLocalPath'));
       return;
     }
-    void writeClipboardText(localPath).then(
+    void copyPlainText(localPath).then(
       () => toast?.success(t('shell.toolChrome.image.copyPathSuccess')),
       () => toast?.error(t('shell.toolChrome.image.copyPathFailed')),
     );
@@ -128,7 +129,7 @@ export default function ToolImageAttachment({ attachment }: Props) {
       } catch (err) {
         console.warn('[ToolImageAttachment] copy image failed:', err);
         if (localPath) {
-          await writeClipboardText(localPath).then(
+          await copyPlainText(localPath).then(
             () => toast?.warning(t('shell.toolChrome.image.copyFallbackPath')),
             () => toast?.error(t('shell.toolChrome.image.copyFailed')),
           );
@@ -268,13 +269,6 @@ export default function ToolImageAttachment({ attachment }: Props) {
         : null}
     </>
   );
-}
-
-async function writeClipboardText(text: string): Promise<void> {
-  if (!navigator.clipboard) {
-    throw new Error('Clipboard text write is unavailable');
-  }
-  await navigator.clipboard.writeText(text);
 }
 
 function getAttachmentFilename(attachment: ToolAttachment): string {

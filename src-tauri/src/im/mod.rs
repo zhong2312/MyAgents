@@ -48,6 +48,7 @@ use agent_channel::{
 pub use agent_channel::{get_all_bots_status, get_im_bot_status, start_im_bot, stop_im_bot};
 use bridge::BridgeAdapter;
 use buffer::MessageBuffer;
+pub(crate) use commands::reload_agent_config_from_disk;
 #[allow(unused_imports, deprecated)]
 pub use commands::{
     cmd_add_im_bot_config, cmd_agent_channel_status, cmd_agent_status, cmd_all_agents_status,

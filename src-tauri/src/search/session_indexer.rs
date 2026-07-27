@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Mutex as StdMutex, RwLock};
 
 use crate::perf_trace::{elapsed_ms, emit_perf_trace, trace_start, PerfTrace, PerfTraceName};
 use crate::ulog_warn;
@@ -13,26 +13,32 @@ use crate::utils::system_reminder::strip_leading_system_reminder;
 
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyError, Term};
 
 use super::schema::{self, SessionFields, SCHEMA_VERSION};
 use super::searcher::{SessionSearchHit, SessionSearchResult};
 use super::tokenizer;
 use super::util::{byte_to_utf16, ceil_char_boundary, floor_char_boundary};
 
-/// Manages the Tantivy index for session history search.
+const INDEX_RECOVERY_REQUIRED: &str = "[recoverable-tantivy-corruption]";
+
+/// Owns the replaceable, derived session-search index.
 ///
-/// **Concurrency model:** the reader path (`search`, `doc_count`) is lock-free
-/// — `IndexReader` is designed for concurrent reads. Only the writer is
-/// serialized through `StdMutex<IndexWriter>`. This lets background indexing
-/// run without starving user searches, and lets `SearchEngine` hold an
-/// `Arc<SessionIndex>` (not `Arc<Mutex<SessionIndex>>`) so searches never await.
+/// Normal reads and writes share the read side of `state`; Tantivy's writer
+/// mutex still serializes mutations while searches remain concurrent. The
+/// write side is used only to replace a confirmed-corrupt derived index from
+/// authoritative `sessions.json` + JSONL data.
 pub struct SessionIndex {
+    state: RwLock<Option<SessionIndexState>>,
+    index_dir: PathBuf,
+    data_dir: PathBuf,
+}
+
+struct SessionIndexState {
     index: Index,
     reader: IndexReader,
     writer: StdMutex<IndexWriter>,
     fields: SessionFields,
-    data_dir: Option<PathBuf>,
     /// Pattern 3 §3.2.4 / D.4 — directory holding the Tantivy index plus
     /// per-session `<sessionId>.offset` sidecar files used for incremental
     /// indexing (see `reindex_session_incremental`).
@@ -40,13 +46,156 @@ pub struct SessionIndex {
 }
 
 impl SessionIndex {
+    pub fn new(index_dir: PathBuf, data_dir: PathBuf) -> Result<Self, String> {
+        let state = match SessionIndexState::open(index_dir.clone()) {
+            Ok(state) => state,
+            Err(error) if is_recoverable_index_error(&error) => {
+                ulog_warn!(
+                    "[search] Session index is corrupt during open; rebuilding derived index: {}",
+                    error
+                );
+                reset_session_index_dir(&index_dir)?;
+                SessionIndexState::open(index_dir.clone())?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Self {
+            state: RwLock::new(Some(state)),
+            index_dir,
+            data_dir,
+        })
+    }
+
+    fn with_recovery<T>(
+        &self,
+        operation: &str,
+        action: impl Fn(&SessionIndexState) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let first_result = {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| format!("session index state lock poisoned: {}", e))?;
+            match state.as_ref() {
+                Some(state) => action(state),
+                None => Err(INDEX_RECOVERY_REQUIRED.to_string()),
+            }
+        };
+        match first_result {
+            Ok(value) => return Ok(value),
+            Err(error) if is_recoverable_index_error(&error) => {}
+            Err(error) => return Err(error),
+        }
+
+        // A concurrent caller may have repaired the index while we waited for
+        // exclusive ownership. Re-run once before electing this caller to rebuild.
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| format!("session index state lock poisoned: {}", e))?;
+        if let Some(current) = state.as_ref() {
+            match action(current) {
+                Ok(value) => return Ok(value),
+                Err(error) if is_recoverable_index_error(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        ulog_warn!(
+            "[search] Session index corruption detected during {}; rebuilding derived index",
+            operation
+        );
+
+        // Drop all Tantivy handles before removing the directory. This is
+        // required on Windows, where mapped segment files cannot be unlinked.
+        drop(state.take());
+        reset_session_index_dir(&self.index_dir)?;
+        let rebuilt = SessionIndexState::open(self.index_dir.clone())?;
+        let rebuild_result = if self.data_dir.join("sessions.json").exists() {
+            rebuilt.index_all_sessions(&self.data_dir).map(|_| ())
+        } else {
+            Ok(())
+        };
+        *state = Some(rebuilt);
+        rebuild_result?;
+
+        action(
+            state
+                .as_ref()
+                .expect("rebuilt session index must be installed"),
+        )
+    }
+
+    pub fn index_all_sessions(&self, data_dir: &Path) -> Result<usize, String> {
+        self.with_recovery("initial indexing", |state| {
+            state.index_all_sessions(data_dir)
+        })
+    }
+
+    pub fn reindex_session(&self, session_id: &str, sessions_dir: &Path) -> Result<(), String> {
+        self.with_recovery("session reindex", |state| {
+            state.reindex_session(session_id, sessions_dir)
+        })
+    }
+
+    pub fn delete_session(&self, session_id: &str) -> Result<(), String> {
+        self.with_recovery("session delete", |state| state.delete_session(session_id))
+    }
+
+    pub fn search(&self, query: &str, limit: usize) -> Result<SessionSearchResult, String> {
+        self.with_recovery("session search", |state| {
+            state.search(query, limit, &self.data_dir)
+        })
+    }
+
+    pub fn doc_count(&self) -> Result<u64, String> {
+        let state = self
+            .state
+            .read()
+            .map_err(|e| format!("session index state lock poisoned: {}", e))?;
+        state
+            .as_ref()
+            .map(SessionIndexState::doc_count)
+            .ok_or_else(|| "session index recovery is pending".to_string())
+    }
+
+    #[cfg(test)]
+    fn read_session_offset(&self, session_id: &str) -> u64 {
+        self.state
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .read_session_offset(session_id)
+    }
+
+    #[cfg(test)]
+    fn write_session_offset(&self, session_id: &str, offset: u64) {
+        self.state
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .write_session_offset(session_id, offset);
+    }
+
+    #[cfg(test)]
+    fn disable_merging(&self) {
+        self.state
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .writer
+            .lock()
+            .unwrap()
+            .set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+    }
+}
+
+impl SessionIndexState {
     /// Open or create the session index at the given directory.
-    ///
-    /// If an existing index was built with a different schema version, it is
-    /// deleted and rebuilt. This prevents Tantivy from panicking when the
-    /// stored schema does not match the runtime schema (which happens any time
-    /// we change tokenizer wiring, field list, or indexing options).
-    pub fn new(index_dir: PathBuf) -> Result<Self, String> {
+    fn open(index_dir: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&index_dir)
             .map_err(|e| format!("Failed to create session index dir: {}", e))?;
 
@@ -75,10 +224,10 @@ impl SessionIndex {
         // Open or create index
         let index = if index_dir.join("meta.json").exists() {
             Index::open_in_dir(&index_dir)
-                .map_err(|e| format!("Failed to open session index: {}", e))?
+                .map_err(|e| tantivy_error("Failed to open session index", e))?
         } else {
             Index::create_in_dir(&index_dir, schema)
-                .map_err(|e| format!("Failed to create session index: {}", e))?
+                .map_err(|e| tantivy_error("Failed to create session index", e))?
         };
 
         // Persist current schema version marker.
@@ -92,43 +241,23 @@ impl SessionIndex {
             tokenizer::build_chinese_tokenizer(),
         );
 
-        // 50MB writer heap — sufficient for desktop usage.
-        //
-        // Tantivy acquires a file lock (`.tantivy-writer.lock`) when a writer
-        // is created. If the previous process crashed or was force-killed, a
-        // stale lock file can remain on disk and the next startup would fail
-        // permanently. Detect that case and retry after removing the lock.
-        let writer = match index.writer(50_000_000) {
-            Ok(w) => w,
-            Err(first_err) => {
-                let lock_path = index_dir.join(".tantivy-writer.lock");
-                if lock_path.exists() {
-                    let _ = fs::remove_file(&lock_path);
-                    ulog_warn!(
-                        "[search] Recovered from stale Tantivy writer lock at {:?}",
-                        lock_path
-                    );
-                    index.writer(50_000_000).map_err(|e| {
-                        format!("Failed to create index writer after lock recovery: {}", e)
-                    })?
-                } else {
-                    return Err(format!("Failed to create index writer: {}", first_err));
-                }
-            }
-        };
+        // 50MB writer heap — sufficient for desktop usage. Tantivy/OS owns the
+        // lock lifetime; pathname existence alone does not prove a stale lock.
+        let writer = index
+            .writer(50_000_000)
+            .map_err(|e| tantivy_error("Failed to create index writer", e))?;
 
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
-            .map_err(|e| format!("Failed to create index reader: {}", e))?;
+            .map_err(|e| tantivy_error("Failed to create index reader", e))?;
 
         Ok(Self {
             index,
             reader,
             writer: StdMutex::new(writer),
             fields,
-            data_dir: infer_data_dir_from_session_index_dir(&index_dir),
             index_dir,
         })
     }
@@ -181,8 +310,8 @@ impl SessionIndex {
         // Get set of already-indexed session IDs
         let indexed_ids = self.get_indexed_session_ids();
 
-        // Hold the writer lock for the whole batch — search path is lock-free
-        // on the reader so this does not block user queries.
+        // Hold the writer lock for the whole batch. Search uses a separate
+        // Tantivy reader, so normal indexing does not block user queries.
         let mut writer = self
             .writer
             .lock()
@@ -227,11 +356,11 @@ impl SessionIndex {
         if changed {
             writer
                 .commit()
-                .map_err(|e| format!("Failed to commit session index: {}", e))?;
+                .map_err(|e| tantivy_error("Failed to commit session index", e))?;
             drop(writer);
             self.reader
                 .reload()
-                .map_err(|e| format!("Failed to reload reader: {}", e))?;
+                .map_err(|e| tantivy_error("Failed to reload reader", e))?;
         }
 
         Ok(count)
@@ -317,11 +446,11 @@ impl SessionIndex {
 
         writer
             .commit()
-            .map_err(|e| format!("commit failed: {}", e))?;
+            .map_err(|e| tantivy_error("commit failed", e))?;
         drop(writer);
         self.reader
             .reload()
-            .map_err(|e| format!("reload failed: {}", e))?;
+            .map_err(|e| tantivy_error("reload failed", e))?;
         emit_perf_trace(
             PerfTrace::new(PerfTraceName::StorageIo, "search_reindex_full")
                 .duration_ms(elapsed_ms(trace_started))
@@ -509,11 +638,11 @@ impl SessionIndex {
 
         writer
             .commit()
-            .map_err(|e| format!("commit failed: {}", e))?;
+            .map_err(|e| tantivy_error("commit failed", e))?;
         drop(writer);
         self.reader
             .reload()
-            .map_err(|e| format!("reload failed: {}", e))?;
+            .map_err(|e| tantivy_error("reload failed", e))?;
         // Persist new offset only after a successful commit.
         if next_offset > from {
             self.write_session_offset(session_id, next_offset);
@@ -602,11 +731,11 @@ impl SessionIndex {
         ));
         writer
             .commit()
-            .map_err(|e| format!("commit failed: {}", e))?;
+            .map_err(|e| tantivy_error("commit failed", e))?;
         drop(writer);
         self.reader
             .reload()
-            .map_err(|e| format!("reload failed: {}", e))?;
+            .map_err(|e| tantivy_error("reload failed", e))?;
         Ok(())
     }
 
@@ -620,11 +749,11 @@ impl SessionIndex {
         writer.delete_term(term);
         writer
             .commit()
-            .map_err(|e| format!("commit failed: {}", e))?;
+            .map_err(|e| tantivy_error("commit failed", e))?;
         drop(writer);
         self.reader
             .reload()
-            .map_err(|e| format!("reload failed: {}", e))?;
+            .map_err(|e| tantivy_error("reload failed", e))?;
         // Pattern 3 §D.4 — drop the offset sidecar so a re-created session
         // with the same id starts indexing from byte 0.
         self.drop_session_offset(session_id);
@@ -632,7 +761,12 @@ impl SessionIndex {
     }
 
     /// Search sessions by query string.
-    pub fn search(&self, query: &str, limit: usize) -> Result<SessionSearchResult, String> {
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        data_dir: &Path,
+    ) -> Result<SessionSearchResult, String> {
         let start = std::time::Instant::now();
         let searcher = self.reader.searcher();
         let f = &self.fields;
@@ -647,7 +781,7 @@ impl SessionIndex {
 
         let top_docs = searcher
             .search(&tantivy_query, &TopDocs::with_limit(limit * 3))
-            .map_err(|e| format!("Search error: {}", e))?;
+            .map_err(|e| tantivy_error("Search error", e))?;
 
         // Deduplicate by session_id (keep highest scoring doc per session)
         let mut seen_sessions = HashSet::new();
@@ -657,12 +791,10 @@ impl SessionIndex {
         for (score, doc_addr) in top_docs {
             let doc = searcher
                 .doc::<tantivy::TantivyDocument>(doc_addr)
-                .map_err(|e| format!("Doc retrieval error: {}", e))?;
+                .map_err(|e| tantivy_error("Doc retrieval error", e))?;
 
             let session_id = get_text_field(&doc, f.session_id);
-            if self.data_dir.as_deref().is_some_and(|data_dir| {
-                !is_session_currently_history_visible(data_dir, &session_id)
-            }) {
+            if !is_session_currently_history_visible(data_dir, &session_id) {
                 continue;
             }
             if !seen_sessions.insert(session_id.clone()) {
@@ -765,12 +897,36 @@ impl SessionIndex {
     }
 }
 
-fn infer_data_dir_from_session_index_dir(index_dir: &Path) -> Option<PathBuf> {
-    let search_index_dir = index_dir.parent()?;
-    if search_index_dir.file_name()? != "search_index" {
-        return None;
+fn is_recoverable_index_error(error: &str) -> bool {
+    error.starts_with(INDEX_RECOVERY_REQUIRED)
+}
+
+fn tantivy_error(context: &str, error: TantivyError) -> String {
+    let detail = error.to_string();
+    if matches!(error, TantivyError::DataCorruption(_)) || detail.contains("FileDoesNotExist") {
+        format!("{} {}: {}", INDEX_RECOVERY_REQUIRED, context, detail)
+    } else {
+        format!("{}: {}", context, detail)
     }
-    search_index_dir.parent().map(Path::to_path_buf)
+}
+
+fn reset_session_index_dir(index_dir: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(index_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(index_dir)
+                .map_err(|e| format!("Failed to remove corrupt session index: {}", e))?;
+        }
+        Ok(_) => fs::remove_file(index_dir)
+            .map_err(|e| format!("Failed to remove corrupt session index path: {}", e))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect corrupt session index: {}",
+                error
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn is_session_currently_history_visible(data_dir: &Path, session_id: &str) -> bool {
@@ -1269,7 +1425,7 @@ mod tests {
         )
         .unwrap();
 
-        let index = SessionIndex::new(temp.path().join("index")).unwrap();
+        let index = SessionIndex::new(temp.path().join("index"), data_dir.clone()).unwrap();
         index.reindex_session(session_id, &sessions_dir).unwrap();
         let initial_offset = index.read_session_offset(session_id);
         assert!(initial_offset > 0);
@@ -1300,7 +1456,7 @@ mod tests {
         let first = message_line("m1", "stable indexed text");
         fs::write(&jsonl_path, &first).unwrap();
 
-        let index = SessionIndex::new(temp.path().join("index")).unwrap();
+        let index = SessionIndex::new(temp.path().join("index"), data_dir.clone()).unwrap();
         index.reindex_session(session_id, &sessions_dir).unwrap();
         let stable_offset = index.read_session_offset(session_id);
 
@@ -1342,7 +1498,7 @@ mod tests {
         let jsonl_path = sessions_dir.join(format!("{}.jsonl", session_id));
         fs::write(&jsonl_path, message_line("m1", "first body text")).unwrap();
 
-        let index = SessionIndex::new(temp.path().join("index")).unwrap();
+        let index = SessionIndex::new(temp.path().join("index"), data_dir.clone()).unwrap();
         index.reindex_session(session_id, &sessions_dir).unwrap();
 
         write_session_metadata_with_title(&data_dir, session_id, "newtitleunique");
@@ -1380,7 +1536,7 @@ mod tests {
             .map(|pos| pos as u64 + 1)
             .unwrap();
 
-        let index = SessionIndex::new(temp.path().join("index")).unwrap();
+        let index = SessionIndex::new(temp.path().join("index"), data_dir.clone()).unwrap();
         index.write_session_offset(session_id, split_offset);
         index.reindex_session(session_id, &sessions_dir).unwrap();
 
@@ -1416,7 +1572,11 @@ mod tests {
         )
         .unwrap();
 
-        let index = SessionIndex::new(data_dir.join("search_index").join("sessions")).unwrap();
+        let index = SessionIndex::new(
+            data_dir.join("search_index").join("sessions"),
+            data_dir.clone(),
+        )
+        .unwrap();
         index.reindex_session(session_id, &sessions_dir).unwrap();
 
         assert_eq!(index.search("preparedunique", 10).unwrap().total_count, 0);
@@ -1461,7 +1621,11 @@ mod tests {
         )
         .unwrap();
 
-        let index = SessionIndex::new(data_dir.join("search_index").join("sessions")).unwrap();
+        let index = SessionIndex::new(
+            data_dir.join("search_index").join("sessions"),
+            data_dir.clone(),
+        )
+        .unwrap();
         index.reindex_session(session_id, &sessions_dir).unwrap();
         assert_eq!(index.search("stalequeryunique", 10).unwrap().total_count, 1);
 
@@ -1504,7 +1668,11 @@ mod tests {
         )
         .unwrap();
 
-        let index = SessionIndex::new(data_dir.join("search_index").join("sessions")).unwrap();
+        let index = SessionIndex::new(
+            data_dir.join("search_index").join("sessions"),
+            data_dir.clone(),
+        )
+        .unwrap();
         index.reindex_session(session_id, &sessions_dir).unwrap();
         assert_eq!(index.search("staledraftunique", 10).unwrap().total_count, 1);
         assert_eq!(
@@ -1536,5 +1704,138 @@ mod tests {
             index.search("stalecontentunique", 10).unwrap().total_count,
             0
         );
+    }
+
+    #[test]
+    fn missing_delete_segment_rebuilds_derived_index_without_touching_session_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("data");
+        let sessions_dir = data_dir.join("sessions");
+        let index_dir = data_dir.join("search_index").join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let session_id = "missing-delete-segment";
+        let keeper_id = "missing-delete-segment-keeper";
+        fs::write(
+            data_dir.join("sessions.json"),
+            json!([
+                {
+                    "id": session_id,
+                    "title": "recoverableunique",
+                    "agentDir": "/tmp/myagents-test-agent",
+                    "lastActiveAt": "2026-06-06T00:00:00.000Z",
+                    "source": "desktop",
+                    "stats": { "messageCount": 1 }
+                },
+                {
+                    "id": keeper_id,
+                    "title": "keeperunique",
+                    "agentDir": "/tmp/myagents-test-agent",
+                    "lastActiveAt": "2026-06-06T00:00:00.000Z",
+                    "source": "desktop",
+                    "stats": { "messageCount": 1 }
+                }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let jsonl_path = sessions_dir.join(format!("{}.jsonl", session_id));
+        fs::write(
+            &jsonl_path,
+            message_line("m1", "recoverablebodyunique searchable text"),
+        )
+        .unwrap();
+        fs::write(
+            sessions_dir.join(format!("{}.jsonl", keeper_id)),
+            message_line("m2", "keeperbodyunique searchable text"),
+        )
+        .unwrap();
+        let transcript_before = fs::read(&jsonl_path).unwrap();
+
+        let index = SessionIndex::new(index_dir.clone(), data_dir.clone()).unwrap();
+        index.disable_merging();
+        index.index_all_sessions(&data_dir).unwrap();
+        assert_eq!(
+            index.search("recoverableunique", 10).unwrap().total_count,
+            1
+        );
+        assert_eq!(index.search("keeperunique", 10).unwrap().total_count, 1);
+        index.delete_session(session_id).unwrap();
+        assert_eq!(
+            index.search("recoverableunique", 10).unwrap().total_count,
+            0
+        );
+        assert_eq!(index.search("keeperunique", 10).unwrap().total_count, 1);
+
+        let metadata_path = data_dir.join("sessions.json");
+        let updated_metadata = fs::read_to_string(&metadata_path)
+            .unwrap()
+            .replace("keeperunique", "recoveredkeeperunique");
+        fs::write(&metadata_path, updated_metadata).unwrap();
+        let metadata_before = fs::read(&metadata_path).unwrap();
+
+        let index_paths: Vec<PathBuf> = fs::read_dir(&index_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
+        let delete_segment = index_paths
+            .iter()
+            .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("del"))
+            .unwrap_or_else(|| {
+                panic!("delete commit should create a Tantivy .del segment: {index_paths:?}")
+            })
+            .clone();
+        drop(index);
+        fs::remove_file(delete_segment).unwrap();
+
+        let index = SessionIndex::new(index_dir, data_dir.clone()).unwrap();
+        index.index_all_sessions(&data_dir).unwrap();
+
+        assert_eq!(
+            index.search("recoverableunique", 10).unwrap().total_count,
+            1
+        );
+        assert_eq!(
+            index
+                .search("recoveredkeeperunique", 10)
+                .unwrap()
+                .total_count,
+            1
+        );
+        assert_eq!(
+            fs::read(data_dir.join("sessions.json")).unwrap(),
+            metadata_before
+        );
+        assert_eq!(fs::read(jsonl_path).unwrap(), transcript_before);
+    }
+
+    #[test]
+    fn active_writer_lock_is_never_deleted_as_stale() {
+        let temp = tempfile::tempdir().unwrap();
+        let index_dir = temp.path().join("index");
+        let data_dir = temp.path().join("data");
+        let first = SessionIndex::new(index_dir.clone(), data_dir.clone()).unwrap();
+        let lock_path = index_dir.join(".tantivy-writer.lock");
+
+        assert!(SessionIndex::new(index_dir.clone(), data_dir.clone()).is_err());
+        assert!(lock_path.exists());
+
+        drop(first);
+        SessionIndex::new(index_dir, data_dir).unwrap();
+    }
+
+    #[test]
+    fn user_query_cannot_impersonate_index_corruption() {
+        let temp = tempfile::tempdir().unwrap();
+        let index_dir = temp.path().join("index");
+        let data_dir = temp.path().join("data");
+        let marker = index_dir.join("must-remain");
+        let index = SessionIndex::new(index_dir.clone(), data_dir).unwrap();
+        fs::write(&marker, "derived-state-marker").unwrap();
+
+        let error = index.search("FileDoesNotExist:anything", 10).unwrap_err();
+
+        assert!(error.contains("Field does not exist"));
+        assert!(marker.exists(), "query errors must not reset the index");
     }
 }

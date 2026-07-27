@@ -6,6 +6,7 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu';
 import { useToast } from './Toast';
 import { isExternalUrl, openExternal } from '@/utils/openExternal';
 import { CUSTOM_EVENTS } from '../../shared/constants';
+import { copyPlainText } from '@/utils/clipboard';
 
 // Global delegated right-click handler for external `<a href="…">` links.
 //
@@ -24,7 +25,7 @@ import { CUSTOM_EVENTS } from '../../shared/constants';
 //     Active Chat tab listens; if its split BrowserPanel is available, it
 //     calls preventDefault() to claim the action. Otherwise we fall back to
 //     openExternal so the action always feels responsive.
-//   - 拷贝链接：navigator.clipboard.writeText + toast feedback.
+//   - 拷贝链接：cross-WebView clipboard helper + toast feedback.
 //   - 在系统浏览器中打开：openExternal (existing routing).
 // Non-external anchors (in-page #anchors, file paths) keep their default
 // browser behavior — no interception.
@@ -85,7 +86,7 @@ export default function LinkContextMenuProvider({ children }: { children: React.
               {
                   label: t('linkContext.copyLink'),
                   onClick: () => {
-                      navigator.clipboard.writeText(menu.href).then(
+                      copyPlainText(menu.href).then(
                           () => toast.success(t('linkContext.copied')),
                           () => toast.error(t('linkContext.copyFailed')),
                       );

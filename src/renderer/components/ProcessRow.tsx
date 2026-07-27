@@ -9,6 +9,7 @@ import Tip from '@/components/Tip';
 import { useToastOptional } from '@/components/Toast';
 import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { buildThinkingMarkdown, downloadMarkdown, localDateStr } from '@/utils/markdownExport';
+import { copyPlainText } from '@/utils/clipboard';
 import {
     formatDuration,
     getToolBadgeConfig,
@@ -204,16 +205,16 @@ const ProcessRow = memo(function ProcessRow({
     };
 
     const handleCopyThinking = () => {
-        // Guard a missing Clipboard API (insecure/unsupported context) so the
-        // synchronous deref can't throw, and only flip the "已复制" checkmark
-        // once the write actually resolves (no false success on rejection).
-        if (!block.thinking || !navigator.clipboard) return;
-        navigator.clipboard.writeText(block.thinking).then(() => {
+        if (!block.thinking) return;
+        void copyPlainText(block.thinking).then(() => {
             track('thinking_copy', {});
             setThinkingCopied(true);
             if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
             copyTimerRef.current = setTimeout(() => setThinkingCopied(false), 1500);
-        }).catch(() => {});
+        }).catch(error => {
+            console.warn('[ProcessRow] Failed to copy thinking:', error);
+            toast?.error(t('workspaceFiles.common.copyFailed'));
+        });
     };
 
     const handleExportThinking = async () => {

@@ -10,8 +10,14 @@ import {
   runtimeConfigForRuntimeBackedProvider,
 } from '../../../shared/providerExecution';
 import type { RuntimeConfig, RuntimeType } from '../../../shared/types/runtime';
-import { atomicModifyConfig, loadAppConfig } from './appConfigService';
-import { loadProjects } from './projectService';
+import {
+  atomicModifyConfig,
+  loadAppConfig,
+  notifyConfigChanged,
+  type ConfigChangeNotification,
+} from './appConfigService';
+import { loadProjects, patchProject } from './projectService';
+import { withAgentConfigIntentLock } from './configStore';
 import { getAllMcpServersFromConfig } from './mcpService';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../../shared/workspacePath';
 
@@ -435,15 +441,46 @@ export function resolveAgentRuntimeMcpServersJson(
   return enabledMcpDefs.length > 0 ? JSON.stringify(enabledMcpDefs) : null;
 }
 
-/**
- * Patch a single agent's config (atomic read-modify-write).
- * After disk write, hot-reloads runtime state of running agent instances via Tauri command.
- */
-export async function patchAgentConfig(
+const PROJECT_MIRRORED_AGENT_FIELDS = new Set<keyof Omit<AgentConfig, 'id'>>([
+  'providerId',
+  'model',
+  'permissionMode',
+  'mcpEnabledServers',
+  'enabledPluginIds',
+  'enabledOfficialToolIds',
+]);
+
+function touchesProjectMirroredAgentField(patch: Partial<Omit<AgentConfig, 'id'>>): boolean {
+  return Object.keys(patch).some(key => PROJECT_MIRRORED_AGENT_FIELDS.has(key as keyof Omit<AgentConfig, 'id'>));
+}
+
+function projectMirrorPatchFromAgentPatch(
+  patch: Partial<Omit<AgentConfig, 'id'>>,
+): Partial<Omit<Project, 'id'>> {
+  const projectPatch: Partial<Omit<Project, 'id'>> = {};
+  const source = patch as Partial<Record<keyof Omit<AgentConfig, 'id'>, unknown>>;
+  const target = projectPatch as Partial<Record<keyof Omit<Project, 'id'>, unknown>>;
+  for (const key of PROJECT_MIRRORED_AGENT_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) {
+      target[key as keyof Omit<Project, 'id'>] = source[key];
+    }
+  }
+  return projectPatch;
+}
+
+interface AgentConfigDiskPatchResult {
+  previous?: AgentConfig;
+  updated?: AgentConfig;
+  configChanged: boolean;
+  effectivePatch: Partial<Omit<AgentConfig, 'id'>>;
+  resolvedMcpJson?: string;
+}
+
+async function persistAgentConfigPatch(
   agentId: string,
   patch: Partial<Omit<AgentConfig, 'id'>>,
-  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
-): Promise<AgentConfig | undefined> {
+  notification: ConfigChangeNotification = 'immediate',
+): Promise<AgentConfigDiskPatchResult> {
   if (patch.enabled === true) {
     const currentConfig = await loadAppConfig();
     const currentAgent = getAgentById(currentConfig, agentId);
@@ -452,7 +489,9 @@ export async function patchAgentConfig(
     }
   }
 
+  let previous: AgentConfig | undefined;
   let updated: AgentConfig | undefined;
+  let configChanged = false;
 
   // If mcpEnabledServers changed, resolve mcpServersJson inside the config
   // transaction so the Agent subset, global MCP registry, and runtime payload
@@ -511,6 +550,7 @@ export async function patchAgentConfig(
       resolvedMcpJson = mcpResolution.mcpServersJson;
       agents = [...(nextConfig.agents || [])];
     }
+    previous = agents[idx];
     agents[idx] = {
       ...agents[idx],
       ...patch,
@@ -525,23 +565,55 @@ export async function patchAgentConfig(
         : {}),
     };
     updated = agents[idx];
-    return {
+    const next = {
       ...nextConfig,
       agents,
     };
-  });
+    configChanged = JSON.stringify(next) !== JSON.stringify(config);
+    return next;
+  }, { notification });
 
-  // Hot-reload runtime state if any runtime-sensitive field changed
-  if (updated) {
-    // If providerEnvJson was auto-resolved (not in original patch), inject it
-    // so syncAgentRuntime pushes the new credentials to the running agent
-    const effectivePatch = shouldUpdateProviderEnv
-      ? { ...patch, providerEnvJson: resolvedProviderEnvJson ?? undefined }
-      : patch;
-    await syncAgentRuntime(agentId, effectivePatch, resolvedMcpJson);
+  const effectivePatch = shouldUpdateProviderEnv
+    ? { ...patch, providerEnvJson: resolvedProviderEnvJson ?? undefined }
+    : patch;
+  return { previous, updated, configChanged, effectivePatch, resolvedMcpJson };
+}
+
+function restoreAgentFieldsIfUnchanged(
+  current: AgentConfig,
+  previous: AgentConfig,
+  committed: AgentConfig,
+): { agent: AgentConfig; complete: boolean } {
+  const restored = { ...current } as Record<string, unknown>;
+  let complete = true;
+  const keys = new Set([...Object.keys(previous), ...Object.keys(committed)]);
+  for (const key of keys) {
+    const previousValue = (previous as unknown as Record<string, unknown>)[key];
+    const committedValue = (committed as unknown as Record<string, unknown>)[key];
+    if (JSON.stringify(previousValue) === JSON.stringify(committedValue)) continue;
+    if (JSON.stringify(restored[key]) !== JSON.stringify(committedValue)) {
+      complete = false;
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(previous, key)) restored[key] = previousValue;
+    else delete restored[key];
+  }
+  return { agent: restored as unknown as AgentConfig, complete };
+}
+
+async function projectLiveAgentConfigPatch(
+  agentId: string,
+  patch: Partial<Omit<AgentConfig, 'id'>>,
+  result: AgentConfigDiskPatchResult,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' },
+): Promise<void> {
+  if (result.updated) {
+    // Live projection deliberately happens after every disk-intent lock has
+    // been released. Runtime rotation/network waits are not persistence work.
+    await syncAgentRuntime(agentId, result.effectivePatch, result.resolvedMcpJson);
     if ('memoryAutoUpdate' in patch) {
       try {
-        await configureMemoryAutoUpdateTaskForAgent(updated);
+        await configureMemoryAutoUpdateTaskForAgent(result.updated);
       } catch (error) {
         if (options.memoryAutoUpdateReconcileFailure === 'throw') {
           throw error;
@@ -553,8 +625,144 @@ export async function patchAgentConfig(
       }
     }
   }
+}
 
-  return updated;
+interface AgentProjectMirrorTarget {
+  projectId: string;
+  projectPatch: Partial<Omit<Project, 'id'>>;
+}
+
+async function persistAgentProjectIntent(
+  agentId: string,
+  agentPatch: Partial<Omit<AgentConfig, 'id'>>,
+  resolveTarget: () => Promise<AgentProjectMirrorTarget | undefined>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' },
+  notificationSource: 'patchAgentConfig' | 'patchAgentProjectConfig',
+): Promise<AgentConfig | undefined> {
+  let result: AgentConfigDiskPatchResult | undefined;
+  let projectCommitted = false;
+  try {
+    await withAgentConfigIntentLock(async () => {
+      const target = await resolveTarget();
+      result = await persistAgentConfigPatch(
+        agentId,
+        agentPatch,
+        target ? 'deferred' : 'immediate',
+      );
+      if (!result.updated || !target) return;
+      try {
+        const updatedProject = await patchProject(target.projectId, target.projectPatch);
+        if (!updatedProject) throw new Error(`Project '${target.projectId}' not found`);
+        projectCommitted = true;
+      } catch (error) {
+        let rolledBack = false;
+        if (result.previous) {
+          try {
+            await atomicModifyConfig(config => {
+              const agents = [...(config.agents ?? [])];
+              const index = agents.findIndex(agent => agent.id === agentId);
+              if (index < 0) return config;
+              const restored = restoreAgentFieldsIfUnchanged(
+                agents[index],
+                result!.previous!,
+                result!.updated!,
+              );
+              agents[index] = restored.agent;
+              rolledBack = restored.complete;
+              return { ...config, agents };
+            }, { notification: 'deferred' });
+          } catch (rollbackError) {
+            const reason = error instanceof Error ? error.message : String(error);
+            const rollbackReason = rollbackError instanceof Error
+              ? rollbackError.message
+              : String(rollbackError);
+            throw new Error(
+              `Project mirror save failed (${reason}) and Agent rollback also failed (${rollbackReason})`,
+            );
+          }
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(rolledBack
+          ? `Agent configuration was not changed because its Project mirror could not be saved: ${reason}`
+          : `Project mirror save failed after Agent configuration changed: ${reason}`);
+      }
+    });
+  } catch (error) {
+    if (result?.configChanged) notifyConfigChanged(notificationSource);
+    throw error;
+  }
+
+  if (!result?.updated) return undefined;
+  if (projectCommitted) {
+    // Project has no renderer notification of its own. Publish only after
+    // both disk authorities have reached their final state.
+    notifyConfigChanged(notificationSource);
+  }
+  await projectLiveAgentConfigPatch(agentId, agentPatch, result, options);
+  return result.updated;
+}
+
+/**
+ * Patch a single Agent record. Fields mirrored by Project compatibility state
+ * automatically participate in the shared intent lock, so direct renderer
+ * callers cannot interleave with a CLI Agent+Project commit. Live runtime
+ * projection always runs after the disk lock is released.
+ */
+export async function patchAgentConfig(
+  agentId: string,
+  patch: Partial<Omit<AgentConfig, 'id'>>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
+): Promise<AgentConfig | undefined> {
+  if (!touchesProjectMirroredAgentField(patch)) {
+    const result = await persistAgentConfigPatch(agentId, patch);
+    await projectLiveAgentConfigPatch(agentId, patch, result, options);
+    return result.updated;
+  }
+
+  return persistAgentProjectIntent(
+    agentId,
+    patch,
+    async () => {
+      // Resolve the association only after joining the cross-process intent
+      // lock. Caller-held React state is a replica and may already be stale.
+      const [config, projects] = await Promise.all([loadAppConfig(), loadProjects()]);
+      const agent = getAgentById(config, agentId);
+      if (!agent) return undefined;
+      const project = projects.find(candidate => candidate.agentId === agentId)
+        ?? projects.find(candidate => (
+          !candidate.agentId && workspacePathsEqual(candidate.path, agent.workspacePath)
+        ));
+      if (!project) return undefined;
+      return {
+        projectId: project.id,
+        projectPatch: projectMirrorPatchFromAgentPatch(patch),
+      };
+    },
+    options,
+    'patchAgentConfig',
+  );
+}
+
+/**
+ * Commit one renderer-owned Agent default together with its Project mirror.
+ * Both disk writes finish under the shared intent lock; hot reload happens
+ * only after release. A failed Project write conditionally restores the exact
+ * Agent record this intent replaced.
+ */
+export async function patchAgentProjectConfig(
+  agentId: string,
+  agentPatch: Partial<Omit<AgentConfig, 'id'>>,
+  projectId: string,
+  projectPatch: Partial<Omit<Project, 'id'>>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
+): Promise<AgentConfig | undefined> {
+  return persistAgentProjectIntent(
+    agentId,
+    agentPatch,
+    async () => ({ projectId, projectPatch }),
+    options,
+    'patchAgentProjectConfig',
+  );
 }
 
 async function modifyAgentChannelConfig(

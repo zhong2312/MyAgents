@@ -60,7 +60,6 @@ export function SpaceLogin({
   const { t } = useTranslation("app");
   return (
     <div
-      data-ui-theme="space-mono"
       className="relative flex h-full items-center justify-center overflow-hidden bg-[var(--paper)] px-6"
     >
       <div

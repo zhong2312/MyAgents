@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 /* @tailwindcss/typography 已于 v2.4 移除：其 prose 字阶（h1=2em/700 等）与产品
    Type Scale 冲突，5 个 markdown 预览面板已统一改用 .ai-message-content + 自家
@@ -8,36 +8,42 @@
    ThemeProvider manages the class based on user preference (light/dark/system). */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Warm-toned shadow scale — maps to Tailwind shadow-xs/sm/md/lg/xl utilities */
-@theme {
-  --shadow-*: initial;
-  --shadow-xs: 0 1px 2px rgb(28 22 18 / 0.05);
-  --shadow-sm: 0 2px 8px rgb(28 22 18 / 0.08);
-  --shadow-md: 0 8px 24px rgb(28 22 18 / 0.12);
-  --shadow-lg: 0 16px 40px rgb(28 22 18 / 0.16);
-  --shadow-xl: 0 24px 48px rgb(28 22 18 / 0.20);
-  --shadow-2xl: 0 32px 64px -12px rgb(28 22 18 / 0.25);
-
-  /* Font families — single source of truth (Tailwind v4 @theme).
-     CRITICAL: intermediate `sans-serif` / `monospace` generics MUST NOT appear
-     before the Chinese families. On Chinese Windows SKUs those generics map
-     to SimSun / NSimSun (宋体), which successfully match CJK glyphs and halt
-     the font-family walk — so `Microsoft YaHei` is never reached. Latin-only
-     sub-chains therefore end at the last real family, and the single trailing
-     generic sits at the very end of each public token. */
-  --font-latin: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI';
-  --font-chinese: 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB';
-  --font-mono-latin: ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'Fira Code';
-
-  /* Public tokens — consumed by body, .font-display, .brand-*, code blocks */
-  --font-body: var(--font-latin), var(--font-chinese), sans-serif;
-  --font-display: var(--font-latin), var(--font-chinese), sans-serif;
-  --font-code: var(--font-mono-latin), var(--font-chinese), monospace;
-
-  /* Tailwind v4 utility aliases — `font-sans` / `font-mono` read these */
+/* Tailwind owns utility generation at build time while Theme packages own all
+   runtime visual values. Keep this bridge value-free: `inline` makes every
+   generated utility (including hover/dark variants) read the active Theme's
+   semantic runtime token instead of freezing Tailwind's defaults. The
+   separate `--theme-*` radius/shadow namespace avoids self-referential custom
+   properties such as `--shadow-sm: var(--shadow-sm)`. */
+@theme inline {
   --font-sans: var(--font-body);
   --font-mono: var(--font-code);
 
+  --radius-*: initial;
+  --radius: var(--theme-radius-base);
+  --radius-sm: var(--theme-radius-sm);
+  --radius-md: var(--theme-radius-md);
+  --radius-lg: var(--theme-radius-lg);
+  --radius-xl: var(--theme-radius-xl);
+  --radius-2xl: var(--theme-radius-2xl);
+  --radius-full: var(--theme-radius-full);
+
+  --shadow-*: initial;
+  --shadow: var(--theme-shadow-base);
+  --shadow-xs: var(--theme-shadow-xs);
+  --shadow-sm: var(--theme-shadow-sm);
+  --shadow-md: var(--theme-shadow-md);
+  --shadow-lg: var(--theme-shadow-lg);
+  --shadow-xl: var(--theme-shadow-xl);
+  --shadow-2xl: var(--theme-shadow-2xl);
+
+  --default-transition-duration: var(--duration-fast);
+  --transition-duration-150: var(--duration-fast);
+  --transition-duration-200: var(--duration-normal);
+  --transition-duration-300: var(--duration-slow);
+}
+
+/* Product Type Scale; Theme-owned values stay in the registered Theme package. */
+@theme {
   /* Type Scale — 单一真相源（PRD 0.2.34 Part 1-3，唯一档位表见 DESIGN.md §2.2）。
      v2.5 终局七档（等距 2px 步进至 18）：12/14/16/18/20/22/28。
      Part 3 双合并：11(micro)+12(caption)→12；13(ui)+14(dense)→14——
@@ -84,8 +90,12 @@
 
 /* Overlay entry animations */
 @keyframes overlayFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes overlayPanelIn {
@@ -142,8 +152,12 @@
 
 /* Fade-in animation for message list after session load completes */
 @keyframes message-list-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 /* ── Streaming leading-edge fade ──
@@ -154,123 +168,31 @@
    tail window slides, so each character fades in over a few reveal steps. The class only
    exists mid-stream → the final render is crisp. mask-image alpha values are taste params. */
 .md-stream-tail {
-  -webkit-mask-image: linear-gradient(to right, #000 0%, #000 35%, rgba(0, 0, 0, 0.2) 100%);
-  mask-image: linear-gradient(to right, #000 0%, #000 35%, rgba(0, 0, 0, 0.2) 100%);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 35%,
+    rgba(0, 0, 0, 0.2) 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 35%,
+    rgba(0, 0, 0, 0.2) 100%
+  );
 }
 @media (prefers-reduced-motion: reduce) {
-  .md-stream-tail { -webkit-mask-image: none; mask-image: none; }
+  .md-stream-tail {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
 }
 
 :root {
-  /* ========== Layout ========== */
+  /* Layout and spacing are product structure, not Theme identity. */
   --breakpoint-mobile: 640px;
   --sidebar-min-width: 320px;
   --header-height: 48px;
-
-  /* Font families live in @theme at the top of this file (single source of
-     truth, so Tailwind's font-sans / font-mono utilities also pick them up
-     with Chinese fallback). Public tokens: --font-body, --font-display,
-     --font-code. */
-
-  /* Typography Size token 已迁入文件顶部 @theme 块（单一真相源，
-     同时驱动 text-xs/sm/base/lg/... utility）。 */
-
-  /* ========== Colors: Ink (Text) ========== */
-  --ink: #1c1612;
-  --ink-secondary: #2e2825;
-  --ink-muted: #6f6156;
-  --ink-subtle: #a69a90;
-  --ink-faint: #c4b8ad;
-
-  /* ========== Colors: Paper (Background) ========== */
-  --paper: #faf6ee;
-  --paper-elevated: #fffcf7;
-  --message-user-bg: #fffefa;
-  --paper-inset: #e8dccf;
-  /* #333 渐变端点 0-alpha 孪生色：渐变里禁止 `transparent` 关键字（= rgba(0,0,0,0)，
-     插值不做 premultiply 的引擎——macOS 27 beta WebKit 的 oklab 渐变路径实测如此——
-     会让渐变中段穿过半透明黑 → 灰黑涂抹横条）。淡出一律用同色 0-alpha 端点；
-     改上面的 paper token 时 MUST 同步这里（eslint 封禁 to-/from-/via-transparent 兜底）。 */
-  --paper-a0: rgb(250 246 238 / 0);
-  --paper-elevated-a0: rgb(255 252 247 / 0);
-  --message-user-bg-a0: rgb(255 254 250 / 0);
-  --paper-inset-a0: rgb(232 220 207 / 0);
-  --hover-bg: rgba(194, 109, 58, 0.07); /* 通用列表项 hover：7% 暖棕 accent，与整体棕色调一致 */
-
-  /* ========== Colors: Accent ========== */
-  --accent: #c26d3a;
-  --accent-warm: #c26d3a;
-  --accent-warm-hover: #e18a58;
-  --accent-warm-subtle: rgba(194, 109, 58, 0.08);
-  --accent-warm-muted: rgba(194, 109, 58, 0.15);
-  --accent-cool: #2e6f5e;
-  --accent-cool-hover: #3d8a75;
-  --accent-cool-subtle: rgba(46, 111, 94, 0.1);
-
-  /* ========== Colors: Heartbeat ========== */
-  --heartbeat: #c75050;
-  --heartbeat-bg: rgba(199, 80, 80, 0.10);
-  --heartbeat-border: rgba(199, 80, 80, 0.20);
-
-  /* ========== Colors: Semantic ========== */
-  --success: #2d8a5e;
-  --success-bg: #e2f0e8;
-  --error: #dc2626;
-  --error-bg: #fee2e2;
-  --error-hover: #b91c1c;
-  /* Faint error tint for focus rings / glows (mirrors --accent-warm-subtle). */
-  --error-subtle: rgba(220, 38, 38, 0.07);
-  /* #333 0-alpha 孪生色，与 --accent-warm-subtle 同步 */
-  --accent-warm-subtle-a0: rgba(194, 109, 58, 0);
-  --warning: #d97706;
-  --warning-bg: #fef3c7;
-  --info: #4a7ab5;
-  --info-bg: #e4ecf4;
-
-  /* ========== Colors: Button ========== */
-  --button-primary-bg: #c26d3a;
-  --button-primary-bg-hover: #b05e2d;
-  --button-primary-text: #ffffff;
-  --button-dark-bg: #1c1612;
-  --button-dark-bg-hover: #3a3532;
-  --button-secondary-bg: #e8dccf;
-  --button-secondary-bg-hover: #ddd0c2;
-  --button-secondary-text: #1c1612;
-
-  /* ========== Colors: Floating Ball ========== */
-  --fb-surface-peek: rgb(253 250 244 / 0.15);
-  --fb-surface-glass: rgb(253 250 244 / 0.55);
-  --fb-surface-pin: rgb(253 250 244 / 0.96);
-  --fb-surface-pin-a0: rgb(253 250 244 / 0);
-  --fb-surface-pin-72: rgb(253 250 244 / 0.72);
-  --fb-surface-pin-95: rgb(253 250 244 / 0.95);
-  --fb-glass-border: rgb(255 255 255 / 0.62);
-  --fb-glass-border-soft: rgb(255 255 255 / 0.50);
-  --fb-highlight: rgb(255 255 255 / 0.92);
-  --fb-highlight-mid: rgb(255 255 255 / 0.30);
-  --fb-highlight-faint: rgb(255 255 255 / 0.14);
-  --fb-highlight-strong: rgb(255 255 255 / 0.95);
-  --fb-highlight-a0: rgb(255 255 255 / 0);
-  --fb-highlight-line: rgb(255 255 255 / 0.85);
-  --fb-mask-opaque: #000000;
-  --fb-shadow-strong: rgb(20 16 12 / 0.28);
-  --fb-shadow-soft: rgb(20 16 12 / 0.12);
-  --fb-shadow-panel: rgb(0 0 0 / 0.18);
-  --fb-shadow-preview: rgb(20 16 12 / 0.45);
-  --fb-core-shadow: rgb(28 22 18 / 0.25);
-  --fb-inset-shadow: rgb(28 22 18 / 0.08);
-  --fb-control-hover: rgb(28 22 18 / 0.06);
-  --fb-line-input: rgb(28 22 18 / 0.07);
-  --fb-line-thumb: rgb(28 22 18 / 0.12);
-  --fb-drag-handle: rgb(28 22 18 / 0.18);
-  --fb-scroll-thumb: rgb(166 154 144 / 0.50);
-
-  /* ========== Colors: Border ========== */
-  --line: rgb(28 22 18 / 0.10);
-  --line-strong: rgb(28 22 18 / 0.18);
-  --line-subtle: rgb(28 22 18 / 0.06);
-
-  /* ========== Spacing ========== */
   --space-0: 0;
   --space-0-5: 2px;
   --space-1: 4px;
@@ -283,192 +205,6 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
-
-  /* ========== Border Radius ========== */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
-  --radius-2xl: 24px;
-  --radius-full: 9999px;
-
-  /* ========== Shadows (CSS var references — Tailwind @theme overrides below) ========== */
-  /* Kept for non-Tailwind CSS usage (e.g. .tool-container, .action-button) */
-  --shadow-xs: 0 1px 2px rgb(28 22 18 / 0.05);
-  --shadow-sm: 0 2px 8px rgb(28 22 18 / 0.08);
-  --shadow-md: 0 8px 24px rgb(28 22 18 / 0.12);
-  --shadow-lg: 0 16px 40px rgb(28 22 18 / 0.16);
-  --shadow-xl: 0 24px 48px rgb(28 22 18 / 0.20);
-
-  /* ========== Focus ========== */
-  --focus-border: #1c1612;
-
-  /* ========== Toggle ========== */
-  --toggle-thumb: #ffffff;
-  --toggle-off-bg: rgb(28 22 18 / 0.18);
-
-  /* ========== Code Block ========== */
-  --code-bg: #1e1e1e;
-  --code-bg-a0: rgb(30 30 30 / 0); /* #333 0-alpha 孪生色，与 --code-bg 同步 */
-  --code-header-bg: #2d2d2d;
-  --code-text: #d4d4d4;
-  --code-line-number: #858585;
-
-  /* ========== Animation ========== */
-  --duration-fast: 150ms;
-  --duration-normal: 200ms;
-  --duration-slow: 300ms;
-}
-
-/* ============================================================
-   Dark Mode — "Warm Night" (暖夜模式)
-   Activated by ThemeProvider adding .dark class to <html>
-   ============================================================ */
-.dark {
-  /* ========== Colors: Ink (Light text on dark bg) ========== */
-  --ink: #e4dcd4;
-  --ink-secondary: #cfc5ba;
-  --ink-muted: #968a7e;
-  --ink-subtle: #685c52;
-  --ink-faint: #4a4038;
-
-  /* ========== Colors: Paper (Dark backgrounds) ========== */
-  --paper: #1a1614;
-  --paper-elevated: #242018;
-  --message-user-bg: #2a251d;
-  --paper-inset: #12100e;
-  /* #333 0-alpha 孪生色（同 light 块注释），与上面三个 token 同步维护 */
-  --paper-a0: rgb(26 22 20 / 0);
-  --paper-elevated-a0: rgb(36 32 24 / 0);
-  --message-user-bg-a0: rgb(42 37 29 / 0);
-  --paper-inset-a0: rgb(18 16 14 / 0);
-  --hover-bg: rgba(194, 109, 58, 0.12);
-
-  /* ========== Colors: Accent ========== */
-  --accent: #d4803f;
-  --accent-warm: #d4803f;
-  --accent-warm-hover: #e89860;
-  --accent-warm-subtle: rgba(212, 128, 63, 0.12);
-  --accent-warm-muted: rgba(212, 128, 63, 0.20);
-  --accent-cool: #4aad8a;
-  --accent-cool-hover: #5ec49e;
-  --accent-cool-subtle: rgba(74, 173, 138, 0.16);
-
-  /* ========== Colors: Heartbeat ========== */
-  --heartbeat: #d46060;
-  --heartbeat-bg: rgba(212, 96, 96, 0.12);
-  --heartbeat-border: rgba(212, 96, 96, 0.22);
-
-  /* ========== Colors: Semantic (brighter for dark bg readability) ========== */
-  --success: #4aad7a;
-  --success-bg: rgba(74, 173, 122, 0.15);
-  --error: #ef4444;
-  --error-bg: rgba(239, 68, 68, 0.15);
-  --error-hover: #dc2626;
-  /* Faint error tint for focus rings / glows (mirrors --accent-warm-subtle). */
-  --error-subtle: rgba(239, 68, 68, 0.12);
-  /* #333 0-alpha 孪生色，与 --accent-warm-subtle 同步 */
-  --accent-warm-subtle-a0: rgba(212, 128, 63, 0);
-  --warning: #f59e0b;
-  --warning-bg: rgba(245, 158, 11, 0.15);
-  --info: #6b9fd4;
-  --info-bg: rgba(107, 159, 212, 0.15);
-
-  /* ========== Colors: Button ========== */
-  --button-primary-bg: #d4803f;
-  --button-primary-bg-hover: #c27030;
-  --button-primary-text: #ffffff;
-  --button-dark-bg: #443e36;
-  --button-dark-bg-hover: #564e44;
-  --button-secondary-bg: #302a22;
-  --button-secondary-bg-hover: #3a342c;
-  --button-secondary-text: #e4dcd4;
-
-  /* ========== Colors: Floating Ball ========== */
-  --fb-surface-peek: rgb(26 22 20 / 0.22);
-  --fb-surface-glass: rgb(36 32 24 / 0.58);
-  --fb-surface-pin: rgb(36 32 24 / 0.96);
-  --fb-surface-pin-a0: rgb(36 32 24 / 0);
-  --fb-surface-pin-72: rgb(36 32 24 / 0.72);
-  --fb-surface-pin-95: rgb(36 32 24 / 0.95);
-  --fb-glass-border: rgb(255 255 255 / 0.16);
-  --fb-glass-border-soft: rgb(255 255 255 / 0.12);
-  --fb-highlight: rgb(255 255 255 / 0.24);
-  --fb-highlight-mid: rgb(255 255 255 / 0.10);
-  --fb-highlight-faint: rgb(255 255 255 / 0.06);
-  --fb-highlight-strong: rgb(255 255 255 / 0.22);
-  --fb-highlight-a0: rgb(255 255 255 / 0);
-  --fb-highlight-line: rgb(255 255 255 / 0.20);
-  --fb-mask-opaque: #000000;
-  --fb-shadow-strong: rgb(0 0 0 / 0.38);
-  --fb-shadow-soft: rgb(0 0 0 / 0.22);
-  --fb-shadow-panel: rgb(0 0 0 / 0.42);
-  --fb-shadow-preview: rgb(0 0 0 / 0.55);
-  --fb-core-shadow: rgb(0 0 0 / 0.32);
-  --fb-inset-shadow: rgb(0 0 0 / 0.16);
-  --fb-control-hover: rgb(255 255 255 / 0.08);
-  --fb-line-input: rgb(228 220 212 / 0.08);
-  --fb-line-thumb: rgb(228 220 212 / 0.16);
-  --fb-drag-handle: rgb(228 220 212 / 0.20);
-  --fb-scroll-thumb: rgb(150 138 126 / 0.55);
-
-  /* ========== Colors: Border ========== */
-  --line: rgb(228 220 212 / 0.10);
-  --line-strong: rgb(228 220 212 / 0.18);
-  --line-subtle: rgb(228 220 212 / 0.06);
-
-  /* ========== Shadows (pure black + higher opacity for dark bg) ========== */
-  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.12);
-  --shadow-sm: 0 2px 8px rgb(0 0 0 / 0.18);
-  --shadow-md: 0 8px 24px rgb(0 0 0 / 0.28);
-  --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.35);
-  --shadow-xl: 0 24px 48px rgb(0 0 0 / 0.42);
-
-  /* ========== Focus ========== */
-  --focus-border: var(--accent);
-
-  /* ========== Toggle ========== */
-  --toggle-thumb: #e4dcd4;
-  --toggle-off-bg: rgb(228 220 212 / 0.18);
-
-  /* ========== Code Block ========== */
-  --code-bg: #141210;
-  --code-bg-a0: rgb(20 18 16 / 0); /* #333 0-alpha 孪生色，与 --code-bg 同步 */
-  --code-header-bg: #1e1a16;
-  --code-text: #d4d4d4;
-  --code-line-number: #685c52;
-
-  color-scheme: dark;
-}
-
-/* Team Space brand pilot: keep the app's warm paper material while swapping
-   Space-only brand actions from warm brown to the logo's charcoal black. */
-[data-ui-theme="space-mono"] {
-  --accent: #1c1612;
-  --accent-warm: #1c1612;
-  --accent-warm-hover: #2e2825;
-  --accent-warm-subtle: rgb(28 22 18 / 0.08);
-  --accent-warm-muted: rgb(28 22 18 / 0.16);
-  --accent-warm-subtle-a0: rgb(28 22 18 / 0);
-  --hover-bg: rgb(28 22 18 / 0.07);
-  --button-primary-bg: #1c1612;
-  --button-primary-bg-hover: #2e2825;
-  --button-primary-text: #ffffff;
-  --focus-border: #1c1612;
-}
-
-.dark [data-ui-theme="space-mono"] {
-  --accent: #e4dcd4;
-  --accent-warm: #e4dcd4;
-  --accent-warm-hover: #ffffff;
-  --accent-warm-subtle: rgb(228 220 212 / 0.12);
-  --accent-warm-muted: rgb(228 220 212 / 0.20);
-  --accent-warm-subtle-a0: rgb(228 220 212 / 0);
-  --hover-bg: rgb(228 220 212 / 0.10);
-  --button-primary-bg: #e4dcd4;
-  --button-primary-bg-hover: #ffffff;
-  --button-primary-text: #1a1614;
-  --focus-border: #e4dcd4;
 }
 
 /* Viewport-locked app: prevent document-level scrolling entirely.
@@ -482,7 +218,7 @@ body {
 body {
   font-family: var(--font-body);
   color: var(--ink);
-  background: var(--paper);
+  background: var(--theme-body-background);
   min-height: 100vh;
   /* Cross-platform font rendering */
   -webkit-font-smoothing: antialiased;
@@ -490,40 +226,16 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Light mode body gradient (warm paper texture) */
-:root:not(.dark) body {
-  background:
-    /* #333: 同色 0-alpha 端点，禁用 `transparent` 关键字（见 paper token 区注释） */
-    radial-gradient(1200px 700px at 82% -10%, #efd0bd 0%, rgb(239 208 189 / 0) 55%),
-    radial-gradient(900px 600px at -10% 110%, #cdddd5 0%, rgb(205 221 213 / 0) 55%),
-    linear-gradient(120deg, rgb(255 255 255 / 0.5), rgb(255 255 255 / 0)), var(--paper);
-}
-
-/* Dark mode body gradient (warm night) */
-.dark body {
-  background:
-    /* #333: 同色 0-alpha 端点，禁用 `transparent` 关键字（见 paper token 区注释） */
-    radial-gradient(1200px 700px at 82% -10%, #2a2018 0%, rgb(42 32 24 / 0) 55%),
-    radial-gradient(900px 600px at -10% 110%, #1a2420 0%, rgb(26 36 32 / 0) 55%),
-    var(--paper);
-}
-
 body::before {
-  content: '';
+  content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background-image: radial-gradient(rgb(28 22 18 / 0.08) 0.7px, transparent 0.7px);
+  background-image: var(--theme-body-texture);
   background-size: 3px 3px;
-  opacity: 0.22;
-  mix-blend-mode: multiply;
+  opacity: var(--theme-body-texture-opacity);
+  mix-blend-mode: var(--theme-body-texture-blend);
   z-index: 0;
-}
-
-.dark body::before {
-  background-image: radial-gradient(rgb(228 220 212 / 0.06) 0.7px, transparent 0.7px);
-  opacity: 0.06;
-  mix-blend-mode: screen;
 }
 
 #root {
@@ -563,7 +275,7 @@ body::before {
     border-color 0.15s ease,
     background 0.15s ease,
     color 0.15s ease;
-  box-shadow: 0 6px 16px -12px rgb(24 18 14 / 0.4);
+  box-shadow: var(--action-shadow);
 }
 
 .action-button:hover {
@@ -573,7 +285,7 @@ body::before {
 
 .action-button:active {
   transform: translateY(1px) scale(0.98);
-  box-shadow: inset 0 2px 6px rgb(24 18 14 / 0.18);
+  box-shadow: var(--action-shadow-active);
 }
 
 .action-button:disabled {
@@ -587,7 +299,9 @@ body::before {
 button {
   cursor: pointer;
   /* Always include transform in transition for smooth active feedback */
-  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property:
+    color, background-color, border-color, text-decoration-color, fill, stroke,
+    opacity, box-shadow, transform, filter, backdrop-filter;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   transition-duration: 150ms;
 }
@@ -596,8 +310,12 @@ button {
    `:not(:has(...))` ensures only the innermost active element scales — when a
    nested button is pressed inside a card/row, the outer ancestor (which also
    matches :active per CSS rules) opts out, so only the actual button animates. */
-button:active:not(:disabled):not(:has(:is(button, [role="button"], [data-tree-row]):active)),
-[role="button"]:active:not(:has(:is(button, [role="button"], [data-tree-row]):active)) {
+button:active:not(:disabled):not(
+    :has(:is(button, [role="button"], [data-tree-row]):active)
+  ),
+[role="button"]:active:not(
+    :has(:is(button, [role="button"], [data-tree-row]):active)
+  ) {
   transform: scale(0.98);
 }
 
@@ -612,7 +330,9 @@ button:disabled {
   transition-duration: 100ms;
 }
 
-[data-tree-row]:active:not(:has(:is(button, [role="button"], [data-tree-row]):active)) {
+[data-tree-row]:active:not(
+    :has(:is(button, [role="button"], [data-tree-row]):active)
+  ) {
   transform: scale(0.98);
   background-color: var(--paper-inset) !important;
 }
@@ -663,12 +383,14 @@ html.platform-windows.platform-windows *::-webkit-scrollbar-thumb {
 }
 
 html.platform-windows.platform-windows.myagents-scrollbar-active::-webkit-scrollbar-thumb,
-html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrollbar-thumb {
+html.platform-windows.platform-windows
+  .myagents-scrollbar-active::-webkit-scrollbar-thumb {
   background-color: var(--ink-subtle);
 }
 
 html.platform-windows.platform-windows.myagents-scrollbar-active::-webkit-scrollbar-thumb:hover,
-html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrollbar-thumb:hover {
+html.platform-windows.platform-windows
+  .myagents-scrollbar-active::-webkit-scrollbar-thumb:hover {
   background-color: var(--ink-muted);
 }
 
@@ -690,7 +412,11 @@ html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrol
 
 @media (prefers-reduced-motion: reduce) {
   @keyframes tab-dot-pulse {
-    0%, 100% { opacity: 0; transform: scale(1); }
+    0%,
+    100% {
+      opacity: 0;
+      transform: scale(1);
+    }
   }
 }
 
@@ -714,14 +440,22 @@ html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrol
 }
 
 @keyframes shimmer-slide {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 /* Indeterminate progress bar animation (browser loading indicator) */
 @keyframes indeterminate {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(400%); }
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
 }
 .animate-indeterminate {
   animation: indeterminate 1.5s ease-in-out infinite;
@@ -729,14 +463,17 @@ html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrol
 
 /* PRD 0.2.17 — Agent Status Panel 点击 SubAgent 行后短暂高亮目标 TaskTool 卡片 */
 @keyframes agent-status-flash {
-  0%   { background-color: var(--accent-warm-subtle); }
-  100% { background-color: transparent; }
+  0% {
+    background-color: var(--accent-warm-subtle);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 .agent-status-flash {
   animation: agent-status-flash 1.5s ease-out;
   border-radius: 0.5rem;
 }
-
 
 /* Terminal-like monospace typography for tool calls */
 .tool-input {
@@ -745,8 +482,8 @@ html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrol
   line-height: 1.6;
   letter-spacing: -0.01em;
   font-feature-settings:
-    'liga' 1,
-    'calt' 1;
+    "liga" 1,
+    "calt" 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -765,7 +502,7 @@ pre code {
   border: 1px solid var(--line);
   background: var(--paper-elevated);
   padding: 0.75rem 1rem;
-  box-shadow: 0 8px 24px -20px rgb(24 18 14 / 0.35);
+  box-shadow: var(--tool-shadow);
   transition:
     border-color 0.2s ease,
     box-shadow 0.2s ease;
@@ -773,15 +510,17 @@ pre code {
 
 .tool-container:hover {
   border-color: var(--line-strong);
-  box-shadow: 0 14px 30px -24px rgb(24 18 14 / 0.45);
+  box-shadow: var(--tool-shadow-hover);
 }
 
 /* Create border with gaps for icons in expanded sections */
 .expanded-block-section {
   position: relative;
-  background-image: linear-gradient(to bottom,
-      rgb(134 112 98 / 0.25) 0%,
-      rgb(134 112 98 / 0.25) 100%);
+  background-image: linear-gradient(
+    to bottom,
+    var(--expanded-block-line) 0%,
+    var(--expanded-block-line) 100%
+  );
   background-size: 1px 100%;
   background-position: 0 0;
   background-repeat: repeat-y;
@@ -802,7 +541,7 @@ pre code {
   position: relative;
 }
 
-.expanded-block-section .flex.items-center.gap-1\.5>svg.size-3:first-child {
+.expanded-block-section .flex.items-center.gap-1\.5 > svg.size-3:first-child {
   position: relative;
   margin-left: -16.5px;
   z-index: 1;
@@ -810,7 +549,7 @@ pre code {
 
 /* Create background gap for thinking icon using pseudo-element on parent */
 .expanded-block-section .flex.items-center.gap-1\.5::before {
-  content: '';
+  content: "";
   position: absolute;
   left: -18.5px;
   width: 20px;
@@ -835,57 +574,16 @@ pre code {
   padding-left: 0 !important;
 }
 
-/* Dark mode: lighter vertical line for expanded sections */
-.dark .expanded-block-section {
-  background-image: linear-gradient(to bottom,
-      rgb(228 220 212 / 0.18) 0%,
-      rgb(228 220 212 / 0.18) 100%);
-}
-
-/* Dark mode: adjust box-shadow for action-button and tool-container */
-.dark .action-button {
-  box-shadow: 0 6px 16px -12px rgb(0 0 0 / 0.6);
-}
-
-.dark .action-button:active {
-  box-shadow: inset 0 2px 6px rgb(0 0 0 / 0.35);
-}
-
-.dark .tool-container {
-  box-shadow: 0 8px 24px -20px rgb(0 0 0 / 0.5);
-}
-
-.dark .tool-container:hover {
-  box-shadow: 0 14px 30px -24px rgb(0 0 0 / 0.65);
-}
-
 /* ============================================
    Launcher Page Styles
    ============================================ */
-
-/* Brand typography - minimalist tech style (cross-platform) */
-.brand-title {
-  font-family: var(--font-display);
-  font-weight: 250;
-  letter-spacing: 0.02em;
-  background: linear-gradient(155deg, var(--ink) 30%, var(--accent-warm) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.brand-slogan {
-  font-family: var(--font-body);
-  font-weight: 300;
-  letter-spacing: 0.06em;
-}
 
 /* Launcher two-column layout */
 .launcher-layout {
   display: grid;
   /* Left 60%, Right 40% (with min-width constraint) */
   grid-template-columns: 60fr minmax(var(--sidebar-min-width), 40fr);
-  grid-template-areas: 'brand workspaces';
+  grid-template-areas: "brand workspaces";
 }
 
 .launcher-brand {
@@ -899,7 +597,11 @@ pre code {
 }
 
 .workspace-card-channel-tags-fade {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 18px),
+    transparent
+  );
   mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
 }
 
@@ -913,24 +615,33 @@ pre code {
 }
 
 .launcher-history-row-title-fade {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 22px),
+    transparent
+  );
   mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
 }
 
 .launcher-history-row-action-overlay {
-  --launcher-history-row-overlay-bg: color-mix(in srgb, var(--paper) 92%, var(--accent-warm));
+  --launcher-history-row-overlay-bg: color-mix(
+    in srgb,
+    var(--paper) 92%,
+    var(--accent-warm)
+  );
 
   background: linear-gradient(
     to right,
     transparent 0%,
-    color-mix(in srgb, var(--launcher-history-row-overlay-bg) 76%, transparent) 38%,
+    color-mix(in srgb, var(--launcher-history-row-overlay-bg) 76%, transparent)
+      38%,
     var(--launcher-history-row-overlay-bg) 78%
   );
 }
 
 /* Floating divider between brand and workspaces */
 .launcher-workspaces::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   top: 24px;
@@ -947,8 +658,8 @@ pre code {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
     grid-template-areas:
-      'brand'
-      'workspaces';
+      "brand"
+      "workspaces";
   }
 
   .launcher-brand {
@@ -967,7 +678,7 @@ pre code {
 }
 
 .settings-sidebar::after {
-  content: '';
+  content: "";
   position: absolute;
   right: 0;
   top: 24px;
@@ -982,14 +693,14 @@ pre code {
 }
 
 .settings-nav-active::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   top: 6px;
   bottom: 6px;
-  width: 3px;
+  width: 2px;
   border-radius: 9999px;
-  background: var(--accent);
+  background: color-mix(in srgb, var(--accent) 80%, transparent);
 }
 
 @media (max-width: 640px) {
@@ -1041,7 +752,7 @@ pre code {
     top: auto;
     bottom: 0;
     width: auto;
-    height: 3px;
+    height: 2px;
   }
 }
 
@@ -1118,7 +829,7 @@ pre code {
 /* Permission prompt card */
 .permission-card {
   background: var(--warning-bg);
-  border: 1px solid rgb(217 119 6 / 0.3);
+  border: 1px solid var(--warning-border);
   border-radius: var(--radius-lg);
   padding: var(--space-4);
 }
@@ -1180,7 +891,6 @@ code {
   background: transparent;
   color: var(--code-line-number);
 }
-
 
 /* ── Toolbar responsive: hide text labels when container is narrow ── */
 @container (max-width: 480px) {
@@ -1310,10 +1020,11 @@ code {
   max-width: min(260px, calc(100vw - 16px));
   transform: translateX(-50%);
   padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--button-dark-bg) 72%, var(--line-strong));
+  border: 1px solid
+    color-mix(in srgb, var(--button-dark-bg) 72%, var(--line-strong));
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--button-dark-bg) 94%, transparent);
-  color: var(--button-primary-text);
+  color: var(--button-dark-text);
   box-shadow: var(--shadow-lg);
   font-size: var(--text-xs);
   line-height: 1.35;

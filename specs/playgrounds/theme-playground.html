@@ -1,0 +1,1154 @@
+<!doctype html>
+<!-- Non-production design playground. Production Theme values live in src/renderer/theme/. -->
+<html lang="zh-CN" data-scheme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MyAgents Theme Playground</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #faf6ee;
+      --paper-elevated: #fffcf7;
+      --paper-inset: #e8dccf;
+      --message-user-bg: #fffefa;
+      --ink: #1c1612;
+      --ink-secondary: #2e2825;
+      --ink-muted: #6f6156;
+      --ink-subtle: #a69a90;
+      --ink-faint: #c4b8ad;
+      --accent: #c26d3a;
+      --accent-hover: #e18a58;
+      --on-accent: #ffffff;
+      --accent-cool: #2e6f5e;
+      --accent-soft: rgb(194 109 58 / 0.08);
+      --accent-muted: rgb(194 109 58 / 0.15);
+      --action-bg: var(--accent);
+      --action-bg-hover: var(--accent-hover);
+      --action-text: var(--on-accent);
+      --hover-bg: rgb(194 109 58 / 0.07);
+      --line: rgb(28 22 18 / 0.10);
+      --line-strong: rgb(28 22 18 / 0.18);
+      --line-subtle: rgb(28 22 18 / 0.06);
+      --success: #2d8a5e;
+      --success-bg: #e2f0e8;
+      --danger: #c75050;
+      --danger-bg: rgb(199 80 80 / 0.10);
+      --info: #4a7ab5;
+      --ambient:
+        radial-gradient(1100px 680px at 82% -10%, #efd0bd 0%, transparent 56%),
+        radial-gradient(860px 580px at -10% 110%, #cdddd5 0%, transparent 55%),
+        #faf6ee;
+      --texture-color: 28 22 18;
+      --texture-opacity: 0.13;
+      --shadow-xs: 0 1px 2px rgb(28 22 18 / 0.05);
+      --shadow-sm: 0 2px 8px rgb(28 22 18 / 0.08);
+      --shadow-md: 0 8px 24px rgb(28 22 18 / 0.12);
+      --shadow-lg: 0 18px 48px rgb(28 22 18 / 0.17);
+      --radius-sm: 7px;
+      --radius-md: 11px;
+      --radius-lg: 15px;
+      --radius-xl: 21px;
+      --font-ui: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      --font-display: 'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+      --font-code: ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { width: 100%; height: 100%; }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #121313;
+      color: #eceeed;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, select { font: inherit; }
+    button { border: 0; }
+
+    .lab {
+      display: grid;
+      grid-template-rows: 54px minmax(0, 1fr);
+      width: 100%;
+      height: 100dvh;
+    }
+
+    .lab-toolbar {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+      padding: 0 18px;
+      border-bottom: 1px solid rgb(255 255 255 / 0.09);
+      background: #181a1a;
+      box-shadow: 0 1px 0 rgb(0 0 0 / 0.4);
+    }
+
+    .lab-mark {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 202px;
+      color: #f5f5f3;
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+    }
+
+    .lab-mark-badge {
+      display: grid;
+      place-items: center;
+      width: 25px;
+      height: 25px;
+      border: 1px solid rgb(255 255 255 / 0.14);
+      border-radius: 8px;
+      color: #d9c3a8;
+      background: linear-gradient(145deg, #343737, #222424);
+      box-shadow: inset 0 1px rgb(255 255 255 / 0.06);
+      font-family: Georgia, serif;
+      font-size: 14px;
+    }
+
+    .lab-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .lab-label {
+      color: #858b89;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .lab-select {
+      min-width: 180px;
+      height: 34px;
+      padding: 0 34px 0 11px;
+      border: 1px solid rgb(255 255 255 / 0.13);
+      border-radius: 9px;
+      outline: none;
+      color: #f3f4f3;
+      background: #242727;
+      box-shadow: inset 0 1px rgb(255 255 255 / 0.04);
+      cursor: pointer;
+    }
+
+    .lab-select:focus-visible { border-color: #81958e; }
+
+    .lab-segment {
+      display: flex;
+      padding: 3px;
+      border: 1px solid rgb(255 255 255 / 0.09);
+      border-radius: 9px;
+      background: #222424;
+    }
+
+    .lab-segment button {
+      min-width: 62px;
+      height: 27px;
+      padding: 0 10px;
+      border-radius: 6px;
+      color: #8e9492;
+      background: transparent;
+      font-size: 12px;
+      cursor: pointer;
+      transition: 150ms ease;
+    }
+
+    .lab-segment button:hover { color: #e2e5e3; }
+
+    .lab-segment button[aria-pressed="true"] {
+      color: #f7f8f7;
+      background: #3a3e3d;
+      box-shadow: 0 1px 3px rgb(0 0 0 / 0.35), inset 0 1px rgb(255 255 255 / 0.05);
+    }
+
+    .lab-theme-meta {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+      margin-left: auto;
+    }
+
+    .lab-swatches { display: flex; gap: 4px; }
+
+    .lab-swatch {
+      width: 15px;
+      height: 15px;
+      border: 1px solid rgb(255 255 255 / 0.18);
+      border-radius: 50%;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+    }
+
+    .lab-description {
+      max-width: 260px;
+      overflow: hidden;
+      color: #9fa4a2;
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .preview-stage {
+      min-width: 0;
+      min-height: 0;
+      padding: 14px;
+      background:
+        radial-gradient(circle at 50% -15%, rgb(118 132 126 / 0.18), transparent 34%),
+        #111313;
+    }
+
+    .product-window {
+      position: relative;
+      display: grid;
+      grid-template-rows: 52px minmax(0, 1fr);
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border: 1px solid rgb(255 255 255 / 0.16);
+      border-radius: 15px;
+      color: var(--ink);
+      background: var(--paper);
+      box-shadow: 0 26px 70px rgb(0 0 0 / 0.42), inset 0 1px rgb(255 255 255 / 0.16);
+      font-family: var(--font-ui);
+      transition: background-color 180ms ease, color 180ms ease;
+      isolation: isolate;
+    }
+
+    .product-window::before {
+      content: '';
+      position: absolute;
+      z-index: -2;
+      inset: 0;
+      background: var(--ambient);
+      transition: background 220ms ease;
+    }
+
+    .product-window::after {
+      content: '';
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      pointer-events: none;
+      opacity: var(--texture-opacity);
+      background-image: radial-gradient(rgb(var(--texture-color) / 0.22) 0.55px, transparent 0.7px);
+      background-size: 4px 4px;
+      mix-blend-mode: multiply;
+    }
+
+    html[data-scheme="dark"] .product-window::after { mix-blend-mode: screen; }
+
+    .product-titlebar {
+      position: relative;
+      z-index: 5;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      min-width: 0;
+      padding: 0 18px 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper) 88%, transparent);
+      backdrop-filter: blur(20px) saturate(1.1);
+    }
+
+    .titlebar-left, .titlebar-right, .window-tab, .top-action {
+      display: flex;
+      align-items: center;
+    }
+
+    .titlebar-left { min-width: 0; gap: 10px; }
+    .titlebar-right { gap: 18px; color: var(--ink-muted); }
+
+    .traffic-lights { display: flex; flex: none; gap: 8px; margin-right: 10px; }
+    .traffic-light { width: 13px; height: 13px; border-radius: 50%; box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.08); }
+    .traffic-light.red { background: #ff5f57; }
+    .traffic-light.yellow { background: #febc2e; }
+    .traffic-light.green { background: #28c840; }
+
+    .window-tabs {
+      display: flex;
+      align-self: stretch;
+      min-width: 0;
+      gap: 5px;
+    }
+
+    .window-tab {
+      position: relative;
+      min-width: 148px;
+      max-width: 220px;
+      height: 100%;
+      padding: 0 16px;
+      overflow: hidden;
+      border-radius: 12px 12px 0 0;
+      color: var(--ink-muted);
+      background: transparent;
+      font-size: 13px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .window-tab:hover { color: var(--ink); background: var(--hover-bg); }
+
+    .window-tab.active {
+      color: var(--ink);
+      background: color-mix(in srgb, var(--paper-inset) 56%, transparent);
+    }
+
+    .window-tab.active::after {
+      content: '';
+      position: absolute;
+      right: 15px;
+      bottom: 5px;
+      left: 15px;
+      height: 2px;
+      border-radius: 4px;
+      background: var(--accent);
+    }
+
+    .window-tab .tab-close { margin-left: auto; color: var(--ink-subtle); font-size: 15px; }
+
+    .top-action {
+      gap: 6px;
+      height: 31px;
+      color: inherit;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .top-action.restore {
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--ink-secondary);
+      background: color-mix(in srgb, var(--paper-elevated) 78%, transparent);
+      box-shadow: var(--shadow-xs);
+    }
+
+    .page-stack { position: relative; min-width: 0; min-height: 0; }
+
+    .product-page {
+      position: absolute;
+      inset: 0;
+      display: none;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .product-page.active { display: grid; }
+
+    .icon { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+    .icon.sm { width: 14px; height: 14px; }
+    .icon.lg { width: 31px; height: 31px; stroke-width: 1.45; }
+
+    /* Launcher */
+    .launcher-page { grid-template-columns: minmax(520px, 60fr) minmax(440px, 40fr); }
+
+    .launcher-brand {
+      position: relative;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      min-width: 0;
+      padding: 42px 52px 10vh;
+    }
+
+    .launcher-hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      padding-top: 3vh;
+    }
+
+    .hero-title {
+      margin: 0 0 14px;
+      color: var(--ink);
+      background: linear-gradient(150deg, var(--ink) 34%, var(--accent) 112%);
+      background-clip: text;
+      font-family: var(--font-display);
+      font-size: clamp(42px, 4.4vw, 72px);
+      font-weight: 260;
+      letter-spacing: 0.01em;
+      line-height: 1;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-slogan {
+      margin: 0;
+      color: var(--ink-muted);
+      font-size: clamp(14px, 1.3vw, 18px);
+      font-weight: 340;
+      letter-spacing: 0.055em;
+      text-align: center;
+    }
+
+    .launcher-compose-wrap { width: min(640px, 90%); margin: 0 auto; }
+
+    .mode-switch {
+      display: flex;
+      width: max-content;
+      margin: 0 auto 16px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--paper-inset);
+    }
+
+    .mode-option {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 95px;
+      height: 36px;
+      justify-content: center;
+      border-radius: calc(var(--radius-md) - 3px);
+      color: var(--ink-muted);
+      background: transparent;
+      font-weight: 560;
+    }
+
+    .mode-option.selected {
+      color: var(--ink);
+      background: var(--paper-elevated);
+      box-shadow: var(--shadow-xs), inset 0 -2px var(--accent);
+    }
+
+    .composer {
+      position: relative;
+      height: 174px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: color-mix(in srgb, var(--paper-elevated) 94%, transparent);
+      box-shadow: var(--shadow-md), inset 0 1px rgb(255 255 255 / 0.12);
+      overflow: hidden;
+    }
+
+    .composer-placeholder { padding: 25px 26px; color: var(--ink-muted); font-size: 17px; }
+
+    .composer-toolbar {
+      position: absolute;
+      right: 17px;
+      bottom: 14px;
+      left: 22px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      color: var(--ink-muted);
+      font-size: 14px;
+    }
+
+    .composer-action { display: flex; align-items: center; gap: 6px; }
+    .composer-model { margin-left: auto; color: var(--ink-secondary); font-weight: 560; }
+
+    .send-button {
+      display: grid;
+      place-items: center;
+      width: 43px;
+      height: 43px;
+      border-radius: 50%;
+      color: var(--ink-subtle);
+      background: var(--paper-inset);
+    }
+
+    .workspace-chip {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: max-content;
+      max-width: 100%;
+      margin-top: 15px;
+      padding: 9px 13px;
+      border: 1px solid var(--line-subtle);
+      border-radius: var(--radius-md);
+      color: var(--ink-muted);
+      background: color-mix(in srgb, var(--paper-elevated) 62%, transparent);
+      box-shadow: var(--shadow-xs);
+      font-size: 14px;
+    }
+
+    .workspace-chip .icon { color: var(--accent); }
+
+    .launcher-rail {
+      position: relative;
+      display: grid;
+      grid-template-rows: auto auto 1px minmax(0, 1fr);
+      min-width: 0;
+      padding: 38px 40px 26px;
+      overflow: hidden;
+    }
+
+    .launcher-rail::before {
+      content: '';
+      position: absolute;
+      top: 24px;
+      bottom: 24px;
+      left: 0;
+      width: 1px;
+      background: var(--line);
+    }
+
+    .rail-heading, .history-heading { display: flex; align-items: center; }
+    .rail-heading { margin-bottom: 23px; }
+    .rail-heading h2, .history-heading h2 { margin: 0; color: var(--ink-secondary); font-size: 18px; font-weight: 650; }
+    .rail-heading .logs { margin-left: auto; margin-right: 22px; color: var(--ink-muted); font-size: 14px; }
+
+    .primary-dark {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 39px;
+      padding: 0 15px;
+      border-radius: var(--radius-md);
+      color: var(--action-text);
+      background: var(--action-bg);
+      box-shadow: var(--shadow-sm);
+      font-size: 14px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: transform 150ms ease, background 150ms ease, box-shadow 150ms ease;
+    }
+
+    .primary-dark:hover { transform: translateY(-1px); background: var(--action-bg-hover); box-shadow: var(--shadow-md); }
+    .primary-dark:active { transform: translateY(0); }
+
+    .workspace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+
+    .workspace-card {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      align-items: center;
+      gap: 13px;
+      min-width: 0;
+      height: 92px;
+      padding: 17px 20px;
+      border: 1px solid transparent;
+      border-radius: var(--radius-xl);
+      background: color-mix(in srgb, var(--paper-elevated) 91%, transparent);
+      box-shadow: var(--shadow-sm);
+      transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+    }
+
+    .workspace-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--line-subtle);
+      box-shadow: var(--shadow-md);
+    }
+
+    .workspace-card-main { min-width: 0; }
+    .workspace-name { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 16px; font-weight: 620; white-space: nowrap; }
+    .workspace-path { margin-top: 7px; overflow: hidden; color: var(--ink-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+    .heart { color: var(--danger); font-size: 15px; }
+    .channel-tag { padding: 3px 7px; border-radius: 5px; color: var(--success); background: var(--success-bg); font-size: 11px; font-weight: 650; }
+
+    .more-workspaces { margin: 17px auto 22px; color: var(--ink-muted); font-size: 13px; font-weight: 620; }
+    .rail-divider { background: var(--line); }
+
+    .history { min-height: 0; padding-top: 23px; overflow: hidden; }
+    .history-heading { margin-bottom: 17px; }
+    .history-filter { margin-left: 17px; color: var(--ink-muted); font-size: 12px; }
+    .history-heading .icon { margin-left: auto; }
+
+    .history-list { display: grid; gap: 2px; }
+    .history-row {
+      display: grid;
+      grid-template-columns: 62px 92px minmax(0, 1fr) auto;
+      align-items: center;
+      min-width: 0;
+      height: 40px;
+      padding: 0 8px;
+      border-radius: var(--radius-sm);
+      color: var(--ink-secondary);
+      font-size: 13px;
+    }
+    .history-row:hover { background: var(--hover-bg); }
+    .history-date, .history-agent, .history-turns { color: var(--ink-subtle); font-size: 11px; }
+    .history-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-turns { padding-left: 8px; }
+
+    /* Chat */
+    .chat-page { grid-template-columns: minmax(0, 1fr) 360px; }
+    .chat-main { position: relative; display: grid; grid-template-rows: 52px minmax(0, 1fr); min-width: 0; }
+
+    .chat-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--line-subtle);
+      color: var(--ink-muted);
+      font-size: 13px;
+    }
+    .chat-header .project { color: var(--ink); font-size: 15px; font-weight: 650; }
+    .chat-header .session-title { color: var(--ink-muted); font-size: 14px; }
+    .chat-header-actions { display: flex; align-items: center; gap: 20px; margin-left: auto; color: var(--ink-secondary); }
+
+    .conversation { position: relative; min-height: 0; overflow: hidden; }
+    .messages {
+      position: absolute;
+      inset: 0;
+      padding: 54px clamp(72px, 8vw, 150px) 190px;
+      overflow: hidden;
+    }
+    .message-content { max-width: 920px; margin: 0 auto; color: var(--ink); font-size: clamp(14px, 1.25vw, 17px); line-height: 1.82; }
+    .message-content p { margin: 0 0 21px; }
+    .message-content strong { font-weight: 720; }
+    .message-content h3 { margin: 0 0 20px; font-size: 18px; font-weight: 620; }
+    .quote-block { margin: 22px 0 30px; padding: 17px 22px; border-left: 3px solid var(--line-strong); color: var(--ink-muted); font-size: 17px; }
+    .message-content ul { margin: 0; padding-left: 26px; }
+    .message-content li { margin: 10px 0; padding-left: 9px; }
+    .inline-code { padding: 3px 8px; border-radius: 5px; color: var(--ink-secondary); background: var(--paper-inset); font-family: var(--font-code); font-size: 0.88em; }
+
+    .chat-composer {
+      position: absolute;
+      right: clamp(44px, 6vw, 100px);
+      bottom: 25px;
+      left: clamp(44px, 6vw, 100px);
+      height: 143px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: color-mix(in srgb, var(--paper-elevated) 95%, transparent);
+      box-shadow: var(--shadow-lg), inset 0 1px rgb(255 255 255 / 0.10);
+    }
+    .chat-composer .composer-placeholder { padding: 21px 24px; font-size: 15px; }
+    .chat-composer .composer-toolbar { right: 17px; bottom: 13px; left: 22px; }
+    .loading-ring { width: 24px; height: 24px; margin-left: auto; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; }
+
+    .workspace-panel {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      min-width: 0;
+      border-left: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper-elevated) 72%, transparent);
+    }
+    .workspace-panel-tabs { display: flex; align-items: center; gap: 17px; height: 53px; padding: 0 24px; border-bottom: 1px solid var(--line); color: var(--ink-muted); font-size: 13px; }
+    .workspace-panel-tabs .selected { position: relative; color: var(--ink); font-size: 16px; font-weight: 650; }
+    .workspace-panel-tabs .selected::after { content: ''; position: absolute; right: 0; bottom: -16px; left: 0; height: 2px; border-radius: 2px; background: var(--accent); }
+
+    .workspace-panel-head { padding: 21px 25px 17px; border-bottom: 1px solid var(--line-subtle); }
+    .workspace-panel-headline { display: flex; align-items: center; gap: 13px; }
+    .workspace-panel-name { color: var(--ink); font-size: 16px; font-weight: 650; }
+    .branch { padding: 4px 7px; border-radius: 6px; color: var(--ink-muted); background: var(--paper-inset); font-size: 11px; }
+    .file-count { margin-left: auto; color: var(--ink-muted); font-size: 11px; }
+    .workspace-panel-path { margin: 5px 0 0 44px; color: var(--ink-muted); font-size: 12px; }
+
+    .tree { min-height: 0; padding: 15px 17px; overflow: hidden; color: var(--ink-secondary); font-size: 13px; }
+    .tree-row { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 8px; border-radius: 6px; }
+    .tree-row:hover { background: var(--hover-bg); }
+    .tree-row .chev { width: 8px; color: var(--ink-subtle); }
+    .tree-divider { height: 1px; margin: 18px 0; background: var(--line); }
+    .tree-section { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; color: var(--ink-secondary); font-size: 14px; font-weight: 680; }
+    .tree-section .capability-icon { color: var(--accent); }
+    .tree-label { margin: 14px 8px 5px; color: var(--ink-subtle); font-size: 10px; font-weight: 720; letter-spacing: 0.11em; }
+    .skill-row { display: flex; align-items: center; gap: 9px; height: 33px; padding: 0 9px; color: var(--ink-secondary); }
+    .skill-dot { color: var(--accent); font-family: var(--font-code); }
+
+    /* Settings */
+    .settings-page { grid-template-columns: 300px minmax(0, 1fr); }
+    .settings-sidebar { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; padding: 36px 34px 28px; }
+    .settings-sidebar::after { content: ''; position: absolute; top: 24px; right: 0; bottom: 24px; width: 1px; background: var(--line); }
+    .settings-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 42px; }
+    .settings-title-row h1 { margin: 0; color: var(--ink); font-size: 22px; font-weight: 720; }
+    .settings-title-row span { color: var(--ink-muted); font-size: 14px; }
+    .settings-nav { display: grid; align-content: start; gap: 5px; }
+    .settings-nav-item { position: relative; display: flex; align-items: center; height: 47px; padding: 0 18px; border-radius: var(--radius-md); color: var(--ink-muted); font-size: 16px; font-weight: 590; }
+    .settings-nav-item:hover { color: var(--ink); background: var(--hover-bg); }
+    .settings-nav-item.active { color: var(--ink); background: var(--accent-soft); }
+    .settings-nav-item.active::before { content: ''; position: absolute; top: 7px; bottom: 7px; left: 0; width: 3px; border-radius: 5px; background: var(--accent); }
+
+    .settings-content { min-width: 0; overflow: auto; padding: 50px clamp(48px, 8vw, 150px) 90px; scrollbar-width: thin; scrollbar-color: var(--ink-faint) transparent; }
+    .settings-content-inner { width: min(820px, 100%); margin: 0 auto; }
+    .settings-content h2 { margin: 0; color: var(--ink); font-size: 22px; font-weight: 720; }
+    .settings-subtitle { margin: 10px 0 30px; color: var(--ink-muted); font-size: 14px; }
+    .settings-card { margin-bottom: 26px; padding: 26px 29px; border: 1px solid var(--line); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--paper-elevated) 80%, transparent); box-shadow: var(--shadow-sm); }
+    .settings-card h3 { margin: 0 0 21px; color: var(--ink-secondary); font-size: 17px; font-weight: 690; }
+    .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 22px; min-height: 70px; border-top: 1px solid var(--line-subtle); }
+    .settings-card h3 + .setting-row { border-top: 0; }
+    .setting-name { margin-bottom: 5px; color: var(--ink); font-size: 15px; font-weight: 640; }
+    .setting-help { max-width: 470px; color: var(--ink-muted); font-size: 12px; line-height: 1.5; }
+
+    .fake-select { display: flex; align-items: center; justify-content: space-between; gap: 18px; width: 300px; height: 44px; padding: 0 16px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--ink-secondary); background: var(--paper-elevated); box-shadow: var(--shadow-xs); font-size: 13px; }
+    .fake-select.compact { width: 335px; }
+    .appearance-control { display: flex; padding: 4px; border-radius: var(--radius-md); background: var(--paper-inset); }
+    .appearance-control span { display: grid; place-items: center; min-width: 92px; height: 34px; border-radius: calc(var(--radius-md) - 3px); color: var(--ink-muted); font-size: 13px; }
+    .appearance-control span.active { color: var(--ink); background: var(--paper-elevated); box-shadow: var(--shadow-xs), inset 0 -2px var(--accent); }
+
+    .toggle { position: relative; width: 48px; height: 27px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 16%, transparent); box-shadow: inset 0 0 0 1px var(--line-subtle); }
+    .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 21px; height: 21px; border-radius: 50%; background: var(--paper-elevated); box-shadow: 0 1px 4px rgb(0 0 0 / 0.20); }
+    .toggle.on { background: var(--action-bg); }
+    .toggle.on::after { left: 24px; background: var(--action-text); }
+
+    .queue-control { display: flex; padding: 4px; border-radius: var(--radius-md); background: var(--paper-inset); }
+    .queue-control span { padding: 8px 18px; border-radius: calc(var(--radius-md) - 3px); color: var(--ink-muted); font-size: 12px; }
+    .queue-control .active { color: var(--ink); background: var(--paper-elevated); box-shadow: var(--shadow-xs), inset 0 -2px var(--accent); }
+
+    @media (max-width: 1260px) {
+      .lab-mark { display: none; }
+      .lab-description { display: none; }
+      .launcher-page { grid-template-columns: minmax(470px, 58fr) minmax(390px, 42fr); }
+      .launcher-brand { padding-right: 34px; padding-left: 34px; }
+      .launcher-rail { padding-right: 25px; padding-left: 25px; }
+      .workspace-card { padding: 14px; }
+      .chat-page { grid-template-columns: minmax(0, 1fr) 320px; }
+      .settings-page { grid-template-columns: 260px minmax(0, 1fr); }
+    }
+
+    @media (max-width: 980px) {
+      .lab-toolbar { gap: 8px; padding: 0 10px; }
+      .lab-label, .lab-theme-meta { display: none; }
+      .lab-select { min-width: 145px; }
+      .lab-segment button { min-width: 48px; padding: 0 6px; }
+      .preview-stage { padding: 8px; overflow: auto; }
+      .product-window { min-width: 920px; min-height: 650px; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <defs>
+      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></symbol>
+      <symbol id="i-box" viewBox="0 0 24 24"><path d="m12 2 8 4.6v10.8L12 22l-8-4.6V6.6z"/><path d="m4.4 6.8 7.6 4.4 7.6-4.4M12 11.2V22"/></symbol>
+      <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="3"/><path d="M12 3v4M8 12h.01M16 12h.01M8 16h8"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.8A1.8 1.8 0 0 1 4.8 5H10l2 2h7.2A1.8 1.8 0 0 1 21 8.8v8.4a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 17.2z"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+      <symbol id="i-tool" viewBox="0 0 24 24"><path d="M14.5 6.5a4 4 0 0 0-5-5L12 4 9 7 6.5 4.5a4 4 0 0 0 5 5L4 17l3 3z"/></symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 11 18-8-8 18-2-8zM11 13l4-4"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="lab">
+    <header class="lab-toolbar">
+      <div class="lab-mark"><span class="lab-mark-badge">M</span><span>Theme Playground · Design only</span></div>
+
+      <div class="lab-group">
+        <span class="lab-label">Theme</span>
+        <select id="theme-select" class="lab-select" aria-label="选择 Theme">
+          <option value="myagents-default">MyAgents Default</option>
+          <option value="default-black">Default Black</option>
+          <option value="sage">Sage</option>
+          <option value="absolutely">Claude</option>
+          <option value="linear">Linear</option>
+          <option value="proof">Proof</option>
+          <option value="codex">Codex</option>
+          <option value="raycast">Raycast</option>
+        </select>
+      </div>
+
+      <div class="lab-group">
+        <span class="lab-label">Mode</span>
+        <div class="lab-segment" id="scheme-control" aria-label="外观模式">
+          <button type="button" data-scheme-mode="system" aria-pressed="false">系统</button>
+          <button type="button" data-scheme-mode="light" aria-pressed="true">浅色</button>
+          <button type="button" data-scheme-mode="dark" aria-pressed="false">深色</button>
+        </div>
+      </div>
+
+      <div class="lab-group">
+        <span class="lab-label">Page</span>
+        <div class="lab-segment" id="page-control" aria-label="示例页面">
+          <button type="button" data-page="launcher" aria-pressed="true">Launcher</button>
+          <button type="button" data-page="chat" aria-pressed="false">对话</button>
+          <button type="button" data-page="settings" aria-pressed="false">设置</button>
+        </div>
+      </div>
+
+      <div class="lab-theme-meta">
+        <div class="lab-swatches" aria-hidden="true">
+          <span class="lab-swatch" id="swatch-bg"></span>
+          <span class="lab-swatch" id="swatch-text"></span>
+          <span class="lab-swatch" id="swatch-accent"></span>
+        </div>
+        <span class="lab-description" id="theme-description"></span>
+      </div>
+    </header>
+
+    <main class="preview-stage">
+      <div class="product-window">
+        <header class="product-titlebar">
+          <div class="titlebar-left">
+            <div class="traffic-lights"><span class="traffic-light red"></span><span class="traffic-light yellow"></span><span class="traffic-light green"></span></div>
+            <div class="window-tabs">
+              <button type="button" class="window-tab">Mino-0705</button>
+              <button type="button" class="window-tab">ai_hot_more_v2…</button>
+              <button type="button" class="window-tab tb-settings" data-open-page="settings">设置<span class="tab-close">×</span></button>
+              <button type="button" class="window-tab tb-chat" data-open-page="chat">人生模拟器35岁文…<span class="tab-close">×</span></button>
+              <button type="button" class="window-tab tb-launcher active" data-open-page="launcher">启动页<span class="tab-close">×</span></button>
+              <button type="button" class="window-tab" style="min-width:42px;max-width:42px">＋</button>
+            </div>
+          </div>
+          <div class="titlebar-right">
+            <span class="top-action restore"><svg class="icon sm"><use href="#i-refresh"></use></svg>恢复上次对话&nbsp; 2</span>
+            <span class="top-action">小助理</span>
+            <span class="top-action">团队</span>
+            <span class="top-action">任务</span>
+            <span class="top-action"><svg class="icon sm"><use href="#i-settings"></use></svg>设置</span>
+          </div>
+        </header>
+
+        <div class="page-stack">
+          <section class="product-page launcher-page active" data-page-panel="launcher">
+            <div class="launcher-brand">
+              <div class="launcher-hero">
+                <h1 class="hero-title">MyAgents</h1>
+                <p class="hero-slogan">每个人都应享受智能的推背感，欢迎来到言出法随的世界</p>
+              </div>
+
+              <div class="launcher-compose-wrap">
+                <div class="mode-switch"><span class="mode-option selected">✣&nbsp; 对话</span><span class="mode-option">♧&nbsp; 想法</span></div>
+                <div class="composer">
+                  <div class="composer-placeholder">今天，想干点啥？</div>
+                  <div class="composer-toolbar">
+                    <span class="composer-action" style="font-size:21px">＋</span>
+                    <span class="composer-action"><svg class="icon sm"><use href="#i-bolt"></use></svg>自主行动⌃</span>
+                    <span class="composer-action"><svg class="icon sm"><use href="#i-tool"></use></svg>工具 1</span>
+                    <span class="composer-action"><svg class="icon sm"><use href="#i-clock"></use></svg>定时</span>
+                    <span class="composer-model">GPT-5.6-Sol⌃</span>
+                    <span class="send-button"><svg class="icon"><use href="#i-send"></use></svg></span>
+                  </div>
+                </div>
+                <div class="workspace-chip"><svg class="icon"><use href="#i-bolt"></use></svg><strong>mino</strong><span>⌄</span></div>
+              </div>
+            </div>
+
+            <aside class="launcher-rail">
+              <div class="rail-heading"><h2>Agent 工作区</h2><span class="logs">Logs</span><button class="primary-dark">＋&nbsp; 添加</button></div>
+              <div>
+                <div class="workspace-grid">
+                  <article class="workspace-card"><svg class="icon lg"><use href="#i-bolt"></use></svg><div class="workspace-card-main"><div class="workspace-name">mino <span class="heart">♡</span><span class="channel-tag">● 飞书</span></div><div class="workspace-path">~/Documents/project/mino</div></div></article>
+                  <article class="workspace-card"><svg class="icon lg"><use href="#i-box"></use></svg><div class="workspace-card-main"><div class="workspace-name">MyAgents <span class="heart">♡</span><span class="channel-tag">● 飞书</span></div><div class="workspace-path">~/Documents/project/MyAgents</div></div></article>
+                  <article class="workspace-card"><svg class="icon lg"><use href="#i-bolt"></use></svg><div class="workspace-card-main"><div class="workspace-name">Mino-0705 <span class="heart">♡</span></div><div class="workspace-path">~/.myagents/projects/Mino-0705</div></div></article>
+                  <article class="workspace-card"><svg class="icon lg"><use href="#i-box"></use></svg><div class="workspace-card-main"><div class="workspace-name">openmino</div><div class="workspace-path">~/Documents/project/openmino</div></div></article>
+                  <article class="workspace-card"><svg class="icon lg"><use href="#i-bot"></use></svg><div class="workspace-card-main"><div class="workspace-name">tem_project <span class="heart">♡</span><span class="channel-tag">● 微信</span></div><div class="workspace-path">~/Documents/project/tem_project</div></div></article>
+                  <article class="workspace-card"><svg class="icon lg"><use href="#i-box"></use></svg><div class="workspace-card-main"><div class="workspace-name">MyAgents-Cuse</div><div class="workspace-path">~/Documents/project/MyAgents-Cuse</div></div></article>
+                </div>
+                <div class="more-workspaces">展开更多 11 个&nbsp;⌄</div>
+              </div>
+              <div class="rail-divider"></div>
+              <div class="history">
+                <div class="history-heading"><h2>历史对话</h2><span class="history-filter">全部⌄</span><svg class="icon"><use href="#i-search"></use></svg></div>
+                <div class="history-list">
+                  <div class="history-row"><span class="history-date">昨天</span><span class="history-agent">mino</span><span class="history-title">ai_hot_more_v2-3 搜索指标SQL</span><span class="history-turns">20 轮</span></div>
+                  <div class="history-row"><span class="history-date">昨天</span><span class="history-agent">mino</span><span class="history-title">人生模拟器35岁文案与素材盘点</span><span class="history-turns">4 轮</span></div>
+                  <div class="history-row"><span class="history-date">昨天</span><span class="history-agent">openmino</span><span class="history-title">你是什么模型呀？</span><span class="history-turns">1 轮</span></div>
+                  <div class="history-row"><span class="history-date">4天前</span><span class="history-agent">MyAgents</span><span class="history-title">#122 Space Issue 投送体验</span><span class="history-turns">14 轮</span></div>
+                  <div class="history-row"><span class="history-date">4天前</span><span class="history-agent">mino</span><span class="history-title">MyAgents 日志耗时排查</span><span class="history-turns">5 轮</span></div>
+                  <div class="history-row"><span class="history-date">4天前</span><span class="history-agent">mino</span><span class="history-title">MyAgents 最新进展与功能认知更新</span><span class="history-turns">8 轮</span></div>
+                </div>
+              </div>
+            </aside>
+          </section>
+
+          <section class="product-page chat-page" data-page-panel="chat">
+            <div class="chat-main">
+              <header class="chat-header"><span>←</span><svg class="icon"><use href="#i-bolt"></use></svg><span class="project">mino</span><span>/</span><span class="session-title">人生模拟器35岁文案与素材盘点</span><span>•••</span><div class="chat-header-actions"><span>＋ 新对话</span><span>◴ 历史</span><span>Logs</span></div></header>
+              <div class="conversation">
+                <div class="messages">
+                  <article class="message-content">
+                    <p>所以不能只改前端代码，必须让设计重出：</p>
+                    <div class="quote-block">35+岁 · 心之所向</div>
+                    <p>“留在家乡 / 漂泊他乡”的男女反馈图共 4 张，里面没有年龄，暂时不用因为年龄修改；但如果运营认为“归乡 / 漂泊”的价值指向也太强，这 4 张及两个选项文案要进入第二轮审核。</p>
+                    <h3>三、结局文案，14/16 个写死了“35岁”</h3>
+                    <p>16 个结局里，只有这两个没有出现“35岁”：</p>
+                    <ul><li>退场的赢家</li><li>旧巷新生命</li></ul>
+                    <p>其余 <strong>14 个结局</strong>正文均出现了“35岁 / 35岁的你”，包括折返的旅人、栖居避风港、携手共归途、飞鸟与信箱、异乡的柴火等。</p>
+                    <p>如果运营的真实要求是“不要把人生终点钉死在 35 岁”，我建议统一改成以下一种：</p>
+                    <ul><li><span class="inline-code">35+岁</span></li><li><span class="inline-code">后来</span></li></ul>
+                  </article>
+                </div>
+                <div class="chat-composer">
+                  <div class="composer-placeholder">输入消息，使用 @ 引用文件，/ 使用技能…</div>
+                  <div class="composer-toolbar">
+                    <span style="font-size:20px">＋</span><span class="composer-action"><svg class="icon sm"><use href="#i-bolt"></use></svg>自主行动⌃</span><span class="composer-action"><svg class="icon sm"><use href="#i-tool"></use></svg>工具 1</span><span class="composer-action"><svg class="icon sm"><use href="#i-clock"></use></svg>定时</span>
+                    <span class="loading-ring"></span><span class="composer-model" style="margin-left:0">GPT-5.6-Sol⌃</span><span class="send-button"><svg class="icon"><use href="#i-send"></use></svg></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <aside class="workspace-panel">
+              <div class="workspace-panel-tabs"><span class="selected">工作区</span><svg class="icon"><use href="#i-search"></use></svg><svg class="icon"><use href="#i-terminal"></use></svg><svg class="icon"><use href="#i-globe"></use></svg><span style="margin-left:auto">Agent 设置</span></div>
+              <div class="workspace-panel-head"><div class="workspace-panel-headline"><svg class="icon lg"><use href="#i-bolt"></use></svg><span class="workspace-panel-name">mino</span><span class="branch">⌘ main</span><span class="file-count">4201 文件 · 1248 文件夹</span></div><div class="workspace-panel-path">~/Documents/project/mino</div></div>
+              <div class="tree">
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>.claude</span></div>
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>.config</span></div>
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>playwright-mcp</span></div>
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>drafts</span></div>
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>memory</span></div>
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>myagents-generated</span></div>
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>published</span></div>
+                <div class="tree-row"><span class="chev">›</span><svg class="icon"><use href="#i-folder"></use></svg><span>tasks</span></div>
+                <div class="tree-row"><span class="chev"></span><span style="width:17px">⌘</span><span>.gitignore</span></div>
+                <div class="tree-row"><span class="chev"></span><span style="width:17px">▣</span><span>CLAUDE.md</span></div>
+                <div class="tree-divider"></div>
+                <div class="tree-section"><span>⌄</span><span class="capability-icon">▣</span><span>Agent 能力 (77)</span></div>
+                <div class="tree-label">COMMANDS (2)</div>
+                <div class="skill-row"><span class="skill-dot">›_</span><span>UPDATE_MEMORY</span></div>
+                <div class="skill-row"><span class="skill-dot">›_</span><span>BOOTSTRAP.md</span></div>
+                <div class="tree-label">SKILLS (75)</div>
+                <div class="skill-row"><span class="skill-dot">✣</span><span>nano-pdf</span></div>
+                <div class="skill-row"><span class="skill-dot">✣</span><span>lark-mail</span></div>
+                <div class="skill-row"><span class="skill-dot">✣</span><span>myagents-memory-update</span></div>
+              </div>
+            </aside>
+          </section>
+
+          <section class="product-page settings-page" data-page-panel="settings">
+            <aside class="settings-sidebar">
+              <div class="settings-title-row"><h1>设置</h1><span>Logs</span></div>
+              <nav class="settings-nav">
+                <div class="settings-nav-item">模型供应商</div><div class="settings-nav-item">技能 Skills</div><div class="settings-nav-item">插件 Plugins</div><div class="settings-nav-item">工具箱</div><div class="settings-nav-item">聊天机器人 Bot</div><div class="settings-nav-item">桌面宠物</div><div class="settings-nav-item">使用统计</div><div class="settings-nav-item active">通用设置</div><div class="settings-nav-item">快捷键</div><div class="settings-nav-item">关于&反馈</div>
+              </nav>
+            </aside>
+            <div class="settings-content">
+              <div class="settings-content-inner">
+                <h2>通用设置</h2><p class="settings-subtitle">配置应用程序的通用行为</p>
+                <section class="settings-card">
+                  <h3>界面外观</h3>
+                  <div class="setting-row"><div><div class="setting-name">界面语言</div><div class="setting-help">切换 MyAgents 界面文案语言，不影响 AI 回复语言</div></div><div class="fake-select"><span>◎&nbsp; 跟随系统</span><span>⌄</span></div></div>
+                  <div class="setting-row"><div><div class="setting-name">外观模式</div><div class="setting-help">设置应用的明暗外观模式</div></div><div class="appearance-control"><span class="active">跟随系统</span><span>日间模式</span><span>夜间模式</span></div></div>
+                </section>
+                <section class="settings-card">
+                  <h3>启动设置</h3>
+                  <div class="setting-row"><div><div class="setting-name">开机启动</div><div class="setting-help">系统启动时自动运行 MyAgents</div></div><div class="toggle on"></div></div>
+                  <div class="setting-row"><div><div class="setting-name">最小化到托盘</div><div class="setting-help">关闭窗口时最小化到系统托盘而非退出应用</div></div><div class="toggle on"></div></div>
+                  <div class="setting-row"><div><div class="setting-name">始终阻止电脑睡眠</div><div class="setting-help">开启后即使 AI 没有在运行，电脑也不会自动睡眠。合上盖子仍会睡眠，且会更快消耗电池。</div></div><div class="toggle"></div></div>
+                  <div class="setting-row"><div><div class="setting-name">启动时打开的工作区</div><div class="setting-help">启动页默认使用的工作区路径</div></div><div class="fake-select compact"><span><svg class="icon sm" style="vertical-align:-2px"><use href="#i-folder"></use></svg>&nbsp; ~/Documents/project/mino</span><span>⌄</span></div></div>
+                </section>
+                <section class="settings-card">
+                  <h3>连续发送消息</h3>
+                  <div class="setting-row"><div><div class="setting-name">队列响应模式</div><div class="setting-help">AI 执行过程中会阅读消息，自主判断响应时机</div></div><div class="queue-control"><span class="active">实时响应</span><span>轮次响应</span></div></div>
+                </section>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const themes = {
+      'myagents-default': {
+        label: 'MyAgents Default',
+        description: '当前产品基准 · 暖纸张、陶土橙与鼠尾草绿',
+        radius: 21,
+        light: { bg:'#faf6ee', surface:'#fffcf7', inset:'#e8dccf', user:'#fffefa', text:'#1c1612', text2:'#2e2825', muted:'#6f6156', subtle:'#a69a90', faint:'#c4b8ad', accent:'#c26d3a', accentHover:'#e18a58', actionHover:'#b05e2d', onAccent:'#ffffff', cool:'#2e6f5e', glowA:'#efd0bd', glowB:'#cdddd5', shadow:'28 22 18', texture:.13 },
+        dark: { bg:'#1a1614', surface:'#242018', inset:'#12100e', user:'#2a251d', text:'#e4dcd4', text2:'#cfc5ba', muted:'#968a7e', subtle:'#685c52', faint:'#4a4038', accent:'#d4803f', accentHover:'#e89860', action:'#b05e2d', actionHover:'#9c5027', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4aad8a', glowA:'#2a2018', glowB:'#1a2420', shadow:'0 0 0', texture:.06 }
+      },
+      'default-black': {
+        label: 'Default Black',
+        description: 'MyAgents Default 对照组 · 仅把浅色主动作改为中性黑',
+        radius: 21,
+        light: { bg:'#faf6ee', surface:'#fffcf7', inset:'#e8dccf', user:'#fffefa', text:'#1c1612', text2:'#2e2825', muted:'#6f6156', subtle:'#a69a90', faint:'#c4b8ad', accent:'#c26d3a', accentHover:'#e18a58', action:'#111111', actionHover:'#2b2b2b', actionText:'#ffffff', onAccent:'#ffffff', cool:'#2e6f5e', glowA:'#efd0bd', glowB:'#cdddd5', shadow:'28 22 18', texture:.13 },
+        dark: { bg:'#1a1614', surface:'#242018', inset:'#12100e', user:'#2a251d', text:'#e4dcd4', text2:'#cfc5ba', muted:'#968a7e', subtle:'#685c52', faint:'#4a4038', accent:'#d4803f', accentHover:'#e89860', action:'#b05e2d', actionHover:'#9c5027', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4aad8a', glowA:'#2a2018', glowB:'#1a2420', shadow:'0 0 0', texture:.06 }
+      },
+      sage: {
+        label: 'Sage',
+        description: '社区 · xxia-king / PR #441 · 鼠尾草绿与自然纸面',
+        radius: 21,
+        light: { bg:'#f3f7ef', surface:'#fbfff8', inset:'#dce8d6', user:'#fdfff9', text:'#17221b', text2:'#27352b', muted:'#657367', subtle:'#95a091', faint:'#b6beb0', accent:'#47754f', accentHover:'#3f6c47', action:'#47754f', actionHover:'#3f6c47', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4f8278', glowA:'#d5e8d0', glowB:'#cfe4de', shadow:'23 34 27', texture:.10, success:'#27784f', successBg:'#dcecdf', danger:'#b83f3f', dangerBg:'#f5dede', info:'#456f8c' },
+        dark: { bg:'#121912', surface:'#1a241a', inset:'#0d120d', user:'#202c20', text:'#dce8d7', text2:'#c6d3c2', muted:'#94a28f', subtle:'#64715f', faint:'#475142', accent:'#7fb184', accentHover:'#6da073', action:'#47754f', actionHover:'#3f6c47', actionText:'#ffffff', onAccent:'#0f150f', cool:'#6cb3a5', glowA:'#213321', glowB:'#17302d', shadow:'0 0 0', texture:.05, success:'#7fb184', successBg:'rgb(127 177 132 / .16)', danger:'#ef6b66', dangerBg:'rgb(239 107 102 / .16)', info:'#77aeb8' }
+      },
+      absolutely: {
+        label: 'Claude',
+        description: 'Codex 参考 · 陶土暖橙与柔和中性表面',
+        radius: 19,
+        font: "Inter, 'SF Pro Text', -apple-system, 'PingFang SC', sans-serif",
+        light: { bg:'#f9f9f7', surface:'#fffefa', inset:'#ece8e2', user:'#fffefb', text:'#2d2d2b', text2:'#46453f', muted:'#716e67', subtle:'#aaa69e', faint:'#c4c0b9', accent:'#aa563b', accentHover:'#9d4e35', action:'#aa563b', actionHover:'#9d4e35', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4b7869', glowA:'#efd9cf', glowB:'#dce5e0', shadow:'45 41 37', texture:.10, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
+        dark: { bg:'#2d2d2b', surface:'#373633', inset:'#242321', user:'#3a3834', text:'#f9f9f7', text2:'#dedcd7', muted:'#aaa69e', subtle:'#747069', faint:'#57534d', accent:'#cc7d5e', accentHover:'#df9375', action:'#aa563b', actionHover:'#9d4e35', actionText:'#ffffff', onAccent:'#251a16', cool:'#75a390', glowA:'#3d2b25', glowB:'#283831', shadow:'0 0 0', texture:.05 }
+      },
+      linear: {
+        label: 'Linear',
+        description: 'Codex 参考 · 靛蓝强调、冷白画布与紧致层级',
+        radius: 14,
+        font: "Inter, 'SF Pro Text', -apple-system, 'PingFang SC', sans-serif",
+        light: { bg:'#fcfcfd', surface:'#ffffff', inset:'#ececf1', user:'#ffffff', text:'#1b1b1b', text2:'#333337', muted:'#6f6f78', subtle:'#a2a2ab', faint:'#c3c3ca', accent:'#5e6ad2', accentHover:'#4f5abe', actionHover:'#4f5abe', onAccent:'#ffffff', cool:'#458782', glowA:'#dfe1fb', glowB:'#dcebea', shadow:'38 40 57', texture:.08, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
+        dark: { bg:'#0f0f11', surface:'#18181b', inset:'#09090b', user:'#1d1d21', text:'#e3e4e6', text2:'#c9cad0', muted:'#8b8c96', subtle:'#585963', faint:'#3b3c44', accent:'#606acc', accentHover:'#515dbe', actionHover:'#515dbe', onAccent:'#ffffff', cool:'#62a7a0', glowA:'#20233c', glowB:'#162a2a', shadow:'0 0 0', texture:.04 }
+      },
+      proof: {
+        label: 'Proof',
+        description: 'Codex 参考 · 森林绿、编辑纸与沉静阅读感',
+        radius: 17,
+        light: { bg:'#f5f3ed', surface:'#fbfaf6', inset:'#e3e0d7', user:'#fdfcf8', text:'#2f312d', text2:'#454941', muted:'#687065', subtle:'#a5aaa0', faint:'#c0c3bb', accent:'#3d755d', accentHover:'#2f624c', actionHover:'#2f624c', onAccent:'#ffffff', cool:'#55749a', glowA:'#d8e4d8', glowB:'#e7dfce', shadow:'43 50 43', texture:.12, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
+        dark: { bg:'#18201c', surface:'#222b26', inset:'#101613', user:'#273129', text:'#e8ebe5', text2:'#cfd6cc', muted:'#929e93', subtle:'#5d6b60', faint:'#414d44', accent:'#67a384', accentHover:'#7bb698', action:'#3d755d', actionHover:'#2f624c', actionText:'#ffffff', onAccent:'#102018', cool:'#7f9fc3', glowA:'#203a2d', glowB:'#282d20', shadow:'0 0 0', texture:.06 }
+      },
+      codex: {
+        label: 'Codex',
+        description: 'Codex 参考 · 标准蓝、纯净中性层级与直接对比',
+        radius: 14,
+        light: { bg:'#ffffff', surface:'#ffffff', inset:'#eaecef', user:'#fbfcfd', text:'#0d0d0d', text2:'#292929', muted:'#696b70', subtle:'#a0a2a7', faint:'#c2c4c8', accent:'#0169cc', accentHover:'#005bb2', actionHover:'#005bb2', onAccent:'#ffffff', cool:'#287e68', glowA:'#dcecff', glowB:'#dcece7', shadow:'24 34 48', texture:.07, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
+        dark: { bg:'#111111', surface:'#1a1a1a', inset:'#090909', user:'#202020', text:'#fcfcfc', text2:'#dddddd', muted:'#999999', subtle:'#626262', faint:'#404040', accent:'#0169cc', accentHover:'#0d70c7', actionHover:'#0d70c7', onAccent:'#ffffff', cool:'#4ca98b', glowA:'#102840', glowB:'#14271f', shadow:'0 0 0', texture:.04 }
+      },
+      raycast: {
+        label: 'Raycast',
+        description: 'Codex 参考 · 珊瑚红、高明度中性画布与强动作感',
+        radius: 16,
+        font: "Inter, 'SF Pro Text', -apple-system, 'PingFang SC', sans-serif",
+        light: { bg:'#ffffff', surface:'#ffffff', inset:'#ededed', user:'#fffafa', text:'#030303', text2:'#242424', muted:'#6c6c6c', subtle:'#a2a2a2', faint:'#c5c5c5', accent:'#c83f45', accentHover:'#bb363c', action:'#c83f45', actionHover:'#bb363c', actionText:'#ffffff', onAccent:'#ffffff', cool:'#397f75', glowA:'#ffe0e0', glowB:'#dfecea', shadow:'45 26 26', texture:.07, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
+        dark: { bg:'#101010', surface:'#1a1a1a', inset:'#090909', user:'#211b1b', text:'#fefefe', text2:'#dedede', muted:'#999999', subtle:'#616161', faint:'#3e3e3e', accent:'#ff6363', accentHover:'#ff7a7a', action:'#c83f45', actionHover:'#bb363c', actionText:'#ffffff', onAccent:'#2b0909', cool:'#62aa9e', glowA:'#3a1c1c', glowB:'#152924', shadow:'0 0 0', texture:.04 }
+      }
+    };
+
+    const themeSelect = document.getElementById('theme-select');
+    const schemeButtons = [...document.querySelectorAll('[data-scheme-mode]')];
+    const pageButtons = [...document.querySelectorAll('[data-page]')];
+    const systemScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const storageKey = 'myagents-theme-playground-v1';
+
+    let state = { theme: 'default-black', schemeMode: 'light', page: 'launcher' };
+    try {
+      state = { ...state, ...JSON.parse(localStorage.getItem(storageKey) || '{}') };
+    } catch { /* Ignore malformed playground-only state. */ }
+    const urlState = new URLSearchParams(window.location.search);
+    if (urlState.has('theme')) state.theme = urlState.get('theme');
+    if (urlState.has('scheme')) state.schemeMode = urlState.get('scheme');
+    if (urlState.has('page')) state.page = urlState.get('page');
+    if (!themes[state.theme]) state.theme = 'default-black';
+    if (!['system', 'light', 'dark'].includes(state.schemeMode)) state.schemeMode = 'light';
+    if (!['launcher', 'chat', 'settings'].includes(state.page)) state.page = 'launcher';
+
+    function rgb(hex) {
+      const normalized = hex.replace('#', '');
+      const value = Number.parseInt(normalized.length === 3 ? normalized.split('').map(c => c + c).join('') : normalized, 16);
+      return `${(value >> 16) & 255} ${(value >> 8) & 255} ${value & 255}`;
+    }
+
+    function resolvedScheme() {
+      return state.schemeMode === 'system' ? (systemScheme.matches ? 'dark' : 'light') : state.schemeMode;
+    }
+
+    function saveState() {
+      localStorage.setItem(storageKey, JSON.stringify(state));
+      const url = new URL(window.location.href);
+      url.searchParams.set('theme', state.theme);
+      url.searchParams.set('scheme', state.schemeMode);
+      url.searchParams.set('page', state.page);
+      history.replaceState(null, '', url);
+    }
+
+    function applyTheme() {
+      const definition = themes[state.theme];
+      const scheme = resolvedScheme();
+      const palette = definition[scheme];
+      const root = document.documentElement;
+      root.dataset.scheme = scheme;
+      root.style.colorScheme = scheme;
+
+      const variables = {
+        '--paper': palette.bg,
+        '--paper-elevated': palette.surface,
+        '--paper-inset': palette.inset,
+        '--message-user-bg': palette.user,
+        '--ink': palette.text,
+        '--ink-secondary': palette.text2,
+        '--ink-muted': palette.muted,
+        '--ink-subtle': palette.subtle,
+        '--ink-faint': palette.faint,
+        '--accent': palette.accent,
+        '--accent-hover': palette.accentHover,
+        '--on-accent': palette.onAccent,
+        '--action-bg': palette.action || palette.accent,
+        '--action-bg-hover': palette.actionHover || palette.accentHover,
+        '--action-text': palette.actionText || palette.onAccent,
+        '--accent-cool': palette.cool,
+        '--accent-soft': `rgb(${rgb(palette.accent)} / ${scheme === 'dark' ? '.14' : '.08'})`,
+        '--accent-muted': `rgb(${rgb(palette.accent)} / ${scheme === 'dark' ? '.22' : '.15'})`,
+        '--hover-bg': `rgb(${rgb(palette.accent)} / ${scheme === 'dark' ? '.13' : '.075'})`,
+        '--line': `rgb(${rgb(palette.text)} / ${scheme === 'dark' ? '.12' : '.10'})`,
+        '--line-strong': `rgb(${rgb(palette.text)} / ${scheme === 'dark' ? '.20' : '.18'})`,
+        '--line-subtle': `rgb(${rgb(palette.text)} / ${scheme === 'dark' ? '.07' : '.055'})`,
+        '--success': palette.success || (scheme === 'dark' ? '#58b988' : '#2d8a5e'),
+        '--success-bg': palette.successBg || (scheme === 'dark' ? 'rgb(88 185 136 / .15)' : '#e2f0e8'),
+        '--danger': palette.danger || (scheme === 'dark' ? '#e36f72' : '#c75050'),
+        '--danger-bg': palette.dangerBg || (scheme === 'dark' ? 'rgb(227 111 114 / .14)' : 'rgb(199 80 80 / .10)'),
+        '--info': palette.info || (scheme === 'dark' ? '#78a8d8' : '#4a7ab5'),
+        '--ambient': `radial-gradient(1100px 680px at 82% -10%, ${palette.glowA} 0%, transparent 56%), radial-gradient(860px 580px at -10% 110%, ${palette.glowB} 0%, transparent 55%), ${palette.bg}`,
+        '--texture-color': rgb(palette.text),
+        '--texture-opacity': palette.texture,
+        '--shadow-xs': `0 1px 2px rgb(${palette.shadow} / ${scheme === 'dark' ? '.15' : '.05'})`,
+        '--shadow-sm': `0 2px 8px rgb(${palette.shadow} / ${scheme === 'dark' ? '.23' : '.085'})`,
+        '--shadow-md': `0 8px 24px rgb(${palette.shadow} / ${scheme === 'dark' ? '.34' : '.13'})`,
+        '--shadow-lg': `0 18px 48px rgb(${palette.shadow} / ${scheme === 'dark' ? '.46' : '.18'})`,
+        '--radius-sm': `${Math.max(6, definition.radius - 13)}px`,
+        '--radius-md': `${Math.max(9, definition.radius - 10)}px`,
+        '--radius-lg': `${Math.max(12, definition.radius - 6)}px`,
+        '--radius-xl': `${definition.radius}px`,
+        '--font-ui': definition.font || "'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+        '--font-display': definition.font || "'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif"
+      };
+      for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
+
+      themeSelect.value = state.theme;
+      schemeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.schemeMode === state.schemeMode)));
+      document.getElementById('theme-description').textContent = definition.description;
+      document.getElementById('swatch-bg').style.background = palette.bg;
+      document.getElementById('swatch-text').style.background = palette.text;
+      document.getElementById('swatch-accent').style.background = palette.accent;
+    }
+
+    function applyPage() {
+      document.querySelectorAll('[data-page-panel]').forEach(panel => panel.classList.toggle('active', panel.dataset.pagePanel === state.page));
+      pageButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.page === state.page)));
+      document.querySelectorAll('.window-tab').forEach(tab => tab.classList.remove('active'));
+      document.querySelector(`.tb-${state.page}`)?.classList.add('active');
+    }
+
+    themeSelect.addEventListener('change', event => {
+      state.theme = event.target.value;
+      saveState();
+      applyTheme();
+    });
+
+    schemeButtons.forEach(button => button.addEventListener('click', () => {
+      state.schemeMode = button.dataset.schemeMode;
+      saveState();
+      applyTheme();
+    }));
+
+    pageButtons.forEach(button => button.addEventListener('click', () => {
+      state.page = button.dataset.page;
+      saveState();
+      applyPage();
+    }));
+
+    document.querySelectorAll('[data-open-page]').forEach(button => button.addEventListener('click', () => {
+      state.page = button.dataset.openPage;
+      saveState();
+      applyPage();
+    }));
+
+    systemScheme.addEventListener('change', () => {
+      if (state.schemeMode === 'system') applyTheme();
+    });
+
+    window.addEventListener('keydown', event => {
+      if (event.target instanceof HTMLSelectElement) return;
+      const pageByKey = { '1': 'launcher', '2': 'chat', '3': 'settings' };
+      if (!pageByKey[event.key]) return;
+      state.page = pageByKey[event.key];
+      saveState();
+      applyPage();
+    });
+
+    applyTheme();
+    applyPage();
+  </script>
+</body>
+</html>

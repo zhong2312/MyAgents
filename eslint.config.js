@@ -245,6 +245,10 @@ export default defineConfig(
       'no-restricted-syntax': [
         'error',
         ...GLOBAL_RESTRICTED_SYNTAX,
+        {
+          selector: "CallExpression[callee.type='MemberExpression'][callee.property.name='writeText'][callee.object.type='MemberExpression'][callee.object.object.name='navigator'][callee.object.property.name='clipboard']",
+          message: "Direct navigator.clipboard.writeText() can reject in focused desktop WebViews even when the API exists, causing silent or false-success copies. Use copyPlainText() from '@/utils/clipboard', which falls back to selection copy and rejects only when every path fails.",
+        },
         // Dynamic-import guard for `@tauri-apps/api/event`. Catches
         // `import('@tauri-apps/api/event').then(({ listen }) => …)` which
         // bypasses the static `no-restricted-imports` rule above — that

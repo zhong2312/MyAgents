@@ -447,7 +447,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                 key="view"
                                 type="button"
                                 onClick={() => handleEdit('name')}
-                                className="flex items-center gap-1.5 rounded-lg bg-[var(--button-dark-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
+                                className="flex items-center gap-1.5 rounded-lg bg-[var(--button-dark-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-dark-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
                             >
                                 <Edit2 className="h-4 w-4" />
                                 {t('resourceDetail.common.edit')}
@@ -597,7 +597,7 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                                                         ? 'border-[var(--accent)] bg-[var(--accent)]'
                                                         : 'border-[var(--ink-muted)]/50'
                                                 }`}>
-                                                    {invocationMode === option.value && <Check className="h-2.5 w-2.5 text-white" />}
+                                                    {invocationMode === option.value && <Check className="h-2.5 w-2.5 text-[var(--on-accent)]" />}
                                                 </span>
                                                 <span>{option.label}</span>
                                             </button>

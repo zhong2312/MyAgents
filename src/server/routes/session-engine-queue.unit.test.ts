@@ -56,7 +56,26 @@ describe('handleSessionEngineQueueRoute', () => {
     expect(await readJson(response!)).toEqual({ success: true, cancelledText: 'hello' });
   });
 
-  it('maps force missing queue item to 404', async () => {
+  it('marks a missing cancel target as stale so the renderer can converge', async () => {
+    mocks.engine.cancelQueuedMessage.mockResolvedValueOnce({ status: 'not_found' });
+
+    const response = await handleSessionEngineQueueRoute(
+      '/chat/queue/cancel',
+      new Request('http://local/chat/queue/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ queueId: 'q1' }),
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await readJson(response!)).toEqual({
+      success: false,
+      stale: true,
+      error: 'Queue item not found',
+    });
+  });
+
+  it('marks a missing force target as stale so the renderer can converge', async () => {
     mocks.engine.forceQueuedMessage.mockResolvedValueOnce(false);
 
     const response = await handleSessionEngineQueueRoute(
@@ -67,8 +86,12 @@ describe('handleSessionEngineQueueRoute', () => {
       }),
     );
 
-    expect(response?.status).toBe(404);
-    expect(await readJson(response!)).toMatchObject({ success: false, error: 'Queue item not found' });
+    expect(response?.status).toBe(200);
+    expect(await readJson(response!)).toEqual({
+      success: false,
+      stale: true,
+      error: 'Queue item not found',
+    });
   });
 
   it('returns active engine queue status', async () => {

@@ -76,7 +76,6 @@ import { useTrayEvents } from "@/hooks/useTrayEvents";
 import { useHelperAgentModelDefaults } from "@/hooks/useHelperAgentModelDefaults";
 import { useConfig } from "@/hooks/useConfig";
 import { useSpaceBuildCapability } from "@/hooks/useSpaceBuildCapability";
-import { useThemeEffect } from "@/hooks/useTheme";
 import { useTabSwipeGesture } from "@/hooks/useTabSwipeGesture";
 import Launcher from "@/pages/Launcher"; // eager: default first view → no cold-start fallback
 // Route-split (P1): heavy / non-initial pages load on demand. lazy-Chat moves the
@@ -798,9 +797,6 @@ export default function App() {
   // helper Tab autoSend resolves provider/model via currentAgent (= helper
   // Agent) — same path as opening ~/.myagents from the Launcher.
   const helperAgentDefaults = useHelperAgentModelDefaults();
-
-  // Apply theme (light/dark/system) to <html> element
-  useThemeEffect();
 
   // Settings initial section state (for deep linking to specific section)
   const [settingsInitialSection, setSettingsInitialSection] = useState<
@@ -4673,30 +4669,32 @@ export default function App() {
       let validatedRequest = request;
       if (request.operation === "create" && request.modelSelections) {
         const validatedSelections = Object.fromEntries(
-          Object.entries(request.modelSelections).map(([sceneId, selection]) => {
-            if (
-              !WORKBENCH_SIMULATION_MODEL_SCENE_IDS.includes(
-                sceneId as (typeof WORKBENCH_SIMULATION_MODEL_SCENE_IDS)[number],
-              )
-            ) {
-              throw new Error(`未知的世界推演模型场景：${sceneId}`);
-            }
-            const resolved = resolveWorkbenchModelSelection(
-              selection,
-              appProvidersRef.current,
-              appApiKeysRef.current,
-              appProviderVerifyStatusRef.current,
-            );
-            if (!resolved || isRuntimeBackedProvider(resolved.provider)) {
-              throw new Error(
-                `模型场景 ${sceneId} 当前不支持运行时托管的供应商，请重新选择。`,
+          Object.entries(request.modelSelections).map(
+            ([sceneId, selection]) => {
+              if (
+                !WORKBENCH_SIMULATION_MODEL_SCENE_IDS.includes(
+                  sceneId as (typeof WORKBENCH_SIMULATION_MODEL_SCENE_IDS)[number],
+                )
+              ) {
+                throw new Error(`未知的世界推演模型场景：${sceneId}`);
+              }
+              const resolved = resolveWorkbenchModelSelection(
+                selection,
+                appProvidersRef.current,
+                appApiKeysRef.current,
+                appProviderVerifyStatusRef.current,
               );
-            }
-            return [
-              sceneId,
-              { providerId: resolved.provider.id, model: resolved.model },
-            ];
-          }),
+              if (!resolved || isRuntimeBackedProvider(resolved.provider)) {
+                throw new Error(
+                  `模型场景 ${sceneId} 当前不支持运行时托管的供应商，请重新选择。`,
+                );
+              }
+              return [
+                sceneId,
+                { providerId: resolved.provider.id, model: resolved.model },
+              ];
+            },
+          ),
         );
         validatedRequest = {
           ...request,

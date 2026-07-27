@@ -202,6 +202,9 @@ const fakeAgent: LocalRegisteredAgent = {
   spaceId: "space-1",
   workspaceId: "project-1",
   displayName: "Frontend Agent",
+  instruction: "Handle frontend issues.",
+  instructionRevision: 1,
+  subscriptions: [],
   workspacePath: "/tmp/workspace",
   workspaceLabel: "Workspace",
   goalId: "goal-1",
@@ -1893,9 +1896,21 @@ describe("spaceStore registered agent actions", () => {
   });
 
   it("preserves Cloud presence when a local Agent edit has no presence projection", async () => {
+    const existingSubscription = {
+      id: "sub-existing",
+      spaceId: fakeAgent.spaceId,
+      actorType: "registered_agent" as const,
+      actorId: fakeAgent.id,
+      goalId: "goal-bugs",
+      includeSubtree: true,
+      stateFilter: ["todo"],
+      goalPathLabel: "Bugs",
+      createdAt: fakeAgent.createdAt,
+    };
     const updatedAgent = {
       ...fakeAgent,
       displayName: "Renamed Agent",
+      subscriptions: [],
       presence: undefined,
       lastOnlineAt: undefined,
       onlineUntil: undefined,
@@ -1916,6 +1931,9 @@ describe("spaceStore registered agent actions", () => {
             id: fakeAgent.id,
             spaceId: fakeAgent.spaceId,
             displayName: fakeAgent.displayName,
+            instruction: fakeAgent.instruction,
+            instructionRevision: fakeAgent.instructionRevision,
+            subscriptions: [existingSubscription],
             status: "active",
             presence: "online",
             lastOnlineAt: "2026-06-24T03:59:00.000Z",
@@ -1941,6 +1959,7 @@ describe("spaceStore registered agent actions", () => {
       presence: "online",
       lastOnlineAt: "2026-06-24T03:59:00.000Z",
       onlineUntil: "2026-06-24T04:09:00.000Z",
+      subscriptions: [existingSubscription],
     });
   });
 
@@ -1978,6 +1997,8 @@ describe("spaceStore registered agent actions", () => {
             id: fakeAgent.id,
             spaceId: fakeAgent.spaceId,
             displayName: fakeAgent.displayName,
+            instruction: fakeAgent.instruction,
+            instructionRevision: fakeAgent.instructionRevision,
             status: fakeAgent.status,
             presence: "online",
             createdAt: fakeAgent.createdAt,
@@ -2045,6 +2066,8 @@ describe("spaceStore registered agent actions", () => {
             id: fakeAgent.id,
             spaceId: fakeAgent.spaceId,
             displayName: fakeAgent.displayName,
+            instruction: fakeAgent.instruction,
+            instructionRevision: fakeAgent.instructionRevision,
             workspacePath: fakeAgent.workspacePath,
             workspaceLabel: fakeAgent.workspaceLabel,
             status: fakeAgent.status,

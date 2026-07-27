@@ -216,14 +216,11 @@ if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
 fi
 
 echo -e "${YELLOW}这可能需要几分钟...${NC}"
-# 如果没有设置 TAURI_SIGNING_PRIVATE_KEY，跳过签名错误
-# (App 本身会正常构建，只是 updater 签名会失败)
-if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
-    echo -e "${YELLOW}⚠ 未设置 TAURI_SIGNING_PRIVATE_KEY，更新签名将被跳过${NC}"
-    npm run tauri:build -- --debug --bundles app || true
-else
-    npm run tauri:build -- --debug --bundles app
-fi
+# Dev App 不发布 updater artifact，也不应要求把发布私钥放进开发环境。
+# 用 Tauri 的 config merge 覆盖 release 默认值，保留普通 macOS App 签名，
+# 同时让真正的编译/打包失败保持非零退出，禁止 `|| true` 制造假成功。
+DEV_TAURI_CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
+npm run tauri:build -- --debug --bundles app --config "${DEV_TAURI_CONFIG}"
 
 # 查找输出
 BUNDLE_DIR="${PROJECT_DIR}/src-tauri/target/debug/bundle"

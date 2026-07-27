@@ -42,7 +42,7 @@ pub fn read_disabled_list(myagents_root: &Path) -> Vec<String> {
             .map(|c| {
                 c.disabled
                     .into_iter()
-                    .filter(|name| !is_required_memory_system_skill(name))
+                    .filter(|name| !is_required_system_skill(name))
                     .collect()
             })
             .unwrap_or_default(),
@@ -50,14 +50,18 @@ pub fn read_disabled_list(myagents_root: &Path) -> Vec<String> {
     }
 }
 
-/// Product-owned workflow contracts cannot be disabled like ordinary user
-/// skills; doing so would leave an enabled automation without its executable
-/// method and invite model improvisation.
-pub fn is_required_memory_system_skill(name: &str) -> bool {
-    matches!(
-        name,
-        "myagents-memory-update" | "myagents-memory-gardener" | "myagents-memory-molt"
-    )
+/// Product-owned runtime contracts that must remain enabled across every
+/// MyAgents surface. Keep in sync with `src/shared/systemSkills.ts`.
+pub const REQUIRED_SYSTEM_SKILLS: &[&str] = &[
+    "myagents-memory-update",
+    "myagents-memory-gardener",
+    "myagents-memory-molt",
+    "myagents-cli",
+    "myagents-docs",
+];
+
+pub fn is_required_system_skill(name: &str) -> bool {
+    REQUIRED_SYSTEM_SKILLS.contains(&name)
 }
 
 /// Read the experimental user-registered CLI tool registry gate from
@@ -81,11 +85,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_memory_system_skills_are_not_reported_as_disabled() {
+    fn required_system_skills_are_not_reported_as_disabled() {
         let root = tempfile::tempdir().expect("tempdir");
         fs::write(
             root.path().join("skills-config.json"),
-            r#"{"disabled":["myagents-memory-update","ordinary-skill"]}"#,
+            r#"{"disabled":["myagents-memory-update","myagents-memory-gardener","myagents-memory-molt","myagents-cli","myagents-docs","ordinary-skill"]}"#,
         )
         .expect("write skills config");
 
@@ -93,7 +97,31 @@ mod tests {
             read_disabled_list(root.path()),
             vec!["ordinary-skill".to_string()]
         );
-        assert!(is_required_memory_system_skill("myagents-memory-gardener"));
-        assert!(is_required_memory_system_skill("myagents-memory-molt"));
+        for name in REQUIRED_SYSTEM_SKILLS {
+            assert!(is_required_system_skill(name));
+        }
+        assert!(!is_required_system_skill("prompt-writer"));
+    }
+
+    #[test]
+    fn rust_and_typescript_required_system_skill_lists_match() {
+        let shared = include_str!("../../../src/shared/systemSkills.ts");
+        let body = shared
+            .split_once("export const REQUIRED_SYSTEM_SKILLS = [")
+            .expect("TypeScript required system skill declaration")
+            .1
+            .split_once("] as const;")
+            .expect("TypeScript required system skill terminator")
+            .0;
+        let typescript_skills: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix('\'')?;
+                rest.split_once('\'').map(|(name, _)| name)
+            })
+            .collect();
+
+        assert_eq!(typescript_skills, REQUIRED_SYSTEM_SKILLS);
     }
 }

@@ -1,6 +1,5 @@
 {
   "brand": {
-    "slogan": "每个人都应享受智能的推背感，欢迎来到言出法随的世界",
     "providerPrompt": {
       "prefix": "✨ 只需一步，即刻开启 AI 之旅 —",
       "configure": "配置模型供应商 →"

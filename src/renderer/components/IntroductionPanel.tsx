@@ -188,7 +188,7 @@ const IntroductionPanel = forwardRef<IntroductionPanelRef, IntroductionPanelProp
                   <button
                     type="button"
                     onClick={handleEdit}
-                    className="flex items-center gap-1 rounded-lg bg-[var(--button-dark-bg)] px-2.5 py-1 text-xs font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
+                    className="flex items-center gap-1 rounded-lg bg-[var(--button-dark-bg)] px-2.5 py-1 text-xs font-medium text-[var(--button-dark-text)] transition-colors hover:bg-[var(--button-dark-bg-hover)]"
                   >
                     <Edit2 className="h-3.5 w-3.5" />
                     {t('agentSettings.common.edit')}

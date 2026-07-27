@@ -15,6 +15,10 @@ pub struct SidecarManager {
     // ===== New Session-Centric Storage (v0.1.11) =====
     /// Session ID -> SessionSidecar (primary storage for Session-centric model)
     pub(super) sidecars: HashMap<String, SessionSidecar>,
+    /// Dead process objects retained while the health monitor starts their
+    /// replacement. Keeping the object manager-owned lets ordinary release
+    /// calls mutate the same owner set during the restart wait.
+    pub(super) recovering_sidecars: HashMap<String, SessionSidecar>,
 
     // ===== Legacy Storage (kept for backward compatibility) =====
     /// Tab ID -> Sidecar Instance (legacy, used for Global Sidecar)
@@ -82,6 +86,7 @@ impl SidecarManager {
         let (terminal_events, _drop_terminal_rx) = tokio::sync::broadcast::channel(64);
         Self {
             sidecars: HashMap::new(),
+            recovering_sidecars: HashMap::new(),
             instances: HashMap::new(),
             session_activations: HashMap::new(),
             port_counter: AtomicU16::new(BASE_PORT),
@@ -264,13 +269,18 @@ impl SidecarManager {
         // that invoke stop_all while IM bots are still running (e.g. exposed
         // `cmd_stop_all_sidecars` Tauri command). The app-exit path normally
         // signals IM shutdown_rx first, but we don't rely on caller ordering.
-        let to_broadcast: Vec<(String, u64)> = self
+        let session_ids: HashSet<String> = self
             .sidecars
             .keys()
+            .chain(self.recovering_sidecars.keys())
+            .cloned()
+            .collect();
+        let to_broadcast: Vec<(String, u64)> = session_ids
+            .into_iter()
             .map(|sid| {
                 (
                     sid.clone(),
-                    self.sidecar_generations.get(sid).copied().unwrap_or(0),
+                    self.sidecar_generations.get(&sid).copied().unwrap_or(0),
                 )
             })
             .collect();
@@ -285,6 +295,7 @@ impl SidecarManager {
             let _ = self.terminal_events.send(ev.clone());
         }
         self.sidecars.clear(); // Session-centric Sidecars (Drop kills processes)
+        self.recovering_sidecars.clear();
         self.instances.clear(); // Global Sidecar (Drop kills process)
         self.session_activations.clear();
         self.sidecar_generations.clear();
@@ -470,13 +481,15 @@ impl SidecarManager {
     /// Used by Task Center to show [后台] tags on sessions
     pub fn get_background_session_ids(&self) -> Vec<String> {
         self.sidecars
-            .iter()
-            .filter(|(_, sc)| {
-                sc.owners
-                    .iter()
-                    .any(|o| matches!(o, SidecarOwner::BackgroundCompletion(_)))
+            .keys()
+            .chain(self.recovering_sidecars.keys())
+            .filter(|sid| {
+                self.session_owners(sid)
+                    .any(|owner| matches!(owner, SidecarOwner::BackgroundCompletion(_)))
             })
-            .map(|(sid, _)| sid.clone())
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
             .collect()
     }
 
@@ -614,6 +627,7 @@ impl SidecarManager {
     /// Add an owner to a Session's Sidecar
     /// Returns true if owner was added, false if session doesn't exist
     pub fn add_session_owner(&mut self, session_id: &str, owner: SidecarOwner) -> bool {
+        let mut found = false;
         if let Some(sidecar) = self.sidecars.get_mut(session_id) {
             ulog_info!(
                 "[sidecar] Adding owner {:?} to session {} (port {})",
@@ -621,11 +635,14 @@ impl SidecarManager {
                 session_id,
                 sidecar.port
             );
-            sidecar.add_owner(owner);
-            true
-        } else {
-            false
+            sidecar.add_owner(owner.clone());
+            found = true;
         }
+        if let Some(sidecar) = self.recovering_sidecars.get_mut(session_id) {
+            sidecar.add_owner(owner);
+            found = true;
+        }
+        found
     }
 
     /// Remove an owner from a Session's Sidecar
@@ -633,28 +650,31 @@ impl SidecarManager {
     /// removed together (the process is killed via Drop).
     /// Returns (was_removed, sidecar_was_stopped)
     pub fn remove_session_owner(&mut self, session_id: &str, owner: &SidecarOwner) -> (bool, bool) {
-        let (removed, should_stop) = if let Some(sidecar) = self.sidecars.get_mut(session_id) {
+        let mut removed = false;
+        if let Some(sidecar) = self.sidecars.get_mut(session_id) {
             ulog_info!(
                 "[sidecar] Removing owner {:?} from session {} (port {})",
                 owner,
                 session_id,
                 sidecar.port
             );
-            sidecar.remove_owner(owner)
-        } else {
-            return (false, false);
-        };
+            removed |= sidecar.remove_owner(owner).0;
+        }
+        if let Some(sidecar) = self.recovering_sidecars.get_mut(session_id) {
+            removed |= sidecar.remove_owner(owner).0;
+        }
 
         if !removed {
             return (false, false);
         }
 
-        if should_stop {
+        if !self.session_has_owners(session_id) {
             ulog_info!(
                 "[sidecar] Last owner removed from session {}, stopping Sidecar",
                 session_id
             );
             self.remove_sidecar(session_id);
+            self.recovering_sidecars.remove(session_id);
             self.deactivate_session(session_id);
             self.clear_generation(session_id);
             (true, true)
@@ -793,20 +813,15 @@ impl SidecarManager {
     /// Check if a session's Sidecar has an owner whose work remains bound to
     /// this session identity after a desktop Tab detaches.
     pub fn session_has_persistent_owners(&self, session_id: &str) -> bool {
-        self.sidecars
-            .get(session_id)
-            .map(|s| {
-                s.owners.iter().any(|o| {
-                    matches!(
-                        o,
-                        SidecarOwner::Task(_)
-                            | SidecarOwner::Goal(_)
-                            | SidecarOwner::BackgroundCompletion(_)
-                            | SidecarOwner::Agent(_)
-                    )
-                })
-            })
-            .unwrap_or(false)
+        self.session_owners(session_id).any(|owner| {
+            matches!(
+                owner,
+                SidecarOwner::Task(_)
+                    | SidecarOwner::Goal(_)
+                    | SidecarOwner::BackgroundCompletion(_)
+                    | SidecarOwner::Agent(_)
+            )
+        })
     }
 
     /// Check if a session's Sidecar currently has any desktop Tab owner.
@@ -815,18 +830,27 @@ impl SidecarManager {
     /// attached to an IM-bound session, subsequent IM turns must keep using the
     /// live Sidecar config instead of following Agent defaults changed elsewhere.
     pub fn session_has_tab_owner(&self, session_id: &str) -> bool {
-        self.sidecars
-            .get(session_id)
-            .map(|s| s.owners.iter().any(|o| matches!(o, SidecarOwner::Tab(_))))
-            .unwrap_or(false)
+        self.session_owners(session_id)
+            .any(|owner| matches!(owner, SidecarOwner::Tab(_)))
     }
 
     /// Ownership is independent of process liveness: a dead Sidecar entry with
     /// owners is restartable and still protects the session transcript.
     pub fn session_has_owners(&self, session_id: &str) -> bool {
+        self.session_owners(session_id).next().is_some()
+    }
+
+    fn session_owners<'a>(&'a self, session_id: &'a str) -> impl Iterator<Item = &'a SidecarOwner> {
         self.sidecars
             .get(session_id)
-            .is_some_and(|sidecar| !sidecar.owners.is_empty())
+            .into_iter()
+            .flat_map(|sidecar| sidecar.owners.iter())
+            .chain(
+                self.recovering_sidecars
+                    .get(session_id)
+                    .into_iter()
+                    .flat_map(|sidecar| sidecar.owners.iter()),
+            )
     }
 }
 

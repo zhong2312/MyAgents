@@ -1,0 +1,155 @@
+/* A complete, visibly distinct Theme package used only by architecture tests. */
+html[data-theme-id='synthetic-test-theme'] {
+  --font-body: system-ui, sans-serif;
+  --font-display: Georgia, serif;
+  --font-code: monospace;
+  --ink: #21002f;
+  --ink-secondary: #3b1648;
+  --ink-muted: #724b7c;
+  --ink-subtle: #96759f;
+  --ink-faint: #baa5c0;
+  --paper: #fff0ff;
+  --paper-elevated: #fff8ff;
+  --message-user-bg: #f8ddff;
+  --paper-inset: #efd0f5;
+  --paper-a0: rgb(255 240 255 / 0);
+  --paper-elevated-a0: rgb(255 248 255 / 0);
+  --message-user-bg-a0: rgb(248 221 255 / 0);
+  --paper-inset-a0: rgb(239 208 245 / 0);
+  --hover-bg: rgb(170 0 170 / 0.08);
+  --accent: #aa00aa;
+  --accent-warm: #aa00aa;
+  --accent-warm-hover: #cc22cc;
+  --accent-warm-subtle: rgb(170 0 170 / 0.08);
+  --accent-warm-muted: rgb(170 0 170 / 0.16);
+  --accent-warm-subtle-a0: rgb(170 0 170 / 0);
+  --accent-cool: #006f8f;
+  --accent-cool-hover: #008fb5;
+  --on-accent: #00ffcc;
+  --heartbeat: #d02070;
+  --heartbeat-bg: rgb(208 32 112 / 0.1);
+  --heartbeat-border: rgb(208 32 112 / 0.2);
+  --success: #087f5b;
+  --success-bg: #d8f3e8;
+  --on-success: #ffffff;
+  --error: #c92a2a;
+  --error-bg: #ffe3e3;
+  --error-hover: #a51111;
+  --error-subtle: rgb(201 42 42 / 0.08);
+  --on-error: #ffffff;
+  --warning: #b26a00;
+  --warning-bg: #fff0c2;
+  --on-warning: #000000;
+  --info: #1864ab;
+  --info-bg: #dbeeff;
+  --on-info: #ffffff;
+  --button-primary-bg: #aa00aa;
+  --button-primary-bg-hover: #880088;
+  --button-primary-text: var(--on-accent);
+  --button-dark-bg: #21002f;
+  --button-dark-bg-hover: #3b1648;
+  --button-dark-text: #fff0ff;
+  --button-secondary-bg: #efd0f5;
+  --button-secondary-bg-hover: #e4b7ec;
+  --button-secondary-text: #21002f;
+  --fb-surface-peek: rgb(255 240 255 / 0.2);
+  --fb-surface-glass: rgb(255 240 255 / 0.6);
+  --fb-surface-pin: rgb(255 240 255 / 0.96);
+  --fb-surface-pin-a0: rgb(255 240 255 / 0);
+  --fb-surface-pin-72: rgb(255 240 255 / 0.72);
+  --fb-surface-pin-95: rgb(255 240 255 / 0.95);
+  --fb-glass-border: rgb(255 255 255 / 0.6);
+  --fb-glass-border-soft: rgb(255 255 255 / 0.4);
+  --fb-highlight: rgb(255 255 255 / 0.9);
+  --fb-highlight-mid: rgb(255 255 255 / 0.3);
+  --fb-highlight-faint: rgb(255 255 255 / 0.14);
+  --fb-highlight-strong: rgb(255 255 255 / 0.95);
+  --fb-highlight-a0: rgb(255 255 255 / 0);
+  --fb-highlight-line: rgb(255 255 255 / 0.8);
+  --fb-mask-opaque: #000000;
+  --fb-shadow-strong: rgb(33 0 47 / 0.3);
+  --fb-shadow-soft: rgb(33 0 47 / 0.14);
+  --fb-shadow-panel: rgb(0 0 0 / 0.2);
+  --fb-shadow-preview: rgb(33 0 47 / 0.45);
+  --fb-core-shadow: rgb(33 0 47 / 0.25);
+  --fb-inset-shadow: rgb(33 0 47 / 0.1);
+  --fb-window-shadow: 0 18px 48px rgb(33 0 47 / 0.22);
+  --fb-control-hover: rgb(33 0 47 / 0.06);
+  --fb-line-input: rgb(33 0 47 / 0.08);
+  --fb-line-thumb: rgb(33 0 47 / 0.14);
+  --fb-drag-handle: rgb(33 0 47 / 0.2);
+  --fb-scroll-thumb: rgb(114 75 124 / 0.5);
+  --line: rgb(33 0 47 / 0.1);
+  --line-strong: rgb(33 0 47 / 0.2);
+  --line-subtle: rgb(33 0 47 / 0.06);
+  --theme-radius-base: 2px;
+  --theme-radius-sm: 3px;
+  --theme-radius-md: 7px;
+  --theme-radius-lg: 11px;
+  --theme-radius-xl: 17px;
+  --theme-radius-2xl: 23px;
+  --theme-radius-full: 1234px;
+  --theme-shadow-base: 0 1px 3px rgb(33 0 47 / 0.07);
+  --theme-shadow-xs: 0 1px 2px rgb(33 0 47 / 0.05);
+  --theme-shadow-sm: 0 2px 8px rgb(33 0 47 / 0.08);
+  --theme-shadow-md: 0 8px 24px rgb(33 0 47 / 0.12);
+  --theme-shadow-lg: 0 16px 40px rgb(33 0 47 / 0.16);
+  --theme-shadow-xl: 0 24px 48px rgb(33 0 47 / 0.2);
+  --theme-shadow-2xl: 0 32px 64px rgb(33 0 47 / 0.25);
+  --action-shadow: 0 6px 16px rgb(33 0 47 / 0.14);
+  --action-shadow-active: inset 0 2px 6px rgb(33 0 47 / 0.18);
+  --tool-shadow: 0 8px 24px rgb(33 0 47 / 0.12);
+  --tool-shadow-hover: 0 14px 30px rgb(33 0 47 / 0.18);
+  --expanded-block-line: rgb(170 0 170 / 0.25);
+  --warning-border: rgb(178 106 0 / 0.3);
+  --focus-border: #aa00aa;
+  --toggle-thumb: #ffffff;
+  --toggle-off-bg: rgb(33 0 47 / 0.18);
+  --code-bg: #21002f;
+  --code-bg-a0: rgb(33 0 47 / 0);
+  --code-header-bg: #3b1648;
+  --code-text: #f8ddff;
+  --code-line-number: #96759f;
+  --duration-fast: 80ms;
+  --duration-normal: 160ms;
+  --duration-slow: 240ms;
+  --theme-body-background: linear-gradient(135deg, #fff0ff, #e1f8ff);
+  --theme-body-texture: none;
+  --theme-body-texture-opacity: 0;
+  --theme-body-texture-blend: normal;
+}
+
+html[data-theme-id='synthetic-test-theme'][data-color-scheme='light'] {
+  --theme-body-background: linear-gradient(135deg, #fff0ff, #e1f8ff);
+}
+
+html[data-theme-id='synthetic-test-theme'][data-color-scheme='dark'] {
+  --ink: #ffe8ff;
+  --ink-secondary: #f2c8f4;
+  --ink-muted: #c89dcc;
+  --ink-subtle: #916d96;
+  --paper: #120012;
+  --paper-elevated: #240024;
+  --paper-inset: #090009;
+  --accent: #dd00dd;
+  --accent-warm: #dd00dd;
+  --on-accent: #120012;
+  --button-primary-bg: #ffe8ff;
+  --button-primary-bg-hover: #ffffff;
+  --button-primary-text: var(--on-accent);
+  --button-dark-text: #ffe8ff;
+  --toggle-thumb: #120012;
+  --focus-border: #dd00dd;
+  --theme-body-background: linear-gradient(135deg, #120012, #001820);
+}
+
+html[data-theme-id='synthetic-test-theme'] .theme-launcher-hero-title {
+  color: var(--accent);
+  font-family: var(--font-display);
+  letter-spacing: 0.12em;
+}
+
+html[data-theme-id='synthetic-test-theme'] .theme-launcher-hero-slogan {
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+}

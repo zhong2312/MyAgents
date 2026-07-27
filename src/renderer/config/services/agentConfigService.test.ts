@@ -124,7 +124,8 @@ describe('agentConfigService template Agent defaults', () => {
   it('creates proactive Mino Agents from the preset when a project has builtin template provenance', () => {
     const cfg: AppConfig = {
       defaultPermissionMode: 'auto',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,
@@ -161,7 +162,8 @@ describe('agentConfigService template Agent defaults', () => {
   it('does not overwrite a project that is already linked to an Agent', () => {
     const cfg: AppConfig = {
       defaultPermissionMode: 'auto',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,
@@ -233,7 +235,8 @@ describe('migrateImBotConfigsToAgents', () => {
     const winPath = 'C:\\Users\\Me\\Project';
     const cfg = {
       defaultPermissionMode: 'auto',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,
@@ -316,7 +319,8 @@ describe('resolveAgentMcpSelectionForConfig', () => {
     };
     const cfg: AppConfig = {
       defaultPermissionMode: 'plan',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,
@@ -352,7 +356,8 @@ describe('resolveAgentMcpSelectionForConfig', () => {
     };
     const cfg: AppConfig = {
       defaultPermissionMode: 'plan',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,
@@ -388,7 +393,8 @@ describe('resolveAgentMcpSelectionForConfig', () => {
     };
     const cfg: AppConfig = {
       defaultPermissionMode: 'plan',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,
@@ -417,7 +423,8 @@ describe('resolveAgentMcpSelectionForConfig', () => {
     };
     const cfg: AppConfig = {
       defaultPermissionMode: 'plan',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,
@@ -461,7 +468,8 @@ describe('resolveAgentMcpSelectionForConfig', () => {
     };
     const cfg: AppConfig = {
       defaultPermissionMode: 'plan',
-      theme: 'system',
+      themeId: 'myagents-default',
+      appearanceMode: 'system',
       minimizeToTray: true,
       showDevTools: false,
       autoStart: false,

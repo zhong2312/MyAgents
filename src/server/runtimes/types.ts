@@ -269,11 +269,17 @@ export type UnifiedEvent =
   | { kind: 'model_update'; model: string }
   | { kind: 'log'; level: 'info' | 'warn' | 'error'; message: string }
 
+  // === Runtime-discovered tools / diagnostics ===
+  // Mutable tool discovery is separate from session_init so startup remains a
+  // one-time lifecycle event. External session state replays the latest catalog
+  // through its system-init snapshot on reconnect.
+  | { kind: 'runtime_tool_catalog'; tools: string[] }
+
   // === Runtime diagnostics (issue #194) ===
   // External-runtime self-report (auth state, feature flags, MCP/apps the
   // runtime sees, effective env). Emitted shortly after session_init.
-  // session_init's `tools: []` was the previous diagnostic surface — vestigial
-  // for external runtimes; this event is the real signal.
+  // Diagnostics remain health/debug data; runtime_tool_catalog owns the tools
+  // shown by the composer.
   | { kind: 'runtime_diagnostics'; diagnostics: RuntimeDiagnostics }
 
   // === Runtime-native todo/plan snapshot ===

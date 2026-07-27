@@ -51,6 +51,7 @@ import { isOpenClawPlatform } from '../../../../shared/types/im';
 import type { InstalledPlugin } from '../../../../shared/types/im';
 import { findPromotedByPlatform } from '../../ImSettings/promotedPlugins';
 import { FEISHU_PERMISSIONS_JSON } from './ChannelWizard';
+import { copyPlainText } from '@/utils/clipboard';
 import OpenClawToolGroupsSelector from './OpenClawToolGroupsSelector';
 import OpenClawScalarField from './OpenClawScalarField';
 import {
@@ -187,9 +188,13 @@ function FeishuPermissionsButton() {
                     <button
                         type="button"
                         onClick={async () => {
-                            await navigator.clipboard.writeText(FEISHU_PERMISSIONS_JSON);
-                            setCopied(true);
-                            setTimeout(() => setCopied(false), 1500);
+                            try {
+                                await copyPlainText(FEISHU_PERMISSIONS_JSON);
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 1500);
+                            } catch (error) {
+                                console.warn('[ChannelDetail] Failed to copy permissions:', error);
+                            }
                         }}
                         className="absolute right-2 top-2 rounded-md px-2 py-1 text-xs font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-elevated)] hover:text-[var(--ink)]"
                     >
@@ -1119,7 +1124,7 @@ export default function ChannelDetailView({
                                     </span>
                                 )}
                                 {pendingCount > 0 && (
-                                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--warning)] px-1.5 text-xs font-bold text-white">
+                                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--warning)] px-1.5 text-xs font-bold text-[var(--on-warning)]">
                                         {pendingCount}
                                     </span>
                                 )}
@@ -1161,7 +1166,7 @@ export default function ChannelDetailView({
                                                                 disabled
                                                                     ? 'cursor-not-allowed text-[var(--ink-muted)] opacity-40'
                                                                     : selected
-                                                                        ? 'bg-[var(--accent)] text-white'
+                                                                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                                         : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                                             }`}
                                                         >

@@ -140,7 +140,7 @@ describe('aggregateGlobalUsageStats', () => {
           '<system-reminder><myagents-space-issue>secret</myagents-space-issue></system-reminder>Visible issue update',
           '2026-07-11T00:00:01.000Z',
         ),
-      ], { origin: { kind: 'registered-agent', surface: 'space_issue_delivery' } }),
+      ], { origin: { kind: 'registered-agent', surface: 'space_issue_delivery', context: { spaceId: 'space-1', registeredAgentId: 'ra-1' } } }),
     ], cutoff);
 
     expect(stats.summary).toMatchObject({
@@ -179,7 +179,7 @@ describe('buildSessionDetailedUsageStats', () => {
       message('visible-answer', 'assistant', 'updated', '2026-07-11T00:00:05.000Z', {
         usage: { inputTokens: 6, outputTokens: 3, model: 'model-a' },
       }),
-    ], { origin: { kind: 'registered-agent', surface: 'space_issue_delivery' } }));
+    ], { origin: { kind: 'registered-agent', surface: 'space_issue_delivery', context: { spaceId: 'space-1', registeredAgentId: 'ra-1' } } }));
 
     expect(stats.summary).toMatchObject({ turnCount: 3, humanQueryCount: 0 });
     expect(stats.details.map(detail => detail.turnTrigger)).toEqual([

@@ -1,5 +1,5 @@
 import { open } from '@tauri-apps/plugin-dialog';
-import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { Provider } from '@/config/types';
@@ -10,6 +10,7 @@ import { isDebugMode } from '@/utils/debug';
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
 import { ALLOWED_IMAGE_MIME_TYPES, isChatImageFile, isImageMimeType } from '@/../shared/fileTypes';
 import type { FileReferenceUndoAction } from '@/hooks/useUndoStack';
+import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
 
 import type { ImageAttachment } from '../types';
 import { MAX_IMAGES, MAX_IMAGE_SIZE } from '../constants';
@@ -60,6 +61,10 @@ interface AttachmentToast {
   success: (message: string) => void;
 }
 
+interface AttachmentImportScope {
+  workspaceIdentity: string;
+}
+
 interface UseAttachmentHandlingParams {
   fileService: AttachmentFileService;
   workspacePath?: string | null;
@@ -97,6 +102,20 @@ export function useAttachmentHandling({
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const mountedRef = useRef(true);
   const activeReadersRef = useRef<Set<FileReader>>(new Set());
+  const workspaceIdentity = normalizeWorkspacePathIdentity(workspacePath ?? '');
+  const currentImportScopeRef = useRef<AttachmentImportScope>({ workspaceIdentity });
+
+  useLayoutEffect(() => {
+    if (currentImportScopeRef.current.workspaceIdentity === workspaceIdentity) return;
+    currentImportScopeRef.current = { workspaceIdentity };
+    // FileReader has no AbortSignal. Abort reads owned by the previous workspace
+    // so a paste/drop cannot finish into the newly selected workspace draft.
+    for (const reader of activeReadersRef.current) {
+      if (reader.readyState === FileReader.LOADING) {
+        reader.abort();
+      }
+    }
+  }, [workspaceIdentity]);
 
   useEffect(
     () => {
@@ -119,6 +138,10 @@ export function useAttachmentHandling({
     activeReadersRef.current.delete(reader);
   }, []);
 
+  const isImportScopeCurrent = useCallback((scope: AttachmentImportScope) => {
+    return mountedRef.current && currentImportScopeRef.current === scope;
+  }, []);
+
   const insertReferenceText = useCallback((paths: string[]): number => {
     const currentInput = inputValueRef.current;
     const cursorPos = Math.min(
@@ -137,7 +160,7 @@ export function useAttachmentHandling({
     return cursorPos;
   }, [inputValueRef, setInputValue, textareaRef]);
 
-  const addImage = useCallback((file: File) => {
+  const addImage = useCallback((file: File, importScope: AttachmentImportScope) => {
     if (!ALLOWED_IMAGE_MIME_TYPES.includes(file.type)) {
       toastRef.current.warning(t('input.attachments.unsupportedImageType'));
       return;
@@ -151,7 +174,7 @@ export function useAttachmentHandling({
     activeReadersRef.current.add(reader);
     reader.onload = (e) => {
       forgetReader(reader);
-      if (!mountedRef.current) return;
+      if (!isImportScopeCurrent(importScope)) return;
       const dataUrl = e.target?.result as string;
       setImages((prev) => {
         if (prev.length >= MAX_IMAGES) {
@@ -172,7 +195,7 @@ export function useAttachmentHandling({
     reader.onerror = () => forgetReader(reader);
     reader.onabort = () => forgetReader(reader);
     reader.readAsDataURL(file);
-  }, [forgetReader, toastRef, t]);
+  }, [forgetReader, isImportScopeCurrent, toastRef, t]);
 
   const addPreparedImageAttachment = useCallback((attachment: PreparedImageAttachment) => {
     const preview = resolveAttachmentUrl({ relativePath: attachment.relativePath });
@@ -229,6 +252,7 @@ export function useAttachmentHandling({
   }, [forgetReader]);
 
   const processDroppedFiles = useCallback(async (files: File[]) => {
+    const importScope = currentImportScopeRef.current;
     if (isDebugMode()) {
       console.log('[SimpleChatInput] processDroppedFiles called with', files.length, 'files:', files.map(f => f.name));
     }
@@ -275,7 +299,7 @@ export function useAttachmentHandling({
     }
 
     for (const file of imageFiles) {
-      addImage(file);
+      addImage(file, importScope);
     }
 
     if (otherFiles.length > 0) {
@@ -295,12 +319,13 @@ export function useAttachmentHandling({
             content: await fileToBase64(file),
           }))
         );
+        if (!isImportScopeCurrent(importScope)) return;
 
         const result = await fileService.importBase64Files({
           files: base64Files,
           targetDir: 'myagents_files',
         });
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
 
         if (!result.success || !result.files || result.files.length === 0) {
           throw new Error(t('input.attachments.uploadFailed'));
@@ -312,7 +337,7 @@ export function useAttachmentHandling({
           // Non-fatal, continue silently.
         }
 
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
         const cursorPos = insertReferenceText(result.files);
 
         const batchId = undoStack.generateBatchId();
@@ -333,14 +358,15 @@ export function useAttachmentHandling({
 
         onWorkspaceRefresh?.();
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
         console.error('[SimpleChatInput] File upload error:', err);
         toastRef.current.error(err instanceof Error ? err.message : t('input.attachments.fileUploadFailed'));
       }
     }
-  }, [fileService, workspacePath, addImage, undoStack, fileToBase64, onWorkspaceRefresh, provider, currentModelId, isExternalRuntime, toastRef, insertReferenceText, t]);
+  }, [fileService, workspacePath, addImage, undoStack, fileToBase64, isImportScopeCurrent, onWorkspaceRefresh, provider, currentModelId, isExternalRuntime, toastRef, insertReferenceText, t]);
 
   const processDroppedFilePaths = useCallback(async (paths: string[]) => {
+    const importScope = currentImportScopeRef.current;
     if (isDebugMode()) {
       console.log('[SimpleChatInput] processDroppedFilePaths called with', paths.length, 'paths:', paths);
     }
@@ -394,7 +420,7 @@ export function useAttachmentHandling({
           sessionId: attachmentSessionId,
           paths: imagePaths,
         });
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
         for (const attachment of prepared.attachments) {
           addPreparedImageAttachment(attachment);
         }
@@ -407,7 +433,7 @@ export function useAttachmentHandling({
           pendingFileReferencePaths.push(err.path);
         }
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
         if (isDebugMode()) {
           console.warn('[SimpleChatInput] Failed to prepare image attachments, treating as regular files:', err);
         }
@@ -432,7 +458,7 @@ export function useAttachmentHandling({
           targetDir: 'myagents_files',
           autoRename: true,
         });
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
 
         if (!result.success) {
           throw new Error(t('input.attachments.copyFailed'));
@@ -449,7 +475,7 @@ export function useAttachmentHandling({
           // Non-fatal, continue silently.
         }
 
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
         const cursorPos = insertReferenceText(successfulCopies.map(f => f.targetPath));
 
         const batchId = undoStack.generateBatchId();
@@ -477,12 +503,12 @@ export function useAttachmentHandling({
 
         onWorkspaceRefresh?.();
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (!isImportScopeCurrent(importScope)) return;
         console.error('[SimpleChatInput] Tauri file copy error:', err);
         toastRef.current.error(err instanceof Error ? err.message : t('input.attachments.fileCopyFailed'));
       }
     }
-  }, [fileService, workspacePath, addPreparedImageAttachment, undoStack, onWorkspaceRefresh, provider, currentModelId, isExternalRuntime, attachmentSessionId, toastRef, insertReferenceText, t]);
+  }, [fileService, workspacePath, addPreparedImageAttachment, undoStack, isImportScopeCurrent, onWorkspaceRefresh, provider, currentModelId, isExternalRuntime, attachmentSessionId, toastRef, insertReferenceText, t]);
 
   const handleUploadButtonClick = useCallback(async () => {
     setShowPlusMenu(false);

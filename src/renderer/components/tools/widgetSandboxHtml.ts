@@ -37,35 +37,35 @@ html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
    below (headings + .text-* utilities) are ALSO quoted in the widget design
    contract prompt (src/server/tools/generative-ui-tool.ts SECTION_CORE);
    change one → sync the other. */
-body { font-family: system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 16px; line-height: 1.7; color: var(--widget-text); }
+body { font-family: var(--widget-font-body); font-size: 16px; line-height: 1.7; color: var(--widget-text); }
 #root { min-height: 20px; }
 
 /* Pre-styled form elements — AI writes bare tags, they look polished */
 input[type="text"], input[type="number"], select, textarea {
   font-family: inherit; font-size: 14px; line-height: 1.5;
-  padding: 8px 12px; border: 1px solid var(--widget-border); border-radius: 8px;
+  padding: 8px 12px; border: 1px solid var(--widget-border); border-radius: var(--widget-radius-control);
   background: var(--widget-bg-elevated); color: var(--widget-text);
   outline: none; transition: border-color 0.15s;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--widget-accent); }
 input[type="range"] {
   width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
-  background: var(--widget-border); border-radius: 3px; outline: none;
+  background: var(--widget-border); border-radius: var(--widget-radius-track); outline: none;
 }
 input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
-  background: var(--widget-accent); cursor: pointer; border: 2px solid white;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  -webkit-appearance: none; width: 18px; height: 18px; border-radius: var(--widget-radius-full);
+  background: var(--widget-accent); cursor: pointer; border: 2px solid var(--widget-primary-text);
+  box-shadow: var(--widget-control-shadow);
 }
 button {
   font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
-  padding: 8px 16px; border-radius: 8px; border: 1px solid var(--widget-border);
+  padding: 8px 16px; border-radius: var(--widget-radius-control); border: 1px solid var(--widget-border);
   background: var(--widget-bg-elevated); color: var(--widget-text);
   transition: all 0.15s;
 }
 button:hover { border-color: var(--widget-border-strong); }
 button.primary {
-  background: var(--widget-accent); color: white; border-color: var(--widget-accent);
+  background: var(--widget-accent); color: var(--widget-primary-text); border-color: var(--widget-accent);
 }
 button.primary:hover { opacity: 0.9; }
 label { font-size: 12px; font-weight: 600; color: var(--widget-text-secondary); display: block; margin-bottom: 4px; }
@@ -97,7 +97,7 @@ p { margin: 0 0 8px; }
    .stat-value, not .text-2xl. */
 .text-sm { font-size: 14px; } .text-xs { font-size: 12px; } .text-lg { font-size: 18px; } .text-xl { font-size: 20px; } .text-2xl { font-size: 22px; }
 .font-semibold { font-weight: 600; } .font-normal { font-weight: 400; }
-.rounded { border-radius: 8px; } .rounded-lg { border-radius: 12px; }
+.rounded { border-radius: var(--widget-radius-control); } .rounded-lg { border-radius: var(--widget-radius-card); }
 .border { border: 1px solid var(--widget-border); }
 .bg-elevated { background: var(--widget-bg-elevated); }
 .bg-inset { background: var(--widget-bg-inset); }
@@ -110,7 +110,7 @@ p { margin: 0 0 8px; }
 .cursor-pointer { cursor: pointer; }
 
 /* Stat card pattern */
-.stat-card { background: var(--widget-bg-elevated); border-radius: 12px; padding: 16px; border: 1px solid var(--widget-border); }
+.stat-card { background: var(--widget-bg-elevated); border-radius: var(--widget-radius-card); padding: 16px; border: 1px solid var(--widget-border); }
 .stat-value { font-size: 24px; font-weight: 600; color: var(--widget-text); }
 .stat-label { font-size: 12px; color: var(--widget-text-muted); margin-top: 4px; }
 </style>
@@ -178,7 +178,7 @@ p { margin: 0 0 8px; }
     widgetErrored = true;
     var note = document.createElement('div');
     note.setAttribute('data-widget-error', '');
-    note.style.cssText = 'margin-top:8px;padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.5;'
+    note.style.cssText = 'margin-top:8px;padding:8px 12px;border-radius:var(--widget-radius-control);font-size:12px;line-height:1.5;'
       + 'background:var(--widget-bg-inset);border:1px solid var(--widget-border);color:var(--widget-text-muted);';
     // Engines often mask the detail to a generic "Script error." for sandboxed
     // scripts, so lead with a self-explanatory line and append whatever detail

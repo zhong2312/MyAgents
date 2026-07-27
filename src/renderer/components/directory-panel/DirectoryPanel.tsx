@@ -67,6 +67,7 @@ import {
   getRichDocKind,
 } from "../../../shared/fileTypes";
 import { getFileIcon } from "@/utils/fileIcons";
+import { copyPlainText } from "@/utils/clipboard";
 
 import { useImagePreview } from "@/context/ImagePreviewContext";
 import { useToast } from "@/components/Toast";
@@ -1732,8 +1733,7 @@ const DirectoryPanel = memo(
     );
 
     const handleCopyPath = (relPath: string, labelKey: string) => {
-      navigator.clipboard
-        .writeText(toAbsolutePath(relPath))
+      copyPlainText(toAbsolutePath(relPath))
         .then(() => toast.success(tRef.current(labelKey)))
         .catch(() => toast.error(tRef.current("workspaceFiles.common.copyFailed")));
     };
@@ -2060,8 +2060,7 @@ const DirectoryPanel = memo(
         if (opts?.skipAsyncOsWrite) {
           lastOsClipboardTextRef.current = osText;
         } else {
-          void navigator.clipboard
-            .writeText(osText)
+          void copyPlainText(osText)
             .then(() => {
               lastOsClipboardTextRef.current = osText;
             })
@@ -3029,7 +3028,7 @@ const DirectoryPanel = memo(
                   }}
                   className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
                       isSearchMode
-                          ? "bg-[var(--accent)] text-white hover:bg-[var(--accent-warm-hover)]"
+                          ? "bg-[var(--accent)] text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)]"
                           : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                   }`}
               >

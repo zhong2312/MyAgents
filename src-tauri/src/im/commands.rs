@@ -1774,6 +1774,26 @@ pub async fn cmd_update_agent_config(
     agentId: String,
     patch: AgentConfigPatch,
 ) -> Result<(), String> {
+    reload_agent_config_from_disk(
+        &app_handle,
+        agentState.inner(),
+        sidecarManager.inner(),
+        agentId,
+        patch,
+    )
+    .await
+}
+
+/// Re-read the authoritative Agent record from disk and project the selected
+/// fields into running Agent/IM instances. Shared by the Tauri command and the
+/// loopback Management API used by `myagents agent set`.
+pub(crate) async fn reload_agent_config_from_disk(
+    app_handle: &AppHandle,
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+    agent_id: String,
+    patch: AgentConfigPatch,
+) -> Result<(), String> {
     let updates_channel_runtime = patch.runtime.is_some()
         || patch.runtime_config.is_some()
         || patch.provider_id.is_some()
@@ -1785,7 +1805,7 @@ pub async fn cmd_update_agent_config(
     let mut channel_ids = if updates_channel_runtime {
         read_agent_configs_from_disk()
             .into_iter()
-            .find(|agent| agent.id == agentId)
+            .find(|agent| agent.id == agent_id)
             .map(|agent| {
                 agent
                     .channels
@@ -1798,8 +1818,8 @@ pub async fn cmd_update_agent_config(
         Vec::new()
     };
     if updates_channel_runtime {
-        let agents = agentState.lock().await;
-        if let Some(agent) = agents.get(&agentId) {
+        let agents = agent_state.lock().await;
+        if let Some(agent) = agents.get(&agent_id) {
             channel_ids.extend(agent.channels.keys().cloned());
         }
     }
@@ -1807,7 +1827,7 @@ pub async fn cmd_update_agent_config(
     channel_ids.dedup();
     let lifecycle_locks = channel_ids
         .iter()
-        .map(|channel_id| agent_channel_lifecycle_lock(&agentId, channel_id))
+        .map(|channel_id| agent_channel_lifecycle_lock(&agent_id, channel_id))
         .collect::<Vec<_>>();
     let mut _lifecycle_guards = Vec::with_capacity(lifecycle_locks.len());
     for lock in &lifecycle_locks {
@@ -1816,8 +1836,8 @@ pub async fn cmd_update_agent_config(
 
     // Hot-reload running instance if present (runtime only — disk persistence
     // is handled by the TypeScript patchAgentConfig service)
-    let mut agents_guard = agentState.lock().await;
-    if let Some(agent) = agents_guard.get_mut(&agentId) {
+    let mut agents_guard = agent_state.lock().await;
+    if let Some(agent) = agents_guard.get_mut(&agent_id) {
         // Disk is the config authority. Renderer writes are serialized, while
         // invokes may arrive out of order. Serialize hot-state updates first,
         // then read disk: a newer write's invoke must run after this lock and
@@ -1825,8 +1845,8 @@ pub async fn cmd_update_agent_config(
         // cannot become the final in-memory state.
         let updated_agent = read_agent_configs_from_disk()
             .into_iter()
-            .find(|candidate| candidate.id == agentId)
-            .ok_or_else(|| format!("Agent {} not found in persisted config", agentId))?;
+            .find(|candidate| candidate.id == agent_id)
+            .ok_or_else(|| format!("Agent {} not found in persisted config", agent_id))?;
         let runtime_identity_patch_present = patch.runtime.is_some()
             || patch.runtime_config.is_some()
             || patch.provider_id.is_some()
@@ -1856,7 +1876,7 @@ pub async fn cmd_update_agent_config(
                     ulog_warn!(
                         "[agent] Running channel {} missing from updated config for agent {}; keeping its live runtime",
                         channel_id,
-                        agentId
+                        agent_id
                     );
                     continue;
                 };
@@ -1921,12 +1941,12 @@ pub async fn cmd_update_agent_config(
                 continue;
             };
             runtime_change::freeze_and_rotate_for_runtime_change(
-                &agentId,
+                &agent_id,
                 channel_id,
                 &channel_instance.bot_instance,
                 &old_identity.label(),
                 &new_identity.label(),
-                &sidecarManager,
+                sidecar_manager,
                 snapshot,
             )
             .await;
@@ -1992,7 +2012,7 @@ pub async fn cmd_update_agent_config(
                     .router
                     .lock()
                     .await
-                    .release_all_sidecars_preserve_bindings(&sidecarManager);
+                    .release_all_sidecars_preserve_bindings(sidecar_manager);
             }
         }
         // Hot-reload heartbeat config

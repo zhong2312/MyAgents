@@ -15,6 +15,8 @@ describe('buildCliToolsAppend', () => {
     expect(text).toContain('<myagents-cli-goal>');
     expect(text).toContain('<myagents-cli-thought>');
     expect(text).toContain('myagents goal --help');
+    expect(text).toContain('goal-objective.txt');
+    expect(text).toContain('system\ntemp files are both accepted');
     expect(text).not.toContain('<myagents-user-tools>');
   });
 
@@ -40,7 +42,7 @@ describe('buildCliToolsAppend', () => {
       { includeUserTools: false },
     );
     const registeredAgentText = buildCliToolsAppend(
-      { type: 'registeredAgent', platform: 'space', registeredAgentId: 'ra-1' },
+      { type: 'registeredAgent', platform: 'space', spaceId: 'space-1', registeredAgentId: 'ra-1' },
       { includeUserTools: false },
     );
     const imGroupText = buildCliToolsAppend(

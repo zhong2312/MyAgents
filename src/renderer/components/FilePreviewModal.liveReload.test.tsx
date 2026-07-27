@@ -230,11 +230,7 @@ describe('FilePreviewModal live reload', () => {
     const onQuoteFile = vi.fn();
     const onRevealInTree = vi.fn();
     const onClose = vi.fn();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText },
-    });
+    mocks.copyPlainText.mockResolvedValueOnce(undefined);
 
     render(
       <FilePreviewModal
@@ -259,7 +255,7 @@ describe('FilePreviewModal live reload', () => {
 
     fireEvent.click(screen.getByLabelText('更多'));
     fireEvent.click(screen.getByRole('button', { name: '复制文件路径' }));
-    expect(writeText).toHaveBeenCalledWith('/workspace/notes.md');
+    expect(mocks.copyPlainText).toHaveBeenCalledWith('/workspace/notes.md');
     await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledWith('已复制文件路径'));
 
     fireEvent.click(screen.getByLabelText('更多'));

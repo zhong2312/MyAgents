@@ -442,6 +442,31 @@ mod tests {
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 
+    #[test]
+    fn disabled_skill_names_keep_required_system_skills_available() {
+        let root = make_test_workspace("slash_required_home").join(".myagents");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("skills-config.json"),
+            r#"{"disabled":["myagents-memory-update","myagents-memory-gardener","myagents-memory-molt","myagents-cli","myagents-docs","prompt-writer"]}"#,
+        )
+        .unwrap();
+
+        let disabled = disabled_skill_names_for_slash(&root);
+
+        for name in [
+            "myagents-memory-update",
+            "myagents-memory-gardener",
+            "myagents-memory-molt",
+            "myagents-cli",
+            "myagents-docs",
+        ] {
+            assert!(!disabled.iter().any(|candidate| candidate == name));
+        }
+        assert!(disabled.iter().any(|name| name == "prompt-writer"));
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
     #[tokio::test]
     async fn lists_builtin_when_no_dirs_exist() {
         let ws = make_tmp_workspace();

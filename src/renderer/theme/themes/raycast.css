@@ -1,0 +1,263 @@
+/* Raycast: complete optional Theme package. */
+html[data-theme-id='raycast'] {
+  --font-body: Inter, 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB', sans-serif;
+  --font-display: Inter, 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB', sans-serif;
+  --font-code: ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB', monospace;
+  --theme-radius-base: 4px;
+  --theme-radius-sm: 6px;
+  --theme-radius-md: 9px;
+  --theme-radius-lg: 12px;
+  --theme-radius-xl: 16px;
+  --theme-radius-2xl: 20px;
+  --theme-radius-full: 9999px;
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+}
+
+html[data-theme-id='raycast'][data-color-scheme='light'] {
+  --ink: #030303;
+  --ink-secondary: #242424;
+  --ink-muted: #6c6c6c;
+  --ink-subtle: #a2a2a2;
+  --ink-faint: #c5c5c5;
+  --paper: #ffffff;
+  --paper-elevated: #ffffff;
+  --message-user-bg: #fffafa;
+  --paper-inset: #ededed;
+  --paper-a0: rgb(255 255 255 / 0);
+  --paper-elevated-a0: rgb(255 255 255 / 0);
+  --message-user-bg-a0: rgb(255 250 250 / 0);
+  --paper-inset-a0: rgb(237 237 237 / 0);
+  --hover-bg: rgb(200 63 69 / 0.07);
+  --accent: #c83f45;
+  --accent-warm: #c83f45;
+  --accent-warm-hover: #bb363c;
+  --accent-warm-subtle: rgb(200 63 69 / 0.08);
+  --accent-warm-muted: rgb(200 63 69 / 0.15);
+  --accent-warm-subtle-a0: rgb(200 63 69 / 0);
+  --accent-cool: #397f75;
+  --accent-cool-hover: #397f75;
+  --on-accent: #ffffff;
+  --heartbeat: #c75050;
+  --heartbeat-bg: #f7e2e2;
+  --heartbeat-border: rgb(199 80 80 / 0.24);
+  --success: #27784f;
+  --success-bg: #e2f0e8;
+  --on-success: #ffffff;
+  --error: #b83f3f;
+  --error-bg: #f7e2e2;
+  --error-hover: #b83f3f;
+  --error-subtle: rgb(184 63 63 / 0.08);
+  --on-error: #ffffff;
+  --warning: #8a550c;
+  --warning-bg: #f8e8c8;
+  --on-warning: #ffffff;
+  --info: #456f8c;
+  --info-bg: #e1ebf3;
+  --on-info: #ffffff;
+  --button-primary-bg: #c83f45;
+  --button-primary-bg-hover: #bb363c;
+  --button-primary-text: #ffffff;
+  --button-dark-bg: #030303;
+  --button-dark-bg-hover: #242424;
+  --button-dark-text: #ffffff;
+  --button-secondary-bg: #ededed;
+  --button-secondary-bg-hover: #ffffff;
+  --button-secondary-text: #030303;
+  --fb-surface-peek: rgb(255 255 255 / 0.15);
+  --fb-surface-glass: rgb(255 255 255 / 0.55);
+  --fb-surface-pin: rgb(255 255 255 / 0.96);
+  --fb-surface-pin-a0: rgb(255 255 255 / 0);
+  --fb-surface-pin-72: rgb(255 255 255 / 0.72);
+  --fb-surface-pin-95: rgb(255 255 255 / 0.95);
+  --fb-glass-border: rgb(255 255 255 / 0.62);
+  --fb-glass-border-soft: rgb(255 255 255 / 0.50);
+  --fb-highlight: rgb(255 255 255 / 0.92);
+  --fb-highlight-mid: rgb(255 255 255 / 0.30);
+  --fb-highlight-faint: rgb(255 255 255 / 0.14);
+  --fb-highlight-strong: rgb(255 255 255 / 0.95);
+  --fb-highlight-a0: rgb(255 255 255 / 0);
+  --fb-highlight-line: rgb(255 255 255 / 0.85);
+  --fb-mask-opaque: #000000;
+  --fb-shadow-strong: rgb(45 26 26 / 0.28);
+  --fb-shadow-soft: rgb(45 26 26 / 0.12);
+  --fb-shadow-panel: rgb(45 26 26 / 0.18);
+  --fb-shadow-preview: rgb(45 26 26 / 0.45);
+  --fb-core-shadow: rgb(45 26 26 / 0.25);
+  --fb-inset-shadow: rgb(45 26 26 / 0.08);
+  --fb-window-shadow: 0 18px 48px rgb(45 26 26 / 0.22);
+  --fb-control-hover: rgb(3 3 3 / 0.06);
+  --fb-line-input: rgb(3 3 3 / 0.07);
+  --fb-line-thumb: rgb(3 3 3 / 0.12);
+  --fb-drag-handle: rgb(3 3 3 / 0.18);
+  --fb-scroll-thumb: rgb(108 108 108 / 0.50);
+  --line: rgb(3 3 3 / 0.10);
+  --line-strong: rgb(3 3 3 / 0.18);
+  --line-subtle: rgb(3 3 3 / 0.06);
+  --theme-shadow-base: 0 1px 3px 0 rgb(45 26 26 / 0.10), 0 1px 2px -1px rgb(45 26 26 / 0.10);
+  --theme-shadow-xs: 0 1px 2px rgb(45 26 26 / 0.05);
+  --theme-shadow-sm: 0 2px 8px rgb(45 26 26 / 0.08);
+  --theme-shadow-md: 0 8px 24px rgb(45 26 26 / 0.12);
+  --theme-shadow-lg: 0 16px 40px rgb(45 26 26 / 0.16);
+  --theme-shadow-xl: 0 24px 48px rgb(45 26 26 / 0.20);
+  --theme-shadow-2xl: 0 32px 64px -12px rgb(45 26 26 / 0.25);
+  --action-shadow: 0 6px 16px -12px rgb(45 26 26 / 0.40);
+  --action-shadow-active: inset 0 2px 6px rgb(45 26 26 / 0.18);
+  --tool-shadow: 0 8px 24px -20px rgb(45 26 26 / 0.35);
+  --tool-shadow-hover: 0 14px 30px -24px rgb(45 26 26 / 0.45);
+  --expanded-block-line: rgb(108 108 108 / 0.25);
+  --warning-border: rgb(138 85 12 / 0.30);
+  --focus-border: #c83f45;
+  --toggle-thumb: #ffffff;
+  --toggle-off-bg: rgb(3 3 3 / 0.18);
+  --code-bg: #101010;
+  --code-bg-a0: rgb(16 16 16 / 0);
+  --code-header-bg: #1a1a1a;
+  --code-text: #fefefe;
+  --code-line-number: #999999;
+  --theme-body-background:
+    radial-gradient(1200px 700px at 82% -10%, #ffe0e0 0%, rgb(255 224 224 / 0) 55%),
+    radial-gradient(900px 600px at -10% 110%, #dfecea 0%, rgb(223 236 234 / 0) 55%),
+    #ffffff;
+  --theme-body-texture: radial-gradient(rgb(3 3 3 / 0.08) 0.7px, transparent 0.7px);
+  --theme-body-texture-opacity: 0.07;
+  --theme-body-texture-blend: multiply;
+}
+
+html[data-theme-id='raycast'][data-color-scheme='dark'] {
+  --ink: #fefefe;
+  --ink-secondary: #dedede;
+  --ink-muted: #999999;
+  --ink-subtle: #616161;
+  --ink-faint: #3e3e3e;
+  --paper: #101010;
+  --paper-elevated: #1a1a1a;
+  --message-user-bg: #211b1b;
+  --paper-inset: #090909;
+  --paper-a0: rgb(16 16 16 / 0);
+  --paper-elevated-a0: rgb(26 26 26 / 0);
+  --message-user-bg-a0: rgb(33 27 27 / 0);
+  --paper-inset-a0: rgb(9 9 9 / 0);
+  --hover-bg: rgb(255 99 99 / 0.12);
+  --accent: #ff6363;
+  --accent-warm: #ff6363;
+  --accent-warm-hover: #ff7a7a;
+  --accent-warm-subtle: rgb(255 99 99 / 0.12);
+  --accent-warm-muted: rgb(255 99 99 / 0.20);
+  --accent-warm-subtle-a0: rgb(255 99 99 / 0);
+  --accent-cool: #62aa9e;
+  --accent-cool-hover: #62aa9e;
+  --on-accent: #2b0909;
+  --heartbeat: #ed6a6a;
+  --heartbeat-bg: rgb(237 106 106 / 0.16);
+  --heartbeat-border: rgb(237 106 106 / 0.24);
+  --success: #5aac7c;
+  --success-bg: rgb(90 172 124 / 0.16);
+  --on-success: #101010;
+  --error: #ed6a6a;
+  --error-bg: rgb(237 106 106 / 0.16);
+  --error-hover: #f27d7d;
+  --error-subtle: rgb(237 106 106 / 0.12);
+  --on-error: #101010;
+  --warning: #d9a347;
+  --warning-bg: rgb(217 163 71 / 0.16);
+  --on-warning: #101010;
+  --info: #62aa9e;
+  --info-bg: rgb(98 170 158 / 0.16);
+  --on-info: #101010;
+  --button-primary-bg: #c83f45;
+  --button-primary-bg-hover: #bb363c;
+  --button-primary-text: #ffffff;
+  --button-dark-bg: #fefefe;
+  --button-dark-bg-hover: #dedede;
+  --button-dark-text: #101010;
+  --button-secondary-bg: #090909;
+  --button-secondary-bg-hover: #1a1a1a;
+  --button-secondary-text: #fefefe;
+  --fb-surface-peek: rgb(26 26 26 / 0.22);
+  --fb-surface-glass: rgb(26 26 26 / 0.58);
+  --fb-surface-pin: rgb(26 26 26 / 0.96);
+  --fb-surface-pin-a0: rgb(26 26 26 / 0);
+  --fb-surface-pin-72: rgb(26 26 26 / 0.72);
+  --fb-surface-pin-95: rgb(26 26 26 / 0.95);
+  --fb-glass-border: rgb(255 255 255 / 0.16);
+  --fb-glass-border-soft: rgb(255 255 255 / 0.12);
+  --fb-highlight: rgb(255 255 255 / 0.24);
+  --fb-highlight-mid: rgb(255 255 255 / 0.10);
+  --fb-highlight-faint: rgb(255 255 255 / 0.06);
+  --fb-highlight-strong: rgb(255 255 255 / 0.22);
+  --fb-highlight-a0: rgb(255 255 255 / 0);
+  --fb-highlight-line: rgb(255 255 255 / 0.20);
+  --fb-mask-opaque: #000000;
+  --fb-shadow-strong: rgb(0 0 0 / 0.38);
+  --fb-shadow-soft: rgb(0 0 0 / 0.22);
+  --fb-shadow-panel: rgb(0 0 0 / 0.42);
+  --fb-shadow-preview: rgb(0 0 0 / 0.55);
+  --fb-core-shadow: rgb(0 0 0 / 0.32);
+  --fb-inset-shadow: rgb(0 0 0 / 0.16);
+  --fb-window-shadow: 0 18px 48px rgb(0 0 0 / 0.42);
+  --fb-control-hover: rgb(254 254 254 / 0.08);
+  --fb-line-input: rgb(254 254 254 / 0.07);
+  --fb-line-thumb: rgb(254 254 254 / 0.16);
+  --fb-drag-handle: rgb(254 254 254 / 0.20);
+  --fb-scroll-thumb: rgb(153 153 153 / 0.55);
+  --line: rgb(254 254 254 / 0.10);
+  --line-strong: rgb(254 254 254 / 0.18);
+  --line-subtle: rgb(254 254 254 / 0.06);
+  --theme-shadow-base: 0 1px 3px 0 rgb(0 0 0 / 0.10), 0 1px 2px -1px rgb(0 0 0 / 0.10);
+  --theme-shadow-xs: 0 1px 2px rgb(0 0 0 / 0.12);
+  --theme-shadow-sm: 0 2px 8px rgb(0 0 0 / 0.18);
+  --theme-shadow-md: 0 8px 24px rgb(0 0 0 / 0.28);
+  --theme-shadow-lg: 0 16px 40px rgb(0 0 0 / 0.35);
+  --theme-shadow-xl: 0 24px 48px rgb(0 0 0 / 0.42);
+  --theme-shadow-2xl: 0 32px 64px -12px rgb(0 0 0 / 0.52);
+  --action-shadow: 0 6px 16px -12px rgb(0 0 0 / 0.60);
+  --action-shadow-active: inset 0 2px 6px rgb(0 0 0 / 0.35);
+  --tool-shadow: 0 8px 24px -20px rgb(0 0 0 / 0.50);
+  --tool-shadow-hover: 0 14px 30px -24px rgb(0 0 0 / 0.65);
+  --expanded-block-line: rgb(153 153 153 / 0.25);
+  --warning-border: rgb(217 163 71 / 0.30);
+  --focus-border: #ff6363;
+  --toggle-thumb: #ffffff;
+  --toggle-off-bg: rgb(254 254 254 / 0.18);
+  --code-bg: #090909;
+  --code-bg-a0: rgb(9 9 9 / 0);
+  --code-header-bg: #1a1a1a;
+  --code-text: #fefefe;
+  --code-line-number: #999999;
+  --theme-body-background:
+    radial-gradient(1200px 700px at 82% -10%, #3a1c1c 0%, rgb(58 28 28 / 0) 55%),
+    radial-gradient(900px 600px at -10% 110%, #152924 0%, rgb(21 41 36 / 0) 55%),
+    #101010;
+  --theme-body-texture: radial-gradient(rgb(254 254 254 / 0.08) 0.7px, transparent 0.7px);
+  --theme-body-texture-opacity: 0.04;
+  --theme-body-texture-blend: screen;
+}
+
+html[data-theme-id='raycast'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  font-weight: 300;
+  letter-spacing: 0.015em;
+  color: var(--ink);
+  background: linear-gradient(150deg, var(--ink) 32%, var(--accent-warm) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+html[data-theme-id='raycast'] .theme-launcher-hero-slogan {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 350;
+  letter-spacing: 0.055em;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  html[data-theme-id='raycast'] .theme-launcher-hero-title { font-size: 3.5rem; }
+  html[data-theme-id='raycast'] .theme-launcher-hero-slogan { font-size: 17px; }
+}

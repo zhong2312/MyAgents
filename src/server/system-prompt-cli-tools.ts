@@ -94,13 +94,14 @@ Before using any Goal command in a session, run:
 
 That help explains when to call:
   myagents goal get
-  myagents goal create --objective-file myagents_files/goal-objective.txt
+  myagents goal create --objective-file goal-objective.txt
   myagents goal update --status complete
   myagents goal update --status blocked
 
 Goal objectives are arbitrary user-provided text. Write them to a file with
-your normal file-writing tool and use --objective-file; never interpolate an
-objective directly into a shell command.
+your normal file-writing tool and use --objective-file; workspace and system
+temp files are both accepted. Never interpolate an objective directly into a
+shell command.
 </myagents-cli-goal>`;
 
 const SECTION_IM_MEDIA = `<myagents-cli-im-media>

@@ -219,7 +219,9 @@ Per-Message Task:
  ├── ensure_im_consumer()：每个 peer_session 保持一个 /api/im/events long-poll SSE consumer
  ├── ReplyRouter 预注册 requestId → draft/reply slot
  ├── POST /api/im/enqueue → 同步 ACK（含 requestId、runtime/config、群聊上下文）
- │ └── Node Sidecar 通过 SessionEngine enqueue 到 builtin/external runtime，立即返回 accepted
+ │ └── Node Sidecar 通过 SessionEngine enqueue 到 builtin/external runtime
+ │     ├── idle external：等待既有 adapter admission 结果，不把启动/配置错误伪装成排队成功
+ │     └── busy external：现有 turn-boundary FIFO 接管后立即返回 accepted
  │
  ├── /api/im/events 推送带 requestId 的事件
  │ ├── "partial" 事件 → ReplyRouter 节流编辑消息（≥1s 间隔，截断平台限制）
@@ -472,7 +474,7 @@ type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 
 IM / Agent Channel 的结构化人类交互不是普通工具偏好，而是 host 能力。Rust `/api/im/enqueue` 与 heartbeat payload 都带 `hostInteraction: { askUserQuestion: 'none' | 'native-card' }`，Node 侧 `InteractionScenario` 同步携带该字段。
 
-- 默认值必须是 `'none'`。Telegram、Dingtalk、OpenClaw Bridge 默认不承接 `AskUserQuestion`，Node 会把它作为 channel compatibility overlay 禁用，避免 AI 发出桌面-only 选项后 IM 用户收不到。
+- 默认值必须是 `'none'`。Telegram、Dingtalk、OpenClaw Bridge（包括官方 Feishu/Lark 插件）不承接 builtin `AskUserQuestion`，Node 会把它作为 channel compatibility overlay 禁用，避免阻塞式 SDK 提问与插件同 chat 串行队列互相等待。插件自带的异步原生卡片工具属于另一套“答案作为新 turn 注入”的协议，不能据此把 Bridge 声明为 `'native-card'`。
 - 原生飞书 adapter 当前声明 `'native-card'`，因此 runtime 可放开 `AskUserQuestion`，并通过 IM event bus 的 `ask-user-question-request` / `ask-user-question-expired` 交给 Rust `ReplyRouter`。
 - `ReplyRouter` 解析 request 后调用 `adapter.send_question_card()`，并在 `PendingQuestion` 中保存 inner `requestId`、chat、card message id、requester、questions 和 sidecar port。用户按钮或文本 fallback 进入 `QuestionCallback`，Rust POST 现有 `/api/ask-user-question/respond`，只有 HTTP 2xx 且 JSON `{success:true}` 后才删除 pending / 更新卡片状态；失败时保留 pending 让用户重试。
 - 敏感问题（`isSecret`）在 IM 渠道 fail-closed：不要求用户在聊天历史里输入 secret，直接通知用户并向 sidecar 回传取消。安全输入能力需要单独设计，不能用普通 IM 文本兜底。
@@ -530,6 +532,7 @@ Plugin tool schema 是 Session 级控制面，sender/chat/account/owner 是 Turn
 - Bridge discovery 与随后对 SDK readiness 的观察共享 `MCP_PREWARM_GRACE_MS` 的 absolute soft window。live `setMcpServers()` map mutation 是独立的 30 秒正确性 fence：mutation 本身不被 10 秒 deadline 截断，但 absolute wall clock 继续前进，所以 mutation 结束后只观察原窗口的剩余时间，甚至可能已为 0；mutation 不会重置或延长 soft budget。只有当前 Query 的 installed-map fingerprint 尚未确认该 surface identity 时，`/api/im/enqueue` 才同步 map；零工具或 degraded generation 也会发布 identity 以阻止逐消息重试，但不会伪造一个 SDK tool server。真实 identity drift 若撞上 active turn，则消息留在既有 turn-boundary queue，replacement Query 确认新 surface 后再 dispatch。
 - `ImBridgeTurnContext` 只由 exact `requestId` 的 `ImRequestRegistry` entry 持有，不随 SessionEngine request 或 queue item 复制。SDK stdin 的每次 user-message yield 都在 output-owner FIFO 占一个槽位（非 IM turn 占 `null` 槽）；tool callback 只在 FIFO head 是 IM request 时解析 sender/chat/account/owner。realtime 消息 B 即使已 yield，也不会覆盖仍在产出/调用工具的消息 A；terminal unregister 后上下文立即不可读。
 - request entry 创建后，取消与异常清理先由 `/api/im/enqueue` admission route 持有；runtime admission 成功后同步移交给 builtin/external runtime。移交前的 catch 由 route unregister；移交后的正常 terminal cleanup 归 runtime，cancel route 仅在成功移除 queued item 时接管 terminal/unregister，running turn 始终由 runtime 收尾。禁止两个 owner 同时清理或在 turn 执行中提前删除 Bridge 身份。
+- external runtime busy 时，IM request 复用 `external-session/operation-queue.ts` 的 turn-boundary FIFO，不创建第三套 IM queue，也不主动进入 `sendExternalMessage()` 的 busy polling gate。既有 direct-send tail 本身就是原子 admission 占位：同一事件循环内同时观察到 idle 的后续 IM 也必须进入正式 FIFO，包括首条 direct send 正在等待 process config invalidation 的窗口；首条仍保留 adapter fail-loud，后续请求由 queue 的精确 terminal 报错。operation 持有 requestId 与 terminal observer；queue clear、config apply failure、按 requestId cancel 都必须先移除对应 operation，再向该 request 发唯一 `error/cancelled` terminal 并清 registry。Desktop 与 IM 的 `queue:added/started/cancelled` 可见性由同一 owner 产生。
 - graceful interrupt 已收到 SDK `result` 时，该 result handler 同步 claim 并消费当前 output owner，interrupt caller 不再追加 `stopped` terminal；没有 result / Session 直接结束时才由 interrupt caller terminalize。`/api/im/cancel` 以 registry AbortController 的首次 abort 作为原子 cancellation claim，重复请求只确认“取消进行中”，不得二次进入 runtime。route 只为 admission-owned / queued 请求补发 terminal；running turn 始终由 runtime terminal owner 收尾，确保每个 request 恰好一个 terminal emitter、每个 SDK result 恰好消费一个 FIFO 槽。
 
 这条分离保证同一飞书 Session 连续对话只支付一次工具发现，同时群聊不同 sender 或并发相邻消息不会串用 OAuth / chat identity。300 秒工具执行预算从 callback 真正调用 `/mcp/call-tool` 时开始，与 10 秒 surface pre-warm预算无关。
@@ -1020,11 +1023,13 @@ src/shared/types/im.ts # ImBotConfig, ImBotStatus, ImPlatform, InstalledPlugin, 
 
 ---
 
-## 九、待实现 / 未来规划
+## 九、现状与后续规划
 
-### 9.1 多端 Session 共享
+### 9.1 多端 Session 共享（已实现）
 
-当前每个 Bot 的 Session 独立于 Desktop Tab。已可通过 Desktop 打开 IM Session（跳转到已有 Sidecar），但完整双端同步尚未实现。
+IM peer 与 Desktop Tab 可以打开并共享同一个持久 Session。IM 入站消息及其 AI 回复由 SessionEngine 选中的 runtime owner 写入该 Session，Desktop 打开后可实时看到；requestId-aware ReplyRouter 只负责当前 Channel 的回复槽与终态渲染。Desktop 在同一 Session 发出的用户消息与完整 AI 文本 block，则通过 `im-mirror.ts → /api/im/mirror → session_delivery` 镜像到当前绑定的 Channel。
+
+Desktop → IM 镜像是跨 Runtime 的产品契约：builtin 与 external（Claude Code / Codex / Managed Codex / Gemini）都必须在各自的 turn owner 内接入同一 transport。用户消息在 runtime admission / surface 后镜像，并剥离隐藏 System Reminder；external 会等待 transcript persist 成功，builtin 的 assistant-start 已接纳 fallback 只保证异步安排持久化。助手只镜像完成的文本 block，不镜像 delta、thinking、tool 或失败终端残留。IM-origin turn 继续只走 ReplyRouter，不再反向镜像，避免同一回答双发。PNG/JPG 用户图片沿用既有 5 MiB 上限，其余附件不镜像。
 
 ### 9.2 Bot Token 加密存储
 

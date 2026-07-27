@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, Loader2, QrCode } from 'lucide-react';
 import QRCode from 'qrcode';
+import { copyPlainText } from '@/utils/clipboard';
 
 export default function BindQrPanel({
     bindUrl,
@@ -35,7 +36,7 @@ export default function BindQrPanel({
 
     const handleCopy = useCallback(async () => {
         try {
-            await navigator.clipboard.writeText(bindUrl);
+            await copyPlainText(bindUrl);
             setCopied(true);
             if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
             copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);

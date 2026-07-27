@@ -7,7 +7,9 @@
 // header still shows the live "思考中…" indicator. This test guards against the
 // auto-expand reappearing.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, fireEvent } from '@testing-library/react';
+import { cleanup, screen, fireEvent } from '@testing-library/react';
+
+import { renderWithTheme as render } from '@/test/renderWithTheme';
 
 import ProcessRow from './ProcessRow';
 import type { ContentBlock } from '@/types/chat';

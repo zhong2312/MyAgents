@@ -134,7 +134,7 @@ myagents vision analyze --image @myagents_files/screenshot.png --prompt "Extract
 ### 模型 Provider（model）
 
 ```bash
-myagents model list                                     # 看所有 Provider + 验证状态
+myagents model list                                     # 看所有 Provider、验证状态、主模型与模型清单
 myagents model add --id <id> --name <显示名> --base-url <url> --models <m1,m2,...> [其它]
 myagents model remove <id>                              # 删除自定义 Provider（内置的删不掉）
 myagents model set-key <id> <apiKey>                    # 设 API Key
@@ -176,7 +176,7 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 - "飞书 Bot 在线吗" → `agent runtime-status`（这个看运行时；`agent list` 看的是配置）
 - 配 Channel 详见下方 §配置 Agent Channel 流程
 
-`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
+`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。provider/model/permissionMode 会先按当前 Provider 的 credential/readiness 与 model 目录校验，再同步 Agent 权威记录、Project 兼容镜像和运行中的 Channel；Managed Codex 的 permissionMode 可传 `suggest/auto-edit/no-restrictions` 或产品值 `plan/auto/fullAgency`，落盘统一规范化为产品值。`full-auto` 无法无损映射（它保留 workspace-write sandbox，而 `fullAgency` 会投影成 `no-restrictions`），因此 setter 会拒绝。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
 
 ### Agent Runtime 发现（runtime）
 
@@ -204,7 +204,7 @@ myagents skill info <name>                              # 某 skill 的详情
 myagents skill add <url-or-spec> [--scope user|project] [--plugin X] [--skill Y] [--force] [--dry-run]
 myagents skill remove <name>                            # 删除
 myagents skill enable <name>                            # 启用
-myagents skill disable <name>                           # 禁用
+myagents skill disable <name>                           # 禁用非 Required Skill；Required System Skill 会拒绝
 myagents skill sync                                     # 把 ~/.claude/skills 里用户自己装的同步过来
 ```
 
@@ -264,13 +264,13 @@ Goal 是当前会话内的持续执行模式：宿主会在每轮完成后自动
 
 ```bash
 myagents goal get                                      # 查看当前 session 的 Goal
-myagents goal create --objective-file myagents_files/goal-objective.txt   # 为当前 session 创建并启动 Goal
+myagents goal create --objective-file goal-objective.txt --max-executions 12   # 本地任意普通文本文件；可选 deadline/max/AI exit 条件
 myagents goal update --status complete                 # AI 判断目标完成时主动退出
 myagents goal update --status blocked                  # AI 判断无法继续时主动退出
 ```
 
 **何时用：**
-- 用户明确要求进入 Goal 时，先用标准文件工具把 objective 写入 workspace 内的文本文件，再传 `--objective-file`；不要把用户文本拼入 Shell 命令。
+- 用户明确要求进入 Goal 时，先用标准文件工具把 objective 写入本地文本文件（workspace 或系统 temp 均可），再传 `--objective-file`；不要把用户文本拼入 Shell 命令。可用 `--deadline <ISO-8601-with-offset>`、`--max-executions <正整数>`、`--ai-can-exit <true|false>` 设置已有结束条件；deadline 是最晚停止时间，不是延迟开始。
 - 当前会话进入 Goal 后，你完成了用户目标 → `goal update --status complete`
 - 你连续尝试后确认缺关键输入/外部状态，无法继续推进 → `goal update --status blocked`
 - 用户问"现在目标是什么/状态如何" → `goal get`
@@ -347,7 +347,6 @@ myagents space issue comment <issueId> --space <slug> \
   [--body-file <path>] [--attachment <path> ...]
 myagents space issue claim <issueId> --space <slug> --deliveryId <deliveryId> --create-attached \
   --workspaceId <id> --workspacePath <path> --name "..." --taskMdContent-file task.md
-myagents space issue delivery ignore <deliveryId> --space <slug>
 myagents space issue complete <issueId> --space <slug> --workspacePath <path> \
   --taskId <taskId> --body-file result.md [--attachment <path> ...] --message "completed Space issue"
 myagents space issue attachment add <issueId> --space <slug> --file <path> [--file <path> ...]
@@ -356,13 +355,13 @@ myagents space attachment download <attachmentId> --space <slug> [--output myage
 
 **何时用：**
 - 普通会话先 `myagents space list --json` 选择明确的 slug；所有 Space 业务命令都必须带 `--space <slug>`，不猜“默认社区”或上次使用的 Space。
-- 当前 workspace 在该 Space 有 active registration 时，CLI 自动以 Registered Agent 身份执行；否则自动以当前 User 身份执行，权限与这个 User 在 UI 中一致。delivery-bound Session 的身份/工作区不匹配会直接拒绝，不会静默降级成 User。身份不确定时先 `space whoami`。
+- CLI 只有在当前 Session 持久化了精确的 `spaceId + registeredAgentId` origin 时，才以该 Registered Agent 身份执行；显式 legacy Agent ID 仅作旧调用兼容。workspace 只校验执行边界，绝不用于猜测 actor。没有 Registered Agent origin 的普通 Session 始终使用当前 User 身份；origin、Space 或 workspace 不匹配会直接拒绝，不会静默降级。身份不确定时先 `space whoami`。
 - 需要创建、筛选或移动 Issue 时，先 `space goal list --json`，只复制 active `data.items[].id`；不要把 Goal title 或 `goalPathLabel` 当 ID。`myagents goal ...` 是本地 Session Goal Mode，`myagents space goal ...` 是 Cloud Space Goal，两者不是同一资源。
 - `issue create` 不传 `--goal` 会进入 Inbox；已发布 Issue 用 `issue update --goal <goalId>` 移动，使用 `--clear-goal` 清回 Inbox。不要用 `--goal null`、`--goal inbox` 或空字符串表达清除。更新后用 `issue view --json` 核对权威 `goalId/goalPathLabel`。
 - 具体命令参数优先运行精确 leaf help，例如 `myagents space issue comment --help`；这些 help 是给 Agent 的完整调用说明。
 - 收到 Space delivery → 先 `myagents space issue view <issueId> --space <slug> --comments --json` 读取当前服务端状态；delivery trigger 只用于定位，不替代当前状态。
 - trigger 的 comment 标记为截断 → 用 `myagents space issue comment get <issueId> <commentId> --space <slug> --json` 精确读取，不要扫描分页猜触发评论。
-- subscription 通知不适合当前 Agent → `space issue delivery ignore` 只忽略这次投送；适合承担时用 `claim --create-attached` 建立/复用责任和本地 Task。
+- subscription 通知只表示该 Issue 在路由时匹配订阅，不等于已经指派责任。读取当前 Issue 后，可以不做进一步动作、评论或更新而不 claim；只有确认该 Agent 应负责完成时，才用 `claim`（需要持久本地执行跟踪时再加 `--create-attached`）。Delivery 会由本地 connector 自动确认，不存在 Agent-facing ignore/handled/acknowledge 命令。
 - assignment 表示责任已经明确交给当前 Agent；仍用 `claim --create-attached` 确认并建立本地 Task/Session 关联，不要 ignore 或自行取消指派。
 - Issue/评论里有附件 → 用 `myagents space attachment download <attachmentId> --space <slug>` 下载到当前工作区，再读取本地文件。
 - 需要回写结论 → `space issue comment` 可原子提交正文和附件；只有附件也合法。评论附件只属于该评论，不会跑到 Issue 顶部。

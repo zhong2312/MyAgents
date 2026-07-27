@@ -36,7 +36,7 @@ export function SpaceEnvironmentSwitch({
                 onClick={() => onChange(environment)}
                 aria-pressed={selected}
                 className={`min-w-[96px] rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${selected
-                  ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                  ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                   : 'text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]'
                   }`}
               >

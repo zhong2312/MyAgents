@@ -31,7 +31,8 @@ use super::runtime_change;
 use super::types::{ImSourceType, LastActiveChannel, LastActivePrivateTarget, PeerSession};
 use super::{ImConsumers, ManagedAgents};
 use crate::sidecar::{
-    ensure_session_sidecar, release_session_sidecar, ManagedSidecarManager, SidecarOwner,
+    ensure_session_sidecar_with_lifecycle, release_session_sidecar, ManagedSidecarManager,
+    SidecarOwner,
 };
 use crate::{ulog_info, ulog_warn};
 
@@ -500,33 +501,22 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
     // ordering; reordered after a dogfood report where the function exited
     // silently mid-step without notification or `[handover] done` log.
     //
-    // CRITICAL: `ensure_session_sidecar` is documented as a BLOCKING function
-    // (uses `reqwest::blocking::Client` + `std::sync::Mutex`). Calling it
-    // directly from this async Tauri command would deadlock the runtime —
-    // which is exactly what the dogfood log showed (function entered, lock
-    // acquired, then no further log). Wrap in `tokio::task::spawn_blocking`
-    // per the contract documented at `sidecar.rs::ensure_session_sidecar`.
-    // (review-by-codex F2 finding — root cause of v0.2.14 dogfood Bug 1).
+    // The async lifecycle entrypoint performs the blocking-thread handoff and
+    // holds the same per-session fence used by deletion.
     let owner = SidecarOwner::Agent(target_session_key.clone());
     let app_clone = app.clone();
     let mgr_clone = manager.inner().clone();
     let sid_clone = sessionId.clone();
     let workspace_clone = req_workspace.clone();
     let owner_clone = owner.clone();
-    let ensure_result = tokio::task::spawn_blocking(move || {
-        ensure_session_sidecar(
-            &app_clone,
-            &mgr_clone,
-            &sid_clone,
-            &workspace_clone,
-            owner_clone,
-        )
-    })
+    let ensure_result = ensure_session_sidecar_with_lifecycle(
+        app_clone,
+        mgr_clone,
+        sid_clone,
+        workspace_clone,
+        owner_clone,
+    )
     .await
-    .map_err(|e| {
-        ulog_warn!("[handover] step4 spawn_blocking join error: {}", e);
-        format!("ensure_session_sidecar join failed: {}", e)
-    })?
     .map_err(|e| {
         ulog_warn!(
             "[handover] step4 ensure_session_sidecar failed for session {}: {}",

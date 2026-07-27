@@ -23,6 +23,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-is-visible",
     "core:window:allow-is-focused",
+    "core:window:allow-set-background-color",
     "fs:default",
     "fs:allow-app-read-recursive",
     "fs:allow-app-write-recursive",

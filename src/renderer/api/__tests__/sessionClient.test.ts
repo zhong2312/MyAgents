@@ -59,14 +59,14 @@ describe('deleteSession', () => {
         expect(mocks.apiFetch).not.toHaveBeenCalled();
     });
 
-    it('keeps browser development mode deletion working without Rust sidecar checks', async () => {
+    it('fails closed in browser development mode where Rust cannot fence owners', async () => {
         mocks.isTauri.mockReturnValue(false);
         mocks.deleteSessionIfUnowned.mockResolvedValue(false);
 
-        await expect(deleteSession('session-browser')).resolves.toBe(true);
+        await expect(deleteSession('session-browser')).resolves.toBe(false);
 
-        expect(mocks.deleteSessionIfUnowned).not.toHaveBeenCalled();
-        expect(mocks.apiFetch).toHaveBeenCalledWith('/sessions/session-browser', { method: 'DELETE' });
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-browser');
+        expect(mocks.apiFetch).not.toHaveBeenCalled();
     });
 
     it('fails closed when sidecar presence cannot be verified', async () => {

@@ -1692,7 +1692,7 @@ function SkillDetailWorkspace({
                 </div>
               </div>
               {revision.isCurrent ? (
-                <span className="rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]">
+                <span className="rounded-md bg-[var(--success-bg)] px-2 py-1 text-xs font-semibold text-[var(--success)]">
                   {t("space.skills.currentVersion")}
                 </span>
               ) : admin ? (

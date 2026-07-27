@@ -36,6 +36,8 @@ const agent: SpaceRegisteredAgent = {
   id: 'rag-1',
   spaceId: 'space-1',
   displayName: 'MyAgents Debugger',
+  instruction: 'Debug accepted issues.',
+  instructionRevision: 1,
   status: 'active',
   createdAt: '2026-07-12T00:00:00.000Z',
   updatedAt: '2026-07-12T00:00:00.000Z',

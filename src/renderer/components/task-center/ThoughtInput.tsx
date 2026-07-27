@@ -638,7 +638,7 @@ export const ThoughtInput = forwardRef<ThoughtInputHandle, Props>(function Thoug
               type="button"
               onClick={() => void handleSubmit()}
               disabled={!canSend}
-              className={`rounded-lg bg-[var(--accent)] text-white transition-colors hover:bg-[var(--accent-warm-hover)] disabled:bg-[var(--ink-muted)]/15 disabled:text-[var(--ink-muted)]/60 ${theme.toolbarButtonPaddingClass}`}
+              className={`rounded-lg bg-[var(--button-primary-bg)] text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:bg-[var(--ink-muted)]/15 disabled:text-[var(--ink-muted)]/60 ${theme.toolbarButtonPaddingClass}`}
             >
               <PenLine className="h-4 w-4" />
             </button>

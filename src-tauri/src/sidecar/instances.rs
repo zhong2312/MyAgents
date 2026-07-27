@@ -91,6 +91,7 @@ pub fn start_tab_sidecar<R: Runtime>(
     // The role was validated against the canonical manager identity before
     // acquiring permits, locks, ports, or filesystem resources.
     append_sidecar_entrypoint_args(&mut cmd, &script_path, port, process_role);
+    let session_delete_authority = configure_session_delete_authority(&mut cmd, process_role);
     if is_global {
         cmd.arg("--no-pre-warm");
         if let Some(companion_path) = find_mirofish_companion_executable(app_handle) {
@@ -251,6 +252,7 @@ pub fn start_tab_sidecar<R: Runtime>(
         agent_dir: effective_agent_dir,
         healthy: false,
         is_global,
+        session_delete_authority,
         created_at: std::time::Instant::now(),
     };
 
@@ -955,28 +957,9 @@ pub async fn monitor_session_sidecars(
     tokio::time::sleep(Duration::from_secs(20)).await;
     ulog_info!("[sidecar] Session sidecar health monitor started");
 
-    // Recovery queue: preserves workspace + owners across failed restarts.
-    // When ensure_session_sidecar fails, the dead entry is gone from sidecars
-    // but we keep it here so the next cycle can retry.
-    struct RecoveryEntry {
-        workspace: std::path::PathBuf,
-        owners: Vec<SidecarOwner>,
-        /// Snapshot of the dead sidecar's `runtime` field (MYAGENTS_RUNTIME env
-        /// var that it was originally spawned with). Captured at the time the
-        /// dead sidecar is detected so that auto-restart can pin the new
-        /// sidecar to the same runtime regardless of which owner happens to
-        /// come first in the `Vec<SidecarOwner>` ordering (owners is collected
-        /// from a HashSet — iteration order is not deterministic). Without
-        /// this, a session with both Agent and Tab owners could restart with
-        /// the wrong runtime resolution branch (Agent → re-resolve from agent
-        /// config; Tab/Cron → read session metadata), producing different
-        /// runtimes across hash-random restarts. See cross-review Codex #2.
-        runtime: Option<String>,
-        /// Snapshot of MYAGENTS_RUNTIME_SOURCE captured with `runtime`.
-        runtime_source: Option<String>,
-        failures: u32,
-    }
-    let mut recovery: HashMap<String, RecoveryEntry> = HashMap::new();
+    // This map tracks retry counts only. The dead SessionSidecar itself stays
+    // manager-owned so there is no parallel owner snapshot.
+    let mut recovery: HashMap<String, u32> = HashMap::new();
 
     loop {
         tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
@@ -996,31 +979,29 @@ pub async fn monitor_session_sidecars(
             };
             for (sid, sc) in guard.sidecars.iter_mut() {
                 if sc.is_dead() && !sc.owners.is_empty() && !recovery.contains_key(sid) {
-                    recovery.insert(
-                        sid.clone(),
-                        RecoveryEntry {
-                            workspace: sc.workspace_path.clone(),
-                            owners: sc.owners.iter().cloned().collect(),
-                            runtime: sc.runtime.clone(),
-                            runtime_source: sc.runtime_source.clone(),
-                            failures: 0,
-                        },
-                    );
+                    recovery.insert(sid.clone(), 0);
                 }
             }
         }
 
-        // Remove entries that recovered on their own (now healthy in sidecars)
+        // Remove entries that recovered, lost all owners, or were removed by a
+        // legitimate lifecycle transition.
         recovery.retain(|sid, _| {
             manager
                 .lock()
                 .map(|mut g| {
-                    g.sidecars
+                    let dead_in_active_map = g
+                        .sidecars
                         .get_mut(sid)
-                        .map(|sc| sc.is_dead())
-                        .unwrap_or(true) // not in sidecars → keep in recovery
+                        .map(|sc| sc.is_dead() && !sc.owners.is_empty())
+                        .unwrap_or(false);
+                    let retained_for_restart = g
+                        .recovering_sidecars
+                        .get(sid)
+                        .is_some_and(|sc| !sc.owners.is_empty());
+                    dead_in_active_map || retained_for_restart
                 })
-                .unwrap_or(true)
+                .unwrap_or(false)
         });
 
         if recovery.is_empty() {
@@ -1034,43 +1015,73 @@ pub async fn monitor_session_sidecars(
                 break;
             }
 
-            let entry = recovery.get(&session_id).unwrap();
-            if entry.failures >= MAX_RESTART_FAILURES {
+            if recovery
+                .get(&session_id)
+                .map(|failures| *failures >= MAX_RESTART_FAILURES)
+                .unwrap_or(true)
+            {
                 continue;
             }
 
-            // Remove dead entry from sidecars if still present (re-verify under lock)
-            {
+            // Deletion and every owner-acquiring ensure use this same guard.
+            // Keep it across take → blocking restart → install/restore so no
+            // delete can observe the deliberate manager gap.
+            let _lifecycle = acquire_session_lifecycle(&[&session_id]).await;
+
+            // Move the dead process object into manager-owned recovery state.
+            // It remains the owner authority while the replacement starts, so
+            // synchronous release paths can still remove owners during the
+            // readiness wait.
+            let restart_identity = {
                 let mut guard = match manager.lock() {
                     Ok(g) => g,
                     Err(_) => continue,
                 };
-                if let Some(sc) = guard.sidecars.get_mut(&session_id) {
-                    if !sc.is_dead() {
-                        // Recovered on its own — remove from recovery
-                        recovery.remove(&session_id);
-                        continue;
+                if !guard.recovering_sidecars.contains_key(&session_id) {
+                    let should_restart = guard
+                        .sidecars
+                        .get_mut(&session_id)
+                        .map(|sidecar| sidecar.is_dead() && !sidecar.owners.is_empty())
+                        .unwrap_or(false);
+                    if should_restart {
+                        if let Some(sidecar) = guard.remove_sidecar(&session_id) {
+                            guard
+                                .recovering_sidecars
+                                .insert(session_id.clone(), sidecar);
+                        }
                     }
                 }
-                guard.remove_sidecar(&session_id);
-            }
-
-            let first_owner = entry.owners[0].clone();
-            let workspace = entry.workspace.clone();
-            let owners_snapshot = entry.owners.clone();
+                guard
+                    .recovering_sidecars
+                    .get(&session_id)
+                    .and_then(|sidecar| {
+                        sidecar.owners.iter().next().cloned().map(|first_owner| {
+                            (
+                                first_owner,
+                                sidecar.workspace_path.clone(),
+                                sidecar.runtime.clone(),
+                                sidecar.runtime_source.clone(),
+                            )
+                        })
+                    })
+            };
+            let Some((first_owner, workspace, pinned_runtime, pinned_runtime_source)) =
+                restart_identity
+            else {
+                recovery.remove(&session_id);
+                continue;
+            };
             // Pin the restart to the same runtime the dead sidecar was running
             // with. `ensure_session_sidecar` would otherwise re-resolve runtime
             // via an owner-type branch (Agent → agent config; Tab/Cron → session
             // meta → agent fallback), and since `owners[0]` is picked from a
             // HashSet the owner type is non-deterministic when a session has
             // mixed owners. See cross-review Codex #2.
-            let pinned_runtime = entry.runtime.clone();
-            let pinned_runtime_source = entry.runtime_source.clone();
             let mgr = manager.clone();
             let app = app_handle.clone();
             let sid = session_id.clone();
 
-            match tokio::task::spawn_blocking(move || {
+            let restart = tauri::async_runtime::spawn_blocking(move || {
                 ensure_session_sidecar_with_runtime_identity_override(
                     &app,
                     &mgr,
@@ -1081,17 +1092,28 @@ pub async fn monitor_session_sidecars(
                     pinned_runtime_source,
                 )
             })
-            .await
-            {
+            .await;
+
+            match restart {
                 Ok(Ok(result)) => {
-                    if owners_snapshot.len() > 1 {
-                        if let Ok(mut guard) = manager.lock() {
-                            if let Some(sc) = guard.sidecars.get_mut(&session_id) {
-                                for owner in owners_snapshot.iter().skip(1) {
-                                    sc.add_owner(owner.clone());
-                                }
-                            }
-                        }
+                    let installed = manager.lock().ok().is_some_and(|mut guard| {
+                        let Some(mut dead_sidecar) = guard.recovering_sidecars.remove(&session_id)
+                        else {
+                            return false;
+                        };
+                        let owners = std::mem::take(&mut dead_sidecar.owners);
+                        let Some(replacement) = guard.sidecars.get_mut(&session_id) else {
+                            dead_sidecar.owners = owners;
+                            guard
+                                .recovering_sidecars
+                                .insert(session_id.clone(), dead_sidecar);
+                            return false;
+                        };
+                        replacement.owners = owners;
+                        true
+                    });
+                    if !installed {
+                        continue;
                     }
                     recovery.remove(&session_id);
                     ulog_info!(
@@ -1108,8 +1130,8 @@ pub async fn monitor_session_sidecars(
                     );
                 }
                 Ok(Err(e)) => {
-                    if let Some(entry) = recovery.get_mut(&session_id) {
-                        entry.failures += 1;
+                    if let Some(failures) = recovery.get_mut(&session_id) {
+                        *failures += 1;
                     }
                     ulog_error!(
                         "[sidecar] Failed to auto-restart session {}: {}",
@@ -1118,8 +1140,8 @@ pub async fn monitor_session_sidecars(
                     );
                 }
                 Err(e) => {
-                    if let Some(entry) = recovery.get_mut(&session_id) {
-                        entry.failures += 1;
+                    if let Some(failures) = recovery.get_mut(&session_id) {
+                        *failures += 1;
                     }
                     ulog_error!(
                         "[sidecar] spawn_blocking failed for session {}: {}",

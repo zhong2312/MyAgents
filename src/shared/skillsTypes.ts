@@ -16,7 +16,12 @@ export interface SkillItem {
     path: string;
     folderName: string;
     author?: string;
-    enabled?: boolean;  // Global skill enable/disable state (always true for project skills)
+    /** Content is versioned and force-synced by MyAgents. */
+    systemOwned: boolean;
+    /** Product contract requires this global skill to remain enabled. */
+    required: boolean;
+    /** Effective enablement (always true for project and required skills). */
+    enabled: boolean;
 }
 
 /**

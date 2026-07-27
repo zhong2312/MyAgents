@@ -1,11 +1,11 @@
 import { ArrowRight, FileText, Info } from 'lucide-react';
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createElement as createSyntaxElement, Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 
-import { codeBlockSyntaxTheme } from '@/components/markdown/CodeBlock';
 import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
+import { useResolvedTheme } from '@/theme';
 import type { ToolUseSimple } from '@/types/chat';
 import { getPrismLanguage } from '@/utils/languageUtils';
 
@@ -32,32 +32,6 @@ const INITIAL_VISIBLE_VIEWPORT_ROWS = 16;
 const MAX_RENDER_ROWS_PER_FILE = 5_000;
 const SYNTAX_HIGHLIGHT_ROW_BUDGET = 1_000;
 const SYNTAX_HIGHLIGHT_TEXT_BUDGET = 100 * 1024;
-
-const FILE_PATCH_SYNTAX_THEME: Record<string, CSSProperties> = {
-  ...codeBlockSyntaxTheme,
-  'pre[class*="language-"]': {
-    ...codeBlockSyntaxTheme['pre[class*="language-"]'],
-    margin: 0,
-    padding: 0,
-    overflow: 'visible',
-    background: 'transparent',
-    textShadow: 'none',
-    borderRadius: 0,
-    fontFamily: 'var(--font-code)',
-    fontSize: 'var(--text-sm)',
-    lineHeight: '1.5rem',
-  },
-  'code[class*="language-"]': {
-    ...codeBlockSyntaxTheme['code[class*="language-"]'],
-    display: 'block',
-    minWidth: 'max-content',
-    background: 'transparent',
-    textShadow: 'none',
-    fontFamily: 'var(--font-code)',
-    fontSize: 'var(--text-sm)',
-    lineHeight: '1.5rem',
-  },
-};
 
 export default function FilePatchTool({ tool }: FilePatchToolProps) {
   const { t } = useTranslation('chat');
@@ -299,6 +273,32 @@ function FilePatchViewport({
   initialRowBudget: number;
   t: ChatTranslator;
 }) {
+  const prismTheme = useResolvedTheme().adapters.prism;
+  const syntaxTheme = useMemo<Record<string, CSSProperties>>(() => ({
+    ...prismTheme,
+    'pre[class*="language-"]': {
+      ...prismTheme['pre[class*="language-"]'],
+      margin: 0,
+      padding: 0,
+      overflow: 'visible',
+      background: 'transparent',
+      textShadow: 'none',
+      borderRadius: 0,
+      fontFamily: 'var(--font-code)',
+      fontSize: 'var(--text-sm)',
+      lineHeight: '1.5rem',
+    },
+    'code[class*="language-"]': {
+      ...prismTheme['code[class*="language-"]'],
+      display: 'block',
+      minWidth: 'max-content',
+      background: 'transparent',
+      textShadow: 'none',
+      fontFamily: 'var(--font-code)',
+      fontSize: 'var(--text-sm)',
+      lineHeight: '1.5rem',
+    },
+  }), [prismTheme]);
   const [isExpanded, setIsExpanded] = useState(false);
   const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
   const expandId = useId();
@@ -366,7 +366,7 @@ function FilePatchViewport({
         {shouldSyntaxHighlight ? (
           <SyntaxHighlighter
             language={language}
-            style={FILE_PATCH_SYNTAX_THEME}
+            style={syntaxTheme}
             PreTag="div"
             CodeTag="div"
             customStyle={{ margin: 0, padding: 0, overflow: 'visible', background: 'transparent' }}

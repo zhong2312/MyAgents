@@ -73,6 +73,7 @@ import { actions as spaceActions } from '@/pages/space/spaceStore';
 import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults';
 import { useAutostart } from '@/hooks/useAutostart';
 import { getBuildVersions } from '@/utils/debug';
+import { copyPlainText } from '@/utils/clipboard';
 import {
     isDeveloperSectionUnlocked,
     unlockDeveloperSection,
@@ -127,6 +128,9 @@ import {
     getManagedCodexUpdateRefreshAction,
     type ManagedCodexRuntimeBusyAction,
 } from './managedCodexRuntimePresentation';
+import { AppearanceModeControl } from './components/AppearanceModeControl';
+import { ThemePresetSelect } from './components/ThemePresetSelect';
+import { useResolvedTheme } from '@/theme';
 import type {
     NetworkProbeResult,
     ProviderVerifyError,
@@ -138,6 +142,7 @@ import { useSettingsNavigation } from './hooks/useSettingsNavigation';
 import { SettingsSidebar } from './components/SettingsSidebar';
 import { SkillsAgentsSection } from './sections/SkillsAgentsSection';
 import { ToolboxSection } from './sections/ToolboxSection';
+import codexModelSelectorOnboarding from '@/assets/onboarding/codex-model-selector.png';
 
 // Memoized component for model tag list to avoid recreating presetModelIds on every render
 /** Default args for Playwright MCP: persistent profile mode (preserves login state, single-session) */
@@ -263,6 +268,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     } = useConfig();
     const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
     const toast = useToast();
+    const resolvedTheme = useResolvedTheme();
     const { t: tSettings } = useTranslation('settings');
     const { t: tCommon } = useTranslation('common');
     // Stabilize toast reference to avoid unnecessary effect re-runs
@@ -2882,7 +2888,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         const url = managedCodexLoginState.loginUrl;
         if (!url) return;
         try {
-            await navigator.clipboard.writeText(url);
+            await copyPlainText(url);
             toast.success(tSettings('providers.codexToast.urlCopied'));
         } catch (error) {
             console.warn('[Settings] Failed to copy Managed Codex login URL:', error);
@@ -2995,7 +3001,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             ?? subscriptionLoginState.manualUrl;
         if (!url) return;
         try {
-            await navigator.clipboard.writeText(url);
+            await copyPlainText(url);
             toast.success(tSettings('providers.codexToast.urlCopied'));
         } catch (error) {
             console.warn('[Settings] Failed to copy subscription login URL:', error);
@@ -3506,6 +3512,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         if (!managedCodexLoginDialogOpen) return null;
         const state = managedCodexLoginState;
         const isActiveLogin = state.status === 'starting' || state.status === 'waiting';
+        const isLoginSucceeded = state.status === 'succeeded';
         const statusLabel = state.status === 'succeeded'
             ? tSettings('providers.loginDialog.statusDone')
             : state.status === 'cancelled'
@@ -3544,7 +3551,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     </div>
 
                     <div className="space-y-5 px-6 py-5">
-                        <section>
+                        <section hidden={isLoginSucceeded}>
                             <div className="flex items-center gap-2">
                                 {isActiveLogin ? (
                                     <Loader2 className="h-4 w-4 animate-spin text-[var(--info)]" />
@@ -3574,7 +3581,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </div>
                         </section>
 
-                        <section className="border-t border-[var(--line-subtle)] pt-5">
+                        <section hidden={isLoginSucceeded} className="border-t border-[var(--line-subtle)] pt-5">
                             <p className="text-sm font-medium text-[var(--ink)]">{tSettings('providers.loginDialog.remoteTitle')}</p>
                             <p className="mt-2 text-sm leading-relaxed text-[var(--ink-muted)]">
                                 {tSettings('providers.loginDialog.codexRemoteDescription')}
@@ -3584,10 +3591,27 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </p>
                         </section>
 
-                        {state.status === 'succeeded' && (
-                            <p className="rounded-lg bg-[var(--success-bg)] px-3 py-2 text-sm text-[var(--success)]">
-                                {tSettings('providers.loginDialog.completed')}
-                            </p>
+                        {isLoginSucceeded && (
+                            <section>
+                                <div className="flex items-start gap-3">
+                                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--success-bg)]">
+                                        <Check className="h-4 w-4 text-[var(--success)]" />
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-semibold text-[var(--ink)]">
+                                            {tSettings('providers.loginDialog.codexReadyTitle')}
+                                        </p>
+                                        <p className="mt-1 text-sm leading-relaxed text-[var(--ink-muted)]">
+                                            {tSettings('providers.loginDialog.codexReadyDescription')}
+                                        </p>
+                                    </div>
+                                </div>
+                                <img
+                                    src={codexModelSelectorOnboarding}
+                                    alt={tSettings('providers.loginDialog.codexModelSelectorAlt')}
+                                    className="mx-auto mt-5 block h-auto w-full max-w-xs rounded-xl border border-[var(--line-subtle)]"
+                                />
+                            </section>
                         )}
                         {(state.status === 'cancelled' || state.status === 'error') && (
                             <p className="break-words rounded-lg bg-[var(--error-bg)] px-3 py-2 text-sm text-[var(--error)]">
@@ -3600,9 +3624,13 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                         <button
                             type="button"
                             onClick={() => setManagedCodexLoginDialogOpen(false)}
-                            className="rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]"
+                            className={isLoginSucceeded
+                                ? 'rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]'
+                                : 'rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]'}
                         >
-                            {tSettings('providers.loginDialog.close')}
+                            {isLoginSucceeded
+                                ? tSettings('providers.loginDialog.done')
+                                : tSettings('providers.loginDialog.close')}
                         </button>
                         {(state.status === 'cancelled' || state.status === 'error') && (
                             <button
@@ -4258,26 +4286,29 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     />
                                 </div>
 
-                                <div className="mt-4 flex items-center justify-between gap-4">
-                                    <div className="flex-1 pr-4">
+                                <AppearanceModeControl
+                                    value={config.appearanceMode}
+                                    onChange={(mode) => { void updateConfig({ appearanceMode: mode }); }}
+                                />
+
+                                <div className="mt-4 flex items-center justify-between gap-4 border-t border-[var(--line)] pt-4">
+                                    <div className="min-w-0 flex-1 pr-4">
                                         <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.themeTitle')}</p>
-                                        <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{tSettings('general.themeDescription')}</p>
+                                        <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
+                                            {tSettings('general.themeDescription')}
+                                        </p>
                                     </div>
-                                    <div className="flex shrink-0 gap-0.5 rounded-full bg-[var(--paper-inset)] p-0.5">
-                                        {(['system', 'light', 'dark'] as const).map((mode) => (
-                                            <button
-                                                key={mode}
-                                                onClick={() => updateConfig({ theme: mode })}
-                                                className={`rounded-full px-3 py-1 text-xs font-medium transition-all ${
-                                                    config.theme === mode
-                                                        ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm'
-                                                        : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]'
-                                                }`}
-                                            >
-                                                {tSettings(`general.theme.${mode}`)}
-                                            </button>
-                                        ))}
-                                    </div>
+                                    <ThemePresetSelect
+                                        value={resolvedTheme.themeId}
+                                        onPersistTheme={(themeId) => updateConfig({
+                                            themeId,
+                                            themeSelectionExplicit: true,
+                                        })}
+                                        onPersistError={(error) => {
+                                            const message = error instanceof Error ? error.message : String(error);
+                                            toast.error(tSettings('general.themeSaveFailed', { message }));
+                                        }}
+                                    />
                                 </div>
                             </div>
 
@@ -4619,7 +4650,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                     onClick={() => patchProxySettings({ scope: { mode: 'all' } })}
                                                     className={`px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                         proxyScope.mode === 'all'
-                                                            ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                                                            ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
@@ -4631,7 +4662,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                     onClick={() => setShowProxyScopeDialog(true)}
                                                     className={`border-l border-[var(--line)] px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                         proxyScope.mode === 'custom'
-                                                            ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                                                            ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
@@ -4798,7 +4829,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <div className="rounded-2xl border border-[var(--line)] bg-gradient-to-br from-[var(--paper-inset)] to-[var(--paper)] p-8">
                                 <div className="flex flex-col items-center text-center">
                                     <h1
-                                        className="brand-title text-[3rem] text-[var(--ink)] cursor-default select-none"
+                                        className="theme-launcher-hero-title cursor-default select-none"
                                         onClick={handleLogoTap}
                                     >
                                         MyAgents
@@ -4878,7 +4909,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 type="button"
                                                 onClick={updateInstalling ? undefined : onRestartAndUpdate}
                                                 disabled={updateInstalling}
-                                                className="rounded-lg bg-[var(--success)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-80 disabled:cursor-wait"
+                                                className="rounded-lg bg-[var(--success)] px-3 py-1.5 text-xs font-medium text-[var(--on-success)] transition-colors hover:opacity-90 disabled:opacity-80 disabled:cursor-wait"
                                             >
                                                 {updateInstalling ? tSettings('about.installing') : tSettings('about.restartInstall')}
                                             </button>
@@ -5477,7 +5508,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 }
                                             }}
                                             disabled={!builtinMcpSettings.newArg.trim()}
-                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                         >
                                             <Plus className="h-3.5 w-3.5" />
                                         </button>
@@ -5576,7 +5607,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 }
                                             }}
                                             disabled={!builtinMcpSettings.newEnvKey.trim() || builtinMcpSettings.newEnvKey.trim() in builtinMcpSettings.env}
-                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                         >
                                             <Plus className="h-3.5 w-3.5" />
                                         </button>
@@ -5595,7 +5626,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={handleSaveBuiltinMcp}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -5696,7 +5727,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, aspectRatio: r } : null)}
                                             className={`rounded-md px-2.5 py-1 text-xs transition-colors ${r !== 'auto' ? 'font-mono' : ''} ${
                                                 geminiImageSettings.aspectRatio === r
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -5721,7 +5752,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, imageSize: s } : null)}
                                             className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
                                                 geminiImageSettings.imageSize === s
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -5820,7 +5851,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <button
                                 onClick={handleSaveGeminiImage}
                                 disabled={!geminiImageSettings.apiKey.trim()}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90 disabled:opacity-40"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90 disabled:opacity-40"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -5894,7 +5925,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 onClick={() => setPlaywrightSettings(prev => prev ? { ...prev, browser: b.id } : null)}
                                                 className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
                                                     playwrightSettings.browser === b.id
-                                                        ? 'bg-[var(--accent)] text-white'
+                                                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                         : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                                 }`}
                                             >
@@ -5921,7 +5952,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setPlaywrightSettings(prev => prev ? { ...prev, device: d.id } : null)}
                                             className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
                                                 playwrightSettings.device === d.id
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -6133,7 +6164,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 <button
                                                     onClick={handleSaveCookie}
                                                     disabled={!cookieForm.domain.trim() || !cookieForm.name.trim() || !cookieForm.value.trim()}
-                                                    className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                                    className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                                 >
                                                     {cookieForm.editIndex !== null
                                                         ? tSettings('toolbox.dialogs.playwright.update')
@@ -6205,7 +6236,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 }
                                             }}
                                             disabled={!playwrightSettings.newArg.trim()}
-                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                         >
                                             <Plus className="h-3.5 w-3.5" />
                                         </button>
@@ -6224,7 +6255,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={handleSavePlaywright}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -6288,7 +6319,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultVoice: v.id } : null)}
                                             className={`rounded-md px-2 py-1 text-xs transition-colors ${
                                                 edgeTtsSettings.defaultVoice === v.id
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -6314,7 +6345,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultOutputFormat: f.id } : null)}
                                             className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
                                                 edgeTtsSettings.defaultOutputFormat === f.id
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -6450,7 +6481,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     <button
                                         onClick={handlePreviewTts}
                                         disabled={ttsPreviewLoading || !ttsPreviewText.trim()}
-                                        className="shrink-0 h-10 w-10 rounded-full bg-[var(--accent)] text-white flex items-center justify-center hover:bg-[var(--accent)]/90 disabled:opacity-40 transition-colors self-center"
+                                        className="shrink-0 h-10 w-10 rounded-full bg-[var(--accent)] text-[var(--on-accent)] flex items-center justify-center hover:bg-[var(--accent)]/90 disabled:opacity-40 transition-colors self-center"
                                         title={ttsPreviewPlaying
                                             ? tSettings('toolbox.dialogs.edgeTts.stop')
                                             : tSettings('toolbox.dialogs.edgeTts.play')}
@@ -6479,7 +6510,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={handleSaveEdgeTts}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -6951,7 +6982,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                                         handleMcpOAuthConnect(mcpForm.id, mcpForm.url);
                                                                     }}
                                                                     disabled={mcpOAuthConnecting === mcpForm.id || !mcpForm.url}
-                                                                    className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+                                                                    className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] transition-colors hover:opacity-90 disabled:opacity-50"
                                                                 >
                                                                     {mcpOAuthConnecting === mcpForm.id ? (
                                                                         <><Loader2 className="h-4 w-4 animate-spin" /> {tSettings('toolbox.dialogs.customMcp.waitingAuthorization')}</>
@@ -7749,7 +7780,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={confirmDeleteCustomProvider}
-                                className="flex-1 rounded-lg bg-[var(--error)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--error-hover)]"
+                                className="flex-1 rounded-lg bg-[var(--error)] px-4 py-2.5 text-sm font-medium text-[var(--on-error)] transition-colors hover:bg-[var(--error-hover)]"
                             >
                                 {tSettings('providers.custom.delete')}
                             </button>
@@ -7793,7 +7824,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             {showAiInstallButton && (
                                 <button
                                     onClick={handleAiInstallRuntime}
-                                    className="flex-1 rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-warm-hover)]"
+                                    className="flex-1 rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)]"
                                 >
                                     {tSettings('toolbox.dialogs.runtimeMissing.askHelperInstall')}
                                 </button>

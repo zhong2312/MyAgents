@@ -10,6 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+use tauri::Emitter;
 use tokio::net::TcpListener;
 
 use crate::cron_task::{
@@ -103,6 +104,7 @@ pub async fn start_management_api() -> Result<u16, String> {
         .map_err(|_| "Management API already started".to_string())?;
 
     let app = Router::new()
+        .route("/api/app/config-changed", post(app_config_changed_handler))
         .route("/api/cron/create", post(create_cron_handler))
         .route("/api/cron/list", get(list_cron_handler))
         .route("/api/cron/update", post(update_cron_handler))
@@ -135,6 +137,10 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route(
             "/api/agent/runtime-status",
             get(agent_runtime_status_handler),
+        )
+        .route(
+            "/api/agent/reload-config",
+            post(agent_reload_config_handler),
         )
         .route(
             "/api/agent/stop-channels",
@@ -195,10 +201,6 @@ pub async fn start_management_api() -> Result<u16, String> {
         )
         .route("/api/space/issue-status", post(space_issue_status_handler))
         .route("/api/space/issue-claim", post(space_issue_claim_handler))
-        .route(
-            "/api/space/issue-delivery-ignore",
-            post(space_issue_delivery_ignore_handler),
-        )
         .route("/api/space/issue-close", post(space_issue_close_handler))
         .route(
             "/api/space/issue-complete",
@@ -243,6 +245,28 @@ pub async fn start_management_api() -> Result<u16, String> {
 
     ulog_info!("[management-api] Started on http://127.0.0.1:{}", port);
     Ok(port)
+}
+
+/// Fan a disk-backed AppConfig invalidation out to every renderer window.
+/// The payload intentionally contains no config fields because config.json may
+/// contain credentials; renderers re-read the authorities after this signal.
+async fn app_config_changed_handler() -> Json<serde_json::Value> {
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "App handle is not initialized",
+        }));
+    };
+    match app_handle.emit("app:config-changed", ()) {
+        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Err(error) => {
+            ulog_warn!("[management] Failed to emit app:config-changed: {}", error);
+            Json(serde_json::json!({
+                "ok": false,
+                "error": error.to_string(),
+            }))
+        }
+    }
 }
 
 fn no_store_json(value: serde_json::Value) -> (HeaderMap, Json<serde_json::Value>) {
@@ -946,6 +970,8 @@ struct GoalCreateRequest {
     session_id: String,
     workspace_path: String,
     objective: String,
+    #[serde(default)]
+    end_conditions: GoalEndConditions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1331,11 +1357,7 @@ async fn goal_create_handler(Json(req): Json<GoalCreateRequest>) -> Json<serde_j
         workspace_path: workspace_path.to_string(),
         session_id: session_id.to_string(),
         objective: objective.to_string(),
-        end_conditions: GoalEndConditions {
-            deadline: None,
-            max_executions: None,
-            ai_can_exit: true,
-        },
+        end_conditions: req.end_conditions,
         notify_enabled: true,
         permission_mode: String::new(),
     };
@@ -1968,6 +1990,54 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
     }
 
     Json(serde_json::json!({ "ok": true, "agents": result }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentReloadConfigRequest {
+    agent_id: String,
+    patch: im::types::AgentConfigPatch,
+}
+
+async fn agent_reload_config_handler(
+    Json(req): Json<AgentReloadConfigRequest>,
+) -> Json<serde_json::Value> {
+    let Some(agents) = get_agents() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Agent state unavailable"
+        }));
+    };
+    let Some(sidecar_manager) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Sidecar manager unavailable"
+        }));
+    };
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "App not initialized"
+        }));
+    };
+
+    let agent_id = req.agent_id;
+    match im::reload_agent_config_from_disk(
+        app_handle,
+        agents,
+        sidecar_manager,
+        agent_id.clone(),
+        req.patch,
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "agentId": agent_id })),
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "agentId": agent_id,
+            "error": error
+        })),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2850,12 +2920,6 @@ async fn space_issue_claim_handler(
     space_result(crate::space_cloud::space_cli_issue_claim(input).await)
 }
 
-async fn space_issue_delivery_ignore_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueDeliveryIgnoreInput>,
-) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_delivery_ignore(input).await)
-}
-
 async fn space_issue_close_handler(
     Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
 ) -> Json<serde_json::Value> {
@@ -3526,6 +3590,62 @@ mod tests {
     }
 
     #[test]
+    fn goal_create_request_defaults_and_deserializes_end_conditions() {
+        let default_request: GoalCreateRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1",
+            "workspacePath": "/tmp/workspace",
+            "objective": "Ship it"
+        }))
+        .unwrap();
+        assert_eq!(default_request.end_conditions, GoalEndConditions::default());
+
+        let limited_request: GoalCreateRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1",
+            "workspacePath": "/tmp/workspace",
+            "objective": "Ship it",
+            "endConditions": {
+                "deadline": "2026-07-22T01:00:00.000Z",
+                "maxExecutions": 5,
+                "aiCanExit": false
+            }
+        }))
+        .unwrap();
+        assert_eq!(limited_request.end_conditions.max_executions, Some(5));
+        assert!(!limited_request.end_conditions.ai_can_exit);
+        assert_eq!(
+            limited_request
+                .end_conditions
+                .deadline
+                .expect("deadline")
+                .to_rfc3339(),
+            "2026-07-22T01:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn agent_reload_request_deserializes_presence_patch() {
+        let request: AgentReloadConfigRequest = serde_json::from_value(serde_json::json!({
+            "agentId": "agent-1",
+            "patch": {
+                "providerId": "codex-sub",
+                "model": "gpt-5.6-sol",
+                "permissionMode": "fullAgency",
+                "providerEnvJson": null
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(request.agent_id, "agent-1");
+        assert_eq!(
+            request.patch.provider_id,
+            Some(Some("codex-sub".to_string()))
+        );
+        assert_eq!(request.patch.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(request.patch.permission_mode.as_deref(), Some("fullAgency"));
+        assert_eq!(request.patch.provider_env_json, Some(None));
+    }
+
+    #[test]
     fn bridge_message_parses_request_scoped_openclaw_reply_protocol() {
         let payload: BridgeMessagePayload = serde_json::from_value(serde_json::json!({
             "botId": "bot-1",
@@ -3707,6 +3827,7 @@ mod tests {
                 space_slug: "official".to_string(),
                 file_paths: Vec::new(),
                 session_id: None,
+                session_origin: None,
                 workspace_id: None,
                 agent_id: None,
                 workspace_path: Some(workspace_path.clone()),
@@ -3734,6 +3855,7 @@ mod tests {
                 comment_id,
                 space_slug: "official".to_string(),
                 session_id: None,
+                session_origin: None,
                 workspace_id: None,
                 agent_id: None,
                 workspace_path: Some(workspace_path.clone()),
@@ -3752,6 +3874,7 @@ mod tests {
                 issue_id: "iss_mock_004".to_string(),
                 space_slug: "official".to_string(),
                 session_id: None,
+                session_origin: None,
                 workspace_id: None,
                 agent_id: None,
                 workspace_path: Some(workspace_path),

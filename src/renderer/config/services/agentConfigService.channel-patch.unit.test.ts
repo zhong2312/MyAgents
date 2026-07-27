@@ -20,7 +20,8 @@ import {
 function initialConfig(): AppConfig {
   return {
     defaultPermissionMode: 'auto',
-    theme: 'system',
+    themeId: 'myagents-default',
+    appearanceMode: 'system',
     minimizeToTray: true,
     showDevTools: false,
     autoStart: false,

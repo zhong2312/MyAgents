@@ -276,9 +276,23 @@ const downloadUrl = isMacARM
 
 ### 1. 更新版本号
 
-同时修改两个文件：
-- `package.json`: `"version": "x.x.x"`
-- `src-tauri/tauri.conf.json`: `"version": "x.x.x"`
+桌面 App 版本的单一数据源是 `package.json`。使用 npm 的版本命令更新它，并让仓库内置
+`version` hook 同步 Tauri 与 Cargo 配置：
+
+```bash
+npm version x.x.x --no-git-tag-version
+cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 >/dev/null
+cargo metadata --manifest-path src-tauri/Cargo.toml --locked --no-deps --format-version 1 >/dev/null
+```
+
+提交前确认以下位置一致：
+
+- `package.json` 与 `package-lock.json` 根包版本；
+- `src-tauri/tauri.conf.json`；
+- `src-tauri/Cargo.toml` 与 `Cargo.lock` 中的 `myagents` 根包版本。
+
+构建脚本会校验 package / Tauri / Cargo 三处版本，不一致时拒绝继续。Managed Codex Runtime
+使用 `src/shared/managed-codex-runtime.json` 的独立版本锁，不能随桌面 App 版本自动递增。
 
 ### 2. 构建应用
 

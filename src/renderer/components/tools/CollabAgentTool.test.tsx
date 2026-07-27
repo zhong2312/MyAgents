@@ -3,9 +3,10 @@
 // a 'CollabAgent' card behave like a builtin 'Task' card (expandable nested trace).
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen, fireEvent } from '@testing-library/react';
+import { cleanup, screen, fireEvent } from '@testing-library/react';
 
 import { i18n } from '@/i18n';
+import { renderWithTheme as render } from '@/test/renderWithTheme';
 import type { ToolUseSimple } from '@/types/chat';
 
 import TaskTool from './TaskTool';

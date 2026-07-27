@@ -369,7 +369,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                                     key={value}
                                     onClick={() => setFilter(value)}
                                     className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${filter === value
-                                        ? 'bg-[var(--accent)] text-white'
+                                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                         : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:bg-[var(--line)]'
                                         }`}
                                 >
@@ -390,7 +390,7 @@ export function UnifiedLogsPanel({ sseLogs, isVisible, onClose, onClearAll }: Un
                                     key={value}
                                     onClick={() => setLevelFilter(value)}
                                     className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${levelFilter === value
-                                        ? 'bg-[var(--button-dark-bg)] text-[var(--button-primary-text)]'
+                                        ? 'bg-[var(--button-dark-bg)] text-[var(--button-dark-text)]'
                                         : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:bg-[var(--line)]'
                                         }`}
                                 >

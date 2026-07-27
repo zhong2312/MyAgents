@@ -101,7 +101,7 @@ function ensureHighlightStyles(): void {
     }
     ${hl}(chat-search-current) {
       background-color: var(--accent);
-      color: #ffffff;
+      color: var(--on-accent);
     }
     @keyframes chat-search-msg-pulse {
       0%   {

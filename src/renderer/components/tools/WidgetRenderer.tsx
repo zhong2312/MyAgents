@@ -16,6 +16,7 @@ import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { buildWidgetCssVars } from './widgetCssVars';
 import { buildSandboxHtml } from './widgetSandboxHtml';
 import { detectWidgetLibraries, loadLibrarySources, inlineWidgetLibraries } from './widgetLibraries';
+import { useResolvedTheme } from '@/theme';
 
 // ===== Module-level height cache (survives component lifecycle) =====
 // Key: first 300 chars of widget_code (past the common <style> prefix).
@@ -72,6 +73,9 @@ const MIN_HEIGHT = 60;
 
 export default function WidgetRenderer({ widgetCode, isStreaming, title }: WidgetRendererProps) {
   const { t } = useTranslation('chat');
+  const resolvedTheme = useResolvedTheme();
+  const themeCss = useMemo(() => buildWidgetCssVars(resolvedTheme), [resolvedTheme]);
+  const [initialThemeCss] = useState(themeCss);
   const scriptErrorPrefix = t('shell.toolChrome.widget.scriptErrorPrefix');
   const [initialScriptErrorPrefix] = useState(() => scriptErrorPrefix);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -99,11 +103,10 @@ export default function WidgetRenderer({ widgetCode, isStreaming, title }: Widge
   // safe to allow (a top frame can't navigate to attacker-controlled srcdoc).
   // See that guard's comment for the full rationale.
   const srcdoc = useMemo(() => {
-    const cssVars = buildWidgetCssVars();
-    return buildSandboxHtml(cssVars, {
+    return buildSandboxHtml(initialThemeCss, {
       scriptErrorPrefix: initialScriptErrorPrefix,
     });
-  }, [initialScriptErrorPrefix]);
+  }, [initialScriptErrorPrefix, initialThemeCss]);
 
   // Send message to iframe
   const sendToIframe = useCallback((msg: Record<string, unknown>) => {
@@ -161,6 +164,7 @@ export default function WidgetRenderer({ widgetCode, isStreaming, title }: Widge
         case 'widget:ready':
           iframeReady.current = true;
           sendToIframe({ type: 'widget:i18n', scriptErrorPrefix });
+          sendToIframe({ type: 'widget:theme', css: themeCss });
           // If we already have content, send it immediately
           if (widgetCode && !hasFinalized.current) {
             if (isStreaming) {
@@ -212,29 +216,24 @@ export default function WidgetRenderer({ widgetCode, isStreaming, title }: Widge
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [widgetCode, isStreaming, sendToIframe, sendFinalize, cacheKey, title, scriptErrorPrefix, notifyRowLayoutChanged]);
+  }, [widgetCode, isStreaming, sendToIframe, sendFinalize, cacheKey, title, scriptErrorPrefix, notifyRowLayoutChanged, themeCss]);
 
   useEffect(() => {
     if (!iframeReady.current) return;
     sendToIframe({ type: 'widget:i18n', scriptErrorPrefix });
   }, [scriptErrorPrefix, sendToIframe]);
 
-  // Theme change observer — push updated CSS vars to iframe when dark/light mode toggles
+  // Push the resolved Theme adapter without recreating the iframe or Widget content.
   useEffect(() => {
-    const observer = new MutationObserver(() => {
-      if (iframeReady.current) {
-        sendToIframe({ type: 'widget:theme', css: buildWidgetCssVars() });
-      }
-    });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] });
-    return () => observer.disconnect();
-  }, [sendToIframe]);
+    if (iframeReady.current) sendToIframe({ type: 'widget:theme', css: themeCss });
+  }, [sendToIframe, themeCss]);
 
   // iframe onLoad fallback for ready race condition (CodePilot Bug #6)
   const onIframeLoad = useCallback(() => {
     if (!iframeReady.current) {
       iframeReady.current = true;
       sendToIframe({ type: 'widget:i18n', scriptErrorPrefix });
+      sendToIframe({ type: 'widget:theme', css: themeCss });
       if (widgetCode) {
         if (isStreaming) {
           const html = sanitizeForStreaming(widgetCode);
@@ -245,7 +244,7 @@ export default function WidgetRenderer({ widgetCode, isStreaming, title }: Widge
         }
       }
     }
-  }, [widgetCode, isStreaming, sendToIframe, sendFinalize, scriptErrorPrefix]);
+  }, [widgetCode, isStreaming, sendToIframe, sendFinalize, scriptErrorPrefix, themeCss]);
 
   // Streaming update: debounced, script-stripped
   useEffect(() => {

@@ -5,6 +5,8 @@
 小 badge。凡是需要"模型可见、用户气泡不直接展示"的投送消息，都应优先复用这套
 协议，不要为单个场景另造隐藏规则。
 
+Space IssueDelivery 在这层通用 envelope 内还有独立的 Registered Agent Prompt contract。0.3.2 active v2、旧客户端 v1 兼容面、完整模板与拼接规则见 `space_issue_delivery_protocol.md`；本文只拥有 leading reminder、badge 与 visible tail 的通用语义。
+
 ## 适用场景
 
 - 后台任务、Cron、IM heartbeat 等系统事件需要唤醒或提示 Agent。
@@ -15,7 +17,9 @@
 不适用场景：
 
 - 普通跨 session send/watch 事件仍走 `session_architecture.md` 的
-  `<myagents-session-event>` 协议，除非最终 user bubble 确实需要隐藏内部 payload。
+  `<myagents-session-event>` 协议。协议整体位于隐藏 envelope 内；renderer 只对
+  `send.request` 提取 `<payload>` 与 `source_label` 形成用户可见气泡，自动
+  `send.result` / watch 事件继续保持隐藏。不得把内部 summary / session id 暴露到气泡。
 - 工具产物、图片、文件不要塞进 prompt 字符串，走 `tool_attachment_pipeline.md`
   的 `ToolAttachment[]`。
 
@@ -47,7 +51,7 @@
 4. `system-reminder` 内部 payload 会进入模型上下文；在有 `visibleText` 的标准
    mixed message 中，用户气泡、Session 搜索/预览、Query Navigator 与统计详情的
    turn trigger 都只使用 `visibleText`。
-5. 同一条消息只应有一个 leading `system-reminder` envelope；解析器只消费第一段。
+5. 同一条消息只应有一个 leading `system-reminder` envelope；通用解析器只消费第一段，生产者不得据此堆叠 envelope。Desktop → IM 镜像属于防泄漏边界，会防御性地连续剥离异常堆叠的 leading envelope 后才生成用户可见文本；这只是兼容历史/异常输入，不改变单 envelope 的生产约束。
 6. 如果没有 `visibleText` 且没有用户附件，前端应把整条 user bubble 视为纯隐藏
    reminder，不渲染气泡正文。Goal 自动续跑、objective update 等“只给模型看”的
    注入依赖这个语义。
@@ -137,12 +141,12 @@ instruction、cron output 都只给模型看。
 | Goal 自动续跑 | 同一 builder，调用方 `/goal/execute-sync` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>`，第二轮起纯隐藏 |
 | Goal 普通 query context | `src/shared/systemReminder.ts::buildGoalContextReminder`，调用方 Goal-aware chat enqueue 路径 | `<system-reminder><GOAL_CONTEXT>...</GOAL_CONTEXT></system-reminder>` + 用户 visible query |
 | 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |
-| Space IssueDelivery | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue><myagents-space-event><issue-instruction><cloud-issue-instruction>…</cloud-issue-instruction><local-execution-instruction>…</local-execution-instruction></issue-instruction>…</myagents-space-event></myagents-space-issue></system-reminder>` + 本地化可见提示 |
+| Space IssueDelivery（0.3.2 v2） | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue><registered-agent-context>…</registered-agent-context><registered-agent-instruction>…</registered-agent-instruction><operating-guidance>…</operating-guidance><deliveries>…</deliveries></myagents-space-issue></system-reminder>` + 本地化可见提示 |
 | Cron 结果投送 IM session | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息` |
 
 相关但不是完整复用模板的入口：
 
-Space 的双 instruction 是该业务域内部的 trust boundary，不改变通用 reminder wire protocol：Cloud 只固化 assignee/delivery/状态等业务意图，Desktop 只描述当前 CLI/workspace/Task 执行方法；trigger 与 Issue 用户文本属于 facts，必须 XML escape，不能进入 instruction。Renderer 仍只消费外层 `myagents-space-issue` badge 与 reminder 后的 visible tail。
+Space v2 的内部 trust boundary 不改变通用 reminder wire protocol：Cloud 提供权威 Registered Agent instruction/revision、transport 索引与轻量因果导航；Desktop 描述当前 CLI/workspace/Task 执行方法并组装 Prompt；Issue 用户文本必须有界 XML escape，不能伪造结构。Renderer 仍只消费外层 `myagents-space-issue` badge 与 reminder 后的 visible tail。已发布旧 Desktop 的 v1 结构继续由 Cloud 版本化 projection 支持，但不进入 0.3.2 builder。
 
 - `src/server/index.ts` 普通 heartbeat：纯
   `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>`，没有 visible tail；

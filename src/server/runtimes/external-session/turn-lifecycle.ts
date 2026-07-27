@@ -31,6 +31,18 @@ let activeTurnPromotion: ExternalTurnPromotionToken | null = null;
 let terminalObserverBarrier: Promise<void> = Promise.resolve();
 let currentTurnActivityFacts: SessionActivityTurnFacts | null = null;
 let lastSessionCompletionTerminal: SessionCompletionTerminal | null = null;
+type ExternalAssistantMirrorDisposition = 'mirror-completed-blocks' | 'reply-router-only' | 'disabled';
+type ExternalTurnMirrorState =
+  | { kind: 'inactive'; assistantDisposition: 'reply-router-only' | 'disabled' }
+  | {
+    kind: 'active';
+    assistantDisposition: Exclude<ExternalAssistantMirrorDisposition, 'disabled'>;
+    deliveryTail: Promise<boolean>;
+  };
+let currentTurnMirrorState: ExternalTurnMirrorState = {
+  kind: 'inactive',
+  assistantDisposition: 'disabled',
+};
 let currentTurnBinding: {
   queueId: string;
   owner?: TurnOwner;
@@ -38,6 +50,98 @@ let currentTurnBinding: {
 } | null = null;
 
 const turnFinalization = new TurnFinalizationGate();
+
+export type ExternalTurnMirrorAdmission =
+  | {
+    kind: 'skip';
+    assistantDisposition: 'reply-router-only' | 'disabled';
+  }
+  | {
+    kind: 'deliver-desktop-user';
+    waitForPersistence: Promise<boolean>;
+    deliverUser: () => Promise<void>;
+  };
+
+function appendExternalMirrorUserDelivery(
+  priorTail: Promise<boolean>,
+  admission: Extract<ExternalTurnMirrorAdmission, { kind: 'deliver-desktop-user' }>,
+): Promise<boolean> {
+  return priorTail
+    .then(async (priorSucceeded) => {
+      const persisted = await admission.waitForPersistence;
+      if (!persisted) return false;
+      await admission.deliverUser();
+      return priorSucceeded;
+    })
+    .catch((error) => {
+      console.warn('[external-session] desktop mirror admission delivery failed:', error);
+      return false;
+    });
+}
+
+/** Begin a new turn's mirror lifecycle after its first user transcript append.
+ * The lifecycle owner serializes user/assistant delivery without blocking the
+ * runtime dispatch path. */
+export function admitExternalTurnMirror(admission: ExternalTurnMirrorAdmission): void {
+  if (admission.kind === 'skip') {
+    currentTurnMirrorState = {
+      kind: 'inactive',
+      assistantDisposition: admission.assistantDisposition,
+    };
+    return;
+  }
+  currentTurnMirrorState = {
+    kind: 'active',
+    assistantDisposition: 'mirror-completed-blocks',
+    deliveryTail: appendExternalMirrorUserDelivery(Promise.resolve(true), admission),
+  };
+}
+
+/** Add a runtime-accepted Desktop realtime steer to the active turn. An IM
+ * request keeps ReplyRouter ownership of assistant delivery; every other turn
+ * gains Desktop mirror ownership for subsequent completed text blocks. */
+export function admitExternalRealtimeDesktopMirror(
+  admission: Extract<ExternalTurnMirrorAdmission, { kind: 'deliver-desktop-user' }>,
+): void {
+  const priorState = currentTurnMirrorState;
+  const assistantDisposition = priorState.assistantDisposition === 'reply-router-only'
+    ? 'reply-router-only'
+    : 'mirror-completed-blocks';
+  currentTurnMirrorState = {
+    kind: 'active',
+    assistantDisposition,
+    deliveryTail: appendExternalMirrorUserDelivery(
+      priorState.kind === 'active' ? priorState.deliveryTail : Promise.resolve(true),
+      admission,
+    ),
+  };
+}
+
+/** Queue one completed assistant block behind every admitted Desktop user
+ * delivery for this turn. Returns false when another owner (ReplyRouter) or a
+ * non-Desktop turn owns delivery. */
+export function enqueueExternalAssistantMirror(
+  deliverAssistant: () => Promise<void>,
+): boolean {
+  const state = currentTurnMirrorState;
+  if (state.kind !== 'active' || state.assistantDisposition !== 'mirror-completed-blocks') {
+    return false;
+  }
+  currentTurnMirrorState = {
+    ...state,
+    deliveryTail: state.deliveryTail
+      .then(async (admissionsSucceeded) => {
+        if (!admissionsSucceeded) return false;
+        await deliverAssistant();
+        return true;
+      })
+      .catch((error) => {
+        console.warn('[external-session] assistant mirror delivery failed:', error);
+        return false;
+      }),
+  };
+  return true;
+}
 
 export type ExternalTurnOutcome = Readonly<{
   generation: number;
@@ -149,6 +253,7 @@ export function resetExternalTurnLifecycleState(): void {
   currentTurnBinding = null;
   currentTurnActivityFacts = null;
   lastSessionCompletionTerminal = null;
+  currentTurnMirrorState = { kind: 'inactive', assistantDisposition: 'disabled' };
   terminalObserverBarrier = Promise.resolve();
 }
 
@@ -291,6 +396,7 @@ export function resetExternalTurnAccumulators(): void {
   currentTurnUsage = null;
   currentTurnContextUsage = null;
   currentTurnEstimatedInputTokens = 0;
+  currentTurnMirrorState = { kind: 'inactive', assistantDisposition: 'disabled' };
 }
 
 export function setExternalTurnCompleted(value: boolean): void {

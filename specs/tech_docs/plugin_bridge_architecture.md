@@ -192,6 +192,18 @@ ReplyRouter 按同一 requestId 有序回传：
 插件将回复发送到 IM 平台（CardKit / 原生消息）
 ```
 
+官方 Lark 插件自身还有一层私有的 `accountId + chatId + threadId` 串行队列。上游默认把
+整段 `dispatchReplyFromConfig → AI terminal → CardKit delivery settled` 当成队列租约，导致
+第一条回复尚未完成时，第二、第三条消息连 MyAgents 的 Rust 入站队列都进不来。Bridge 对
+当前已知的官方 `chat-queue.js` 结构做窄兼容变换：每个 task 的 dispatcher / completion
+promise 仍存活到平台投递结束，但同 chat 的下一条只等待当前 task 的 Bridge→Rust POST
+收到 2xx（bounded mpsc 已接管）。作用域由 `AsyncLocalStorage` token 绑定，重叠 dispatcher
+不会互相 unregister；未知源码结构保持上游原行为并打印 warning，禁止猜测式 patch。
+
+这不是新增平台消息队列，也不改变 ReplyRouter / CardKit owner。Rust 入站队列仍是消息接管
+权威，官方插件仍是渲染与终态投递 owner；Bridge 只移除两个 owner 之间重复且生命周期错位的
+串行等待。
+
 #### Reply protocol ownership
 
 OpenClaw Channel Plugin 是回复渲染 owner：由插件决定是否启用 streaming、CardKit 的创建/更新节奏、静态消息 fallback 与最终收尾。MyAgents 不复制任何平台 SDK 会话，也不根据凭据或插件 ID 推导流式能力；Bridge 只提供 OpenClaw dispatcher 所需的**请求级、有序、可等待传输**。
@@ -400,6 +412,8 @@ Bridge 消费；Builtin SDK、Managed Codex 与用户原生外部 Runtime 仍保
 | `src/server/plugin-bridge/index.ts` | Bridge HTTP Server + 插件加载入口 |
 | `src/server/plugin-bridge/compat-api.ts` | OpenClaw API 适配（registerChannel/Tool） |
 | `src/server/plugin-bridge/compat-runtime.ts` | Channel Runtime Mock + 消息拦截路由 |
+| `src/server/plugin-bridge/lark-admission.ts` | 官方 Lark 同 chat task 的 admission scope/token owner |
+| `src/server/plugin-bridge/plugin-compat-patches.ts` | 已知官方 Lark queue 源码的 fail-closed 窄变换 |
 | `src/server/plugin-bridge/pending-dispatch.ts` | requestId → OpenClaw dispatcher 的有序传输队列 |
 | `src/server/plugin-bridge/sdk-shim/` | SDK shim 包（293 个 exports） |
 | `src/server/plugin-bridge/sdk-shim/plugin-sdk/_handwritten.json` | 手写模块保护清单 |

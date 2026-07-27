@@ -495,12 +495,15 @@ export interface LocalRegisteredAgent {
   localAgentId?: string | null;
   workspaceId?: string | null;
   displayName: string;
+  instruction: string | null;
+  instructionRevision: number;
   workspacePath: string;
   workspaceLabel?: string | null;
   avatarUrl?: string | null;
   avatarSource?: "preset" | "r2" | string | null;
   avatarPresetId?: string | null;
   avatarUrls?: SpaceAvatarUrls | null;
+  subscriptions: SpaceGoalSubscription[];
   goalId?: string | null;
   goalPathLabel?: string | null;
   stateFilter: string[];
@@ -527,6 +530,8 @@ export interface SpaceRegisteredAgent {
   localWorkspaceId?: string | null;
   localAgentId?: string | null;
   displayName: string;
+  instruction: string | null;
+  instructionRevision: number;
   workspacePath?: string | null;
   workspaceLabel?: string | null;
   avatarUrl?: string | null;
@@ -576,34 +581,17 @@ export interface SpaceDeliveryItem {
     spaceId: string;
     issueId: string;
     registeredAgentId: string;
-    deliveryKind?: "subscription" | "assignment" | "claim_followup" | string | null;
-    subscriptionId?: string | null;
-    claimId?: string | null;
-    notificationVersion: number;
-    updateSummary?: string | null;
-    targetSessionId?: string | null;
-    cloudInstruction?: {
-      id: string;
-      text: string;
-    } | null;
-    trigger?: {
-      updateId: string;
-      type: string;
-      actor?: { type: string; id?: string | null; name?: string | null } | null;
-      createdAt: string;
-      comment?: {
-        id: string;
-        author: SpaceIdentitySummary;
-        createdAt: string;
-        body: string;
-        truncated: boolean;
-      } | null;
-    } | null;
-    status: "pending" | "delivered" | "claimed" | "ignored" | string;
-    deliveredToSessionId?: string | null;
-    deliveredAt?: string | null;
+    subscriptionId: string | null;
+    deliveryKind: "subscription" | "assignment" | "claim_followup";
+    deliveryReason: "issue_update" | "subscription_backfill" | "scope_reevaluation";
+    claimId: string | null;
+    targetSessionId: string | null;
+    sourceIssueUpdateId: string;
+    fromNotificationVersionExclusive: number;
+    toNotificationVersionInclusive: number;
+    protocolVersion: 2;
+    status: "pending";
     createdAt: string;
-    updatedAt: string;
   };
   issueMeta: {
     id: string;
@@ -619,6 +607,28 @@ export interface SpaceDeliveryItem {
     path?: string | null;
     title?: string | null;
   } | null;
+  sourceUpdate: {
+    id: string;
+    version: number;
+    type: string;
+    createdAt: string;
+    actor: SpaceIdentitySummary;
+    commentId: string | null;
+    attachmentIds: string[];
+  };
+}
+
+export interface SpaceDeliveryPollPackage {
+  protocolVersion: 2;
+  space: { id: string; name: string; slug: string };
+  registeredAgent: {
+    id: string;
+    displayName: string;
+    instruction: string | null;
+    instructionRevision: number;
+  };
+  items: SpaceDeliveryItem[];
+  poll: Record<string, unknown>;
 }
 
 export type SpaceEventType =
@@ -1513,6 +1523,7 @@ export function spaceDownloadIssueAttachment(input: {
 
 export function spaceRegisterAgent(input: {
   displayName: string;
+  instruction: string;
   workspaceId: string;
   workspacePath: string;
   workspaceLabel?: string;
@@ -1526,6 +1537,8 @@ export function spaceRegisterAgent(input: {
 export function spaceUpdateRegisteredAgent(input: {
   id: string;
   displayName?: string;
+  instruction?: string;
+  expectedInstructionRevision?: number;
   workspaceId?: string;
   workspacePath?: string;
   workspaceLabel?: string;
@@ -1562,6 +1575,38 @@ export function spaceListRegisteredAgents(spaceId = DEFAULT_SPACE_ID) {
   );
 }
 
+export function spaceCreateRegisteredAgentSubscription(input: {
+  spaceId: string;
+  registeredAgentId: string;
+  goalId: string;
+  stateFilter: string[];
+}) {
+  return spaceApi<{ subscription: SpaceGoalSubscription }>(
+    "POST",
+    `/api/spaces/${spacePath(input.spaceId)}/subscriptions`,
+    {
+      actorType: "registered_agent",
+      actorId: input.registeredAgentId,
+      goalId: input.goalId,
+      stateFilter: input.stateFilter,
+    },
+  );
+}
+
+export function spaceDeleteRegisteredAgentSubscription(subscriptionId: string) {
+  return spaceApi<{ deleted: boolean }>(
+    "DELETE",
+    `/api/subscriptions/${encodeURIComponent(subscriptionId)}`,
+  );
+}
+
+export function spaceReevaluateRegisteredAgent(id: string) {
+  return spaceApi<{ reevaluated: boolean; subscriptionCount: number }>(
+    "POST",
+    `/api/registered-agents/${encodeURIComponent(id)}/re-evaluate-current-scope`,
+  );
+}
+
 export function spaceListLocalAgents() {
   return inv<LocalRegisteredAgent[]>("cmd_space_list_local_agents");
 }
@@ -1594,7 +1639,7 @@ export function spaceProcessDispatchesOnce() {
 }
 
 export function spacePollDeliveries(registeredAgentId: string) {
-  return inv<SpaceApiEnvelope<{ items: SpaceDeliveryItem[] }>>(
+  return inv<SpaceApiEnvelope<SpaceDeliveryPollPackage>>(
     "cmd_space_poll_deliveries",
     {
       input: { registeredAgentId },

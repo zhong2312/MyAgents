@@ -38,6 +38,9 @@ pub async fn initialize_session_goal_manager(app_handle: AppHandle) {
     match manager.startup_snapshot().await {
         Ok(goals) => {
             for goal in goals {
+                if !goal.is_terminal() && goal.end_conditions.deadline.is_some() {
+                    manager.ensure_deadline(&goal.id).await;
+                }
                 if goal.status == GoalStatus::Active {
                     manager.ensure_continuation(&goal.id, 0).await;
                 } else if !goal.delivery_outbox.is_empty() {

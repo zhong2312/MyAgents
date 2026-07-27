@@ -97,9 +97,9 @@ export default function ConfirmDialog({
                         type="button"
                         onClick={onConfirm}
                         disabled={loading}
-                        className={`flex items-center gap-1.5 rounded-full px-4 py-1.5 text-sm font-semibold text-white transition-colors disabled:opacity-50 ${isDanger
-                            ? 'bg-[var(--error)] hover:brightness-110'
-                            : 'bg-[var(--button-primary-bg)] hover:bg-[var(--button-primary-bg-hover)]'
+                        className={`flex items-center gap-1.5 rounded-full px-4 py-1.5 text-sm font-semibold transition-colors disabled:opacity-50 ${isDanger
+                            ? 'bg-[var(--error)] text-[var(--on-error)] hover:brightness-110'
+                            : 'bg-[var(--button-primary-bg)] text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]'
                             }`}
                     >
                         {loading && <Loader2 className="h-3 w-3 animate-spin" />}

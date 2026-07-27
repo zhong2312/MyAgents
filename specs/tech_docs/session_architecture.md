@@ -71,6 +71,13 @@ interface SessionStats {
 | `pending-` | `pending-{tabId}` | 新 Tab 占位符 | Tab 创建时，等待首条消息产生真实 UUID |
 | `cron-standalone-` | `cron-standalone-{uuid}` | 独立定时任务 | 创建不绑定 Tab 的定时任务 |
 
+### Session identity 迁移与删除线性化
+
+- `pending-* → SDK UUID` 不是“先创建 target、再尽力删除 source”的两次独立写入。`SessionStore.migratePendingSessionIdentity()` 同时持有 source/target JSONL 锁与 sessions index 锁；若 pending transcript 已落盘，先为 target 建立同 inode hard link，再用一次 `sessions.json` 写入替换 identity，最后移除 source 名称。进程在 metadata commit 前退出时，source metadata/data 仍是权威；重试只接纳与 source 同 inode 的 staged target，不明 target data 一律 fail-closed。source 清理失败时先补回已移除的 source link、恢复原始 metadata，再清 target，因此不会把部分迁移发布成两个可分叉副本。
+- 用户删除的唯一 lifecycle authority 是 Rust `cmd_delete_session_if_unowned`。它只接受 `[A-Za-z0-9-]{1,99}` 的 canonical 单路径段 ID，持有 per-Session lifecycle guard，并同时检查 durable Task/Goal 与全部 Sidecar owner；通过后使用仅注入 Global Sidecar 进程的随机 capability 调用 Node `user-delete` 存储 mutation。owner-acquiring Sidecar ensure 统一走 lifecycle async entrypoint：普通调用方由入口 acquire，Task metadata creator 已持 authority 时用 shared held lease 贯穿 readiness，严禁同 key 二次 acquire。health recovery 失败时把携带 owners 的原始 dead sidecar 放回 manager，不能把 owner 只藏在 monitor 私有重试队列。Renderer/browser 不能直接建立删除 authority，browser dev 因而拒绝删除，而不是退化成裸 HTTP DELETE。
+- `SessionStore.deleteSession()` 只接受 typed intent。`prepared-materialization-rollback` 必须在 JSONL/legacy data 尚不存在且 metadata 仍由同一 materialization source 拥有时才可执行；用户删除还在 index 锁内复核 system-maintenance 保护。
+- prepared rollback 与 turn admission 不靠队列/内存布尔快照互猜。Admission 以 `PendingDesktopMaterialization.targetSessionId + priorSessionId` 调用存储层 typed CAS `claimPreparedSessionForTurnAdmission()`；它与 rollback 在同一 sessions index 锁内检查同一 `materializationState:'prepared'` / source marker。该 CAS 是 admission 最后一个 awaited transition：此前仍可取消，赢锁后则同步把 promoted item 转成 active turn。admission 先赢则 marker 已清、rollback 拒绝；rollback 先赢则 metadata 已删、admission 在发布 accepted 前失败。
+
 ### SDK `sessionId` 与 `resume` 互斥
 
 SDK 约束：`sessionId` 和 `resume` 参数不能同时传递。
@@ -125,6 +132,12 @@ message.uuid`），MyAgents 必须清掉该 stale anchor 并降级为裸 `resume
 | `watch.completed` | watch 注册时目标正在运行，该 turn 正常 terminal 后回推结果 | 目标 Sidecar pending watch registry → Management API → watcher Sidecar |
 | `watch.error` | 被 watch 的目标 turn 中止、错误或无法确认正常完成 | 同 `watch.completed` |
 
+所有事件的结构化 prompt 都位于隐藏的 `system-reminder` envelope 内。renderer
+仅对 `send.request` 建立展示投影：读取 `<payload>` 与 `source_label` 形成目标
+session 的用户气泡；`event-summary`、session id 等协议元数据不得进入气泡。
+`send.result` 与 watch 事件是自动控制流，继续保持隐藏。该投影同时作用于 live echo
+与 REST 历史恢复，因此不能通过只在 SSE 分支插一条临时消息实现。
+
 `watch` 的 owner 分两层：Rust Management API 先用 live sidecar 表确认目标 session
 是否仍在运行，并在目标 sidecar 上注册 pending watch；目标 sidecar 只在 turn terminal
 时调用 `deliverSessionWatchEvents()` 生成最终事件。只有 watcher sidecar 确认 inbox
@@ -134,11 +147,22 @@ delivery 成功后，目标 sidecar 才 ack 并清理 pending watch；Management
 Space Registered Agent 的 `space.issue_delivery` 复用 inbox 的 `sessionEvent`
 metadata 来选择 registered-agent scenario 和 lazy session materialization，但最终
 prompt 不走通用 `<myagents-session-event>` 外包。Rust Space owner 会直接渲染
-`<system-reminder><myagents-space-issue><myagents-space-event ...>` user message，
+`<system-reminder><myagents-space-issue>…</myagents-space-issue></system-reminder>` user message，
 让前端隐藏内部处理指令并显示 `Space issue` badge。这个特例只适用于 Space Issue
 delivery，不改变 `myagents session send/watch` 的通用事件协议。`system-reminder`
 的通用隐藏 payload / badge / visible tail 规则见
 `system_reminder_protocol.md`。
+
+0.3.2 起，Registered Agent Session 的持久 origin 必须是
+`{ kind:'registered-agent', surface:'space_issue_delivery', context:{ spaceId, registeredAgentId } }`。
+Rust delivery event 同时携带两个 exact ID，Inbox 将其组成 `InteractionScenario`，
+SessionEngine 的 builtin/external adapter 必须透传同一 context 到 Session metadata。
+缺任一 ID 时不能构造 Agent context；普通桌面 Session 即使 workspace 与某个或多个
+Registered Agent 相同，也保持 User actor。升级时只允许把明确持久化为
+`registered-agent + space_issue_delivery`、且历史结构中完全没有 `context` property 的
+origin 补齐为 exact binding；`origin` 缺失、`null`、畸形或属于 desktop/其它 surface
+都必须 fail closed，不能因一次定向 Delivery 把普通旧 Session 提升为 Agent。fork 明确重置为
+`{ kind:'desktop', surface:'session_fork' }`，不得继承源 Session 的 Agent 身份。
 
 ### Desktop 连续 Query 队列模式（0.2.37）
 
@@ -166,18 +190,31 @@ Goal 是 current Session 的独立持久状态，物理存储为 `~/.myagents/se
 ```typescript
 type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
 
+interface GoalEndConditions {
+  deadline?: string;
+  maxExecutions?: number;
+  aiCanExit: boolean;
+}
+
 interface SessionGoalView {
   id: string;              // current Goal incarnation fence
   sessionId: string;       // product lookup key
   workspacePath: string;
   objective: string;
   status: GoalStatus;
+  endConditions: GoalEndConditions;
+  notifyEnabled: boolean;
+  permissionMode: string;
   turnCount: number;
+  createdAt: string;
+  updatedAt: string;
   revision: number;
   controlRevision: number;
   isExecuting: boolean;
+  executionNumber?: number; // 正在执行的 current turn；未执行时省略
   totalDurationMs: number; // 已结算 Goal Turn 的实际执行耗时之和
   totalTokens: number;     // 已结算 Goal Turn 的 input + output tokens 之和
+  lastExecutedAt?: string;
   terminalReason?: string;
 }
 ```
@@ -214,7 +251,7 @@ user query 对 paused Goal 的成功 claim 会原子恢复为 active。automatic
 
 #### Continuation 与 Sidecar
 
-Goal scheduler 只有 `goalId -> one-shot JoinHandle`。active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。
+Goal scheduler 的 automatic continuation 是 `goalId -> one-shot JoinHandle`：active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。绝对 deadline 由同一 `SessionGoalManager` 的另一条 one-shot handle 按 wall clock 反复复核，因此 paused 和 in-flight Turn 同样受限；到点后在 session lifecycle 锁内持续复用 disk-first terminal + exact/owner-scoped stop，直到 authority 清除与 owner 释放确认，期间新 Goal 不能越过旧 Goal cleanup。max executions 同时在 continuation 调度与原子 Turn claim 处裁决；claim 输给结束条件时仍持久化该 queue authority，等 Node 既有 abort settlement 清除后才允许替换。
 
 automatic continuation 在调用 Node `/goal/execute-sync` 前先附着 `SidecarOwner::Goal(goalId)`；用户 query 最晚在 Turn claim 时附着。它只是 owner token，不创建独立进程。Pause/Cancel/terminal 先提交 durable control 状态，再按 owner + queueId 精确 stop；只有 promotion/transport/进程终止得到确认后才清 `currentTurn` 并释放 owner。Rust 尚无 currentTurn 的 preclaim transport failure 也必须把已知 queueId 发给 Node stop，不能当作 already stopped。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
 
@@ -323,8 +360,8 @@ SDK background Agent/Bash 不拥有独立 Sidecar；它与父 turn 共用产生�
 |---|---|---|
 | `lifecycle.ts` | active process/runtime、starting guard、session binding、runtimeSessionId、prewarm/system-init、user-stop flag | start/prewarm/restore/stop/session_init |
 | `runtime-config.ts` | desired/live model、permission mode、reasoning effort；snapshot/source guard integration | runtime config setters、message snapshot capture、restore metadata |
-| `operation-queue.ts` | desktop queued message/config FIFO、drain reservation、generation-based stale dispatch rejection、desktop send tail reset、force/cancel/status | mid-turn desktop send、turn-boundary drain、config deferral、session reset cleanup |
-| `turn-lifecycle.ts` | turn completed/success flags、pre-transport promotion token、finalization gate、turn start time、usage/context usage、terminal plan classification | `beforeDispatch` accepted→transport 间 Stop invalidation、`turn_complete` / `session_complete` success/failure/prewarm/idle/user-stop 分类、wait idle、cron/IM true-success gating |
+| `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status | Desktop / busy IM admission、turn-boundary drain、config deferral、session reset cleanup |
+| `turn-lifecycle.ts` | turn completed/success flags、pre-transport promotion token、finalization gate、turn start time、usage/context usage、terminal plan classification、Desktop → IM mirror admission/order | `beforeDispatch` accepted→transport 间 Stop invalidation、`turn_complete` / `session_complete` success/failure/prewarm/idle/user-stop 分类、wait idle、cron/IM true-success gating、mirror user-before-assistant delivery |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot | UnifiedEvent text/thinking/tool/subagent cases、live snapshot、turn persistence snapshot |
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update | restore state、append user/assistant、retry truncate、turn-end SessionStore write；facade 只拿 snapshot/owner API，不拿 mutable message ref |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送 | permission request/response、AskUserQuestion response、stop/error cleanup、IM complete/error fan-out；permission delivery 成功后才 consume/delete |
@@ -729,6 +766,7 @@ Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 
 凡是会更新 Tab 会话快照或展示阻塞式交互 UI 的 SSE 事件，payload MUST 带 `sessionId`，前端 MUST 先通过 `src/renderer/context/sessionScopedEventGuards.ts::shouldAcceptSessionScopedSseSnapshot()` 或 `decideSystemInitSessionId()` 过滤，再写 React state。当前范围包括：
 
 - `chat:system-init`：既是 runtime/config 快照，也是新 session birth 信号；只有 pending/null/reset → concrete id 的 birth 窗口允许同步 Tab sessionId，普通历史切换中的 mismatch 一律视为 stale。
+- `chat:runtime-tool-catalog`：external runtime 工具目录的可变快照；必须按 sessionId 过滤，重连时由既有 `chat:system-init` replay snapshot 恢复，不能另建第二份 replay 状态。
 - `chat:message-replay` 的 `live-user-echo`：既是用户气泡，也是 server-initiated turn 结束 new-session stale window 的有序边界；必须带创建时的 `sessionId`。
 - `queue:started`：排队消息正式 promotion 后的用户气泡与 turn 边界；必须带 promotion 所属的 `sessionId`，guarded Goal 只能在 admission accepted 后发送。
 - `permission:request` / `permission:expired`
@@ -785,7 +823,7 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 - turn boundary drain 先应用前导 config ops,再启动下一条 message。
 - Codex / Claude Code 使用 next-turn state；Gemini 的 `session/set_model` /
   `session/set_mode` 也只在 boundary 调用,保持“当前轮不受影响”的产品语义。
-- IM 仍通过每轮 `ExternalSendContext` live resolve；Task 只在新 Session 初始化时使用 Task config，已有 Session 继承自己的配置。Task 的 initialize/adopt 由 scheduler reservation 在 per-Session lifecycle 内读取持久 Session metadata 决定，不能绑定到 Sidecar 进程的 `EnsureSidecarResult.isNew`：Tab 可已保活同一 Sidecar，而 Task 仍是合法 metadata creator。adopt payload 在 Rust 构造时即不携带 model/provider/runtime/MCP 初始化字段。reservation 从发布 Session id 起持有 lifecycle guard，并并行等待权威 `SessionStore` metadata 出生；一旦 materialize 立即释放（不得持满整轮，否则同 Session 工具会反向死锁），保证 shared-session joiner 不会抢在 creator 前 adopt。若 turn 先失败且 metadata 仍未出生，creator 释放 guard 与 Sidecar owner，下一次 reservation 重新取得 creator 权；进程是否仍被其它 owner 保活不参与该裁决。
+- IM 仍通过每轮 `ExternalSendContext` live resolve；Task 只在新 Session 初始化时使用 Task config，已有 Session 继承自己的配置。Task 的 initialize/adopt 由 scheduler reservation 在 per-Session lifecycle 内读取持久 Session metadata 决定，不能绑定到 Sidecar 进程的 `EnsureSidecarResult.isNew`：Tab 可已保活同一 Sidecar，而 Task 仍是合法 metadata creator。adopt payload 在 Rust 构造时即不携带 model/provider/runtime/MCP 初始化字段。reservation 从发布 Session id 起持有 lifecycle guard，并把同一次 acquisition 以 shared lease 交给 Sidecar ensure；ensure 不得再进入 acquiring wrapper。未 materialize 时 lease 挂在 exact `ActiveTaskExecution(taskId + queueId)`，metadata observer 只清空该 owner、worker/observer 退出不释放；一旦 materialize 立即释放（不得持满整轮，否则同 Session 工具会反向死锁），保证 shared-session joiner 不会抢在 creator 前 adopt。若 turn **确认**在 metadata birth 前失败，creator 释放 guard 与 Sidecar owner，下一次 reservation 重新取得 creator 权；若 POST 可能已到 Node、仅响应丢失，则 lease 保留到 metadata 出生或精确 queue generation 被确认停止。Node pre-metadata admission 把 authorize、Stop cancellation 与 `createSession()` 线性化：`/task/stop` 必须等 birth admission settled 后才能把 queue `not_found` 当成功，不能提前 rebound；admission 可以在 HTTP handler 尚等待 scheduled-turn mutex 时就因 pre-materialization cancellation 而权威结算。进程是否仍被其它 owner 保活不参与该裁决。
 - `/api/runtime/config` 是 source-aware：Rust IM router 热同步传 `source:"im-sync"`；桌面 push 走 `runtime-config` / `desktop`。`updateExternalRuntimeConfig()` 必须先调用 `runtime-config-policy` 过滤 snapshotted session 不应接收的字段，再写 `lastModel` / `lastPermissionMode` / `lastReasoningEffort`，禁止“先污染 desired state 再跳过 restart”。
 
 **红线**：

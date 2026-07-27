@@ -1059,13 +1059,10 @@ async fn update_single_session<R: Runtime>(
             let sid = session_id.to_string();
             let ws = workspace_path.to_string();
             let own = owner.clone();
-            let started = tauri::async_runtime::spawn_blocking(move || {
-                let workspace = PathBuf::from(ws);
-                sidecar::ensure_session_sidecar(&ah, &sm, &sid, &workspace, own)
-            })
-            .await
-            .map_err(|e| format!("spawn_blocking: {}", e))
-            .and_then(|r| r.map_err(|e| format!("ensure_sidecar: {}", e)));
+            let started =
+                sidecar::ensure_session_sidecar_with_lifecycle(ah, sm, sid, PathBuf::from(ws), own)
+                    .await
+                    .map_err(|e| format!("ensure_sidecar: {}", e));
 
             match started {
                 Ok(result) => result.port,

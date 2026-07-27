@@ -53,6 +53,7 @@
 | Sidecar 启动性能 / 冷启动退化排查 | `tech_docs/sidecar_cold_start.md` |
 | 任务中心 / Task Store / Thought Store | `tech_docs/task_center.md` |
 | Cloud Space / Space Issue / Space Skill / registered agent（实验室） | `tech_docs/space_cloud.md`；改云端 API / 鉴权 / 数据 / quota 时还 MUST 读同级仓库 `../MyAgents_space/specs/ARCHITECTURE.md` |
+| Space IssueDelivery / Registered Agent Prompt 协议 / 拼接规则 | `tech_docs/space_issue_delivery_protocol.md`；同时读 `tech_docs/space_cloud.md` 与 `tech_docs/system_reminder_protocol.md` |
 | IM Bot / Telegram / Dingtalk / 飞书 | `tech_docs/im_integration_architecture.md` |
 | Plugin Bridge / OpenClaw / SDK shim | `tech_docs/plugin_bridge_architecture.md` |
 | Claude Code / Codex / Gemini Runtime | `tech_docs/multi_agent_runtime.md` |
@@ -74,6 +75,7 @@
 | SDK `canUseTool` / 工具权限回调 | `tech_docs/sdk_canUseTool_guide.md` |
 | SDK 自定义 Tool / `createSdkMcpServer` | `tech_docs/sdk_custom_tools_guide.md` |
 | React 稳定性 5 条规则 | `tech_docs/react_stability_rules.md` |
+| Theme System / 外观模式 / CSS Token / Launcher Hero / xterm、Monaco、Mermaid、Prism、Widget、浮动窗口视觉 | `tech_docs/theme_system.md` |
 | UI 国际化 / 语言设置 / 文案资源 / native 托盘语言 | `tech_docs/i18n_architecture.md` |
 | 埋点 / Analytics 事件 / runtime 维度口径 | `tech_docs/analytics_design.md` |
 | Tool Attachment 管道 / 富媒体产物归一化 | `tech_docs/tool_attachment_pipeline.md` |
@@ -190,6 +192,7 @@ Rust `TaskStore` 是所有新定时自动化的唯一权威，`TaskSchedulerCont
 | Tauri `resource_dir()` / `current_exe()` 路径直接喂 Node / npm / URL / 子进程 | Windows `\\?\` 长路径前缀让 `fileURLToPath` / spawn 报 `ERR_INVALID_FILE_URL_PATH` 或静默挂 | `crate::sidecar::normalize_external_path(p)`，在路径"出 Rust 边界"前剥前缀 | — (路径来源动态) |
 | `~/.myagents/config.json` 裸 `tmp + rename` | 多写者 race，密钥静默丢失 | Node `withConfigLock` / Rust `with_config_lock` / renderer `withConfigLock` | — (路径作用域，banning all `fs::rename` 噪音过大) |
 | 单写者文件裸 append / read-modify-write | 应用内多 owner race | `withFileLock` / `with_file_lock` / `with_file_lock_blocking` | — (writer-pattern 依赖) |
+| Renderer 直接调用 `navigator.clipboard.writeText()` | WKWebView / WebView2 即使暴露 API 也可能因焦点或权限 reject；UI 若先翻转状态会静默失败或误报“已复制” | `copyPlainText()`（`@/utils/clipboard`），仅在 helper resolve 后反馈成功 | eslint (`src/renderer/**`) |
 | Runtime 子进程 stop 用裸 `SIGTERM + waitForExit` | 进程拒收 SIGTERM 时永久卡死 | `killWithEscalation` | — (跨多语句模式，false-positive 高) |
 | 工具 / bridge 裸 `fetch()` 无 AbortSignal | 下游卡住 → tool turn / IM 消息处理永久 hang 直到 OS TCP 超时（分钟级） | `cancellableFetch` / `withAbortSignal`（`@/server/utils/cancellation`，默认 30s 超时 + parentSignal 传递） | eslint (`src/server/tools/**` + `plugin-bridge/**`) |
 | 大 payload（>256KB）直接进 SSE / IPC JSON | OOM / UI 卡死 / 慢 client 拖死 sidecar | `maybeSpill` + `/refs/:id` + SSE 优先级队列 | — (运行时 size 判定) |
@@ -214,6 +217,7 @@ Rust `TaskStore` 是所有新定时自动化的唯一权威，`TaskSchedulerCont
 | Overlay 遮罩用裸 `<div>` + `onClick` / `onMouseDown` | 选中文字拖到面板外松手会误关 | `<OverlayBackdrop>` 组件 | — (语义识别) |
 | onClick 里 `requestAnimationFrame(() => otherEl.focus())` 抢焦点 | macOS WebKit 触摸板 tap 会被吞掉 | `onMouseDown={retainFocusOnMouseDown}`（`@/utils/focusRetention`） | — (语义识别) |
 | 前端硬编码颜色（`#fff`、`bg-blue-500`） | 破坏设计系统一致性 | CSS Token `var(--xxx)`，参考 DESIGN.md | — (Tailwind class 形态太多，false positive 炸裂) |
+| Theme package 内放 raw `@theme`，或只在 runtime CSS 声明 Tailwind utility Token | runtime 注入不经 Tailwind 编译，`font-sans` / `shadow-sm` / `rounded-*` 静默退回 framework default，换 Theme 不生效 | 视觉值放 concrete Theme runtime Token；编译映射只放 `src/renderer/index.css` 的无值 `@theme inline` bridge，并用 `npm run verify:theme-css` 验证生成 CSS。详见 `tech_docs/pit_of_success.md#theme-tailwind-bridge` 与 `tech_docs/theme_system.md` | — (build contract) |
 | 前端任意 px 字号（`text-[13px]`）或已删档位类名（`text-2xs/2sm/md`） | 字阶漂移（幽灵字阶曾 ~700 处，PRD 0.2.34 清零）；死类名无 @theme token，编译不报错但**静默失效** | 终局七档 `text-xs/sm/base/lg/xl/2xl/3xl`（12/14/16/18/20/22/28；**2xl=22、3xl=28 与官方不同**）。档位职责与离阶豁免见 DESIGN.md §2.2 | eslint (`src/renderer/**`) |
 | 表单原生 `<select>` | 系统下拉框跨平台不一致 + 不可主题化 → 破坏 DESIGN.md 视觉一致性 | `<CustomSelect>` 组件 | eslint |
 | 新增手写 SDK shim 不加入 `_handwritten.json` | `generate:sdk-shims` 下次覆盖手写 | 同步加入 `sdk-shim/plugin-sdk/_handwritten.json` | — (协调性变更) |

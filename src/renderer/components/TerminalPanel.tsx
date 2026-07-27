@@ -1,76 +1,12 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { useResolvedTheme } from '@/theme';
 
-// ── Terminal themes — aligned with specs/DESIGN.md color system ──
-// Two themes: dark (nighttime) and light (daytime), auto-switching with app theme.
-
-/** Dark terminal theme — warm black background, for dark mode */
-export const TERMINAL_DARK_THEME = {
-  background: '#1a1614',      // --paper (dark)
-  foreground: '#d4c8bc',
-  cursor: '#c26d3a',          // --accent-warm
-  cursorAccent: '#1a1614',
-  selectionBackground: 'rgba(194, 109, 58, 0.25)',
-  selectionForeground: undefined,
-  selectionInactiveBackground: 'rgba(194, 109, 58, 0.15)',
-
-  // ANSI 16 colors — dark mode (bright colors for dark background)
-  black: '#2a2420',
-  red: '#c75050',              // --heartbeat
-  green: '#2d8a5e',            // --success
-  yellow: '#d97706',           // --warning
-  blue: '#4a7ab5',             // --info
-  magenta: '#b07aab',
-  cyan: '#3d8a75',             // --accent-cool
-  white: '#d4c8bc',
-
-  brightBlack: '#6f6156',      // --ink-muted
-  brightRed: '#e06060',
-  brightGreen: '#3da872',
-  brightYellow: '#f0a030',
-  brightBlue: '#6a9ad0',
-  brightMagenta: '#c894c2',
-  brightCyan: '#4da88a',
-  brightWhite: '#efe8e0',
-};
-
-/** Light terminal theme — warm paper background, for light mode */
-export const TERMINAL_LIGHT_THEME = {
-  background: '#f0ebe3',      // slightly deeper than --paper (#faf6ee), distinguishes from surrounding UI
-  foreground: '#1c1612',      // --ink
-  cursor: '#c26d3a',          // --accent-warm (shared across both themes)
-  cursorAccent: '#f0ebe3',
-  selectionBackground: 'rgba(194, 109, 58, 0.18)',  // --accent-warm-muted
-  selectionForeground: undefined,
-  selectionInactiveBackground: 'rgba(194, 109, 58, 0.10)',
-
-  // ANSI 16 colors — light mode (darker/more saturated for light background readability)
-  black: '#1c1612',            // --ink
-  red: '#b83030',              // darkened heartbeat
-  green: '#1d7a4e',            // darkened success
-  yellow: '#a85a00',           // darkened warning (yellow hardest on light bg)
-  blue: '#3568a0',             // darkened info
-  magenta: '#8f5a8a',          // darkened magenta
-  cyan: '#2a7560',             // darkened accent-cool
-  white: '#6f6156',            // --ink-muted (acts as "dim white" on light bg)
-
-  brightBlack: '#a69a90',      // --ink-subtle
-  brightRed: '#c74040',
-  brightGreen: '#2d8a5e',      // --success (normal brightness OK for bright variant)
-  brightYellow: '#b87010',
-  brightBlue: '#4a7ab5',       // --info
-  brightMagenta: '#a070a0',
-  brightCyan: '#3d8a75',       // --accent-cool
-  brightWhite: '#2e2825',      // --ink-secondary
-};
-
-/** Backward compat alias — dark theme is the default */
-export const TERMINAL_THEME = TERMINAL_DARK_THEME;
 
 interface TerminalPanelProps {
   workspacePath: string;
@@ -91,23 +27,26 @@ export function TerminalPanel({
   isVisible = true,
   sessionId: sessionIdProp,
 }: TerminalPanelProps) {
+  const { adapters } = useResolvedTheme();
+  const xtermTheme = adapters.xterm;
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(terminalId);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastColsRef = useRef<number>(0);
+  const lastRowsRef = useRef<number>(0);
+  const transitionGuardRef = useRef(isVisible);
+  const [geometryReady, setGeometryReady] = useState(false);
   useEffect(() => { terminalIdRef.current = terminalId; }, [terminalId]);
 
-  // Detect dark mode from <html> class (same pattern as MonacoEditor)
-  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
-  useEffect(() => {
-    const htmlEl = document.documentElement;
-    const observer = new MutationObserver(() => {
-      setIsDark(htmlEl.classList.contains('dark'));
-    });
-    observer.observe(htmlEl, { attributes: true, attributeFilter: ['class'] });
-    return () => observer.disconnect();
-  }, []);
-  const activeTheme = isDark ? TERMINAL_DARK_THEME : TERMINAL_LIGHT_THEME;
+  // Arm the transition guard before passive Theme/PTY effects run. This is a
+  // layout effect because a false -> true visibility render must not expose a
+  // single frame where metric fitting can observe the expanding panel width.
+  useLayoutEffect(() => {
+    transitionGuardRef.current = isVisible;
+  }, [isVisible]);
+
 
   // Stable callbacks via refs to avoid effect re-runs
   const onTerminalCreatedRef = useRef(onTerminalCreated);
@@ -135,10 +74,10 @@ export function TerminalPanel({
     if (!containerRef.current) return;
 
     const term = new Terminal({
-      theme: isDark ? TERMINAL_DARK_THEME : TERMINAL_LIGHT_THEME,
-      fontFamily: "'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'PingFang SC', 'Microsoft YaHei', monospace",
-      fontSize: 14,
-      lineHeight: 1.3,
+      theme: xtermTheme.palette,
+      fontFamily: xtermTheme.fontFamily,
+      fontSize: xtermTheme.fontSize,
+      lineHeight: xtermTheme.lineHeight,
       cursorBlink: true,
       cursorStyle: 'bar',
       scrollback: 5000,
@@ -159,11 +98,6 @@ export function TerminalPanel({
 
     term.open(containerRef.current);
 
-    // Initial fit (next frame to ensure container has dimensions)
-    requestAnimationFrame(() => {
-      fitAddon.fit();
-    });
-
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -172,15 +106,9 @@ export function TerminalPanel({
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- isDark is initial value only; theme updates handled by effect 1b
+  // Theme changes update options in effect 1b without recreating the PTY.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // 1b. Dynamically update xterm theme when app theme changes (without recreating terminal)
-  useEffect(() => {
-    if (xtermRef.current) {
-      xtermRef.current.options.theme = activeTheme;
-    }
-  }, [activeTheme]);
 
   // 2. Create PTY — "listeners first" pattern to prevent exit event loss.
   //    Frontend generates the terminal ID, registers listeners, THEN creates the PTY.
@@ -190,6 +118,7 @@ export function TerminalPanel({
   useEffect(() => {
     if (terminalId !== null) return; // Already created
     if (!fitAddonRef.current) return; // xterm not ready yet
+    if (!geometryReady) return; // Wait until the width transition has settled
     if (creatingRef.current) return; // Creation already in flight
     creatingRef.current = true;
 
@@ -272,7 +201,7 @@ export function TerminalPanel({
       // by the next effect cycle when terminalId becomes non-null
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionIdProp: one-time env injection at creation
-  }, [terminalId, workspacePath]);
+  }, [terminalId, workspacePath, geometryReady]);
 
   // 3. User input → PTY write
   useEffect(() => {
@@ -288,22 +217,20 @@ export function TerminalPanel({
     return () => disposable.dispose();
   }, [terminalId]);
 
-  // 5. Unified resize with transition-aware suppression.
+  // 5. Unified resize with geometry-settle suppression.
   //
-  // ROOT CAUSE of prompt truncation: the left panel has `transition-[width] duration-300`
-  // (300ms CSS transition). During this transition, the terminal container width changes
-  // continuously from 0 to its final width. Without suppression, ResizeObserver fires
-  // repeatedly during transition, each time calling fit() at a different intermediate width,
-  // sending multiple SIGWINCH to the shell → prompt redrawn at wrong widths → garbled text.
+  // ROOT CAUSE of prompt truncation: while the split width transitions, the terminal
+  // container changes continuously. Fitting each intermediate width sends repeated
+  // SIGWINCH events and redraws the prompt at stale columns.
   //
-  // Fix: suppress ALL resizes during a 400ms window after becoming visible (covers the
-  // full 300ms CSS transition + margin). Only send a single resize at the final stable width.
-  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastColsRef = useRef<number>(0);
-  const lastRowsRef = useRef<number>(0);
-  const transitionGuardRef = useRef(false); // true = suppress resize (CSS transition in progress)
-
+  // Theme owns transition durations, so this component must not duplicate one as a
+  // timeout. ResizeObserver is the geometry owner: after 100ms without another size
+  // observation, fit once at the actual stable width.
   const doFitAndResize = useCallback(() => {
+    // Every fit path, including Theme-driven font metric updates, must respect
+    // the panel-width transition. The final visibility timer applies the
+    // latest options once the geometry is stable.
+    if (transitionGuardRef.current) return;
     if (!fitAddonRef.current || !containerRef.current) return;
     // Skip if container is too narrow — still in CSS transition or hidden
     if (containerRef.current.clientWidth < 100) return;
@@ -321,15 +248,41 @@ export function TerminalPanel({
     }).catch(() => {});
   }, []);
 
+  const scheduleGeometrySettle = useCallback(() => {
+    if (!isVisible) return;
+    // Every new observation re-arms the guard. A Theme/font update that lands
+    // inside this quiet window must not fit against intermediate geometry.
+    transitionGuardRef.current = true;
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      transitionGuardRef.current = false;
+      doFitAndResize();
+      setGeometryReady(true);
+      xtermRef.current?.focus();
+    }, 100);
+  }, [doFitAndResize, isVisible]);
+
+  // 1b. Update the existing xterm in place. Font metric changes invalidate
+  // the grid geometry, so route them through the same fit + PTY resize owner
+  // used by container resizes instead of leaving rows/cols stale until the
+  // next incidental ResizeObserver event.
+  useEffect(() => {
+    if (!xtermRef.current) return;
+    xtermRef.current.options.theme = xtermTheme.palette;
+    xtermRef.current.options.fontFamily = xtermTheme.fontFamily;
+    xtermRef.current.options.fontSize = xtermTheme.fontSize;
+    xtermRef.current.options.lineHeight = xtermTheme.lineHeight;
+    doFitAndResize();
+  }, [xtermTheme, doFitAndResize]);
+
   // ResizeObserver — fires on container size changes (drag resize, window resize)
   // Suppressed during the visibility transition window to prevent intermediate resizes.
   useEffect(() => {
     if (!containerRef.current) return;
 
     const observer = new ResizeObserver(() => {
-      if (transitionGuardRef.current) return; // Suppress during CSS transition
-      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-      resizeTimerRef.current = setTimeout(doFitAndResize, 100);
+      scheduleGeometrySettle();
     });
     observer.observe(containerRef.current);
 
@@ -337,30 +290,30 @@ export function TerminalPanel({
       observer.disconnect();
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
     };
-  }, [doFitAndResize]);
+  }, [scheduleGeometrySettle]);
 
-  // Visibility change — waits for CSS transition to complete (400ms > 300ms transition)
-  // before sending a single fit+resize. Suppresses ResizeObserver during this window.
+  // Visibility change arms geometry settling. Subsequent ResizeObserver callbacks
+  // keep moving the quiet-window timer until the Theme-owned transition really ends.
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible) {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      setGeometryReady(false);
+      return;
+    }
     transitionGuardRef.current = true;
-    const timer = setTimeout(() => {
-      transitionGuardRef.current = false;
-      doFitAndResize();
-      // Auto-focus when terminal becomes visible (switching from file view, or reopening panel)
-      xtermRef.current?.focus();
-    }, 400);
+    setGeometryReady(false);
+    scheduleGeometrySettle();
     return () => {
-      clearTimeout(timer);
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       transitionGuardRef.current = false;
     };
-  }, [isVisible, doFitAndResize]);
+  }, [isVisible, scheduleGeometrySettle]);
 
   return (
     <div
       ref={containerRef}
       className="h-full w-full px-2 pb-1"
-      style={{ background: activeTheme.background }}
+      style={{ background: xtermTheme.palette.background }}
     />
   );
 }

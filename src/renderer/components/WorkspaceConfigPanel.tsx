@@ -228,7 +228,7 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                             </button>
                         )}
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--button-dark-bg)] shadow">
-                            <SlidersHorizontal className="h-4 w-4 text-[var(--button-primary-text)]" />
+                            <SlidersHorizontal className="h-4 w-4 text-[var(--button-dark-text)]" />
                         </div>
                         <h2 className="text-lg font-semibold text-[var(--ink)]">{t('agentSettings.panel.title')}</h2>
                     </div>

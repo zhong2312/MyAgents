@@ -153,7 +153,7 @@ export default function BugReportOverlay({
                                         <button
                                             type="button"
                                             onClick={() => removeAt(img.id)}
-                                            className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--error)] text-white opacity-0 transition-opacity group-hover:opacity-100"
+                                            className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--error)] text-[var(--on-error)] opacity-0 transition-opacity group-hover:opacity-100"
                                         >
                                             <X className="h-3 w-3" />
                                         </button>
@@ -226,7 +226,7 @@ export default function BugReportOverlay({
                                 title={getSubmitTitle()}
                                 className={`rounded-lg p-2 transition-colors ${
                                     canSubmit
-                                        ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-warm-hover)]'
+                                        ? 'bg-[var(--accent)] text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)]'
                                         : 'bg-[var(--ink-muted)]/15 text-[var(--ink-muted)]/40'
                                 }`}
                             >

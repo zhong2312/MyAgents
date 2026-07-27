@@ -76,6 +76,8 @@ export interface SimpleChatInputProps {
   workspaceMcpEnabled?: string[];
   globalMcpEnabled?: string[];
   mcpServers?: Array<{ id: string; name: string; description?: string }>;
+  /** MCP tools reported ready by the active external runtime. Read-only in this UI. */
+  runtimeMcpTools?: string[];
   onWorkspaceMcpToggle?: (serverId: string, enabled: boolean) => void;
   officialTools?: readonly OfficialToolDefinition[];
   workspaceOfficialToolEnabled?: OfficialToolId[];

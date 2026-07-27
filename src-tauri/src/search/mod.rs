@@ -33,10 +33,10 @@ pub use searcher::{
 ///
 /// Holds Tantivy indices for sessions (global) and workspace files (per-workspace).
 ///
-/// **Session index** is held as `Arc<SessionIndex>` (no outer mutex): the
-/// reader path is lock-free so searches never contend with background
-/// indexing. The single-writer invariant is enforced internally via
-/// `StdMutex<IndexWriter>` inside `SessionIndex`.
+/// **Session index** is held as `Arc<SessionIndex>` (no outer mutex). Normal
+/// search and indexing share a read lock over the current Tantivy state; only
+/// confirmed corruption takes the write lock to replace that derived state.
+/// Tantivy's writer mutex still enforces the single-writer invariant.
 ///
 /// **File indices** keep only a short global map lock to locate the per-workspace
 /// slot. Heavy refresh/search work is serialized per workspace and run on a
@@ -55,8 +55,9 @@ impl SearchEngine {
         std::fs::create_dir_all(&index_dir)
             .map_err(|e| format!("Failed to create search index dir: {}", e))?;
 
-        let session_index = session_indexer::SessionIndex::new(index_dir.join("sessions"))
-            .map_err(|e| format!("Failed to create session index: {}", e))?;
+        let session_index =
+            session_indexer::SessionIndex::new(index_dir.join("sessions"), data_dir.clone())
+                .map_err(|e| format!("Failed to create session index: {}", e))?;
 
         let file_manager = file_indexer::FileIndexManager::new(index_dir.join("workspaces"));
 
@@ -89,7 +90,7 @@ impl SearchEngine {
             if have_sessions_file {
                 // `index_all_sessions` is synchronous + disk/CPU-bound. Run on a
                 // blocking worker so we don't pin a Tokio reactor thread and so
-                // the user search path (lock-free reader) stays responsive.
+                // the user search path stays responsive.
                 let indexer = session_index.clone();
                 let dir_for_index = data_dir.clone();
                 let result =
@@ -125,8 +126,8 @@ impl SearchEngine {
         });
     }
 
-    /// Search session history (title + content). Lock-free — safe to call
-    /// concurrently with background indexing.
+    /// Search session history (title + content). Normal reads remain concurrent
+    /// with background indexing; only corruption recovery takes exclusive ownership.
     pub async fn search_sessions(
         &self,
         query: &str,
@@ -154,11 +155,11 @@ impl SearchEngine {
     }
 
     /// Get index status (for debugging).
-    pub async fn get_status(&self) -> IndexStatus {
-        IndexStatus {
-            session_doc_count: self.session_index.doc_count(),
+    pub async fn get_status(&self) -> Result<IndexStatus, String> {
+        Ok(IndexStatus {
+            session_doc_count: self.session_index.doc_count()?,
             index_dir: self.data_dir.join("search_index").display().to_string(),
-        }
+        })
     }
 
     /// Invalidate workspace file index to force it to be rebuilt from scratch next time
@@ -464,7 +465,7 @@ pub async fn cmd_search_workspace_files(
 pub async fn cmd_search_index_status(
     state: tauri::State<'_, Arc<SearchEngine>>,
 ) -> Result<IndexStatus, String> {
-    Ok(state.get_status().await)
+    state.get_status().await
 }
 
 /// Invalidate workspace file index so it gets rebuilt on next search

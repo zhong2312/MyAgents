@@ -27,10 +27,19 @@ export type OriginSurface =
   | 'session_reply'
   | 'unknown';
 
-export interface SessionOrigin {
-  kind: OriginKind;
-  surface: OriginSurface;
-}
+export type RegisteredAgentSessionOrigin = {
+  kind: 'registered-agent';
+  surface: 'space_issue_delivery';
+  context: {
+    spaceId: string;
+    registeredAgentId: string;
+  };
+};
+
+export type SessionOrigin = RegisteredAgentSessionOrigin | {
+  kind: Exclude<OriginKind, 'registered-agent'>;
+  surface: Exclude<OriginSurface, 'space_issue_delivery'>;
+};
 
 export type OriginAnalyticsFields = {
   origin_kind: OriginKind;
@@ -93,13 +102,42 @@ export function isOriginSurface(value: unknown): value is OriginSurface {
 
 export function normalizeSessionOrigin(value: unknown): SessionOrigin | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const candidate = value as { kind?: unknown; surface?: unknown };
+  const candidate = value as { kind?: unknown; surface?: unknown; context?: unknown };
   if (!isOriginKind(candidate.kind) || !isOriginSurface(candidate.surface)) {
     return undefined;
   }
+  const isRegisteredAgentOrigin = candidate.kind === 'registered-agent'
+    || candidate.surface === 'space_issue_delivery';
+  if (isRegisteredAgentOrigin) {
+    if (
+      candidate.kind !== 'registered-agent'
+      || candidate.surface !== 'space_issue_delivery'
+      || !candidate.context
+      || typeof candidate.context !== 'object'
+    ) {
+      return undefined;
+    }
+    const context = candidate.context as { spaceId?: unknown; registeredAgentId?: unknown };
+    if (
+      typeof context.spaceId !== 'string'
+      || !context.spaceId.trim()
+      || typeof context.registeredAgentId !== 'string'
+      || !context.registeredAgentId.trim()
+    ) {
+      return undefined;
+    }
+    return {
+      kind: 'registered-agent',
+      surface: 'space_issue_delivery',
+      context: {
+        spaceId: context.spaceId.trim(),
+        registeredAgentId: context.registeredAgentId.trim(),
+      },
+    };
+  }
   return {
-    kind: candidate.kind,
-    surface: candidate.surface,
+    kind: candidate.kind as Exclude<OriginKind, 'registered-agent'>,
+    surface: candidate.surface as Exclude<OriginSurface, 'space_issue_delivery'>,
   };
 }
 
@@ -143,7 +181,10 @@ export function originFromMaterializationScenario(scenario: string | undefined |
       return { kind: 'agent-channel', surface: 'channel_message' };
     case 'registeredAgent':
     case 'registered-agent':
-      return { kind: 'registered-agent', surface: 'space_issue_delivery' };
+      // A scenario label does not contain the stable Space + Registered Agent
+      // identity required for authority. The delivery ingress supplies the
+      // exact origin explicitly; never invent an identity here.
+      return UNKNOWN_SESSION_ORIGIN;
     case 'desktop':
       return { kind: 'desktop', surface: 'unknown' };
     default:
@@ -172,7 +213,7 @@ export function originFromTurnAttribution(input: {
       return { kind: 'agent-channel', surface: 'channel_message' };
     case 'registeredAgent':
     case 'registered-agent':
-      return { kind: 'registered-agent', surface: 'space_issue_delivery' };
+      return UNKNOWN_SESSION_ORIGIN;
     case 'desktop':
       return input.desktopSurface === 'floating-ball'
         ? { kind: 'desktop', surface: 'floating_ball' }

@@ -15,6 +15,7 @@ import {
   clearExternalTurnBinding,
   awaitExternalSessionStarting,
   enqueueExternalSendForDesktop,
+  enqueueExternalSendForIm,
   forceExecuteExternalQueueItem,
   getActiveRuntimeSource,
   getActiveRuntimeType,
@@ -64,7 +65,12 @@ import type {
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
-import { getSessionData, updateSessionMetadata } from '../SessionStore';
+import {
+  ensureRegisteredAgentSessionOrigin,
+  getPersistedSessionOrigin,
+  getSessionData,
+  updateSessionMetadata,
+} from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import {
@@ -90,6 +96,35 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
       },
     );
   });
+}
+
+function observeExternalDispatch(
+  dispatch: Promise<{ queued: boolean; error?: string; terminationUnconfirmed?: boolean }>,
+  queueId?: string,
+): Promise<{ accepted: boolean; error?: string }> {
+  return dispatch
+    .then((result) => {
+      if (!result.queued) {
+        if (queueId && !result.terminationUnconfirmed) {
+          clearExternalTurnBinding(queueId);
+        }
+        if (result.error) {
+          console.error(`[chat] external send failed: ${result.error}`);
+          broadcast('chat:agent-error', { message: result.error });
+        }
+        return result.terminationUnconfirmed
+          ? { accepted: true }
+          : { accepted: false, ...(result.error ? { error: result.error } : {}) };
+      }
+      return { accepted: true };
+    })
+    .catch((error) => {
+      if (queueId) clearExternalTurnBinding(queueId);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[chat] external send threw: ${message}`);
+      broadcast('chat:agent-error', { message });
+      return { accepted: false, error: message };
+    });
 }
 
 async function stopExternalTarget(): Promise<boolean> {
@@ -229,6 +264,14 @@ export function createExternalSessionEngine(): SessionEngine {
       };
     },
 
+    getSessionOrigin(sessionId) {
+      return getPersistedSessionOrigin(sessionId);
+    },
+
+    ensureRegisteredAgentSessionOrigin(sessionId, expected) {
+      return ensureRegisteredAgentSessionOrigin(sessionId, expected);
+    },
+
     getHeldImConfigSnapshot() {
       return {
         model: getExternalSessionModel() ?? undefined,
@@ -284,29 +327,7 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
         },
       );
-      const dispatchAcceptance = sent.dispatch
-        .then((result) => {
-          if (!result.queued) {
-            if (request.queueId && !result.terminationUnconfirmed) {
-              clearExternalTurnBinding(request.queueId);
-            }
-            if (result.error) {
-              console.error(`[chat] external send failed: ${result.error}`);
-              broadcast('chat:agent-error', { message: result.error });
-            }
-            return result.terminationUnconfirmed
-              ? { accepted: true }
-              : { accepted: false, ...(result.error ? { error: result.error } : {}) };
-          }
-          return { accepted: true };
-        })
-        .catch((err) => {
-          if (request.queueId) clearExternalTurnBinding(request.queueId);
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[chat] external send threw: ${message}`);
-          broadcast('chat:agent-error', { message });
-          return { accepted: false, error: message };
-        });
+      const dispatchAcceptance = observeExternalDispatch(sent.dispatch, request.queueId);
       return {
         success: true,
         queued: sent.queued,
@@ -320,11 +341,9 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult> {
-      const result = await sendExternalMessage(
+      const sent = enqueueExternalSendForIm(
         request.message,
         request.images,
-        undefined,
-        undefined,
         {
           sessionId: request.sessionId,
           workspacePath: request.workspacePath,
@@ -341,18 +360,35 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
         },
       );
-      if (!result.queued) {
-        if (result.terminationUnconfirmed) {
-          return { success: true, queued: true };
-        }
-        if (request.queueId) clearExternalTurnBinding(request.queueId);
+      const dispatchAcceptance = observeExternalDispatch(
+        sent.dispatch,
+        sent.queueId ?? request.queueId,
+      );
+
+      // A queueId means the existing external turn-boundary queue has taken
+      // ownership. Return admission immediately; the request-scoped terminal
+      // and Goal lifecycle stay attached to the queued operation until drain.
+      if (sent.queueId) {
+        return {
+          success: true,
+          queued: true,
+          dispatchAcceptance,
+        };
+      }
+
+      // Idle sends retain the adapter's existing admission result instead of
+      // being reported as queue-owned. This preserves fail-loud startup/config
+      // errors where the runtime reports them, without reintroducing the busy
+      // wait that blocked Lark's same-chat ingress queue.
+      const accepted = await dispatchAcceptance;
+      if (!accepted.accepted) {
         return {
           success: false,
-          error: result.error ?? 'Failed to send via external runtime',
+          error: accepted.error ?? 'Failed to send via external runtime',
           status: 503,
         };
       }
-      return { success: true, queued: result.queued };
+      return { success: true, queued: true };
     },
 
     cancelImRequest(requestId, reason) {
@@ -406,6 +442,7 @@ export function createExternalSessionEngine(): SessionEngine {
           inboxMeta: request.inboxMeta,
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,
+          birthOrigin: request.birthOrigin,
         },
       );
     },

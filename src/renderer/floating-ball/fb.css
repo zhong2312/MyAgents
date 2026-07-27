@@ -94,7 +94,7 @@ html.fb-transparent #root {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 28%, color-mix(in srgb, var(--core-c) 45%, var(--button-primary-text)), var(--core-c) 72%);
+  background: radial-gradient(circle at 35% 28%, color-mix(in srgb, var(--core-c) 45%, var(--fb-highlight-strong)), var(--core-c) 72%);
   box-shadow:
     0 0 9px 1px color-mix(in srgb, var(--core-c) 50%, transparent),
     0 1px 2px var(--fb-core-shadow);
@@ -157,7 +157,7 @@ html.fb-transparent #root {
   padding: 0 4px;
   border-radius: 9999px;
   background: var(--success);
-  color: var(--button-primary-text);
+  color: var(--on-success);
   border: 1.5px solid var(--fb-highlight-line);
   font-size: var(--text-xs, 12px);
   font-weight: 600;
@@ -275,7 +275,7 @@ html.fb-transparent #root {
      native material，否则 hover 会被系统材质染成另一种冷色表面。 */
   background: color-mix(in srgb, var(--paper-elevated) 92%, transparent);
   border: 1px solid color-mix(in srgb, var(--line-strong) 78%, transparent);
-  box-shadow: 0 18px 48px rgb(0 0 0 / 0.22);
+  box-shadow: var(--fb-window-shadow);
   -webkit-backdrop-filter: blur(18px) saturate(1.08);
   backdrop-filter: blur(18px) saturate(1.08);
   background-clip: padding-box;
@@ -657,10 +657,10 @@ html.fb-transparent #root {
   transition: background 150ms, color 150ms;
 }
 .fbw-inputrow .send svg { width: 16px; height: 16px; }
-.fbw-inputrow .send.ready { background: var(--accent); color: var(--button-primary-text); }
+.fbw-inputrow .send.ready { background: var(--accent); color: var(--on-accent); }
 .fbw-inputrow .send.ready:hover { background: var(--button-primary-bg-hover); }
 /* 运行中：发送钮变停止钮（与主对话框同语义） */
-.fbw-inputrow .send.stop { background: var(--ink); color: var(--button-primary-text); }
+.fbw-inputrow .send.stop { background: var(--button-dark-bg); color: var(--button-dark-text); }
 .fbw-inputrow .send.stop:hover { background: var(--button-dark-bg-hover); }
 
 /* ════════ 过程组（思考/工具，主端 BlockGroup 的单行降级态） ════════ */
@@ -793,7 +793,7 @@ html.fb-transparent #root {
   margin-top: 6px;
   font-size: var(--text-sm, 14px);
   font-weight: 600;
-  color: var(--button-primary-text);
+  color: var(--on-accent);
   background: var(--accent);
   border: none;
   border-radius: 8px;

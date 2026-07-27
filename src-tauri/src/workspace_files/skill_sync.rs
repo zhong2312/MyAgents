@@ -33,9 +33,7 @@ use std::path::Path;
 use crate::{ulog_debug, ulog_warn};
 
 use super::platform_blocks::is_skill_blocked_on_platform;
-use super::skills_config::{
-    is_required_memory_system_skill, read_cli_tool_registry_enabled, read_disabled_list,
-};
+use super::skills_config::{read_cli_tool_registry_enabled, read_disabled_list};
 
 /// Idempotent: symlink user-level skills + commands into `<workspace>/.claude/`.
 ///
@@ -116,7 +114,7 @@ fn sync_skills_subtree(workspace: &Path, myagents_root: &Path) {
         managed.insert(folder_name.clone());
         let link_path = project_skills.join(&folder_name);
 
-        if (disabled.contains(&folder_name) && !is_required_memory_system_skill(&folder_name))
+        if disabled.contains(&folder_name)
             || (!cli_tool_registry_enabled && folder_name == "tool-creator")
         {
             // Disabled: remove our symlink if present; never remove real dirs.
@@ -362,13 +360,10 @@ fn remove_symlink_or_dir(p: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace_files::skills_config::REQUIRED_SYSTEM_SKILLS;
     use crate::workspace_files::test_support::make_test_workspace;
 
-    fn user_root_with_skill(name: &str) -> std::path::PathBuf {
-        // Create a stand-in `~/.myagents` rooted at a tempdir for tests so
-        // we don't poke the real user home. We monkey-patch HOME for the
-        // duration of the test.
-        let root = make_test_workspace("home_for_skill_sync");
+    fn add_user_skill(root: &Path, name: &str) {
         let user_skills = root.join(".myagents").join("skills");
         fs::create_dir_all(user_skills.join(name)).unwrap();
         fs::write(
@@ -376,6 +371,13 @@ mod tests {
             "---\nname: x\n---\n",
         )
         .unwrap();
+    }
+
+    fn user_root_with_skill(name: &str) -> std::path::PathBuf {
+        // Create a stand-in `~/.myagents` rooted at a tempdir for tests so
+        // we don't poke the real user home.
+        let root = make_test_workspace("home_for_skill_sync");
+        add_user_skill(&root, name);
         root
     }
 
@@ -482,6 +484,44 @@ mod tests {
         assert!(
             !workspace.join(".claude/skills/foo").exists(),
             "disabled skill was symlinked"
+        );
+        let _ = fs::remove_dir_all(&workspace);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn required_system_skills_ignore_legacy_disabled_entries() {
+        let home = make_test_workspace("home_required_skill_sync");
+        for name in REQUIRED_SYSTEM_SKILLS
+            .iter()
+            .copied()
+            .chain(std::iter::once("prompt-writer"))
+        {
+            add_user_skill(&home, name);
+        }
+        let disabled: Vec<&str> = REQUIRED_SYSTEM_SKILLS
+            .iter()
+            .copied()
+            .chain(std::iter::once("prompt-writer"))
+            .collect();
+        fs::write(
+            home.join(".myagents/skills-config.json"),
+            serde_json::json!({ "disabled": disabled }).to_string(),
+        )
+        .unwrap();
+        let workspace = make_test_workspace("ws_required_skill_sync");
+
+        sync_workspace_skills_with_home(&workspace, &home).unwrap();
+
+        for name in REQUIRED_SYSTEM_SKILLS {
+            assert!(
+                workspace.join(".claude/skills").join(name).exists(),
+                "required skill {name} was not exposed"
+            );
+        }
+        assert!(
+            !workspace.join(".claude/skills/prompt-writer").exists(),
+            "optional disabled system skill was exposed"
         );
         let _ = fs::remove_dir_all(&workspace);
         let _ = fs::remove_dir_all(&home);

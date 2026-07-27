@@ -4,23 +4,27 @@ vi.mock('../SessionStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../SessionStore')>();
   return {
     ...actual,
-    deleteSession: vi.fn(async () => true),
+    claimPreparedSessionForTurnAdmission: vi.fn(),
+    deleteSession: vi.fn(async () => ({ deleted: true as const })),
+    migratePendingSessionIdentity: vi.fn(),
     getSessionMetadata: vi.fn(),
     saveSessionMetadata: vi.fn(async () => undefined),
     updateSessionMetadata: vi.fn(),
   };
 });
 
-import { deleteSession, getSessionMetadata, saveSessionMetadata, updateSessionMetadata } from '../SessionStore';
+import { claimPreparedSessionForTurnAdmission, deleteSession, getSessionMetadata, migratePendingSessionIdentity, saveSessionMetadata, updateSessionMetadata } from '../SessionStore';
 import {
   resetSessionMaterializationState,
   setPendingDesktopMaterialization,
 } from '../builtin-session/materialization';
-import { ensureSessionMetadataForSdkSystemInit, getSessionId, initializeAgent, materializePendingDesktopSession } from '../agent-session';
+import { claimPreparedMaterializationForTurnAdmission, ensureSessionMetadataForSdkSystemInit, getSessionId, initializeAgent, materializePendingDesktopSession } from '../agent-session';
 import type { SessionMetadata } from '../types/session';
 
 const mockedDeleteSession = vi.mocked(deleteSession);
+const mockedClaimPreparedSessionForTurnAdmission = vi.mocked(claimPreparedSessionForTurnAdmission);
 const mockedGetSessionMetadata = vi.mocked(getSessionMetadata);
+const mockedMigratePendingSessionIdentity = vi.mocked(migratePendingSessionIdentity);
 const mockedSaveSessionMetadata = vi.mocked(saveSessionMetadata);
 const mockedUpdateSessionMetadata = vi.mocked(updateSessionMetadata);
 
@@ -28,6 +32,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
   beforeEach(() => {
     resetSessionMaterializationState();
     vi.clearAllMocks();
+    mockedClaimPreparedSessionForTurnAdmission.mockResolvedValue({ status: 'not-found' });
   });
 
   afterEach(() => {
@@ -99,19 +104,50 @@ describe('materializePendingDesktopSession rollback guard', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(mockedDeleteSession).toHaveBeenCalledWith('prepared-target', expect.any(Function));
-    const guard = mockedDeleteSession.mock.calls[0][1] as (current: {
-      materializationState?: 'prepared';
-      materializationSourceSessionId?: string;
-    }) => boolean;
-    expect(guard({
-      materializationState: 'prepared',
-      materializationSourceSessionId: 'pending-source',
-    })).toBe(true);
-    expect(guard({
-      materializationState: 'prepared',
-      materializationSourceSessionId: 'different-source',
-    })).toBe(false);
+    expect(mockedDeleteSession).toHaveBeenCalledWith('prepared-target', {
+      kind: 'prepared-materialization-rollback',
+      sourceSessionId: 'pending-source',
+    });
+  });
+
+  it('claims the prepared target identity rather than the still-active pending identity', async () => {
+    await initializeAgent('/tmp/workspace', null, 'pending-source', { preWarmDisabled: true });
+    setPendingDesktopMaterialization({
+      priorSessionId: 'pending-source',
+      targetSessionId: 'prepared-target',
+      reusingLiveSdkSession: false,
+      snapshotKind: 'owned',
+    });
+    mockedClaimPreparedSessionForTurnAdmission.mockResolvedValue({
+      status: 'claimed',
+      metadata: {
+        id: 'prepared-target',
+        agentDir: '/tmp/workspace',
+        title: 'hello',
+        createdAt: '2026-06-23T00:00:00.000Z',
+        lastActiveAt: '2026-06-23T00:00:00.000Z',
+      },
+    });
+
+    await expect(claimPreparedMaterializationForTurnAdmission('hello')).resolves.toBe(true);
+    expect(mockedClaimPreparedSessionForTurnAdmission).toHaveBeenCalledWith(
+      'prepared-target',
+      'pending-source',
+      expect.objectContaining({ messageText: 'hello', title: 'hello' }),
+    );
+  });
+
+  it('fails closed when rollback removed a renderer-prepared target before admission', async () => {
+    await initializeAgent('/tmp/workspace', null, 'pending-source', { preWarmDisabled: true });
+    setPendingDesktopMaterialization({
+      priorSessionId: 'pending-source',
+      targetSessionId: 'prepared-target',
+      reusingLiveSdkSession: false,
+      snapshotKind: 'owned',
+    });
+    mockedClaimPreparedSessionForTurnAdmission.mockResolvedValue({ status: 'not-found' });
+
+    await expect(claimPreparedMaterializationForTurnAdmission('hello')).resolves.toBe(false);
   });
 
   it('refuses to patch a prepared row not owned by the pending transaction', async () => {
@@ -237,8 +273,13 @@ describe('materializePendingDesktopSession rollback guard', () => {
     mockedGetSessionMetadata.mockImplementation((id) => {
       return savedMetadata.get(id) ?? null;
     });
-    mockedDeleteSession.mockImplementation(async (id) => {
-      return savedMetadata.delete(id);
+    mockedMigratePendingSessionIdentity.mockImplementation(async (sourceId, targetId, patch) => {
+      const source = savedMetadata.get(sourceId);
+      if (!source) return { migrated: false, reason: 'source-not-found' };
+      const metadata = { ...source, ...patch, id: targetId };
+      savedMetadata.delete(sourceId);
+      savedMetadata.set(targetId, metadata);
+      return { migrated: true, metadata };
     });
 
     await initializeAgent('/tmp/workspace', null, 'pending-tab-1', { preWarmDisabled: true });
@@ -261,6 +302,12 @@ describe('materializePendingDesktopSession rollback guard', () => {
       materializationSourceSessionId: 'pending-tab-1',
     });
     expect(savedMetadata.has('pending-tab-1')).toBe(false);
+    expect(mockedMigratePendingSessionIdentity).toHaveBeenCalledWith(
+      'pending-tab-1',
+      concreteSessionId,
+      { sdkSessionId: concreteSessionId, unifiedSession: true },
+    );
+    expect(mockedDeleteSession).not.toHaveBeenCalled();
   });
 
   it('refuses SDK system_init for an unindexed concrete existing session', async () => {

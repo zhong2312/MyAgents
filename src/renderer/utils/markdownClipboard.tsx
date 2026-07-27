@@ -8,6 +8,9 @@ import {
   MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
   convertFrontmatter,
 } from '@/utils/markdownPipeline';
+import { copyPlainText } from './clipboard';
+
+export { copyPlainText } from './clipboard';
 
 type RichCopyResult = 'rich' | 'plain';
 
@@ -169,22 +172,6 @@ export async function copyMarkdownAsRichText(markdown: string): Promise<RichCopy
   return 'plain';
 }
 
-export async function copyPlainText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall through to the selection fallback; WebKit can expose the API but
-      // still reject writes depending on focus/permission state.
-    }
-  }
-  if (copyPlainTextWithSelection(text)) {
-    return;
-  }
-  throw new Error('Clipboard write is unavailable');
-}
-
 async function writeHtmlToClipboard(html: string, plainText: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
@@ -238,39 +225,6 @@ function copyHtmlWithSelection(html: string): boolean {
       selection.addRange(range);
     }
     container.remove();
-  }
-}
-
-function copyPlainTextWithSelection(text: string): boolean {
-  if (typeof document === 'undefined' || !document.body) return false;
-  const selection = window.getSelection?.();
-  const previousRanges: Range[] = [];
-  if (selection) {
-    for (let i = 0; i < selection.rangeCount; i += 1) {
-      previousRanges.push(selection.getRangeAt(i).cloneRange());
-    }
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', 'true');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-10000px';
-  textarea.style.top = '0';
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    return document.execCommand('copy');
-  } catch {
-    return false;
-  } finally {
-    if (selection) {
-      selection.removeAllRanges();
-      for (const range of previousRanges) {
-        selection.addRange(range);
-      }
-    }
-    textarea.remove();
   }
 }
 

@@ -80,6 +80,7 @@ export function buildCodexInitializeParams(): Record<string, unknown> {
 
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
+const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
 const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
 const CODEX_MCP_PROXY_ENV_KEYS = [
   'HTTP_PROXY',
@@ -125,6 +126,74 @@ export interface CodexMcpStartupStatusNotification {
   status: CodexMcpStartupState;
   error: string | null;
   failureReason: string | null;
+}
+
+export interface CodexMcpServerStatus {
+  name: string;
+  tools: Record<string, { name?: string } | undefined>;
+  resources?: unknown[];
+  authStatus: unknown;
+}
+
+function codexMcpAuthStatusText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return undefined;
+  const status = value as Record<string, unknown>;
+  return typeof status.status === 'string'
+    ? status.status
+    : typeof status.kind === 'string'
+      ? status.kind
+      : undefined;
+}
+
+function isCodexMcpAuthUnavailable(value: unknown): boolean {
+  const status = codexMcpAuthStatusText(value)?.toLowerCase().replace(/[^a-z]/g, '') ?? '';
+  return status === 'notloggedin'
+    || status.includes('unauthenticated')
+    || status.includes('failed')
+    || status.includes('error')
+    || status.includes('needs')
+    || status.includes('required');
+}
+
+/** Build the UI-facing catalog from tools Codex reports on explicitly ready servers. */
+export function buildCodexMcpToolCatalog(
+  servers: readonly CodexMcpServerStatus[],
+  readyServerNames: ReadonlySet<string>,
+): string[] {
+  const catalog = new Set<string>();
+  for (const server of servers) {
+    if (!readyServerNames.has(server.name) || isCodexMcpAuthUnavailable(server.authStatus)) continue;
+    for (const [key, tool] of Object.entries(server.tools ?? {})) {
+      const toolName = typeof tool?.name === 'string' && tool.name ? tool.name : key;
+      if (server.name && toolName) catalog.add(`mcp__${server.name}__${toolName}`);
+    }
+  }
+  return [...catalog].sort();
+}
+
+type CodexMcpServerStatusPage = {
+  data: CodexMcpServerStatus[];
+  nextCursor?: string | null;
+};
+
+/** Read the complete tool catalog for the active Codex thread. */
+export async function listCodexMcpServerStatuses(
+  rpc: Pick<JsonRpcClient, 'call'>,
+  threadId: string,
+): Promise<CodexMcpServerStatus[]> {
+  const servers: CodexMcpServerStatus[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await rpc.call('mcpServerStatus/list', {
+      threadId,
+      detail: 'toolsAndAuthOnly',
+      ...(cursor ? { cursor } : {}),
+    }, 5_000) as CodexMcpServerStatusPage;
+    servers.push(...(page.data ?? []));
+    cursor = page.nextCursor ?? null;
+  } while (cursor);
+  return servers;
 }
 
 export interface CodexMcpStartupResult {
@@ -544,20 +613,41 @@ export function buildCodexAppServerLaunchConfig(args: {
   runtimeSource: RuntimeSource;
   codexEnv: Record<string, string | undefined>;
   mcpServers?: readonly McpServerDefinition[];
-}): { args: string[]; mcpServerNames: string[] } {
+}): { args: string[]; mcpServerNames: string[]; modelProvider?: string } {
   const codexArgs = [
     args.commandPath,
     '-c', CODEX_PROJECT_DOC_FALLBACK_CONFIG,
   ];
   let mcpServerNames: string[] = [];
+  let modelProvider: string | undefined;
   if (args.runtimeSource === 'managed-provider') {
     codexArgs.push('-c', CODEX_FILE_AUTH_CONFIG);
+    modelProvider = MANAGED_CODEX_HTTP_PROVIDER_ID;
+    pushCodexConfigArg(codexArgs, 'model_provider', tomlString(modelProvider));
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.name`, tomlString('OpenAI'));
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.wire_api`, tomlString('responses'));
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.requires_openai_auth`, 'true');
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.supports_websockets`, 'false');
     const mcpConfig = buildManagedCodexMcpConfigArgs(args.mcpServers, args.codexEnv);
     codexArgs.push(...mcpConfig.args);
     mcpServerNames = mcpConfig.serverNames;
   }
   codexArgs.push('app-server');
-  return { args: codexArgs, mcpServerNames };
+  return { args: codexArgs, mcpServerNames, modelProvider };
+}
+
+export function resolveCodexThreadModelProvider(
+  launchModelProvider: string | undefined,
+  resumeSessionId: string | undefined,
+  model: string | undefined,
+): string | undefined {
+  if (!launchModelProvider) return undefined;
+  if (!resumeSessionId || model?.trim()) return launchModelProvider;
+
+  // A legacy thread can carry a different persisted model/provider pair. When
+  // MyAgents has no authoritative model snapshot, let Codex restore that pair
+  // together instead of overriding only its provider and resetting the model.
+  return undefined;
 }
 
 export function buildCodexAppServerArgs(args: {
@@ -1992,7 +2082,7 @@ async function collectCodexDiagnostics(
       'getAuthStatus', {}),
     tryCall<{ data: Array<{ name: string; stage: string; enabled: boolean; defaultEnabled: boolean }> }>(
       'experimentalFeature/list', {}),
-    tryCall<{ data: Array<{ name: string; tools: Record<string, unknown>; resources: unknown[]; authStatus: unknown }> }>(
+    tryCall<{ data: CodexMcpServerStatus[] }>(
       'mcpServerStatus/list', {}),
     tryCall<{ data: Array<{ id: string; name?: string; description?: string | null; isAccessible: boolean; isEnabled: boolean; installUrl?: string | null }> }>(
       'app/list', { threadId }),
@@ -2078,32 +2168,17 @@ async function collectCodexDiagnostics(
     mcpServers = mcpR[1].data.map(s => {
       // authStatus shape varies — render the stringified status when it's a
       // known marker, otherwise just flag whether MCP is auth'd.
-      let authStatusStr: string | undefined;
-      if (typeof s.authStatus === 'string') {
-        authStatusStr = s.authStatus;
-      } else if (s.authStatus && typeof s.authStatus === 'object') {
-        const obj = s.authStatus as Record<string, unknown>;
-        authStatusStr = typeof obj.status === 'string' ? obj.status :
-                        typeof obj.kind === 'string' ? obj.kind : undefined;
-      }
+      const authStatusStr = codexMcpAuthStatusText(s.authStatus);
       // Derive `state` from authStatus so the diagnostic banner has a single
       // field to filter on (its existing `state === 'failed'` check would
       // never fire if we only populated authStatus). Known unhealthy markers
       // — explicit failure plus auth-required states the user must act on —
       // surface as 'failed' so the banner highlights them.
-      const lowered = authStatusStr?.toLowerCase() ?? '';
-      const unhealthy =
-        lowered.includes('failed') ||
-        lowered.includes('error') ||
-        lowered.includes('oauth') ||
-        lowered.includes('unauthenticated') ||
-        lowered.includes('needs') ||
-        lowered.includes('required');
       return {
         name: s.name,
         toolCount: Object.keys(s.tools ?? {}).length,
         resourceCount: s.resources?.length ?? 0,
-        state: unhealthy ? 'failed' : undefined,
+        state: isCodexMcpAuthUnavailable(s.authStatus) ? 'failed' : undefined,
         authStatus: authStatusStr,
       };
     });
@@ -2466,11 +2541,60 @@ export class CodexRuntime implements AgentRuntime {
       withLogContext({ runtime: 'codex', runtimeSource }, () => onEvent(event));
     };
 
+    const readyMcpServerNames = new Set<string>();
+    let lastMcpToolCatalog: string[] = [];
+    let mcpCatalogRevision = 0;
+    let mcpCatalogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const publishMcpToolCatalog = (tools: string[]): void => {
+      if (
+        tools.length === lastMcpToolCatalog.length
+        && tools.every((tool, index) => tool === lastMcpToolCatalog[index])
+      ) return;
+      lastMcpToolCatalog = tools;
+      wrappedOnEvent({ kind: 'runtime_tool_catalog', tools });
+    };
+    const emitMcpToolCatalog = (servers: readonly CodexMcpServerStatus[]): void => {
+      publishMcpToolCatalog(buildCodexMcpToolCatalog(servers, readyMcpServerNames));
+    };
+    const scheduleMcpToolCatalogRefresh = (): void => {
+      if (!codexProc.threadId || codexProc.exited || mcpCatalogRefreshTimer) return;
+      // Startup notifications arrive in a burst. One short coalescing window
+      // avoids redundant list calls while keeping discovery off the first-turn path.
+      mcpCatalogRefreshTimer = setTimeout(() => {
+        mcpCatalogRefreshTimer = null;
+        if (codexProc.exited) return;
+        const revision = mcpCatalogRevision;
+        void listCodexMcpServerStatuses(codexProc.rpc, codexProc.threadId)
+          .then((servers) => {
+            if (codexProc.exited || revision !== mcpCatalogRevision) return;
+            emitMcpToolCatalog(servers);
+          })
+          .catch((err) => {
+            console.warn('[codex] MCP tool catalog refresh failed:', err instanceof Error ? err.message : String(err));
+          });
+      }, 100);
+    };
+
     // Wire up notification handler to emit UnifiedEvents
     codexProc.rpc.setNotificationHandler((method, params) => {
       const p = params as Record<string, unknown> | undefined;
       if (method === 'mcpServer/startupStatus/updated') {
-        mcpStartup.observe(params as CodexMcpStartupStatusNotification);
+        const status = params as CodexMcpStartupStatusNotification;
+        const belongsToActiveThread = status.threadId === null
+          || !codexProc.threadId
+          || status.threadId === codexProc.threadId;
+        if (belongsToActiveThread) {
+          mcpStartup.observe(status);
+          if (status.status === 'ready') {
+            readyMcpServerNames.add(status.name);
+          } else {
+            readyMcpServerNames.delete(status.name);
+            const prefix = `mcp__${status.name}__`;
+            publishMcpToolCatalog(lastMcpToolCatalog.filter(tool => !tool.startsWith(prefix)));
+          }
+          mcpCatalogRevision += 1;
+          scheduleMcpToolCatalogRefresh();
+        }
       }
       // Skip noisy notifications from logging: deltas, legacy duplicates, account events
       const isNoisy = method.startsWith('codex/event/') || method.startsWith('account/')
@@ -2567,6 +2691,10 @@ export class CodexRuntime implements AgentRuntime {
     // SIGTERM echo on top. See issue #105.
     proc.exited.then((code) => {
       codexProc.exited = true;
+      if (mcpCatalogRefreshTimer) {
+        clearTimeout(mcpCatalogRefreshTimer);
+        mcpCatalogRefreshTimer = null;
+      }
       mcpStartup.fail(new Error(`Codex process exited during MCP startup with code ${code}`));
       if (codexProc.intentionalKillDuringStartup) return;
       wrappedOnEvent({
@@ -2622,6 +2750,11 @@ export class CodexRuntime implements AgentRuntime {
       const defaultPermissionMode = isHeadlessAutomation ? 'no-restrictions' : 'full-auto';
       const permMode = options.permissionMode || defaultPermissionMode;
       const { approval, sandbox } = mapPermissionMode(permMode);
+      const threadModelProvider = resolveCodexThreadModelProvider(
+        launchConfig.modelProvider,
+        options.resumeSessionId,
+        options.model,
+      );
       codexProc.defaultPermissionMode = defaultPermissionMode;
       codexProc.permissionMode = permMode;
       codexProc.approvalPolicy = approval;
@@ -2640,6 +2773,7 @@ export class CodexRuntime implements AgentRuntime {
           threadId: options.resumeSessionId,
           cwd: options.workspacePath,
           model: options.model || null,
+          ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
           approvalPolicy: approval,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
@@ -2657,11 +2791,13 @@ export class CodexRuntime implements AgentRuntime {
           model: options.model || '',
           tools: [],
         });
+        scheduleMcpToolCatalogRefresh();
       } else {
         // New thread
         const startParams = {
           cwd: options.workspacePath,
           model: options.model || null,
+          ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
           approvalPolicy: approval,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
@@ -2678,6 +2814,7 @@ export class CodexRuntime implements AgentRuntime {
           model: result.model || '',
           tools: [],
         });
+        scheduleMcpToolCatalogRefresh();
       }
 
       // Managed Codex owns one soft MCP startup window for this runtime
@@ -2748,6 +2885,10 @@ export class CodexRuntime implements AgentRuntime {
       })();
     } catch (err) {
       // Clean up on startup failure.
+      if (mcpCatalogRefreshTimer) {
+        clearTimeout(mcpCatalogRefreshTimer);
+        mcpCatalogRefreshTimer = null;
+      }
       // Flag must be set BEFORE proc.kill so proc.exited.then observes it.
       codexProc.intentionalKillDuringStartup = true;
       try { proc.kill(); } catch { /* ignore */ }
@@ -3012,8 +3153,9 @@ export class CodexRuntime implements AgentRuntime {
       case 'thread/status/changed': {
         const status = p.status as { type: string } | undefined;
         if (!status) return null;
-        if (status.type === 'active') return { kind: 'status_change', state: 'running' };
-        if (status.type === 'idle') return { kind: 'status_change', state: 'idle' };
+        // Thread status describes the persistent Codex thread, not the user
+        // turn. Resume can report `idle` after the turn owner accepted a query;
+        // only the external turn lifecycle may drive running/idle.
         if (status.type === 'systemError') return { kind: 'status_change', state: 'error' };
         return null;
       }

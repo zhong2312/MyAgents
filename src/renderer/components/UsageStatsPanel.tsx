@@ -117,7 +117,7 @@ export default function UsageStatsPanel() {
                                 onClick={() => setRange(r)}
                                 className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                                     range === r
-                                        ? 'bg-[var(--accent)] text-white'
+                                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                         : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                 }`}
                             >
@@ -478,7 +478,7 @@ function ModelTable({ byModel, totalTokens, providerInfoMap }: {
                                 onClick={() => setSelectedVendor(v)}
                                 className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                                     selectedVendor === v
-                                        ? 'bg-[var(--accent)] text-white'
+                                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                         : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                 }`}
                             >

@@ -276,7 +276,7 @@ export default function HeartbeatConfigCard({
                                             onClick={() => selectPreset(preset.value)}
                                             className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                                                 config.intervalMinutes === preset.value
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-secondary)] hover:bg-[var(--ink-faint)]'
                                             }`}
                                         >

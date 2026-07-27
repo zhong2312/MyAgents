@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -9,15 +10,24 @@ import {
   buildRoute,
   buildClaimCancelBody,
   buildSpaceCompleteOperationKey,
+  TOP_HELP,
   normalizeScheduleFlag,
   parseArgs,
   parseDispatchAtValue,
+  printModelList,
+  printGoalResult,
   printResult,
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
 } from './myagents';
 
 describe('myagents CLI Space issue contracts', () => {
+  it('advertises the modern Space Issue entry without the stale legacy issue alias', () => {
+    expect(TOP_HELP).toContain('space     Discover Cloud Goals and manage Space Issues/attachments');
+    expect(TOP_HELP).toContain('myagents space issue view <issueId> --space <slug> --comments --json');
+    expect(TOP_HELP).not.toContain('issue     Legacy read-only alias for Space issue view');
+  });
+
   it('routes Goal discovery and builds scoped Goal/update request bodies', () => {
     expect(buildRoute('space', 'goal', ['list'])).toBe('space/goal-list');
     expect(buildRequestBody('space', 'goal', ['list'], {
@@ -330,7 +340,6 @@ describe('myagents CLI Space issue contracts', () => {
         ['space', 'issue', 'comment', 'iss_1'],
         ['space', 'issue', 'status', 'iss_1'],
         ['space', 'issue', 'claim', 'iss_1'],
-        ['space', 'issue', 'delivery', 'ignore', 'delivery_1'],
         ['space', 'issue', 'attachment', 'add', 'iss_1'],
         ['space', 'issue', 'close', 'iss_1'],
         ['space', 'issue', 'complete', 'iss_1'],
@@ -345,7 +354,7 @@ describe('myagents CLI Space issue contracts', () => {
           { json: true, dryRun: true, space: 'official' },
         ), positional.join(' ')).toThrow('process.exit(2)');
         const nestedIssueLeaf = positional[1] === 'issue'
-          && (positional[2] === 'delivery' || positional[2] === 'attachment');
+          && positional[2] === 'attachment';
         const expectedCommand = positional.slice(0, nestedIssueLeaf ? 4 : 3).join(' ');
         expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
           suggestion: expect.stringContaining(`Read myagents ${expectedCommand} --help`),
@@ -604,7 +613,7 @@ describe('myagents CLI Space issue contracts', () => {
 });
 
 describe('myagents CLI Goal file inputs', () => {
-  it('reads shell-sensitive objective and reason text from workspace files', () => {
+  it('reads shell-sensitive objective and reason text from local files', () => {
     const dir = mkdtempSync(join(process.cwd(), '.goal-cli-test-'));
     try {
       const objectivePath = join(dir, 'objective.txt');
@@ -626,7 +635,125 @@ describe('myagents CLI Goal file inputs', () => {
     }
   });
 
-  it('rejects paths outside the workspace, symlinks, oversized files, and NUL bytes', () => {
+  it('accepts Goal objective and reason files outside the current workspace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-goal-cli-external-'));
+    try {
+      const objectivePath = join(dir, 'objective.txt');
+      const reasonPath = join(dir, 'reason.txt');
+      writeFileSync(objectivePath, 'objective from system temp', 'utf8');
+      writeFileSync(reasonPath, 'reason from system temp', 'utf8');
+
+      expect(buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+      })).toEqual({ objective: 'objective from system temp' });
+      expect(buildRequestBody('goal', 'update', [], {
+        status: 'blocked',
+        reasonFile: reasonPath,
+      })).toEqual({ status: 'blocked', reason: 'reason from system temp' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('builds existing Goal end conditions without changing the default payload', () => {
+    const dir = mkdtempSync(join(process.cwd(), '.goal-cli-end-conditions-test-'));
+    try {
+      const objectivePath = join(dir, 'objective.txt');
+      writeFileSync(objectivePath, 'finish the release', 'utf8');
+
+      expect(buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+      })).toEqual({ objective: 'finish the release' });
+      expect(buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        deadline: '2026-07-22T09:00:00+08:00',
+        maxExecutions: '5',
+        aiCanExit: 'false',
+      })).toEqual({
+        objective: 'finish the release',
+        endConditions: {
+          deadline: '2026-07-22T01:00:00.000Z',
+          maxExecutions: 5,
+          aiCanExit: false,
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ambiguous or invalid Goal end conditions at the CLI boundary', () => {
+    const dir = mkdtempSync(join(process.cwd(), '.goal-cli-invalid-end-conditions-test-'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const objectivePath = join(dir, 'objective.txt');
+      writeFileSync(objectivePath, 'finish the release', 'utf8');
+
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        deadline: '2026-07-22T09:00:00',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        deadline: '2026-02-30T09:00:00+08:00',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        maxExecutions: '0',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        maxExecutions: '1.5',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        aiCanExit: 'sometimes',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        aiCanExit: true,
+      })).toThrow('process.exit(2)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('shows settled and current Goal turns separately with effective end conditions', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printGoalResult('get', {
+        goal: {
+          id: 'goal-1',
+          status: 'active',
+          turnCount: 3,
+          isExecuting: true,
+          executionNumber: 4,
+          endConditions: {
+            deadline: '2026-07-22T01:00:00.000Z',
+            maxExecutions: 5,
+            aiCanExit: false,
+          },
+        },
+      });
+
+      const output = log.mock.calls.map(call => String(call[0])).join('\n');
+      expect(output).toContain('settled turns: 3');
+      expect(output).toContain('current turn:  4 (executing)');
+      expect(output).toContain('max executions: 5');
+      expect(output).toContain('AI can exit:    no');
+      expect(output).toContain('[UTC 2026-07-22T01:00:00.000Z]');
+      expect(output).not.toContain('  turns:');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps workspace-scoped readers bounded and rejects unsafe file shapes', () => {
     const root = mkdtempSync(join(process.cwd(), '.goal-cli-safety-test-'));
     const workspace = join(root, 'workspace');
     mkdirSync(workspace);
@@ -682,9 +809,20 @@ describe('myagents CLI parseArgs', () => {
       'create',
       '--objective-file',
       'myagents_files/objective.txt',
+      '--deadline',
+      '2026-07-22T09:00:00+08:00',
+      '--max-executions',
+      '5',
+      '--ai-can-exit',
+      'false',
     ])).toMatchObject({
       positional: ['goal', 'create'],
-      flags: { objectiveFile: 'myagents_files/objective.txt' },
+      flags: {
+        objectiveFile: 'myagents_files/objective.txt',
+        deadline: '2026-07-22T09:00:00+08:00',
+        maxExecutions: '5',
+        aiCanExit: 'false',
+      },
     });
   });
 
@@ -739,6 +877,30 @@ describe('myagents CLI parseArgs', () => {
     });
   });
 
+  it('prints each provider primary model and model catalogue in human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printModelList([{
+        id: 'provider-a',
+        name: 'Provider A',
+        status: 'valid',
+        enabled: true,
+        primaryModel: 'model-b',
+        models: [
+          { model: 'model-a', modelName: 'Model A' },
+          { model: 'model-b', modelName: 'Model B' },
+        ],
+      }]);
+
+      const output = log.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(output).toContain('provider-a');
+      expect(output).toContain('Primary: model-b');
+      expect(output).toContain('model-a (Model A), model-b (Model B)');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('still accepts dash-prefixed values as the first repeatable value', () => {
     expect(parseArgs([
       'mcp',
@@ -754,6 +916,66 @@ describe('myagents CLI parseArgs', () => {
         env: ['TOKEN=secret'],
       },
     });
+  });
+});
+
+describe('myagents CLI IM contracts', () => {
+  it('serializes the advertised send-media file flag as one scalar path', () => {
+    for (const args of [
+      ['im', 'send-media', '--file', '/tmp/chart.png', '--caption', 'Daily chart'],
+      ['im', 'send-media', '--file=/tmp/chart.png', '--caption=Daily chart'],
+    ]) {
+      const { positional, flags } = parseArgs(args);
+      expect(buildRequestBody(
+        positional[0],
+        positional[1],
+        positional.slice(2),
+        flags,
+      )).toEqual({
+        filePath: '/tmp/chart.png',
+        caption: 'Daily chart',
+      });
+    }
+  });
+
+  it('keeps the positional compatibility form and rejects missing or ambiguous file input', () => {
+    const positional = parseArgs(['im', 'send-media', '/tmp/chart.png']);
+    expect(buildRequestBody(
+      positional.positional[0],
+      positional.positional[1],
+      positional.positional.slice(2),
+      positional.flags,
+    )).toEqual({ filePath: '/tmp/chart.png', caption: undefined });
+
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    try {
+      const repeated = parseArgs([
+        'im', 'send-media', '--file', '/tmp/a.png', '--file', '/tmp/b.png',
+      ]);
+      expect(() => buildRequestBody(
+        repeated.positional[0],
+        repeated.positional[1],
+        repeated.positional.slice(2),
+        repeated.flags,
+      )).toThrow('process.exit(2)');
+      expect(error).toHaveBeenCalledWith('Error: im send-media accepts exactly one --file <path>.');
+
+      error.mockClear();
+      const missing = parseArgs(['im', 'send-media', '--file', '--caption', 'Daily chart']);
+      expect(() => buildRequestBody(
+        missing.positional[0],
+        missing.positional[1],
+        missing.positional.slice(2),
+        missing.flags,
+      )).toThrow('process.exit(2)');
+      expect(error).toHaveBeenCalledWith('Error: im send-media requires --file <path>.');
+    } finally {
+      error.mockRestore();
+      exit.mockRestore();
+    }
   });
 });
 

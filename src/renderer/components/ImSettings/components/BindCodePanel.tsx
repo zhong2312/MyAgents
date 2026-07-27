@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, MessageSquare } from 'lucide-react';
+import { copyPlainText } from '@/utils/clipboard';
 
 export default function BindCodePanel({
     bindCode,
@@ -22,7 +23,7 @@ export default function BindCodePanel({
 
     const handleCopy = useCallback(async () => {
         try {
-            await navigator.clipboard.writeText(bindCode);
+            await copyPlainText(bindCode);
             setCopied(true);
             if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
             copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);

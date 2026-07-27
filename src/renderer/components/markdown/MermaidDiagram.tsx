@@ -11,70 +11,39 @@
 
 import { AlertCircle, Check, Code, Copy, Eye, RefreshCw } from 'lucide-react';
 import mermaid from 'mermaid';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 
-import { codeBlockSyntaxTheme } from './CodeBlock';
+import { useResolvedTheme } from '@/theme';
+import { copyPlainText } from '@/utils/clipboard';
 
-// Track mermaid initialization and dark mode state
+// Mermaid owns a process-global config, so cache the resolved Theme key.
 let mermaidInitialized = false;
-let lastDarkMode: boolean | null = null;
+let lastMermaidThemeKey: string | null = null;
 
-const LIGHT_THEME = {
-    primaryColor: '#e8ddd0',
-    primaryTextColor: '#1c1612',
-    primaryBorderColor: '#c4b5a5',
-    lineColor: '#8a7a6a',
-    secondaryColor: '#f5efe8',
-    tertiaryColor: '#fff8f0',
-};
-
-const DARK_THEME = {
-    primaryColor: '#3a3230',
-    primaryTextColor: '#e8dccf',
-    primaryBorderColor: '#5a4f48',
-    lineColor: '#8a7a6a',
-    secondaryColor: '#2a2420',
-    tertiaryColor: '#1e1a18',
-};
-
-function isDarkMode(): boolean {
-    return document.documentElement.classList.contains('dark');
-}
-
-function initMermaid(force = false) {
-    const dark = isDarkMode();
-    if (mermaidInitialized && !force && lastDarkMode === dark) return;
-
+function initMermaid(
+    themeKey: string,
+    adapter: import('@/theme').MermaidThemeAdapter,
+    force = false,
+) {
+    if (mermaidInitialized && !force && lastMermaidThemeKey === themeKey) return;
     mermaid.initialize({
         startOnLoad: false,
-        theme: dark ? 'dark' : 'neutral',
+        theme: adapter.theme,
         securityLevel: 'strict',
-        suppressErrorRendering: true, // Don't show error in SVG
-        fontFamily: "'Avenir Next', 'Gill Sans', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', sans-serif",
+        suppressErrorRendering: true,
+        fontFamily: adapter.fontFamily,
         flowchart: {
             useMaxWidth: true,
             htmlLabels: true,
             curve: 'basis',
         },
-        themeVariables: dark ? DARK_THEME : LIGHT_THEME,
+        themeVariables: adapter.themeVariables,
     });
     mermaidInitialized = true;
-    lastDarkMode = dark;
+    lastMermaidThemeKey = themeKey;
 }
-
-// Share CodeBlock's theme（单一真相源）——此前这里是一份手写复制品，CodeBlock
-// 字号 token 化后复制品停在 13px，同一条消息里代码块/源码视图字号分叉。
-// 只覆写 borderRadius（源码视图嵌在自带圆角的容器里）。
-const codeTheme = {
-    ...codeBlockSyntaxTheme,
-    'pre[class*="language-"]': {
-        ...codeBlockSyntaxTheme['pre[class*="language-"]'],
-        borderRadius: 0,
-    },
-};
-
 interface MermaidDiagramProps {
     children: string;
 }
@@ -108,6 +77,15 @@ function looksLikeValidMermaid(content: string): boolean {
 
 export default function MermaidDiagram({ children }: MermaidDiagramProps) {
     const { t } = useTranslation('app');
+    const resolvedTheme = useResolvedTheme();
+    const mermaidTheme = resolvedTheme.adapters.mermaid;
+    const codeTheme = useMemo(() => ({
+        ...resolvedTheme.adapters.prism,
+        'pre[class*="language-"]': {
+            ...resolvedTheme.adapters.prism['pre[class*="language-"]'],
+            borderRadius: 0,
+        },
+    }), [resolvedTheme.adapters.prism]);
     // View mode: preview (rendered diagram) or code (syntax highlighted source)
     const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
     const [copied, setCopied] = useState(false);
@@ -122,25 +100,12 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
     const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Use ref to avoid re-creating tryRender on every successful render
     const lastValidContentRef = useRef('');
+    const lastValidThemeKeyRef = useRef('');
 
-    // Re-render when dark mode changes (MutationObserver on <html>.dark)
-    const [, setDarkTick] = useState(0);
-    useEffect(() => {
-        const observer = new MutationObserver(() => {
-            const dark = isDarkMode();
-            if (dark !== lastDarkMode) {
-                mermaidInitialized = false; // Force re-init on next render
-                lastValidContentRef.current = ''; // Force re-render
-                setDarkTick(t => t + 1);
-            }
-        });
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-        return () => observer.disconnect();
-    }, []);
 
     const handleCopy = useCallback(async () => {
         try {
-            await navigator.clipboard.writeText(children.trim());
+            await copyPlainText(children.trim());
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch (err) {
@@ -152,7 +117,10 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
         const trimmedContent = content.trim();
 
         // Skip if content hasn't changed from last successful render
-        if (trimmedContent === lastValidContentRef.current) return;
+        if (
+            trimmedContent === lastValidContentRef.current
+            && resolvedTheme.key === lastValidThemeKeyRef.current
+        ) return;
         // Skip if content doesn't look like valid mermaid
         if (!looksLikeValidMermaid(trimmedContent)) return;
 
@@ -161,7 +129,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
         const renderId = `mermaid-${id}-${renderCountRef.current}`;
 
         try {
-            initMermaid();
+            initMermaid(resolvedTheme.key, mermaidTheme);
             setIsRendering(true);
             setParseError(null);
 
@@ -170,6 +138,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
             const { svg } = await withTimeout(mermaid.render(renderId, trimmedContent), RENDER_TIMEOUT_MS);
 
             lastValidContentRef.current = trimmedContent;
+            lastValidThemeKeyRef.current = resolvedTheme.key;
             setLastValidSvg(svg);
         } catch (err) {
             // Parse failed - this is expected during streaming
@@ -181,7 +150,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
             // Clean up orphaned DOM elements mermaid may leave on failure/timeout
             document.getElementById(renderId)?.remove();
         }
-    }, [id]); // stable reference — no state dependencies
+    }, [id, mermaidTheme, resolvedTheme.key]);
 
     useEffect(() => {
         // Debounce rendering - wait for content to stabilize

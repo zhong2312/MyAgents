@@ -34,7 +34,7 @@ function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v
         checked ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--line-strong)] bg-transparent hover:border-[var(--accent-muted)]'
       }`}>
       {checked && (
-        <svg className="h-3 w-3 text-white" viewBox="0 0 12 12" fill="none">
+        <svg className="h-3 w-3 text-[var(--on-accent)]" viewBox="0 0 12 12" fill="none">
           <path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}
@@ -55,7 +55,7 @@ function PillButton({ selected, onClick, children }: { selected: boolean; onClic
   return (
     <button type="button" onClick={onClick}
       className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-        selected ? 'bg-[var(--accent)] text-white' : 'bg-[var(--paper)] text-[var(--ink)] hover:bg-[var(--paper-inset)]'
+        selected ? 'bg-[var(--accent)] text-[var(--on-accent)]' : 'bg-[var(--paper)] text-[var(--ink)] hover:bg-[var(--paper-inset)]'
       }`}>{children}</button>
   );
 }
@@ -377,7 +377,7 @@ function CronTaskSettingsForm({
         <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[var(--line)] px-6 py-3.5">
           <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-[var(--ink-muted)] transition hover:bg-[var(--paper-inset)]">{t('cron.settingsModal.cancel')}</button>
           <button onClick={handleConfirm} disabled={!isValid}
-            className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50">
+            className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50">
             {t('cron.settingsModal.confirm')}
           </button>
         </div>

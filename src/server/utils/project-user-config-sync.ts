@@ -5,7 +5,7 @@ import { isAbsolute, join, relative, resolve } from 'path';
 import { isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './admin-config';
 import { ensureDirSync, isDirEntry } from './fs-utils';
 import { getCrossPlatformEnv, isSkillBlockedOnPlatform } from './platform';
-import { isRequiredMemorySystemSkill } from '../../shared/systemSkills';
+import { isRequiredSystemSkill } from '../../shared/systemSkills';
 
 const MYAGENTS_USER_DIR = '.myagents';
 
@@ -103,7 +103,7 @@ export function syncProjectUserConfigFiles(
       const linkPath = join(projectSkillsDir, entry.name);
 
       if (
-        (disabled.includes(entry.name) && !isRequiredMemorySystemSkill(entry.name))
+        (disabled.includes(entry.name) && !isRequiredSystemSkill(entry.name))
         || (!cliToolRegistryEnabled && entry.name === 'tool-creator')
       ) {
         try {

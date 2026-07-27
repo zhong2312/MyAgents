@@ -16,7 +16,7 @@ export type SourceNotification = 'auto' | 'none';
 export type SessionEventStatus = 'ok' | 'error';
 
 interface SessionEventBase {
-  version: 1;
+  version: 1 | 2;
   type: SessionEventType;
   eventId: string;
   createdAt: string;
@@ -58,8 +58,11 @@ export interface WatchEvent extends SessionEventBase {
 
 export interface SpaceIssueDeliveryEvent extends SessionEventBase {
   type: 'space.issue_delivery';
+  spaceId: string;
+  registeredAgentId: string;
   deliveryId: string;
-  deliveryKind?: 'subscription' | 'claim_followup' | string | null;
+  deliveryKind?: 'subscription' | 'assignment' | 'claim_followup' | string | null;
+  deliveryReason?: 'issue_update' | 'subscription_backfill' | 'scope_reevaluation' | string | null;
   claimId?: string | null;
   issueId: string;
   issueTitle: string;
@@ -67,6 +70,11 @@ export interface SpaceIssueDeliveryEvent extends SessionEventBase {
   goalId?: string | null;
   goalPathLabel?: string | null;
   notificationVersion?: number;
+  sourceIssueUpdateId?: string;
+  fromNotificationVersionExclusive?: number;
+  toNotificationVersionInclusive?: number;
+  protocolVersion?: 2;
+  instructionRevision?: number;
   deliveryCount?: number;
   updateSummary?: string | null;
 }

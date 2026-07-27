@@ -27,7 +27,7 @@ import {
   useFloating,
   type Placement,
 } from '@floating-ui/react';
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 export type PopoverPlacement = Placement;
 
@@ -131,19 +131,6 @@ export function Popover({
   // Outside-click dismissal. Uses `mousedown` (not `click`) so dragging a
   // text selection ending outside doesn't accidentally fire.
   const floatingRef = useRef<HTMLDivElement | null>(null);
-  useLayoutEffect(() => {
-    if (!open || !floatingRef.current) return;
-    const inheritedUiTheme =
-      anchorRef.current
-        ?.closest('[data-ui-theme]')
-        ?.getAttribute('data-ui-theme') || '';
-    if (inheritedUiTheme) {
-      floatingRef.current.setAttribute('data-ui-theme', inheritedUiTheme);
-    } else {
-      floatingRef.current.removeAttribute('data-ui-theme');
-    }
-  }, [anchorRef, open]);
-
   useEffect(() => {
     if (!open || !closeOnOutsideClick) return;
     const handler = (e: MouseEvent) => {
@@ -182,15 +169,6 @@ export function Popover({
         ref={(node) => {
           refs.setFloating(node);
           floatingRef.current = node;
-          const inheritedUiTheme =
-            anchorRef.current
-              ?.closest('[data-ui-theme]')
-              ?.getAttribute('data-ui-theme') || '';
-          if (node && inheritedUiTheme) {
-            node.setAttribute('data-ui-theme', inheritedUiTheme);
-          } else {
-            node?.removeAttribute('data-ui-theme');
-          }
         }}
         style={{ ...floatingStyles, zIndex, ...style }}
         className={unstyled ? className : `${DEFAULT_CHROME} ${className}`.trim()}

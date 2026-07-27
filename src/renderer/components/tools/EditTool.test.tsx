@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { i18n } from '@/i18n';
+import { renderWithTheme as render } from '@/test/renderWithTheme';
 import type { ToolUseSimple } from '@/types/chat';
 
 import EditTool from './EditTool';

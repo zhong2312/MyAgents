@@ -136,6 +136,7 @@ import {
 } from "@/config/configService";
 import {
   patchAgentConfig,
+  patchAgentProjectConfig,
   getAgentById,
 } from "@/config/services/agentConfigService";
 import { BrowserPanelContext } from "@/context/BrowserPanelContext";
@@ -655,7 +656,7 @@ export default function Chat({
     sessionMeta,
     setSessionMeta,
     unifiedLogs,
-    systemInitInfo: _systemInitInfo,
+    systemInitInfo,
     sdkSlashCommands,
     runtimeDiagnostics,
     agentError,
@@ -2816,6 +2817,15 @@ export default function Chat({
   const [workspaceMcpEnabled, setWorkspaceMcpEnabled] = useState<string[]>(
     currentAgent?.mcpEnabledServers ?? currentProject?.mcpEnabledServers ?? [],
   );
+  const runtimeMcpTools = useMemo(
+    () =>
+      isExternalRuntime
+        ? (systemInitInfo?.tools ?? []).filter((tool) =>
+            tool.startsWith("mcp__"),
+          )
+        : [],
+    [isExternalRuntime, systemInitInfo?.tools],
+  );
 
   // PRD 0.2.17 — Claude plugin per-workspace enable state. Init from Agent
   // (preferred) or Project. Layer 1 (global visibility) is applied later
@@ -3377,6 +3387,7 @@ export default function Chat({
         },
         patchProject,
         patchAgentConfig,
+        patchAgentProjectConfig,
         // v0.2.39: desktop Tab user intent always snapshots first; the helper is
         // still wired with a policy hook so future non-Tab surfaces cannot drift.
         patchSnapshot: skipSnapshotWrite ? undefined : patchSnapshot,
@@ -3792,10 +3803,19 @@ export default function Chat({
     const fallback = currentProvider.primaryModel;
     if (fallback) {
       setSelectedModel(fallback);
-      void patchProject(currentProject.id, { model: fallback });
-      if (currentProject?.agentId) {
-        void patchAgentConfig(currentProject.agentId, { model: fallback });
-      }
+      void persistInputOptionChange({
+        workspaceId: currentProject.id,
+        agentId: currentProject.agentId ?? null,
+        isExternalRuntime: false,
+        currentRuntimeConfig: currentAgent?.runtimeConfig,
+        currentProviderId:
+          currentAgent?.providerId ?? currentProject.providerId,
+        fields: { builtinModel: fallback },
+        snapshotWriteMode: "disabled",
+        patchProject,
+        patchAgentConfig,
+        patchAgentProjectConfig,
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to specific sub-properties, not full object refs
   }, [
@@ -3809,6 +3829,9 @@ export default function Chat({
     configPending,
     sessionSnapshotOwnsConfig,
     waitingForExistingSessionMeta,
+    currentAgent?.runtimeConfig,
+    currentAgent?.providerId,
+    currentProject?.providerId,
   ]);
 
   // Unified model-push effect — single source of truth for `/api/model/set`.
@@ -5213,6 +5236,7 @@ export default function Chat({
           snapshotWriteMode: "disabled",
           patchProject,
           patchAgentConfig,
+          patchAgentProjectConfig,
         });
         if (!defaultWriteResult.ok) {
           console.error(
@@ -6645,6 +6669,7 @@ export default function Chat({
               workspaceMcpEnabled={workspaceMcpEnabled}
               globalMcpEnabled={globalMcpEnabled}
               mcpServers={mcpServers}
+              runtimeMcpTools={runtimeMcpTools}
               onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
               officialTools={OFFICIAL_TOOLS}
               workspaceOfficialToolEnabled={workspaceOfficialToolEnabled}
@@ -7351,7 +7376,7 @@ export default function Chat({
                 type="button"
                 onClick={() => void handleGoalEditSubmit()}
                 disabled={goalEditSubmitting || !goalEditDraft.trim()}
-                className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {goalEditSubmitting
                   ? t("goalEdit.updating")

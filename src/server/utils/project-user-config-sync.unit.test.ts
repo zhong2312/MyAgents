@@ -76,18 +76,28 @@ describe('project-user-config-sync', () => {
     expect(existsSync(linkPath)).toBe(false);
   });
 
-  it('keeps managed memory system skills exposed even if legacy config disabled them', () => {
+  it('keeps all required system skills exposed while honoring an optional system skill disable', () => {
     const { home, workspace } = makeEnv();
-    writeUserSkill(home, 'myagents-memory-update');
+    const required = [
+      'myagents-memory-update',
+      'myagents-memory-gardener',
+      'myagents-memory-molt',
+      'myagents-cli',
+      'myagents-docs',
+    ];
+    for (const name of [...required, 'prompt-writer']) writeUserSkill(home, name);
     writeFileSync(
       join(home, '.myagents', 'skills-config.json'),
-      JSON.stringify({ disabled: ['myagents-memory-update'] }),
+      JSON.stringify({ disabled: [...required, 'prompt-writer'] }),
     );
 
     syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
 
-    const linkPath = join(workspace, '.claude', 'skills', 'myagents-memory-update');
-    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    for (const name of required) {
+      const linkPath = join(workspace, '.claude', 'skills', name);
+      expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    }
+    expect(existsSync(join(workspace, '.claude', 'skills', 'prompt-writer'))).toBe(false);
   });
 
   it('does not overwrite real project skill directories', () => {

@@ -110,9 +110,14 @@ export type InboxInjector = (
 
 function scenarioForInboxMessage(msg: PendingInboxMessage): InteractionScenario | undefined {
   if (msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery') {
+    if (!msg.sessionEvent.spaceId.trim() || !msg.sessionEvent.registeredAgentId.trim()) {
+      throw new Error('INVALID_REGISTERED_AGENT_ORIGIN: Space delivery requires exact spaceId and registeredAgentId.');
+    }
     return {
       type: 'registeredAgent',
       platform: 'space',
+      spaceId: msg.sessionEvent.spaceId,
+      registeredAgentId: msg.sessionEvent.registeredAgentId,
       sourceType: 'issue-delivery',
     };
   }
@@ -135,13 +140,12 @@ export async function handleInboxDrain(
   const rejectReasons: string[] = [];
 
   for (const msg of messages) {
-    const prompt = buildSessionEventPrompt(msg);
-    const meta = buildTurnMeta(msg);
-    const allowLazySessionMaterialization =
-      msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery';
-    const scenario = scenarioForInboxMessage(msg);
-
     try {
+      const prompt = buildSessionEventPrompt(msg);
+      const meta = buildTurnMeta(msg);
+      const allowLazySessionMaterialization =
+        msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery';
+      const scenario = scenarioForInboxMessage(msg);
       const result = await injector(prompt, meta, { allowLazySessionMaterialization, scenario });
       // PRD 0.2.18 cross-review fix (Codex):
       // enqueueUserMessage's `queued` flag is "queued behind other turns" not

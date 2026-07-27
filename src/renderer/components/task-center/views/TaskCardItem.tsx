@@ -307,7 +307,7 @@ export function ViewSessionButton({ task }: { task?: Task }) {
         <MessageCircle className="h-3.5 w-3.5" strokeWidth={1.5} />
         {t('tasks.viewSession')}
       </button>
-      <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-primary-text)] opacity-0 shadow-lg transition-opacity group-hover/view-session:opacity-100">
+      <span className="pointer-events-none absolute -bottom-7 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2 py-0.5 text-xs text-[var(--button-dark-text)] opacity-0 shadow-lg transition-opacity group-hover/view-session:opacity-100">
         {t('tasks.viewSessionTooltip')}
       </span>
     </div>

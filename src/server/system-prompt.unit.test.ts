@@ -14,10 +14,18 @@ describe('buildSystemPromptAppend floating-ball surface', () => {
 });
 
 describe('buildSystemPromptAppend registered Agent events', () => {
-  it('defers event business intent to the delivery-specific cloud instruction', () => {
-    const prompt = buildSystemPromptAppend({ type: 'registeredAgent', platform: 'space' });
-    expect(prompt).toContain('<cloud-issue-instruction>');
-    expect(prompt).toContain('<local-execution-instruction>');
-    expect(prompt).not.toContain('再决定 ignore、claim 或继续工作');
+  it('keeps action semantics open while binding the exact execution identity', () => {
+    const prompt = buildSystemPromptAppend({
+      type: 'registeredAgent',
+      platform: 'space',
+      spaceId: 'space-1',
+      registeredAgentId: 'agent-1',
+    });
+    expect(prompt).toContain('space-id="space-1" registered-agent-id="agent-1"');
+    expect(prompt).toContain('<registered-agent-instruction>');
+    expect(prompt).toContain('<operating-guidance>');
+    expect(prompt).toContain('不再行动、只评论或更新、claim 责任');
+    expect(prompt).toContain('不存在由你调用的 ignore、handled 或 acknowledge 动作');
+    expect(prompt).not.toContain('<cloud-issue-instruction>');
   });
 });

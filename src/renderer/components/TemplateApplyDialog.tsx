@@ -270,7 +270,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                             type="button"
                             onClick={handleRequestApply}
                             disabled={loading || !selectedTemplate}
-                            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
                         >
                             {loading && <Loader2 className="h-3 w-3 animate-spin" />}
                             {tSettings('agentSettings.templateApply.next')}
@@ -280,7 +280,7 @@ export default function TemplateApplyDialog({ agentDir, onClose, onApplied }: Te
                             type="button"
                             onClick={handleConfirmApply}
                             disabled={loading || !preview || (preview.overwrite.length === 0 && preview.add.length === 0)}
-                            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
                         >
                             {loading && <Loader2 className="h-3 w-3 animate-spin" />}
                             {tSettings('agentSettings.templateApply.confirmApply')}

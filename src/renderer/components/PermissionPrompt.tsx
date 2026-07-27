@@ -161,7 +161,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                         onClick={() => handleDecision('allow_once')}
                         disabled={isResponding}
                         className="flex items-center gap-1.5 rounded-lg bg-[var(--warning)] px-3 py-1.5 text-xs font-medium
-                            text-white transition-colors hover:brightness-110 disabled:opacity-50"
+                            text-[var(--on-warning)] transition-colors hover:brightness-110 disabled:opacity-50"
                     >
                         <Check className="size-3.5" />
                         <span>{t('shell.permissionPrompt.allow')}</span>

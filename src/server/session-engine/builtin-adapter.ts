@@ -69,7 +69,11 @@ import type {
 } from './types';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { DispatchGuard, TurnTerminalOutcome } from '../session-core/turn-queue';
-import { getSessionData } from '../SessionStore';
+import {
+  ensureRegisteredAgentSessionOrigin,
+  getPersistedSessionOrigin,
+  getSessionData,
+} from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 
@@ -260,6 +264,14 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
+    getSessionOrigin(sessionId) {
+      return getPersistedSessionOrigin(sessionId);
+    },
+
+    ensureRegisteredAgentSessionOrigin(sessionId, expected) {
+      return ensureRegisteredAgentSessionOrigin(sessionId, expected);
+    },
+
     getHeldImConfigSnapshot() {
       return {
         model: getSessionModel() ?? undefined,
@@ -421,7 +433,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.inboxMeta,
         undefined,
         request.analyticsOrigin,
-        { allowLazySessionMaterialization: request.allowLazySessionMaterialization === true },
+        {
+          allowLazySessionMaterialization: request.allowLazySessionMaterialization === true,
+          sessionBirthOrigin: request.birthOrigin,
+        },
       );
     },
 

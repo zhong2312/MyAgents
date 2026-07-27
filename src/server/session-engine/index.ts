@@ -9,6 +9,10 @@ export {
   stopOwnedTurnByQueueId,
 } from './selector';
 export { goalOrchestrator } from './goal-orchestrator';
+export {
+  beginTaskSessionBirth,
+  runTaskSessionBirthAdmission,
+} from './task-session-birth';
 export type {
   DesktopAdmissionResult,
   DesktopMessageRequest,

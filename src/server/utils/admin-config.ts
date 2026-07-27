@@ -17,42 +17,70 @@ import {
   fsyncSync,
   closeSync,
   unlinkSync,
-} from 'fs';
-import { resolve } from 'path';
-import { getHomeDirOrNull } from './platform';
-import { stripBom } from '../../shared/utils';
-import { workspacePathsEqual } from '../../shared/workspacePath';
-import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
-import type { ManagedProviderCredential, McpServerDefinition, ModelEntity, PermissionMode, Provider, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
-import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, mergePresetCustomModels, PRESET_MCP_SERVERS, PRESET_PROVIDERS, XAI_SUBSCRIPTION_API_BASE_URL, XAI_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
-import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
-import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
+  lstatSync,
+} from "fs";
+import { resolve } from "path";
+import { getHomeDirOrNull } from "./platform";
+import { stripBom } from "../../shared/utils";
+import { workspacePathsEqual } from "../../shared/workspacePath";
+import { promoteAgentMcpJsonToGlobal } from "../../shared/mcpConfig";
+import type {
+  AppConfig,
+  ManagedProviderCredential,
+  McpServerDefinition,
+  ModelEntity,
+  PermissionMode,
+  Provider,
+  ProviderVerifyStatus,
+  SubscriptionAuthPolicy,
+} from "../../shared/config-types";
+import {
+  applyManagedCodexProviderReadiness,
+  applyProviderEnablementAndOrder,
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  completeModelAliases,
+  getManagedCodexProviderReadiness,
+  isProviderEnabled,
+  mergePresetCustomModels,
+  PRESET_MCP_SERVERS,
+  PRESET_PROVIDERS,
+  withManagedCodexProviderCatalog,
+  XAI_SUBSCRIPTION_API_BASE_URL,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+} from "../../shared/config-types";
+import {
+  isRuntimeBackedProvider,
+  managedCodexProviderPermissionToRuntimePermission,
+} from "../../shared/providerExecution";
+import type { AgentConfig, ChannelConfig } from "../../shared/types/agent";
 import {
   IMAGE_UNDERSTANDING_TOOL_ID,
   isImageUnderstandingToolConfigured,
   normalizeOfficialToolIds,
   type OfficialToolId,
   type OfficialToolSettings,
-} from '../../shared/official-tools';
-import { applyMcpServerConfigAdditions } from '../../shared/mcpConfig';
+} from "../../shared/official-tools";
+import { applyMcpServerConfigAdditions } from "../../shared/mcpConfig";
 import {
   coerceModelForRuntime,
   coercePermissionModeForRuntime,
   getDefaultRuntimePermissionMode,
   normalizeRuntime,
   type RuntimeType,
-} from '../../shared/types/runtime';
-import type { SessionMetadata } from '../types/session';
-import { coerceReasoningEffortSettingForRuntime } from '../../shared/reasoningEffort';
-import { ensureDirSync } from './fs-utils';
-import { withFileLock, FileBusyError } from './file-lock';
+} from "../../shared/types/runtime";
+import type { SessionMetadata } from "../types/session";
+import { coerceReasoningEffortSettingForRuntime } from "../../shared/reasoningEffort";
+import { ensureDirSync } from "./fs-utils";
+import { withFileLock, FileBusyError } from "./file-lock";
 import {
   isConcreteProviderRoute,
   resolveExplicitProviderRoute,
   resolveLegacyModelOnlyProviderRoute,
   type ProviderRoute,
-} from '../../shared/providerRoute';
-import { resolveSessionConfig } from './resolve-session-config';
+} from "../../shared/providerRoute";
+import { resolveSessionConfig } from "./resolve-session-config";
+import { normalizeThemeConfigRecord } from "../../shared/theme";
+import { buildAvailableProvidersJson } from "../../shared/availableProvidersProjection";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -60,40 +88,53 @@ import { resolveSessionConfig } from './resolve-session-config';
 
 function getConfigDir(): string {
   const home = getHomeDirOrNull();
-  if (!home) throw new Error('Cannot determine home directory');
-  return resolve(home, '.myagents');
+  if (!home) throw new Error("Cannot determine home directory");
+  return resolve(home, ".myagents");
 }
 
 function getConfigPath(): string {
-  return resolve(getConfigDir(), 'config.json');
+  return resolve(getConfigDir(), "config.json");
 }
 
 function getProjectsPath(): string {
-  return resolve(getConfigDir(), 'projects.json');
+  return resolve(getConfigDir(), "projects.json");
 }
 
 const CONFIG_LOCK_TIMEOUT_MS = 5000;
 const CONFIG_LOCK_STALE_MS = 30000;
 
 function isProductPermissionMode(value: unknown): value is PermissionMode {
-  return value === 'auto' || value === 'plan' || value === 'fullAgency';
+  return value === "auto" || value === "plan" || value === "fullAgency";
 }
 
 export class ConfigBusyError extends Error {
-  readonly code = 'CONFIG_BUSY';
+  readonly code = "CONFIG_BUSY";
 
-  constructor(message = 'Config busy: could not acquire config.json.lock within 5000ms; retry') {
+  constructor(
+    message = "Config busy: could not acquire config.json.lock within 5000ms; retry",
+  ) {
     super(message);
-    this.name = 'ConfigBusyError';
+    this.name = "ConfigBusyError";
   }
 }
 
 export class ProjectsBusyError extends Error {
-  readonly code = 'PROJECTS_BUSY';
+  readonly code = "PROJECTS_BUSY";
 
-  constructor(message = 'Projects busy: could not acquire projects.json.lock within 5000ms; retry') {
+  constructor(
+    message = "Projects busy: could not acquire projects.json.lock within 5000ms; retry",
+  ) {
     super(message);
-    this.name = 'ProjectsBusyError';
+    this.name = "ProjectsBusyError";
+  }
+}
+
+export class ProviderBusyError extends Error {
+  readonly code = "PROVIDER_BUSY";
+
+  constructor(providerId: string) {
+    super(`Provider '${providerId}' is busy; retry the operation.`);
+    this.name = "ProviderBusyError";
   }
 }
 
@@ -103,6 +144,9 @@ export class ProjectsBusyError extends Error {
 
 /** Lightweight AppConfig subset used by admin operations */
 export interface AdminAppConfig {
+  themeId?: string;
+  themeSelectionExplicit?: boolean;
+  appearanceMode?: "system" | "light" | "dark";
   // MCP
   mcpServers?: McpServerDefinition[];
   mcpEnabledServers?: string[];
@@ -174,7 +218,9 @@ export interface ProjectSlim {
   archivedAgentEnabledBeforeArchive?: boolean;
   pinnedAt?: string;
   mcpEnabledServers?: string[];
+  enabledPluginIds?: string[];
   enabledOfficialToolIds?: OfficialToolId[];
+  providerId?: string;
   model?: string;
   permissionMode?: string;
   [key: string]: unknown;
@@ -187,11 +233,13 @@ export interface ProjectSlim {
 export function loadConfig(): AdminAppConfig {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) {
-    return {};
+    return normalizeThemeConfigRecord({}) as unknown as AdminAppConfig;
   }
   try {
-    const raw = readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(stripBom(raw)) as AdminAppConfig;
+    const raw = readFileSync(configPath, "utf-8");
+    const config = normalizeThemeConfigRecord(
+      JSON.parse(stripBom(raw)) as AdminAppConfig,
+    ) as AdminAppConfig;
     // Keep Admin API/CLI reads aligned with renderer and Rust IM config
     // readers: legacy Agent-only HTTP/SSE definitions are part of the MCP
     // catalogue until the user explicitly removes or disables them.
@@ -199,21 +247,33 @@ export function loadConfig(): AdminAppConfig {
     return config;
   } catch {
     // Malformed JSON — try .bak fallback
-    const bakPath = configPath + '.bak';
+    const bakPath = configPath + ".bak";
     if (existsSync(bakPath)) {
       try {
-        console.warn('[admin-config] config.json parse failed, falling back to .bak');
-        const config = JSON.parse(stripBom(readFileSync(bakPath, 'utf-8'))) as AdminAppConfig;
+        console.warn(
+          "[admin-config] config.json parse failed, falling back to .bak",
+        );
+        const config = normalizeThemeConfigRecord(
+          JSON.parse(
+            stripBom(readFileSync(bakPath, "utf-8")),
+          ) as AdminAppConfig,
+        ) as AdminAppConfig;
         promoteAgentMcpJsonToGlobal(config);
         return config;
-      } catch { /* bak also corrupt */ }
+      } catch {
+        /* bak also corrupt */
+      }
     }
-    console.error('[admin-config] config.json and .bak both unreadable, returning empty config');
-    return {};
+    console.error(
+      "[admin-config] config.json and .bak both unreadable, returning empty config",
+    );
+    return normalizeThemeConfigRecord({}) as unknown as AdminAppConfig;
   }
 }
 
-export function isCliToolRegistryEnabled(config: AdminAppConfig = loadConfig()): boolean {
+export function isCliToolRegistryEnabled(
+  config: AdminAppConfig = loadConfig(),
+): boolean {
   return config.cliToolRegistryEnabled === true;
 }
 
@@ -225,7 +285,9 @@ export function isCliToolRegistryEnabled(config: AdminAppConfig = loadConfig()):
  * never a sync busy-wait or `Atomics.wait` (Pattern 5 §5.3.4.a).
  */
 export async function withConfigLock(
-  modifier: (config: AdminAppConfig) => AdminAppConfig | Promise<AdminAppConfig>
+  modifier: (
+    config: AdminAppConfig,
+  ) => AdminAppConfig | Promise<AdminAppConfig>,
 ): Promise<AdminAppConfig> {
   const configPath = getConfigPath();
   const configDir = getConfigDir();
@@ -238,31 +300,37 @@ export async function withConfigLock(
   try {
     return await withFileLock(
       {
-        lockPath: configPath + '.lock',
+        lockPath: configPath + ".lock",
         timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
         staleMs: CONFIG_LOCK_STALE_MS,
       },
       async () => {
         const config = loadConfig();
         const before = JSON.stringify(config);
-        const modified = await modifier(config);
+        const modified = normalizeThemeConfigRecord(
+          await modifier(config),
+        ) as AdminAppConfig;
 
         if (JSON.stringify(modified) === before) {
           return modified;
         }
 
-        const tmpPath = configPath + '.tmp';
-        const bakPath = configPath + '.bak';
+        const tmpPath = configPath + ".tmp";
+        const bakPath = configPath + ".bak";
 
         writeFileSynced(tmpPath, JSON.stringify(modified, null, 2));
         if (existsSync(configPath)) {
-          try { copyFileSync(configPath, bakPath); } catch { /* best-effort backup */ }
+          try {
+            copyFileSync(configPath, bakPath);
+          } catch {
+            /* best-effort backup */
+          }
         }
         renameSync(tmpPath, configPath);
         fsyncDir(configDir);
 
         return modified;
-      }
+      },
     );
   } catch (err) {
     if (err instanceof FileBusyError) {
@@ -273,15 +341,44 @@ export async function withConfigLock(
 }
 
 export async function atomicModifyConfig(
-  modifier: (config: AdminAppConfig) => AdminAppConfig | Promise<AdminAppConfig>
+  modifier: (
+    config: AdminAppConfig,
+  ) => AdminAppConfig | Promise<AdminAppConfig>,
 ): Promise<AdminAppConfig> {
   return withConfigLock(modifier);
 }
 
-function writeFileSynced(path: string, content: string): void {
-  const fd = openSync(path, 'w', 0o600);
+/**
+ * Serialize a composite Agent configuration intent across config.json and its
+ * projects.json compatibility mirror. This lock is intentionally distinct
+ * from either file lock: callers still take the normal per-file locks in a
+ * fixed order while the outer intent lock prevents two Sidecars from
+ * interleaving the two commits.
+ */
+export async function withAgentConfigIntentLock<T>(
+  fn: () => Promise<T>,
+): Promise<T> {
+  const configDir = getConfigDir();
+  if (!existsSync(configDir)) ensureDirSync(configDir);
   try {
-    writeFileSync(fd, content, 'utf-8');
+    return await withFileLock(
+      {
+        lockPath: resolve(configDir, "agent-config-intent.lock"),
+        timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
+        staleMs: CONFIG_LOCK_STALE_MS,
+      },
+      fn,
+    );
+  } catch (error) {
+    if (error instanceof FileBusyError) throw new ConfigBusyError();
+    throw error;
+  }
+}
+
+function writeFileSynced(path: string, content: string): void {
+  const fd = openSync(path, "w", 0o600);
+  try {
+    writeFileSync(fd, content, "utf-8");
     fsyncSync(fd);
   } finally {
     closeSync(fd);
@@ -289,10 +386,10 @@ function writeFileSynced(path: string, content: string): void {
 }
 
 function fsyncDir(dir: string): void {
-  if (process.platform === 'win32') return;
+  if (process.platform === "win32") return;
   let fd: number | null = null;
   try {
-    fd = openSync(dir, 'r');
+    fd = openSync(dir, "r");
     fsyncSync(fd);
   } finally {
     if (fd !== null) closeSync(fd);
@@ -307,7 +404,7 @@ export function loadProjects(): ProjectSlim[] {
   const path = getProjectsPath();
   if (!existsSync(path)) return [];
   try {
-    const raw = readFileSync(path, 'utf-8');
+    const raw = readFileSync(path, "utf-8");
     return JSON.parse(raw) as ProjectSlim[];
   } catch {
     return [];
@@ -316,15 +413,19 @@ export function loadProjects(): ProjectSlim[] {
 
 export function saveProjects(projects: ProjectSlim[]): void {
   const path = getProjectsPath();
-  const tmpPath = path + '.tmp';
-  writeFileSync(tmpPath, JSON.stringify(projects, null, 2), 'utf-8');
+  const tmpPath = path + ".tmp";
+  writeFileSync(tmpPath, JSON.stringify(projects, null, 2), "utf-8");
   // Pattern 5 fix #13: if rename fails (e.g. permission denied, target on a
   // different filesystem), the .tmp file used to persist forever. Wrap so a
   // failure cleans up the artifact before rethrowing.
   try {
     renameSync(tmpPath, path);
   } catch (err) {
-    try { unlinkSync(tmpPath); } catch { /* ignore — tmp may not exist */ }
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* ignore — tmp may not exist */
+    }
     throw err;
   }
 }
@@ -336,7 +437,7 @@ export function saveProjects(projects: ProjectSlim[]): void {
  * owner code can all mutate workspace metadata.
  */
 export async function atomicModifyProjects(
-  modifier: (projects: ProjectSlim[]) => ProjectSlim[] | Promise<ProjectSlim[]>
+  modifier: (projects: ProjectSlim[]) => ProjectSlim[] | Promise<ProjectSlim[]>,
 ): Promise<ProjectSlim[]> {
   const projectsPath = getProjectsPath();
   const configDir = getConfigDir();
@@ -348,7 +449,7 @@ export async function atomicModifyProjects(
   try {
     return await withFileLock(
       {
-        lockPath: projectsPath + '.lock',
+        lockPath: projectsPath + ".lock",
         timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
         staleMs: CONFIG_LOCK_STALE_MS,
       },
@@ -361,17 +462,21 @@ export async function atomicModifyProjects(
           return modified;
         }
 
-        const tmpPath = projectsPath + '.tmp';
+        const tmpPath = projectsPath + ".tmp";
         writeFileSynced(tmpPath, JSON.stringify(modified, null, 2));
         try {
           renameSync(tmpPath, projectsPath);
           fsyncDir(configDir);
         } catch (err) {
-          try { unlinkSync(tmpPath); } catch { /* ignore — tmp may not exist */ }
+          try {
+            unlinkSync(tmpPath);
+          } catch {
+            /* ignore — tmp may not exist */
+          }
           throw err;
         }
         return modified;
-      }
+      },
     );
   } catch (err) {
     if (err instanceof FileBusyError) {
@@ -391,8 +496,8 @@ function getPresetMcpServers(): McpServerDefinition[] {
   // keeps platform-specific presets (e.g. cuse on darwin/win32) invisible
   // everywhere on unsupported hosts (catalogue, validation, effective
   // MCP lists, `myagents mcp list`).
-  return (PRESET_MCP_SERVERS as McpServerDefinition[]).filter(p =>
-    !p.platforms || p.platforms.includes(process.platform)
+  return (PRESET_MCP_SERVERS as McpServerDefinition[]).filter(
+    (p) => !p.platforms || p.platforms.includes(process.platform),
   );
 }
 
@@ -400,17 +505,16 @@ function getPresetMcpServers(): McpServerDefinition[] {
  * Get all MCP servers (preset + custom), with user env/args overrides applied.
  * Mirrors getAllMcpServers() from mcpService.ts.
  */
-export function getAllMcpServers(config?: AdminAppConfig): McpServerDefinition[] {
+export function getAllMcpServers(
+  config?: AdminAppConfig,
+): McpServerDefinition[] {
   const c = config ?? loadConfig();
   const presets = getPresetMcpServers();
   const custom = c.mcpServers ?? [];
 
   // Custom servers can override presets with same ID
-  const customIds = new Set(custom.map(s => s.id));
-  const merged = [
-    ...presets.filter(p => !customIds.has(p.id)),
-    ...custom,
-  ];
+  const customIds = new Set(custom.map((s) => s.id));
+  const merged = [...presets.filter((p) => !customIds.has(p.id)), ...custom];
 
   return applyMcpServerConfigAdditions(merged, c);
 }
@@ -423,23 +527,27 @@ export function getEnabledMcpServerIds(config?: AdminAppConfig): string[] {
   return c.mcpEnabledServers ?? [];
 }
 
-export function getGloballyEnabledOfficialToolIds(config?: AdminAppConfig): OfficialToolId[] {
+export function getGloballyEnabledOfficialToolIds(
+  config?: AdminAppConfig,
+): OfficialToolId[] {
   const c = config ?? loadConfig();
   return normalizeOfficialToolIds(c.enabledOfficialToolIds);
 }
 
-export function isImageUnderstandingGloballyConfigured(config?: AdminAppConfig): boolean {
+export function isImageUnderstandingGloballyConfigured(
+  config?: AdminAppConfig,
+): boolean {
   const c = config ?? loadConfig();
   return isImageUnderstandingToolConfigured(c.officialToolSettings);
 }
 
 export type ImageUnderstandingToolUnavailableReason =
-  | 'not-configured'
-  | 'provider-unavailable'
-  | 'runtime-backed-provider'
-  | 'model-not-image-capable'
-  | 'missing-credential'
-  | 'subscription-not-verified';
+  | "not-configured"
+  | "provider-unavailable"
+  | "runtime-backed-provider"
+  | "model-not-image-capable"
+  | "missing-credential"
+  | "subscription-not-verified";
 
 export type ImageUnderstandingToolAvailability =
   | {
@@ -472,11 +580,13 @@ function findProviderImageModel(
 ): { model: string; inputModalities: string[] } | null {
   const models = Array.isArray(provider.models) ? provider.models : [];
   for (const entry of models) {
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
     if (record.model !== model) continue;
     const inputModalities = Array.isArray(record.inputModalities)
-      ? record.inputModalities.filter((value): value is string => typeof value === 'string')
+      ? record.inputModalities.filter(
+          (value): value is string => typeof value === "string",
+        )
       : [];
     return { model, inputModalities };
   }
@@ -492,62 +602,66 @@ export function resolveImageUnderstandingToolAvailability(
   const model = settings?.model?.trim();
   if (!providerId || !model) {
     return unavailableImageUnderstandingTool(
-      'not-configured',
-      'Image understanding model is not configured.',
-      'Open Settings -> Toolbox -> Image Understanding and select an image-capable model.',
+      "not-configured",
+      "Image understanding model is not configured.",
+      "Open Settings -> Toolbox -> Image Understanding and select an image-capable model.",
     );
   }
 
   const provider = findEffectiveProvider(providerId, c);
   if (!provider || !isProviderEnabled(provider)) {
     return unavailableImageUnderstandingTool(
-      'provider-unavailable',
+      "provider-unavailable",
       `Configured vision provider '${providerId}' is unavailable.`,
-      'Open Settings -> Model Providers and re-enable or reconfigure the selected provider.',
+      "Open Settings -> Model Providers and re-enable or reconfigure the selected provider.",
     );
   }
   if (isRuntimeBackedProvider(provider)) {
     return unavailableImageUnderstandingTool(
-      'runtime-backed-provider',
+      "runtime-backed-provider",
       `Provider '${providerId}' is runtime-backed and cannot drive the vision helper.`,
-      'Choose an API-backed provider/model for Image Understanding.',
+      "Choose an API-backed provider/model for Image Understanding.",
     );
   }
 
   const modelEntry = findProviderImageModel(provider, model);
-  if (!modelEntry || !modelEntry.inputModalities.includes('image')) {
+  if (!modelEntry || !modelEntry.inputModalities.includes("image")) {
     return unavailableImageUnderstandingTool(
-      'model-not-image-capable',
+      "model-not-image-capable",
       `Model '${model}' is not registered as image-capable for provider '${providerId}'.`,
-      'Open Model Providers and select or mark a model whose input modalities include image.',
+      "Open Model Providers and select or mark a model whose input modalities include image.",
     );
   }
 
-  if (provider.type === 'subscription') {
+  if (provider.type === "subscription") {
     const verifyStatus = c.providerVerifyStatus?.[providerId];
-    if (verifyStatus?.status !== 'valid') {
+    if (verifyStatus?.status !== "valid") {
       return unavailableImageUnderstandingTool(
-        'subscription-not-verified',
+        "subscription-not-verified",
         `Subscription provider '${providerId}' is not verified.`,
-        'Open Settings -> Model Providers and verify the selected subscription provider.',
+        "Open Settings -> Model Providers and verify the selected subscription provider.",
       );
     }
   } else if (!resolveProviderEnv(providerId, c)) {
     return unavailableImageUnderstandingTool(
-      'missing-credential',
+      "missing-credential",
       `Provider '${providerId}' needs a valid API key before it can drive image understanding.`,
-      'Open Settings -> Model Providers and configure or verify the provider API key.',
+      "Open Settings -> Model Providers and configure or verify the provider API key.",
     );
   }
 
   return { ok: true, providerId, model, provider, modelEntry };
 }
 
-export function isImageUnderstandingToolCallable(config?: AdminAppConfig): boolean {
+export function isImageUnderstandingToolCallable(
+  config?: AdminAppConfig,
+): boolean {
   return resolveImageUnderstandingToolAvailability(config).ok;
 }
 
-function configuredOfficialToolSet(config: AdminAppConfig): Set<OfficialToolId> {
+function configuredOfficialToolSet(
+  config: AdminAppConfig,
+): Set<OfficialToolId> {
   const configured = new Set<OfficialToolId>();
   if (isImageUnderstandingToolCallable(config)) {
     configured.add(IMAGE_UNDERSTANDING_TOOL_ID);
@@ -562,7 +676,7 @@ function filterEffectiveOfficialToolIds(
   const globalEnabled = new Set(getGloballyEnabledOfficialToolIds(config));
   const configured = configuredOfficialToolSet(config);
   return normalizeOfficialToolIds(requested).filter(
-    id => globalEnabled.has(id) && configured.has(id),
+    (id) => globalEnabled.has(id) && configured.has(id),
   );
 }
 
@@ -573,11 +687,13 @@ export function getDefaultEnabledOfficialToolIdsForWorkspace(
   if (!agentDir) return [];
   const c = config ?? loadConfig();
   const agents = (c.agents ?? []) as Array<Record<string, unknown>>;
-  const agent = agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
+  const agent = agents.find(
+    (a) =>
+      typeof a.workspacePath === "string" &&
+      workspacePathsEqual(a.workspacePath, agentDir),
   );
-  const project = loadProjects().find(p =>
-    typeof p.path === 'string' && workspacePathsEqual(p.path, agentDir)
+  const project = loadProjects().find(
+    (p) => typeof p.path === "string" && workspacePathsEqual(p.path, agentDir),
   );
   return filterEffectiveOfficialToolIds(
     c,
@@ -596,10 +712,16 @@ export function getEffectiveOfficialToolIdsForSession(
     return filterEffectiveOfficialToolIds(c, overrideIds);
   }
   if (sessionMeta?.configSnapshotAt) {
-    return filterEffectiveOfficialToolIds(c, sessionMeta.enabledOfficialToolIds);
+    return filterEffectiveOfficialToolIds(
+      c,
+      sessionMeta.enabledOfficialToolIds,
+    );
   }
   if (sessionMeta?.enabledOfficialToolIds !== undefined) {
-    return filterEffectiveOfficialToolIds(c, sessionMeta.enabledOfficialToolIds);
+    return filterEffectiveOfficialToolIds(
+      c,
+      sessionMeta.enabledOfficialToolIds,
+    );
   }
   return getDefaultEnabledOfficialToolIdsForWorkspace(agentDir, c);
 }
@@ -607,7 +729,9 @@ export function getEffectiveOfficialToolIdsForSession(
 /**
  * Get effective MCP servers for a specific project (global enabled ∩ project enabled)
  */
-export function getEffectiveMcpServers(projectPath: string): McpServerDefinition[] {
+export function getEffectiveMcpServers(
+  projectPath: string,
+): McpServerDefinition[] {
   if (!projectPath) return [];
 
   const config = loadConfig();
@@ -616,12 +740,17 @@ export function getEffectiveMcpServers(projectPath: string): McpServerDefinition
 
   // Find project by path
   const projects = loadProjects();
-  const project = projects.find(p => typeof p.path === 'string' && workspacePathsEqual(p.path, projectPath));
+  const project = projects.find(
+    (p) =>
+      typeof p.path === "string" && workspacePathsEqual(p.path, projectPath),
+  );
   const projectEnabled = new Set(project?.mcpEnabledServers ?? []);
 
   if (projectEnabled.size === 0) return [];
 
-  return allServers.filter(s => globalEnabled.has(s.id) && projectEnabled.has(s.id));
+  return allServers.filter(
+    (s) => globalEnabled.has(s.id) && projectEnabled.has(s.id),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -630,24 +759,125 @@ export function getEffectiveMcpServers(projectPath: string): McpServerDefinition
 
 /** Redact sensitive values for display (show first 4 + last 4 chars) */
 export function redactSecret(value: string): string {
-  if (value.length <= 10) return '****';
-  return value.slice(0, 4) + '****' + value.slice(-4);
+  if (value.length <= 10) return "****";
+  return value.slice(0, 4) + "****" + value.slice(-4);
 }
 
 /** Path to custom provider files directory */
 export function getProvidersDir(): string {
   const home = getHomeDirOrNull();
-  if (!home) throw new Error('Cannot determine home directory');
-  return resolve(home, '.myagents', 'providers');
+  if (!home) throw new Error("Cannot determine home directory");
+  return resolve(home, ".myagents", "providers");
+}
+
+function lstatIfPresent(
+  path: string,
+): ReturnType<typeof lstatSync> | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function writeProviderFileUnlocked(
+  filePath: string,
+  dir: string,
+  contents: string,
+): void {
+  const tmpPath = filePath + ".tmp";
+  const bakPath = filePath + ".bak";
+  try {
+    writeFileSynced(tmpPath, contents);
+    const metadata = lstatIfPresent(filePath);
+    if (metadata) {
+      if (metadata.isDirectory()) {
+        throw new Error(`Provider path is a directory: ${filePath}`);
+      }
+      if (metadata.isSymbolicLink()) {
+        unlinkSync(filePath);
+      } else {
+        try {
+          copyFileSync(filePath, bakPath);
+        } catch {
+          /* best-effort backup */
+        }
+      }
+    }
+    renameSync(tmpPath, filePath);
+    fsyncDir(dir);
+  } catch (error) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* tmp may not exist */
+    }
+    throw error;
+  }
+}
+
+function deleteProviderFileUnlocked(filePath: string, dir: string): boolean {
+  const metadata = lstatIfPresent(filePath);
+  if (!metadata) return false;
+  if (metadata.isDirectory()) {
+    throw new Error(`Provider path is a directory: ${filePath}`);
+  }
+  unlinkSync(filePath);
+  fsyncDir(dir);
+  return true;
+}
+
+async function withProviderFileLock<T>(
+  providerId: string,
+  operation: (filePath: string, dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = getProvidersDir();
+  ensureDirSync(dir);
+  const filePath = resolve(dir, `${providerId}.json`);
+  try {
+    return await withFileLock(
+      {
+        lockPath: filePath + ".lock",
+        timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
+        staleMs: CONFIG_LOCK_STALE_MS,
+      },
+      () => operation(filePath, dir),
+    );
+  } catch (error) {
+    if (error instanceof FileBusyError) throw new ProviderBusyError(providerId);
+    throw error;
+  }
+}
+
+/**
+ * Atomically replace one custom provider file under the same cross-process
+ * lock protocol used by renderer config writes.
+ */
+export async function saveCustomProviderFile(
+  provider: Record<string, unknown> & { id: string },
+): Promise<void> {
+  await withProviderFileLock(provider.id, async (filePath, dir) => {
+    writeProviderFileUnlocked(filePath, dir, JSON.stringify(provider, null, 2));
+  });
+}
+
+/** Delete one custom provider file while holding its cross-process lock. */
+export async function deleteCustomProviderFile(
+  providerId: string,
+): Promise<boolean> {
+  return withProviderFileLock(providerId, async (filePath, dir) =>
+    deleteProviderFileUnlocked(filePath, dir),
+  );
 }
 
 /** Find a provider by ID: checks PRESET_PROVIDERS first, then custom files in ~/.myagents/providers/ */
 export function findProvider(id: string): Record<string, unknown> | null {
   // Check presets first (statically imported — see top of file).
   // Cast via `unknown` because Provider lacks a string index signature.
-  const preset = (PRESET_PROVIDERS as unknown as Array<Record<string, unknown>>)?.find(
-    (p: Record<string, unknown>) => p.id === id
-  );
+  const preset = (
+    PRESET_PROVIDERS as unknown as Array<Record<string, unknown>>
+  )?.find((p: Record<string, unknown>) => p.id === id);
   if (preset) return preset;
 
   // Check custom providers
@@ -655,9 +885,14 @@ export function findProvider(id: string): Record<string, unknown> | null {
     const dir = getProvidersDir();
     const filePath = resolve(dir, `${id}.json`);
     if (existsSync(filePath)) {
-      return JSON.parse(readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+      return JSON.parse(readFileSync(filePath, "utf-8")) as Record<
+        string,
+        unknown
+      >;
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return null;
 }
 
@@ -667,73 +902,164 @@ export function loadCustomProviderFiles(): Array<Record<string, unknown>> {
     const dir = getProvidersDir();
     if (!existsSync(dir)) return [];
     return readdirSync(dir)
-      .filter(f => f.endsWith('.json'))
-      .map(f => {
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => {
         try {
-          return JSON.parse(readFileSync(resolve(dir, f), 'utf-8')) as Record<string, unknown>;
-        } catch { return null; }
+          return JSON.parse(readFileSync(resolve(dir, f), "utf-8")) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          return null;
+        }
       })
       .filter((p): p is Record<string, unknown> => p !== null && !!p.id);
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
-export type ProviderRecord = Record<string, unknown> & { id: string; enabled?: unknown };
+export type ProviderRecord = Record<string, unknown> & {
+  id: string;
+  enabled?: unknown;
+};
 
-function hasProviderId(provider: Record<string, unknown>): provider is ProviderRecord {
-  return typeof provider.id === 'string' && provider.id.length > 0;
+function hasProviderId(
+  provider: Record<string, unknown>,
+): provider is ProviderRecord {
+  return typeof provider.id === "string" && provider.id.length > 0;
 }
 
-export function getAllEffectiveProviders(config?: AdminAppConfig): ProviderRecord[] {
+export function getAllEffectiveProviders(
+  config?: AdminAppConfig,
+): ProviderRecord[] {
   const c = config ?? loadConfig();
-  const presetProviders = ((PRESET_PROVIDERS ?? []) as unknown as Array<Record<string, unknown>>)
-    .filter(hasProviderId);
+  const presetProviders = (
+    (PRESET_PROVIDERS ?? []) as unknown as Array<Record<string, unknown>>
+  ).filter(hasProviderId);
   const customProviders = loadCustomProviderFiles().filter(hasProviderId);
-  const mergedProviders = mergePresetCustomModels(
+  // Managed Codex is intentionally not a PRESET_PROVIDERS entry: the product
+  // catalog injects it only when its developer gate is enabled. Admin/CLI must
+  // consume that same catalog instead of maintaining a second provider list,
+  // otherwise a valid `agent set ... providerId codex-sub` is rejected while
+  // the in-app picker accepts it.
+  const providerConfig = c as unknown as AppConfig;
+  const providersWithManagedCodex = withManagedCodexProviderCatalog(
     [...presetProviders, ...customProviders] as unknown as Provider[],
-    c.presetCustomModels,
-    c.presetRemovedModels,
-  ).map(provider => {
+    providerConfig,
+  );
+  const providersWithUserModels = mergePresetCustomModels(
+    providersWithManagedCodex,
+    providerConfig.presetCustomModels,
+    providerConfig.presetRemovedModels,
+  ).map((provider) => {
     const primaryOverride = c.providerPrimaryModels?.[provider.id];
-    return primaryOverride && provider.models.some(model => model.model === primaryOverride)
+    return primaryOverride &&
+      provider.models.some((model) => model.model === primaryOverride)
       ? { ...provider, primaryModel: primaryOverride }
       : provider;
   });
-  return applyProviderEnablementAndOrder(
-    mergedProviders as unknown as ProviderRecord[],
-    c,
+  return applyManagedCodexProviderReadiness(
+    applyProviderEnablementAndOrder(providersWithUserModels, providerConfig),
+    providerConfig,
+  ) as unknown as ProviderRecord[];
+}
+
+export function getProviderSelectionError(
+  provider: ProviderRecord,
+  config?: AdminAppConfig,
+): string | null {
+  const c = config ?? loadConfig();
+  if (!isProviderEnabled(provider)) {
+    return `Provider '${provider.id}' is disabled.`;
+  }
+  if (isRuntimeBackedProvider(provider)) {
+    const readiness = getManagedCodexProviderReadiness(c);
+    return readiness.selectable
+      ? null
+      : `Managed Codex provider is not ready (${readiness.reason}). Complete runtime installation and sign-in before selecting it.`;
+  }
+  if (provider.type === "subscription") {
+    return c.providerVerifyStatus?.[provider.id]?.status === "valid"
+      ? null
+      : `Subscription provider '${provider.id}' is not verified. Verify its account before selecting it.`;
+  }
+  return resolveProviderEnv(provider.id, c)
+    ? null
+    : `Provider '${provider.id}' has no usable credential. Configure its API key before selecting it.`;
+}
+
+/**
+ * Rebuild the Rust IM provider projection from the same effective provider
+ * catalogue and readiness rules used by the Admin API. The projection remains
+ * a derived cache; config/provider files are the authorities.
+ */
+export function withAvailableProvidersProjection(
+  config: AdminAppConfig,
+): AdminAppConfig {
+  const apiKeys = config.providerApiKeys ?? {};
+  const availableProvidersJson = buildAvailableProvidersJson({
+    providers: getAllEffectiveProviders(config) as unknown as Provider[],
+    apiKeys,
+    verifyStatus: config.providerVerifyStatus ?? {},
+    primaryModels: config.providerPrimaryModels as
+      | Record<string, string>
+      | undefined,
+  });
+
+  return {
+    ...config,
+    availableProvidersJson,
+  };
+}
+
+export function findEffectiveProvider(
+  id: string,
+  config?: AdminAppConfig,
+): ProviderRecord | null {
+  if (!id) return null;
+  return (
+    getAllEffectiveProviders(config).find((provider) => provider.id === id) ??
+    null
   );
 }
 
-export function findEffectiveProvider(id: string, config?: AdminAppConfig): ProviderRecord | null {
-  if (!id) return null;
-  return getAllEffectiveProviders(config).find(provider => provider.id === id) ?? null;
-}
-
-export function isProviderDisabled(providerId: string, config?: AdminAppConfig): boolean {
+export function isProviderDisabled(
+  providerId: string,
+  config?: AdminAppConfig,
+): boolean {
   const provider = findEffectiveProvider(providerId, config);
   return !!provider && !isProviderEnabled(provider);
 }
 
 function providersForRouteResolution(config: AdminAppConfig): Array<{
   id: string;
-  type: 'api' | 'subscription';
+  type: "api" | "subscription";
   enabled?: boolean;
   models: Array<{ model: string; modelName: string; modelSeries: string }>;
 }> {
-  return getAllEffectiveProviders(config).map(provider => {
+  return getAllEffectiveProviders(config).map((provider) => {
     const models = Array.isArray(provider.models) ? provider.models : [];
     return {
       id: provider.id,
-      type: provider.type === 'subscription' ? 'subscription' : 'api',
+      type: provider.type === "subscription" ? "subscription" : "api",
       enabled: provider.enabled === false ? false : true,
       models: models
-        .map(model => {
-          if (!model || typeof model !== 'object') return undefined;
+        .map((model) => {
+          if (!model || typeof model !== "object") return undefined;
           const value = (model as Record<string, unknown>).model;
-          if (typeof value !== 'string' || !value.trim()) return undefined;
+          if (typeof value !== "string" || !value.trim()) return undefined;
           return { model: value, modelName: value, modelSeries: value };
         })
-        .filter((model): model is { model: string; modelName: string; modelSeries: string } => Boolean(model)),
+        .filter(
+          (
+            model,
+          ): model is {
+            model: string;
+            modelName: string;
+            modelSeries: string;
+          } => Boolean(model),
+        ),
     };
   });
 }
@@ -750,22 +1076,30 @@ export interface ResolvedProviderEnv {
   providerName?: string;
   baseUrl?: string;
   apiKey?: string;
-  authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
-  apiProtocol?: 'anthropic' | 'openai';
+  authType?: "auth_token" | "api_key" | "both" | "auth_token_clear_api_key";
+  apiProtocol?: "anthropic" | "openai";
   maxOutputTokens?: number;
-  maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
-  upstreamFormat?: 'chat_completions' | 'responses';
-  modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
+  maxOutputTokensParamName?:
+    | "max_tokens"
+    | "max_completion_tokens"
+    | "max_output_tokens";
+  upstreamFormat?: "chat_completions" | "responses";
+  modelAliases?: {
+    fable?: string;
+    sonnet?: string;
+    opus?: string;
+    haiku?: string;
+  };
   credentialSource?: ManagedProviderCredential;
 }
 
 export function resolveSubscriptionAuthKind(
   providerId: string,
   config?: AdminAppConfig,
-): SubscriptionAuthPolicy['kind'] | undefined {
+): SubscriptionAuthPolicy["kind"] | undefined {
   const provider = findEffectiveProvider(providerId, config ?? loadConfig());
   const auth = provider?.subscriptionAuth as SubscriptionAuthPolicy | undefined;
-  return provider?.type === 'subscription' ? auth?.kind : undefined;
+  return provider?.type === "subscription" ? auth?.kind : undefined;
 }
 
 /**
@@ -788,53 +1122,81 @@ export function resolveProviderEnv(
   // Anthropic subscription remains SDK-native. Grok subscription is builtin
   // too, but its OAuth grant is owned by Rust and referenced here without a
   // bearer so the Bridge can resolve it per request.
-  const subscriptionAuth = provider.subscriptionAuth as SubscriptionAuthPolicy | undefined;
-  const subscriptionAuthKind = provider.type === 'subscription'
-    ? subscriptionAuth?.kind
-    : undefined;
-  const isManagedOauth = subscriptionAuthKind === 'host-managed-oauth';
-  if (provider.type === 'subscription' && !isManagedOauth) return undefined;
-  if (isManagedOauth && providerId !== XAI_SUBSCRIPTION_PROVIDER_ID) return undefined;
+  const subscriptionAuth = provider.subscriptionAuth as
+    | SubscriptionAuthPolicy
+    | undefined;
+  const subscriptionAuthKind =
+    provider.type === "subscription" ? subscriptionAuth?.kind : undefined;
+  const isManagedOauth = subscriptionAuthKind === "host-managed-oauth";
+  if (provider.type === "subscription" && !isManagedOauth) return undefined;
+  if (isManagedOauth && providerId !== XAI_SUBSCRIPTION_PROVIDER_ID)
+    return undefined;
 
   // Get API key from config. PRD 0.2.9 — also reject whitespace-only keys
   // (Codex review): a value like `"  "` is truthy and would silently be
   // sent to the upstream as the Authorization header, producing an opaque
   // 401 instead of an actionable "no API key" error.
-  const apiKey = isManagedOauth ? undefined : (c.providerApiKeys ?? {})[providerId];
+  const apiKey = isManagedOauth
+    ? undefined
+    : (c.providerApiKeys ?? {})[providerId];
   if (!isManagedOauth && (!apiKey || !apiKey.trim())) return undefined;
 
   // Extract provider config fields (same shape as frontend Chat.tsx builds)
   const providerConfig = (provider.config ?? {}) as Record<string, unknown>;
   const result: ResolvedProviderEnv = {
     providerId,
-    providerName: typeof provider.name === 'string' ? provider.name : providerId,
-    baseUrl: providerConfig.baseUrl ? String(providerConfig.baseUrl) : undefined,
+    providerName:
+      typeof provider.name === "string" ? provider.name : providerId,
+    baseUrl: providerConfig.baseUrl
+      ? String(providerConfig.baseUrl)
+      : undefined,
     ...(apiKey ? { apiKey } : {}),
-    authType: (provider.authType as ResolvedProviderEnv['authType']) ?? 'both',
+    authType: (provider.authType as ResolvedProviderEnv["authType"]) ?? "both",
     ...(isManagedOauth
-      ? { credentialSource: { kind: 'managed-oauth', providerId: XAI_SUBSCRIPTION_PROVIDER_ID } as const }
+      ? {
+          credentialSource: {
+            kind: "managed-oauth",
+            providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
+          } as const,
+        }
       : {}),
   };
-  if (provider.apiProtocol) result.apiProtocol = provider.apiProtocol as ResolvedProviderEnv['apiProtocol'];
-  if (provider.maxOutputTokens) result.maxOutputTokens = Number(provider.maxOutputTokens);
-  if (provider.maxOutputTokensParamName) result.maxOutputTokensParamName = provider.maxOutputTokensParamName as ResolvedProviderEnv['maxOutputTokensParamName'];
-  if (provider.upstreamFormat) result.upstreamFormat = provider.upstreamFormat as ResolvedProviderEnv['upstreamFormat'];
+  if (provider.apiProtocol)
+    result.apiProtocol =
+      provider.apiProtocol as ResolvedProviderEnv["apiProtocol"];
+  if (provider.maxOutputTokens)
+    result.maxOutputTokens = Number(provider.maxOutputTokens);
+  if (provider.maxOutputTokensParamName)
+    result.maxOutputTokensParamName =
+      provider.maxOutputTokensParamName as ResolvedProviderEnv["maxOutputTokensParamName"];
+  if (provider.upstreamFormat)
+    result.upstreamFormat =
+      provider.upstreamFormat as ResolvedProviderEnv["upstreamFormat"];
 
   // Model aliases: merge preset defaults with user overrides (from config.providerModelAliases)
-  const presetAliases = (provider as Record<string, unknown>).modelAliases as Record<string, string> | undefined;
-  const aliasOverrides = c.providerModelAliases as Record<string, Record<string, string>> | undefined;
+  const presetAliases = (provider as Record<string, unknown>).modelAliases as
+    | Record<string, string>
+    | undefined;
+  const aliasOverrides = c.providerModelAliases as
+    | Record<string, Record<string, string>>
+    | undefined;
   const userOverrides = aliasOverrides?.[providerId];
-  const mergedAliases = presetAliases || userOverrides
-    ? { ...presetAliases, ...userOverrides }
-    : undefined;
+  const mergedAliases =
+    presetAliases || userOverrides
+      ? { ...presetAliases, ...userOverrides }
+      : undefined;
   const completedAliases = completeModelAliases(mergedAliases);
   if (completedAliases) {
     result.modelAliases = completedAliases;
   } else {
     // Fallback: no aliases configured — use provider's primaryModel or first model
     // so sub-agents don't send raw claude-* model names to third-party APIs.
-    const primaryModel = (provider as Record<string, unknown>).primaryModel as string | undefined;
-    const models = (provider as Record<string, unknown>).models as Array<{ model: string }> | undefined;
+    const primaryModel = (provider as Record<string, unknown>).primaryModel as
+      | string
+      | undefined;
+    const models = (provider as Record<string, unknown>).models as
+      | Array<{ model: string }>
+      | undefined;
     const fallback = primaryModel || models?.[0]?.model;
     result.modelAliases = completeModelAliases(undefined, fallback);
   }
@@ -847,8 +1209,12 @@ export function materializeProviderRouteEnv(
   config?: AdminAppConfig,
 ): ResolvedProviderEnv | undefined {
   if (!isConcreteProviderRoute(route)) return undefined;
-  if (route.kind === 'subscription'
-      && resolveSubscriptionAuthKind(route.providerId, config) !== 'host-managed-oauth') return undefined;
+  if (
+    route.kind === "subscription" &&
+    resolveSubscriptionAuthKind(route.providerId, config) !==
+      "host-managed-oauth"
+  )
+    return undefined;
   return resolveProviderEnv(route.providerId, config);
 }
 
@@ -858,21 +1224,23 @@ export function canonicalizeManagedProviderEnv(
 ): ResolvedProviderEnv {
   const source = providerEnv.credentialSource;
   if (!source) return providerEnv;
-  if (source.kind !== 'managed-oauth'
-      || source.providerId !== XAI_SUBSCRIPTION_PROVIDER_ID
-      || providerEnv.providerId !== XAI_SUBSCRIPTION_PROVIDER_ID) {
-    throw new Error('Unsupported managed OAuth provider identity');
+  if (
+    source.kind !== "managed-oauth" ||
+    source.providerId !== XAI_SUBSCRIPTION_PROVIDER_ID ||
+    providerEnv.providerId !== XAI_SUBSCRIPTION_PROVIDER_ID
+  ) {
+    throw new Error("Unsupported managed OAuth provider identity");
   }
   return {
     providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
     providerName: providerEnv.providerName,
     baseUrl: XAI_SUBSCRIPTION_API_BASE_URL,
-    authType: 'both',
-    apiProtocol: 'openai',
-    upstreamFormat: 'responses',
+    authType: "both",
+    apiProtocol: "openai",
+    upstreamFormat: "responses",
     modelAliases: providerEnv.modelAliases,
     credentialSource: {
-      kind: 'managed-oauth',
+      kind: "managed-oauth",
       providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
     },
   };
@@ -920,7 +1288,9 @@ function resolveOwnedBuiltinProviderRoute(args: {
  * helpers only read `runtime`/`providerId`/`providerEnvJson`/`model`/`permissionMode`/
  * `mcpEnabledServers`, all of which are documented optional/required on AgentConfig).
  */
-export function findAgentByWorkspacePath(agentDir: string): AgentConfigSlim | undefined {
+export function findAgentByWorkspacePath(
+  agentDir: string,
+): AgentConfigSlim | undefined {
   const config = loadConfig();
   const agents = (config.agents ?? []) as AgentConfigSlim[];
   // #320 family: slash-only folding missed drive-letter case + trailing-slash
@@ -928,38 +1298,40 @@ export function findAgentByWorkspacePath(agentDir: string): AgentConfigSlim | un
   // could silently miss the Agent on Windows — the session then fell back to
   // live-follow and stayed exposed to the #327 config-stomp this snapshot
   // exists to prevent. Use the canonical workspace-path identity.
-  return agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
+  return agents.find(
+    (a) =>
+      typeof a.workspacePath === "string" &&
+      workspacePathsEqual(a.workspacePath, agentDir),
   );
 }
 
 export type ImProviderRoutingResult =
   | {
-      kind: 'provider-route';
+      kind: "provider-route";
       providerRoute: ProviderRoute;
       providerId: string;
       model: string;
       providerEnv: ResolvedProviderEnv | undefined;
     }
   | {
-      kind: 'external-runtime';
+      kind: "external-runtime";
       runtime: RuntimeType;
       runtimeSource?: string;
       model?: string;
       providerId?: string;
-      reason: 'runtime-not-builtin' | 'managed-codex-provider';
+      reason: "runtime-not-builtin" | "managed-codex-provider";
     }
   | {
-      kind: 'legacy-fallback';
-      reason: 'agent-not-found' | 'provider-id-missing';
+      kind: "legacy-fallback";
+      reason: "agent-not-found" | "provider-id-missing";
     }
   | {
-      kind: 'error';
+      kind: "error";
       status: 409;
       reason:
-        | 'managed-codex-provider-not-ready'
-        | 'provider-route-unresolved'
-        | 'provider-env-unavailable';
+        | "managed-codex-provider-not-ready"
+        | "provider-route-unresolved"
+        | "provider-env-unavailable";
       message: string;
       providerId?: string;
       model?: string;
@@ -972,35 +1344,45 @@ function findImAgentAndChannel(
   channelId: string | undefined,
 ): { agent?: AgentConfigSlim; channel?: ChannelConfigSlim } {
   const agents = (config.agents ?? []) as AgentConfigSlim[];
-  const agent = agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
+  const agent = agents.find(
+    (a) =>
+      typeof a.workspacePath === "string" &&
+      workspacePathsEqual(a.workspacePath, agentDir),
   );
   if (!agent) return {};
   const channel = channelId
-    ? ((agent.channels ?? []) as ChannelConfigSlim[]).find(ch => ch.id === channelId)
+    ? ((agent.channels ?? []) as ChannelConfigSlim[]).find(
+        (ch) => ch.id === channelId,
+      )
     : undefined;
   return { agent, channel };
 }
 
-function channelLevelProviderId(channel: ChannelConfigSlim | undefined): string | undefined {
+function channelLevelProviderId(
+  channel: ChannelConfigSlim | undefined,
+): string | undefined {
   if (!channel) return undefined;
-  const overrides = (channel.overrides as Record<string, unknown> | undefined) ?? undefined;
+  const overrides =
+    (channel.overrides as Record<string, unknown> | undefined) ?? undefined;
   const overrideProviderId = overrides?.providerId;
-  if (typeof overrideProviderId === 'string' && overrideProviderId.trim()) {
+  if (typeof overrideProviderId === "string" && overrideProviderId.trim()) {
     return overrideProviderId;
   }
   const legacyProviderId = (channel as Record<string, unknown>).providerId;
-  if (typeof legacyProviderId === 'string' && legacyProviderId.trim()) {
+  if (typeof legacyProviderId === "string" && legacyProviderId.trim()) {
     return legacyProviderId;
   }
   return undefined;
 }
 
-function channelForSessionConfig(channel: ChannelConfigSlim | undefined): ChannelConfig | undefined {
+function channelForSessionConfig(
+  channel: ChannelConfigSlim | undefined,
+): ChannelConfig | undefined {
   if (!channel) return undefined;
   const providerId = channelLevelProviderId(channel);
   if (!providerId) return channel as unknown as ChannelConfig;
-  const overrides = (channel.overrides as Record<string, unknown> | undefined) ?? {};
+  const overrides =
+    (channel.overrides as Record<string, unknown> | undefined) ?? {};
   return {
     ...channel,
     overrides: {
@@ -1015,10 +1397,10 @@ function providerRouteFailureMessage(
   providerId: string | undefined,
   model: string | undefined,
 ): string {
-  if (route.kind !== 'unknown-legacy') {
-    return `Provider route for ${providerId ?? '<missing>'}/${model ?? '<missing>'} is not concrete.`;
+  if (route.kind !== "unknown-legacy") {
+    return `Provider route for ${providerId ?? "<missing>"}/${model ?? "<missing>"} is not concrete.`;
   }
-  return `Provider route for ${providerId ?? '<missing>'}/${model ?? '<missing>'} is unresolved: ${route.reason}.`;
+  return `Provider route for ${providerId ?? "<missing>"}/${model ?? "<missing>"} is unresolved: ${route.reason}.`;
 }
 
 /**
@@ -1038,55 +1420,58 @@ export function resolveImProviderRouting(
 ): ImProviderRoutingResult {
   const c = options?.config ?? loadConfig();
   const { agent, channel } = findImAgentAndChannel(c, agentDir, channelId);
-  if (!agent) return { kind: 'legacy-fallback', reason: 'agent-not-found' };
+  if (!agent) return { kind: "legacy-fallback", reason: "agent-not-found" };
 
   const resolved = resolveSessionConfig(
     undefined,
     agent as unknown as AgentConfig,
     channelForSessionConfig(channel),
-    'im',
+    "im",
     { managedCodexProviderReady: options?.managedCodexProviderReady === true },
   );
 
-  const providerId = resolved.providerId
-    || channelLevelProviderId(channel)
-    || agent.providerId
-    || (c.defaultProviderId as string | undefined);
+  const providerId =
+    resolved.providerId ||
+    channelLevelProviderId(channel) ||
+    agent.providerId ||
+    (c.defaultProviderId as string | undefined);
   const model = resolved.model;
 
-  if (resolved.runtime !== 'builtin') {
+  if (resolved.runtime !== "builtin") {
     return {
-      kind: 'external-runtime',
+      kind: "external-runtime",
       runtime: resolved.runtime,
       runtimeSource: resolved.runtimeSource,
       model,
       providerId,
-      reason: 'runtime-not-builtin',
+      reason: "runtime-not-builtin",
     };
   }
 
   if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
     if (options?.managedCodexProviderReady === true && model) {
       return {
-        kind: 'external-runtime',
-        runtime: 'codex',
-        runtimeSource: 'managed-provider',
+        kind: "external-runtime",
+        runtime: "codex",
+        runtimeSource: "managed-provider",
         model,
         providerId,
-        reason: 'managed-codex-provider',
+        reason: "managed-codex-provider",
       };
     }
     return {
-      kind: 'error',
+      kind: "error",
       status: 409,
-      reason: 'managed-codex-provider-not-ready',
+      reason: "managed-codex-provider-not-ready",
       providerId,
       model,
-      message: 'Managed Codex Provider is configured for this IM channel but is not ready.',
+      message:
+        "Managed Codex Provider is configured for this IM channel but is not ready.",
     };
   }
 
-  if (!providerId) return { kind: 'legacy-fallback', reason: 'provider-id-missing' };
+  if (!providerId)
+    return { kind: "legacy-fallback", reason: "provider-id-missing" };
 
   const route = resolveExplicitProviderRoute({
     providerId,
@@ -1095,9 +1480,9 @@ export function resolveImProviderRouting(
   });
   if (!isConcreteProviderRoute(route)) {
     return {
-      kind: 'error',
+      kind: "error",
       status: 409,
-      reason: 'provider-route-unresolved',
+      reason: "provider-route-unresolved",
       providerId,
       model,
       providerRoute: route,
@@ -1106,11 +1491,11 @@ export function resolveImProviderRouting(
   }
 
   const providerEnv = materializeProviderRouteEnv(route, c);
-  if (route.kind === 'provider' && !providerEnv) {
+  if (route.kind === "provider" && !providerEnv) {
     return {
-      kind: 'error',
+      kind: "error",
       status: 409,
-      reason: 'provider-env-unavailable',
+      reason: "provider-env-unavailable",
       providerId,
       model: route.model,
       providerRoute: route,
@@ -1119,7 +1504,7 @@ export function resolveImProviderRouting(
   }
 
   return {
-    kind: 'provider-route',
+    kind: "provider-route",
     providerRoute: route,
     providerId,
     model: route.model,
@@ -1164,7 +1549,7 @@ export function resolveImProviderEnv(
   config?: AdminAppConfig,
 ): ResolvedProviderEnv | undefined {
   const routing = resolveImProviderRouting(agentDir, channelId, { config });
-  return routing.kind === 'provider-route' ? routing.providerEnv : undefined;
+  return routing.kind === "provider-route" ? routing.providerEnv : undefined;
 }
 
 /**
@@ -1192,7 +1577,8 @@ export function decodeProviderEnvSnapshot(
     const parsed = JSON.parse(snapshotJson) as ResolvedProviderEnv;
     if (!parsed.providerName && providerId) {
       const provider = findEffectiveProvider(providerId, config);
-      if (typeof provider?.name === 'string') parsed.providerName = provider.name;
+      if (typeof provider?.name === "string")
+        parsed.providerName = provider.name;
     }
     return parsed;
   } catch {
@@ -1213,10 +1599,15 @@ export interface WorkspaceResolvedConfig {
   reasoningEffort: string | undefined;
 }
 
-const BUILTIN_PERMISSION_MODES = new Set(['auto', 'plan', 'fullAgency', 'custom']);
+const BUILTIN_PERMISSION_MODES = new Set([
+  "auto",
+  "plan",
+  "fullAgency",
+  "custom",
+]);
 
 function asBuiltinPermissionMode(value: unknown): string | undefined {
-  return typeof value === 'string' && BUILTIN_PERMISSION_MODES.has(value)
+  return typeof value === "string" && BUILTIN_PERMISSION_MODES.has(value)
     ? value
     : undefined;
 }
@@ -1255,11 +1646,13 @@ export function resolveWorkspaceConfig(
 
   // Find matching agent by workspace path
   const agents = (config.agents ?? []) as Array<Record<string, unknown>>;
-  const agent = agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
+  const agent = agents.find(
+    (a) =>
+      typeof a.workspacePath === "string" &&
+      workspacePathsEqual(a.workspacePath, agentDir),
   );
-  const project = loadProjects().find(p =>
-    typeof p.path === 'string' && workspacePathsEqual(p.path, agentDir)
+  const project = loadProjects().find(
+    (p) => typeof p.path === "string" && workspacePathsEqual(p.path, agentDir),
   );
 
   // --- Resolve MCP ---
@@ -1275,7 +1668,9 @@ export function resolveWorkspaceConfig(
       const allServers = getAllMcpServers(config);
       const globalEnabled = new Set(getEnabledMcpServerIds(config));
       const sessionEnabled = new Set(sessionMeta.mcpEnabledServers);
-      mcpServers = allServers.filter(s => globalEnabled.has(s.id) && sessionEnabled.has(s.id));
+      mcpServers = allServers.filter(
+        (s) => globalEnabled.has(s.id) && sessionEnabled.has(s.id),
+      );
     } else if (!snapshotOwnsConfig) {
       // Lazy fallback for legacy / IM sessions — uses project ∩ global as before.
       mcpServers = getEffectiveMcpServers(agentDir);
@@ -1283,57 +1678,74 @@ export function resolveWorkspaceConfig(
   }
 
   // --- Resolve MyAgents official CLI tools ---
-  const globalOfficialTools = new Set(getGloballyEnabledOfficialToolIds(config));
+  const globalOfficialTools = new Set(
+    getGloballyEnabledOfficialToolIds(config),
+  );
   const configuredOfficialTools = configuredOfficialToolSet(config);
   const requestedOfficialTools = snapshotOwnsConfig
     ? normalizeOfficialToolIds(sessionMeta?.enabledOfficialToolIds)
     : normalizeOfficialToolIds(
-      sessionMeta?.enabledOfficialToolIds
-      ?? agent?.enabledOfficialToolIds
-      ?? project?.enabledOfficialToolIds,
-    );
+        sessionMeta?.enabledOfficialToolIds ??
+          agent?.enabledOfficialToolIds ??
+          project?.enabledOfficialToolIds,
+      );
   const enabledOfficialToolIds = requestedOfficialTools.filter(
-    id => globalOfficialTools.has(id) && configuredOfficialTools.has(id),
+    (id) => globalOfficialTools.has(id) && configuredOfficialTools.has(id),
   );
 
   const agentProviderId = agent?.providerId as string | undefined;
   const agentProvider = agentProviderId
     ? findEffectiveProvider(agentProviderId, config)
     : undefined;
-  const agentUsesRuntimeBackedProvider = agentProviderId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    || Boolean(agentProvider && isRuntimeBackedProvider(agentProvider));
-  const resolvedRuntime: RuntimeType = agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
-    ? 'codex'
-    : normalizeRuntime(
-        (sessionMeta?.runtime as string | undefined) ?? (agent?.runtime as string | undefined),
-      );
-  const agentRuntimeConfig = agent?.runtimeConfig as {
-    model?: string;
-    permissionMode?: string;
-    reasoningEffort?: string;
-  } | undefined;
-  const agentProductPermissionMode = isProductPermissionMode(agent?.permissionMode)
+  const agentUsesRuntimeBackedProvider =
+    agentProviderId === CODEX_SUBSCRIPTION_PROVIDER_ID ||
+    Boolean(agentProvider && isRuntimeBackedProvider(agentProvider));
+  const resolvedRuntime: RuntimeType =
+    agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
+      ? "codex"
+      : normalizeRuntime(
+          (sessionMeta?.runtime as string | undefined) ??
+            (agent?.runtime as string | undefined),
+        );
+  const agentRuntimeConfig = agent?.runtimeConfig as
+    | {
+        model?: string;
+        permissionMode?: string;
+        reasoningEffort?: string;
+      }
+    | undefined;
+  const agentProductPermissionMode = isProductPermissionMode(
+    agent?.permissionMode,
+  )
     ? agent.permissionMode
     : undefined;
-  const agentRuntimeBackedProviderPermissionMode = agentUsesRuntimeBackedProvider && agentProductPermissionMode
-    ? managedCodexProviderPermissionToRuntimePermission(agentProductPermissionMode)
-    : undefined;
+  const agentRuntimeBackedProviderPermissionMode =
+    agentUsesRuntimeBackedProvider && agentProductPermissionMode
+      ? managedCodexProviderPermissionToRuntimePermission(
+          agentProductPermissionMode,
+        )
+      : undefined;
 
   // --- Resolve Provider ---
   // Priority: session.providerId → agent.providerId → config.defaultProviderId → persisted snapshot
   let providerEnv: ResolvedProviderEnv | undefined;
   let providerRoute: ProviderRoute | undefined;
   let providerId: string | undefined;
-  if (resolvedRuntime === 'builtin' && snapshotOwnsConfig) {
+  if (resolvedRuntime === "builtin" && snapshotOwnsConfig) {
     providerRoute = resolveOwnedBuiltinProviderRoute({ sessionMeta, config });
-    providerId = isConcreteProviderRoute(providerRoute) ? providerRoute.providerId : sessionMeta?.providerId;
+    providerId = isConcreteProviderRoute(providerRoute)
+      ? providerRoute.providerId
+      : sessionMeta?.providerId;
     providerEnv = isConcreteProviderRoute(providerRoute)
       ? materializeProviderRouteEnv(providerRoute, config)
-      : (providerId ? resolveProviderEnv(providerId, config) : undefined);
-  } else if (resolvedRuntime === 'builtin') {
-    providerId = sessionMeta?.providerId
-      || (agent?.providerId as string | undefined)
-      || (config.defaultProviderId as string | undefined);
+      : providerId
+        ? resolveProviderEnv(providerId, config)
+        : undefined;
+  } else if (resolvedRuntime === "builtin") {
+    providerId =
+      sessionMeta?.providerId ||
+      (agent?.providerId as string | undefined) ||
+      (config.defaultProviderId as string | undefined);
     if (providerId) {
       const route = resolveExplicitProviderRoute({
         providerId,
@@ -1349,11 +1761,19 @@ export function resolveWorkspaceConfig(
   // historical data may still decode providerEnvJson for back-compat.
   // decodeProviderEnvSnapshot still enforces the global disable gate.
   if (sessionMeta?.providerEnvJson && !isConcreteProviderRoute(providerRoute)) {
-    const decoded = decodeProviderEnvSnapshot(sessionMeta.providerEnvJson, providerId, config);
+    const decoded = decodeProviderEnvSnapshot(
+      sessionMeta.providerEnvJson,
+      providerId,
+      config,
+    );
     if (decoded) providerEnv = decoded;
   } else if (!snapshotOwnsConfig && !providerEnv && agent?.providerEnvJson) {
     // Backward-compat: legacy sessions without a snapshot fall back to agent's persisted env
-    const decoded = decodeProviderEnvSnapshot(agent.providerEnvJson as string, providerId, config);
+    const decoded = decodeProviderEnvSnapshot(
+      agent.providerEnvJson as string,
+      providerId,
+      config,
+    );
     if (decoded) providerEnv = decoded;
   }
 
@@ -1361,26 +1781,38 @@ export function resolveWorkspaceConfig(
   // Runtime-aware priority:
   // - builtin: session.model → agent.model → provider primary model
   // - external: session.model → agent.runtimeConfig.model → runtime default
-  const rawModel = resolvedRuntime === 'builtin'
-    ? (snapshotOwnsConfig
-      ? (isConcreteProviderRoute(providerRoute) ? providerRoute.model : sessionMeta?.model)
-      : (sessionMeta?.model ?? (agent?.model as string | undefined) ?? undefined))
-    : (snapshotOwnsConfig
-      ? sessionMeta?.model
-      : (sessionMeta?.model ?? (agentUsesRuntimeBackedProvider ? agent?.model as string | undefined : agentRuntimeConfig?.model)));
+  const rawModel =
+    resolvedRuntime === "builtin"
+      ? snapshotOwnsConfig
+        ? isConcreteProviderRoute(providerRoute)
+          ? providerRoute.model
+          : sessionMeta?.model
+        : (sessionMeta?.model ??
+          (agent?.model as string | undefined) ??
+          undefined)
+      : snapshotOwnsConfig
+        ? sessionMeta?.model
+        : (sessionMeta?.model ??
+          (agentUsesRuntimeBackedProvider
+            ? (agent?.model as string | undefined)
+            : agentRuntimeConfig?.model));
   let model = coerceModelForRuntime(rawModel, resolvedRuntime);
-  if (resolvedRuntime !== 'builtin'
-      && typeof rawModel === 'string'
-      && rawModel.trim().length > 0
-      && model === undefined) {
+  if (
+    resolvedRuntime !== "builtin" &&
+    typeof rawModel === "string" &&
+    rawModel.trim().length > 0 &&
+    model === undefined
+  ) {
     console.warn(
-      `[runtime-coerce] dropping stale workspace model='${rawModel}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? '<none>'} agentDir=${agentDir}`,
+      `[runtime-coerce] dropping stale workspace model='${rawModel}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? "<none>"} agentDir=${agentDir}`,
     );
   }
-  if (!model && providerId && resolvedRuntime === 'builtin') {
+  if (!model && providerId && resolvedRuntime === "builtin") {
     const provider = findEffectiveProvider(providerId, config);
     if (provider && isProviderEnabled(provider)) {
-      model = (provider as Record<string, unknown>).primaryModel as string | undefined;
+      model = (provider as Record<string, unknown>).primaryModel as
+        | string
+        | undefined;
     }
   }
 
@@ -1392,20 +1824,26 @@ export function resolveWorkspaceConfig(
   // chain handles naturally.
   const rawReasoningEffort = snapshotOwnsConfig
     ? sessionMeta?.reasoningEffort
-    : (sessionMeta?.reasoningEffort
-      ?? (resolvedRuntime === 'builtin'
+    : (sessionMeta?.reasoningEffort ??
+      (resolvedRuntime === "builtin"
         ? (agent?.reasoningEffort as string | undefined)
         : agentRuntimeConfig?.reasoningEffort));
-  const reasoningEffort = resolvedRuntime === 'builtin'
-    ? rawReasoningEffort
-    : coerceReasoningEffortSettingForRuntime(rawReasoningEffort, resolvedRuntime);
-  if (resolvedRuntime !== 'builtin'
-      && typeof rawReasoningEffort === 'string'
-      && rawReasoningEffort.trim().length > 0
-      && rawReasoningEffort.trim() !== 'default'
-      && reasoningEffort === undefined) {
+  const reasoningEffort =
+    resolvedRuntime === "builtin"
+      ? rawReasoningEffort
+      : coerceReasoningEffortSettingForRuntime(
+          rawReasoningEffort,
+          resolvedRuntime,
+        );
+  if (
+    resolvedRuntime !== "builtin" &&
+    typeof rawReasoningEffort === "string" &&
+    rawReasoningEffort.trim().length > 0 &&
+    rawReasoningEffort.trim() !== "default" &&
+    reasoningEffort === undefined
+  ) {
     console.warn(
-      `[runtime-coerce] dropping stale workspace reasoningEffort='${rawReasoningEffort}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? '<none>'} agentDir=${agentDir}`,
+      `[runtime-coerce] dropping stale workspace reasoningEffort='${rawReasoningEffort}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? "<none>"} agentDir=${agentDir}`,
     );
   }
 
@@ -1415,7 +1853,7 @@ export function resolveWorkspaceConfig(
   // only their runtime-specific fields; project/global builtin permission
   // values are not portable.
   let permissionMode: string;
-  if (resolvedRuntime === 'builtin') {
+  if (resolvedRuntime === "builtin") {
     // Deliberate divergence from the renderer's UI fallback (which defaults a
     // missing defaultPermissionMode to 'plan'): headless pre-warm for IM/cron
     // sessions must default to 'auto' (classify, non-blocking), NOT 'plan'
@@ -1423,44 +1861,64 @@ export function resolveWorkspaceConfig(
     // every write before the first user message. Only reachable on a brand-new
     // empty config; once the UI has run, config.defaultPermissionMode is set.
     permissionMode = snapshotOwnsConfig
-      ? (asBuiltinPermissionMode(sessionMeta?.permissionMode) ?? 'auto')
-      : (asBuiltinPermissionMode(sessionMeta?.permissionMode)
-        ?? asBuiltinPermissionMode(agent?.permissionMode)
-        ?? asBuiltinPermissionMode(project?.permissionMode)
-        ?? asBuiltinPermissionMode(config.defaultPermissionMode)
-        ?? 'auto');
+      ? (asBuiltinPermissionMode(sessionMeta?.permissionMode) ?? "auto")
+      : (asBuiltinPermissionMode(sessionMeta?.permissionMode) ??
+        asBuiltinPermissionMode(agent?.permissionMode) ??
+        asBuiltinPermissionMode(project?.permissionMode) ??
+        asBuiltinPermissionMode(config.defaultPermissionMode) ??
+        "auto");
   } else {
     const rawPermissionMode = snapshotOwnsConfig
       ? sessionMeta?.permissionMode
-      : (sessionMeta?.permissionMode
-        ?? agentRuntimeBackedProviderPermissionMode
-        ?? agentRuntimeConfig?.permissionMode);
-    const coercedPermissionMode = coercePermissionModeForRuntime(rawPermissionMode, resolvedRuntime);
-    if (typeof rawPermissionMode === 'string'
-        && rawPermissionMode.trim().length > 0
-        && coercedPermissionMode === undefined) {
+      : (sessionMeta?.permissionMode ??
+        agentRuntimeBackedProviderPermissionMode ??
+        agentRuntimeConfig?.permissionMode);
+    const coercedPermissionMode = coercePermissionModeForRuntime(
+      rawPermissionMode,
+      resolvedRuntime,
+    );
+    if (
+      typeof rawPermissionMode === "string" &&
+      rawPermissionMode.trim().length > 0 &&
+      coercedPermissionMode === undefined
+    ) {
       console.warn(
-        `[runtime-coerce] dropping stale workspace permissionMode='${rawPermissionMode}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? '<none>'} agentDir=${agentDir}`,
+        `[runtime-coerce] dropping stale workspace permissionMode='${rawPermissionMode}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? "<none>"} agentDir=${agentDir}`,
       );
     }
-    permissionMode = coercedPermissionMode
-      ?? getDefaultRuntimePermissionMode(resolvedRuntime)
-      ?? 'default';
+    permissionMode =
+      coercedPermissionMode ??
+      getDefaultRuntimePermissionMode(resolvedRuntime) ??
+      "default";
   }
 
   // Gate on the signals that indicate a real workspace match — NOT permissionMode,
   // which now always resolves to a non-empty string ('auto' fallback) and would
   // make this log fire on every call (incl. no-match). Stay silent when nothing
   // resolved, as before.
-  if (mcpServers.length > 0 || enabledOfficialToolIds.length > 0 || providerEnv || model || agent) {
-    const source = sessionMeta?.configSnapshotAt ? 'session-snapshot' : 'agent';
+  if (
+    mcpServers.length > 0 ||
+    enabledOfficialToolIds.length > 0 ||
+    providerEnv ||
+    model ||
+    agent
+  ) {
+    const source = sessionMeta?.configSnapshotAt ? "session-snapshot" : "agent";
     console.log(
       `[admin-config] resolveWorkspaceConfig (${source}): ` +
-      `provider=${providerId ?? 'subscription'}, model=${model ?? 'default'}, ` +
-      `permission=${permissionMode}, mcp=${mcpServers.length} server(s), ` +
-      `officialTools=${enabledOfficialToolIds.join(',') || 'none'}${agent ? '' : ' (no agent match)'}`
+        `provider=${providerId ?? "subscription"}, model=${model ?? "default"}, ` +
+        `permission=${permissionMode}, mcp=${mcpServers.length} server(s), ` +
+        `officialTools=${enabledOfficialToolIds.join(",") || "none"}${agent ? "" : " (no agent match)"}`,
     );
   }
 
-  return { mcpServers, enabledOfficialToolIds, providerEnv, providerRoute, model, permissionMode, reasoningEffort };
+  return {
+    mcpServers,
+    enabledOfficialToolIds,
+    providerEnv,
+    providerRoute,
+    model,
+    permissionMode,
+    reasoningEffort,
+  };
 }

@@ -53,6 +53,10 @@ export default defineConfig({
         test: {
           name: 'unit',
           environment: 'node',
+          // Theme manifests validate the exact co-located CSS source. Vitest
+          // mocks CSS to an empty module by default, which would bypass that
+          // production contract; process only the Theme package styles here.
+          css: { include: /theme\/.*\.css/ },
           include: [
             'src/shared/**/*.test.ts',
             'src/renderer/**/*.test.ts',
@@ -99,6 +103,7 @@ export default defineConfig({
         test: {
           name: 'dom',
           environment: 'jsdom',
+          css: { include: /theme\/.*\.css/ },
           include: ['src/**/*.test.tsx'],
           setupFiles: ['src/test/setup-dom.ts'],
           testTimeout: 10_000,

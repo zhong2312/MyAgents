@@ -1,10 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getEffectiveMcpServers } from './admin-config';
-import { getDefaultEnabledPluginIdsForWorkspace } from '../plugins/store';
+import {
+  getDefaultEnabledPluginIdsForWorkspace,
+  setWorkspaceEnabledPlugins,
+} from '../plugins/store';
 
 let scratch: string;
 let prevHome: string | undefined;
@@ -12,6 +15,10 @@ let prevUserProfile: string | undefined;
 
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2), 'utf-8');
+}
+
+function readJson<T>(path: string): T {
+  return JSON.parse(readFileSync(path, 'utf-8')) as T;
 }
 
 beforeEach(() => {
@@ -102,5 +109,66 @@ describe('Windows workspace path identity for server config helpers', () => {
 
     expect(getDefaultEnabledPluginIdsForWorkspace('c:/users/me/project/'))
       .toEqual(['workspace-plugin']);
+  });
+
+  it('commits workspace plugin defaults to both Agent and Project under one intent', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Agent',
+        enabled: true,
+        workspacePath: 'C:\\Users\\Me\\Project',
+        enabledPluginIds: ['old-plugin'],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Win Project',
+      path: 'c:/users/me/project/',
+      agentId: 'agent-1',
+      enabledPluginIds: ['old-plugin'],
+    }]);
+
+    await expect(setWorkspaceEnabledPlugins(
+      'c:/users/me/project/',
+      ['reviewer', 'reviewer', 'charts'],
+    )).resolves.toEqual({ scope: 'agent', ids: ['reviewer', 'charts'] });
+
+    const config = readJson<{ agents: Array<{ enabledPluginIds?: string[] }> }>(
+      join(scratch, '.myagents', 'config.json'),
+    );
+    const projects = readJson<Array<{ enabledPluginIds?: string[] }>>(
+      join(scratch, '.myagents', 'projects.json'),
+    );
+    expect(config.agents[0].enabledPluginIds).toEqual(['reviewer', 'charts']);
+    expect(projects[0].enabledPluginIds).toEqual(['reviewer', 'charts']);
+  });
+
+  it('rolls back the Agent plugin default when its Project mirror cannot be written', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Agent',
+        enabled: true,
+        workspacePath: '/tmp/workspace',
+        enabledPluginIds: ['old-plugin'],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Project',
+      path: '/tmp/workspace',
+      agentId: 'agent-1',
+      enabledPluginIds: ['old-plugin'],
+    }]);
+    mkdirSync(join(scratch, '.myagents', 'projects.json.tmp'));
+
+    await expect(setWorkspaceEnabledPlugins('/tmp/workspace', ['new-plugin']))
+      .rejects.toThrow();
+
+    const config = readJson<{ agents: Array<{ enabledPluginIds?: string[] }> }>(
+      join(scratch, '.myagents', 'config.json'),
+    );
+    expect(config.agents[0].enabledPluginIds).toEqual(['old-plugin']);
   });
 });

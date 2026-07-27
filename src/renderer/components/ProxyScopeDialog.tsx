@@ -165,7 +165,7 @@ export default function ProxyScopeDialog({
           <button
             type="button"
             onClick={() => onSave({ generalRequests, providerIds: selectedIds })}
-            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-transform active:scale-[0.98]"
+            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] transition-transform active:scale-[0.98]"
           >
             <Check size={16} />
             {t('general.proxyScopeDialogSave')}

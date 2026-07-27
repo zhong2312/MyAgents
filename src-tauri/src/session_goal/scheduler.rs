@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tauri::Manager;
 
-use super::manager::failure_backoff;
+use super::manager::{end_condition_reason, failure_backoff, GoalEndConditionStopSource};
 use super::{
     execution, get_session_goal_manager, GoalStatus, GoalTurnFinalizationRequest,
     SessionGoalManager,
@@ -49,6 +49,81 @@ impl SessionGoalManager {
         });
         handles.insert(goal_id.to_string(), handle);
     }
+
+    pub(super) async fn ensure_deadline(&self, goal_id: &str) {
+        let deadline = match self.get(goal_id).await {
+            Ok(Some(goal)) if !goal.is_terminal() => goal.end_conditions.deadline,
+            _ => None,
+        };
+        let mut handles = self.deadline_handles.write().await;
+        if let Some(previous) = handles.remove(goal_id) {
+            previous.abort();
+        }
+        let Some(deadline) = deadline else {
+            return;
+        };
+
+        let goal_id_owned = goal_id.to_string();
+        let manager = self.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            sleep_until_wallclock(deadline).await;
+            loop {
+                match manager
+                    .stop_goal_for_end_condition(
+                        &goal_id_owned,
+                        "Goal deadline reached".to_string(),
+                        GoalEndConditionStopSource::DeadlineWatchdog,
+                    )
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(error) if error.code() == "goal_changed" => {
+                        ulog_warn!(
+                            "[Goal] Deadline cleanup owner {} no longer exists; stopping watchdog",
+                            goal_id_owned
+                        );
+                        break;
+                    }
+                    Err(error) => {
+                        ulog_error!(
+                            "[Goal] Deadline terminal commit failed for {}: {}; retrying",
+                            goal_id_owned,
+                            error
+                        );
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
+                }
+            }
+            manager
+                .deadline_handles
+                .write()
+                .await
+                .remove(&goal_id_owned);
+        });
+        handles.insert(goal_id.to_string(), handle);
+        drop(handles);
+
+        let deadline_is_still_current = self
+            .get(goal_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|goal| goal.end_conditions.deadline == Some(deadline));
+        if !deadline_is_still_current {
+            self.cancel_deadline(goal_id).await;
+        }
+    }
+}
+
+async fn sleep_until_wallclock(deadline: chrono::DateTime<chrono::Utc>) {
+    loop {
+        let now = chrono::Utc::now();
+        if now >= deadline {
+            return;
+        }
+        let millis = (deadline - now).num_milliseconds().clamp(1, 30_000) as u64;
+        tokio::time::sleep(Duration::from_millis(millis)).await;
+    }
 }
 
 async fn run_once(goal_id: &str) -> Option<u64> {
@@ -68,17 +143,13 @@ async fn run_once(goal_id: &str) -> Option<u64> {
         manager.ensure_delivery_replay(goal_id).await;
         return None;
     }
-    if goal
-        .end_conditions
-        .deadline
-        .is_some_and(|deadline| deadline <= chrono::Utc::now())
-        || goal
-            .end_conditions
-            .max_executions
-            .is_some_and(|max| goal.turn_count >= max)
-    {
+    if let Some(reason) = end_condition_reason(&goal, chrono::Utc::now()) {
         if let Err(error) = manager
-            .cancel_goal_and_stop(goal_id, Some("Goal end condition reached".to_string()))
+            .stop_goal_for_end_condition(
+                goal_id,
+                reason.to_string(),
+                GoalEndConditionStopSource::BoundaryCheck,
+            )
             .await
         {
             ulog_error!(

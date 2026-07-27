@@ -283,7 +283,7 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
                                                 : 'border-[var(--line)]'
                                             }`}
                                         >
-                                            {isSelected && <Check className="size-3 text-white" />}
+                                            {isSelected && <Check className="size-3 text-[var(--on-accent)]" />}
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center gap-2">
@@ -366,7 +366,7 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
                                         : 'border-[var(--line)]'
                                     }`}
                                 >
-                                    {isCustomSelected && <Check className="size-3 text-white" />}
+                                    {isCustomSelected && <Check className="size-3 text-[var(--on-accent)]" />}
                                 </div>
                             </button>
                             <input
@@ -451,7 +451,7 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
                                 onClick={handleSubmit}
                                 disabled={!allAnswered || isSubmitting}
                                 className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium rounded-lg
-                                    text-white bg-[var(--accent)] hover:bg-[var(--accent-warm-hover)]
+                                    text-[var(--on-accent)] bg-[var(--accent)] hover:bg-[var(--accent-warm-hover)]
                                     transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <Check className="size-3.5" />

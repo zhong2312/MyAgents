@@ -8,11 +8,11 @@ use serde_json::{json, Value};
 
 use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
-    SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
-    SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic, SpaceSkillSourceMetaInput,
-    SpaceUpdateProfileInput, SpaceUpdateRegisteredAgentAvatarInput, SpaceUpdateSpaceInput,
-    SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
-    MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
+    SpaceDownloadAttachmentResult, SpaceGoalSubscriptionSummary, SpaceIssueSubscriptionRunMode,
+    SpaceProcessDeliveryResult, SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic,
+    SpaceSkillSourceMetaInput, SpaceUpdateProfileInput, SpaceUpdateRegisteredAgentAvatarInput,
+    SpaceUpdateSpaceInput, SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput,
+    MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -250,6 +250,10 @@ pub fn register_agent(
     if display_name.is_empty() {
         return Err("displayName is required".to_string());
     }
+    let instruction = input.instruction.trim();
+    if instruction.is_empty() {
+        return Err("instruction is required".to_string());
+    }
     let goal_id = input.goal_id.trim();
     if goal_id.is_empty() {
         return Err("goalId is required".to_string());
@@ -275,6 +279,8 @@ pub fn register_agent(
         local_agent_id: Some(local_agent_id),
         workspace_id: Some(input.workspace_id),
         display_name: display_name.to_string(),
+        instruction: Some(instruction.to_string()),
+        instruction_revision: 1,
         workspace_path: workspace_root.to_string_lossy().to_string(),
         workspace_label: input.workspace_label.and_then(|value| {
             let trimmed = value.trim();
@@ -288,6 +294,20 @@ pub fn register_agent(
         avatar_source: Some("preset".to_string()),
         avatar_preset_id: Some(avatar_preset_id.clone()),
         avatar_urls: Some(mock_avatar_urls("agents", &avatar_preset_id)),
+        subscriptions: vec![SpaceGoalSubscriptionSummary {
+            id: format!("subscription-{}", id),
+            space_id: MOCK_SPACE_ID.to_string(),
+            actor_type: "registered_agent".to_string(),
+            actor_id: id.clone(),
+            goal_id: goal_id.to_string(),
+            include_subtree: true,
+            state_filter: input
+                .state_filter
+                .clone()
+                .unwrap_or_else(|| vec!["todo".to_string()]),
+            goal_path_label: goal_path_label.clone(),
+            created_at: "2026-06-24T09:34:00.000Z".to_string(),
+        }],
         goal_id: Some(goal_id.to_string()),
         goal_path_label,
         state_filter: input
@@ -480,45 +500,6 @@ pub fn mark_delivery_delivered(
         }
     }
     Ok(err_envelope(format!("Delivery not found: {}", delivery_id)))
-}
-
-fn ignore_delivery(
-    state: &mut MockState,
-    issue_id: Option<&str>,
-    delivery_id: &str,
-    request_actor: &MockActor,
-) -> Result<Value, String> {
-    let agent_id = require_registered_agent_actor(request_actor)?;
-    for item in &mut state.deliveries {
-        if item.pointer("/delivery/id").and_then(Value::as_str) != Some(delivery_id) {
-            continue;
-        }
-        if let Some(issue_id) = issue_id {
-            let delivery_issue_id = item.pointer("/delivery/issueId").and_then(Value::as_str);
-            if delivery_issue_id != Some(issue_id) {
-                return Err(format!(
-                    "Delivery {} does not belong to issue {}",
-                    delivery_id, issue_id
-                ));
-            }
-        }
-        let delivery_agent_id = item
-            .pointer("/delivery/registeredAgentId")
-            .and_then(Value::as_str);
-        if delivery_agent_id != Some(agent_id.as_str()) {
-            return Err(format!(
-                "Delivery {} does not belong to Registered Agent {}",
-                delivery_id, agent_id
-            ));
-        }
-        if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
-            delivery.insert("status".to_string(), json!("ignored"));
-            delivery.insert("handledAt".to_string(), json!("2026-06-24T09:48:00.000Z"));
-            delivery.insert("updatedAt".to_string(), json!("2026-06-24T09:48:00.000Z"));
-        }
-        return Ok(json!({ "ignored": true, "handledAt": "2026-06-24T09:48:00.000Z" }));
-    }
-    Err(format!("Delivery not found: {}", delivery_id))
 }
 
 pub fn process_deliveries_once() -> SpaceProcessDeliveryResult {
@@ -1215,9 +1196,6 @@ fn handle_api_data_request(
             "issue.state_changed",
             &actor,
         ),
-        ("POST", ["api", "issues", issue_id, "deliveries", delivery_id, "ignore"]) => {
-            ignore_delivery(&mut state, Some(issue_id), delivery_id, &actor)
-        }
         ("POST", ["api", "issues", issue_id, "close-own"]) => transition_issue_state(
             &mut state,
             issue_id,
@@ -1367,10 +1345,14 @@ fn handle_api_data_request(
                 .map(ToString::to_string);
             drop(state);
             let data = mark_delivery_delivered(delivery_id, Some(&agent_id), session_id)?;
+            if data.get("success").and_then(Value::as_bool) == Some(false) {
+                return Err(data
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Mock Delivery ACK failed")
+                    .to_string());
+            }
             Ok(data.get("data").cloned().unwrap_or(Value::Null))
-        }
-        ("POST", ["api", "deliveries", delivery_id, "ignored"]) => {
-            ignore_delivery(&mut state, None, delivery_id, &actor)
         }
         ("POST", ["api", "claims", claim_id, "local-task"]) => {
             claim_local_task(&mut state, claim_id, body, &actor)
@@ -1517,7 +1499,7 @@ fn initial_state() -> MockState {
         ("iss_mock_011", "附件下载到 workspace 时目录名需要稳定", "triaged", vec!["bug"], "下载路径应包含 issue id 和 attachment id，便于 Agent 引用。"),
         ("iss_mock_012", "Registered Agent 离线时指派菜单要禁用", "open", vec!["needs-agent", "ux"], "下拉菜单可以显示 offline agent，但不能点击派发。"),
         ("iss_mock_013", "长标题在 Issue 列表里不能挤掉状态 badge 和 tag", "open", vec!["ux"], "这是一个特意很长很长的标题，用来验证列表行在窄屏和中等宽度下的截断、换行和 badge 布局是否稳定。"),
-        ("iss_mock_014", "中文正文和英文 CLI 命令混排的阅读节奏", "in_progress", vec!["docs", "ux"], "详情页正文里会同时出现中文说明、`myagents issue iss_mock_014` 命令和较长段落，需要稳定行高。"),
+        ("iss_mock_014", "中文正文和英文 CLI 命令混排的阅读节奏", "in_progress", vec!["docs", "ux"], "详情页正文里会同时出现中文说明、`myagents space issue view iss_mock_014 --space myagents` 命令和较长段落，需要稳定行高。"),
         ("iss_mock_015", "权限不足时状态切换应为静态 badge", "resolved", vec!["bug"], "member 只能关闭自己创建的 issue，不能看到会失败的状态菜单。"),
         ("iss_mock_016", "Agent 执行完成后应回写处理记录", "open", vec!["needs-agent"], "派发后 Agent 需要通过 CLI comment/status 回写进展。"),
         ("iss_mock_017", "官方 Skill 列表空态不应该是大虚线卡片", "triaged", vec!["ux"], "列表空态也应该在底纸上，而不是浮起容器。"),
@@ -1616,7 +1598,7 @@ fn initial_state() -> MockState {
             offset + 1
         );
         let body = format!(
-            "这是 mock mode 生成的真实感 Issue，用于验证 500 条列表、筛选、搜索、状态和 tag 的稳定性。\n\n场景编号：{}。\n命令示例：myagents issue {}",
+            "这是 mock mode 生成的真实感 Issue，用于验证 500 条列表、筛选、搜索、状态和 tag 的稳定性。\n\n场景编号：{}。\n命令示例：myagents space issue view {} --space myagents",
             offset + 1,
             id
         );
@@ -3968,6 +3950,21 @@ fn update_agent_api(
         }
         agent.display_name = display_name.to_string();
     }
+    if let Some(instruction) = body.get("instruction").and_then(Value::as_str) {
+        let expected = body
+            .get("expectedInstructionRevision")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "expectedInstructionRevision is required".to_string())?;
+        if expected != agent.instruction_revision {
+            return Err("REGISTERED_AGENT_INSTRUCTION_CONFLICT".to_string());
+        }
+        let instruction = instruction.trim();
+        if instruction.is_empty() {
+            return Err("instruction is required".to_string());
+        }
+        agent.instruction = Some(instruction.to_string());
+        agent.instruction_revision += 1;
+    }
     if let Some(local_workspace_id) = body.get("localWorkspaceId").and_then(Value::as_str) {
         let local_workspace_id = local_workspace_id.trim();
         if local_workspace_id.is_empty() {
@@ -4053,6 +4050,8 @@ fn update_agent_api(
             "localWorkspaceId": agent.local_workspace_id.clone(),
             "localAgentId": agent.local_agent_id.clone(),
             "displayName": agent.display_name.clone(),
+            "instruction": agent.instruction.clone(),
+            "instructionRevision": agent.instruction_revision,
             "workspacePath": agent.workspace_path.clone(),
             "workspaceLabel": agent.workspace_label.clone(),
             "goalMd": agent.goal_md.clone(),
@@ -4603,12 +4602,15 @@ fn agent(
         )),
         workspace_id: Some(format!("project_{}", safe_local_name(workspace_label))),
         display_name: display_name.to_string(),
+        instruction: Some(goal_md.to_string()),
+        instruction_revision: 1,
         workspace_path: workspace_path.to_string(),
         workspace_label: Some(workspace_label.to_string()),
         avatar_url: Some(mock_avatar_preset_url("agents", &avatar_preset_id, 128)),
         avatar_source: Some("preset".to_string()),
         avatar_preset_id: Some(avatar_preset_id.clone()),
         avatar_urls: Some(mock_avatar_urls("agents", &avatar_preset_id)),
+        subscriptions: Vec::new(),
         goal_id: Some(goal_id.to_string()),
         goal_path_label: Some(
             match goal_id {

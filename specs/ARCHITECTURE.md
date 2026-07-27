@@ -163,7 +163,7 @@ Goal concurrency 只保留三类真实 identity/fence：Runtime queue item 的 `
 
 Renderer 发出的 Goal mutation 还必须通过 owner/projection fence 才能落回当前 UI：返回值的 `goalId + sessionId + normalize(workspacePath)` 必须仍匹配请求 owner，且当前 projection 仍是同一 Goal。切换 Session、同 Session 新建 Goal incarnation，或 cancel 后的迟到 pause/resume/cancel 响应都不得覆盖新投影。
 
-自动 continuation 是 `goalId -> one-shot JoinHandle`，只在 active、无 current Turn、无待投递 outbox 时存在；paused/terminal Goal 不轮询。实际发送统一走 `/goal/execute-sync` 和 SessionEngine facade。自动 continuation 在进入 Node dispatch 前先附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Turn claim 时附着；它只是现有 Sidecar 的 owner token，不创建独立进程。
+自动 continuation 是 `goalId -> one-shot JoinHandle`，只在 active、无 current Turn、无待投递 outbox 时存在；paused/terminal Goal 不轮询。deadline 由同一个 `SessionGoalManager` 持有独立 one-shot stop handle，按 wall clock 复核后，在 session lifecycle 锁内持续复用既有 disk-first terminal + exact/owner-scoped stop 链，直到 authority 清除与 owner 释放确认，覆盖用户 Turn、自动 continuation 与 paused 状态。max executions 同时在 continuation 调度和原子 Turn claim 处裁决；输给结束条件的 claim 会保留该 queue authority，等既有 abort settlement 清除后才允许替换，不能在竞态中多抢一轮或泄漏旧 owner。实际发送统一走 `/goal/execute-sync` 和 SessionEngine facade。自动 continuation 在进入 Node dispatch 前先附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Turn claim 时附着；它只是现有 Sidecar 的 owner token，不创建独立进程。
 
 桌面 Goal 先以 Paused 持久化并等待首条用户 turn；首条 claim 通过普通用户发送路径原子激活。`GOAL_CONTINUATION` hidden envelope 后保留原 objective visible tail，因此用户气泡、Goal badge 与实时 streaming 都存在；切换 Session 或发送失败不会产生 Active 空 Goal。后续自动 continuation 纯隐藏；Goal 运行中用户 query 使用 `GOAL_CONTEXT` + visible query，并由现有 Runtime queue 排序。所有 continuation 强制 turn boundary，不能 steer/merge 到正在运行的 Turn。
 
@@ -243,6 +243,7 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 | `/api/cron/*`                    | Scheduled Task 兼容 CRUD + 调度控制          | CLI、`im-cron-tool.ts`            |
 | `/api/task/*`（13 条）           | Task Center 任务 CRUD + run/rerun + doc 读写 | CLI、`admin-api.ts`               |
 | `/api/mcp/remove-references`     | Task 中删除 custom MCP identity 的持久引用   | `admin-api.ts` MCP remove cascade |
+| `/api/app/config-changed`        | 将 disk-first AppConfig 失效信号广播到所有 WebView（空 payload，不携带 secret） | `admin-api.ts` model mutation |
 | `/api/thought/*`（2 条）         | 想法 create / list                           | CLI、`admin-api.ts`               |
 | `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调  | Node.js / 社区插件 Bridge         |
 | `/api/plugin/*`（3 条）          | OpenClaw 插件 CRUD                           | CLI                               |
@@ -282,7 +283,7 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_ensure_session_sidecar`                      | 确保 Session 有运行中的 Sidecar                                                                                             |
 | `cmd_release_session_sidecar`                     | 释放 Owner 对 Sidecar 的使用                                                                                                |
 | `cmd_release_tab_session`                         | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation                                                   |
-| `cmd_delete_session_if_unowned`                   | 在同一 owner 锁边界内拒绝删除仍被 Sidecar 或持久 scheduler 拥有的 Session；检查 ownership/entry，不用 process liveness 代替 |
+| `cmd_delete_session_if_unowned`                   | 用户删除的唯一 lifecycle authority：在同一 owner 锁边界内拒绝仍被 Sidecar 或持久 scheduler 拥有的 Session，并用每次 Global Sidecar 启动生成的 capability 调用从属 Node 存储端点；无 Rust authority 的 browser/dev HTTP 调用 fail-closed。检查 ownership/entry，不用 process liveness 代替 |
 | `cmd_get_session_port`                            | 获取 Session 的 Sidecar 端口                                                                                                |
 | `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理                                                                                                            |
 | `cmd_upgrade_session_id`                          | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename                                    |
@@ -323,6 +324,8 @@ Phase4 后，几个历史大型 UI 入口保留原路径作为兼容 facade，�
 | `src/renderer/pages/Settings.tsx`             | re-export `pages/settings/SettingsPage.tsx`；section/sidebar/navigation/provider form 拆到 `pages/settings/*`                                                                 |
 | `src/renderer/components/SimpleChatInput.tsx` | re-export `components/chat-input/SimpleChatInput.tsx`；附件处理、mention/thought row、常量/types 拆到 `components/chat-input/*`                                               |
 | `src/renderer/components/DirectoryPanel.tsx`  | re-export `components/directory-panel/DirectoryPanel.tsx`；搜索 hook、path display、types 拆到 `components/directory-panel/*`，树 viewport 仍在 `components/workspace-tree/*` |
+
+macOS 的 renderer 崩溃恢复由 Tauri `on_web_content_process_terminate` 回调拥有：只有 WebKit 明确报告 content process 已终止时才 reload 对应 WebView，并从持久 Session/REST/SSE 权威恢复页面。普通系统 wake/resume、窗口重新显示或应用激活不得 reload 健康 WebView，以免丢失未提交草稿和 renderer-local UI 状态；Sidecar/Session 生命周期独立于 WebView，content process 终止时继续存活并保持后端权威。
 
 ### 3. 系统提示词组装 (`src/server/system-prompt.ts`)
 
@@ -524,8 +527,8 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lifecycle.ts`              | active runtime/process、starting guard、session binding、prewarm/system-init、user-stop flag                                                                                            |
 | `runtime-config.ts`         | desired/live model、permission、reasoning effort state；snapshot/source guard integration                                                                                               |
-| `operation-queue.ts`        | desktop queued message/config FIFO、drain reservation、generation-based stale dispatch rejection、desktop send tail reset、force/cancel/status bookkeeping                              |
-| `turn-lifecycle.ts`         | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类                                          |
+| `operation-queue.ts`        | turn-boundary message/config FIFO（Desktop + busy IM）、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
+| `turn-lifecycle.ts`         | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；Desktop → IM admission、assistant disposition 与 user-before-assistant delivery tail |
 | `content-blocks.ts`         | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot backing state                                                                  |
 | `transcript-persistence.ts` | in-memory session messages、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update             |
 | `interactive.ts`            | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
@@ -584,7 +587,7 @@ PTY master read → emit('terminal:data:{id}') → xterm.write → 屏幕渲染
 - 终端绑定 Tab 生命周期，面板关闭不杀进程
 - 环境注入：内置 Node.js + `~/.myagents/bin` + `MYAGENTS_PORT` + `TERM=xterm-256color`
 - Shell 以 login shell（`-l`）启动
-- 主题：日间 / 夜间双主题自动切换（MutationObserver 监听 `<html>.dark`）
+- 视觉：从全局 `ResolvedTheme.adapters.xterm` 读取 palette / 字体 / 字号；scheme 变化只原位更新 xterm options，字体度量变化后复用现有 fit-and-resize owner 重算 cols/rows 并同步同一 PTY，不重建 PTY 或 buffer
 
 PTY 进程由 `portable-pty` 管理，**不走** `process_cmd`。
 
@@ -622,7 +625,7 @@ Cmd+W 层级关闭：Overlay → 分屏面板 → Tab，高 z-index 优先。
 
 - Session 索引：单一全局索引 `~/.myagents/search_index/sessions/`
 - Session watcher：`notify-debouncer-full` 5s 滑动去抖观察 `~/.myagents/sessions/`，**任何**写入者的变更都自动流入索引
-- 读写并发：`Arc<SessionIndex>`（无外层 mutex），读路径 lock-free
+- 读写并发：`Arc<SessionIndex>`（无外层 mutex）；正常读写共享 state 读锁，仅损坏恢复独占替换
 - 中文分词：`tantivy-jieba`（~37 万词词典），字段 MUST 显式 `"chinese"` tokenizer
 - Schema 版本门控：`SCHEMA_VERSION` + `.schema_version` 磁盘 marker，不一致时自动删除重建
 - 工作区文件搜索结果导航：Rust 只返回 `FileSearchHit`；预览、命中行定位、右键菜单、回到文件树是 renderer-side 协议，复用 `DirectoryPanel` / `WorkspaceTreeViewport` / `useWorkspaceFileService`，不新增 Sidecar HTTP 或 Rust IPC
@@ -777,7 +780,7 @@ trusted root `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>`（base6
 
 Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能力正式随客户端发布，用户需在「设置 → 关于&反馈 → 实验室」显式开启；它不是默认稳定入口，但应作为实验室功能写入 CHANGELOG 与 GitHub Release notes。
 
-**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立发版，不按版本号锁步；截至 2026-07-14 最近联合校验基线为 Desktop `0.3.0` 发布线 ↔ Space Cloud `v0.1.4`（`origin/main` / `origin/dev` / tag 均为 `97ac3b89c11b2dedef2448475d852809c533e858`，Production `/health` 为 `main-97ac3b89c11b2dedef2448475d852809c533e858`，Dev `/health` 为 `dev-97ac3b89c11b2dedef2448475d852809c533e858`）。该版本包含 comment-owned attachments、原子 multipart create/comment/complete、direct attachment update/delivery、持久 assignee、`subscription | assignment | claim_followup` 三类 Delivery、trigger/cloud instruction、客户端兼容门控、Production/Dev 环境隔离，以及 account plan / per-Space entitlement / nullable quota limits。此处 Git 与 `/health` 身份是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回为准。具体 rollout 差异见 `specs/tech_docs/space_cloud.md`「文档归属与兼容基线」。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
+**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立版本，但 0.3.2 Registered Agent execution instance 属于一次协调交付：Cloud additive migration/Worker 与 v0/v1/v2 smoke 先通过，再发布 Desktop。0.3.2 源码实现不代表 Production 已上线；实时真相仍只以两端已发布版本和 Cloud `/health` 为准。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
 
 **核心边界：**
 
@@ -789,10 +792,10 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 - Space renderer cache identity 包含服务 origin；切换 production/Dev 时即使 space slug 同为 `official` 也必须清缓存。
 - 本地端点身份统一由 `~/.myagents/device_id` 表达，Rust owner 是 `src-tauri/src/device_identity.rs`。Analytics 的 `device_id` 与 Space 的 `deviceId` 消费同一个值，不再派生第二套云端 device id。
 - 云端概念是 `user_devices(userId, deviceId)`，用于记录某个登录用户在某个本地端点上的设备名、平台、系统版本、客户端版本与 last seen。客户端登录/授权后会尝试 upsert；registered-agent 注册/编辑 payload 也携带这些字段供服务端落表。
-- Registered Agent 是执行实体，归属于 `(ownerUserId, deviceId)`，并关联该设备上的本地 Agent 工作区。只有 `ownerUserId === current session user` 且 `deviceId === current local device_id` 的 Agent 才是当前设备可编辑/可执行的 local Agent。
+- Registered Agent 是执行实例，归属于 `(ownerUserId, deviceId)`，并关联该设备上的本地 Agent 工作区；workspace 不是身份。同一 workspace 可登记多个实例，各自拥有 id/token、Instruction/revision、Subscription 集合与 Session binding。只有 `ownerUserId === current session user` 且 `deviceId === current local device_id` 的 Agent 才是当前设备可编辑/可执行的 local Agent。
 - Registered Agent 执行端点使用 token-only capability：本地轮询时只带 registered-agent token，服务端由 token 映射到 user / space / device / agent 权限边界；MyAgents Desktop 只从“当前 Space user + 当前 device”的本地 token 集合中选择 token。
-- Registered Agent delivery 处理由 Rust 长驻 connector 拥有：每个 agent 维护内存级 due time / empty streak，云端返回 `poll` 提示，本地负责 clamp、jitter、错误退避与 delivery 注入。Renderer 只能唤醒 connector，不自己 poll/process delivery，也不持有 registered-agent token。
-- Space CLI 是三层薄壳：Node CLI 解析显式 slug/参数，Sidecar Admin API 补当前 project stable workspace id，Rust `SpaceCliContext` 单点拥有 membership 刷新、User/Registered Agent token 选择与 delivery binding fail-closed。现代登记不得退回 path 选身份；path 只兼容没有 workspace id 的 legacy row。`space goal list` 与 `space issue update` 也复用这条 owner 路径；Goal 清除在 CLI/Rust 内用 tagged `action:'clear'` 表达，仅在 Rust 构造 Cloud PATCH body 时翻译为 `goalId:null`。Space mutation 不实现伪 preview，出现 `--dry-run` 时由 CLI 在 HTTP 和文件 IO 前 fail closed。
+- Registered Agent delivery 处理由 Rust 长驻 connector 拥有：每个 agent 维护内存级 due time / empty streak，云端返回 transport-only v2 package 与 `poll` 提示，本地负责严格解析、Prompt 组装、clamp/jitter/错误退避、exact Session origin、inbox 注入、本地 receipt 与自动 ACK。Renderer 只能唤醒 connector，不自己 poll/process delivery，也不持有 registered-agent token。
+- Space CLI 是三层薄壳：Node CLI 解析显式 slug/参数，Sidecar Admin API 补当前 project stable workspace id，Rust `SpaceCliContext` 单点拥有 membership 刷新、User/Registered Agent token 选择与 binding fail-closed。只有持久 Session origin 中 exact `spaceId + registeredAgentId`（或显式 legacy localAgentId）可选择 Agent；workspace path/id 只做 containment/binding 校验，绝不推断 actor。0.3.2 删除 Agent-facing Delivery ignore，no-op 不需要 CLI 动作；`space goal list`、`space issue --help` 与业务 leaf 继续复用既有路径。Space mutation 不实现伪 preview，出现 `--dry-run` 时由 CLI 在 HTTP 和文件 IO 前 fail closed。
 - Issue 正文附件与评论附件共用 Cloud `issue_attachments`，以 nullable `comment_id` 决定归属。Renderer 文件选择只形成 Rust inspect 后的本地 metadata draft；创建/评论/完成在一次 JSON 或 multipart mutation 内提交。已发布 Issue 顶部“上传”仍是独立即时 mutation，并产生正常 update/delivery。
 - Space 附件字节 IO 由 Rust owner：上传最多 5 个/单个 25MB、workspace CLI no-follow containment；Windows child/leaf/temp 全部相对已验证目录 handle 打开，最终覆盖也用 `RootDirectory` handle-relative rename，阻断目录替换与原地 reparse。下载流式累计 25MB且只在完整成功后提交。二进制不进入 Renderer state、Delivery 或 Session prompt。
 - Cloud Worker 侧的容量与一致性策略属于 `MyAgents_space` 服务端：D1 访问走 bookmark-aware facade，delivery poll 是读路径，poll 数字由服务端策略 owner 返回，prune/rate limit/placement 由 Worker 配置与服务端代码承担。
@@ -821,6 +824,52 @@ Workbench 是完整产品模块的扩展边界，不复用 Claude Plugin 或 Ope
 
 详见 [Workbench Platform Foundation](./tech_docs/workbench_platform.md)。
 
+---
+
+### 22. Theme System (`src/shared/theme.ts` + `src/renderer/theme/`)
+
+Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只是用户的明暗偏好，两者正交：
+
+- `themeId`：当前生效的完整 Theme 身份；production registry 依次注册 `myagents-default`、`default-black`、
+  Sage、Claude（稳定内部 ID `absolutely`）、Linear、Proof、Codex、Raycast；
+- `themeSelectionExplicit`：用户是否明确选过 Theme；`false` 时跟随可独立演进的产品默认
+  `DEFAULT_THEME_ID`（当前为 `default-black`），`true` 时永久尊重 `themeId`；
+- `appearanceMode`：`system | light | dark`；
+- `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
+
+`ThemeRegistry` 校验一个 Theme 同时具备 light/dark、精确 Theme root / scheme root 下的 required CSS Token、Launcher Hero 和 xterm / Monaco / Mermaid / Prism / Widget adapters；canonical default 另允许受控的 `:root, <exact-theme-root>` 合并 globals 作为 unknown-ID/pre-React fallback，可选 Theme 不得泄漏全局 selector。Preset adapter 构造与 Registry 校验复用同一个 stylesheet contract parser，按 CSS selector/declaration 语义读取实际 `?inline` 产物，不依赖开发源码的引号或空白序列化。Token 解析 Theme 内 `var(...)` 后按实际消费属性校验，Widget 值必须是 iframe 可直接消费且属性语法有效的 literal，stylesheet 与 Hero 资源禁止远程 URL。无效可选包在注册边界被拒绝且不阻断 canonical Theme，未知 ID 整套回退 default，不做逐字段拼接。组件只能 import `@/theme` 公共入口，`.dependency-cruiser.cjs::theme-consumers-public-api-only` 禁止生产 consumer 直引 concrete Theme。
+
+Theme CSS 只拥有运行时视觉值；Tailwind 入口 `src/renderer/index.css` 用无值
+`@theme inline` 把 font/radius/shadow/duration utility 编译为对 `--theme-*` 与语义
+Token 的运行时引用。禁止在动态 Theme package 中放 raw `@theme`；该 CSS 不会二次经过
+Tailwind，否则 utility 会静默回退 framework default。`build:web` 后的 generated-CSS 契约校验
+是这条编译边界的必备护栏。
+
+配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`。缺失 Theme 选择或历史自动物化的 `myagents-default` 迁为 `default-black + themeSelectionExplicit:false`；历史非 canonical ID 视为用户已选择，继续保留。读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 分别写 `{ themeId, themeSelectionExplicit:true }` 或 `appearanceMode`，两者不得互相覆盖。`myagents-default` 继续只承担 canonical/unknown-ID fallback，产品默认与结构兜底不得重新合并成一个概念。
+
+启动与窗口数据流：
+
+```text
+Rust 读取归一后的非敏感 disk appearance
+  → 隐藏构建主窗口 + native canonical --paper 首帧投影
+  → one-shot initialization script 对齐 versioned localStorage snapshot
+    （Theme ID 只保留 renderer registry 已解析值；同进程 reload 不覆盖新快照）
+  → index.html 在 React 前应用 html[data-theme-id][data-color-scheme] + .dark
+  → durable AppConfig 加载后 ConfiguredThemeRuntime 校正并刷新 snapshot
+  → ThemeRuntime 激活已校验的实际 stylesheet + ResolvedTheme Context + root CSS Token selector
+    + 把当前 resolved --paper 投影到 main native Window background
+  → CSS surface / Launcher / xterm / Monaco / Mermaid / Prism / Widget
+  → Tauri theme:selection-changed → FloatingThemeRuntime 即时重解析
+```
+
+浮球 Webview 保持轻量 tree，不挂完整 `ConfigProvider`：先用 snapshot 保证首帧，随后先完成精简事件 listener 注册、再异步读 durable config；hydration 期间收到的 live event 具有更高 freshness，旧磁盘结果不能反向覆盖。`system` 由每个 Webview 的 `useSyncExternalStore(matchMedia)` 订阅；`.dark` 只是 Tailwind 兼容投影，不再是 React consumer 的反向状态源。
+
+Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme 的语义 Token；不维护局部 Theme ID、独立 palette 或 portal scope 传播。Space 的布局、业务状态机、三方 Logo、用户内容和纯 alpha 遮罩仍不属于 Theme 身份，但 paper、文字、字体、圆角、阴影、动作色和业务状态色必须随全局 Theme / scheme 原子切换。
+
+详见 `tech_docs/theme_system.md`。
+
+---
+
 ## Pit-of-Success 索引
 
 每个模块在 helper 层把"正确路径"做成默认。完整 Problem / Surface / Invariants / Don't 见 `tech_docs/pit_of_success.md`。
@@ -834,7 +883,9 @@ Workbench 是完整产品模块的扩展边界，不复用 Claude Plugin 或 Ope
 | `tauri::async_runtime::spawn` + clippy ban         | Rust                   | 防 macOS startup-abort（`tokio::spawn` 跨 FFI 不能 unwind）                        |
 | Session watcher                                    | Rust                   | 文件系统观察索引（写入路径解耦）                                                   |
 | `withConfigLock` / `with_config_lock`              | Node + Rust + renderer | `config.json` 跨进程串行写入                                                       |
-| `withFileLock` / `with_file_lock`                  | Node + Rust            | 单写者文件原子性                                                                   |
+| `ThemeRegistry` + `ThemeRuntimeProvider` + Tailwind bridge | renderer | 完整 Theme 校验、整套解析、root/context/跨窗口一致投影；runtime 值与编译期 utility 映射分离 |
+| `withFileLock` / `with_file_lock`                  | Node + Rust + renderer | 单写者文件原子性                                                                   |
+| `copyPlainText`                                    | renderer               | WebView 普通文本复制 fallback + 真实成功语义                                        |
 | `killWithEscalation`                               | Node                   | 子进程 stop SIGTERM → SIGKILL → orphan 升级链                                      |
 | `withAbortSignal` / `cancellableFetch`             | Node                   | 统一 cancel 协议（fetch / stream / process）                                       |
 | `maybeSpill` + `/refs/:id` + SSE 优先级            | Node + Rust            | 大 payload 流到 ref，SSE 三档队列                                                  |
@@ -976,6 +1027,8 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 排查第一步：`grep '\[boot\]' ~/.myagents/logs/unified-*.log` 获取完整环境。
 
+主窗口还输出稳定的阶段标签：`native-page-load-started/finished → native-init-script → renderer-entry-evaluated → theme-renderer-bootstrap-complete → react-root-created → react-commit`。`renderer-uncaught-error` / `renderer-unhandled-rejection` 由 initialization script 在模块加载前捕获，因此即使 React 尚未执行也能定位停点。pre-App JS 统一通过白名单 Tauri command `cmd_record_renderer_boot_event` 进入 Rust unified logger；每条阶段含 `window=<label>`，禁止直写 raw plugin-log 形成第二日志 sink。阶段观测只记录状态与有界错误，不触发 reload/retry，也不改变 Theme fallback。
+
 ### 统一日志格式
 
 三个来源汇入 `~/.myagents/logs/unified-{YYYY-MM-DD}.log`（本地时间）：
@@ -1062,6 +1115,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 ### 前端
 
 - [设计系统](./DESIGN.md) — Token / 组件 / 页面规范
+- [Theme System](./tech_docs/theme_system.md) — Theme/Appearance 状态、注册契约、Token/adapter owner、bootstrap 与跨窗口同步
 - [React 稳定性规范](./tech_docs/react_stability_rules.md) — Context / useEffect / memo 5 条规则
 - [UI 国际化架构](./tech_docs/i18n_architecture.md) — `uiLanguage`、i18next resources、native tray language mirror、增加新语言流程
 

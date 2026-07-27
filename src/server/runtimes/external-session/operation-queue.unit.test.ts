@@ -26,7 +26,44 @@ function snapshot(overrides: Partial<ExternalRuntimeConfigSnapshot> = {}): Exter
   };
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe('external operation queue owner', () => {
+  it('claims an idle direct-send slot synchronously and releases it after the tail settles', async () => {
+    const queue = await loadFreshQueueOwner();
+    const releaseFirst = deferred();
+    let firstStarted = false;
+    let secondStarted = false;
+
+    const first = queue.chainExternalSend(async () => {
+      firstStarted = true;
+      await releaseFirst.promise;
+      return 'first';
+    });
+    expect(firstStarted).toBe(false);
+    expect(queue.hasExternalSendInFlight()).toBe(true);
+    await Promise.resolve();
+    expect(firstStarted).toBe(true);
+
+    const second = queue.chainExternalSend(async () => {
+      secondStarted = true;
+      return 'second';
+    });
+    expect(secondStarted).toBe(false);
+
+    releaseFirst.resolve();
+    await expect(first).resolves.toBe('first');
+    await expect(second).resolves.toBe('second');
+    await Promise.resolve();
+    expect(queue.hasExternalSendInFlight()).toBe(false);
+  });
+
   it('coalesces adjacent config operations and lets later fields win', async () => {
     const queue = await loadFreshQueueOwner();
 
@@ -124,19 +161,19 @@ describe('external operation queue owner', () => {
   it('blocks immediate sends while a drain reservation is in flight', async () => {
     const queue = await loadFreshQueueOwner();
 
-    expect(queue.shouldQueueExternalDesktopSend('idle', {
+    expect(queue.shouldQueueExternalOperation('idle', {
       responseMode: 'realtime',
       canSteerActiveTurn: true,
     })).toBe(false);
     queue.setExternalOperationDrainInFlight(true);
-    expect(queue.shouldQueueExternalDesktopSend('idle', {
+    expect(queue.shouldQueueExternalOperation('idle', {
       responseMode: 'realtime',
       canSteerActiveTurn: true,
     })).toBe(true);
     expect(queue.canDrainExternalOperations('idle')).toBe(false);
 
     queue.setExternalOperationDrainInFlight(false);
-    expect(queue.shouldQueueExternalDesktopSend('idle', {
+    expect(queue.shouldQueueExternalOperation('idle', {
       responseMode: 'realtime',
       canSteerActiveTurn: true,
     })).toBe(false);
@@ -145,7 +182,7 @@ describe('external operation queue owner', () => {
   it('allows realtime active-turn steering only before queued work exists', async () => {
     const queue = await loadFreshQueueOwner();
 
-    expect(queue.shouldQueueExternalDesktopSend('running', {
+    expect(queue.shouldQueueExternalOperation('running', {
       responseMode: 'realtime',
       canSteerActiveTurn: true,
     })).toBe(false);
@@ -154,11 +191,11 @@ describe('external operation queue owner', () => {
       context: context(),
       runtimeConfig: snapshot(),
     });
-    expect(queue.shouldQueueExternalDesktopSend('running', {
+    expect(queue.shouldQueueExternalOperation('running', {
       responseMode: 'realtime',
       canSteerActiveTurn: true,
     })).toBe(true);
-    expect(queue.shouldQueueExternalDesktopSend('running', {
+    expect(queue.shouldQueueExternalOperation('running', {
       responseMode: 'turn',
       canSteerActiveTurn: true,
     })).toBe(true);
@@ -261,21 +298,69 @@ describe('external operation queue owner', () => {
     await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: false });
   });
 
+  it('finds and cancels a queued IM operation by request identity', async () => {
+    const queue = await loadFreshQueueOwner();
+    const queued = queue.enqueueExternalMessageOperation({
+      text: 'follow-up from IM',
+      context: context({
+        requestId: 'request-2',
+        scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      }),
+      runtimeConfig: snapshot(),
+    });
+    if (!queued.queued) throw new Error('test queue setup failed');
+
+    const cancelled = queue.cancelExternalQueuedMessageByRequestId('request-2');
+    expect(cancelled).toMatchObject({
+      queueId: queued.queueId,
+      text: 'follow-up from IM',
+      context: { requestId: 'request-2' },
+    });
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: false });
+    expect(queue.hasExternalQueuedOperations()).toBe(false);
+  });
+
+  it('exposes a reserved IM operation without letting queue cancellation steal drain ownership', async () => {
+    const queue = await loadFreshQueueOwner();
+    const queued = queue.enqueueExternalMessageOperation({
+      text: 'reserved IM follow-up',
+      context: context({
+        requestId: 'request-reserved',
+        scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      }),
+      runtimeConfig: snapshot(),
+    });
+    if (!queued.queued) throw new Error('test queue setup failed');
+
+    const reserved = queue.reserveExternalOperationForDrain();
+    expect(queue.cancelExternalQueuedMessageByRequestId('request-reserved')).toBeNull();
+    expect(queue.getExternalReservedMessageByRequestId('request-reserved')).toBe(reserved);
+
+    let settled = false;
+    void queued.dispatchAcceptance.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    if (!reserved || reserved.kind !== 'message') throw new Error('expected reserved IM message');
+    queue.settleExternalMessageOperation(reserved, { queued: false });
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: false });
+  });
+
   it('resets stale desktop send tails without running old queued closures', async () => {
     const queue = await loadFreshQueueOwner();
     let releaseFirst!: () => void;
-    const first = queue.chainExternalDesktopSend(() => new Promise<string>((resolve) => {
+    const first = queue.chainExternalSend(() => new Promise<string>((resolve) => {
       releaseFirst = () => resolve('first');
     }));
     const staleDispatch = vi.fn(async () => 'stale');
-    const stale = queue.chainExternalDesktopSend(staleDispatch);
+    const stale = queue.chainExternalSend(staleDispatch);
 
     await Promise.resolve();
     expect(releaseFirst).toBeTypeOf('function');
     queue.clearExternalQueueWithCancellation();
 
     const freshDispatch = vi.fn(async () => 'fresh');
-    await expect(queue.chainExternalDesktopSend(freshDispatch)).resolves.toBe('fresh');
+    await expect(queue.chainExternalSend(freshDispatch)).resolves.toBe('fresh');
     expect(freshDispatch).toHaveBeenCalledTimes(1);
 
     releaseFirst();

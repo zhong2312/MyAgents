@@ -1,0 +1,285 @@
+/* Default Black: canonical MyAgents visual language with neutral-black
+   primary buttons for a controlled baseline comparison. */
+html[data-theme-id='default-black'] {
+  /* Windows CJK families precede the single trailing generic. */
+  --font-latin: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI';
+  --font-chinese: 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB';
+  --font-mono-latin: ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'Fira Code';
+  --font-body: var(--font-latin), var(--font-chinese), sans-serif;
+  --font-display: var(--font-latin), var(--font-chinese), sans-serif;
+  --font-code: var(--font-mono-latin), var(--font-chinese), monospace;
+
+  --theme-radius-base: 4px;
+  --theme-radius-sm: 6px;
+  --theme-radius-md: 10px;
+  --theme-radius-lg: 14px;
+  --theme-radius-xl: 20px;
+  --theme-radius-2xl: 24px;
+  --theme-radius-full: 9999px;
+
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+}
+
+/* The one-attribute selector is the pre-React fallback for a malformed or
+   not-yet-registered Theme ID. A registered Theme's two-attribute selector
+   has higher specificity and replaces the whole visual package atomically. */
+html[data-theme-id='default-black'][data-color-scheme='light'] {
+  --ink: #1c1612;
+  --ink-secondary: #2e2825;
+  --ink-muted: #6f6156;
+  --ink-subtle: #a69a90;
+  --ink-faint: #c4b8ad;
+
+  --paper: #faf6ee;
+  --paper-elevated: #fffcf7;
+  --message-user-bg: #fffefa;
+  --paper-inset: #e8dccf;
+  --paper-a0: rgb(250 246 238 / 0);
+  --paper-elevated-a0: rgb(255 252 247 / 0);
+  --message-user-bg-a0: rgb(255 254 250 / 0);
+  --paper-inset-a0: rgb(232 220 207 / 0);
+  --hover-bg: rgba(194, 109, 58, 0.07);
+
+  --accent: #c26d3a;
+  --accent-warm: #c26d3a;
+  --accent-warm-hover: #e18a58;
+  --accent-warm-subtle: rgba(194, 109, 58, 0.08);
+  --accent-warm-muted: rgba(194, 109, 58, 0.15);
+  --accent-warm-subtle-a0: rgba(194, 109, 58, 0);
+  --accent-cool: #2e6f5e;
+  --accent-cool-hover: #3d8a75;
+  --on-accent: #ffffff;
+
+  --heartbeat: #c75050;
+  --heartbeat-bg: rgba(199, 80, 80, 0.10);
+  --heartbeat-border: rgba(199, 80, 80, 0.20);
+  --success: #2d8a5e;
+  --success-bg: #e2f0e8;
+  --on-success: #000000;
+  --error: #dc2626;
+  --error-bg: #fee2e2;
+  --error-hover: #b91c1c;
+  --error-subtle: rgba(220, 38, 38, 0.07);
+  --on-error: #ffffff;
+  --warning: #d97706;
+  --warning-bg: #fef3c7;
+  --on-warning: #1c1612;
+  --info: #4a7ab5;
+  --info-bg: #e4ecf4;
+  --on-info: #000000;
+
+  --button-primary-bg: #111111;
+  --button-primary-bg-hover: #2b2b2b;
+  --button-primary-text: var(--on-accent);
+  --button-dark-bg: #1c1612;
+  --button-dark-bg-hover: #3a3532;
+  --button-dark-text: #ffffff;
+  --button-secondary-bg: #e8dccf;
+  --button-secondary-bg-hover: #ddd0c2;
+  --button-secondary-text: #1c1612;
+
+  --fb-surface-peek: rgb(253 250 244 / 0.15);
+  --fb-surface-glass: rgb(253 250 244 / 0.55);
+  --fb-surface-pin: rgb(253 250 244 / 0.96);
+  --fb-surface-pin-a0: rgb(253 250 244 / 0);
+  --fb-surface-pin-72: rgb(253 250 244 / 0.72);
+  --fb-surface-pin-95: rgb(253 250 244 / 0.95);
+  --fb-glass-border: rgb(255 255 255 / 0.62);
+  --fb-glass-border-soft: rgb(255 255 255 / 0.50);
+  --fb-highlight: rgb(255 255 255 / 0.92);
+  --fb-highlight-mid: rgb(255 255 255 / 0.30);
+  --fb-highlight-faint: rgb(255 255 255 / 0.14);
+  --fb-highlight-strong: rgb(255 255 255 / 0.95);
+  --fb-highlight-a0: rgb(255 255 255 / 0);
+  --fb-highlight-line: rgb(255 255 255 / 0.85);
+  --fb-mask-opaque: #000000;
+  --fb-shadow-strong: rgb(20 16 12 / 0.28);
+  --fb-shadow-soft: rgb(20 16 12 / 0.12);
+  --fb-shadow-panel: rgb(0 0 0 / 0.18);
+  --fb-shadow-preview: rgb(20 16 12 / 0.45);
+  --fb-core-shadow: rgb(28 22 18 / 0.25);
+  --fb-inset-shadow: rgb(28 22 18 / 0.08);
+  --fb-window-shadow: 0 18px 48px rgb(0 0 0 / 0.22);
+  --fb-control-hover: rgb(28 22 18 / 0.06);
+  --fb-line-input: rgb(28 22 18 / 0.07);
+  --fb-line-thumb: rgb(28 22 18 / 0.12);
+  --fb-drag-handle: rgb(28 22 18 / 0.18);
+  --fb-scroll-thumb: rgb(166 154 144 / 0.50);
+
+  --line: rgb(28 22 18 / 0.10);
+  --line-strong: rgb(28 22 18 / 0.18);
+  --line-subtle: rgb(28 22 18 / 0.06);
+  --theme-shadow-base: 0 1px 3px 0 rgb(0 0 0 / 0.10), 0 1px 2px -1px rgb(0 0 0 / 0.10);
+  --theme-shadow-xs: 0 1px 2px rgb(28 22 18 / 0.05);
+  --theme-shadow-sm: 0 2px 8px rgb(28 22 18 / 0.08);
+  --theme-shadow-md: 0 8px 24px rgb(28 22 18 / 0.12);
+  --theme-shadow-lg: 0 16px 40px rgb(28 22 18 / 0.16);
+  --theme-shadow-xl: 0 24px 48px rgb(28 22 18 / 0.20);
+  --theme-shadow-2xl: 0 32px 64px -12px rgb(28 22 18 / 0.25);
+  --action-shadow: 0 6px 16px -12px rgb(24 18 14 / 0.4);
+  --action-shadow-active: inset 0 2px 6px rgb(24 18 14 / 0.18);
+  --tool-shadow: 0 8px 24px -20px rgb(24 18 14 / 0.35);
+  --tool-shadow-hover: 0 14px 30px -24px rgb(24 18 14 / 0.45);
+  --expanded-block-line: rgb(134 112 98 / 0.25);
+  --warning-border: rgb(217 119 6 / 0.3);
+  --focus-border: #1c1612;
+  --toggle-thumb: #ffffff;
+  --toggle-off-bg: rgb(28 22 18 / 0.18);
+  --code-bg: #1e1e1e;
+  --code-bg-a0: rgb(30 30 30 / 0);
+  --code-header-bg: #2d2d2d;
+  --code-text: #d4d4d4;
+  --code-line-number: #858585;
+  --theme-body-background:
+    radial-gradient(1200px 700px at 82% -10%, #efd0bd 0%, rgb(239 208 189 / 0) 55%),
+    radial-gradient(900px 600px at -10% 110%, #cdddd5 0%, rgb(205 221 213 / 0) 55%),
+    linear-gradient(120deg, rgb(255 255 255 / 0.5), rgb(255 255 255 / 0)), var(--paper);
+  --theme-body-texture: radial-gradient(rgb(28 22 18 / 0.08) 0.7px, transparent 0.7px);
+  --theme-body-texture-opacity: 0.22;
+  --theme-body-texture-blend: multiply;
+}
+
+html[data-theme-id='default-black'][data-color-scheme='dark'] {
+  --ink: #e4dcd4;
+  --ink-secondary: #cfc5ba;
+  --ink-muted: #968a7e;
+  --ink-subtle: #685c52;
+  --ink-faint: #4a4038;
+
+  --paper: #1a1614;
+  --paper-elevated: #242018;
+  --message-user-bg: #2a251d;
+  --paper-inset: #12100e;
+  --paper-a0: rgb(26 22 20 / 0);
+  --paper-elevated-a0: rgb(36 32 24 / 0);
+  --message-user-bg-a0: rgb(42 37 29 / 0);
+  --paper-inset-a0: rgb(18 16 14 / 0);
+  --hover-bg: rgba(194, 109, 58, 0.12);
+
+  --accent: #d4803f;
+  --accent-warm: #d4803f;
+  --accent-warm-hover: #e89860;
+  --accent-warm-subtle: rgba(212, 128, 63, 0.12);
+  --accent-warm-muted: rgba(212, 128, 63, 0.20);
+  --accent-warm-subtle-a0: rgba(212, 128, 63, 0);
+  --accent-cool: #4aad8a;
+  --accent-cool-hover: #5ec49e;
+  --on-accent: #ffffff;
+
+  --heartbeat: #d46060;
+  --heartbeat-bg: rgba(212, 96, 96, 0.12);
+  --heartbeat-border: rgba(212, 96, 96, 0.22);
+  --success: #4aad7a;
+  --success-bg: rgba(74, 173, 122, 0.15);
+  --on-success: #1a1614;
+  --error: #ef4444;
+  --error-bg: rgba(239, 68, 68, 0.15);
+  --error-hover: #dc2626;
+  --error-subtle: rgba(239, 68, 68, 0.12);
+  --on-error: #1a1614;
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.15);
+  --on-warning: #1a1614;
+  --info: #6b9fd4;
+  --info-bg: rgba(107, 159, 212, 0.15);
+  --on-info: #1a1614;
+
+  --button-primary-bg: #b05e2d;
+  --button-primary-bg-hover: #9c5027;
+  --button-primary-text: var(--on-accent);
+  --button-dark-bg: #443e36;
+  --button-dark-bg-hover: #564e44;
+  --button-dark-text: #e4dcd4;
+  --button-secondary-bg: #302a22;
+  --button-secondary-bg-hover: #3a342c;
+  --button-secondary-text: #e4dcd4;
+
+  --fb-surface-peek: rgb(26 22 20 / 0.22);
+  --fb-surface-glass: rgb(36 32 24 / 0.58);
+  --fb-surface-pin: rgb(36 32 24 / 0.96);
+  --fb-surface-pin-a0: rgb(36 32 24 / 0);
+  --fb-surface-pin-72: rgb(36 32 24 / 0.72);
+  --fb-surface-pin-95: rgb(36 32 24 / 0.95);
+  --fb-glass-border: rgb(255 255 255 / 0.16);
+  --fb-glass-border-soft: rgb(255 255 255 / 0.12);
+  --fb-highlight: rgb(255 255 255 / 0.24);
+  --fb-highlight-mid: rgb(255 255 255 / 0.10);
+  --fb-highlight-faint: rgb(255 255 255 / 0.06);
+  --fb-highlight-strong: rgb(255 255 255 / 0.22);
+  --fb-highlight-a0: rgb(255 255 255 / 0);
+  --fb-highlight-line: rgb(255 255 255 / 0.20);
+  --fb-mask-opaque: #000000;
+  --fb-shadow-strong: rgb(0 0 0 / 0.38);
+  --fb-shadow-soft: rgb(0 0 0 / 0.22);
+  --fb-shadow-panel: rgb(0 0 0 / 0.42);
+  --fb-shadow-preview: rgb(0 0 0 / 0.55);
+  --fb-core-shadow: rgb(0 0 0 / 0.32);
+  --fb-inset-shadow: rgb(0 0 0 / 0.16);
+  --fb-window-shadow: 0 18px 48px rgb(0 0 0 / 0.22);
+  --fb-control-hover: rgb(255 255 255 / 0.08);
+  --fb-line-input: rgb(228 220 212 / 0.08);
+  --fb-line-thumb: rgb(228 220 212 / 0.16);
+  --fb-drag-handle: rgb(228 220 212 / 0.20);
+  --fb-scroll-thumb: rgb(150 138 126 / 0.55);
+
+  --line: rgb(228 220 212 / 0.10);
+  --line-strong: rgb(228 220 212 / 0.18);
+  --line-subtle: rgb(228 220 212 / 0.06);
+  --theme-shadow-base: 0 1px 3px 0 rgb(0 0 0 / 0.10), 0 1px 2px -1px rgb(0 0 0 / 0.10);
+  --theme-shadow-xs: 0 1px 2px rgb(0 0 0 / 0.12);
+  --theme-shadow-sm: 0 2px 8px rgb(0 0 0 / 0.18);
+  --theme-shadow-md: 0 8px 24px rgb(0 0 0 / 0.28);
+  --theme-shadow-lg: 0 16px 40px rgb(0 0 0 / 0.35);
+  --theme-shadow-xl: 0 24px 48px rgb(0 0 0 / 0.42);
+  --theme-shadow-2xl: 0 32px 64px -12px rgb(0 0 0 / 0.52);
+  --action-shadow: 0 6px 16px -12px rgb(0 0 0 / 0.6);
+  --action-shadow-active: inset 0 2px 6px rgb(0 0 0 / 0.35);
+  --tool-shadow: 0 8px 24px -20px rgb(0 0 0 / 0.5);
+  --tool-shadow-hover: 0 14px 30px -24px rgb(0 0 0 / 0.65);
+  --expanded-block-line: rgb(228 220 212 / 0.18);
+  --warning-border: rgb(217 119 6 / 0.3);
+  --focus-border: var(--accent);
+  --toggle-thumb: #ffffff;
+  --toggle-off-bg: rgb(228 220 212 / 0.18);
+  --code-bg: #141210;
+  --code-bg-a0: rgb(20 18 16 / 0);
+  --code-header-bg: #1e1a16;
+  --code-text: #d4d4d4;
+  --code-line-number: #685c52;
+  --theme-body-background:
+    radial-gradient(1200px 700px at 82% -10%, #2a2018 0%, rgb(42 32 24 / 0) 55%),
+    radial-gradient(900px 600px at -10% 110%, #1a2420 0%, rgb(26 36 32 / 0) 55%),
+    var(--paper);
+  --theme-body-texture: radial-gradient(rgb(228 220 212 / 0.06) 0.7px, transparent 0.7px);
+  --theme-body-texture-opacity: 0.06;
+  --theme-body-texture-blend: screen;
+}
+
+html[data-theme-id='default-black'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  font-weight: 250;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: linear-gradient(155deg, var(--ink) 30%, var(--accent-warm) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+html[data-theme-id='default-black'] .theme-launcher-hero-slogan {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 300;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  html[data-theme-id='default-black'] .theme-launcher-hero-title { font-size: 3.5rem; }
+  html[data-theme-id='default-black'] .theme-launcher-hero-slogan { font-size: 17px; }
+}

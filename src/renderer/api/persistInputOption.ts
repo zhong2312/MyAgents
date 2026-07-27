@@ -104,6 +104,12 @@ export interface PersistInputOptionParams {
     agentId: string,
     patch: Partial<Omit<AgentConfig, 'id'>>,
   ) => Promise<unknown>;
+  patchAgentProjectConfig: (
+    agentId: string,
+    agentPatch: Partial<Omit<AgentConfig, 'id'>>,
+    projectId: string,
+    projectPatch: Partial<Omit<Project, 'id'>>,
+  ) => Promise<unknown>;
 
   /** Session snapshot writer — chat-tab only (owned sessions). Omit for
    *  launcher (no session yet) or unlocked sessions (no snapshot). */
@@ -201,19 +207,34 @@ export async function persistInputOptionChange(
     }
   }
 
-  if (Object.keys(projectPatch).length > 0) {
+  const hasProjectPatch = Object.keys(projectPatch).length > 0;
+  const hasAgentPatch = Object.keys(agentPatch).length > 0;
+  if (params.agentId && hasProjectPatch && hasAgentPatch) {
     try {
-      await params.patchProject(params.workspaceId, projectPatch);
+      await params.patchAgentProjectConfig(
+        params.agentId,
+        agentPatch,
+        params.workspaceId,
+        projectPatch,
+      );
     } catch (e) {
-      errors.push(`project: ${describe(e)}`);
+      errors.push(`agent/project intent: ${describe(e)}`);
     }
-  }
+  } else {
+    if (hasProjectPatch) {
+      try {
+        await params.patchProject(params.workspaceId, projectPatch);
+      } catch (e) {
+        errors.push(`project: ${describe(e)}`);
+      }
+    }
 
-  if (params.agentId && Object.keys(agentPatch).length > 0) {
-    try {
-      await params.patchAgentConfig(params.agentId, agentPatch);
-    } catch (e) {
-      errors.push(`agent: ${describe(e)}`);
+    if (params.agentId && hasAgentPatch) {
+      try {
+        await params.patchAgentConfig(params.agentId, agentPatch);
+      } catch (e) {
+        errors.push(`agent: ${describe(e)}`);
+      }
     }
   }
 

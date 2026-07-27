@@ -54,13 +54,23 @@ export default memo(function SortableTabItem({
 
     const fixedViewTitle = getFixedTabChromeTitle(tab.view, t);
 
-    // Prefer session title (auto/user) over folder name, fallback to folder name or tab title.
-    // Fixed product tabs are chrome, not user content, so they follow UI language.
+    // A chat tab needs both pieces of identity once it has a real session title:
+    // the workspace answers "which Agent?", while the session title answers
+    // "which conversation?". Fixed product tabs remain localized chrome.
     const hasSessionTitle = tab.title && tab.title !== 'New Tab' && tab.title !== 'New Chat';
+    const workspaceTitle = tab.agentDir ? getFolderName(tab.agentDir) : undefined;
     const displayTitle = fixedViewTitle ?? (hasSessionTitle
         ? tab.title
-        : (tab.agentDir ? getFolderName(tab.agentDir) : tab.title));
-    const tooltipTitle = tab.agentDir ? getFolderName(tab.agentDir) : undefined;
+        : (workspaceTitle ?? tab.title));
+    const showWorkspaceContext = tab.view === 'chat'
+        && !!workspaceTitle
+        && !!hasSessionTitle;
+    const tooltipTitle = showWorkspaceContext
+        ? `${workspaceTitle} — ${displayTitle}`
+        : displayTitle;
+    const accessibleTitle = showWorkspaceContext
+        ? `${workspaceTitle}, ${displayTitle}`
+        : displayTitle;
 
     return (
         <div
@@ -88,10 +98,25 @@ export default memo(function SortableTabItem({
         >
             {/* Tab title — drag handle is bound here, not on the entire tab */}
             <span
-                className="min-w-0 flex-1 truncate text-xs font-medium select-none"
+                className="flex min-w-0 flex-1 items-center text-xs font-medium select-none"
+                aria-label={accessibleTitle}
                 {...listeners}
             >
-                {displayTitle}
+                {showWorkspaceContext ? (
+                    <>
+                        <span className="max-w-[35%] flex-shrink-0 truncate">
+                            {workspaceTitle}
+                        </span>
+                        <span
+                            data-tab-title-divider
+                            className="mx-1.5 h-3 w-px flex-shrink-0 bg-[var(--line-strong)]/70"
+                            aria-hidden="true"
+                        />
+                        <span className="min-w-0 truncate">{displayTitle}</span>
+                    </>
+                ) : (
+                    <span className="min-w-0 truncate">{displayTitle}</span>
+                )}
             </span>
 
             {/* Status dot indicator — streaming (pulsing green, always visible) or unread (static warm, non-active only) */}
@@ -132,7 +157,7 @@ export default memo(function SortableTabItem({
 
             {/* Active indicator */}
             {isActive && (
-                <div className="absolute bottom-0.5 left-3 right-3 h-0.5 rounded-full bg-[var(--accent)]" />
+                <div className="absolute bottom-0.5 left-4 right-4 h-0.5 rounded-full bg-[var(--accent)]/70" />
             )}
 
         </div>

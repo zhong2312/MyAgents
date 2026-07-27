@@ -112,7 +112,7 @@ import {
 import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
 import type { OfficialToolId } from '../shared/official-tools';
-import { commitPreparedSessionForFirstUserTurn, deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
+import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, deleteSession, migratePendingSessionIdentity, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromMaterializationScenario, originFromTurnAttribution } from '../shared/session-origin';
@@ -191,13 +191,17 @@ import type { ToolAttachment } from '../shared/types/tool-attachment';
 import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { buildImCancelledPayload, buildImErrorPayload } from './utils/im-terminal-payload';
-import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
+import {
+  mirrorIfChannelBound,
+  resolvedImagesToMirrorImages,
+  visibleDesktopMirrorText,
+  type MirrorImage,
+} from './utils/im-mirror';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
 import {
   LOCAL_COMMAND_OUTPUT_TAG,
   SYSTEM_REMINDER_CLOSE,
   SYSTEM_REMINDER_OPEN,
-  stripLeadingSystemReminder,
 } from '../shared/systemReminder';
 import { createConcreteProviderRoute, isConcreteProviderRoute } from '../shared/providerRoute';
 import type {
@@ -951,15 +955,7 @@ function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefine
   // Only fire if there's a chance an IM channel is bound. Rust silently
   // no-ops if not, but skipping the round-trip when content is trivially
   // empty avoids needless network chatter.
-  let visibleContent = content;
-  // Hidden reminders may be stacked (for example Goal context wrapping a
-  // floating-ball reminder). Never leak those control payloads into a bound
-  // IM channel; peel every leading envelope and mirror only the visible tail.
-  for (let i = 0; i < 8; i += 1) {
-    const stripped = stripLeadingSystemReminder(visibleContent);
-    if (stripped === visibleContent) break;
-    visibleContent = stripped;
-  }
+  const visibleContent = visibleDesktopMirrorText(content);
   if (!visibleContent && (!images || images.length === 0)) return;
   currentTurnMirrorEnabled = true;
   currentTurnMirrorSessionId = sessionId;
@@ -1126,35 +1122,6 @@ function fireDesktopAssistantBlockMirror(text: string): void {
   });
 }
 
-/** Convert resolved user images to MirrorImage[] keeping only PNG/JPG (Q5 lockdown). */
-// Pre-validation cap MUST stay in sync with Rust's
-// `MIRROR_IMAGE_MAX_BYTES = 5MB` in management_api.rs (and its
-// `MIRROR_IMAGE_MAX_BASE64_LEN` derivation). Base64 with padding inflates
-// to `4 * ceil(bytes / 3)` chars — using a strict `Math.ceil(bytes/3)*4`
-// formula matches Rust's exact bound, plus the same 64-char slack for any
-// trailing whitespace/newlines. Without this alignment, the Node check is
-// off by 1 char at the boundary and would reject a 5 MiB image that Rust
-// would still accept (review-by-codex F4). Cap on the *encoded* length so
-// the guard is O(1) without decoding.
-const MIRROR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-const MIRROR_IMAGE_MAX_BASE64_CHARS = Math.ceil(MIRROR_IMAGE_MAX_BYTES / 3) * 4 + 64;
-
-function toMirrorImages(images: ResolvedImagePayload[] | undefined): MirrorImage[] | undefined {
-  if (!images || images.length === 0) return undefined;
-  const out: MirrorImage[] = [];
-  for (const img of images) {
-    const mime = img.mimeType.toLowerCase();
-    if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/jpg') continue;
-    if (img.data.length > MIRROR_IMAGE_MAX_BASE64_CHARS) {
-      console.warn(
-        `[mirror] dropping oversize image: mime=${mime} base64Len=${img.data.length} cap=${MIRROR_IMAGE_MAX_BASE64_CHARS}`,
-      );
-      continue;
-    }
-    out.push({ mimeType: img.mimeType, dataBase64: img.data });
-  }
-  return out.length > 0 ? out : undefined;
-}
 let isApiRetrying = false;  // Track api_retry state to clear when streaming resumes
 let transientProviderRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -4817,6 +4784,46 @@ async function commitPreparedSessionAfterUserMessagePersist(
   }
 }
 
+/**
+ * Linearization point between prepared rollback and irreversible turn
+ * admission. Both this commit and rollback compare the same durable
+ * materialization marker under the SessionStore lock: whichever wins makes
+ * the other fail before the turn is published as accepted.
+ */
+export async function claimPreparedMaterializationForTurnAdmission(
+  messageText: string,
+  origin?: SessionOrigin,
+): Promise<boolean> {
+  const pendingMaterialization = getPendingDesktopMaterialization();
+  const targetSessionId = pendingMaterialization?.targetSessionId ?? sessionId;
+  const visibleText = resolveVisibleUserTurnText(messageText)?.trim();
+  const title = deriveSessionTitle(messageText, 40) || (messageText ? 'New Chat' : '图片消息');
+  const claim = await claimPreparedSessionForTurnAdmission(
+    targetSessionId,
+    pendingMaterialization?.priorSessionId,
+    {
+      messageText,
+      title,
+      origin,
+      lastMessagePreview: visibleText ? visibleText.slice(0, 60) : undefined,
+    },
+  );
+
+  if (claim.status === 'claimed' || claim.status === 'already-committed') {
+    return true;
+  }
+  // A genuinely lazy pending session has no metadata until the first admitted
+  // user turn. That is distinct from a renderer-prepared target disappearing:
+  // the latter still has an in-process transaction and must fail closed.
+  if (claim.status === 'not-found' && !pendingMaterialization) {
+    return true;
+  }
+  console.warn(
+    `[agent] prepared turn-admission claim refused target=${targetSessionId} source=${pendingMaterialization?.priorSessionId ?? '-'} status=${claim.status}`,
+  );
+  return false;
+}
+
 async function persistMessagesToStorageAndCommitPreparedFirstUserTurn(
   messageText: string,
   origin?: SessionOrigin,
@@ -4947,7 +4954,18 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
   const previousMeta = getSessionMetadata(previousSessionId);
   const targetMeta = getSessionMetadata(targetSessionId);
 
-  if (targetMeta) {
+  if (targetSessionId !== previousSessionId && isPendingSessionId(previousSessionId)) {
+    const migration = await migratePendingSessionIdentity(previousSessionId, targetSessionId, {
+      sdkSessionId: sdkSessionId ?? targetSessionId,
+      unifiedSession: sdkSessionId
+        ? sdkSessionId === targetSessionId
+        : (previousMeta ?? targetMeta)?.unifiedSession,
+    });
+    if (!migration.migrated) {
+      throw new Error(`[agent] failed pending session identity migration ${previousSessionId} -> ${targetSessionId}: ${migration.reason}`);
+    }
+    console.log(`[agent] session ${targetSessionId} persisted to SessionStore (atomic pending identity migration, from=${previousSessionId}, scenario=${currentScenario.type})`);
+  } else if (targetMeta) {
     const updated = await updateSessionMetadata(targetSessionId, {
       sdkSessionId: sdkSessionId ?? targetSessionId,
       unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : targetMeta.unifiedSession,
@@ -4993,15 +5011,6 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
     setCurrentSessionId(targetSessionId);
     initLogger(targetSessionId);
     resetTranscriptPersistenceForSession(previousSessionId);
-    if (previousMeta && isPendingSessionId(previousSessionId)) {
-      const deleted = await deleteSession(
-        previousSessionId,
-        (current) => current.id === previousSessionId && getSessionMetadata(targetSessionId) !== null,
-      );
-      if (!deleted) {
-        console.warn(`[agent] sdk system_init metadata migration could not delete pending source ${previousSessionId}; target ${targetSessionId} is already indexed`);
-      }
-    }
     console.log(`[agent] SDK system_init migrated session identity ${previousSessionId} -> ${targetSessionId}`);
   }
 
@@ -5282,11 +5291,11 @@ export async function materializePendingDesktopSession(
         status: 409,
       };
     }
-    const deleted = await deleteSession(
-      target,
-      (current) => preparedMaterializationOwnsMetadata(prepared, current),
-    );
-    if (!deleted) {
+    const deletion = await deleteSession(target, {
+      kind: 'prepared-materialization-rollback',
+      sourceSessionId: prepared.priorSessionId,
+    });
+    if (!deletion.deleted) {
       const latest = getSessionMetadata(target);
       if (!latest) {
         clearPendingDesktopMaterialization();
@@ -5300,14 +5309,21 @@ export async function materializePendingDesktopSession(
           status: 409,
         };
       }
+      if (deletion.reason === 'data-present' || deletion.reason === 'precondition-failed') {
+        return {
+          success: false,
+          error: `Refusing to roll back prepared session ${target}: ${deletion.reason}.`,
+          status: 409,
+        };
+      }
       return {
         success: false,
-        error: `Failed to delete prepared session ${target}.`,
+        error: `Failed to delete prepared session ${target}: ${deletion.reason}.`,
         status: 500,
       };
     }
     clearPendingDesktopMaterialization();
-    console.log(`[agent] rolled back pending desktop materialization target=${target} deleted=${deleted}`);
+    console.log(`[agent] rolled back pending desktop materialization target=${target} deleted=true`);
     return { success: true };
   }
 
@@ -7442,9 +7458,17 @@ export function getCurrentTurnIdentity(): TurnIdentity | null {
     ?? getTurnAdmissionIdentity();
 }
 
-/** Runtime-accepted turn only; excludes admission tickets and promoted guards. */
+/**
+ * Turn ownership that has crossed the last cancellable boundary.
+ *
+ * The prepared-session CAS is durable admission: once it starts, callers can
+ * no longer truthfully report that the request was never dispatched. The
+ * active runtime owner replaces this temporary identity synchronously after
+ * the CAS settles.
+ */
 export function getDispatchedTurnIdentity(): { queueId: string } | null {
-  const queueId = getBuiltinCurrentTurnQueueId();
+  const queueId = getBuiltinCurrentTurnQueueId()
+    ?? getCommittingTurnAdmissionQueueId();
   return queueId ? { queueId } : null;
 }
 
@@ -8675,7 +8699,6 @@ export async function enqueueUserMessage(
       pushTurnBoundary(reservedTurnBoundaryItem);
     } else {
       setTurnAdmissionTicket(admissionTicket);
-      setCommittingTurnAdmissionQueueId(queueId);
     }
   }
 
@@ -8874,7 +8897,7 @@ export async function enqueueUserMessage(
     // during awaitSessionTermination is a legitimate rapid second send behind
     // this ticket. Do not drain that new work as if it belonged to the dead
     // provider session.
-    if (getTurnAdmissionTicket()?.queueId === queueId && getCommittingTurnAdmissionQueueId() === queueId) {
+    if (getTurnAdmissionTicket()?.queueId === queueId) {
       console.log('[agent] provider/history restart preserving turn-mode admission queue');
     } else {
       drainQueueWithCancellation();
@@ -9325,7 +9348,7 @@ export async function enqueueUserMessage(
       readyTurnItem.source = effectiveQueueSource === 'desktop' ? 'desktop' : metadata?.source;
       readyTurnItem.analyticsSource = analyticsSource ?? currentScenario.type;
       readyTurnItem.analyticsOrigin = analyticsOrigin;
-      readyTurnItem.mirrorImages = toMirrorImages(resolvedImages);
+      readyTurnItem.mirrorImages = resolvedImagesToMirrorImages(resolvedImages);
       if (readyTurnItem.admissionTicket) {
         releaseDetachedAdmissionTicket(readyTurnItem.admissionTicket);
         readyTurnItem.admissionTicket = undefined;
@@ -9354,7 +9377,7 @@ export async function enqueueUserMessage(
           source: metadata?.source,
           analyticsSource: analyticsSource ?? currentScenario.type,
           analyticsOrigin,
-          mirrorImages: toMirrorImages(resolvedImages),
+          mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
         });
         wakeGenerator(queueItem);
         console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
@@ -9439,7 +9462,7 @@ export async function enqueueUserMessage(
     event: 'message-replay',
     message: userMessage,
     sessionBirthOrigin: options?.sessionBirthOrigin,
-    mirrorImages: toMirrorImages(resolvedImages),
+    mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
   };
   if (!options?.beforeDispatch) {
     await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
@@ -9520,9 +9543,6 @@ export async function enqueueUserMessage(
     if (releasedAdmissionTicket) {
       releaseTurnAdmissionTicket(queueId);
       startNextTurnQueuedItem('recovery');
-    }
-    if (getCommittingTurnAdmissionQueueId() === queueId) {
-      setCommittingTurnAdmissionQueueId(null);
     }
   }
 }
@@ -9606,6 +9626,15 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
   }
 
   if (!isTurnInFlight()) {
+    // A durable admission CAS has crossed the queue-cancellation boundary but
+    // has not yet transferred to `isStreamingMessage`. Reuse the canonical
+    // session abort: it marks the promoted item cancelled and sets
+    // abortRequested, so the generator exits immediately after the CAS instead
+    // of executing a turn that its deadline caller already stopped.
+    if (getCommittingTurnAdmissionQueueId() !== null) {
+      abortPersistentSession();
+      return true;
+    }
     // (issue #174) Stop pressed during 'starting': the SDK subprocess is
     // alive but system_init hasn't arrived (the for-await loop sees no
     // assistant content yet, so isTurnInFlight is false). Without this
@@ -9857,6 +9886,14 @@ export type QueueCancelResult =
  *     cancel_async_message; it succeeds only before SDK dequeues execution.
  */
 export async function cancelQueueItem(queueId: string): Promise<QueueCancelResult> {
+  // The durable prepared-session claim is the final admission CAS. Once it
+  // starts, cancellation can no longer truthfully report a pre-dispatch win:
+  // either rollback wins the same lock and this item is rejected, or admission
+  // wins and synchronously transfers ownership to the active turn. Returning
+  // not_cancelled keeps the caller on the active-turn stop path.
+  if (getCommittingTurnAdmissionQueueId() === queueId) {
+    return { status: 'not_cancelled' };
+  }
   const admissionCancellation = cancelTurnAdmissionTicket(queueId);
   const admission = admissionCancellation?.ticket ?? null;
   const removed = removeQueuedItemByQueueId(queueId);
@@ -13320,6 +13357,9 @@ async function rejectPromotedMessageBeforeDispatch(
   item: MessageQueueItem,
   result: DispatchGuardResult,
 ): Promise<void> {
+  if (getCommittingTurnAdmissionQueueId() === item.id) {
+    setCommittingTurnAdmissionQueueId(null);
+  }
   if (result.rollbackBeforeReject) {
     try {
       await result.rollbackBeforeReject;
@@ -13506,6 +13546,55 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         continue;
       }
     }
+    const turnOrigin = item.analyticsOrigin ?? originFromTurnAttribution({
+      source: item.analyticsSource,
+      scenarioType: currentScenario.type,
+      desktopSurface: currentScenario.type === 'desktop' ? currentScenario.surface : undefined,
+      inboxMeta: item.inboxMeta,
+    });
+    const deferredSystemInit = lifecycleState.preWarming
+      ? lifecycleState.systemInitInfo
+      : null;
+
+    // Finish every asynchronous setup step while the item is still
+    // cancellable. The prepared-session claim below is the final awaited
+    // transition; after it wins, ownership transfers synchronously to the
+    // active turn with no cancellation seam in between.
+    try {
+      if (!item.wasQueued) {
+        await prepareSessionPlansForUserTurn({ clearStale: true });
+      }
+      if (deferredSystemInit) {
+        await ensureSessionMetadataForSdkSystemInit(deferredSystemInit);
+        sessionRegistered = true;
+      }
+      if (item.deferredSessionMetadata) {
+        await persistSessionMetadataForAdmittedMessage(
+          item.messageText,
+          item.deferredSessionMetadata,
+        );
+        item.deferredSessionMetadata = undefined;
+      }
+    } catch (error) {
+      const admissionError = error instanceof Error ? error.message : String(error);
+      console.error('[agent] turn setup failed before admission:', error);
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        error: admissionError,
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+
+    if (isPromotedItemCanceled(item.id)) {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        code: 'dispatch_canceled',
+        error: 'Queue item was cancelled',
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
     if (guardResult?.validateAtCommit) {
       let commitResult: DispatchGuardResult;
       try {
@@ -13522,12 +13611,16 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       }
     }
 
-    const turnOrigin = item.analyticsOrigin ?? originFromTurnAttribution({
-      source: item.analyticsSource,
-      scenarioType: currentScenario.type,
-      desktopSurface: currentScenario.type === 'desktop' ? currentScenario.surface : undefined,
-      inboxMeta: item.inboxMeta,
-    });
+    setCommittingTurnAdmissionQueueId(item.id);
+    if (!await claimPreparedMaterializationForTurnAdmission(item.messageText, item.sessionBirthOrigin)) {
+      setCommittingTurnAdmissionQueueId(null);
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        code: 'dispatch_canceled',
+        error: 'Session materialization was rolled back before turn admission.',
+      });
+      continue;
+    }
 
     // Direct-send items (wasQueued=false): enqueueUserMessage already surfaced
     // the ordinary user message; guarded items were surfaced once immediately
@@ -13599,9 +13692,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     // accepted active turn (even while its metadata is being persisted), so a
     // caller deadline/cancel must report and stop that exact active owner
     // rather than claiming the turn was never enqueued.
-    const deferredSystemInit = lifecycleState.preWarming
-      ? lifecycleState.systemInitInfo
-      : null;
     clearPromotedItem(item.id);
     isStreamingMessage = true;
     if (lifecycleState.preWarming) {
@@ -13617,29 +13707,8 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       item.deferVisibleAdmission = false;
     }
     item.settleDispatchAcceptance?.({ accepted: true });
+    setCommittingTurnAdmissionQueueId(null);
 
-    try {
-      if (!item.wasQueued) {
-        await prepareSessionPlansForUserTurn({ clearStale: true });
-      }
-      if (deferredSystemInit) {
-        await ensureSessionMetadataForSdkSystemInit(deferredSystemInit);
-        sessionRegistered = true;
-      }
-      if (item.deferredSessionMetadata) {
-        await persistSessionMetadataForAdmittedMessage(
-          item.messageText,
-          item.deferredSessionMetadata,
-        );
-        item.deferredSessionMetadata = undefined;
-      }
-    } catch (error) {
-      const admissionError = error instanceof Error ? error.message : String(error);
-      console.error('[agent] admitted turn setup failed before SDK dispatch:', error);
-      builtinTurnLifecycle.failAdmittedTurnSetup(admissionError);
-      item.resolve();
-      continue;
-    }
     if (deferredSystemInit) {
       broadcast('chat:system-init', { info: deferredSystemInit, sessionId, runtime: 'builtin' });
       console.log(`[agent] pre-warm → active (at admission), sessionRegistered=${sessionRegistered}`);

@@ -31,42 +31,6 @@ pub struct EnsureSidecarResult {
     pub is_new: bool,
 }
 
-/// Ensure a Session has a Sidecar running, adding the specified owner.
-/// If the Session already has a healthy Sidecar, just adds the owner.
-/// If no Sidecar exists, creates a new one with the owner.
-///
-/// Returns (port, is_new) where is_new is true if a new Sidecar was started.
-///
-/// # WARNING: Blocking Function
-/// This function uses `reqwest::blocking::Client` internally (via `check_sidecar_http_health`)
-/// which uses `block_on()`. Calling this function from within an async context (tokio runtime)
-/// will cause a deadlock or panic.
-///
-/// When calling from async code, wrap in `tokio::task::spawn_blocking`:
-/// ```ignore
-/// let result = tokio::task::spawn_blocking(move || {
-///     ensure_session_sidecar(&app_handle, &manager, &session_id, workspace_path, owner)
-/// })
-/// .await
-/// .map_err(|e| format!("spawn_blocking failed: {}", e))?;
-/// ```
-pub fn ensure_session_sidecar<R: Runtime>(
-    app_handle: &AppHandle<R>,
-    manager: &ManagedSidecarManager,
-    session_id: &str,
-    workspace_path: &std::path::Path,
-    owner: SidecarOwner,
-) -> Result<EnsureSidecarResult, String> {
-    ensure_session_sidecar_with_runtime_override(
-        app_handle,
-        manager,
-        session_id,
-        workspace_path,
-        owner,
-        None,
-    )
-}
-
 /// Upper bound on ensure re-entry. The ensure path re-runs itself on
 /// generation-change and concurrent-create (it must re-wait for `/health/ready`
 /// rather than return a replacement port directly). This caps that re-entry so
@@ -113,7 +77,11 @@ pub fn ensure_session_sidecar_with_runtime_override<R: Runtime>(
     )
 }
 
-pub fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
+/// Blocking ensure kernel. Callers must normally use the lifecycle-fenced
+/// async wrapper below. The health monitor is the sole direct caller because
+/// it already holds the lifecycle guard while preserving the dead owner object
+/// across restart failure.
+pub(crate) fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
     session_id: &str,
@@ -133,6 +101,92 @@ pub fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
         runtime_source_override,
         0,
     )
+}
+
+/// Async pit-of-success entrypoint for every owner-acquiring ensure.
+///
+/// The per-session lifecycle guard is held across the entire blocking ensure,
+/// including readiness waits. Session deletion takes the same guard, so it
+/// cannot validate an ownerless identity and then have this path recreate that
+/// fixed identity immediately after deletion.
+pub(crate) async fn ensure_session_sidecar_with_lifecycle<R: Runtime>(
+    app_handle: AppHandle<R>,
+    manager: ManagedSidecarManager,
+    session_id: String,
+    workspace_path: PathBuf,
+    owner: SidecarOwner,
+) -> Result<EnsureSidecarResult, String> {
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle(
+        app_handle,
+        manager,
+        session_id,
+        workspace_path,
+        owner,
+        None,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecycle<R: Runtime>(
+    app_handle: AppHandle<R>,
+    manager: ManagedSidecarManager,
+    session_id: String,
+    workspace_path: PathBuf,
+    owner: SidecarOwner,
+    runtime_override: Option<String>,
+    runtime_source_override: Option<String>,
+) -> Result<EnsureSidecarResult, String> {
+    let lifecycle = Arc::new(acquire_session_lifecycle(&[&session_id]).await);
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle_held(
+        lifecycle,
+        app_handle,
+        manager,
+        session_id,
+        workspace_path,
+        owner,
+        runtime_override,
+        runtime_source_override,
+    )
+    .await
+}
+
+/// Blocking-thread ensure for a caller that already owns this Session's
+/// lifecycle authority. The shared lease keeps that exact acquisition alive
+/// through readiness without attempting to re-enter the non-reentrant lock.
+///
+/// Task reservation is the non-generic caller: the exact execution retains a
+/// shared handle until SessionStore metadata is born, while the worker moves
+/// its handle through Sidecar ensure. Other callers use the wrapper above.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecycle_held<
+    R: Runtime,
+>(
+    lifecycle: Arc<SessionLifecycleGuard>,
+    app_handle: AppHandle<R>,
+    manager: ManagedSidecarManager,
+    session_id: String,
+    workspace_path: PathBuf,
+    owner: SidecarOwner,
+    runtime_override: Option<String>,
+    runtime_source_override: Option<String>,
+) -> Result<EnsureSidecarResult, String> {
+    // Keep the caller's authority alive until the blocking ensure and its
+    // readiness wait finish. This is intentionally not a fresh acquisition.
+    let _lifecycle = lifecycle;
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_session_sidecar_with_runtime_identity_override(
+            &app_handle,
+            &manager,
+            &session_id,
+            &workspace_path,
+            owner,
+            runtime_override,
+            runtime_source_override,
+        )
+    })
+    .await
+    .map_err(|error| format!("ensure_session_sidecar blocking task failed: {error:?}"))?
 }
 
 fn resolve_runtime_identity_for_owner(
@@ -1087,6 +1141,14 @@ pub fn get_session_generation(
 
 // ============= Session-Centric Tauri Commands =============
 
+fn is_canonical_session_id(session_id: &str) -> bool {
+    let len = session_id.len();
+    (1..=99).contains(&len)
+        && session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
 /// Ensure a Session has a Sidecar running, adding the specified owner
 #[tauri::command]
 #[allow(non_snake_case)]
@@ -1107,24 +1169,11 @@ pub async fn cmd_ensure_session_sidecar(
 
     let workspace_path = PathBuf::from(&workspacePath);
 
-    // CRITICAL: this command BLOCKS for the entire cold sidecar boot (~800ms — it
-    // waits for the sidecar's /health/ready). A SYNC `pub fn` Tauri command runs on
-    // the MAIN THREAD, which on macOS is the WKWebView's UI thread — so a sync
-    // version freezes the whole UI for the boot: the Launcher→Chat flip commits in
-    // React but the WebView physically cannot PAINT it until the command returns.
-    // (Measured via a double-rAF `chat_painted` mark: the paint fired ~3ms AFTER
-    // this resolved, i.e. ~800ms after the click — that was the user's
-    // "click → wait → page appears", and it's why every renderer-side fix did
-    // nothing.) Make the command `async` and run the blocking boot on a blocking
-    // thread so the main thread stays free and the WebView paints the flip in the
-    // next frame. Clone the manager Arc out of the State first (the State guard must
-    // not be held across the .await).
+    // The async lifecycle entrypoint owns both the per-session deletion fence
+    // and the blocking-thread handoff for the full cold boot/readiness wait.
     let manager = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        ensure_session_sidecar(&app_handle, &manager, &sessionId, &workspace_path, owner)
-    })
-    .await
-    .map_err(|e| format!("ensure_session_sidecar blocking task failed: {e:?}"))?
+    ensure_session_sidecar_with_lifecycle(app_handle, manager, sessionId, workspace_path, owner)
+        .await
 }
 
 /// Release an owner from a Session's Sidecar
@@ -1229,7 +1278,7 @@ pub async fn cmd_delete_session_if_unowned(
     state: tauri::State<'_, ManagedSidecarManager>,
     sessionId: String,
 ) -> Result<bool, String> {
-    if sessionId.trim().is_empty() || sessionId.contains('/') {
+    if !is_canonical_session_id(&sessionId) {
         return Err("Invalid session ID".to_string());
     }
     // Fast negative for the common active Task/Goal case. A fresh Session
@@ -1259,16 +1308,30 @@ pub async fn cmd_delete_session_if_unowned(
             return Err("Global Sidecar is not running".to_string());
         }
         let port = instance.port;
+        let delete_authority = instance
+            .session_delete_authority
+            .clone()
+            .ok_or_else(|| "Global Sidecar deletion authority is unavailable".to_string())?;
         let client = crate::local_http::blocking_builder()
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|error| format!("Failed to create local HTTP client: {error}"))?;
         let response = client
             .delete(format!("http://127.0.0.1:{port}/sessions/{sessionId}"))
+            .header(SESSION_DELETE_AUTHORITY_HEADER, delete_authority)
             .send()
             .map_err(|error| format!("Failed to delete session: {error}"))?;
-        if !response.status().is_success() {
-            return Ok(false);
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .unwrap_or_else(|_| "<unreadable response>".to_string());
+            return match status.as_u16() {
+                403 | 404 | 409 => Ok(false),
+                _ => Err(format!(
+                    "Global Sidecar failed to delete session (HTTP {status}): {body}"
+                )),
+            };
         }
         manager.deactivate_session(&sessionId);
         Ok(true)
@@ -1296,7 +1359,7 @@ pub async fn cmd_release_tab_session(
 #[cfg(test)]
 mod session_lifecycle_tests {
     use super::{
-        acquire_session_lifecycle, resolve_runtime_identity_for_owner,
+        acquire_session_lifecycle, is_canonical_session_id, resolve_runtime_identity_for_owner,
         validate_sidecar_runtime_invariant, RuntimeIdentity, SidecarOwner,
     };
     use std::time::Duration;
@@ -1357,6 +1420,27 @@ mod session_lifecycle_tests {
 
         assert_eq!(expected.runtime, "gemini");
         assert_eq!(expected.runtime_source.as_deref(), Some("system-cli"));
+    }
+
+    #[test]
+    fn deletion_accepts_only_one_canonical_session_path_segment() {
+        assert!(is_canonical_session_id(
+            "11111111-2222-4333-8444-555555555555"
+        ));
+        assert!(is_canonical_session_id("pending-tab-123"));
+
+        for invalid in [
+            "",
+            "owned?shadow",
+            "owned#shadow",
+            "owned/shadow",
+            "owned\\shadow",
+            "owned_shadow",
+            "owned%2Fshadow",
+        ] {
+            assert!(!is_canonical_session_id(invalid), "accepted {invalid:?}");
+        }
+        assert!(!is_canonical_session_id(&"a".repeat(100)));
     }
 
     #[tokio::test]
