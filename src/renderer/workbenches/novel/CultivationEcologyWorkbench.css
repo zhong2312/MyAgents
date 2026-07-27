@@ -1784,8 +1784,13 @@
   padding: 0.15rem;
 }
 .ce-topology-color-control code {
+  min-width: 0;
+  flex: 1;
   color: var(--ink-muted);
   font-size: var(--text-xs);
+}
+.ce-topology-color-control .ce-button {
+  flex: 0 0 auto;
 }
 .ce-topology-color-swatches {
   display: flex;
@@ -2726,6 +2731,7 @@
   width: 100%;
   height: 100%;
   overflow: visible;
+  background-color: var(--formation-backdrop-color, transparent);
   box-shadow:
     inset 0 0 5rem rgb(0 0 0 / 72%),
     0 0 5rem rgb(213 177 99 / 10%);
@@ -3558,6 +3564,34 @@
   flex-direction: column;
   border-top: 1px solid var(--line);
 }
+.ce-relation-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(7rem, 0.55fr)) minmax(12rem, 1fr);
+  align-items: end;
+  gap: 1rem;
+  border-block: 1px solid var(--line-subtle);
+  padding: 0.85rem 0;
+}
+.ce-relation-overview > div:not(.ce-relation-filter) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.ce-relation-overview strong {
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+.ce-relation-overview span {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.ce-relation-filter {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.35rem;
+}
 .ce-relation-row {
   display: grid;
   width: 100%;
@@ -3632,6 +3666,12 @@
   transform: translateX(0.15rem);
 }
 @media (max-width: 820px) {
+  .ce-relation-overview {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .ce-relation-filter {
+    grid-column: 1 / -1;
+  }
   .ce-relation-row {
     min-height: 0;
     grid-template-columns: minmax(0, 1fr) 1.75rem;
@@ -3650,7 +3690,7 @@
   }
 }
 
-/* 原型布局：左侧体系导航、中间页面工作区、右侧焦点检查器。 */
+/* 工作台布局：左侧体系导航、中间页面工作区、覆盖式焦点检查器。 */
 .ce-shell {
   overflow: hidden;
   font-family: var(--font-body);
@@ -3735,7 +3775,7 @@
   );
   color: var(--ink);
 }
-.ce-system-item .cp-system-icon {
+.ce-system-item .ce-system-icon {
   display: flex;
   width: 1.75rem;
   height: 1.75rem;
@@ -3746,7 +3786,7 @@
   background: var(--paper-inset);
   color: var(--accent-cool);
 }
-.ce-system-item.is-active .cp-system-icon {
+.ce-system-item.is-active .ce-system-icon {
   background: var(--accent-warm-subtle);
   color: var(--accent-warm);
 }
@@ -4865,6 +4905,9 @@
 
 .ce-page-action {
   min-height: 2.25rem;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin: 0;
   justify-content: flex-end;
 }
@@ -4873,6 +4916,44 @@
   min-height: 2.25rem;
   padding: 0.5rem 0.75rem;
   font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.ce-level-create-control,
+.ce-interaction-create-control {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ce-level-create-control .ce-inline-select {
+  width: clamp(10rem, 18vw, 15rem);
+}
+.ce-interaction-create-control .ce-inline-select {
+  width: clamp(10rem, 16vw, 14rem);
+}
+.ce-level-create-control .ce-button,
+.ce-interaction-create-control .ce-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+@media (max-width: 820px) {
+  .ce-page-header {
+    flex-direction: column;
+  }
+  .ce-main-scroll .ce-section-head {
+    flex-wrap: wrap;
+  }
+  .ce-page-action,
+  .ce-level-create-control,
+  .ce-interaction-create-control {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .ce-level-create-control .ce-inline-select,
+  .ce-interaction-create-control .ce-inline-select {
+    width: auto;
+    flex: 1;
+  }
 }
 
 .ce-section {
@@ -5255,6 +5336,15 @@
     width: auto;
     flex: 1;
     padding: 0.55rem 0.5rem;
+  }
+
+  .ce-system-entry {
+    width: 12rem;
+    flex: 0 0 12rem;
+  }
+
+  .ce-system-item {
+    width: 100%;
   }
 
   .ce-stat-strip {
@@ -6380,20 +6470,20 @@
 }
 
 .ce-origin-flow-node.is-system {
-  border-color: rgb(255 255 255 / 16%);
-  border-left-color: #64748b;
-  background: rgb(18 11 21 / 94%);
+  border-color: var(--line-strong);
+  border-left-color: var(--ink-muted);
+  background: color-mix(in srgb, var(--paper-elevated) 94%, transparent);
   box-shadow: 0 0.6rem 1.8rem rgb(0 0 0 / 32%);
-  color: #fff4ff;
+  color: var(--ink);
 }
 
 .ce-origin-flow-node.is-system.is-connected {
-  border-left-color: #22d3ee;
+  border-left-color: var(--info);
 }
 
 .ce-origin-flow-node.is-selected {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 2px rgb(245 158 11 / 22%);
+  border-color: var(--warning);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 22%, transparent);
 }
 
 .ce-origin-flow-node.is-origin.is-selected,
@@ -6466,7 +6556,7 @@
 }
 
 .ce-origin-flow-node.is-system.is-connected .ce-origin-flow-node-icon {
-  color: #22d3ee;
+  color: var(--info);
 }
 
 .ce-origin-flow-node-copy {
@@ -6478,7 +6568,7 @@
 }
 
 .ce-origin-flow-node-copy small {
-  color: rgb(244 224 248 / 62%);
+  color: var(--ink-muted);
   font-size: var(--text-xs);
   font-weight: 650;
 }
@@ -6493,7 +6583,7 @@
 .ce-origin-flow-node-copy em {
   display: -webkit-box;
   overflow: hidden;
-  color: rgb(244 224 248 / 70%);
+  color: var(--ink-muted);
   font-size: var(--text-xs);
   font-style: normal;
   line-height: 1.45;
@@ -6504,7 +6594,7 @@
 .ce-origin-flow-handle.react-flow__handle {
   width: 0.7rem;
   height: 0.7rem;
-  border: 2px solid #050207;
+  border: 2px solid var(--paper-elevated);
   background: var(--topology-node-color);
   box-shadow:
     0 0 0.3rem white,
@@ -6513,7 +6603,7 @@
 }
 
 .ce-origin-flow-node.is-system .ce-origin-flow-handle.react-flow__handle {
-  background: #22d3ee;
+  background: var(--info);
   box-shadow: none;
 }
 
@@ -6524,20 +6614,20 @@
 .ce-origin-flow-surface .react-flow__controls,
 .ce-origin-flow-surface .react-flow__minimap {
   overflow: hidden;
-  border: 1px solid #493450;
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
-  background: #16091a;
+  background: var(--paper-elevated);
   box-shadow: 0 0.6rem 1.8rem rgb(0 0 0 / 28%);
 }
 
 .ce-origin-flow-surface .react-flow__controls-button {
-  border-bottom-color: #493450;
-  background: #16091a;
-  color: #fff2ff;
+  border-bottom-color: var(--line-strong);
+  background: var(--paper-elevated);
+  color: var(--ink);
 }
 
 .ce-origin-flow-surface .react-flow__controls-button:hover {
-  background: #27132d;
+  background: var(--paper-inset);
 }
 
 .ce-origin-flow-surface .react-flow__minimap-mask {
@@ -6545,7 +6635,7 @@
 }
 
 .ce-origin-flow-surface .react-flow__minimap {
-  background: #0c0710;
+  background: var(--paper-elevated);
 }
 
 .ce-origin-flow-edge path {

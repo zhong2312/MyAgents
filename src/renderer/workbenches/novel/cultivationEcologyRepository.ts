@@ -124,6 +124,15 @@ function createMigratedSubStage(
   };
 }
 
+function stableMigrationId(prefix: string, seed: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${prefix}-migrated-${(hash >>> 0).toString(36)}`;
+}
+
 function normalizeFormationExtensions(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const formation = value as Record<string, unknown>;
@@ -132,7 +141,7 @@ function normalizeFormationExtensions(value: unknown): unknown {
   // Stable migration IDs keep repeated parsing idempotent until the upgraded file is persisted.
   const defaultRings = [
     {
-      id: `${formationId}-ring-inner`,
+      id: stableMigrationId("formation-ring", `${formationId}:inner`),
       name: "内枢",
       radius: 115,
       style: "double",
@@ -145,7 +154,7 @@ function normalizeFormationExtensions(value: unknown): unknown {
       order: 0,
     },
     {
-      id: `${formationId}-ring-pattern`,
+      id: stableMigrationId("formation-ring", `${formationId}:pattern`),
       name: "纹环",
       radius: 220,
       style: "runic",
@@ -158,7 +167,7 @@ function normalizeFormationExtensions(value: unknown): unknown {
       order: 1,
     },
     {
-      id: `${formationId}-ring-domain`,
+      id: stableMigrationId("formation-ring", `${formationId}:domain`),
       name: "域环",
       radius: 330,
       style: "polygon",
@@ -171,7 +180,7 @@ function normalizeFormationExtensions(value: unknown): unknown {
       order: 2,
     },
     {
-      id: `${formationId}-ring-boundary`,
+      id: stableMigrationId("formation-ring", `${formationId}:boundary`),
       name: "天盘",
       radius: 420,
       style: "double",
@@ -190,9 +199,8 @@ function normalizeFormationExtensions(value: unknown): unknown {
     !Array.isArray(formation.design)
       ? (formation.design as Record<string, unknown>)
       : null;
-  const fallbackBackdrop = createFormationBackdropPreset(
-    "classic",
-    (index) => `${formationId}-backdrop-${index + 1}`,
+  const fallbackBackdrop = createFormationBackdropPreset("classic", (index) =>
+    stableMigrationId("formation-backdrop", `${formationId}:${index + 1}`),
   );
   const palette =
     design?.palette &&
@@ -210,11 +218,16 @@ function normalizeFormationExtensions(value: unknown): unknown {
     design && Array.isArray(design.backdropLayers)
       ? design.backdropLayers
       : fallbackBackdrop.backdropLayers;
-  const rings = design
-    ? Array.isArray(design.rings)
-      ? design.rings
-      : defaultRings
-    : defaultRings;
+  const providedRings =
+    design && Array.isArray(design.rings) ? design.rings : null;
+  const usesDefaultRings = providedRings === null;
+  const rings = providedRings ?? defaultRings;
+  const legacyDefaultRingIds = new Map([
+    [`${formationId}-ring-inner`, defaultRings[0].id],
+    [`${formationId}-ring-pattern`, defaultRings[1].id],
+    [`${formationId}-ring-domain`, defaultRings[2].id],
+    [`${formationId}-ring-boundary`, defaultRings[3].id],
+  ]);
   const outerRingId =
     rings.length > 0 &&
     rings[rings.length - 1] &&
@@ -271,7 +284,9 @@ function normalizeFormationExtensions(value: unknown): unknown {
       ...current,
       ringId:
         "ringId" in current
-          ? current.ringId
+          ? usesDefaultRings && typeof current.ringId === "string"
+            ? (legacyDefaultRingIds.get(current.ringId) ?? current.ringId)
+            : current.ringId
           : element === "eye"
             ? null
             : outerRingId,

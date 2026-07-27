@@ -139,7 +139,6 @@ import {
 } from "./cultivationEcologyAudit";
 
 import "@xyflow/react/dist/style.css";
-import "./CultivationEcologyPrototype.css";
 import "./CultivationEcologyWorkbench.css";
 
 type ModuleId =
@@ -377,6 +376,7 @@ function SwitchField({
   );
 }
 
+// These are editable diagram-art colors, not application-shell theme tokens.
 const TOPOLOGY_NODE_PALETTE = [
   "#d946ef",
   "#22d3ee",
@@ -485,14 +485,19 @@ function TopologyColorField({
   value,
   onChange,
   label = "节点颜色",
+  allowTransparent = false,
+  transparentFallback = TOPOLOGY_NODE_PALETTE[0],
 }: {
   value: string;
   onChange: (value: string) => void;
   label?: string;
+  allowTransparent?: boolean;
+  transparentFallback?: string;
 }) {
+  const isTransparent = value === "transparent";
   const resolvedValue = /^#[0-9a-f]{6}$/iu.test(value)
     ? value
-    : TOPOLOGY_NODE_PALETTE[0];
+    : transparentFallback;
   return (
     <fieldset className="ce-topology-color-field">
       <legend>{label}</legend>
@@ -501,16 +506,40 @@ function TopologyColorField({
           type="color"
           value={resolvedValue}
           onChange={(event) => onChange(event.target.value)}
-          aria-label="自定义节点颜色"
+          aria-label={`自定义${label}`}
         />
-        <code>{resolvedValue.toUpperCase()}</code>
+        <code>
+          {isTransparent ? "跟随系统背景" : resolvedValue.toUpperCase()}
+        </code>
+        {allowTransparent && (
+          <Button
+            variant="ghost"
+            onClick={() =>
+              onChange(isTransparent ? transparentFallback : "transparent")
+            }
+            title={
+              isTransparent ? "恢复自定义阵盘底色" : "改为透明并跟随系统背景"
+            }
+          >
+            {isTransparent ? (
+              <Eye className="h-3.5 w-3.5" />
+            ) : (
+              <EyeOff className="h-3.5 w-3.5" />
+            )}
+            {isTransparent ? "使用自定义底色" : "跟随系统背景"}
+          </Button>
+        )}
       </div>
       <div className="ce-topology-color-swatches">
         {TOPOLOGY_NODE_PALETTE.map((color) => (
           <button
             type="button"
             key={color}
-            className={resolvedValue.toLowerCase() === color ? "is-active" : ""}
+            className={
+              !isTransparent && resolvedValue.toLowerCase() === color
+                ? "is-active"
+                : ""
+            }
             style={{ "--topology-swatch-color": color } as CSSProperties}
             onClick={() => onChange(color)}
             title={color.toUpperCase()}
@@ -1694,13 +1723,18 @@ export default function CultivationEcologyWorkbench({
     if (scope === "origins") {
       const origin = selected(currentEcology.worldOrigins);
       if (!origin) return null;
-      return systemTarget("世界本源", origin as unknown as Record<string, unknown>, (next) =>
-        commit({
-          ...currentEcology,
-          worldOrigins: updateById(currentEcology.worldOrigins, origin.id, () =>
-            next as unknown as WorldOrigin,
-          ),
-        }),
+      return systemTarget(
+        "世界本源",
+        origin as unknown as Record<string, unknown>,
+        (next) =>
+          commit({
+            ...currentEcology,
+            worldOrigins: updateById(
+              currentEcology.worldOrigins,
+              origin.id,
+              () => next as unknown as WorldOrigin,
+            ),
+          }),
       );
     }
     if (scope === "relations") {
@@ -1725,13 +1759,21 @@ export default function CultivationEcologyWorkbench({
       return systemTarget(
         "本源投影",
         activeSystem.projection as unknown as Record<string, unknown>,
-        (next) => updateSystem({ ...activeSystem, projection: next as typeof activeSystem.projection }),
+        (next) =>
+          updateSystem({
+            ...activeSystem,
+            projection: next as typeof activeSystem.projection,
+          }),
       );
     if (module === "theory")
       return systemTarget(
         "理论模型",
         activeSystem.theoryModel as unknown as Record<string, unknown>,
-        (next) => updateSystem({ ...activeSystem, theoryModel: next as typeof activeSystem.theoryModel }),
+        (next) =>
+          updateSystem({
+            ...activeSystem,
+            theoryModel: next as typeof activeSystem.theoryModel,
+          }),
       );
 
     const target =
@@ -1750,7 +1792,9 @@ export default function CultivationEcologyWorkbench({
                   : module === "transitions"
                     ? selected([
                         ...activeSystem.transitions,
-                        ...activeSystem.progressionTracks.flatMap((track) => track.transitions),
+                        ...activeSystem.progressionTracks.flatMap(
+                          (track) => track.transitions,
+                        ),
                       ])
                     : module === "progression"
                       ? selected([
@@ -1769,28 +1813,70 @@ export default function CultivationEcologyWorkbench({
         (next) => {
           const replace = <T extends { id: string }>(items: readonly T[]) =>
             updateById(items, target.id, () => next as unknown as T);
-          if (module === "resources") updateSystem({ ...activeSystem, resources: replace(activeSystem.resources) });
-          else if (module === "methods") updateSystem({ ...activeSystem, methods: replace(activeSystem.methods) });
-          else if (module === "abilities") updateSystem({ ...activeSystem, abilities: replace(activeSystem.abilities) });
-          else if (module === "formations") updateSystem({ ...activeSystem, formations: replace(activeSystem.formations) });
-          else if (module === "foundations") updateSystem({ ...activeSystem, foundations: replace(activeSystem.foundations) });
-          else if (module === "constraints") updateSystem({ ...activeSystem, constraints: replace(activeSystem.constraints) });
+          if (module === "resources")
+            updateSystem({
+              ...activeSystem,
+              resources: replace(activeSystem.resources),
+            });
+          else if (module === "methods")
+            updateSystem({
+              ...activeSystem,
+              methods: replace(activeSystem.methods),
+            });
+          else if (module === "abilities")
+            updateSystem({
+              ...activeSystem,
+              abilities: replace(activeSystem.abilities),
+            });
+          else if (module === "formations")
+            updateSystem({
+              ...activeSystem,
+              formations: replace(activeSystem.formations),
+            });
+          else if (module === "foundations")
+            updateSystem({
+              ...activeSystem,
+              foundations: replace(activeSystem.foundations),
+            });
+          else if (module === "constraints")
+            updateSystem({
+              ...activeSystem,
+              constraints: replace(activeSystem.constraints),
+            });
           else if (module === "transitions") {
             const rootTransitions = replace(activeSystem.transitions);
             const tracks = activeSystem.progressionTracks.map((track) => ({
               ...track,
               transitions: replace(track.transitions),
             }));
-            updateSystem({ ...activeSystem, transitions: rootTransitions, progressionTracks: tracks });
+            updateSystem({
+              ...activeSystem,
+              transitions: rootTransitions,
+              progressionTracks: tracks,
+            });
           } else if (module === "progression") {
             const tracks = activeSystem.progressionTracks.map((track) => ({
               ...track,
-              ...(track.id === target.id ? (next as unknown as ProgressionTrack) : {}),
-              levels: updateById(track.levels, target.id, () => next as unknown as CultivationLevel).map((level) => ({
+              ...(track.id === target.id
+                ? (next as unknown as ProgressionTrack)
+                : {}),
+              levels: updateById(
+                track.levels,
+                target.id,
+                () => next as unknown as CultivationLevel,
+              ).map((level) => ({
                 ...level,
-                subStages: updateById(level.subStages, target.id, () => next as unknown as CultivationLevelSubStage),
+                subStages: updateById(
+                  level.subStages,
+                  target.id,
+                  () => next as unknown as CultivationLevelSubStage,
+                ),
               })),
-              transitions: updateById(track.transitions, target.id, () => next as unknown as Transition),
+              transitions: updateById(
+                track.transitions,
+                target.id,
+                () => next as unknown as Transition,
+              ),
             }));
             updateSystem({ ...activeSystem, progressionTracks: tracks });
           }
@@ -1822,20 +1908,47 @@ export default function CultivationEcologyWorkbench({
       });
       let parsed: unknown;
       try {
-        const trimmed = output.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
+        const trimmed = output
+          .trim()
+          .replace(/^```(?:json)?\s*/iu, "")
+          .replace(/\s*```$/u, "");
         parsed = JSON.parse(trimmed);
       } catch (cause) {
-        throw new Error(`AI 完善结果不是有效 JSON：${cause instanceof Error ? cause.message : String(cause)}`);
+        throw new Error(
+          `AI 完善结果不是有效 JSON：${cause instanceof Error ? cause.message : String(cause)}`,
+        );
       }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
         throw new Error("AI 完善结果必须是 JSON 对象");
       const patchValue = parsed as Record<string, unknown>;
-      const merge = (base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> => {
+      const merge = (
+        base: Record<string, unknown>,
+        patch: Record<string, unknown>,
+      ): Record<string, unknown> => {
         const next = { ...base };
         for (const [key, value] of Object.entries(patch)) {
-          if (!(key in base) || key === "id" || key === "name" || key === "audit" || key === "schemaVersion" || key === "updatedAt" || Array.isArray(value)) continue;
-          if (value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object" && !Array.isArray(base[key])) {
-            next[key] = merge(base[key] as Record<string, unknown>, value as Record<string, unknown>);
+          if (
+            !(key in base) ||
+            key === "id" ||
+            key === "name" ||
+            key === "audit" ||
+            key === "schemaVersion" ||
+            key === "updatedAt" ||
+            Array.isArray(value)
+          )
+            continue;
+          if (
+            value &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            base[key] &&
+            typeof base[key] === "object" &&
+            !Array.isArray(base[key])
+          ) {
+            next[key] = merge(
+              base[key] as Record<string, unknown>,
+              value as Record<string, unknown>,
+            );
           } else if (
             value !== null &&
             value !== undefined &&
@@ -1849,7 +1962,8 @@ export default function CultivationEcologyWorkbench({
         return next;
       };
       const merged = merge(target.value, patchValue);
-      if (JSON.stringify(merged) === JSON.stringify(target.value)) throw new Error("AI 没有返回可应用的字段补全");
+      if (JSON.stringify(merged) === JSON.stringify(target.value))
+        throw new Error("AI 没有返回可应用的字段补全");
       target.apply(merged);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1987,16 +2101,16 @@ export default function CultivationEcologyWorkbench({
     ? activeSystem?.formations.find((item) => item.id === formationEditorId)
     : undefined;
   return (
-    <div className="ce-shell cultivation-prototype">
+    <div className="ce-shell">
       <NarrativeUnsavedChangesGuard
         dirty={dirty}
         label="修炼体系"
         registerNavigationGuard={registerNavigationGuard}
         onSave={save}
       />
-      <header className="ce-topbar cp-topbar">
-        <div className="ce-brand cp-topbar-brand">
-          <span className="ce-brand-mark cp-brand-mark">
+      <header className="ce-topbar">
+        <div className="ce-brand">
+          <span className="ce-brand-mark">
             <Waypoints className="h-4 w-4" />
           </span>
           <div>
@@ -2024,14 +2138,14 @@ export default function CultivationEcologyWorkbench({
         </div>
       </header>
       <div
-        className={`ce-body cp-workspace ${scope === "origins" ? "ce-body-no-inspector" : ""}`}
+        className={`ce-body ${scope === "origins" ? "ce-body-no-inspector" : ""}`}
       >
-        <aside className="ce-sidebar cp-sidebar">
-          <div className="ce-sidebar-group cp-sidebar-block">
-            <span className="ce-sidebar-label cp-sidebar-label">项目全局</span>
+        <aside className="ce-sidebar">
+          <div className="ce-sidebar-group">
+            <span className="ce-sidebar-label">项目全局</span>
             <button
               type="button"
-              className={`ce-nav-item cp-global-entry ${scope === "origins" ? "is-active" : ""}`}
+              className={`ce-nav-item ${scope === "origins" ? "is-active" : ""}`}
               onClick={() => {
                 setScope("origins");
                 setSelection(null);
@@ -2047,7 +2161,7 @@ export default function CultivationEcologyWorkbench({
             </button>
             <button
               type="button"
-              className={`ce-nav-item cp-global-entry ${scope === "relations" ? "is-active" : ""}`}
+              className={`ce-nav-item ${scope === "relations" ? "is-active" : ""}`}
               onClick={() => {
                 setScope("relations");
                 setSelection(null);
@@ -2059,21 +2173,19 @@ export default function CultivationEcologyWorkbench({
               <span>跨体系关系</span>
             </button>
           </div>
-          <div className="ce-sidebar-group ce-system-group cp-sidebar-block cp-system-block">
-            <div className="ce-sidebar-label-row cp-sidebar-label-row">
-              <span className="ce-sidebar-label cp-sidebar-label">
-                修行体系
-              </span>
+          <div className="ce-sidebar-group ce-system-group ce-system-block">
+            <div className="ce-sidebar-label-row">
+              <span className="ce-sidebar-label">修行体系</span>
               <Button variant="ghost" onClick={addSystem} title="新增修行体系">
                 <Plus className="h-3.5 w-3.5" />
               </Button>
             </div>
-            <div className="ce-system-list cp-system-list">
+            <div className="ce-system-list">
               {ecology.systems.map((system) => (
                 <div key={system.id} className="ce-system-entry">
                   <button
                     type="button"
-                    className={`ce-system-item cp-system-card ${activeSystemId === system.id && scope === "system" ? "is-active" : ""}`}
+                    className={`ce-system-item ${activeSystemId === system.id && scope === "system" ? "is-active" : ""}`}
                     onClick={() => {
                       setActiveSystemId(system.id);
                       setScope("system");
@@ -2083,7 +2195,7 @@ export default function CultivationEcologyWorkbench({
                       setFormationEditorId(null);
                     }}
                   >
-                    <span className="cp-system-icon">
+                    <span className="ce-system-icon">
                       <Boxes className="h-3.5 w-3.5 shrink-0" />
                     </span>
                     <span>
@@ -2092,7 +2204,7 @@ export default function CultivationEcologyWorkbench({
                         {system.kind} · {system.methods.length} 部法门
                       </small>
                     </span>
-                    <ChevronRight className="h-3.5 w-3.5 ce-system-arrow cp-system-arrow" />
+                    <ChevronRight className="h-3.5 w-3.5 ce-system-arrow" />
                   </button>
                   <button
                     type="button"
@@ -2113,7 +2225,7 @@ export default function CultivationEcologyWorkbench({
               ))}
             </div>
           </div>
-          <div className="ce-sidebar-footer cp-sidebar-foot">
+          <div className="ce-sidebar-footer">
             <Activity className="h-3.5 w-3.5" />
             <span>结构审查</span>
             <strong>
@@ -2122,9 +2234,9 @@ export default function CultivationEcologyWorkbench({
             </strong>
           </div>
         </aside>
-        <main className="ce-main cp-main">
+        <main className="ce-main">
           {scope === "relations" && (
-            <div className="ce-main-header cp-main-header">
+            <div className="ce-main-header">
               <div>
                 <h1>{pageMeta.title}</h1>
                 <p>{pageMeta.description}</p>
@@ -2132,10 +2244,7 @@ export default function CultivationEcologyWorkbench({
             </div>
           )}
           {scope === "system" && (
-            <nav
-              className="ce-module-nav cp-module-nav"
-              aria-label="修行体系模块"
-            >
+            <nav className="ce-module-nav" aria-label="修行体系模块">
               {modules.map((item) => {
                 const Icon = item.icon;
                 return (
@@ -2159,23 +2268,35 @@ export default function CultivationEcologyWorkbench({
             </nav>
           )}
           <div className="ce-page-stage">
-            {(scope === "system" || scope === "origins" || scope === "relations") && (
+            {(scope === "system" ||
+              scope === "origins" ||
+              scope === "relations") && (
               <div className="flex shrink-0 items-center justify-end gap-2 border-b border-[var(--line-subtle)] px-5 py-2">
-                {error && <span className="mr-auto truncate text-xs text-[var(--danger)]">{error}</span>}
+                {error && (
+                  <span className="mr-auto truncate text-xs text-[var(--danger)]">
+                    {error}
+                  </span>
+                )}
                 <Button
                   variant="ghost"
                   disabled={!onAiRun || isAiRunning}
                   onClick={() => void runCultivationAi()}
-                  title={onAiRun ? "使用轻量 AI 完善当前模块" : "轻量 AI 当前不可用"}
+                  title={
+                    onAiRun ? "使用轻量 AI 完善当前模块" : "轻量 AI 当前不可用"
+                  }
                   ariaLabel="AI 完善当前模块"
                 >
-                  {isAiRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {isAiRunning ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
                   {isAiRunning ? "AI 完善中" : "AI 完善当前模块"}
                 </Button>
               </div>
             )}
             <div
-              className={`ce-main-scroll cp-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""}`}
+              className={`ce-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""}`}
             >
               {scope === "origins" ? (
                 <WorldOriginWorkspace
@@ -2397,6 +2518,7 @@ function SystemModule({
         worldOrigins={worldOrigins}
         system={system}
         onChange={onChange}
+        onSelect={onSelect}
       />
     );
   if (module === "theory")
@@ -2620,10 +2742,12 @@ function Projection({
   worldOrigins,
   system,
   onChange,
+  onSelect,
 }: {
   worldOrigins: readonly WorldOrigin[];
   system: CultivationSystem;
   onChange: (system: CultivationSystem) => void;
+  onSelect: (selection: Selection) => void;
 }) {
   const projection = system.projection;
   const originNames = new Map(worldOrigins.map((item) => [item.id, item.name]));
@@ -2647,6 +2771,15 @@ function Projection({
         eyebrow="体系内部 / 01 本源投影"
         title="体系本源投影"
         description="声明该体系从哪些世界本源和显化节点取得力量，以及如何完成本地化翻译。"
+        action={
+          <Button
+            variant="secondary"
+            onClick={() => onSelect({ kind: "projection", id: system.id })}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            编辑投影合同
+          </Button>
+        }
       />
       <Section title="接入与翻译" eyebrow="投影合同">
         <div className="ce-form-grid">
@@ -2725,10 +2858,19 @@ function Theory({
         title="体系共有结构"
         description="理论模型定义经脉、丹田、关窍、魔网、符文或神经节点等共同结构；具体运行线路必须由法门单独声明。"
         action={
-          <Button variant="primary" onClick={add}>
-            <Plus className="h-3.5 w-3.5" />
-            新增理论节点
-          </Button>
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => onSelect({ kind: "theory", id: system.id })}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              编辑理论模型
+            </Button>
+            <Button variant="primary" onClick={add}>
+              <Plus className="h-3.5 w-3.5" />
+              新增理论节点
+            </Button>
+          </>
         }
       />
       <Section
@@ -2815,8 +2957,15 @@ function Progression({
   onSelect: (selection: Selection) => void;
 }) {
   const [trackId, setTrackId] = useState(system.progressionTracks[0]?.id ?? "");
+  const [levelInsertAnchor, setLevelInsertAnchor] = useState("end");
+  const [interactionTargetTrackId, setInteractionTargetTrackId] = useState("");
+  const firstTrackId = system.progressionTracks[0]?.id ?? "";
+  const trackExists = system.progressionTracks.some(
+    (item) => item.id === trackId,
+  );
+  const resolvedTrackId = trackExists ? trackId : firstTrackId;
   const track =
-    system.progressionTracks.find((item) => item.id === trackId) ??
+    system.progressionTracks.find((item) => item.id === resolvedTrackId) ??
     system.progressionTracks[0];
   const addTrack = () => {
     const item = createTrack();
@@ -2844,16 +2993,50 @@ function Progression({
         <Empty text="尚未建立成长轨道" />
       </>
     );
+  const levelInsertOptions =
+    track.levels.length === 0
+      ? [{ value: "end", label: "创建第一个境界" }]
+      : [
+          { value: "end", label: "插入到末尾" },
+          { value: "start", label: "插入到最前" },
+          ...track.levels.slice(0, -1).map((level) => ({
+            value: `after:${level.id}`,
+            label: `在「${level.name}」之后`,
+          })),
+        ];
+  const resolvedLevelInsertAnchor = levelInsertOptions.some(
+    (option) => option.value === levelInsertAnchor,
+  )
+    ? levelInsertAnchor
+    : "end";
   const addLevel = () => {
-    const item = createLevel(track.levels.length);
+    const insertionIndex =
+      resolvedLevelInsertAnchor === "start"
+        ? 0
+        : resolvedLevelInsertAnchor.startsWith("after:")
+          ? Math.max(
+              0,
+              track.levels.findIndex(
+                (level) =>
+                  level.id === resolvedLevelInsertAnchor.slice("after:".length),
+              ) + 1,
+            )
+          : track.levels.length;
+    const item = createLevel(insertionIndex);
+    const levels = [...track.levels];
+    levels.splice(insertionIndex, 0, item);
     onChange({
       ...system,
       progressionTracks: updateById(
         system.progressionTracks,
         track.id,
-        (current) => ({ ...current, levels: [...current.levels, item] }),
+        (current) => ({
+          ...current,
+          levels: levels.map((level, order) => ({ ...level, order })),
+        }),
       ),
     });
+    setLevelInsertAnchor("end");
     onSelect({
       kind: "level",
       id: item.id,
@@ -2912,9 +3095,13 @@ function Progression({
   };
   const addInteraction = () => {
     if (system.progressionTracks.length < 2) return;
-    const targetTrack = system.progressionTracks.find(
-      (candidate) => candidate.id !== track.id,
-    );
+    const targetTrack =
+      system.progressionTracks.find(
+        (candidate) =>
+          candidate.id === interactionTargetTrackId &&
+          candidate.id !== track.id,
+      ) ??
+      system.progressionTracks.find((candidate) => candidate.id !== track.id);
     if (!targetTrack) return;
     const item = createTrackInteraction(track.id, targetTrack.id);
     onChange({
@@ -2955,10 +3142,20 @@ function Progression({
               <Plus className="h-3.5 w-3.5" />
               新增轨道
             </Button>
-            <Button variant="primary" onClick={addLevel}>
-              <Plus className="h-3.5 w-3.5" />
-              新增境界
-            </Button>
+            <div className="ce-level-create-control">
+              <CustomSelect
+                value={resolvedLevelInsertAnchor}
+                options={levelInsertOptions}
+                onChange={setLevelInsertAnchor}
+                ariaLabel="新境界插入位置"
+                className="ce-inline-select"
+                size="toolbar"
+              />
+              <Button variant="primary" onClick={addLevel}>
+                <Plus className="h-3.5 w-3.5" />
+                插入境界
+              </Button>
+            </div>
           </>
         }
       />
@@ -3126,19 +3323,46 @@ function Progression({
         title="多轨道交叉规则"
         eyebrow={`${system.trackInteractions?.length ?? 0} 条同步 / 协同 / 竞争规则`}
         action={
-          <Button
-            variant="secondary"
-            onClick={addInteraction}
-            disabled={system.progressionTracks.length < 2}
-            title={
-              system.progressionTracks.length < 2
-                ? "至少需要两条成长轨道"
-                : "新增轨道交叉规则"
-            }
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新增规则
-          </Button>
+          <div className="ce-interaction-create-control">
+            <CustomSelect
+              value={
+                system.progressionTracks.some(
+                  (candidate) =>
+                    candidate.id === interactionTargetTrackId &&
+                    candidate.id !== track.id,
+                )
+                  ? interactionTargetTrackId
+                  : (system.progressionTracks.find(
+                      (candidate) => candidate.id !== track.id,
+                    )?.id ?? "")
+              }
+              options={system.progressionTracks
+                .filter((candidate) => candidate.id !== track.id)
+                .map((candidate) => ({
+                  value: candidate.id,
+                  label: `目标：${candidate.name}`,
+                }))}
+              onChange={setInteractionTargetTrackId}
+              ariaLabel="轨道交叉规则目标轨道"
+              placeholder="选择目标轨道"
+              disabled={system.progressionTracks.length < 2}
+              className="ce-inline-select"
+              size="toolbar"
+            />
+            <Button
+              variant="secondary"
+              onClick={addInteraction}
+              disabled={system.progressionTracks.length < 2}
+              title={
+                system.progressionTracks.length < 2
+                  ? "至少需要两条成长轨道"
+                  : "新增轨道交叉规则"
+              }
+            >
+              <Plus className="h-3.5 w-3.5" />
+              新增规则
+            </Button>
+          </div>
         }
       >
         <div className="ce-transition-list">
@@ -3719,8 +3943,11 @@ function buildTopologyCanvasEdges(
         className: `ce-topology-flow-edge is-${mode}`,
         label: edgeName,
         labelStyle: {
-          fill: mode === "immersive" ? "#fff2ff" : "var(--ink-muted)",
-          fontSize: 12,
+          fill:
+            mode === "immersive"
+              ? "var(--button-primary-text)"
+              : "var(--ink-muted)",
+          fontSize: "var(--text-xs)",
           fontWeight: 650,
         },
         labelBgStyle: {
@@ -4582,7 +4809,11 @@ function buildFormationCanvasEdges(
       animated: edge.animated,
       className: "ce-formation-canvas-edge",
       label: edge.name || edge.flowType,
-      labelStyle: { fill: "#f2e8cb", fontSize: 12, fontWeight: 650 },
+      labelStyle: {
+        fill: "var(--button-primary-text)",
+        fontSize: "var(--text-xs)",
+        fontWeight: 650,
+      },
       labelBgStyle: {
         fill: "#100e12",
         fillOpacity: 0.92,
@@ -6368,6 +6599,7 @@ const worldOriginStatusLabels: Record<WorldOrigin["status"], string> = {
   incomplete: "待完善",
   unstable: "不稳定",
 };
+// Status and manifestation colors are editable canvas-art semantics, not shell UI states.
 const worldOriginStatusColors: Record<WorldOrigin["status"], string> = {
   stable: "#f59e0b",
   fragmented: "#d946ef",
@@ -6540,7 +6772,7 @@ function buildOriginCanvasNodes(
             ? `${sourceCount} 个本源入口 · ${system.projection.access || "接入方式未定义"}`
             : "拖入连线以建立体系投影",
         badge: sourceCount > 0 ? "已接入体系" : "待接入体系",
-        color: sourceCount > 0 ? "#22d3ee" : "#64748b",
+        color: sourceCount > 0 ? "var(--info)" : "var(--ink-muted)",
         orbStyle: "plasma",
         connected: sourceCount > 0,
       },
@@ -6596,11 +6828,15 @@ function buildOriginCanvasEdges(
         animated: true,
         className: "ce-origin-flow-edge is-relation",
         label: originRelationLabels[relation.relation],
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b" },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--warning)" },
         data: { kind: "relation", relationId: relation.id },
-        style: { stroke: "#f59e0b", strokeWidth: 1.8 },
-        labelStyle: { fill: "#fff2ff", fontSize: 12, fontWeight: 650 },
-        labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
+        style: { stroke: "var(--warning)", strokeWidth: 1.8 },
+        labelStyle: {
+          fill: "var(--ink)",
+          fontSize: "var(--text-xs)",
+          fontWeight: 650,
+        },
+        labelBgStyle: { fill: "var(--paper-elevated)", fillOpacity: 0.94 },
         labelBgPadding: [5, 3],
         labelBgBorderRadius: 3,
       };
@@ -6625,15 +6861,19 @@ function buildOriginCanvasEdges(
       animated: true,
       className: "ce-origin-flow-edge is-projection",
       label,
-      markerEnd: { type: MarkerType.ArrowClosed, color: "#22d3ee" },
+      markerEnd: { type: MarkerType.ArrowClosed, color: "var(--info)" },
       data: { kind: "projection", systemId: system.id, sourceId },
       style: {
-        stroke: "#22d3ee",
+        stroke: "var(--info)",
         strokeDasharray: "6 5",
         strokeWidth: 1.5,
       },
-      labelStyle: { fill: "#fff2ff", fontSize: 12, fontWeight: 650 },
-      labelBgStyle: { fill: "#16091a", fillOpacity: 0.94 },
+      labelStyle: {
+        fill: "var(--ink)",
+        fontSize: "var(--text-xs)",
+        fontWeight: 650,
+      },
+      labelBgStyle: { fill: "var(--paper-elevated)", fillOpacity: 0.94 },
       labelBgPadding: [5, 3],
       labelBgBorderRadius: 3,
     });
@@ -7102,14 +7342,14 @@ function WorldOriginCanvasEditor({
             variant={BackgroundVariant.Dots}
             gap={24}
             size={1.2}
-            color="#34243d"
+            color="var(--line-strong)"
           />
           <MiniMap
             pannable
             zoomable
             nodeStrokeWidth={3}
             nodeColor={(node) =>
-              (node.data as OriginCanvasNodeData).color ?? "#64748b"
+              (node.data as OriginCanvasNodeData).color ?? "var(--ink-muted)"
             }
           />
           <Controls showInteractive={false} />
@@ -7803,6 +8043,16 @@ function Relations({
   onChange: (ecology: CultivationEcology) => void;
   onSelect: (selection: Selection) => void;
 }) {
+  const [relationFilter, setRelationFilter] = useState("all");
+  const relationTypes = [
+    "兼容",
+    "克制",
+    "转换",
+    "依赖",
+    "继承",
+    "污染",
+    "冲突",
+  ] as const;
   const add = () => {
     if (ecology.systems.length < 2) return;
     const source = ecology.systems[0]?.id ?? "";
@@ -7825,6 +8075,21 @@ function Relations({
     onSelect({ kind: "relation", id: item.id });
   };
   const names = new Map(ecology.systems.map((item) => [item.id, item.name]));
+  const visibleRelations =
+    relationFilter === "all"
+      ? ecology.crossSystemRelations
+      : ecology.crossSystemRelations.filter(
+          (item) => item.relation === relationFilter,
+        );
+  const connectedSystemCount = new Set(
+    ecology.crossSystemRelations.flatMap((item) => [
+      item.sourceSystemId,
+      item.targetSystemId,
+    ]),
+  ).size;
+  const riskRelationCount = ecology.crossSystemRelations.filter((item) =>
+    ["克制", "污染", "冲突"].includes(item.relation),
+  ).length;
   return (
     <>
       <PageHeader
@@ -7847,8 +8112,39 @@ function Relations({
           </Button>
         }
       />
+      <div className="ce-relation-overview" aria-label="跨体系关系概况">
+        <div>
+          <strong>{ecology.crossSystemRelations.length}</strong>
+          <span>关系总数</span>
+        </div>
+        <div>
+          <strong>{connectedSystemCount}</strong>
+          <span>已连接体系</span>
+        </div>
+        <div>
+          <strong>{riskRelationCount}</strong>
+          <span>风险关系</span>
+        </div>
+        <div className="ce-relation-filter">
+          <span>关系类型</span>
+          <CustomSelect
+            value={relationFilter}
+            options={[
+              { value: "all", label: "全部类型" },
+              ...relationTypes.map((relation) => ({
+                value: relation,
+                label: relation,
+              })),
+            ]}
+            onChange={setRelationFilter}
+            ariaLabel="筛选跨体系关系类型"
+            className="ce-inline-select"
+            size="toolbar"
+          />
+        </div>
+      </div>
       <div className="ce-relation-list">
-        {ecology.crossSystemRelations.map((item) => (
+        {visibleRelations.map((item) => (
           <button
             type="button"
             className="ce-relation-row"
@@ -7877,8 +8173,14 @@ function Relations({
           </button>
         ))}
       </div>
-      {ecology.crossSystemRelations.length === 0 && (
-        <Empty text="尚未定义跨体系关系" />
+      {visibleRelations.length === 0 && (
+        <Empty
+          text={
+            ecology.crossSystemRelations.length === 0
+              ? "尚未定义跨体系关系"
+              : "当前筛选条件下没有关系"
+          }
+        />
       )}
     </>
   );
@@ -11231,6 +11533,10 @@ function InspectorV2({
       update({
         design: { ...item.design, ...patch, presetId: "custom" },
       });
+    const backdropColorFallback =
+      FORMATION_BACKDROP_PRESETS.find(
+        (preset) => preset.id === item.design.presetId,
+      )?.backgroundColor ?? FORMATION_BACKDROP_PRESETS[0].backgroundColor;
     return (
       <InspectorEditor
         title={item.name}
@@ -11316,6 +11622,8 @@ function InspectorV2({
         <TopologyColorField
           label="阵盘底色"
           value={item.design.backgroundColor}
+          allowTransparent
+          transparentFallback={backdropColorFallback}
           onChange={(backgroundColor) =>
             updateBackdropDesign({ backgroundColor })
           }

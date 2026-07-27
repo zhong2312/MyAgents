@@ -341,16 +341,16 @@ function FormationBackdropArtComponent({
       : "is-still";
   const artStyle = {
     "--formation-backdrop-glow": design.palette.glow,
+    "--formation-backdrop-color": design.backgroundColor,
   } as CSSProperties;
   return (
     <div
       className={`ce-formation-backdrop is-${design.canvasStyle}`}
-      style={{ backgroundColor: design.backgroundColor }}
+      style={artStyle}
       aria-hidden="true"
     >
       <svg
         viewBox={`${-canvasOffset} ${-canvasOffset} ${canvasSize} ${canvasSize}`}
-        style={artStyle}
       >
         <defs>
           <filter id={glowId} x="-12%" y="-12%" width="124%" height="124%">
