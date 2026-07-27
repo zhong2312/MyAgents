@@ -3,7 +3,7 @@ import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 import {
   cultivationEcologySchema,
   type CultivationEcology,
-} from "../../../shared/novel-cultivation-ecology-schema";
+} from "../../../shared/workbenches/novel/cultivationEcologySchema";
 
 import {
   createDefaultCharacterLibraryMeta,
@@ -189,7 +189,9 @@ async function ensureCultivationReferences(
       profile.activeConstraintIds.length > 0 ||
       profile.breakthroughHistory.length > 0;
     if (!profile.systemId && hasBoundAssets)
-      throw new Error(`角色“${character.name}”的修行档案存在资产，但未绑定修行体系`);
+      throw new Error(
+        `角色“${character.name}”的修行档案存在资产，但未绑定修行体系`,
+      );
     if (profile.systemId)
       check(character, profile.systemId, "修行体系", systems);
     if (profile.trackId && !tracks.has(profile.trackId))

@@ -17,8 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 
-import { useCloseLayer } from "@/hooks/useCloseLayer";
-import { DraggableDialogFrame } from "@/workbench-sdk";
+import { DraggableDialogFrame, useCloseLayer } from "@/workbench-sdk";
 
 import type { LoadedNovelChapter } from "./repository";
 import type {

@@ -23,6 +23,7 @@
 
 ```text
 src/shared/workbench-sdk/          # 跨进程纯协议；不得依赖 renderer/server/cli
+src/shared/workbenches/            # 具体工作台的跨进程纯领域模型
 src/renderer/workbench-sdk/        # React 宿主 SDK 与 WorkbenchShell
 src/renderer/workbench-host/       # SDK 能力到 MyAgents 内部实现的私有适配层
 src/renderer/workbenches/          # 具体官方工作台
@@ -42,6 +43,7 @@ MyAgents Core -> workbench-sdk <- Concrete Workbench
 
 - 核心模块直接导入 `src/renderer/workbenches/*`；
 - 具体工作台导入 `App`、Chat、Config Store、Sidecar 或其它宿主内部模块；
+- 具体工作台绕过 SDK 使用宿主 UI、关闭层、provider catalog 或 i18n 启动实现；
 - shared SDK 导入任何进程专用模块；
 - 为每个工作台增加新的 `Tab.view` 字面量。
 
@@ -102,7 +104,9 @@ export default defineWorkbench(manifest, () => import("./renderer"));
 
 Workbench API 1.7 允许当前页面注册一个导航守卫。具体工作台只声明页面是否允许离开以及保存动作；Shell 统一串行化侧栏导航请求，App 在关闭工作台标签前调用同一守卫，并根据结果决定继续或留在原页。页面卸载时必须注销守卫，宿主不会替工作台推断 dirty 状态。
 
-工作台需要浮层或选择器时使用 Renderer SDK 导出的 `Popover` 与 `CustomSelect`。这些原语统一提供 Portal、视口翻转、边界偏移、关闭语义和跨平台选择器样式，具体工作台不得直接导入宿主 `components/` 下的实现。
+工作台需要浮层或选择器时使用 Renderer SDK 导出的 `Popover`、`CustomSelect` 与 `OverlayBackdrop`，通过 `useCloseLayer` 接入统一关闭栈。模型选择器使用 `useWorkbenchAvailableProviders` 的去凭证只读投影；独立原型入口通过 `workbench-sdk/i18n` 启动宿主国际化。具体工作台不得直接导入宿主 `components/`、`hooks/`、config 或 i18n 实现。
+
+具体工作台需要被 Renderer 与 Server 同时读取的纯领域 schema 放在 `src/shared/workbenches/<id>/`。它属于该工作台包本身，不是通用 SDK；不得依赖 renderer/server/cli，也不得作为其它工作台复用宿主能力的捷径。
 
 只读文件差异通过 Renderer SDK 的 `DiffViewer` 接入。该组件基于项目现有开源依赖 `@monaco-editor/react` / `monaco-editor` 的 `DiffEditor`，按需加载并统一本地 Worker、主题、CJK Unicode 规则和只读配置。具体工作台不得自行实现文本 diff 算法，也不得直接导入宿主 `components/MonacoEditor`。
 

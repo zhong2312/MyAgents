@@ -13,8 +13,11 @@ import {
 import { pinyin } from "pinyin-pro";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useCloseLayer } from "@/hooks/useCloseLayer";
-import { ConfirmDialog, DraggableDialogFrame } from "@/workbench-sdk";
+import {
+  ConfirmDialog,
+  DraggableDialogFrame,
+  useCloseLayer,
+} from "@/workbench-sdk";
 
 import {
   createLegacyCharacterArcStageId,

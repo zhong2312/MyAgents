@@ -1,10 +1,10 @@
 import { AlertTriangle, Loader2, Save, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useCloseLayer } from "@/hooks/useCloseLayer";
 import {
   DraggableDialogFrame,
   type WorkbenchNavigationGuard,
+  useCloseLayer,
 } from "@/workbench-sdk";
 
 interface NarrativeUnsavedChangesGuardProps {
@@ -154,7 +154,8 @@ export default function NarrativeUnsavedChangesGuard({
           disabled={saving}
           onClick={() => complete(true)}
         >
-          <Trash2 className="h-3.5 w-3.5" />放弃修改
+          <Trash2 className="h-3.5 w-3.5" />
+          放弃修改
         </button>
         <button
           type="button"

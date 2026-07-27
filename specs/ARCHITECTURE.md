@@ -820,7 +820,7 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 Workbench 是完整产品模块的扩展边界，不复用 Claude Plugin 或 OpenClaw Channel Plugin 协议。共享层定义 manifest v1、宿主 API 版本协商、打开请求和声明式新项目初始化蓝图；Renderer 层提供密封注册表、单一 `workbench` Tab、懒加载 `WorkbenchShell` 与局部错误边界。宿主 API 1.2 的初始化能力由 Workspace File Service 落到 Tauri，具体工作台拥有目录业务含义，宿主仅验证和原子提交；API 1.3 通过 `agentSessions.open()` 把大型领域任务交给现有 MyAgents Chat Session 生命周期。
 
-核心只通过 `src/renderer/workbench-registry.ts` 解析具体工作台，具体工作台只依赖 Workbench SDK。两条依赖方向由 dependency-cruiser 强制。Workspace/Template 可声明 `workbenchId`，Launcher 点击后发送 `OPEN_WORKBENCH`；工作台 Tab 不挂载 `TabProvider`，不会隐式创建 Sidecar。显式 Agent 请求由 Shell 绑定 Workspace，App 负责普通 Chat Tab、模型配置和 Sidecar 生命周期。
+核心只通过 `src/renderer/workbench-registry.ts` 解析具体工作台，具体工作台只通过 Workbench SDK 使用宿主能力；跨 Renderer/Server 的工作台自有纯领域模型归档在 `src/shared/workbenches/<id>/`。两条依赖方向由 dependency-cruiser 强制。Workspace/Template 可声明 `workbenchId`，Launcher 点击后发送 `OPEN_WORKBENCH`；工作台 Tab 不挂载 `TabProvider`，不会隐式创建 Sidecar。显式 Agent 请求由 Shell 绑定 Workspace，App 负责普通 Chat Tab、模型配置和 Sidecar 生命周期。
 
 详见 [Workbench Platform Foundation](./tech_docs/workbench_platform.md)。
 

@@ -7,8 +7,8 @@ import {
   characterRecordSchema,
   characterSoulDefinitionSchema,
   raceDefinitionSchema,
-} from "../../shared/novel-character-library-schema";
-import { cultivationEcologySchema } from "../../shared/novel-cultivation-ecology-schema";
+} from "../../shared/workbenches/novel/characterLibrarySchema";
+import { cultivationEcologySchema } from "../../shared/workbenches/novel/cultivationEcologySchema";
 import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,

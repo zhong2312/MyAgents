@@ -29,8 +29,11 @@ import { AlertTriangle, Maximize2, Minimize2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
-import { useCloseLayer } from "@/hooks/useCloseLayer";
+import {
+  CustomSelect,
+  type SelectOption,
+  useCloseLayer,
+} from "@/workbench-sdk";
 
 interface MarkdownVisualEditorProps {
   readonly pageId: string;

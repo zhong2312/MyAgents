@@ -1,8 +1,7 @@
 import { CircleHelp, Lightbulb, X } from "lucide-react";
 import { useState } from "react";
 
-import { useCloseLayer } from "@/hooks/useCloseLayer";
-import { DraggableDialogFrame } from "@/workbench-sdk";
+import { DraggableDialogFrame, useCloseLayer } from "@/workbench-sdk";
 
 export default function InspirationHelp() {
   const [open, setOpen] = useState(false);
@@ -63,7 +62,8 @@ export default function InspirationHelp() {
             <section className="mt-5 border-t border-[var(--line-subtle)] pt-4">
               <h3 className="font-semibold">AI 能做什么</h3>
               <p className="mt-2 text-[var(--ink-muted)]">
-                AI 可以检查想法是否清晰、与现有灵感是否重复，并提供三个发展方向。结果只作为建议，不会自动修改灵感文件或正文。
+                AI
+                可以检查想法是否清晰、与现有灵感是否重复，并提供三个发展方向。结果只作为建议，不会自动修改灵感文件或正文。
               </p>
             </section>
           </div>

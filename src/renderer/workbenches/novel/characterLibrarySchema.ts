@@ -6,7 +6,7 @@ import {
   characterRecordSchema,
   characterSoulDefinitionSchema,
   raceDefinitionSchema,
-} from "../../../shared/novel-character-library-schema";
+} from "../../../shared/workbenches/novel/characterLibrarySchema";
 import { normalizeWorkbenchStoragePath } from "@/workbench-sdk";
 
 import { CHARACTER_LIBRARY_SCHEMA_VERSION } from "./characterLibraryDefaults";
@@ -23,7 +23,7 @@ export {
   characterRoleWeightSchema,
   characterSoulDefinitionSchema,
   raceDefinitionSchema,
-} from "../../../shared/novel-character-library-schema";
+} from "../../../shared/workbenches/novel/characterLibrarySchema";
 export type {
   CharacterAppearance,
   CharacterArcStage,
@@ -35,7 +35,7 @@ export type {
   CharacterRoleWeight,
   CharacterSoulDefinition,
   RaceDefinition,
-} from "../../../shared/novel-character-library-schema";
+} from "../../../shared/workbenches/novel/characterLibrarySchema";
 
 export const characterLibraryMetaSchema = z
   .object({

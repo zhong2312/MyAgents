@@ -1,6 +1,6 @@
 import { memo, useMemo, type CSSProperties, type ReactNode } from "react";
 
-import type { Formation } from "../../../shared/novel-cultivation-ecology-schema";
+import type { Formation } from "../../../shared/workbenches/novel/cultivationEcologySchema";
 import {
   getFormationCanvasSize,
   type FormationBackdropLayer,

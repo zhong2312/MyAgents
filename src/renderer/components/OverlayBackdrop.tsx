@@ -16,7 +16,7 @@
  * The onClose prop is optional — omit it for overlays that don't support backdrop dismiss.
  */
 
-interface OverlayBackdropProps {
+export interface OverlayBackdropProps {
   children: React.ReactNode;
   /** Called when user clicks directly on the backdrop (not on children). Omit to disable backdrop dismiss. */
   onClose?: () => void;
@@ -25,17 +25,29 @@ interface OverlayBackdropProps {
   /** Inline styles — for custom animations etc. */
   style?: React.CSSProperties;
   /** Background opacity variant. Default: "normal" (bg-black/30). "dark" uses bg-black/80 (e.g. image preview). */
-  variant?: 'normal' | 'dark';
+  variant?: "normal" | "dark";
 }
 
-export default function OverlayBackdrop({ children, onClose, className = '', style, variant = 'normal' }: OverlayBackdropProps) {
-  const bg = variant === 'dark' ? 'bg-black/80' : 'bg-black/30';
+export default function OverlayBackdrop({
+  children,
+  onClose,
+  className = "",
+  style,
+  variant = "normal",
+}: OverlayBackdropProps) {
+  const bg = variant === "dark" ? "bg-black/80" : "bg-black/30";
 
   return (
     <div
       className={`fixed inset-0 flex items-center justify-center ${bg} backdrop-blur-sm ${className}`}
       style={style}
-      onMouseDown={onClose ? (e) => { if (e.target === e.currentTarget) onClose(); } : undefined}
+      onMouseDown={
+        onClose
+          ? (e) => {
+              if (e.target === e.currentTarget) onClose();
+            }
+          : undefined
+      }
     >
       {children}
     </div>

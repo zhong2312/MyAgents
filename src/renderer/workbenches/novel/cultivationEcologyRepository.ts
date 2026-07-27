@@ -5,7 +5,7 @@ import {
   createEmptyCultivationEcology,
   cultivationEcologySchema,
   type CultivationEcology,
-} from "../../../shared/novel-cultivation-ecology-schema";
+} from "../../../shared/workbenches/novel/cultivationEcologySchema";
 import { rebuildCultivationAudits } from "./cultivationEcologyAudit";
 import { createFormationBackdropPreset } from "./formationBackdropPresets";
 

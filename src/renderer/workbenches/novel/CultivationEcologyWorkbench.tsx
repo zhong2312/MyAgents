@@ -107,7 +107,7 @@ import type {
   WorldOrigin,
   WorldOriginManifestation,
   WorldOriginRelation,
-} from "../../../shared/novel-cultivation-ecology-schema";
+} from "../../../shared/workbenches/novel/cultivationEcologySchema";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import type { ItemIndexEntry } from "./itemLibrarySchema";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";

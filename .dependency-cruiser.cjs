@@ -172,13 +172,13 @@ module.exports = {
           "^src/renderer/workbench-registry\\.ts$",
         ],
       },
-      to: { path: "^src/renderer/workbenches/" },
+      to: { path: "^src/(?:renderer|shared)/workbenches/" },
     },
     {
       name: "workbench-uses-sdk-boundary",
       severity: "error",
       comment:
-        "Concrete workbenches MUST depend on MyAgents only through src/renderer/workbench-sdk or src/shared/workbench-sdk. Importing App, config stores, Chat internals, sidecar code, or other host modules couples the workbench to unstable implementation details and prevents independent versioning. Add a capability to workbench-sdk instead.",
+        "Concrete workbenches MUST depend on MyAgents only through src/renderer/workbench-sdk or src/shared/workbench-sdk. Their own cross-process domain modules live under src/shared/workbenches. Importing App, config stores, Chat internals, sidecar code, or other host modules couples the workbench to unstable implementation details and prevents independent versioning. Add a capability to workbench-sdk instead.",
       from: { path: "^src/renderer/workbenches/" },
       to: {
         path: "^src/",
@@ -186,6 +186,7 @@ module.exports = {
           "^src/renderer/workbenches/",
           "^src/renderer/workbench-sdk/",
           "^src/shared/workbench-sdk/",
+          "^src/shared/workbenches/",
         ],
       },
     },

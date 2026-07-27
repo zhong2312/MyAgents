@@ -10,15 +10,14 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useAvailableProviders } from "@/hooks/useAvailableProviders";
 import {
   CustomSelect,
   type SelectOption,
+  type WorkbenchAvailableProvider,
   type WorkbenchModelSelection,
   type WorkbenchStorage,
+  useWorkbenchAvailableProviders,
 } from "@/workbench-sdk";
-import type { Provider } from "@/config/types";
-import { isRuntimeBackedProvider } from "../../../shared/providerExecution";
 
 import {
   getModelSceneBinding,
@@ -43,16 +42,16 @@ function errorMessage(error: unknown): string {
 
 function modelsForScene(
   scene: NovelModelSceneDefinition,
-  providers: readonly Provider[],
-): readonly Provider[] {
+  providers: readonly WorkbenchAvailableProvider[],
+): readonly WorkbenchAvailableProvider[] {
   return scene.execution === "run"
-    ? providers.filter((provider) => !isRuntimeBackedProvider(provider))
+    ? providers.filter((provider) => !provider.runtimeBacked)
     : providers;
 }
 
 function sceneStatus(
   binding: WorkbenchModelSelection | undefined,
-  providers: readonly Provider[],
+  providers: readonly WorkbenchAvailableProvider[],
 ): "default" | "bound" | "invalid" {
   if (!binding) return "default";
   const provider = providers.find((item) => item.id === binding.providerId);
@@ -64,7 +63,7 @@ function sceneStatus(
 
 function providerOptions(
   binding: WorkbenchModelSelection | undefined,
-  providers: readonly Provider[],
+  providers: readonly WorkbenchAvailableProvider[],
   defaultLabel = "使用全局默认模型",
 ): SelectOption[] {
   const options: SelectOption[] = [
@@ -91,7 +90,7 @@ function providerOptions(
 
 function modelOptions(
   binding: WorkbenchModelSelection | undefined,
-  provider: Provider | undefined,
+  provider: WorkbenchAvailableProvider | undefined,
 ): SelectOption[] {
   if (!provider) {
     return binding
@@ -103,7 +102,10 @@ function modelOptions(
     label: model.modelName || model.model,
     suffix: model.modelName === model.model ? undefined : model.model,
   }));
-  if (binding && !provider.models.some((item) => item.model === binding.model)) {
+  if (
+    binding &&
+    !provider.models.some((item) => item.model === binding.model)
+  ) {
     options.unshift({
       value: binding.model,
       label: `不可用：${binding.model}`,
@@ -127,7 +129,7 @@ function ModelSceneRow({
   readonly scene: NovelModelSceneDefinition;
   readonly binding: WorkbenchModelSelection | undefined;
   readonly projectDefaultModel: WorkbenchModelSelection | undefined;
-  readonly availableProviders: readonly Provider[];
+  readonly availableProviders: readonly WorkbenchAvailableProvider[];
   readonly disabled: boolean;
   readonly isSaving: boolean;
   readonly onProviderChange: (providerId: string) => void;
@@ -226,7 +228,7 @@ export default function NovelModelScenarioSettings({
     () => createNovelModelSceneSettingsRepository(storage),
     [storage],
   );
-  const availableProviders = useAvailableProviders();
+  const availableProviders = useWorkbenchAvailableProviders();
   const [loaded, setLoaded] = useState<LoadedModelSceneSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -317,7 +319,7 @@ export default function NovelModelScenarioSettings({
     return [...groups.entries()];
   }, []);
   const defaultProviders = useMemo(
-    () => availableProviders.filter((provider) => !isRuntimeBackedProvider(provider)),
+    () => availableProviders.filter((provider) => !provider.runtimeBacked),
     [availableProviders],
   );
   const defaultModel = loaded?.settings.defaultModel;
@@ -382,20 +384,28 @@ export default function NovelModelScenarioSettings({
               void saveDefaultModel(undefined);
               return;
             }
-            const provider = defaultProviders.find((item) => item.id === providerId);
-            const model = provider?.models.find(
-              (item) => item.model === provider.primaryModel,
-            ) ?? provider?.models[0];
+            const provider = defaultProviders.find(
+              (item) => item.id === providerId,
+            );
+            const model =
+              provider?.models.find(
+                (item) => item.model === provider.primaryModel,
+              ) ?? provider?.models[0];
             if (!provider || !model) {
               setError("所选供应商没有可用模型，请先在 MyAgents 配置模型");
               return;
             }
-            void saveDefaultModel({ providerId: provider.id, model: model.model });
+            void saveDefaultModel({
+              providerId: provider.id,
+              model: model.model,
+            });
           }}
           ariaLabel="默认模型的供应商"
           placeholder="选择供应商"
           size="toolbar"
-          disabled={isLoading || !loaded || isSavingDefault || savingSceneId !== null}
+          disabled={
+            isLoading || !loaded || isSavingDefault || savingSceneId !== null
+          }
         />
         <CustomSelect
           value={defaultModel?.model ?? ""}
@@ -444,7 +454,9 @@ export default function NovelModelScenarioSettings({
         {groupedScenes.map(([group, scenes], index) => (
           <section
             key={group}
-            className={index === 0 ? "" : "border-t border-[var(--line-strong)]"}
+            className={
+              index === 0 ? "" : "border-t border-[var(--line-strong)]"
+            }
           >
             <div className="flex items-center justify-between border-b border-[var(--line-subtle)] bg-[var(--paper-inset)] px-5 py-2.5">
               <h2 className="text-xs font-semibold text-[var(--ink-muted)]">
@@ -476,11 +488,14 @@ export default function NovelModelScenarioSettings({
                     scene,
                     availableProviders,
                   ).find((item) => item.id === providerId);
-                  const model = provider?.models.find(
-                    (item) => item.model === provider.primaryModel,
-                  ) ?? provider?.models[0];
+                  const model =
+                    provider?.models.find(
+                      (item) => item.model === provider.primaryModel,
+                    ) ?? provider?.models[0];
                   if (!provider || !model) {
-                    setError("所选供应商没有可用模型，请先在 MyAgents 配置模型");
+                    setError(
+                      "所选供应商没有可用模型，请先在 MyAgents 配置模型",
+                    );
                     return;
                   }
                   void saveSceneBinding(scene.id, {

@@ -1,4 +1,4 @@
-import type { Formation } from "../../../shared/novel-cultivation-ecology-schema";
+import type { Formation } from "../../../shared/workbenches/novel/cultivationEcologySchema";
 
 // Preset colors are editable formation artwork data, not application-shell theme tokens.
 

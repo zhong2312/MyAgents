@@ -3,7 +3,7 @@ import type {
   CultivationEcology,
   ResourceRequirement,
   CultivationSystem,
-} from "../../../shared/novel-cultivation-ecology-schema";
+} from "../../../shared/workbenches/novel/cultivationEcologySchema";
 
 type IssueTarget =
   | "system"

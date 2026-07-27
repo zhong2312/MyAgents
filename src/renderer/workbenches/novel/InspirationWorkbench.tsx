@@ -18,9 +18,11 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import OverlayBackdrop from "@/components/OverlayBackdrop";
-import { useCloseLayer } from "@/hooks/useCloseLayer";
-import type { WorkbenchNavigationGuard } from "@/workbench-sdk";
+import {
+  OverlayBackdrop,
+  useCloseLayer,
+  type WorkbenchNavigationGuard,
+} from "@/workbench-sdk";
 
 import {
   inspirationOverview,

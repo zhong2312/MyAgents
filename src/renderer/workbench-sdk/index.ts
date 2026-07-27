@@ -1,6 +1,8 @@
 export { defineWorkbench } from "./defineWorkbench";
 export { createWorkbenchRegistry, DuplicateWorkbenchError } from "./registry";
-export { CustomSelect, Popover } from "./ui";
+export { CustomSelect, OverlayBackdrop, Popover } from "./ui";
+export { useCloseLayer } from "./lifecycle";
+export { useWorkbenchAvailableProviders } from "./modelCatalog";
 export {
   CompactAiRunWindow,
   type CompactAiRunStatus,
@@ -25,7 +27,16 @@ export {
   type WorkbenchHostActionDetail,
   type WorkbenchHostActionFilter,
 } from "./hostActions";
-export type { PopoverPlacement, PopoverProps, SelectOption } from "./ui";
+export type {
+  OverlayBackdropProps,
+  PopoverPlacement,
+  PopoverProps,
+  SelectOption,
+} from "./ui";
+export type {
+  WorkbenchAvailableModel,
+  WorkbenchAvailableProvider,
+} from "./modelCatalog";
 export type { RegisteredWorkbench, WorkbenchRegistry } from "./registry";
 export type {
   WorkbenchDefinition,

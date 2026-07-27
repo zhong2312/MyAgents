@@ -58,15 +58,17 @@ import {
   type ReactNode,
 } from "react";
 
-import CustomSelect from "@/components/CustomSelect";
-import OverlayBackdrop from "@/components/OverlayBackdrop";
-import { Popover } from "@/components/ui/Popover";
-import type { WorkbenchStorage } from "@/workbench-sdk";
+import {
+  CustomSelect,
+  OverlayBackdrop,
+  Popover,
+  type WorkbenchStorage,
+} from "@/workbench-sdk";
 
 import {
   cultivationEcologySchema,
   type CultivationEcology,
-} from "../../../shared/novel-cultivation-ecology-schema";
+} from "../../../shared/workbenches/novel/cultivationEcologySchema";
 
 import {
   createNovelCharacterLibraryRepository,

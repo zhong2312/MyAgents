@@ -28,8 +28,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Popover } from "@/components/ui/Popover";
-import { CustomSelect, type WorkbenchStorage } from "@/workbench-sdk";
+import { CustomSelect, Popover, type WorkbenchStorage } from "@/workbench-sdk";
 
 import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
 import {

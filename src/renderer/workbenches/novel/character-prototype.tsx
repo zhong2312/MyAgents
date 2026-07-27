@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import CharacterLibraryPrototype from "./CharacterLibraryPrototype";
 import { NovelMemoryStorage } from "./testStorage";
 
-import "../../i18n";
+import "@/workbench-sdk/i18n";
 
 const storage = new NovelMemoryStorage({});
 
