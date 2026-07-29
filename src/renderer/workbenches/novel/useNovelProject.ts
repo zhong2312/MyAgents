@@ -4,9 +4,20 @@ import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
   createNovelRepository,
+  type CreateNovelChapterOptions,
   type LoadedNovelChapter,
   type LoadedNovelProject,
+  type NovelRepository,
+  type UpdateNovelProjectSettingsInput,
+  type UpdateNovelChapterInput,
 } from "./repository";
+import { createNarrativeEngineeringRepository } from "./narrativeEngineeringRepository";
+import {
+  orderManuscriptChapters,
+  type ManuscriptDirectoryKind,
+  type ManuscriptStructureMode,
+  type ManuscriptTypography,
+} from "./projectSchema";
 
 export interface NovelProjectController {
   readonly project: LoadedNovelProject | null;
@@ -14,19 +25,80 @@ export interface NovelProjectController {
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
   readonly isCreatingChapter: boolean;
+  saveProjectSettings(input: UpdateNovelProjectSettingsInput): Promise<void>;
   saveKnowledgeGraphEnabled(enabled: boolean): Promise<void>;
   reload(): Promise<LoadedNovelProject | null>;
-  createChapter(): Promise<string>;
+  createChapter(options?: CreateNovelChapterOptions): Promise<string>;
+  updateChapter(
+    chapterId: string,
+    input: UpdateNovelChapterInput,
+  ): Promise<void>;
   renameChapter(chapterId: string, title: string): Promise<void>;
+  linkChapterToNarrative(
+    chapterId: string,
+    narrativeChapterId: string | null,
+  ): Promise<void>;
+  createDirectory(
+    parentId: string | null,
+    kind: ManuscriptDirectoryKind,
+    title: string,
+  ): Promise<string>;
+  updateDirectory(
+    directoryId: string,
+    input: {
+      readonly title?: string;
+      readonly parentId?: string | null;
+      readonly kind?: ManuscriptDirectoryKind;
+      readonly order?: number;
+      readonly narrativeDirectoryId?: string | null;
+    },
+  ): Promise<void>;
+  deleteDirectory(directoryId: string): Promise<void>;
+  setStructureMode(mode: ManuscriptStructureMode): Promise<void>;
+  synchronizeNarrative(): Promise<void>;
+  saveTypography(typography: ManuscriptTypography): Promise<void>;
+  deleteChapter(chapterId: string, expectedContent: string): Promise<void>;
+  restoreChapter(deletionId: string): Promise<void>;
   saveChapter(
     chapterId: string,
     content: string,
     expectedContent: string,
   ): Promise<void>;
+  adoptSimulationPath(input: {
+    readonly title: string;
+    readonly description: string;
+    readonly premise: string;
+    readonly sourceChapterPlanId: string | null;
+    readonly sourceManuscriptChapterId: string | null;
+    readonly agentRole: string;
+    readonly coherence: number;
+    readonly novelty: number;
+    readonly risk: number;
+    readonly riskLevel: "low" | "medium" | "high";
+    readonly tags: readonly string[];
+    readonly nodes: readonly {
+      readonly offset: number;
+      readonly title: string;
+      readonly summary: string;
+      readonly checkpoint: string;
+    }[];
+  }): Promise<void>;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createProposalId(): string {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID().replaceAll("-", "")
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return `simulation-proposal-${random.toLowerCase()}`;
+}
+
+function boundedScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 export function useNovelProject(
@@ -47,7 +119,12 @@ export function useNovelProject(
       if (background) setIsRefreshing(true);
       else setIsLoading(true);
       try {
-        const loaded = await repository.load();
+        let loaded = await repository.load();
+        await repository.synchronizeNarrative(
+          loaded,
+          loaded.chapterIndex.structureMode,
+        );
+        loaded = await repository.load();
         if (requestId !== requestIdRef.current) return null;
         setProject(loaded);
         setError(null);
@@ -76,15 +153,47 @@ export function useNovelProject(
     if (!isActive || !storage.isAvailable) return;
     let disposed = false;
     let refreshTimer: number | undefined;
+    let refreshRunning = false;
+    let refreshQueued = false;
     let subscription:
       | Awaited<ReturnType<WorkbenchStorage["watch"]>>
       | undefined;
+    const refresh = async () => {
+      if (refreshRunning) {
+        refreshQueued = true;
+        return;
+      }
+      refreshRunning = true;
+      setIsRefreshing(true);
+      try {
+        let loaded = await repository.load();
+        await repository.synchronizeNarrative(
+          loaded,
+          loaded.chapterIndex.structureMode,
+        );
+        loaded = await repository.load();
+        if (!disposed) {
+          setProject(loaded);
+          setError(null);
+        }
+      } catch (cause) {
+        if (!disposed) setError(errorMessage(cause));
+      } finally {
+        refreshRunning = false;
+        if (!disposed) setIsRefreshing(false);
+        if (refreshQueued && !disposed) {
+          refreshQueued = false;
+          window.clearTimeout(refreshTimer);
+          refreshTimer = window.setTimeout(() => void refresh(), 150);
+        }
+      }
+    };
     void storage
       .watch(() => {
         if (disposed) return;
         window.clearTimeout(refreshTimer);
         refreshTimer = window.setTimeout(() => {
-          void load(true);
+          void refresh();
         }, 150);
       })
       .then((value) => {
@@ -100,42 +209,165 @@ export function useNovelProject(
       window.clearTimeout(refreshTimer);
       if (subscription) void subscription.dispose();
     };
-  }, [isActive, load, storage]);
+  }, [isActive, repository, storage]);
 
-  const createChapter = useCallback(async (): Promise<string> => {
-    if (!project) throw new Error("小说项目尚未加载");
-    setIsCreatingChapter(true);
-    try {
-      const chapter = await repository.createChapter(project);
-      const loaded = await load(true);
-      if (!loaded) throw new Error("章节已创建，但项目重新加载失败");
-      return chapter.id;
-    } finally {
-      setIsCreatingChapter(false);
-    }
-  }, [load, project, repository]);
-
-  const renameChapter = useCallback(
-    async (chapterId: string, title: string) => {
+  const createChapter = useCallback(
+    async (options?: CreateNovelChapterOptions): Promise<string> => {
       if (!project) throw new Error("小说项目尚未加载");
-      const updated = await repository.renameChapter(project, chapterId, title);
+      setIsCreatingChapter(true);
+      try {
+        const chapter = await repository.createChapter(project, options);
+        const loaded = await load(true);
+        if (!loaded) throw new Error("章节已创建，但项目重新加载失败");
+        return chapter.id;
+      } finally {
+        setIsCreatingChapter(false);
+      }
+    },
+    [load, project, repository],
+  );
+
+  const updateChapter = useCallback(
+    async (chapterId: string, input: UpdateNovelChapterInput) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      const updated = await repository.updateChapter(project, chapterId, input);
+      if (await load(true)) return;
+      const record = updated.chapterIndex.chapters.find(
+        (chapter) => chapter.id === chapterId,
+      );
       setProject((current) => {
-        if (!current) return current;
+        if (
+          !current ||
+          !record ||
+          current.chapterIndexContent !== project.chapterIndexContent
+        )
+          return current;
+        const chapters = current.chapters.map((chapter) =>
+          chapter.id === chapterId ? { ...chapter, ...record } : chapter,
+        );
         return Object.freeze({
           ...current,
           chapterIndex: updated.chapterIndex,
           chapterIndexContent: updated.chapterIndexContent,
           chapters: Object.freeze(
-            current.chapters.map((chapter) =>
-              chapter.id === chapterId
-                ? Object.freeze({ ...chapter, title: title.trim() })
-                : chapter,
-            ),
+            orderManuscriptChapters(updated.chapterIndex.directories, chapters),
           ),
         });
       });
     },
-    [project, repository],
+    [load, project, repository],
+  );
+
+  const renameChapter = useCallback(
+    async (chapterId: string, title: string) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.renameChapter(project, chapterId, title);
+      if (!(await load(true))) {
+        throw new Error("章节标题已更新，但项目重新加载失败");
+      }
+    },
+    [load, project, repository],
+  );
+
+  const linkChapterToNarrative = useCallback(
+    async (chapterId: string, narrativeChapterId: string | null) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.linkChapterToNarrative(
+        project,
+        chapterId,
+        narrativeChapterId,
+      );
+      if (!(await load(true))) throw new Error("正文关联后重新加载失败");
+    },
+    [load, project, repository],
+  );
+
+  const createDirectory = useCallback(
+    async (
+      parentId: string | null,
+      kind: ManuscriptDirectoryKind,
+      title: string,
+    ) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      const directory = await repository.createDirectory(
+        project,
+        parentId,
+        kind,
+        title,
+      );
+      if (!(await load(true))) throw new Error("目录创建后重新加载失败");
+      return directory.id;
+    },
+    [load, project, repository],
+  );
+
+  const updateDirectory = useCallback(
+    async (
+      directoryId: string,
+      input: {
+        readonly title?: string;
+        readonly parentId?: string | null;
+        readonly kind?: ManuscriptDirectoryKind;
+        readonly order?: number;
+        readonly narrativeDirectoryId?: string | null;
+      },
+    ) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.updateDirectory(project, directoryId, input);
+      if (!(await load(true))) throw new Error("目录更新后重新加载失败");
+    },
+    [load, project, repository],
+  );
+
+  const deleteDirectory = useCallback(
+    async (directoryId: string) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.deleteDirectory(project, directoryId);
+      if (!(await load(true))) throw new Error("目录删除后重新加载失败");
+    },
+    [load, project, repository],
+  );
+
+  const setStructureMode = useCallback(
+    async (mode: ManuscriptStructureMode) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.setStructureMode(project, mode);
+      if (!(await load(true))) throw new Error("结构设置更新后重新加载失败");
+    },
+    [load, project, repository],
+  );
+
+  const synchronizeNarrative = useCallback(async () => {
+    if (!project) throw new Error("小说项目尚未加载");
+    await repository.synchronizeNarrative(project);
+    if (!(await load(true))) throw new Error("剧情结构同步后重新加载失败");
+  }, [load, project, repository]);
+
+  const saveTypography = useCallback(
+    async (typography: ManuscriptTypography) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.saveTypography(project, typography);
+      if (!(await load(true))) throw new Error("排版保存后重新加载失败");
+    },
+    [load, project, repository],
+  );
+
+  const deleteChapter = useCallback(
+    async (chapterId: string, expectedContent: string) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.deleteChapter(project, chapterId, expectedContent);
+      if (!(await load(true))) throw new Error("章节删除后重新加载失败");
+    },
+    [load, project, repository],
+  );
+
+  const restoreChapter = useCallback(
+    async (deletionId: string) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.restoreChapter(project, deletionId);
+      if (!(await load(true))) throw new Error("章节恢复后重新加载失败");
+    },
+    [load, project, repository],
   );
 
   const saveChapter = useCallback(
@@ -148,20 +380,118 @@ export function useNovelProject(
         content,
         expectedContent,
       );
+      const trackingInvalidated =
+        content !== expectedContent && chapter.trackingStatus !== "idle";
+      let updatedIndex:
+        | Awaited<ReturnType<NovelRepository["updateChapter"]>>
+        | undefined;
+      if (trackingInvalidated) {
+        try {
+          updatedIndex = await repository.updateChapter(project, chapterId, {
+            trackingStatus: "stale",
+            lastTrackedAt: null,
+          });
+        } catch (cause) {
+          await repository
+            .saveChapter(saved, expectedContent, content)
+            .catch(() => undefined);
+          throw cause;
+        }
+      }
       setProject((current) => {
         if (!current) return current;
+        const nextChapter = trackingInvalidated
+          ? { ...saved, trackingStatus: "stale" as const, lastTrackedAt: null }
+          : saved;
         return Object.freeze({
           ...current,
+          ...(updatedIndex
+            ? {
+                chapterIndex: updatedIndex.chapterIndex,
+                chapterIndexContent: updatedIndex.chapterIndexContent,
+              }
+            : {}),
           chapters: Object.freeze(
             current.chapters.map(
               (item): LoadedNovelChapter =>
-                item.id === chapterId ? saved : item,
+                item.id === chapterId ? nextChapter : item,
             ),
           ),
         });
       });
     },
     [project, repository],
+  );
+
+  const adoptSimulationPath = useCallback(
+    async (input: {
+      readonly title: string;
+      readonly description: string;
+      readonly premise: string;
+      readonly sourceChapterPlanId: string | null;
+      readonly sourceManuscriptChapterId: string | null;
+      readonly agentRole: string;
+      readonly coherence: number;
+      readonly novelty: number;
+      readonly risk: number;
+      readonly riskLevel: "low" | "medium" | "high";
+      readonly tags: readonly string[];
+      readonly nodes: readonly {
+        readonly offset: number;
+        readonly title: string;
+        readonly summary: string;
+        readonly checkpoint: string;
+      }[];
+    }) => {
+      const narrativeRepository = createNarrativeEngineeringRepository(storage);
+      const current = await narrativeRepository.load();
+      const now = new Date().toISOString();
+      const title = input.title.trim();
+      if (!title) throw new Error("推演方案缺少标题，不能送入剧情工程");
+      await narrativeRepository.save(current, {
+        ...current.library,
+        simulationProposals: [
+          ...current.library.simulationProposals,
+          {
+            id: createProposalId(),
+            title,
+            description: input.description.trim(),
+            premise: input.premise.trim(),
+            sourceChapterPlanId: input.sourceChapterPlanId,
+            sourceManuscriptChapterId: input.sourceManuscriptChapterId,
+            agentRole: input.agentRole.trim(),
+            coherence: boundedScore(input.coherence),
+            novelty: boundedScore(input.novelty),
+            risk: boundedScore(input.risk),
+            riskLevel: input.riskLevel,
+            tags: input.tags
+              .map((tag) => tag.trim())
+              .filter(Boolean)
+              .slice(0, 6),
+            nodes: input.nodes
+              .flatMap((node) => {
+                const nodeTitle = node.title.trim();
+                if (!nodeTitle) return [];
+                return [
+                  {
+                    offset: Math.max(1, Math.round(node.offset)),
+                    title: nodeTitle,
+                    summary: node.summary.trim(),
+                    checkpoint: node.checkpoint.trim(),
+                  },
+                ];
+              })
+              .slice(0, 12),
+            status: "pending",
+            createdAt: now,
+            reviewedAt: null,
+          },
+        ],
+      });
+      if (!(await load(true)))
+        throw new Error("推演候选已写入，但项目重新加载失败");
+    },
+    [load, storage],
   );
 
   const saveKnowledgeGraphEnabled = useCallback(
@@ -184,16 +514,45 @@ export function useNovelProject(
     [project, repository],
   );
 
+  const saveProjectSettings = useCallback(
+    async (input: UpdateNovelProjectSettingsInput) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      const updated = await repository.saveProjectSettings(project, input);
+      setProject((current) =>
+        current
+          ? Object.freeze({
+              ...current,
+              metadata: updated.metadata,
+              metadataContent: updated.metadataContent,
+            })
+          : current,
+      );
+    },
+    [project, repository],
+  );
+
   return Object.freeze({
     project,
     error,
     isLoading,
     isRefreshing,
     isCreatingChapter,
+    saveProjectSettings,
     saveKnowledgeGraphEnabled,
     reload,
     createChapter,
+    updateChapter,
     renameChapter,
+    linkChapterToNarrative,
+    createDirectory,
+    updateDirectory,
+    deleteDirectory,
+    setStructureMode,
+    synchronizeNarrative,
+    saveTypography,
+    deleteChapter,
+    restoreChapter,
     saveChapter,
+    adoptSimulationPath,
   });
 }

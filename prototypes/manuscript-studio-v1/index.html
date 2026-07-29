@@ -9,65 +9,210 @@
   </head>
   <body data-mobile-pane="editor" data-structure-mode="merged">
     <svg class="svg-sprite" aria-hidden="true">
-      <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></symbol>
-      <symbol id="i-file" viewBox="0 0 24 24"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5Z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h8M8 17h6"/></symbol>
-      <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><path d="M9 19h4.5a4.5 4.5 0 0 0 0-9h-3a4.5 4.5 0 0 1 0-9H15"/><circle cx="18" cy="1" r="3"/></symbol>
-      <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
-      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
-      <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3-1.3 3.7L7 8l3.7 1.3L12 13l1.3-3.7L17 8l-3.7-1.3Z"/><path d="m18.5 13-.8 2.2-2.2.8 2.2.8.8 2.2.8-2.2 2.2-.8-2.2-.8Z"/><path d="m5 14-.7 1.8-1.8.7 1.8.7L5 19l.7-1.8 1.8-.7-1.8-.7Z"/></symbol>
-      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1v.1h-4v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1-.4h-.1v-4h.1A1.7 1.7 0 0 0 4.1 8a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.5 3.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1h4a1.7 1.7 0 0 0 .4 1 1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.7 8a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1 .4h.1v4h-.1a1.7 1.7 0 0 0-1.9 1.6Z"/></symbol>
-      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
-      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 5h6l2 2h10v12H3Z"/></symbol>
-      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
-      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
-      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/></symbol>
-      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
-      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.8 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
-      <symbol id="i-wand" viewBox="0 0 24 24"><path d="m15 4 5 5L7 22l-5-5Z"/><path d="m14 5 5 5M6 3v4M4 5h4M19 15v4M17 17h4"/></symbol>
-      <symbol id="i-columns" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></symbol>
-      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/></symbol>
-      <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
-      <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
-      <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
-      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path
+          d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"
+        />
+      </symbol>
+      <symbol id="i-file" viewBox="0 0 24 24">
+        <path
+          d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5Z"
+        />
+        <polyline points="14 2 14 8 20 8" />
+        <path d="M8 13h8M8 17h6" />
+      </symbol>
+      <symbol id="i-route" viewBox="0 0 24 24">
+        <circle cx="6" cy="19" r="3" />
+        <path d="M9 19h4.5a4.5 4.5 0 0 0 0-9h-3a4.5 4.5 0 0 1 0-9H15" />
+        <circle cx="18" cy="1" r="3" />
+      </symbol>
+      <symbol id="i-users" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24">
+        <path d="m12 3-1.3 3.7L7 8l3.7 1.3L12 13l1.3-3.7L17 8l-3.7-1.3Z" />
+        <path d="m18.5 13-.8 2.2-2.2.8 2.2.8.8 2.2.8-2.2 2.2-.8-2.2-.8Z" />
+        <path d="m5 14-.7 1.8-1.8.7 1.8.7L5 19l.7-1.8 1.8-.7-1.8-.7Z" />
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path
+          d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1v.1h-4v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1-.4h-.1v-4h.1A1.7 1.7 0 0 0 4.1 8a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.5 3.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1h4a1.7 1.7 0 0 0 .4 1 1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.7 8a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1 .4h.1v4h-.1a1.7 1.7 0 0 0-1.9 1.6Z"
+        />
+      </symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24">
+        <path d="m9 18 6-6-6-6" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path d="M3 5h6l2 2h10v12H3Z" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7" />
+        <path d="m20 20-4-4" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24">
+        <path d="M12 5v14M5 12h14" />
+      </symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24">
+        <rect x="4" y="10" width="16" height="11" rx="2" />
+        <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+      </symbol>
+      <symbol id="i-link" viewBox="0 0 24 24">
+        <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2" />
+        <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2" />
+      </symbol>
+      <symbol id="i-more" viewBox="0 0 24 24">
+        <circle cx="5" cy="12" r="1" />
+        <circle cx="12" cy="12" r="1" />
+        <circle cx="19" cy="12" r="1" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="m5 12 4 4L19 6" />
+      </symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24">
+        <path
+          d="M10.3 3.8 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0Z"
+        />
+        <path d="M12 9v4M12 17h.01" />
+      </symbol>
+      <symbol id="i-wand" viewBox="0 0 24 24">
+        <path d="m15 4 5 5L7 22l-5-5Z" />
+        <path d="m14 5 5 5M6 3v4M4 5h4M19 15v4M17 17h4" />
+      </symbol>
+      <symbol id="i-columns" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M12 4v16" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5" />
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18" />
+      </symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M15 4v16" />
+      </symbol>
+      <symbol id="i-history" viewBox="0 0 24 24">
+        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+        <path d="M3 3v5h5M12 7v5l3 2" />
+      </symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" />
+        <rect x="14" y="3" width="7" height="7" />
+        <rect x="3" y="14" width="7" height="7" />
+        <rect x="14" y="14" width="7" height="7" />
+      </symbol>
     </svg>
 
     <div class="app-shell">
       <aside class="global-nav" aria-label="小说工作台导航">
         <div class="brand-mark" title="小说工作台"><span>途</span></div>
         <nav>
-          <button class="nav-button is-active" title="正文"><svg><use href="#i-file" /></svg><span>正文</span></button>
-          <button class="nav-button" title="剧情工程"><svg><use href="#i-route" /></svg><span>剧情</span></button>
-          <button class="nav-button" title="连续性"><svg><use href="#i-history" /></svg><span>连续性</span><i class="nav-dot"></i></button>
-          <button class="nav-button" title="人物库"><svg><use href="#i-users" /></svg><span>人物</span></button>
-          <button class="nav-button" title="时间线"><svg><use href="#i-clock" /></svg><span>时间</span></button>
+          <button class="nav-button is-active" title="正文">
+            <svg><use href="#i-file" /></svg><span>正文</span>
+          </button>
+          <button class="nav-button" title="剧情工程">
+            <svg><use href="#i-route" /></svg><span>剧情</span>
+          </button>
+          <button class="nav-button" title="连续性">
+            <svg><use href="#i-history" /></svg><span>连续性</span
+            ><i class="nav-dot"></i>
+          </button>
+          <button class="nav-button" title="人物库">
+            <svg><use href="#i-users" /></svg><span>人物</span>
+          </button>
+          <button class="nav-button" title="时间线">
+            <svg><use href="#i-clock" /></svg><span>时间</span>
+          </button>
         </nav>
         <div class="nav-spacer"></div>
-        <button class="nav-button" title="设置"><svg><use href="#i-settings" /></svg><span>设置</span></button>
+        <button class="nav-button" title="设置">
+          <svg><use href="#i-settings" /></svg><span>设置</span>
+        </button>
       </aside>
 
       <main class="studio-shell">
         <header class="studio-header">
           <div class="header-identity">
-            <div class="book-crumb"><svg><use href="#i-book" /></svg><span>仙途</span><b>/</b><span>正文</span></div>
-            <div class="chapter-crumb"><strong>第 42 章 · 丹成大道</strong><span class="status-chip is-draft">修改中</span><span class="status-chip is-warning">同步待更新</span></div>
+            <div class="book-crumb">
+              <svg><use href="#i-book" /></svg><span>仙途</span><b>/</b
+              ><span>正文</span>
+            </div>
+            <div class="chapter-crumb">
+              <strong id="chapterCrumb">第 42 章 · 丹成大道</strong
+              ><label
+                class="chapter-number-editor"
+                title="仅修改读者可见的章节编号；内部文件 ID 不变"
+                ><span>编号</span
+                ><input
+                  id="chapterNumberInput"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value="42"
+                  aria-label="章节显示编号" /></label
+              ><span class="chapter-scope-badge" id="chapterScopeBadge"
+                >剧情工程</span
+              ><span class="status-chip is-draft">修改中</span
+              ><span class="status-chip is-warning">同步待更新</span>
+            </div>
           </div>
           <div class="header-actions">
             <div class="segmented structure-mode" aria-label="正文结构模式">
               <button data-mode="free">自由</button>
               <button data-mode="merged" class="is-active">合并</button>
-              <button data-mode="locked"><svg><use href="#i-lock" /></svg>严格</button>
+              <button data-mode="locked">
+                <svg><use href="#i-lock" /></svg>严格
+              </button>
             </div>
-            <button class="ghost-button" id="continuousToggle" title="连续稿阅读" aria-label="连续稿阅读"><svg><use href="#i-columns" /></svg><span>连续稿</span></button>
-            <button class="ghost-button" id="brainstormOpen" title="多 Agent 脑暴" aria-label="多 Agent 脑暴"><svg><use href="#i-spark" /></svg><span>多 Agent 脑暴</span></button>
-            <button class="ghost-button" id="simulationOpen" title="AI 剧情推演" aria-label="AI 剧情推演"><svg><use href="#i-route" /></svg><span>剧情推演</span></button>
-            <button class="primary-button" id="generateChapter" title="AI 写本章" aria-label="AI 写本章"><svg><use href="#i-wand" /></svg><span>AI 写本章</span></button>
+            <button
+              class="ghost-button"
+              id="continuousToggle"
+              title="连续稿阅读"
+              aria-label="连续稿阅读"
+            >
+              <svg><use href="#i-columns" /></svg><span>连续稿</span>
+            </button>
+            <button
+              class="ghost-button"
+              id="brainstormOpen"
+              title="多 Agent 脑暴"
+              aria-label="多 Agent 脑暴"
+            >
+              <svg><use href="#i-spark" /></svg><span>多 Agent 脑暴</span>
+            </button>
+            <button
+              class="ghost-button"
+              id="simulationOpen"
+              title="AI 剧情推演"
+              aria-label="AI 剧情推演"
+            >
+              <svg><use href="#i-route" /></svg><span>剧情推演</span>
+            </button>
+            <button
+              class="primary-button"
+              id="generateChapter"
+              title="AI 写本章"
+              aria-label="AI 写本章"
+            >
+              <svg><use href="#i-wand" /></svg><span>AI 写本章</span>
+            </button>
           </div>
         </header>
 
-        <div class="mobile-pane-switch" role="tablist" aria-label="移动端工作面">
+        <div
+          class="mobile-pane-switch"
+          role="tablist"
+          aria-label="移动端工作面"
+        >
           <button data-pane="tree">目录</button>
           <button data-pane="editor" class="is-active">正文</button>
           <button data-pane="context">上下文</button>
@@ -76,56 +221,163 @@
         <section class="workbench">
           <aside class="manuscript-tree pane" aria-label="正文目录">
             <div class="pane-heading">
-              <div><span class="eyebrow">MANUSCRIPT</span><strong>正文目录</strong></div>
+              <div>
+                <span class="eyebrow">MANUSCRIPT</span><strong>正文目录</strong>
+              </div>
               <div class="pane-actions">
-                <button class="icon-button" id="addFolder" title="新建目录"><svg><use href="#i-folder" /></svg><span class="sr-only">新建目录</span></button>
-                <button class="icon-button" id="addChapter" title="新建章节"><svg><use href="#i-plus" /></svg><span class="sr-only">新建章节</span></button>
+                <button class="icon-button" id="addFolder" title="新建目录">
+                  <svg><use href="#i-folder" /></svg
+                  ><span class="sr-only">新建目录</span>
+                </button>
+                <button class="icon-button" id="addChapter" title="新建章节">
+                  <svg><use href="#i-plus" /></svg
+                  ><span class="sr-only">新建章节</span>
+                </button>
               </div>
             </div>
-            <div class="mode-notice" id="modeNotice"><svg><use href="#i-link" /></svg><span>剧情结构与正文合并显示，计划仍由剧情工程拥有。</span></div>
-            <label class="tree-search"><svg><use href="#i-search" /></svg><input id="treeSearch" placeholder="搜索章节、人物或状态" /></label>
+            <div class="mode-notice" id="modeNotice">
+              <svg><use href="#i-link" /></svg
+              ><span>剧情结构与正文合并显示，计划仍由剧情工程拥有。</span>
+            </div>
+            <label class="tree-search"
+              ><svg><use href="#i-search" /></svg
+              ><input id="treeSearch" placeholder="搜索章节、人物或状态"
+            /></label>
             <div class="tree-filter-row">
-              <button class="filter-pill is-active">全部</button><button class="filter-pill">本卷</button><button class="filter-pill">待同步 <b>2</b></button>
+              <button class="filter-pill is-active">全部</button
+              ><button class="filter-pill">本卷</button
+              ><button class="filter-pill">待同步 <b>2</b></button>
             </div>
 
             <div class="tree-scroll" id="treeList">
-              <div class="tree-section-label"><span>已关联剧情结构</span><span>18 章</span></div>
+              <div class="tree-section-label">
+                <span>已关联剧情结构</span><span>18 章</span>
+              </div>
               <div class="tree-row folder-row" data-search="第二卷 焚城问道">
-                <button class="tree-caret is-open"><svg><use href="#i-chevron" /></svg></button>
+                <button class="tree-caret is-open">
+                  <svg><use href="#i-chevron" /></svg>
+                </button>
                 <svg class="row-icon folder"><use href="#i-folder" /></svg>
-                <span class="row-main"><strong>第二卷 · 焚城问道</strong><small>关联剧情工程 / 卷</small></span>
+                <span class="row-main"
+                  ><strong>第二卷 · 焚城问道</strong
+                  ><small>关联剧情工程 / 卷</small></span
+                >
                 <span class="count">18</span>
               </div>
-              <div class="tree-row folder-row depth-1" data-search="丹炉城 单元">
-                <button class="tree-caret is-open"><svg><use href="#i-chevron" /></svg></button>
+              <div
+                class="tree-row folder-row depth-1"
+                data-search="丹炉城 单元"
+              >
+                <button class="tree-caret is-open">
+                  <svg><use href="#i-chevron" /></svg>
+                </button>
                 <svg class="row-icon folder"><use href="#i-folder" /></svg>
-                <span class="row-main"><strong>丹炉城</strong><small>章节组 · 8 章</small></span>
+                <span class="row-main"
+                  ><strong>丹炉城</strong><small>章节组 · 8 章</small></span
+                >
               </div>
-              <button class="tree-row chapter-row depth-2" data-chapter="40" data-search="第40章 入城 人物 林砚 已同步">
-                <span class="chapter-no">40</span><span class="row-main"><strong>入城</strong><small>2,846 字 · 已同步</small></span><i class="state-dot is-ok"></i>
+              <button
+                class="tree-row chapter-row depth-2"
+                data-chapter="40"
+                data-sequence="narrative"
+                data-display-number="40"
+                data-title="入城"
+                data-search="第40章 入城 人物 林砚 已同步"
+              >
+                <span class="chapter-no">40</span
+                ><span class="row-main"
+                  ><strong>入城</strong><small>2,846 字 · 已同步</small></span
+                ><i class="state-dot is-ok"></i>
               </button>
-              <button class="tree-row chapter-row depth-2" data-chapter="41" data-search="第41章 火脉 人物 林砚 已同步">
-                <span class="chapter-no">41</span><span class="row-main"><strong>火脉</strong><small>3,102 字 · 已同步</small></span><i class="state-dot is-ok"></i>
+              <button
+                class="tree-row chapter-row depth-2"
+                data-chapter="41"
+                data-sequence="narrative"
+                data-display-number="41"
+                data-title="火脉"
+                data-search="第41章 火脉 人物 林砚 已同步"
+              >
+                <span class="chapter-no">41</span
+                ><span class="row-main"
+                  ><strong>火脉</strong><small>3,102 字 · 已同步</small></span
+                ><i class="state-dot is-ok"></i>
               </button>
-              <button class="tree-row chapter-row depth-2 is-selected" data-chapter="42" data-search="第42章 丹成大道 修改中 待同步 主线">
-                <span class="chapter-no">42</span><span class="row-main"><strong>丹成大道</strong><small>2,716 字 · 修改中</small></span><i class="state-dot is-warning"></i>
+              <button
+                class="tree-row chapter-row depth-2 is-selected"
+                data-chapter="42"
+                data-sequence="narrative"
+                data-display-number="42"
+                data-title="丹成大道"
+                data-search="第42章 丹成大道 修改中 待同步 主线"
+              >
+                <span class="chapter-no">42</span
+                ><span class="row-main"
+                  ><strong>丹成大道</strong
+                  ><small>2,716 字 · 修改中</small></span
+                ><i class="state-dot is-warning"></i>
               </button>
-              <button class="tree-row chapter-row depth-2" data-chapter="43" data-search="第43章 灰烬 计划待写 伏笔">
-                <span class="chapter-no">43</span><span class="row-main"><strong>灰烬</strong><small>剧情计划待写</small></span><span class="plan-only">计划</span>
+              <button
+                class="tree-row chapter-row depth-2"
+                data-chapter="43"
+                data-sequence="narrative"
+                data-display-number="43"
+                data-title="灰烬"
+                data-search="第43章 灰烬 计划待写 伏笔"
+              >
+                <span class="chapter-no">43</span
+                ><span class="row-main"
+                  ><strong>灰烬</strong><small>剧情计划待写</small></span
+                ><span class="plan-only">计划</span>
               </button>
-              <div class="tree-row folder-row depth-1 is-collapsed" data-search="问剑台 副本">
-                <button class="tree-caret"><svg><use href="#i-chevron" /></svg></button>
+              <div
+                class="tree-row folder-row depth-1 is-collapsed"
+                data-search="问剑台 副本"
+              >
+                <button class="tree-caret">
+                  <svg><use href="#i-chevron" /></svg>
+                </button>
                 <svg class="row-icon folder"><use href="#i-folder" /></svg>
-                <span class="row-main"><strong>问剑台</strong><small>副本 · 10 章</small></span>
+                <span class="row-main"
+                  ><strong>问剑台</strong><small>副本 · 10 章</small></span
+                >
               </div>
-              <div class="tree-section-label free-only"><span>自由正文</span><span>2</span></div>
-              <button class="tree-row chapter-row free-only" data-chapter="x" data-search="番外 雨夜 自由正文">
-                <span class="chapter-no">外</span><span class="row-main"><strong>雨夜试写</strong><small>未关联剧情计划</small></span><i class="state-dot"></i>
+              <div class="tree-section-label free-only">
+                <span>自由正文 · 独立编号</span><span>2 篇</span>
+              </div>
+              <button
+                class="tree-row chapter-row free-only"
+                data-chapter="free-1"
+                data-sequence="free"
+                data-display-number="1"
+                data-title="雨夜试写"
+                data-search="自由第1章 番外 雨夜 自由正文"
+              >
+                <span class="chapter-no">01</span
+                ><span class="row-main"
+                  ><strong>雨夜试写</strong
+                  ><small>自由正文第 1 篇 · 未关联剧情计划</small></span
+                ><i class="state-dot"></i>
+              </button>
+              <button
+                class="tree-row chapter-row free-only"
+                data-chapter="free-2"
+                data-sequence="free"
+                data-display-number="2"
+                data-title="界碑残页"
+                data-search="自由第2章 界碑 残页 自由正文"
+              >
+                <span class="chapter-no">02</span
+                ><span class="row-main"
+                  ><strong>界碑残页</strong
+                  ><small>自由正文第 2 篇 · 未关联剧情计划</small></span
+                ><i class="state-dot"></i>
               </button>
             </div>
 
             <div class="tree-footer">
-              <button id="trashOpen"><svg><use href="#i-trash" /></svg><span>回收站</span><b>1</b></button>
+              <button id="trashOpen">
+                <svg><use href="#i-trash" /></svg><span>回收站</span><b>1</b>
+              </button>
               <span>本卷 51,428 字</span>
             </div>
           </aside>
@@ -137,61 +389,148 @@
                 <button>场景卡 <span>3</span></button>
               </div>
               <div class="editor-meta">
-                <span id="saveState"><svg><use href="#i-check" /></svg>已保存</span>
+                <span id="saveState"
+                  ><svg><use href="#i-check" /></svg>已保存</span
+                >
                 <span>修订 r12</span>
-                <button class="typography-trigger" id="typographyOpen" title="全局正文排版" aria-label="全局正文排版"><svg><use href="#i-settings" /></svg><span>排版</span></button>
-                <button class="icon-button" id="deleteChapter" title="删除本章"><svg><use href="#i-more" /></svg><span class="sr-only">章节更多操作</span></button>
+                <button
+                  class="typography-trigger"
+                  id="typographyOpen"
+                  title="全局正文排版"
+                  aria-label="全局正文排版"
+                >
+                  <svg><use href="#i-settings" /></svg><span>排版</span>
+                </button>
+                <button class="icon-button" id="deleteChapter" title="删除本章">
+                  <svg><use href="#i-more" /></svg
+                  ><span class="sr-only">章节更多操作</span>
+                </button>
               </div>
             </div>
 
             <div class="editor-scroll" id="editorScroll">
               <article class="manuscript-page" id="singleManuscript">
                 <header class="chapter-title-block">
-                  <div class="chapter-kicker"><span>第二卷 · 丹炉城</span><i></i><span>CHAPTER 42</span></div>
+                  <div class="chapter-kicker">
+                    <span>第二卷 · 丹炉城</span><i></i><span>CHAPTER 42</span>
+                  </div>
                   <h1>丹成大道</h1>
-                  <p class="chapter-note">目标：以奇则碰撞完成破局，让“灰烬剑痕”由背景异象升级为主动悬念。</p>
+                  <p class="chapter-note">
+                    目标：以奇则碰撞完成破局，让“灰烬剑痕”由背景异象升级为主动悬念。
+                  </p>
                 </header>
 
-                <div class="scene-boundary"><span>场景一 · 地火丹房</span><small>POV 林砚 · 计划节拍 1/3</small></div>
-                <div class="prose" id="chapterEditor" contenteditable="true" spellcheck="false" aria-label="章节正文">
-                  <p>炉门合拢时，城南的雨才刚落下来。</p>
-                  <p>林砚盘膝坐在赤铜阵心，听见雨点隔着三重禁制敲在瓦上。那声音很轻，像有人在极远的地方，以指节一下一下叩问。他面前的丹炉却已经红得发白，炉腹深处那枚未成形的丹胚，每一次吞吐，都把屋内的影子向外推开半尺。</p>
-                  <p data-quality="rule">按照《离火丹经》，此刻应当收火、封窍、静候九息。可那道寄生在地火里的奇则偏偏反了过来——火越收，丹胚吞得越凶；灵气越静，炉中回响越像活物的心跳。</p>
-                  <p>“它在学你。”识海里，枯灯老人忽然开口。</p>
-                  <p>林砚没有答。他抬起右手，掌心悬着最后一缕青木真炁。照常理，这缕真炁入炉，只会被离火烧成飞灰。但常理既已失效，最稳妥的法子反而是把错误推到尽头。</p>
-                  <p data-quality="voice">丹炉外，陆青禾压低声音：“再等下去，巡火司就到了。”</p>
-                  <p>“那就不等。”</p>
-                  <p id="selectionDemo">林砚五指一松，青木真炁落入炉心。刹那间，赤焰没有暴涨，反而齐齐伏低，像万千枝草向同一个方向俯首。丹胚表面的裂纹开始倒着愈合，一道、两道、三道——直到最深处浮出第二道银白剑痕。</p>
+                <div class="scene-boundary">
+                  <span>场景一 · 地火丹房</span
+                  ><small>POV 林砚 · 计划节拍 1/3</small>
                 </div>
-                <div class="scene-boundary"><span>场景二 · 规则反噬</span><small>POV 林砚 · 奇则碰撞</small></div>
-                <div class="prose continuation" contenteditable="true" spellcheck="false">
-                  <p>第一道剑痕来自他在黑水谷捡回的残剑。第二道，却和它完全相反。</p>
+                <div
+                  class="prose"
+                  id="chapterEditor"
+                  contenteditable="true"
+                  spellcheck="false"
+                  aria-label="章节正文"
+                >
+                  <p>炉门合拢时，城南的雨才刚落下来。</p>
+                  <p>
+                    林砚盘膝坐在赤铜阵心，听见雨点隔着三重禁制敲在瓦上。那声音很轻，像有人在极远的地方，以指节一下一下叩问。他面前的丹炉却已经红得发白，炉腹深处那枚未成形的丹胚，每一次吞吐，都把屋内的影子向外推开半尺。
+                  </p>
+                  <p data-quality="rule">
+                    按照《离火丹经》，此刻应当收火、封窍、静候九息。可那道寄生在地火里的奇则偏偏反了过来——火越收，丹胚吞得越凶；灵气越静，炉中回响越像活物的心跳。
+                  </p>
+                  <p>“它在学你。”识海里，枯灯老人忽然开口。</p>
+                  <p>
+                    林砚没有答。他抬起右手，掌心悬着最后一缕青木真炁。照常理，这缕真炁入炉，只会被离火烧成飞灰。但常理既已失效，最稳妥的法子反而是把错误推到尽头。
+                  </p>
+                  <p data-quality="voice">
+                    丹炉外，陆青禾压低声音：“再等下去，巡火司就到了。”
+                  </p>
+                  <p>“那就不等。”</p>
+                  <p id="selectionDemo">
+                    林砚五指一松，青木真炁落入炉心。刹那间，赤焰没有暴涨，反而齐齐伏低，像万千枝草向同一个方向俯首。丹胚表面的裂纹开始倒着愈合，一道、两道、三道——直到最深处浮出第二道银白剑痕。
+                  </p>
+                </div>
+                <div class="scene-boundary">
+                  <span>场景二 · 规则反噬</span
+                  ><small>POV 林砚 · 奇则碰撞</small>
+                </div>
+                <div
+                  class="prose continuation"
+                  contenteditable="true"
+                  spellcheck="false"
+                >
+                  <p>
+                    第一道剑痕来自他在黑水谷捡回的残剑。第二道，却和它完全相反。
+                  </p>
                   <p>一个向外斩，一个向内生。</p>
-                  <p>林砚望着炉心，忽然明白这枚丹为什么始终不肯成形。它不是缺一味药，也不是少一道火候。它在等一个能够同时容下两条相反规则的人。</p>
+                  <p>
+                    林砚望着炉心，忽然明白这枚丹为什么始终不肯成形。它不是缺一味药，也不是少一道火候。它在等一个能够同时容下两条相反规则的人。
+                  </p>
                   <p>门外传来铁靴踏过积水的声音。巡火司到了。</p>
                 </div>
 
-                <footer class="chapter-end"><span>本章 2,716 字</span><i></i><span>3 个场景</span><i></i><span>目标 3,000 字</span></footer>
+                <footer class="chapter-end">
+                  <span>本章 2,716 字</span><i></i><span>3 个场景</span><i></i
+                  ><span>目标 3,000 字</span>
+                </footer>
               </article>
 
-              <section class="continuous-manuscript" id="continuousManuscript" hidden>
-                <div class="continuous-heading"><span>连续稿 · 丹炉城</span><small>第 41—43 章</small></div>
-                <article class="continuous-chapter"><span>第四十一章</span><h2>火脉</h2><p>地底的火像一条睡了千年的赤蛇，沿着石壁缓慢呼吸。林砚第一次听见那声音时，便知道丹炉城真正守着的从来不是丹方。</p><button>展开上一章全文</button></article>
-                <article class="continuous-chapter is-current"><span>第四十二章</span><h2>丹成大道</h2><p>炉门合拢时，城南的雨才刚落下来。林砚盘膝坐在赤铜阵心，听见雨点隔着三重禁制敲在瓦上……</p><button>回到当前章编辑</button></article>
-                <article class="continuous-chapter is-plan"><span>第四十三章 · 计划</span><h2>灰烬</h2><p>巡火司封锁丹房；灰烬里的第二道剑痕首次主动回应林砚，并留下指向问剑台的坐标。</p><button>开始写下一章</button></article>
+              <section
+                class="continuous-manuscript"
+                id="continuousManuscript"
+                hidden
+              >
+                <div class="continuous-heading">
+                  <span>连续稿 · 丹炉城</span><small>第 41—43 章</small>
+                </div>
+                <article class="continuous-chapter">
+                  <span>第四十一章</span>
+                  <h2>火脉</h2>
+                  <p>
+                    地底的火像一条睡了千年的赤蛇，沿着石壁缓慢呼吸。林砚第一次听见那声音时，便知道丹炉城真正守着的从来不是丹方。
+                  </p>
+                  <button>展开上一章全文</button>
+                </article>
+                <article class="continuous-chapter is-current">
+                  <span>第四十二章</span>
+                  <h2>丹成大道</h2>
+                  <p>
+                    炉门合拢时，城南的雨才刚落下来。林砚盘膝坐在赤铜阵心，听见雨点隔着三重禁制敲在瓦上……
+                  </p>
+                  <button>回到当前章编辑</button>
+                </article>
+                <article class="continuous-chapter is-plan">
+                  <span>第四十三章 · 计划</span>
+                  <h2>灰烬</h2>
+                  <p>
+                    巡火司封锁丹房；灰烬里的第二道剑痕首次主动回应林砚，并留下指向问剑台的坐标。
+                  </p>
+                  <button>开始写下一章</button>
+                </article>
               </section>
             </div>
 
             <div class="editor-statusbar">
               <span><i class="presence-dot"></i>本地草稿安全</span>
-              <span>正文 2,716 字</span><span>今日净增 1,284</span><span>预计 6 分钟完成</span>
+              <span>正文 2,716 字</span><span>今日净增 1,284</span
+              ><span>预计 6 分钟完成</span>
             </div>
           </section>
 
           <aside class="context-pane pane" aria-label="写作上下文">
             <div class="context-header">
-              <div><span class="eyebrow">CHAPTER CONTEXT</span><strong>本章上下文</strong></div>
-              <button class="icon-button" id="collapseContext" title="收起上下文"><svg><use href="#i-panel" /></svg><span class="sr-only">收起上下文</span></button>
+              <div>
+                <span class="eyebrow">CHAPTER CONTEXT</span
+                ><strong>本章上下文</strong>
+              </div>
+              <button
+                class="icon-button"
+                id="collapseContext"
+                title="收起上下文"
+              >
+                <svg><use href="#i-panel" /></svg
+                ><span class="sr-only">收起上下文</span>
+              </button>
             </div>
             <nav class="context-tabs" role="tablist">
               <button class="is-active" data-context-tab="plan">计划</button>
@@ -203,78 +542,289 @@
 
             <div class="context-body">
               <section class="context-panel is-active" data-panel="plan">
-                <div class="source-line"><svg><use href="#i-route" /></svg><span>来源：剧情工程 / 第 42 章计划</span><button id="openNarrative">打开</button></div>
+                <div class="source-line">
+                  <svg><use href="#i-route" /></svg
+                  ><span>来源：剧情工程 / 第 42 章计划</span
+                  ><button id="openNarrative">打开</button>
+                </div>
                 <section class="inspector-section">
-                  <header><strong>章节目标</strong><span class="read-only">只读</span></header>
-                  <p>炼成逆火丹，以规则冲突破除丹房困局，同时推动灰烬剑痕伏笔。</p>
+                  <header>
+                    <strong>章节目标</strong><span class="read-only">只读</span>
+                  </header>
+                  <p>
+                    炼成逆火丹，以规则冲突破除丹房困局，同时推动灰烬剑痕伏笔。
+                  </p>
                 </section>
                 <section class="inspector-section">
-                  <header><strong>关键节拍</strong><span>2 / 3 已写</span></header>
+                  <header>
+                    <strong>关键节拍</strong><span>2 / 3 已写</span>
+                  </header>
                   <ol class="beat-list">
-                    <li class="is-done"><i><svg><use href="#i-check" /></svg></i><span><strong>丹胚反噬</strong><small>常规丹道规则失效</small></span></li>
-                    <li class="is-done"><i><svg><use href="#i-check" /></svg></i><span><strong>逆向投药</strong><small>林砚主动放大规则冲突</small></span></li>
-                    <li><i>3</i><span><strong>巡火司破门</strong><small>尚缺正面冲突与章尾钩子</small></span></li>
+                    <li class="is-done">
+                      <i
+                        ><svg><use href="#i-check" /></svg></i
+                      ><span
+                        ><strong>丹胚反噬</strong
+                        ><small>常规丹道规则失效</small></span
+                      >
+                    </li>
+                    <li class="is-done">
+                      <i
+                        ><svg><use href="#i-check" /></svg></i
+                      ><span
+                        ><strong>逆向投药</strong
+                        ><small>林砚主动放大规则冲突</small></span
+                      >
+                    </li>
+                    <li>
+                      <i>3</i
+                      ><span
+                        ><strong>巡火司破门</strong
+                        ><small>尚缺正面冲突与章尾钩子</small></span
+                      >
+                    </li>
                   </ol>
                 </section>
                 <section class="inspector-section compact">
                   <header><strong>推进来源</strong></header>
-                  <div class="tag-row"><span class="tag warm">主线 · 丹成大道</span><span class="tag">暗线 · 剑痕</span><span class="tag green">林砚弧</span></div>
+                  <div class="tag-row">
+                    <span class="tag warm">主线 · 丹成大道</span
+                    ><span class="tag">暗线 · 剑痕</span
+                    ><span class="tag green">林砚弧</span>
+                  </div>
                 </section>
                 <section class="inspector-section compact">
                   <header><strong>期待动作</strong><span>2 项</span></header>
-                  <div class="expectation-row"><i></i><div><strong>灰烬中的第二道剑痕</strong><small>本章计划：强化</small></div><span class="status-chip is-warning">待验证</span></div>
-                  <div class="expectation-row"><i></i><div><strong>巡火司真正目的</strong><small>本章计划：建立</small></div><span class="status-chip">未出现</span></div>
+                  <div class="expectation-row">
+                    <i></i>
+                    <div>
+                      <strong>灰烬中的第二道剑痕</strong
+                      ><small>本章计划：强化</small>
+                    </div>
+                    <span class="status-chip is-warning">待验证</span>
+                  </div>
+                  <div class="expectation-row">
+                    <i></i>
+                    <div>
+                      <strong>巡火司真正目的</strong
+                      ><small>本章计划：建立</small>
+                    </div>
+                    <span class="status-chip">未出现</span>
+                  </div>
                 </section>
                 <section class="inspector-section">
-                  <header><strong>六项交付</strong><span>《仙途》规则</span></header>
-                  <div class="delivery-grid"><span class="is-done">推进</span><span class="is-done">代价</span><span class="is-done">规则碰撞</span><span>关系变化</span><span class="is-done">信息增量</span><span>章尾钩子</span></div>
+                  <header>
+                    <strong>六项交付</strong><span>《仙途》规则</span>
+                  </header>
+                  <div class="delivery-grid">
+                    <span class="is-done">推进</span
+                    ><span class="is-done">代价</span
+                    ><span class="is-done">规则碰撞</span><span>关系变化</span
+                    ><span class="is-done">信息增量</span><span>章尾钩子</span>
+                  </div>
                 </section>
               </section>
 
               <section class="context-panel" data-panel="reference">
-                <div class="reference-toolbar"><button class="is-active">固定资料</button><button>本章关联</button><button>最近查看</button></div>
-                <article class="reference-item"><div class="avatar">林</div><div><strong>林砚</strong><small>当前：炼气九层 · 右臂火伤 · 知道残剑第一道剑痕</small></div><button>查看</button></article>
-                <article class="reference-item"><div class="avatar is-green">陆</div><div><strong>陆青禾</strong><small>当前：丹房外警戒 · 不知道枯灯老人存在</small></div><button>查看</button></article>
-                <article class="reference-item"><div class="reference-icon">则</div><div><strong>逆火奇则</strong><small>火势越弱，吞噬越强；当前仅在地火丹房成立</small></div><button>查看</button></article>
-                <article class="reference-item"><div class="reference-icon">物</div><div><strong>黑水残剑</strong><small>剑痕一向外斩；第二道剑痕来源未知</small></div><button>查看</button></article>
-                <button class="wide-ghost"><svg><use href="#i-plus" /></svg>固定更多资料</button>
+                <div class="reference-toolbar">
+                  <button class="is-active">固定资料</button
+                  ><button>本章关联</button><button>最近查看</button>
+                </div>
+                <article class="reference-item">
+                  <div class="avatar">林</div>
+                  <div>
+                    <strong>林砚</strong
+                    ><small
+                      >当前：炼气九层 · 右臂火伤 · 知道残剑第一道剑痕</small
+                    >
+                  </div>
+                  <button>查看</button>
+                </article>
+                <article class="reference-item">
+                  <div class="avatar is-green">陆</div>
+                  <div>
+                    <strong>陆青禾</strong
+                    ><small>当前：丹房外警戒 · 不知道枯灯老人存在</small>
+                  </div>
+                  <button>查看</button>
+                </article>
+                <article class="reference-item">
+                  <div class="reference-icon">则</div>
+                  <div>
+                    <strong>逆火奇则</strong
+                    ><small>火势越弱，吞噬越强；当前仅在地火丹房成立</small>
+                  </div>
+                  <button>查看</button>
+                </article>
+                <article class="reference-item">
+                  <div class="reference-icon">物</div>
+                  <div>
+                    <strong>黑水残剑</strong
+                    ><small>剑痕一向外斩；第二道剑痕来源未知</small>
+                  </div>
+                  <button>查看</button>
+                </article>
+                <button class="wide-ghost">
+                  <svg><use href="#i-plus" /></svg>固定更多资料
+                </button>
               </section>
 
               <section class="context-panel" data-panel="ai">
-                <div class="ai-context-summary"><div><svg><use href="#i-wand" /></svg></div><strong>正文助手</strong><p>所有结果先进入候选，不会覆盖当前正文。</p></div>
+                <div class="ai-context-summary">
+                  <div>
+                    <svg><use href="#i-wand" /></svg>
+                  </div>
+                  <strong>正文助手</strong>
+                  <p>所有结果先进入候选，不会覆盖当前正文。</p>
+                </div>
                 <div class="ai-action-grid">
-                  <button data-ai-action="continue"><strong>续写</strong><small>从当前结尾继续</small></button>
-                  <button data-ai-action="polish"><strong>整章润色</strong><small>保持事实和文风</small></button>
-                  <button data-ai-action="expand"><strong>扩写场景</strong><small>补足感官和行动</small></button>
-                  <button data-ai-action="repair"><strong>按问题修复</strong><small>处理 2 个质量问题</small></button>
+                  <button data-ai-action="continue">
+                    <strong>续写</strong><small>从当前结尾继续</small>
+                  </button>
+                  <button data-ai-action="polish">
+                    <strong>整章润色</strong><small>保持事实和文风</small>
+                  </button>
+                  <button data-ai-action="expand">
+                    <strong>扩写场景</strong><small>补足感官和行动</small>
+                  </button>
+                  <button data-ai-action="repair">
+                    <strong>按问题修复</strong><small>处理 2 个质量问题</small>
+                  </button>
                 </div>
                 <section class="inspector-section">
-                  <header><strong>本次上下文</strong><button class="link-button" id="contextManifestOpen">检查 12,480 tokens</button></header>
-                  <div class="context-meter"><i style="width:72%"></i></div>
-                  <ul class="context-source-list"><li><span>章节计划与验收</span><b>强制</b></li><li><span>人物当前状态</span><b>2,180</b></li><li><span>前 3 章摘要与尾段</span><b>4,920</b></li><li><span>活跃期待与伏笔</span><b>1,260</b></li><li><span>语义召回 4 段</span><b>2,340</b></li></ul>
+                  <header>
+                    <strong>本次上下文</strong
+                    ><button class="link-button" id="contextManifestOpen">
+                      检查 12,480 tokens
+                    </button>
+                  </header>
+                  <div class="context-meter"><i style="width: 72%"></i></div>
+                  <ul class="context-source-list">
+                    <li><span>章节计划与验收</span><b>强制</b></li>
+                    <li><span>人物当前状态</span><b>2,180</b></li>
+                    <li><span>前 3 章摘要与尾段</span><b>4,920</b></li>
+                    <li><span>活跃期待与伏笔</span><b>1,260</b></li>
+                    <li><span>语义召回 4 段</span><b>2,340</b></li>
+                  </ul>
                 </section>
-                <section class="inspector-section"><header><strong>最近候选</strong><span>3</span></header><button class="candidate-row" data-ai-action="polish"><i>A</i><span><strong>选区润色 · 文气收束</strong><small>Claude · 2 分钟前</small></span><b>未采用</b></button><button class="candidate-row" data-ai-action="continue"><i>B</i><span><strong>续写 · 巡火司破门</strong><small>DeepSeek · 6 分钟前</small></span><b>未采用</b></button></section>
+                <section class="inspector-section">
+                  <header><strong>最近候选</strong><span>3</span></header>
+                  <button class="candidate-row" data-ai-action="polish">
+                    <i>A</i
+                    ><span
+                      ><strong>选区润色 · 文气收束</strong
+                      ><small>Claude · 2 分钟前</small></span
+                    ><b>未采用</b></button
+                  ><button class="candidate-row" data-ai-action="continue">
+                    <i>B</i
+                    ><span
+                      ><strong>续写 · 巡火司破门</strong
+                      ><small>DeepSeek · 6 分钟前</small></span
+                    ><b>未采用</b>
+                  </button>
+                </section>
               </section>
 
               <section class="context-panel" data-panel="quality">
-                <div class="quality-summary"><div><strong>82</strong><span>本章质量</span></div><p>计划完成度较高，但章尾冲突尚未落地。</p></div>
-                <button class="issue-row is-error" data-highlight="rule"><svg><use href="#i-alert" /></svg><span><strong>奇则前态缺少正文依据</strong><small>“照常理”之前没有展示《离火丹经》的具体操作后果。</small></span><b>连续性</b></button>
-                <button class="issue-row is-warning" data-highlight="voice"><svg><use href="#i-alert" /></svg><span><strong>陆青禾声线偏中性</strong><small>与人物库中“短句、先结论后原因”的说话习惯不一致。</small></span><b>人物</b></button>
-                <section class="inspector-section compact"><header><strong>已通过</strong><span>6 项</span></header><ul class="passed-list"><li><svg><use href="#i-check" /></svg>POV 知识边界</li><li><svg><use href="#i-check" /></svg>人物位置连续</li><li><svg><use href="#i-check" /></svg>物品所有权</li><li><svg><use href="#i-check" /></svg>主线推进证据</li><li><svg><use href="#i-check" /></svg>信息增量</li><li><svg><use href="#i-check" /></svg>重复表达检查</li></ul></section>
-                <button class="secondary-wide" data-ai-action="repair"><svg><use href="#i-wand" /></svg>生成修复候选</button>
+                <div class="quality-summary">
+                  <div><strong>82</strong><span>本章质量</span></div>
+                  <p>计划完成度较高，但章尾冲突尚未落地。</p>
+                </div>
+                <button class="issue-row is-error" data-highlight="rule">
+                  <svg><use href="#i-alert" /></svg
+                  ><span
+                    ><strong>奇则前态缺少正文依据</strong
+                    ><small
+                      >“照常理”之前没有展示《离火丹经》的具体操作后果。</small
+                    ></span
+                  ><b>连续性</b>
+                </button>
+                <button class="issue-row is-warning" data-highlight="voice">
+                  <svg><use href="#i-alert" /></svg
+                  ><span
+                    ><strong>陆青禾声线偏中性</strong
+                    ><small
+                      >与人物库中“短句、先结论后原因”的说话习惯不一致。</small
+                    ></span
+                  ><b>人物</b>
+                </button>
+                <section class="inspector-section compact">
+                  <header><strong>已通过</strong><span>6 项</span></header>
+                  <ul class="passed-list">
+                    <li>
+                      <svg><use href="#i-check" /></svg>POV 知识边界
+                    </li>
+                    <li>
+                      <svg><use href="#i-check" /></svg>人物位置连续
+                    </li>
+                    <li>
+                      <svg><use href="#i-check" /></svg>物品所有权
+                    </li>
+                    <li>
+                      <svg><use href="#i-check" /></svg>主线推进证据
+                    </li>
+                    <li>
+                      <svg><use href="#i-check" /></svg>信息增量
+                    </li>
+                    <li>
+                      <svg><use href="#i-check" /></svg>重复表达检查
+                    </li>
+                  </ul>
+                </section>
+                <button class="secondary-wide" data-ai-action="repair">
+                  <svg><use href="#i-wand" /></svg>生成修复候选
+                </button>
               </section>
 
               <section class="context-panel" data-panel="sync">
-                <div class="sync-banner"><svg><use href="#i-history" /></svg><div><strong>正文修订后尚未重新同步</strong><p>上次同步基于 r10，当前为 r12。</p></div></div>
-                <section class="inspector-section"><header><strong>检测到的变化</strong><span>5 项待确认</span></header>
-                  <label class="sync-change"><input type="checkbox" checked/><span><strong>林砚 · 新增出场</strong><small>地点：地火丹房</small></span><b>人物</b></label>
-                  <label class="sync-change"><input type="checkbox" checked/><span><strong>逆火奇则 · 规则触发</strong><small>“火越收，丹胚吞得越凶”</small></span><b>规则</b></label>
-                  <label class="sync-change"><input type="checkbox" checked/><span><strong>剑痕伏笔 · 强化</strong><small>出现第二道相反剑痕</small></span><b>期待</b></label>
-                  <label class="sync-change"><input type="checkbox" checked/><span><strong>巡火司 · 抵达丹房</strong><small>新增时间线事件</small></span><b>时间</b></label>
-                  <label class="sync-change"><input type="checkbox"/><span><strong>逆火丹 · 新物品提案</strong><small>尚未正式成丹，建议暂不创建</small></span><b>物品</b></label>
+                <div class="sync-banner">
+                  <svg><use href="#i-history" /></svg>
+                  <div>
+                    <strong>正文修订后尚未重新同步</strong>
+                    <p>上次同步基于 r10，当前为 r12。</p>
+                  </div>
+                </div>
+                <section class="inspector-section">
+                  <header>
+                    <strong>检测到的变化</strong><span>5 项待确认</span>
+                  </header>
+                  <label class="sync-change"
+                    ><input type="checkbox" checked /><span
+                      ><strong>林砚 · 新增出场</strong
+                      ><small>地点：地火丹房</small></span
+                    ><b>人物</b></label
+                  >
+                  <label class="sync-change"
+                    ><input type="checkbox" checked /><span
+                      ><strong>逆火奇则 · 规则触发</strong
+                      ><small>“火越收，丹胚吞得越凶”</small></span
+                    ><b>规则</b></label
+                  >
+                  <label class="sync-change"
+                    ><input type="checkbox" checked /><span
+                      ><strong>剑痕伏笔 · 强化</strong
+                      ><small>出现第二道相反剑痕</small></span
+                    ><b>期待</b></label
+                  >
+                  <label class="sync-change"
+                    ><input type="checkbox" checked /><span
+                      ><strong>巡火司 · 抵达丹房</strong
+                      ><small>新增时间线事件</small></span
+                    ><b>时间</b></label
+                  >
+                  <label class="sync-change"
+                    ><input type="checkbox" /><span
+                      ><strong>逆火丹 · 新物品提案</strong
+                      ><small>尚未正式成丹，建议暂不创建</small></span
+                    ><b>物品</b></label
+                  >
                 </section>
-                <button class="primary-wide" id="applySync"><svg><use href="#i-check" /></svg>确认并同步 4 项</button>
-                <button class="wide-ghost" id="openContinuity">前往连续性中心查看事件与回退</button>
+                <button class="primary-wide" id="applySync">
+                  <svg><use href="#i-check" /></svg>确认并同步 4 项
+                </button>
+                <button class="wide-ghost" id="openContinuity">
+                  前往连续性中心查看事件与回退
+                </button>
               </section>
             </div>
           </aside>
@@ -283,67 +833,658 @@
     </div>
 
     <div class="selection-toolbar" id="selectionToolbar" hidden>
-      <span>AI</span><button data-selection-action="polish">润色</button><button data-selection-action="expand">扩写</button><button data-selection-action="rewrite">重写</button><i></i><button data-selection-action="foreshadow">标为伏笔证据</button>
+      <span>AI</span><button data-selection-action="polish">润色</button
+      ><button data-selection-action="expand">扩写</button
+      ><button data-selection-action="rewrite">重写</button><i></i
+      ><button data-selection-action="foreshadow">标为伏笔证据</button>
     </div>
 
     <div class="overlay" id="typographyOverlay" hidden>
-      <section class="typography-surface" role="dialog" aria-modal="true" aria-labelledby="typographyTitle">
-        <header class="overlay-header"><div><span class="eyebrow">GLOBAL TYPOGRAPHY</span><h2 id="typographyTitle">《仙途》全局正文排版</h2><p>统一作用于全部章节与连续稿；不向正文内容写入格式标记。</p></div><div class="overlay-actions"><span class="status-chip is-success" id="typographyDirtyState">已应用 · 版本 3</span><button class="icon-button overlay-close" title="关闭"><svg><use href="#i-x" /></svg></button></div></header>
+      <section
+        class="typography-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="typographyTitle"
+      >
+        <header class="overlay-header">
+          <div>
+            <span class="eyebrow">GLOBAL TYPOGRAPHY</span>
+            <h2 id="typographyTitle">《仙途》全局正文排版</h2>
+            <p>统一作用于全部章节与连续稿；不向正文内容写入格式标记。</p>
+          </div>
+          <div class="overlay-actions">
+            <span class="status-chip is-success" id="typographyDirtyState"
+              >已应用 · 版本 3</span
+            ><button class="icon-button overlay-close" title="关闭">
+              <svg><use href="#i-x" /></svg>
+            </button>
+          </div>
+        </header>
         <div class="typography-layout">
           <aside class="typography-controls">
-            <div class="typography-scope"><svg><use href="#i-book" /></svg><span><strong>应用范围</strong><small>《仙途》全部正文 · 42 个已写章节</small></span><b>项目级</b></div>
-            <section class="typography-control-section"><div class="control-section-heading"><strong>排版预设</strong><span id="typographyPresetLabel">当前：专注写作</span></div><div class="typography-presets"><button class="is-active" data-typography-preset="writing"><b>专注写作</b><small>舒展 · 宋体</small></button><button data-typography-preset="proof"><b>紧凑校对</b><small>高密 · 黑体</small></button><button data-typography-preset="book"><b>纸书阅读</b><small>窄版 · 楷体</small></button></div></section>
-            <section class="typography-control-section"><div class="control-section-heading"><strong>字体与字号</strong><span>正文和章节标题</span></div><label class="typography-select"><span>正文字体</span><select id="typographyFont"><option value="source-serif" selected>思源宋体 / 宋体回退</option><option value="lxgw">霞鹜文楷 / 楷体回退</option><option value="song">系统宋体</option><option value="source-sans">思源黑体 / 微软雅黑回退</option><option value="system">系统界面字体</option></select></label><div class="typography-range"><label for="typographyFontSize"><span>正文字号</span><output id="typographyFontSizeValue">16 px</output></label><input id="typographyFontSize" type="range" min="14" max="22" step="1" value="16"/></div><div class="typography-range"><label for="typographyTitleSize"><span>章节标题</span><output id="typographyTitleSizeValue">29 px</output></label><input id="typographyTitleSize" type="range" min="24" max="40" step="1" value="29"/></div></section>
-            <section class="typography-control-section"><div class="control-section-heading"><strong>段落与版心</strong><span>控制阅读密度</span></div><div class="typography-range"><label for="typographyLineHeight"><span>行间距</span><output id="typographyLineHeightValue">2.00</output></label><input id="typographyLineHeight" type="range" min="1.4" max="2.4" step="0.05" value="2"/></div><div class="typography-range"><label for="typographyParagraphGap"><span>段落间距</span><output id="typographyParagraphGapValue">1.0 em</output></label><input id="typographyParagraphGap" type="range" min="0" max="1.8" step="0.1" value="1"/></div><div class="typography-range"><label for="typographyWidth"><span>版心宽度</span><output id="typographyWidthValue">760 px</output></label><input id="typographyWidth" type="range" min="600" max="880" step="20" value="760"/></div></section>
-            <section class="typography-control-section is-compact"><div class="control-section-heading"><strong>段落格式</strong><span>全局规则</span></div><div class="typography-inline-controls"><label class="switch-control"><input id="typographyIndent" type="checkbox" checked/><span><i></i>首行缩进 2 字</span></label><div class="segmented typography-align" aria-label="段落对齐"><button class="is-active" data-typography-align="left">左对齐</button><button data-typography-align="justify">两端对齐</button></div></div><div class="paper-tone-row"><span>纸张底色</span><button class="paper-swatch is-active" data-paper-tone="warm" title="暖纸" aria-label="暖纸"></button><button class="paper-swatch is-white" data-paper-tone="white" title="纯白" aria-label="纯白"></button><button class="paper-swatch is-gray" data-paper-tone="gray" title="柔灰" aria-label="柔灰"></button></div></section>
+            <div class="typography-scope">
+              <svg><use href="#i-book" /></svg
+              ><span
+                ><strong>应用范围</strong
+                ><small>《仙途》全部正文 · 42 个已写章节</small></span
+              ><b>项目级</b>
+            </div>
+            <section class="typography-control-section">
+              <div class="control-section-heading">
+                <strong>排版预设</strong
+                ><span id="typographyPresetLabel">当前：专注写作</span>
+              </div>
+              <div class="typography-presets">
+                <button class="is-active" data-typography-preset="writing">
+                  <b>专注写作</b><small>舒展 · 宋体</small></button
+                ><button data-typography-preset="proof">
+                  <b>紧凑校对</b><small>高密 · 黑体</small></button
+                ><button data-typography-preset="book">
+                  <b>纸书阅读</b><small>窄版 · 楷体</small>
+                </button>
+              </div>
+            </section>
+            <section class="typography-control-section">
+              <div class="control-section-heading">
+                <strong>字体与字号</strong><span>正文和章节标题</span>
+              </div>
+              <label class="typography-select"
+                ><span>正文字体</span
+                ><select id="typographyFont">
+                  <option value="source-serif" selected>
+                    思源宋体 / 宋体回退
+                  </option>
+                  <option value="lxgw">霞鹜文楷 / 楷体回退</option>
+                  <option value="song">系统宋体</option>
+                  <option value="source-sans">思源黑体 / 微软雅黑回退</option>
+                  <option value="system">系统界面字体</option>
+                </select></label
+              >
+              <div class="typography-range">
+                <label for="typographyFontSize"
+                  ><span>正文字号</span
+                  ><output id="typographyFontSizeValue">16 px</output></label
+                ><input
+                  id="typographyFontSize"
+                  type="range"
+                  min="14"
+                  max="22"
+                  step="1"
+                  value="16"
+                />
+              </div>
+              <div class="typography-range">
+                <label for="typographyTitleSize"
+                  ><span>章节标题</span
+                  ><output id="typographyTitleSizeValue">29 px</output></label
+                ><input
+                  id="typographyTitleSize"
+                  type="range"
+                  min="24"
+                  max="40"
+                  step="1"
+                  value="29"
+                />
+              </div>
+            </section>
+            <section class="typography-control-section">
+              <div class="control-section-heading">
+                <strong>段落与版心</strong><span>控制阅读密度</span>
+              </div>
+              <div class="typography-range">
+                <label for="typographyLineHeight"
+                  ><span>行间距</span
+                  ><output id="typographyLineHeightValue">2.00</output></label
+                ><input
+                  id="typographyLineHeight"
+                  type="range"
+                  min="1.4"
+                  max="2.4"
+                  step="0.05"
+                  value="2"
+                />
+              </div>
+              <div class="typography-range">
+                <label for="typographyParagraphGap"
+                  ><span>段落间距</span
+                  ><output id="typographyParagraphGapValue"
+                    >1.0 em</output
+                  ></label
+                ><input
+                  id="typographyParagraphGap"
+                  type="range"
+                  min="0"
+                  max="1.8"
+                  step="0.1"
+                  value="1"
+                />
+              </div>
+              <div class="typography-range">
+                <label for="typographyWidth"
+                  ><span>版心宽度</span
+                  ><output id="typographyWidthValue">760 px</output></label
+                ><input
+                  id="typographyWidth"
+                  type="range"
+                  min="600"
+                  max="880"
+                  step="20"
+                  value="760"
+                />
+              </div>
+            </section>
+            <section class="typography-control-section is-compact">
+              <div class="control-section-heading">
+                <strong>段落格式</strong><span>全局规则</span>
+              </div>
+              <div class="typography-inline-controls">
+                <label class="switch-control"
+                  ><input id="typographyIndent" type="checkbox" checked /><span
+                    ><i></i>首行缩进 2 字</span
+                  ></label
+                >
+                <div class="segmented typography-align" aria-label="段落对齐">
+                  <button class="is-active" data-typography-align="left">
+                    左对齐</button
+                  ><button data-typography-align="justify">两端对齐</button>
+                </div>
+              </div>
+              <div class="paper-tone-row">
+                <span>纸张底色</span
+                ><button
+                  class="paper-swatch is-active"
+                  data-paper-tone="warm"
+                  title="暖纸"
+                  aria-label="暖纸"
+                ></button
+                ><button
+                  class="paper-swatch is-white"
+                  data-paper-tone="white"
+                  title="纯白"
+                  aria-label="纯白"
+                ></button
+                ><button
+                  class="paper-swatch is-gray"
+                  data-paper-tone="gray"
+                  title="柔灰"
+                  aria-label="柔灰"
+                ></button>
+              </div>
+            </section>
           </aside>
           <main class="typography-preview-stage">
-            <div class="typography-preview-toolbar"><span><strong>实时样张</strong><small>第 42 章 · 丹成大道</small></span><b id="typographyPreviewMeta">版心 760 px · 正文 16 px</b></div>
-            <article class="typography-preview-page" id="typographyPreviewPage"><header><small>第二卷 · 丹炉城</small><h3>丹成大道</h3><i></i></header><div><p>炉门合拢时，城南的雨才刚落下来。</p><p>林砚盘膝坐在赤铜阵心，听见雨点隔着三重禁制敲在瓦上。那声音很轻，像有人在极远的地方，以指节一下一下叩问。</p><p>按照《离火丹经》，此刻应当收火、封窍、静候九息。可寄生在地火里的奇则偏偏反了过来——火越收，丹胚吞得越凶。</p><p>“它在学你。”识海里，枯灯老人忽然开口。</p></div><footer><span>42</span><i></i><span>仙途</span></footer></article>
+            <div class="typography-preview-toolbar">
+              <span
+                ><strong>实时样张</strong
+                ><small>第 42 章 · 丹成大道</small></span
+              ><b id="typographyPreviewMeta">版心 760 px · 正文 16 px</b>
+            </div>
+            <article class="typography-preview-page" id="typographyPreviewPage">
+              <header>
+                <small>第二卷 · 丹炉城</small>
+                <h3>丹成大道</h3>
+                <i></i>
+              </header>
+              <div>
+                <p>炉门合拢时，城南的雨才刚落下来。</p>
+                <p>
+                  林砚盘膝坐在赤铜阵心，听见雨点隔着三重禁制敲在瓦上。那声音很轻，像有人在极远的地方，以指节一下一下叩问。
+                </p>
+                <p>
+                  按照《离火丹经》，此刻应当收火、封窍、静候九息。可寄生在地火里的奇则偏偏反了过来——火越收，丹胚吞得越凶。
+                </p>
+                <p>“它在学你。”识海里，枯灯老人忽然开口。</p>
+              </div>
+              <footer><span>42</span><i></i><span>仙途</span></footer>
+            </article>
           </main>
         </div>
-        <footer class="overlay-footer typography-footer"><button class="danger-link" id="typographyReset">恢复项目默认</button><span class="footer-spacer"></span><button class="secondary-button overlay-close">取消</button><button class="primary-button" id="typographyApply"><svg><use href="#i-check" /></svg>应用到全部正文</button></footer>
+        <footer class="overlay-footer typography-footer">
+          <button class="danger-link" id="typographyReset">恢复项目默认</button
+          ><span class="footer-spacer"></span
+          ><button class="secondary-button overlay-close">取消</button
+          ><button class="primary-button" id="typographyApply">
+            <svg><use href="#i-check" /></svg>应用到全部正文
+          </button>
+        </footer>
       </section>
     </div>
 
     <div class="overlay" id="candidateOverlay" hidden>
-      <section class="review-surface" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
-        <header class="overlay-header"><div><span class="eyebrow">CHANGE REVIEW</span><h2 id="reviewTitle">AI 候选审阅</h2></div><div class="overlay-actions"><span class="base-revision">基于修订 r12</span><button class="icon-button overlay-close" title="关闭"><svg><use href="#i-x" /></svg></button></div></header>
-        <div class="review-summary"><div><svg><use href="#i-wand" /></svg></div><div><strong id="reviewLabel">选区润色 · 文气收束</strong><p id="reviewReason">压缩说明句，增强动作与异象之间的因果感；不改变人物、物品和规则事实。</p></div><span class="status-chip is-success">无事实偏移</span></div>
-        <div class="diff-grid">
-          <section><header><span>当前正文</span><small>BEFORE</small></header><div class="diff-text before" id="beforeText"></div></section>
-          <section><header><span>候选正文</span><small>AFTER</small></header><div class="diff-text after" id="afterText"></div></section>
+      <section
+        class="review-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reviewTitle"
+      >
+        <header class="overlay-header">
+          <div>
+            <span class="eyebrow">CHANGE REVIEW</span>
+            <h2 id="reviewTitle">AI 候选审阅</h2>
+          </div>
+          <div class="overlay-actions">
+            <span class="base-revision">基于修订 r12</span
+            ><button class="icon-button overlay-close" title="关闭">
+              <svg><use href="#i-x" /></svg>
+            </button>
+          </div>
+        </header>
+        <div class="review-summary">
+          <div>
+            <svg><use href="#i-wand" /></svg>
+          </div>
+          <div>
+            <strong id="reviewLabel">选区润色 · 文气收束</strong>
+            <p id="reviewReason">
+              压缩说明句，增强动作与异象之间的因果感；不改变人物、物品和规则事实。
+            </p>
+          </div>
+          <span class="status-chip is-success">无事实偏移</span>
         </div>
-        <footer class="overlay-footer"><button class="danger-link overlay-close">拒绝候选</button><span class="footer-spacer"></span><button class="secondary-button" id="acceptPartial">逐段选择</button><button class="primary-button" id="acceptCandidate"><svg><use href="#i-check" /></svg>接受并创建新修订</button></footer>
+        <div class="diff-grid">
+          <section>
+            <header><span>当前正文</span><small>BEFORE</small></header>
+            <div class="diff-text before" id="beforeText"></div>
+          </section>
+          <section>
+            <header><span>候选正文</span><small>AFTER</small></header>
+            <div class="diff-text after" id="afterText"></div>
+          </section>
+        </div>
+        <footer class="overlay-footer">
+          <button class="danger-link overlay-close">拒绝候选</button
+          ><span class="footer-spacer"></span
+          ><button class="secondary-button" id="acceptPartial">逐段选择</button
+          ><button class="primary-button" id="acceptCandidate">
+            <svg><use href="#i-check" /></svg>接受并创建新修订
+          </button>
+        </footer>
       </section>
     </div>
 
     <div class="overlay" id="brainstormOverlay" hidden>
-      <section class="brainstorm-surface" role="dialog" aria-modal="true" aria-labelledby="brainstormTitle">
-        <header class="overlay-header"><div><span class="eyebrow">MULTI-AGENT ROOM</span><h2 id="brainstormTitle">第 42 章 · 多 Agent 脑暴室</h2><p>六个角色共享同一冻结上下文，彼此独立产出，不修改正文。</p></div><div class="overlay-actions"><span class="base-revision">上下文快照 ctx-042-r12</span><button class="icon-button overlay-close" title="关闭"><svg><use href="#i-x" /></svg></button></div></header>
+      <section
+        class="brainstorm-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="brainstormTitle"
+      >
+        <header class="overlay-header">
+          <div>
+            <span class="eyebrow">MULTI-AGENT ROOM</span>
+            <h2 id="brainstormTitle">第 42 章 · 多 Agent 脑暴室</h2>
+            <p>六个角色共享同一冻结上下文，彼此独立产出，不修改正文。</p>
+          </div>
+          <div class="overlay-actions">
+            <span class="base-revision">上下文快照 ctx-042-r12</span
+            ><button class="icon-button overlay-close" title="关闭">
+              <svg><use href="#i-x" /></svg>
+            </button>
+          </div>
+        </header>
         <div class="brainstorm-layout">
           <aside class="agent-config">
-            <div class="agent-config-header"><strong>Agent 阵容</strong><span id="agentSummary">启用 6 / 6 · 6 个模型</span></div>
-            <div class="agent-list">
-              <div class="agent-row" data-agent-name="剧情结构师"><input class="agent-enabled" type="checkbox" checked aria-label="启用剧情结构师"/><i class="agent-color c1">策</i><span class="agent-info"><strong>剧情结构师</strong><small>剧情工程 · 时间线</small></span><div class="agent-controls"><select class="agent-model" aria-label="剧情结构师模型"><optgroup label="Anthropic"><option value="claude-opus-4.6" selected>Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option></optgroup><optgroup label="OpenAI"><option value="gpt-5.6">GPT-5.6</option></optgroup><optgroup label="Google"><option value="gemini-3-pro">Gemini 3 Pro</option></optgroup><optgroup label="其它供应商"><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></optgroup></select><select class="agent-count" aria-label="剧情结构师方案数量"><option value="1">1 个方案</option><option value="2" selected>2 个方案</option><option value="3">3 个方案</option><option value="4">4 个方案</option><option value="5">5 个方案</option></select></div></div>
-              <div class="agent-row" data-agent-name="人物导演"><input class="agent-enabled" type="checkbox" checked aria-label="启用人物导演"/><i class="agent-color c2">人</i><span class="agent-info"><strong>人物导演</strong><small>人物 · 关系 · 秘密</small></span><div class="agent-controls"><select class="agent-model" aria-label="人物导演模型"><optgroup label="Anthropic"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option></optgroup><optgroup label="OpenAI"><option value="gpt-5.6">GPT-5.6</option></optgroup><optgroup label="Google"><option value="gemini-3-pro" selected>Gemini 3 Pro</option></optgroup><optgroup label="其它供应商"><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></optgroup></select><select class="agent-count" aria-label="人物导演方案数量"><option value="1">1 个方案</option><option value="2" selected>2 个方案</option><option value="3">3 个方案</option><option value="4">4 个方案</option><option value="5">5 个方案</option></select></div></div>
-              <div class="agent-row" data-agent-name="连载编辑"><input class="agent-enabled" type="checkbox" checked aria-label="启用连载编辑"/><i class="agent-color c3">商</i><span class="agent-info"><strong>连载编辑</strong><small>爽点 · 留存 · 钩子</small></span><div class="agent-controls"><select class="agent-model" aria-label="连载编辑模型"><optgroup label="Anthropic"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option></optgroup><optgroup label="OpenAI"><option value="gpt-5.6">GPT-5.6</option></optgroup><optgroup label="Google"><option value="gemini-3-pro">Gemini 3 Pro</option></optgroup><optgroup label="其它供应商"><option value="deepseek-v3.2" selected>DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></optgroup></select><select class="agent-count" aria-label="连载编辑方案数量"><option value="1">1 个方案</option><option value="2" selected>2 个方案</option><option value="3">3 个方案</option><option value="4">4 个方案</option><option value="5">5 个方案</option></select></div></div>
-              <div class="agent-row" data-agent-name="规则破壁者"><input class="agent-enabled" type="checkbox" checked aria-label="启用规则破壁者"/><i class="agent-color c4">则</i><span class="agent-info"><strong>规则破壁者</strong><small>世界 · 力量 · 奇则</small></span><div class="agent-controls"><select class="agent-model" aria-label="规则破壁者模型"><optgroup label="Anthropic"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option></optgroup><optgroup label="OpenAI"><option value="gpt-5.6" selected>GPT-5.6</option></optgroup><optgroup label="Google"><option value="gemini-3-pro">Gemini 3 Pro</option></optgroup><optgroup label="其它供应商"><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></optgroup></select><select class="agent-count" aria-label="规则破壁者方案数量"><option value="1">1 个方案</option><option value="2">2 个方案</option><option value="3" selected>3 个方案</option><option value="4">4 个方案</option><option value="5">5 个方案</option></select></div></div>
-              <div class="agent-row" data-agent-name="文风雕刻师"><input class="agent-enabled" type="checkbox" checked aria-label="启用文风雕刻师"/><i class="agent-color c5">文</i><span class="agent-info"><strong>文风雕刻师</strong><small>正文 · 写法 · 去模板</small></span><div class="agent-controls"><select class="agent-model" aria-label="文风雕刻师模型"><optgroup label="Anthropic"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6" selected>Claude Sonnet 4.6</option></optgroup><optgroup label="OpenAI"><option value="gpt-5.6">GPT-5.6</option></optgroup><optgroup label="Google"><option value="gemini-3-pro">Gemini 3 Pro</option></optgroup><optgroup label="其它供应商"><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></optgroup></select><select class="agent-count" aria-label="文风雕刻师方案数量"><option value="1">1 个方案</option><option value="2" selected>2 个方案</option><option value="3">3 个方案</option><option value="4">4 个方案</option><option value="5">5 个方案</option></select></div></div>
-              <div class="agent-row" data-agent-name="反套路顾问"><input class="agent-enabled" type="checkbox" checked aria-label="启用反套路顾问"/><i class="agent-color c6">逆</i><span class="agent-info"><strong>反套路顾问</strong><small>灵感 · 研究 · 反事实</small></span><div class="agent-controls"><select class="agent-model" aria-label="反套路顾问模型"><optgroup label="Anthropic"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option></optgroup><optgroup label="OpenAI"><option value="gpt-5.6">GPT-5.6</option></optgroup><optgroup label="Google"><option value="gemini-3-pro">Gemini 3 Pro</option></optgroup><optgroup label="其它供应商"><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5" selected>Kimi K2.5</option></optgroup></select><select class="agent-count" aria-label="反套路顾问方案数量"><option value="1">1 个方案</option><option value="2" selected>2 个方案</option><option value="3">3 个方案</option><option value="4">4 个方案</option><option value="5">5 个方案</option></select></div></div>
+            <div class="agent-config-header">
+              <strong>Agent 阵容</strong
+              ><span id="agentSummary">启用 6 / 6 · 6 个模型</span>
             </div>
-            <button class="primary-wide" id="brainstormStart"><svg><use href="#i-spark" /></svg>开始脑暴 · 预计 13 个方案</button>
-            <p class="config-note">模型和上下文模块可在“模型场景 / 正文 Agent”中配置。</p>
+            <div class="agent-list">
+              <div class="agent-row" data-agent-name="剧情结构师">
+                <input
+                  class="agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用剧情结构师"
+                /><i class="agent-color c1">策</i
+                ><span class="agent-info"
+                  ><strong>剧情结构师</strong
+                  ><small>剧情工程 · 时间线</small></span
+                >
+                <div class="agent-controls">
+                  <select class="agent-model" aria-label="剧情结构师模型">
+                    <optgroup label="Anthropic">
+                      <option value="claude-opus-4.6" selected>
+                        Claude Opus 4.6
+                      </option>
+                      <option value="claude-sonnet-4.6">
+                        Claude Sonnet 4.6
+                      </option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-5.6">GPT-5.6</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                      <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    </optgroup>
+                    <optgroup label="其它供应商">
+                      <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                      <option value="kimi-k2.5">Kimi K2.5</option>
+                    </optgroup></select
+                  ><select class="agent-count" aria-label="剧情结构师方案数量">
+                    <option value="1">1 个方案</option>
+                    <option value="2" selected>2 个方案</option>
+                    <option value="3">3 个方案</option>
+                    <option value="4">4 个方案</option>
+                    <option value="5">5 个方案</option>
+                  </select>
+                </div>
+              </div>
+              <div class="agent-row" data-agent-name="人物导演">
+                <input
+                  class="agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用人物导演"
+                /><i class="agent-color c2">人</i
+                ><span class="agent-info"
+                  ><strong>人物导演</strong
+                  ><small>人物 · 关系 · 秘密</small></span
+                >
+                <div class="agent-controls">
+                  <select class="agent-model" aria-label="人物导演模型">
+                    <optgroup label="Anthropic">
+                      <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                      <option value="claude-sonnet-4.6">
+                        Claude Sonnet 4.6
+                      </option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-5.6">GPT-5.6</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                      <option value="gemini-3-pro" selected>
+                        Gemini 3 Pro
+                      </option>
+                    </optgroup>
+                    <optgroup label="其它供应商">
+                      <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                      <option value="kimi-k2.5">Kimi K2.5</option>
+                    </optgroup></select
+                  ><select class="agent-count" aria-label="人物导演方案数量">
+                    <option value="1">1 个方案</option>
+                    <option value="2" selected>2 个方案</option>
+                    <option value="3">3 个方案</option>
+                    <option value="4">4 个方案</option>
+                    <option value="5">5 个方案</option>
+                  </select>
+                </div>
+              </div>
+              <div class="agent-row" data-agent-name="连载编辑">
+                <input
+                  class="agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用连载编辑"
+                /><i class="agent-color c3">商</i
+                ><span class="agent-info"
+                  ><strong>连载编辑</strong
+                  ><small>爽点 · 留存 · 钩子</small></span
+                >
+                <div class="agent-controls">
+                  <select class="agent-model" aria-label="连载编辑模型">
+                    <optgroup label="Anthropic">
+                      <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                      <option value="claude-sonnet-4.6">
+                        Claude Sonnet 4.6
+                      </option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-5.6">GPT-5.6</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                      <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    </optgroup>
+                    <optgroup label="其它供应商">
+                      <option value="deepseek-v3.2" selected>
+                        DeepSeek V3.2
+                      </option>
+                      <option value="kimi-k2.5">Kimi K2.5</option>
+                    </optgroup></select
+                  ><select class="agent-count" aria-label="连载编辑方案数量">
+                    <option value="1">1 个方案</option>
+                    <option value="2" selected>2 个方案</option>
+                    <option value="3">3 个方案</option>
+                    <option value="4">4 个方案</option>
+                    <option value="5">5 个方案</option>
+                  </select>
+                </div>
+              </div>
+              <div class="agent-row" data-agent-name="规则破壁者">
+                <input
+                  class="agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用规则破壁者"
+                /><i class="agent-color c4">则</i
+                ><span class="agent-info"
+                  ><strong>规则破壁者</strong
+                  ><small>世界 · 力量 · 奇则</small></span
+                >
+                <div class="agent-controls">
+                  <select class="agent-model" aria-label="规则破壁者模型">
+                    <optgroup label="Anthropic">
+                      <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                      <option value="claude-sonnet-4.6">
+                        Claude Sonnet 4.6
+                      </option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-5.6" selected>GPT-5.6</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                      <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    </optgroup>
+                    <optgroup label="其它供应商">
+                      <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                      <option value="kimi-k2.5">Kimi K2.5</option>
+                    </optgroup></select
+                  ><select class="agent-count" aria-label="规则破壁者方案数量">
+                    <option value="1">1 个方案</option>
+                    <option value="2">2 个方案</option>
+                    <option value="3" selected>3 个方案</option>
+                    <option value="4">4 个方案</option>
+                    <option value="5">5 个方案</option>
+                  </select>
+                </div>
+              </div>
+              <div class="agent-row" data-agent-name="文风雕刻师">
+                <input
+                  class="agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用文风雕刻师"
+                /><i class="agent-color c5">文</i
+                ><span class="agent-info"
+                  ><strong>文风雕刻师</strong
+                  ><small>正文 · 写法 · 去模板</small></span
+                >
+                <div class="agent-controls">
+                  <select class="agent-model" aria-label="文风雕刻师模型">
+                    <optgroup label="Anthropic">
+                      <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                      <option value="claude-sonnet-4.6" selected>
+                        Claude Sonnet 4.6
+                      </option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-5.6">GPT-5.6</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                      <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    </optgroup>
+                    <optgroup label="其它供应商">
+                      <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                      <option value="kimi-k2.5">Kimi K2.5</option>
+                    </optgroup></select
+                  ><select class="agent-count" aria-label="文风雕刻师方案数量">
+                    <option value="1">1 个方案</option>
+                    <option value="2" selected>2 个方案</option>
+                    <option value="3">3 个方案</option>
+                    <option value="4">4 个方案</option>
+                    <option value="5">5 个方案</option>
+                  </select>
+                </div>
+              </div>
+              <div class="agent-row" data-agent-name="反套路顾问">
+                <input
+                  class="agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用反套路顾问"
+                /><i class="agent-color c6">逆</i
+                ><span class="agent-info"
+                  ><strong>反套路顾问</strong
+                  ><small>灵感 · 研究 · 反事实</small></span
+                >
+                <div class="agent-controls">
+                  <select class="agent-model" aria-label="反套路顾问模型">
+                    <optgroup label="Anthropic">
+                      <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                      <option value="claude-sonnet-4.6">
+                        Claude Sonnet 4.6
+                      </option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      <option value="gpt-5.6">GPT-5.6</option>
+                    </optgroup>
+                    <optgroup label="Google">
+                      <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    </optgroup>
+                    <optgroup label="其它供应商">
+                      <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                      <option value="kimi-k2.5" selected>Kimi K2.5</option>
+                    </optgroup></select
+                  ><select class="agent-count" aria-label="反套路顾问方案数量">
+                    <option value="1">1 个方案</option>
+                    <option value="2" selected>2 个方案</option>
+                    <option value="3">3 个方案</option>
+                    <option value="4">4 个方案</option>
+                    <option value="5">5 个方案</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <button class="primary-wide" id="brainstormStart">
+              <svg><use href="#i-spark" /></svg>开始脑暴 · 预计 13 个方案
+            </button>
+            <p class="config-note">
+              模型和上下文模块可在“模型场景 / 正文 Agent”中配置。
+            </p>
           </aside>
           <main class="brainstorm-results">
-            <div class="result-toolbar"><div><strong>候选方案</strong><span id="resultCount">示例 6 个 · 已按差异聚类</span></div><div class="segmented"><button class="is-active">全部</button><button>剧情</button><button>人物</button><button>商业</button></div></div>
+            <div class="result-toolbar">
+              <div>
+                <strong>候选方案</strong
+                ><span id="resultCount">示例 6 个 · 已按差异聚类</span>
+              </div>
+              <div class="segmented">
+                <button class="is-active">全部</button><button>剧情</button
+                ><button>人物</button><button>商业</button>
+              </div>
+            </div>
             <div class="candidate-grid" id="candidateGrid">
-              <article class="idea-card is-featured"><header><i class="agent-color c4">则</i><div><strong>反向成丹：丹是容器，人才是药</strong><small>规则破壁者 · GPT-5.6 · 方案 01</small></div><span>新颖 94</span></header><p>丹炉没有炼丹，而是在反向炼化林砚。林砚主动让两道剑痕分别承担“药性”与“炉火”，最终成的不是逆火丹，而是一枚能暂时承载矛盾规则的内丹雏形。</p><footer><span>#强规则碰撞</span><span>#高代价</span><button data-ai-action="brainstorm">查看正文稿</button></footer></article>
-              <article class="idea-card"><header><i class="agent-color c3">商</i><div><strong>巡火司提前破门</strong><small>连载编辑 · DeepSeek V3.2 · 方案 02</small></div><span>追读 91</span></header><p>把破门提前到成丹前一息，迫使林砚当众做出错误选择；章尾停在丹炉中传出第二个人的呼吸声。</p><footer><span>#强钩子</span><span>#节奏快</span><button data-ai-action="brainstorm">查看正文稿</button></footer></article>
-              <article class="idea-card"><header><i class="agent-color c2">人</i><div><strong>陆青禾第一次说谎</strong><small>人物导演 · Gemini 3 Pro · 方案 03</small></div><span>人物 89</span></header><p>陆青禾其实认得第二道剑痕，却向林砚隐瞒。她替他挡住巡火司时第一次主动越过自己的底线，关系推进与暗线同时落地。</p><footer><span>#关系变化</span><span>#秘密矩阵</span><button data-ai-action="brainstorm">查看正文稿</button></footer></article>
-              <article class="idea-card"><header><i class="agent-color c1">策</i><div><strong>双线汇合：问剑台坐标</strong><small>剧情结构师 · Claude Opus 4.6 · 方案 04</small></div><span>结构 87</span></header><p>第二道剑痕不是图案，而是被炉火点亮的空间坐标，将丹炉城单元自然引向问剑台副本。</p><footer><span>#转场</span><span>#暗线强化</span><button data-ai-action="brainstorm">查看正文稿</button></footer></article>
-              <article class="idea-card"><header><i class="agent-color c5">文</i><div><strong>删去解释，只留火焰俯首</strong><small>文风雕刻师 · Claude Sonnet 4.6 · 方案 05</small></div><span>文气 93</span></header><p>不直接解释规则，让火焰、雨声、丹炉心跳和人物动作完成信息传递，直到章末才用一句话点破“炉中炼的是谁”。</p><footer><span>#克制</span><span>#画面感</span><button data-ai-action="brainstorm">查看正文稿</button></footer></article>
-              <article class="idea-card"><header><i class="agent-color c6">逆</i><div><strong>失败成丹：赢的是资格</strong><small>反套路顾问 · Kimi K2.5 · 方案 06</small></div><span>意外 96</span></header><p>丹最终碎裂，林砚表面失败，却因此被丹炉城古阵承认为新的守炉人。爽点从“得到宝物”改成“规则承认”。</p><footer><span>#反预期</span><span>#长期资产</span><button data-ai-action="brainstorm">查看正文稿</button></footer></article>
+              <article class="idea-card is-featured">
+                <header>
+                  <i class="agent-color c4">则</i>
+                  <div>
+                    <strong>反向成丹：丹是容器，人才是药</strong
+                    ><small>规则破壁者 · GPT-5.6 · 方案 01</small>
+                  </div>
+                  <span>新颖 94</span>
+                </header>
+                <p>
+                  丹炉没有炼丹，而是在反向炼化林砚。林砚主动让两道剑痕分别承担“药性”与“炉火”，最终成的不是逆火丹，而是一枚能暂时承载矛盾规则的内丹雏形。
+                </p>
+                <footer>
+                  <span>#强规则碰撞</span><span>#高代价</span
+                  ><button data-ai-action="brainstorm">查看正文稿</button>
+                </footer>
+              </article>
+              <article class="idea-card">
+                <header>
+                  <i class="agent-color c3">商</i>
+                  <div>
+                    <strong>巡火司提前破门</strong
+                    ><small>连载编辑 · DeepSeek V3.2 · 方案 02</small>
+                  </div>
+                  <span>追读 91</span>
+                </header>
+                <p>
+                  把破门提前到成丹前一息，迫使林砚当众做出错误选择；章尾停在丹炉中传出第二个人的呼吸声。
+                </p>
+                <footer>
+                  <span>#强钩子</span><span>#节奏快</span
+                  ><button data-ai-action="brainstorm">查看正文稿</button>
+                </footer>
+              </article>
+              <article class="idea-card">
+                <header>
+                  <i class="agent-color c2">人</i>
+                  <div>
+                    <strong>陆青禾第一次说谎</strong
+                    ><small>人物导演 · Gemini 3 Pro · 方案 03</small>
+                  </div>
+                  <span>人物 89</span>
+                </header>
+                <p>
+                  陆青禾其实认得第二道剑痕，却向林砚隐瞒。她替他挡住巡火司时第一次主动越过自己的底线，关系推进与暗线同时落地。
+                </p>
+                <footer>
+                  <span>#关系变化</span><span>#秘密矩阵</span
+                  ><button data-ai-action="brainstorm">查看正文稿</button>
+                </footer>
+              </article>
+              <article class="idea-card">
+                <header>
+                  <i class="agent-color c1">策</i>
+                  <div>
+                    <strong>双线汇合：问剑台坐标</strong
+                    ><small>剧情结构师 · Claude Opus 4.6 · 方案 04</small>
+                  </div>
+                  <span>结构 87</span>
+                </header>
+                <p>
+                  第二道剑痕不是图案，而是被炉火点亮的空间坐标，将丹炉城单元自然引向问剑台副本。
+                </p>
+                <footer>
+                  <span>#转场</span><span>#暗线强化</span
+                  ><button data-ai-action="brainstorm">查看正文稿</button>
+                </footer>
+              </article>
+              <article class="idea-card">
+                <header>
+                  <i class="agent-color c5">文</i>
+                  <div>
+                    <strong>删去解释，只留火焰俯首</strong
+                    ><small>文风雕刻师 · Claude Sonnet 4.6 · 方案 05</small>
+                  </div>
+                  <span>文气 93</span>
+                </header>
+                <p>
+                  不直接解释规则，让火焰、雨声、丹炉心跳和人物动作完成信息传递，直到章末才用一句话点破“炉中炼的是谁”。
+                </p>
+                <footer>
+                  <span>#克制</span><span>#画面感</span
+                  ><button data-ai-action="brainstorm">查看正文稿</button>
+                </footer>
+              </article>
+              <article class="idea-card">
+                <header>
+                  <i class="agent-color c6">逆</i>
+                  <div>
+                    <strong>失败成丹：赢的是资格</strong
+                    ><small>反套路顾问 · Kimi K2.5 · 方案 06</small>
+                  </div>
+                  <span>意外 96</span>
+                </header>
+                <p>
+                  丹最终碎裂，林砚表面失败，却因此被丹炉城古阵承认为新的守炉人。爽点从“得到宝物”改成“规则承认”。
+                </p>
+                <footer>
+                  <span>#反预期</span><span>#长期资产</span
+                  ><button data-ai-action="brainstorm">查看正文稿</button>
+                </footer>
+              </article>
             </div>
           </main>
         </div>
@@ -351,38 +1492,456 @@
     </div>
 
     <div class="overlay" id="simulationOverlay" hidden>
-      <section class="simulation-surface" role="dialog" aria-modal="true" aria-labelledby="simulationTitle">
-        <header class="overlay-header"><div><span class="eyebrow">PLOT SIMULATION LAB</span><h2 id="simulationTitle">第 42 章之后 · AI 剧情推演室</h2><p>每个 Agent 从同一剧情检查点独立演算后续因果链，只创建候选分支，不修改正式大纲。</p></div><div class="overlay-actions"><span class="base-revision">剧情检查点 plot-042-r12</span><button class="icon-button overlay-close" title="关闭"><svg><use href="#i-x" /></svg></button></div></header>
+      <section
+        class="simulation-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="simulationTitle"
+      >
+        <header class="overlay-header">
+          <div>
+            <span class="eyebrow">PLOT SIMULATION LAB</span>
+            <h2 id="simulationTitle">第 42 章之后 · AI 剧情推演室</h2>
+            <p>
+              每个 Agent
+              从同一剧情检查点独立演算后续因果链，只创建候选分支，不修改正式大纲。
+            </p>
+          </div>
+          <div class="overlay-actions">
+            <span class="base-revision">剧情检查点 plot-042-r12</span
+            ><button class="icon-button overlay-close" title="关闭">
+              <svg><use href="#i-x" /></svg>
+            </button>
+          </div>
+        </header>
         <div class="simulation-layout">
           <aside class="simulation-config">
-            <div class="simulation-section-title"><strong>推演边界</strong><span id="simulationAgentSummary">启用 6 / 6 · 6 个模型</span></div>
+            <div class="simulation-section-title">
+              <strong>推演边界</strong
+              ><span id="simulationAgentSummary">启用 6 / 6 · 6 个模型</span>
+            </div>
             <div class="simulation-scope">
-              <label><span>从哪里开始</span><select id="simulationStartPoint"><option value="42-end" selected>第 42 章结尾</option><option value="43-plan">第 43 章计划</option><option value="unit-end">丹炉城单元末</option></select></label>
-              <label><span>向后推演</span><select id="simulationHorizon"><option value="3">未来 3 章</option><option value="5" selected>未来 5 章</option><option value="8">未来 8 章</option><option value="10">未来 10 章</option></select></label>
+              <label
+                ><span>从哪里开始</span
+                ><select id="simulationStartPoint">
+                  <option value="42-end" selected>第 42 章结尾</option>
+                  <option value="43-plan">第 43 章计划</option>
+                  <option value="unit-end">丹炉城单元末</option>
+                </select></label
+              >
+              <label
+                ><span>向后推演</span
+                ><select id="simulationHorizon">
+                  <option value="3">未来 3 章</option>
+                  <option value="5" selected>未来 5 章</option>
+                  <option value="8">未来 8 章</option>
+                  <option value="10">未来 10 章</option>
+                </select></label
+              >
             </div>
             <div class="simulation-guardrails" aria-label="推演约束">
-              <label><input type="checkbox" checked/><span>主线目标</span></label><label><input type="checkbox" checked/><span>卷级验收</span></label><label><input type="checkbox" checked/><span>人物状态</span></label><label><input type="checkbox" checked/><span>规则边界</span></label><label><input type="checkbox" checked/><span>伏笔账本</span></label>
+              <label
+                ><input type="checkbox" checked /><span>主线目标</span></label
+              ><label
+                ><input type="checkbox" checked /><span>卷级验收</span></label
+              ><label
+                ><input type="checkbox" checked /><span>人物状态</span></label
+              ><label
+                ><input type="checkbox" checked /><span>规则边界</span></label
+              ><label
+                ><input type="checkbox" checked /><span>伏笔账本</span></label
+              >
             </div>
-            <div class="simulation-section-title is-agent-title"><strong>推演 Agent</strong><span>每个产出 1～5 条路径</span></div>
+            <div class="simulation-section-title is-agent-title">
+              <strong>推演 Agent</strong><span>每个产出 1～5 条路径</span>
+            </div>
             <div class="simulation-agent-list">
-              <div class="simulation-agent-row" data-agent-name="主线演算师"><input class="simulation-agent-enabled" type="checkbox" checked aria-label="启用主线演算师"/><i class="agent-color c1">主</i><span class="agent-info"><strong>主线演算师</strong><small>目标递进 · 卷级收束</small></span><div class="simulation-agent-controls"><select class="simulation-agent-model" aria-label="主线演算师模型"><option value="claude-opus-4.6" selected>Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option><option value="gpt-5.6">GPT-5.6</option><option value="gemini-3-pro">Gemini 3 Pro</option><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></select><select class="simulation-agent-count" aria-label="主线演算师方案数量"><option value="1">1 条</option><option value="2" selected>2 条</option><option value="3">3 条</option><option value="4">4 条</option><option value="5">5 条</option></select></div></div>
-              <div class="simulation-agent-row" data-agent-name="人物因果师"><input class="simulation-agent-enabled" type="checkbox" checked aria-label="启用人物因果师"/><i class="agent-color c2">人</i><span class="agent-info"><strong>人物因果师</strong><small>动机 · 关系 · 选择代价</small></span><div class="simulation-agent-controls"><select class="simulation-agent-model" aria-label="人物因果师模型"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option><option value="gpt-5.6">GPT-5.6</option><option value="gemini-3-pro" selected>Gemini 3 Pro</option><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></select><select class="simulation-agent-count" aria-label="人物因果师方案数量"><option value="1">1 条</option><option value="2" selected>2 条</option><option value="3">3 条</option><option value="4">4 条</option><option value="5">5 条</option></select></div></div>
-              <div class="simulation-agent-row" data-agent-name="对手行动者"><input class="simulation-agent-enabled" type="checkbox" checked aria-label="启用对手行动者"/><i class="agent-color c3">敌</i><span class="agent-info"><strong>对手行动者</strong><small>反派理性 · 资源反制</small></span><div class="simulation-agent-controls"><select class="simulation-agent-model" aria-label="对手行动者模型"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option><option value="gpt-5.6">GPT-5.6</option><option value="gemini-3-pro">Gemini 3 Pro</option><option value="deepseek-v3.2" selected>DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></select><select class="simulation-agent-count" aria-label="对手行动者方案数量"><option value="1">1 条</option><option value="2" selected>2 条</option><option value="3">3 条</option><option value="4">4 条</option><option value="5">5 条</option></select></div></div>
-              <div class="simulation-agent-row" data-agent-name="世界规则师"><input class="simulation-agent-enabled" type="checkbox" checked aria-label="启用世界规则师"/><i class="agent-color c4">则</i><span class="agent-info"><strong>世界规则师</strong><small>奇则碰撞 · 力量代价</small></span><div class="simulation-agent-controls"><select class="simulation-agent-model" aria-label="世界规则师模型"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option><option value="gpt-5.6" selected>GPT-5.6</option><option value="gemini-3-pro">Gemini 3 Pro</option><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></select><select class="simulation-agent-count" aria-label="世界规则师方案数量"><option value="1">1 条</option><option value="2" selected>2 条</option><option value="3">3 条</option><option value="4">4 条</option><option value="5">5 条</option></select></div></div>
-              <div class="simulation-agent-row" data-agent-name="连载节奏师"><input class="simulation-agent-enabled" type="checkbox" checked aria-label="启用连载节奏师"/><i class="agent-color c5">节</i><span class="agent-info"><strong>连载节奏师</strong><small>情绪波形 · 爽点 · 钩子</small></span><div class="simulation-agent-controls"><select class="simulation-agent-model" aria-label="连载节奏师模型"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6" selected>Claude Sonnet 4.6</option><option value="gpt-5.6">GPT-5.6</option><option value="gemini-3-pro">Gemini 3 Pro</option><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5">Kimi K2.5</option></select><select class="simulation-agent-count" aria-label="连载节奏师方案数量"><option value="1">1 条</option><option value="2" selected>2 条</option><option value="3">3 条</option><option value="4">4 条</option><option value="5">5 条</option></select></div></div>
-              <div class="simulation-agent-row" data-agent-name="黑天鹅变量"><input class="simulation-agent-enabled" type="checkbox" checked aria-label="启用黑天鹅变量"/><i class="agent-color c6">变</i><span class="agent-info"><strong>黑天鹅变量</strong><small>反事实 · 意外变量 · 新解</small></span><div class="simulation-agent-controls"><select class="simulation-agent-model" aria-label="黑天鹅变量模型"><option value="claude-opus-4.6">Claude Opus 4.6</option><option value="claude-sonnet-4.6">Claude Sonnet 4.6</option><option value="gpt-5.6">GPT-5.6</option><option value="gemini-3-pro">Gemini 3 Pro</option><option value="deepseek-v3.2">DeepSeek V3.2</option><option value="kimi-k2.5" selected>Kimi K2.5</option></select><select class="simulation-agent-count" aria-label="黑天鹅变量方案数量"><option value="1">1 条</option><option value="2" selected>2 条</option><option value="3">3 条</option><option value="4">4 条</option><option value="5">5 条</option></select></div></div>
+              <div class="simulation-agent-row" data-agent-name="主线演算师">
+                <input
+                  class="simulation-agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用主线演算师"
+                /><i class="agent-color c1">主</i
+                ><span class="agent-info"
+                  ><strong>主线演算师</strong
+                  ><small>目标递进 · 卷级收束</small></span
+                >
+                <div class="simulation-agent-controls">
+                  <select
+                    class="simulation-agent-model"
+                    aria-label="主线演算师模型"
+                  >
+                    <option value="claude-opus-4.6" selected>
+                      Claude Opus 4.6
+                    </option>
+                    <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+                    <option value="gpt-5.6">GPT-5.6</option>
+                    <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                    <option value="kimi-k2.5">Kimi K2.5</option></select
+                  ><select
+                    class="simulation-agent-count"
+                    aria-label="主线演算师方案数量"
+                  >
+                    <option value="1">1 条</option>
+                    <option value="2" selected>2 条</option>
+                    <option value="3">3 条</option>
+                    <option value="4">4 条</option>
+                    <option value="5">5 条</option>
+                  </select>
+                </div>
+              </div>
+              <div class="simulation-agent-row" data-agent-name="人物因果师">
+                <input
+                  class="simulation-agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用人物因果师"
+                /><i class="agent-color c2">人</i
+                ><span class="agent-info"
+                  ><strong>人物因果师</strong
+                  ><small>动机 · 关系 · 选择代价</small></span
+                >
+                <div class="simulation-agent-controls">
+                  <select
+                    class="simulation-agent-model"
+                    aria-label="人物因果师模型"
+                  >
+                    <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                    <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+                    <option value="gpt-5.6">GPT-5.6</option>
+                    <option value="gemini-3-pro" selected>Gemini 3 Pro</option>
+                    <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                    <option value="kimi-k2.5">Kimi K2.5</option></select
+                  ><select
+                    class="simulation-agent-count"
+                    aria-label="人物因果师方案数量"
+                  >
+                    <option value="1">1 条</option>
+                    <option value="2" selected>2 条</option>
+                    <option value="3">3 条</option>
+                    <option value="4">4 条</option>
+                    <option value="5">5 条</option>
+                  </select>
+                </div>
+              </div>
+              <div class="simulation-agent-row" data-agent-name="对手行动者">
+                <input
+                  class="simulation-agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用对手行动者"
+                /><i class="agent-color c3">敌</i
+                ><span class="agent-info"
+                  ><strong>对手行动者</strong
+                  ><small>反派理性 · 资源反制</small></span
+                >
+                <div class="simulation-agent-controls">
+                  <select
+                    class="simulation-agent-model"
+                    aria-label="对手行动者模型"
+                  >
+                    <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                    <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+                    <option value="gpt-5.6">GPT-5.6</option>
+                    <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    <option value="deepseek-v3.2" selected>
+                      DeepSeek V3.2
+                    </option>
+                    <option value="kimi-k2.5">Kimi K2.5</option></select
+                  ><select
+                    class="simulation-agent-count"
+                    aria-label="对手行动者方案数量"
+                  >
+                    <option value="1">1 条</option>
+                    <option value="2" selected>2 条</option>
+                    <option value="3">3 条</option>
+                    <option value="4">4 条</option>
+                    <option value="5">5 条</option>
+                  </select>
+                </div>
+              </div>
+              <div class="simulation-agent-row" data-agent-name="世界规则师">
+                <input
+                  class="simulation-agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用世界规则师"
+                /><i class="agent-color c4">则</i
+                ><span class="agent-info"
+                  ><strong>世界规则师</strong
+                  ><small>奇则碰撞 · 力量代价</small></span
+                >
+                <div class="simulation-agent-controls">
+                  <select
+                    class="simulation-agent-model"
+                    aria-label="世界规则师模型"
+                  >
+                    <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                    <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+                    <option value="gpt-5.6" selected>GPT-5.6</option>
+                    <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                    <option value="kimi-k2.5">Kimi K2.5</option></select
+                  ><select
+                    class="simulation-agent-count"
+                    aria-label="世界规则师方案数量"
+                  >
+                    <option value="1">1 条</option>
+                    <option value="2" selected>2 条</option>
+                    <option value="3">3 条</option>
+                    <option value="4">4 条</option>
+                    <option value="5">5 条</option>
+                  </select>
+                </div>
+              </div>
+              <div class="simulation-agent-row" data-agent-name="连载节奏师">
+                <input
+                  class="simulation-agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用连载节奏师"
+                /><i class="agent-color c5">节</i
+                ><span class="agent-info"
+                  ><strong>连载节奏师</strong
+                  ><small>情绪波形 · 爽点 · 钩子</small></span
+                >
+                <div class="simulation-agent-controls">
+                  <select
+                    class="simulation-agent-model"
+                    aria-label="连载节奏师模型"
+                  >
+                    <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                    <option value="claude-sonnet-4.6" selected>
+                      Claude Sonnet 4.6
+                    </option>
+                    <option value="gpt-5.6">GPT-5.6</option>
+                    <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                    <option value="kimi-k2.5">Kimi K2.5</option></select
+                  ><select
+                    class="simulation-agent-count"
+                    aria-label="连载节奏师方案数量"
+                  >
+                    <option value="1">1 条</option>
+                    <option value="2" selected>2 条</option>
+                    <option value="3">3 条</option>
+                    <option value="4">4 条</option>
+                    <option value="5">5 条</option>
+                  </select>
+                </div>
+              </div>
+              <div class="simulation-agent-row" data-agent-name="黑天鹅变量">
+                <input
+                  class="simulation-agent-enabled"
+                  type="checkbox"
+                  checked
+                  aria-label="启用黑天鹅变量"
+                /><i class="agent-color c6">变</i
+                ><span class="agent-info"
+                  ><strong>黑天鹅变量</strong
+                  ><small>反事实 · 意外变量 · 新解</small></span
+                >
+                <div class="simulation-agent-controls">
+                  <select
+                    class="simulation-agent-model"
+                    aria-label="黑天鹅变量模型"
+                  >
+                    <option value="claude-opus-4.6">Claude Opus 4.6</option>
+                    <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+                    <option value="gpt-5.6">GPT-5.6</option>
+                    <option value="gemini-3-pro">Gemini 3 Pro</option>
+                    <option value="deepseek-v3.2">DeepSeek V3.2</option>
+                    <option value="kimi-k2.5" selected>
+                      Kimi K2.5
+                    </option></select
+                  ><select
+                    class="simulation-agent-count"
+                    aria-label="黑天鹅变量方案数量"
+                  >
+                    <option value="1">1 条</option>
+                    <option value="2" selected>2 条</option>
+                    <option value="3">3 条</option>
+                    <option value="4">4 条</option>
+                    <option value="5">5 条</option>
+                  </select>
+                </div>
+              </div>
             </div>
-            <button class="primary-wide" id="simulationStart"><svg><use href="#i-route" /></svg>开始推演 · 预计 12 条路径</button>
-            <p class="config-note">每条路径绑定独立检查点，可比较、重跑或送入剧情工程。</p>
+            <button class="primary-wide" id="simulationStart">
+              <svg><use href="#i-route" /></svg>开始推演 · 预计 12 条路径
+            </button>
+            <p class="config-note">
+              每条路径绑定独立检查点，可比较、重跑或送入剧情工程。
+            </p>
           </aside>
           <main class="simulation-results">
-            <div class="simulation-toolbar"><div><strong>候选剧情路径</strong><span id="simulationResultCount">示例 4 条 · 覆盖未来 5 章</span></div><div class="segmented simulation-filters"><button class="is-active" data-simulation-filter="all">全部</button><button data-simulation-filter="stable">稳健</button><button data-simulation-filter="bold">高变</button></div></div>
-            <div class="simulation-origin"><span><small>推演起点</small><strong id="simulationOriginLabel">第 42 章 · 丹成大道</strong></span><i><svg><use href="#i-route" /></svg></i><span><small>推演边界</small><strong id="simulationEndLabel">第 47 章</strong></span><b>正文修订 r12 已冻结</b></div>
+            <div class="simulation-toolbar">
+              <div>
+                <strong>候选剧情路径</strong
+                ><span id="simulationResultCount"
+                  >示例 4 条 · 覆盖未来 5 章</span
+                >
+              </div>
+              <div class="segmented simulation-filters">
+                <button class="is-active" data-simulation-filter="all">
+                  全部</button
+                ><button data-simulation-filter="stable">稳健</button
+                ><button data-simulation-filter="bold">高变</button>
+              </div>
+            </div>
+            <div class="simulation-origin">
+              <span
+                ><small>推演起点</small
+                ><strong id="simulationOriginLabel"
+                  >第 42 章 · 丹成大道</strong
+                ></span
+              ><i
+                ><svg><use href="#i-route" /></svg></i
+              ><span
+                ><small>推演边界</small
+                ><strong id="simulationEndLabel">第 47 章</strong></span
+              ><b>正文修订 r12 已冻结</b>
+            </div>
             <div class="simulation-path-list" id="simulationPathList">
-              <article class="simulation-path is-featured" data-kind="stable"><header><i class="agent-color c1">主</i><div class="path-identity"><strong>守炉人资格通往问剑台</strong><small>主线演算师 · Claude Opus 4.6 · 路径 A1</small></div><div class="path-metrics"><span>连贯 94</span><span>新颖 82</span><b>风险低</b></div></header><div class="path-timeline"><span><b>43</b><small>灰烬剑痕暴露</small></span><i></i><span><b>44</b><small>巡火司夺炉</small></span><i></i><span><b>45</b><small>陆青禾作证</small></span><i></i><span><b>47</b><small>问剑台开门</small></span></div><div class="simulation-path-detail" hidden><span><b>人物变化</b>陆青禾从协助者转为共同担责者</span><span><b>伏笔动作</b>回收守炉古阵，强化第二道剑痕</span><span><b>卷级贡献</b>完成丹炉城资格验收并转入问剑台</span></div><footer><span>#主线递进</span><span>#低改纲成本</span><b class="path-run-state">已完成</b><button data-simulation-expand>展开节点</button><button class="path-adopt" data-simulation-adopt>送入剧情工程</button></footer></article>
-              <article class="simulation-path" data-kind="bold"><header><i class="agent-color c2">人</i><div class="path-identity"><strong>陆青禾先背叛，再主动归队</strong><small>人物因果师 · Gemini 3 Pro · 路径 B2</small></div><div class="path-metrics"><span>人物 96</span><span>新颖 89</span><b class="is-medium">风险中</b></div></header><div class="path-timeline"><span><b>43</b><small>谎言被识破</small></span><i></i><span><b>44</b><small>交出林砚</small></span><i></i><span><b>46</b><small>真因揭晓</small></span><i></i><span><b>47</b><small>共闯问剑台</small></span></div><div class="simulation-path-detail" hidden><span><b>人物变化</b>陆青禾的秘密由信息点变成主动选择</span><span><b>关系代价</b>信任先降至冰点，再用不可逆行动重建</span><span><b>连续性风险</b>需要调整第 44 章计划中的同行状态</span></div><footer><span>#关系反转</span><span>#情绪高压</span><b class="path-run-state">已完成</b><button data-simulation-expand>展开节点</button><button class="path-adopt" data-simulation-adopt>送入剧情工程</button></footer></article>
-              <article class="simulation-path" data-kind="stable"><header><i class="agent-color c3">敌</i><div class="path-identity"><strong>巡火司不抓人，只封死丹炉城</strong><small>对手行动者 · DeepSeek V3.2 · 路径 C1</small></div><div class="path-metrics"><span>对抗 93</span><span>新颖 85</span><b class="is-medium">风险中</b></div></header><div class="path-timeline"><span><b>43</b><small>城门落锁</small></span><i></i><span><b>44</b><small>资源断供</small></span><i></i><span><b>45</b><small>民意反噬</small></span><i></i><span><b>47</b><small>以城换路</small></span></div><div class="simulation-path-detail" hidden><span><b>对手收益</b>不制造英雄叙事，同时逼守炉阵自行崩溃</span><span><b>主角难题</b>胜负从斗法改为有限资源下的公共选择</span><span><b>商业节点</b>第 44 章形成封城强钩子，第 46 章集中释放</span></div><footer><span>#理性反派</span><span>#资源困局</span><b class="path-run-state">已完成</b><button data-simulation-expand>展开节点</button><button class="path-adopt" data-simulation-adopt>送入剧情工程</button></footer></article>
-              <article class="simulation-path" data-kind="bold"><header><i class="agent-color c6">变</i><div class="path-identity"><strong>问剑台主动降临丹炉城</strong><small>黑天鹅变量 · Kimi K2.5 · 路径 F2</small></div><div class="path-metrics"><span>意外 98</span><span>连贯 76</span><b class="is-high">风险高</b></div></header><div class="path-timeline"><span><b>43</b><small>剑痕共鸣</small></span><i></i><span><b>44</b><small>空间错位</small></span><i></i><span><b>46</b><small>两城重叠</small></span><i></i><span><b>47</b><small>规则战争</small></span></div><div class="simulation-path-detail" hidden><span><b>核心意外</b>副本不是地点，而是会寻找持剑者的规则实体</span><span><b>收益</b>省去常规转场，提前兑现问剑台的视觉奇观</span><span><b>改纲成本</b>需要重排丹炉城单元后半段与两个商业节点</span></div><footer><span>#规则奇观</span><span>#高改纲成本</span><b class="path-run-state">已完成</b><button data-simulation-expand>展开节点</button><button class="path-adopt" data-simulation-adopt>送入剧情工程</button></footer></article>
+              <article class="simulation-path is-featured" data-kind="stable">
+                <header>
+                  <i class="agent-color c1">主</i>
+                  <div class="path-identity">
+                    <strong>守炉人资格通往问剑台</strong
+                    ><small>主线演算师 · Claude Opus 4.6 · 路径 A1</small>
+                  </div>
+                  <div class="path-metrics">
+                    <span>连贯 94</span><span>新颖 82</span><b>风险低</b>
+                  </div>
+                </header>
+                <div class="path-timeline">
+                  <span><b>43</b><small>灰烬剑痕暴露</small></span
+                  ><i></i><span><b>44</b><small>巡火司夺炉</small></span
+                  ><i></i><span><b>45</b><small>陆青禾作证</small></span
+                  ><i></i><span><b>47</b><small>问剑台开门</small></span>
+                </div>
+                <div class="simulation-path-detail" hidden>
+                  <span><b>人物变化</b>陆青禾从协助者转为共同担责者</span
+                  ><span><b>伏笔动作</b>回收守炉古阵，强化第二道剑痕</span
+                  ><span><b>卷级贡献</b>完成丹炉城资格验收并转入问剑台</span>
+                </div>
+                <footer>
+                  <span>#主线递进</span><span>#低改纲成本</span
+                  ><b class="path-run-state">已完成</b
+                  ><button data-simulation-expand>展开节点</button
+                  ><button class="path-adopt" data-simulation-adopt>
+                    送入剧情工程
+                  </button>
+                </footer>
+              </article>
+              <article class="simulation-path" data-kind="bold">
+                <header>
+                  <i class="agent-color c2">人</i>
+                  <div class="path-identity">
+                    <strong>陆青禾先背叛，再主动归队</strong
+                    ><small>人物因果师 · Gemini 3 Pro · 路径 B2</small>
+                  </div>
+                  <div class="path-metrics">
+                    <span>人物 96</span><span>新颖 89</span
+                    ><b class="is-medium">风险中</b>
+                  </div>
+                </header>
+                <div class="path-timeline">
+                  <span><b>43</b><small>谎言被识破</small></span
+                  ><i></i><span><b>44</b><small>交出林砚</small></span
+                  ><i></i><span><b>46</b><small>真因揭晓</small></span
+                  ><i></i><span><b>47</b><small>共闯问剑台</small></span>
+                </div>
+                <div class="simulation-path-detail" hidden>
+                  <span><b>人物变化</b>陆青禾的秘密由信息点变成主动选择</span
+                  ><span><b>关系代价</b>信任先降至冰点，再用不可逆行动重建</span
+                  ><span
+                    ><b>连续性风险</b>需要调整第 44 章计划中的同行状态</span
+                  >
+                </div>
+                <footer>
+                  <span>#关系反转</span><span>#情绪高压</span
+                  ><b class="path-run-state">已完成</b
+                  ><button data-simulation-expand>展开节点</button
+                  ><button class="path-adopt" data-simulation-adopt>
+                    送入剧情工程
+                  </button>
+                </footer>
+              </article>
+              <article class="simulation-path" data-kind="stable">
+                <header>
+                  <i class="agent-color c3">敌</i>
+                  <div class="path-identity">
+                    <strong>巡火司不抓人，只封死丹炉城</strong
+                    ><small>对手行动者 · DeepSeek V3.2 · 路径 C1</small>
+                  </div>
+                  <div class="path-metrics">
+                    <span>对抗 93</span><span>新颖 85</span
+                    ><b class="is-medium">风险中</b>
+                  </div>
+                </header>
+                <div class="path-timeline">
+                  <span><b>43</b><small>城门落锁</small></span
+                  ><i></i><span><b>44</b><small>资源断供</small></span
+                  ><i></i><span><b>45</b><small>民意反噬</small></span
+                  ><i></i><span><b>47</b><small>以城换路</small></span>
+                </div>
+                <div class="simulation-path-detail" hidden>
+                  <span
+                    ><b>对手收益</b>不制造英雄叙事，同时逼守炉阵自行崩溃</span
+                  ><span><b>主角难题</b>胜负从斗法改为有限资源下的公共选择</span
+                  ><span
+                    ><b>商业节点</b>第 44 章形成封城强钩子，第 46
+                    章集中释放</span
+                  >
+                </div>
+                <footer>
+                  <span>#理性反派</span><span>#资源困局</span
+                  ><b class="path-run-state">已完成</b
+                  ><button data-simulation-expand>展开节点</button
+                  ><button class="path-adopt" data-simulation-adopt>
+                    送入剧情工程
+                  </button>
+                </footer>
+              </article>
+              <article class="simulation-path" data-kind="bold">
+                <header>
+                  <i class="agent-color c6">变</i>
+                  <div class="path-identity">
+                    <strong>问剑台主动降临丹炉城</strong
+                    ><small>黑天鹅变量 · Kimi K2.5 · 路径 F2</small>
+                  </div>
+                  <div class="path-metrics">
+                    <span>意外 98</span><span>连贯 76</span
+                    ><b class="is-high">风险高</b>
+                  </div>
+                </header>
+                <div class="path-timeline">
+                  <span><b>43</b><small>剑痕共鸣</small></span
+                  ><i></i><span><b>44</b><small>空间错位</small></span
+                  ><i></i><span><b>46</b><small>两城重叠</small></span
+                  ><i></i><span><b>47</b><small>规则战争</small></span>
+                </div>
+                <div class="simulation-path-detail" hidden>
+                  <span
+                    ><b>核心意外</b
+                    >副本不是地点，而是会寻找持剑者的规则实体</span
+                  ><span><b>收益</b>省去常规转场，提前兑现问剑台的视觉奇观</span
+                  ><span
+                    ><b>改纲成本</b>需要重排丹炉城单元后半段与两个商业节点</span
+                  >
+                </div>
+                <footer>
+                  <span>#规则奇观</span><span>#高改纲成本</span
+                  ><b class="path-run-state">已完成</b
+                  ><button data-simulation-expand>展开节点</button
+                  ><button class="path-adopt" data-simulation-adopt>
+                    送入剧情工程
+                  </button>
+                </footer>
+              </article>
             </div>
           </main>
         </div>
@@ -390,25 +1949,141 @@
     </div>
 
     <div class="overlay" id="deleteOverlay" hidden>
-      <section class="impact-dialog" role="alertdialog" aria-modal="true" aria-labelledby="deleteTitle">
-        <header><div class="danger-icon"><svg><use href="#i-trash" /></svg></div><div><span class="eyebrow">DELETE IMPACT</span><h2 id="deleteTitle">删除第 42 章并回退状态？</h2><p>正文将进入项目回收站；剧情计划不会被删除。</p></div></header>
-        <div class="impact-summary"><div><strong>1</strong><span>章节</span></div><div><strong>3</strong><span>场景</span></div><div><strong>8</strong><span>状态事件</span></div><div><strong>2</strong><span>后续章受影响</span></div></div>
-        <section class="impact-section"><strong>将自动回退</strong><ul><li><svg><use href="#i-history" /></svg><span>时间线：巡火司抵达丹房</span></li><li><svg><use href="#i-users" /></svg><span>人物：林砚、陆青禾的出场与位置</span></li><li><svg><use href="#i-spark" /></svg><span>期待：“第二道剑痕”的强化事实</span></li><li><svg><use href="#i-route" /></svg><span>章节槽位：解除第 42 章正文关联</span></li></ul></section>
-        <section class="impact-section is-warning"><strong>不会删除，但会标记待复核</strong><p>第 43、44 章使用过本章产生的剑痕事实。它们的正文仍保留，连续性同步将失效并等待重新审查。</p></section>
-        <label class="confirm-check"><input type="checkbox" id="deleteConfirmCheck"/><span>我已查看影响范围，确认将正文移入回收站并重建状态。</span></label>
-        <footer><button class="secondary-button overlay-close">取消</button><button class="danger-button" id="confirmDelete" disabled><svg><use href="#i-trash" /></svg>删除并回退 8 项状态</button></footer>
+      <section
+        class="impact-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="deleteTitle"
+      >
+        <header>
+          <div class="danger-icon">
+            <svg><use href="#i-trash" /></svg>
+          </div>
+          <div>
+            <span class="eyebrow">DELETE IMPACT</span>
+            <h2 id="deleteTitle">删除第 42 章并回退状态？</h2>
+            <p>正文将进入项目回收站；剧情计划不会被删除。</p>
+          </div>
+        </header>
+        <div class="impact-summary">
+          <div><strong>1</strong><span>章节</span></div>
+          <div><strong>3</strong><span>场景</span></div>
+          <div><strong>8</strong><span>状态事件</span></div>
+          <div><strong>2</strong><span>后续章受影响</span></div>
+        </div>
+        <section class="impact-section">
+          <strong>将自动回退</strong>
+          <ul>
+            <li>
+              <svg><use href="#i-history" /></svg
+              ><span>时间线：巡火司抵达丹房</span>
+            </li>
+            <li>
+              <svg><use href="#i-users" /></svg
+              ><span>人物：林砚、陆青禾的出场与位置</span>
+            </li>
+            <li>
+              <svg><use href="#i-spark" /></svg
+              ><span>期待：“第二道剑痕”的强化事实</span>
+            </li>
+            <li>
+              <svg><use href="#i-route" /></svg
+              ><span>章节槽位：解除第 42 章正文关联</span>
+            </li>
+          </ul>
+        </section>
+        <section class="impact-section is-warning">
+          <strong>不会删除，但会标记待复核</strong>
+          <p>
+            第 43、44
+            章使用过本章产生的剑痕事实。它们的正文仍保留，连续性同步将失效并等待重新审查。
+          </p>
+        </section>
+        <label class="confirm-check"
+          ><input type="checkbox" id="deleteConfirmCheck" /><span
+            >我已查看影响范围，确认将正文移入回收站并重建状态。</span
+          ></label
+        >
+        <footer>
+          <button class="secondary-button overlay-close">取消</button
+          ><button class="danger-button" id="confirmDelete" disabled>
+            <svg><use href="#i-trash" /></svg>删除并回退 8 项状态
+          </button>
+        </footer>
       </section>
     </div>
 
     <div class="overlay" id="manifestOverlay" hidden>
-      <section class="manifest-dialog" role="dialog" aria-modal="true" aria-labelledby="manifestTitle">
-        <header class="overlay-header"><div><span class="eyebrow">CONTEXT MANIFEST</span><h2 id="manifestTitle">本次 AI 上下文检查</h2></div><button class="icon-button overlay-close"><svg><use href="#i-x" /></svg></button></header>
-        <div class="manifest-list"><div class="manifest-row is-locked"><i>01</i><span><strong>平台写作协议与安全规则</strong><small>system / manuscript.generate v1.0</small></span><b>1,120 · 强制</b></div><div class="manifest-row is-locked"><i>02</i><span><strong>第 42 章计划与六项交付</strong><small>story/narrative-design.json · slot-042</small></span><b>1,660 · 强制</b></div><div class="manifest-row"><i>03</i><span><strong>林砚、陆青禾当前状态</strong><small>连续性投影 v118</small></span><b>2,180</b><button>排除</button></div><div class="manifest-row"><i>04</i><span><strong>第 39—41 章摘要与上一章尾段</strong><small>绑定正文修订与内容哈希</small></span><b>4,920</b><button>排除</button></div><div class="manifest-row"><i>05</i><span><strong>活跃期待与未回收伏笔</strong><small>确定性 ID 关联命中</small></span><b>1,260</b><button>固定</button></div><div class="manifest-row"><i>06</i><span><strong>语义召回片段 × 4</strong><small>残剑、逆火、巡火司、问剑台</small></span><b>2,340</b><button>展开</button></div></div>
-        <footer class="overlay-footer"><span>总计 12,480 tokens · 预计占上下文 38%</span><span class="footer-spacer"></span><button class="primary-button overlay-close">完成检查</button></footer>
+      <section
+        class="manifest-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="manifestTitle"
+      >
+        <header class="overlay-header">
+          <div>
+            <span class="eyebrow">CONTEXT MANIFEST</span>
+            <h2 id="manifestTitle">本次 AI 上下文检查</h2>
+          </div>
+          <button class="icon-button overlay-close">
+            <svg><use href="#i-x" /></svg>
+          </button>
+        </header>
+        <div class="manifest-list">
+          <div class="manifest-row is-locked">
+            <i>01</i
+            ><span
+              ><strong>平台写作协议与安全规则</strong
+              ><small>system / manuscript.generate v1.0</small></span
+            ><b>1,120 · 强制</b>
+          </div>
+          <div class="manifest-row is-locked">
+            <i>02</i
+            ><span
+              ><strong>第 42 章计划与六项交付</strong
+              ><small>story/narrative-design.json · slot-042</small></span
+            ><b>1,660 · 强制</b>
+          </div>
+          <div class="manifest-row">
+            <i>03</i
+            ><span
+              ><strong>林砚、陆青禾当前状态</strong
+              ><small>连续性投影 v118</small></span
+            ><b>2,180</b><button>排除</button>
+          </div>
+          <div class="manifest-row">
+            <i>04</i
+            ><span
+              ><strong>第 39—41 章摘要与上一章尾段</strong
+              ><small>绑定正文修订与内容哈希</small></span
+            ><b>4,920</b><button>排除</button>
+          </div>
+          <div class="manifest-row">
+            <i>05</i
+            ><span
+              ><strong>活跃期待与未回收伏笔</strong
+              ><small>确定性 ID 关联命中</small></span
+            ><b>1,260</b><button>固定</button>
+          </div>
+          <div class="manifest-row">
+            <i>06</i
+            ><span
+              ><strong>语义召回片段 × 4</strong
+              ><small>残剑、逆火、巡火司、问剑台</small></span
+            ><b>2,340</b><button>展开</button>
+          </div>
+        </div>
+        <footer class="overlay-footer">
+          <span>总计 12,480 tokens · 预计占上下文 38%</span
+          ><span class="footer-spacer"></span
+          ><button class="primary-button overlay-close">完成检查</button>
+        </footer>
       </section>
     </div>
 
-    <div class="toast" id="toast" role="status" aria-live="polite"><svg><use href="#i-check" /></svg><span>操作完成</span></div>
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <svg><use href="#i-check" /></svg><span>操作完成</span>
+    </div>
 
     <script src="./app.js"></script>
   </body>

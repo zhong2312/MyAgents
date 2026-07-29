@@ -16,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Settings2,
   Sparkles,
   Users,
 } from "lucide-react";
@@ -35,6 +36,8 @@ import {
 } from "@/workbench-sdk";
 
 import type { NovelChapterStatus, NovelMetadata } from "./projectSchema";
+import NovelProjectSettingsDialog from "./NovelProjectSettingsDialog";
+import { estimateChapterRange, formatWordCountInWan } from "./projectPlanning";
 import CharacterLibraryPrototype, {
   type CharacterAiTarget,
 } from "./CharacterLibraryPrototype";
@@ -56,11 +59,13 @@ import CultivationEcologyWorkbench, {
 } from "./CultivationEcologyWorkbench";
 import KnowledgeBase from "./KnowledgeBase";
 import TimelineLibrary from "./TimelineLibrary";
+import type { TimelineAiAgentRequest } from "./timelineAi";
 import NarrativeEngineering from "./NarrativeEngineering";
 import type { NarrativeAiAgentRequest } from "./narrativeAi";
 import InspirationStudio from "./InspirationStudio";
 import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
+import ManuscriptStudio from "./ManuscriptStudio";
 import {
   createNovelSettingLibraryRepository,
   type LoadedSettingLibrary,
@@ -85,15 +90,10 @@ const STATUS_LABELS: Record<NovelMetadata["status"], string> = {
 
 const CHAPTER_STATUS_LABELS: Record<NovelChapterStatus, string> = {
   draft: "草稿",
+  revising: "修订中",
   complete: "完成",
   planned: "待写",
 };
-
-function formatTargetWordCount(targetWordCount: number): string {
-  return (targetWordCount / 10_000).toLocaleString("zh-CN", {
-    maximumFractionDigits: 1,
-  });
-}
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
@@ -273,11 +273,13 @@ function Overview({
   project,
   onOpenChapter,
   onCreateChapter,
+  onEditProject,
   isCreatingChapter,
 }: {
   project: LoadedNovelProject;
   onOpenChapter: (chapterId: string) => void;
   onCreateChapter: () => void;
+  onEditProject: () => void;
   isCreatingChapter: boolean;
 }) {
   const chapters = [...project.chapters].sort(
@@ -294,6 +296,21 @@ function Overview({
   const planned = chapters.filter(
     (chapter) => chapter.status === "planned",
   ).length;
+  const wordCountRange =
+    project.metadata.targetWordCountMin !== null &&
+    project.metadata.targetWordCountMax !== null
+      ? `${formatWordCountInWan(project.metadata.targetWordCountMin)} 至 ${formatWordCountInWan(project.metadata.targetWordCountMax)} 万字`
+      : "未设置";
+  const estimatedChapters =
+    project.metadata.targetWordCountMin !== null &&
+    project.metadata.targetWordCountMax !== null &&
+    project.metadata.chapterWordCount !== null
+      ? estimateChapterRange({
+          targetWordCountMin: project.metadata.targetWordCountMin,
+          targetWordCountMax: project.metadata.targetWordCountMax,
+          chapterWordCount: project.metadata.chapterWordCount,
+        })
+      : null;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-7 py-6 max-md:px-4">
@@ -309,35 +326,67 @@ function Overview({
             {project.metadata.title}
           </h1>
           <p className="mt-2 text-sm text-[var(--ink-muted)]">
-            共 {chapters.length} 章 · 已完成 {completed} 章 ·{" "}
-            {totalWords.toLocaleString()} 字
-            {project.metadata.targetWordCount !== null && (
-              <>
-                {" "}
-                · 目标 {formatTargetWordCount(
-                  project.metadata.targetWordCount,
-                )}{" "}
-                万字
-              </>
-            )}
+            项目 {project.metadata.projectName} · 共 {chapters.length} 章 ·
+            已完成 {completed} 章 · {totalWords.toLocaleString()} 字
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() =>
-            latestChapter ? onOpenChapter(latestChapter.id) : onCreateChapter()
-          }
-          disabled={isCreatingChapter}
-          className="flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
-        >
-          {isCreatingChapter ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <PenLine className="h-3.5 w-3.5" />
-          )}
-          {latestChapter ? "继续写作" : "开始写作"}
-        </button>
+        <div className="flex shrink-0 items-center gap-2 max-sm:flex-col max-sm:items-stretch">
+          <button
+            type="button"
+            onClick={onEditProject}
+            className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+            编辑资料
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              latestChapter
+                ? onOpenChapter(latestChapter.id)
+                : onCreateChapter()
+            }
+            disabled={isCreatingChapter}
+            className="flex items-center justify-center gap-1.5 rounded-md bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
+          >
+            {isCreatingChapter ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <PenLine className="h-3.5 w-3.5" />
+            )}
+            {latestChapter ? "继续写作" : "开始写作"}
+          </button>
+        </div>
       </header>
+
+      <dl className="grid grid-cols-4 border-b border-[var(--line-subtle)] max-lg:grid-cols-2 max-sm:grid-cols-1">
+        {[
+          ["计划字数", wordCountRange],
+          [
+            "每章字数",
+            project.metadata.chapterWordCount === null
+              ? "未设置"
+              : `${project.metadata.chapterWordCount.toLocaleString()} 字`,
+          ],
+          [
+            "预计章节",
+            estimatedChapters
+              ? `${estimatedChapters.min.toLocaleString()} 至 ${estimatedChapters.max.toLocaleString()} 章`
+              : "待设置",
+          ],
+          ["已写进度", `${totalWords.toLocaleString()} 字`],
+        ].map(([label, value], index) => (
+          <div
+            key={label}
+            className={`py-5 ${index > 0 ? "border-l border-[var(--line-subtle)] pl-5 max-sm:border-l-0 max-sm:pl-0" : "pr-5"}`}
+          >
+            <dt className="text-xs text-[var(--ink-muted)]">{label}</dt>
+            <dd className="mt-1 text-sm font-semibold text-[var(--ink)]">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
 
       <section className="grid grid-cols-12 border-b border-[var(--line-subtle)] max-lg:block">
         <div className="col-span-8 border-r border-[var(--line-subtle)] py-6 pr-8 max-lg:border-r-0 max-lg:pr-0">
@@ -351,7 +400,7 @@ function Overview({
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="text-xs font-medium text-[var(--accent-warm)]">
-                    第 {latestChapter.number} 章
+                    第 {latestChapter.displayNumber} 章
                   </p>
                   <h3 className="mt-1 text-xl font-semibold text-[var(--ink)]">
                     {latestChapter.title}
@@ -414,7 +463,7 @@ function Overview({
               className="flex w-full items-center gap-4 rounded-md px-2 py-3 text-left transition-colors hover:bg-[var(--hover-bg)]"
             >
               <span className="w-8 shrink-0 text-xs font-medium text-[var(--ink-subtle)]">
-                {String(chapter.number).padStart(2, "0")}
+                {String(chapter.displayNumber).padStart(2, "0")}
               </span>
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink)]">
                 {chapter.title}
@@ -500,7 +549,7 @@ function ChapterEditor({
       <header className="flex min-h-12 shrink-0 items-center justify-between gap-4 border-b border-[var(--line-subtle)] px-5 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="shrink-0 text-xs font-medium text-[var(--ink-muted)]">
-            第 {chapter.number} 章
+            第 {chapter.displayNumber} 章
           </span>
           <input
             value={titleDraft}
@@ -601,7 +650,7 @@ function ChapterEditor({
   );
 }
 
-function Manuscript({
+function _Manuscript({
   chapters,
   selectedChapterId,
   onSelectChapter,
@@ -659,14 +708,14 @@ function Manuscript({
                 key={chapter.id}
                 type="button"
                 onClick={() => onSelectChapter(chapter.id)}
-                aria-label={`第 ${chapter.number} 章 ${chapter.title}`}
+                aria-label={`第 ${chapter.displayNumber} 章 ${chapter.title}`}
                 className={`mb-1 flex w-full items-start gap-2 rounded-md px-2.5 py-2.5 text-left transition-colors max-md:justify-center max-md:px-1 ${active ? "bg-[var(--accent-warm-subtle)] text-[var(--ink)]" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"}`}
-                title={`第 ${chapter.number} 章 ${chapter.title}`}
+                title={`第 ${chapter.displayNumber} 章 ${chapter.title}`}
               >
                 <span
                   className={`mt-0.5 w-6 shrink-0 font-mono text-xs ${active ? "text-[var(--accent-warm)]" : "text-[var(--ink-subtle)]"}`}
                 >
-                  {String(chapter.number).padStart(2, "0")}
+                  {String(chapter.displayNumber).padStart(2, "0")}
                 </span>
                 <span className="min-w-0 flex-1 max-md:hidden">
                   <span className="block truncate text-sm font-medium">
@@ -758,7 +807,7 @@ function ContextInspector({
     manuscript: {
       icon: FileText,
       label: "章节信息",
-      title: chapter ? `第 ${chapter.number} 章` : "暂无章节",
+      title: chapter ? `第 ${chapter.displayNumber} 章` : "暂无章节",
     },
     lore: { icon: Users, label: "设定数据", title: "人物与世界" },
     map: { icon: Map, label: "地图数据", title: "世界空间模型" },
@@ -800,16 +849,31 @@ function ContextInspector({
           </span>
         </div>
         <div className="flex items-center justify-between gap-3 text-sm">
-          <span className="text-[var(--ink-muted)]">目标</span>
-          <span className="text-[var(--ink)]">
-            {project.metadata.targetWordCount === null
+          <span className="text-[var(--ink-muted)]">计划字数</span>
+          <span className="text-right text-[var(--ink)]">
+            {project.metadata.targetWordCountMin === null ||
+            project.metadata.targetWordCountMax === null
               ? "未设置"
-              : `${formatTargetWordCount(project.metadata.targetWordCount)} 万字`}
+              : `${formatWordCountInWan(project.metadata.targetWordCountMin)} 至 ${formatWordCountInWan(project.metadata.targetWordCountMax)} 万字`}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-3 text-sm">
+          <span className="text-[var(--ink-muted)]">每章字数</span>
+          <span className="text-[var(--ink)]">
+            {project.metadata.chapterWordCount === null
+              ? "未设置"
+              : `${project.metadata.chapterWordCount.toLocaleString()} 字`}
           </span>
         </div>
       </div>
       <div className="mt-6 border-t border-[var(--line-subtle)] pt-5">
         <SectionLabel>项目标识</SectionLabel>
+        <p
+          className="mt-3 truncate text-sm font-medium text-[var(--ink)]"
+          title={project.metadata.projectName}
+        >
+          {project.metadata.projectName}
+        </p>
         <div className="mt-3 flex items-center gap-2 text-xs text-[var(--ink-muted)]">
           <Hash className="h-3.5 w-3.5" /> novel.schema/
           {project.metadata.schemaVersion}
@@ -830,6 +894,7 @@ export default function NovelWorkbenchRenderer({
 }: WorkbenchRendererProps) {
   const controller = useNovelProject(context.storage, context.isActive);
   const [selectedChapterId, setSelectedChapterId] = useState("");
+  const [isProjectSettingsOpen, setIsProjectSettingsOpen] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [isWorldAgentLaunching, setIsWorldAgentLaunching] = useState(false);
   const [isItemAgentLaunching, setIsItemAgentLaunching] = useState(false);
@@ -1182,9 +1247,8 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
 5. 作者确认修改范围后，调用 novel_cultivation_create_draft 创建草稿，再用 novel_cultivation_upsert_draft 写入完整且规范化的生态 JSON；调用 novel_cultivation_validate_draft 成功后，只能使用返回的 validationToken 调用 novel_cultivation_submit_draft。
 6. 提交后必须调用 novel_cultivation_get_proposal_status 确认 exists=true，再告知作者点击“审阅提案”审批；在审批前不得声称正式事实源已经更新。
 7. 禁止调用 Bash、Write、Edit 等原始文件工具修改小说项目。`;
-      const modelSelection = await resolveSceneModelSelection(
-        "cultivation.assist",
-      );
+      const modelSelection =
+        await resolveSceneModelSelection("cultivation.assist");
       await context.agentSessions.open({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `修行体系逻辑共创 · ${project.metadata.title}`,
@@ -1557,14 +1621,47 @@ ${JSON.stringify(injectedContext, null, 2)}
   switch (context.route) {
     case "manuscript":
       content = (
-        <Manuscript
-          chapters={project.chapters}
+        <ManuscriptStudio
+          storage={context.storage}
+          project={project}
           selectedChapterId={effectiveSelectedChapterId}
           onSelectChapter={setSelectedChapterId}
-          onAddChapter={() => void createChapter()}
           isCreatingChapter={controller.isCreatingChapter}
+          onCreateChapter={controller.createChapter}
+          onUpdateChapter={controller.updateChapter}
           onSaveChapter={controller.saveChapter}
           onRenameChapter={controller.renameChapter}
+          onLinkChapterToNarrative={controller.linkChapterToNarrative}
+          onCreateDirectory={controller.createDirectory}
+          onUpdateDirectory={controller.updateDirectory}
+          onDeleteDirectory={controller.deleteDirectory}
+          onSetStructureMode={controller.setStructureMode}
+          onSynchronizeNarrative={controller.synchronizeNarrative}
+          onSaveTypography={controller.saveTypography}
+          onDeleteChapter={controller.deleteChapter}
+          onRestoreChapter={controller.restoreChapter}
+          onAdoptSimulation={controller.adoptSimulationPath}
+          onAiRun={
+            context.aiRuns.isAvailable
+              ? async (request) => {
+                  const modelSelection = await resolveSceneModelSelection(
+                    request.sceneId,
+                  );
+                  return (
+                    await context.aiRuns.run({
+                      version: WORKBENCH_AI_RUN_REQUEST_VERSION,
+                      label: request.label,
+                      prompt: request.prompt,
+                      systemPrompt: request.systemPrompt,
+                      ...(modelSelection ? { modelSelection } : {}),
+                    })
+                  ).output;
+                }
+              : undefined
+          }
+          onOpenNarrative={() => context.navigate("narrative")}
+          onOpenModelSettings={() => context.navigate("model-scenes")}
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -1781,7 +1878,9 @@ ${JSON.stringify(injectedContext, null, 2)}
                 : undefined
             }
             proposalReviewOpen={isCultivationProposalReviewOpen}
-            onCloseProposalReview={() => setIsCultivationProposalReviewOpen(false)}
+            onCloseProposalReview={() =>
+              setIsCultivationProposalReviewOpen(false)
+            }
             registerNavigationGuard={context.registerNavigationGuard}
           />
         </div>
@@ -1832,6 +1931,33 @@ ${JSON.stringify(injectedContext, null, 2)}
           storage={context.storage}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
+          onOpenAiAgent={
+            context.agentSessions.isAvailable
+              ? async (request: TimelineAiAgentRequest) => {
+                  const modelSelection =
+                    await resolveSceneModelSelection("timeline.assist");
+                  await context.agentSessions.open({
+                    version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+                    title: request.title,
+                    promptId: "novel.timeline.assist",
+                    initialMessage: request.initialMessage,
+                    presentation: "dock",
+                    conversationKey: request.conversationKey,
+                    historyGroupPath: request.historyGroupPath,
+                    forceNew: true,
+                    toolset: {
+                      id: "novel-world",
+                      context: {
+                        mode: "timeline",
+                        promptId: "novel.timeline.assist",
+                        promptVersion: "1.0.0",
+                      },
+                    },
+                    ...(modelSelection ? { modelSelection } : {}),
+                  });
+                }
+              : undefined
+          }
         />
       );
       break;
@@ -1868,6 +1994,7 @@ ${JSON.stringify(injectedContext, null, 2)}
           project={project}
           onOpenChapter={openChapter}
           onCreateChapter={() => void createChapter()}
+          onEditProject={() => setIsProjectSettingsOpen(true)}
           isCreatingChapter={controller.isCreatingChapter}
         />
       );
@@ -1889,6 +2016,7 @@ ${JSON.stringify(injectedContext, null, 2)}
     "ai-prompts",
     "settings",
     "model-scenes",
+    "manuscript",
   ].includes(context.route);
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
@@ -1936,6 +2064,13 @@ ${JSON.stringify(injectedContext, null, 2)}
           />
         )}
       </div>
+      {isProjectSettingsOpen && (
+        <NovelProjectSettingsDialog
+          metadata={project.metadata}
+          onSave={controller.saveProjectSettings}
+          onClose={() => setIsProjectSettingsOpen(false)}
+        />
+      )}
     </div>
   );
 }

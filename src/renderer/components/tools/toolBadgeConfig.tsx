@@ -65,6 +65,7 @@ const NOVEL_WORKBENCH_ACTION_KEYS: Record<string, string> = {
   novel_world_validate_changes: 'nativeTools.validateWorldProposal',
   novel_world_submit_proposal: 'nativeTools.submitWorldProposal',
   novel_narrative_get_context: 'nativeTools.readNarrativeContext',
+  novel_timeline_get_context: 'nativeTools.readTimelineContext',
   novel_items_get_context: 'nativeTools.readItems',
   novel_items_validate_batch: 'nativeTools.validateItemProposal',
   novel_items_submit_batch: 'nativeTools.submitItemProposal',

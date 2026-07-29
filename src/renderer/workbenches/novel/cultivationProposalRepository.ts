@@ -1,11 +1,13 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
+import { cultivationEcologySchema } from "../../../shared/workbenches/novel/cultivationEcologySchema";
 import type {
   FileProposal,
   FileProposalChange,
+  FileProposalConflictResolution,
   FileProposalLoadError,
   FileProposalRepository,
-} from "./WorldProposalReview";
+} from "./fileProposal";
 import {
   CULTIVATION_ECOLOGY_PATH,
   CULTIVATION_PROPOSALS_DIRECTORY,
@@ -32,6 +34,24 @@ function proposalStatus(
   change: FileProposalChange,
 ): FileProposal["manifest"]["changes"][number]["status"] {
   return change.status;
+}
+
+function resolvedContent(
+  change: FileProposalChange,
+  resolution: FileProposalConflictResolution,
+): string {
+  const content =
+    resolution.strategy === "merge" ? resolution.content : change.afterContent;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error(
+      `合并结果不是有效 JSON：${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  cultivationEcologySchema.parse(parsed);
+  return content;
 }
 
 export function createNovelCultivationProposalRepository(
@@ -76,6 +96,7 @@ export function createNovelCultivationProposalRepository(
       status: change.status,
       beforeContent,
       afterContent,
+      currentContent,
       conflict: change.status === "pending" && currentContent !== beforeContent,
       loadError: beforeContent && afterContent ? null : "提案快照缺失",
     };
@@ -179,6 +200,62 @@ export function createNovelCultivationProposalRepository(
         expectedContent: change.beforeContent,
       });
       return updateStatus(proposalId, "applied");
+    },
+    async resolveConflict(proposalId, changeId, resolution) {
+      const proposal = await load(proposalId);
+      const change = proposal.changes[0];
+      if (change.id !== changeId) throw new Error("提案变更不存在");
+      if (change.status !== "pending")
+        throw new Error("已处理的修行体系提案不能重复操作");
+      if (change.loadError) throw new Error(change.loadError);
+      if (!change.conflict)
+        throw new Error("正式内容当前没有冲突，请直接应用提案");
+      if (change.currentContent !== resolution.expectedCurrentContent) {
+        throw new Error("正式内容在冲突处理期间再次变化，请重新读取后再处理");
+      }
+      const content = resolvedContent(change, resolution);
+      let wroteFormalContent = false;
+      try {
+        if (change.currentContent === null) {
+          await storage.createText(CULTIVATION_ECOLOGY_PATH, content, {
+            createParents: true,
+          });
+        } else {
+          await storage.writeText(CULTIVATION_ECOLOGY_PATH, content, {
+            expectedContent: change.currentContent,
+          });
+        }
+        wroteFormalContent = true;
+        return await updateStatus(proposalId, "applied");
+      } catch (error) {
+        if (wroteFormalContent) {
+          try {
+            if (change.currentContent === null) {
+              const current = await readOptional(
+                storage,
+                CULTIVATION_ECOLOGY_PATH,
+              );
+              if (current !== content) {
+                throw new Error("正式内容已再次变化，已保留当前内容");
+              }
+              await storage.remove(CULTIVATION_ECOLOGY_PATH, {
+                permanent: true,
+              });
+            } else {
+              await storage.writeText(
+                CULTIVATION_ECOLOGY_PATH,
+                change.currentContent,
+                { expectedContent: content },
+              );
+            }
+          } catch (rollbackError) {
+            throw new Error(
+              `修行体系冲突处理失败且无法回滚：${errorMessage(error)}；${errorMessage(rollbackError)}`,
+            );
+          }
+        }
+        throw error;
+      }
     },
     async reject(proposalId, changeIds) {
       if (changeIds.length !== 1)

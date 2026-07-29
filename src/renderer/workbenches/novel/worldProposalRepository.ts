@@ -1,5 +1,6 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
+import type { FileProposalConflictResolution } from "./fileProposal";
 import {
   createNovelSettingLibraryRepository,
   SETTING_LIBRARY_PATHS,
@@ -82,6 +83,12 @@ export interface NovelWorldProposalRepository {
     proposalId: string,
     changeIds: readonly string[],
   ): Promise<LoadedWorldProposal | null>;
+  resolveConflict(
+    proposalId: string,
+    changeId: string,
+    resolution: FileProposalConflictResolution,
+    projectTitle: string,
+  ): Promise<LoadedWorldProposal>;
 }
 
 function errorMessage(error: unknown): string {
@@ -685,6 +692,74 @@ export function createNovelWorldProposalRepository(
     });
   };
 
+  const applySelectedChanges = async (
+    proposal: LoadedWorldProposal,
+    selected: readonly LoadedWorldProposalChange[],
+    projectTitle: string,
+  ): Promise<LoadedWorldProposal> => {
+    const selectedIds = new Set(selected.map((change) => change.id));
+    const settingLibrary =
+      await createNovelSettingLibraryRepository(storage).load(projectTitle);
+    const prospective = prospectiveLibrary(settingLibrary, selected);
+    validateLocationProposalChanges(prospective, selected);
+    await validateMaterializedSettingFiles(
+      storage,
+      prospective,
+      selected,
+      true,
+    );
+
+    const applied: LoadedWorldProposalChange[] = [];
+    try {
+      await persistGeneratedProposalSnapshots(
+        storage,
+        proposal.manifest.proposalId,
+        proposal.changes,
+      );
+      for (const change of selected) {
+        if (change.operation === "create") {
+          await storage.createText(change.targetPath, change.afterContent, {
+            createParents: true,
+          });
+        } else {
+          await storage.writeText(change.targetPath, change.afterContent, {
+            expectedContent: change.beforeContent,
+          });
+        }
+        applied.push(change);
+      }
+
+      const persistedLibrary = await loadPersistedSettingLibrary(storage);
+      await validateMaterializedSettingFiles(
+        storage,
+        persistedLibrary,
+        selected,
+        false,
+      );
+
+      const nextManifest = updateManifestChanges(
+        proposal.manifest,
+        selectedIds,
+        "applied",
+      );
+      await storage.writeText(
+        proposal.manifestPath,
+        serializeWorldProposalManifest(nextManifest),
+        { expectedContent: proposal.manifestContent },
+      );
+    } catch (error) {
+      try {
+        await rollbackAppliedChanges(storage, applied);
+      } catch (rollbackError) {
+        throw new Error(
+          `${errorMessage(error)}；${errorMessage(rollbackError)}`,
+        );
+      }
+      throw error;
+    }
+    return load(proposal.manifest.proposalId);
+  };
+
   const repository: NovelWorldProposalRepository = {
     async list() {
       const [directory] = await storage.stat([WORLD_PROPOSALS_DIRECTORY]);
@@ -734,7 +809,11 @@ export function createNovelWorldProposalRepository(
           !proposalId ||
           proposalId === "." ||
           proposalId === ".." ||
-          /[\\/]/.test(proposalId) || Array.from(proposalId).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+          /[\\/]/.test(proposalId) ||
+          Array.from(proposalId).some(
+            (character) =>
+              character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+          )
         ) {
           throw new Error(`提案 ID 非法：${proposalId}`);
         }
@@ -770,66 +849,35 @@ export function createNovelWorldProposalRepository(
         );
       }
 
-      const settingLibrary =
-        await createNovelSettingLibraryRepository(storage).load(projectTitle);
-      const prospective = prospectiveLibrary(settingLibrary, selected);
-      validateLocationProposalChanges(prospective, selected);
-      await validateMaterializedSettingFiles(
-        storage,
-        prospective,
-        selected,
-        true,
-      );
+      return applySelectedChanges(proposal, selected, projectTitle);
+    },
 
-      const applied: LoadedWorldProposalChange[] = [];
-      try {
-        await persistGeneratedProposalSnapshots(
-          storage,
-          proposalId,
-          proposal.changes,
-        );
-        for (const change of selected) {
-          if (change.operation === "create") {
-            await storage.createText(change.targetPath, change.afterContent, {
-              createParents: true,
-            });
-          } else {
-            await storage.writeText(change.targetPath, change.afterContent, {
-              expectedContent: change.beforeContent,
-            });
-          }
-          applied.push(change);
-        }
-
-        const persistedLibrary = await loadPersistedSettingLibrary(storage);
-        await validateMaterializedSettingFiles(
-          storage,
-          persistedLibrary,
-          selected,
-          false,
-        );
-
-        const nextManifest = updateManifestChanges(
-          proposal.manifest,
-          selectedIds,
-          "applied",
-        );
-        await storage.writeText(
-          proposal.manifestPath,
-          serializeWorldProposalManifest(nextManifest),
-          { expectedContent: proposal.manifestContent },
-        );
-      } catch (error) {
-        try {
-          await rollbackAppliedChanges(storage, applied);
-        } catch (rollbackError) {
-          throw new Error(
-            `${errorMessage(error)}；${errorMessage(rollbackError)}`,
-          );
-        }
-        throw error;
+    async resolveConflict(proposalId, changeId, resolution, projectTitle) {
+      const proposal = await load(proposalId);
+      const change = proposal.changes.find((item) => item.id === changeId);
+      if (!change) throw new Error("提案变更不存在");
+      if (change.status !== "pending") {
+        throw new Error("已处理的变更不能再次解决冲突");
       }
-      return load(proposalId);
+      if (change.loadError) throw new Error(change.loadError);
+      if (!change.conflict) {
+        throw new Error("正式内容当前没有冲突，请直接应用提案");
+      }
+      if (change.currentContent !== resolution.expectedCurrentContent) {
+        throw new Error("正式内容在冲突处理期间再次变化，请重新读取后再处理");
+      }
+
+      const resolvedChange: LoadedWorldProposalChange = {
+        ...change,
+        operation: change.currentContent === null ? "create" : "modify",
+        beforeContent: change.currentContent ?? "",
+        afterContent:
+          resolution.strategy === "merge"
+            ? resolution.content
+            : change.afterContent,
+        conflict: false,
+      };
+      return applySelectedChanges(proposal, [resolvedChange], projectTitle);
     },
 
     async reject(proposalId, changeIds) {

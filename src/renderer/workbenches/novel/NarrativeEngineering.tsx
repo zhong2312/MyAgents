@@ -55,6 +55,7 @@ import type { NarrativeEngineering as NarrativeEngineeringData } from "./narrati
 import NarrativeGantt from "./NarrativeGantt";
 import NarrativeOutline from "./NarrativeOutline";
 import NarrativeOverview from "./NarrativeOverview";
+import SimulationProposalReview from "./SimulationProposalReview";
 import WorldProposalReview from "./WorldProposalReview";
 import { createNarrativeFileProposalRepository } from "./narrativeProposalRepository";
 import NarrativeTracks from "./NarrativeTracks";
@@ -79,6 +80,7 @@ const VIEW_META: readonly [NarrativeWorkspaceView, string, LucideIcon][] = [
   ["outline", "大纲", ListTree],
   ["chapters", "章节", BookOpenText],
   ["schedule", "故事编排", ChartGantt],
+  ["proposals", "推演候选", GitBranch],
   ["audit", "叙事检查", ListChecks],
 ];
 
@@ -140,6 +142,8 @@ export default function NarrativeEngineering({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [aiDialogOpen, setAiDialogOpen] = useState(false);
+  const [aiDialogTask, setAiDialogTask] =
+    useState<NarrativeAiTaskId>("current");
   const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -221,6 +225,10 @@ export default function NarrativeEngineering({
   const warningCount = findings.filter(
     (finding) => finding.severity === "warning",
   ).length;
+  const pendingSimulationProposalCount =
+    draft?.simulationProposals.filter(
+      (proposal) => proposal.status === "pending",
+    ).length ?? 0;
 
   const openFinding = (finding: NarrativeAuditFinding) => {
     setView(finding.view);
@@ -302,17 +310,28 @@ export default function NarrativeEngineering({
           : view === "chapters"
             ? (draft.chapters.find(
                 (chapter) => chapter.id === selectedChapterId,
-              )?.title ?? "未选择章节")
-            : view === "audit"
-              ? "叙事检查"
-              : "全书剧情工程";
+              )?.title ??
+              (chapterDirectory !== "all" && chapterDirectory !== "unassigned"
+                ? (draft.directories.find(
+                    (directory) => directory.id === chapterDirectory,
+                  )?.title ?? "未选择章节目录")
+                : chapterDirectory === "unassigned"
+                  ? "未归类章节"
+                  : "全部章节"))
+            : view === "proposals"
+              ? "推演候选"
+              : view === "audit"
+                ? "叙事检查"
+                : "全书剧情工程";
   const viewLabel = VIEW_META.find(([id]) => id === view)?.[1] ?? "总览";
   const sectionCount = draft.chapters.reduce(
     (total, chapter) => total + chapter.sections.length,
     0,
   );
-  const openAiDialog = () => {
-    if (onOpenAiAgent) setAiDialogOpen(true);
+  const openAiDialog = (initialTask: NarrativeAiTaskId = "current") => {
+    if (!onOpenAiAgent) return;
+    setAiDialogTask(initialTask);
+    setAiDialogOpen(true);
   };
   const submitAiTask = async (
     task: NarrativeAiTaskId,
@@ -330,7 +349,14 @@ export default function NarrativeEngineering({
         view,
         selectedLineId,
         selectedArcId,
-        selectedDirectoryId,
+        selectedDirectoryId:
+          view === "chapters" &&
+          chapterDirectory !== "all" &&
+          chapterDirectory !== "unassigned"
+            ? chapterDirectory
+            : view === "chapters"
+              ? ""
+              : selectedDirectoryId,
         selectedChapterId,
       },
       userInstruction,
@@ -383,6 +409,11 @@ export default function NarrativeEngineering({
                   {errorCount + warningCount}
                 </span>
               )}
+              {id === "proposals" && pendingSimulationProposalCount > 0 && (
+                <span className="min-w-4 rounded-sm bg-[var(--accent-cool-subtle)] px-1 text-center text-xs text-[var(--accent-cool)]">
+                  {pendingSimulationProposalCount}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -405,7 +436,7 @@ export default function NarrativeEngineering({
                 ? "在 MyAgents 对话中分析当前剧情工程"
                 : "当前环境暂不支持 AI 共创"
             }
-            onClick={openAiDialog}
+            onClick={() => openAiDialog()}
           >
             <Sparkles className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
             AI 共创
@@ -473,6 +504,7 @@ export default function NarrativeEngineering({
             selectedId={selectedDirectoryId}
             onSelect={setSelectedDirectoryId}
             onChange={setDraft}
+            onOpenAi={() => openAiDialog("outline")}
           />
         )}
         {view === "chapters" && (
@@ -509,12 +541,16 @@ export default function NarrativeEngineering({
             }}
           />
         )}
+        {view === "proposals" && (
+          <SimulationProposalReview library={draft} onChange={setDraft} />
+        )}
         {view === "audit" && (
           <NarrativeAudit
             findings={findings}
             onOpenFinding={openFinding}
             onRepairDuplicates={
-              duplicateRepairPlan && hasNarrativeDuplicateRepair(duplicateRepairPlan)
+              duplicateRepairPlan &&
+              hasNarrativeDuplicateRepair(duplicateRepairPlan)
                 ? repairDuplicateRecords
                 : undefined
             }
@@ -526,9 +562,11 @@ export default function NarrativeEngineering({
           projectTitle={projectTitle}
           selectedEntity={selectedEntity}
           viewLabel={viewLabel}
+          initialTask={aiDialogTask}
           counts={{
             lines: draft.lines.length,
             arcs: draft.arcs.length,
+            directories: draft.directories.length,
             chapters: draft.chapters.length,
             sections: sectionCount,
             findings: findings.length,
@@ -547,7 +585,9 @@ export default function NarrativeEngineering({
           onClose={() => setProposalReviewOpen(false)}
           onApplied={() => {
             if (dirty) {
-              setError("提案已应用；当前剧情工程仍有未保存草稿，请先关闭提案后重新读取页面。 ");
+              setError(
+                "提案已应用；当前剧情工程仍有未保存草稿，请先关闭提案后重新读取页面。 ",
+              );
               return;
             }
             void load();

@@ -489,11 +489,11 @@ function ChapterDetail({
       { id: "", label: "暂不关联正文" },
       ...manuscriptChapters.map((manuscript) => ({
         id: manuscript.id,
-        label: `第 ${manuscript.number} 章 · ${manuscript.title}`,
+        label: `第 ${manuscript.displayNumber} 章 · ${manuscript.title}`,
         description: linkedByManuscript.has(manuscript.id)
           ? `已被“${linkedByManuscript.get(manuscript.id)}”关联`
           : `${manuscript.words.toLocaleString("zh-CN")} 字`,
-        keywords: [String(manuscript.number), manuscript.title],
+        keywords: [String(manuscript.displayNumber), manuscript.title],
       })),
     ],
     [linkedByManuscript, manuscriptChapters],

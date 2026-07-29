@@ -157,6 +157,32 @@ describe("WorldProposalReview", () => {
     expect(storage.getText(targetPath)).toBe("人工修改后的空间树\n");
   });
 
+  it("offers explicit choices and a merge editor for a conflict", async () => {
+    const { storage, targetPath } = await seedProposal();
+    storage.setExternalText(targetPath, "人工修改后的空间树\n");
+    render(
+      <WorldProposalReview
+        storage={storage}
+        projectTitle="测试小说"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "保留正式版本" }),
+    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "使用提案版本" })).toBeEnabled();
+    const mergeButton = screen.getByRole("button", { name: "合并内容" });
+    expect(mergeButton).toBeEnabled();
+
+    fireEvent.click(mergeButton);
+    expect(
+      await screen.findByRole("button", { name: "应用合并结果" }),
+    ).toBeEnabled();
+    expect(screen.getByText("合并冲突")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "合并结果" })).toBeEnabled();
+  });
+
   it("keeps malformed proposals visible beside valid proposals", async () => {
     const { storage } = await seedProposal();
     await storage.createText(

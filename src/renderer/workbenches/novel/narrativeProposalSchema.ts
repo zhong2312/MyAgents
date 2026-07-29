@@ -1,13 +1,19 @@
 import { z } from "zod";
 
 import {
+  narrativeChapterPlanSchema,
+  narrativeDirectorySchema,
   plotLineSchema,
   storyArcSchema,
 } from "./narrativeEngineeringSchema";
 
 export const NARRATIVE_PROPOSALS_DIRECTORY = "narrative/proposals";
+export const NARRATIVE_PROPOSAL_SCHEMA_VERSION = 4 as const;
 
-const idSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9-]*$/u);
+const idSchema = z
+  .string()
+  .trim()
+  .regex(/^[a-z0-9][a-z0-9-]*$/u);
 
 const proposalCandidateSchema = z
   .object({
@@ -18,16 +24,41 @@ const proposalCandidateSchema = z
   .strict();
 
 export const narrativeLineProposalCandidateSchema = proposalCandidateSchema
-  .extend({ value: plotLineSchema })
+  .extend({
+    value: plotLineSchema,
+    baseValue: plotLineSchema.nullable().optional(),
+  })
   .strict();
 
 export const narrativeArcProposalCandidateSchema = proposalCandidateSchema
-  .extend({ value: storyArcSchema })
+  .extend({
+    value: storyArcSchema,
+    baseValue: storyArcSchema.nullable().optional(),
+  })
+  .strict();
+
+export const narrativeDirectoryProposalCandidateSchema = proposalCandidateSchema
+  .extend({
+    value: narrativeDirectorySchema,
+    baseValue: narrativeDirectorySchema.nullable().optional(),
+  })
+  .strict();
+
+export const narrativeChapterProposalCandidateSchema = proposalCandidateSchema
+  .extend({
+    value: narrativeChapterPlanSchema,
+    baseValue: narrativeChapterPlanSchema.nullable().optional(),
+  })
   .strict();
 
 export const narrativeProposalManifestSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([
+      z.literal(1),
+      z.literal(2),
+      z.literal(3),
+      z.literal(NARRATIVE_PROPOSAL_SCHEMA_VERSION),
+    ]),
     proposalId: idSchema,
     title: z.string().trim().min(1),
     description: z.string(),
@@ -42,11 +73,19 @@ export const narrativeProposalManifestSchema = z
     baseSourceHash: z.string().regex(/^[a-f0-9]{64}$/u),
     lines: z.array(narrativeLineProposalCandidateSchema),
     arcs: z.array(narrativeArcProposalCandidateSchema),
+    directories: z.array(narrativeDirectoryProposalCandidateSchema).default([]),
+    chapters: z.array(narrativeChapterProposalCandidateSchema).default([]),
   })
   .strict()
   .superRefine((manifest, context) => {
     const ids = new Set<string>();
-    [...manifest.lines, ...manifest.arcs].forEach((candidate, index) => {
+    const candidates = [
+      ...manifest.lines,
+      ...manifest.arcs,
+      ...manifest.directories,
+      ...manifest.chapters,
+    ];
+    candidates.forEach((candidate, index) => {
       if (ids.has(candidate.candidateId)) {
         context.addIssue({
           code: "custom",
@@ -56,6 +95,23 @@ export const narrativeProposalManifestSchema = z
       }
       ids.add(candidate.candidateId);
     });
+    if (manifest.schemaVersion >= 2) {
+      const versionedCandidates =
+        manifest.schemaVersion === 2
+          ? [...manifest.lines, ...manifest.arcs]
+          : manifest.schemaVersion === 3
+            ? [...manifest.lines, ...manifest.arcs, ...manifest.directories]
+            : candidates;
+      versionedCandidates.forEach((candidate, index) => {
+        if (candidate.baseValue === undefined) {
+          context.addIssue({
+            code: "custom",
+            path: ["candidates", index, "baseValue"],
+            message: `v${manifest.schemaVersion} 剧情候选必须保存对象级基准；新增对象使用 null`,
+          });
+        }
+      });
+    }
   });
 
 export type NarrativeLineProposalCandidate = z.infer<
@@ -64,12 +120,21 @@ export type NarrativeLineProposalCandidate = z.infer<
 export type NarrativeArcProposalCandidate = z.infer<
   typeof narrativeArcProposalCandidateSchema
 >;
+export type NarrativeDirectoryProposalCandidate = z.infer<
+  typeof narrativeDirectoryProposalCandidateSchema
+>;
+export type NarrativeChapterProposalCandidate = z.infer<
+  typeof narrativeChapterProposalCandidateSchema
+>;
 export type NarrativeProposalManifest = z.infer<
   typeof narrativeProposalManifestSchema
 >;
 
 export class NarrativeProposalFormatError extends Error {
-  constructor(readonly filePath: string, detail: string) {
+  constructor(
+    readonly filePath: string,
+    detail: string,
+  ) {
     super(`${filePath} 格式错误：${detail}`);
     this.name = "NarrativeProposalFormatError";
   }

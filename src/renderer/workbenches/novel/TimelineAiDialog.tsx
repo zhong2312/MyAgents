@@ -3,38 +3,32 @@ import { useEffect, useState } from "react";
 
 import { DraggableDialogFrame } from "@/workbench-sdk";
 
-import { NARRATIVE_AI_TASKS, type NarrativeAiTaskId } from "./narrativeAi";
+import { TIMELINE_AI_TASKS, type TimelineAiTaskId } from "./timelineAi";
 
-export interface NarrativeAiDialogProps {
+export interface TimelineAiDialogProps {
   readonly projectTitle: string;
-  readonly selectedEntity: string;
-  readonly viewLabel: string;
-  readonly initialTask?: NarrativeAiTaskId;
+  readonly selectedLabel: string;
   readonly counts: Readonly<{
-    lines: number;
-    arcs: number;
-    directories: number;
-    chapters: number;
-    sections: number;
-    findings: number;
+    events: number;
+    periods: number;
+    branches: number;
+    foreshadowings: number;
   }>;
   readonly onClose: () => void;
   readonly onSubmit: (
-    task: NarrativeAiTaskId,
+    task: TimelineAiTaskId,
     userInstruction: string,
   ) => Promise<void>;
 }
 
-export default function NarrativeAiDialog({
+export default function TimelineAiDialog({
   projectTitle,
-  selectedEntity,
-  viewLabel,
-  initialTask = "current",
+  selectedLabel,
   counts,
   onClose,
   onSubmit,
-}: NarrativeAiDialogProps) {
-  const [task, setTask] = useState<NarrativeAiTaskId>(initialTask);
+}: TimelineAiDialogProps) {
+  const [task, setTask] = useState<TimelineAiTaskId>("consistency");
   const [instruction, setInstruction] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -45,10 +39,6 @@ export default function NarrativeAiDialog({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, submitting]);
-
-  useEffect(() => {
-    setTask(initialTask);
-  }, [initialTask]);
 
   const submit = async () => {
     setSubmitting(true);
@@ -61,7 +51,7 @@ export default function NarrativeAiDialog({
 
   return (
     <DraggableDialogFrame
-      ariaLabel="剧情工程 AI 共创"
+      ariaLabel="时间线 AI 共创"
       className="w-[min(42rem,calc(100vw-2rem))]"
       overlayClassName="bg-black/35"
       headerClassName="border-b border-[var(--line)] bg-[var(--paper-elevated)]"
@@ -71,15 +61,15 @@ export default function NarrativeAiDialog({
             <BrainCircuit className="h-4 w-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-semibold">剧情工程 AI 共创</h2>
+            <h2 className="truncate text-sm font-semibold">时间线 AI 共创</h2>
             <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
-              {projectTitle} · {viewLabel} · {selectedEntity}
+              {projectTitle} · {selectedLabel}
             </p>
           </div>
           <button
             type="button"
             className="ns-icon-button border-0"
-            aria-label="关闭剧情工程 AI 共创"
+            aria-label="关闭时间线 AI 共创"
             title="关闭"
             onClick={onClose}
             disabled={submitting}
@@ -90,14 +80,12 @@ export default function NarrativeAiDialog({
       }
     >
       <div className="ne-panel-scroll min-h-0 flex-1 p-5">
-        <div className="grid grid-cols-3 gap-2 border-b border-[var(--line)] pb-4 sm:grid-cols-6">
+        <div className="grid grid-cols-4 gap-2 border-b border-[var(--line)] pb-4">
           {[
-            ["线路", counts.lines],
-            ["故事弧", counts.arcs],
-            ["目录", counts.directories],
-            ["章节", counts.chapters],
-            ["节", counts.sections],
-            ["检查项", counts.findings],
+            ["事件", counts.events],
+            ["纪元", counts.periods],
+            ["分支", counts.branches],
+            ["伏笔", counts.foreshadowings],
           ].map(([label, value]) => (
             <div
               key={label}
@@ -119,7 +107,7 @@ export default function NarrativeAiDialog({
             <h3 className="text-sm font-semibold">选择共创方向</h3>
           </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {NARRATIVE_AI_TASKS.map((candidate) => (
+            {TIMELINE_AI_TASKS.map((candidate) => (
               <button
                 key={candidate.id}
                 type="button"
@@ -155,13 +143,12 @@ export default function NarrativeAiDialog({
             disabled={submitting}
             rows={4}
             className="ne-input mt-2 min-h-24 resize-y leading-6"
-            placeholder="例如：重点检查中点前后的角色弧转折，并给出可以落到具体章节或节的修改建议。"
+            placeholder="例如：核对当前分支在第一个分歧点之后是否还保留了不应继承的事件。"
           />
         </label>
 
         <p className="mt-4 text-xs leading-5 text-[var(--ink-muted)]">
-          AI 会在 MyAgents
-          完整对话中按需读取剧情工程事实。线路、故事弧、卷篇组目录以及章内节段规划都会生成待审提案；不会修改正文。
+          AI 会在 MyAgents 完整对话中按需读取已保存的时间线与关联事实，并给出可由作者确认后录入的建议；不会直接修改时间线或正文。
         </p>
       </div>
       <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] bg-[var(--paper-elevated)] px-5 py-3">

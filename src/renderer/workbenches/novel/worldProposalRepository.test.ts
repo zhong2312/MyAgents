@@ -72,6 +72,41 @@ async function seedTreeProposal() {
   return { storage, proposalId, targetPath, afterContent };
 }
 
+function createExternalTreeContent(
+  storage: ReturnType<typeof createEmptyNovelStorage>,
+  targetPath: string,
+  nodeId: string,
+): string {
+  const content = storage.getText(targetPath);
+  if (!content) throw new Error("测试缺少空间树事实源");
+  const tree = JSON.parse(content) as {
+    nodes: Array<{
+      id: string;
+      parentId: string | null;
+      name: string;
+      typeId: string;
+      order: number;
+    }>;
+  };
+  return `${JSON.stringify(
+    {
+      ...tree,
+      nodes: [
+        ...tree.nodes,
+        {
+          id: nodeId,
+          parentId: "world-root",
+          name: `人工节点 ${nodeId}`,
+          typeId: "continent",
+          order: tree.nodes.length,
+        },
+      ],
+    },
+    null,
+    2,
+  )}\n`;
+}
+
 describe("createNovelWorldProposalRepository", () => {
   it("loads before/after snapshots and applies a selected validated change", async () => {
     const { storage, proposalId, targetPath, afterContent } =
@@ -106,6 +141,62 @@ describe("createNovelWorldProposalRepository", () => {
       repository.apply(proposalId, ["update-tree"], "测试小说"),
     ).rejects.toThrow("目标文件已变化");
     expect(storage.getText(targetPath)).toBe("人工修改后的空间树\n");
+  });
+
+  it("uses the proposal version after an explicit conflict resolution", async () => {
+    const { storage, proposalId, targetPath, afterContent } =
+      await seedTreeProposal();
+    storage.setExternalText(
+      targetPath,
+      createExternalTreeContent(storage, targetPath, "manual-continent"),
+    );
+    const repository = createNovelWorldProposalRepository(storage);
+    const proposal = await repository.load(proposalId);
+    const change = proposal.changes[0];
+    expect(change?.conflict).toBe(true);
+
+    const applied = await repository.resolveConflict(
+      proposalId,
+      "update-tree",
+      {
+        strategy: "use-proposal",
+        expectedCurrentContent: change?.currentContent ?? null,
+      },
+      "测试小说",
+    );
+
+    expect(storage.getText(targetPath)).toBe(afterContent);
+    expect(applied.manifest.changes[0]?.status).toBe("applied");
+  });
+
+  it("blocks a conflict resolution when formal content changes again", async () => {
+    const { storage, proposalId, targetPath } = await seedTreeProposal();
+    storage.setExternalText(
+      targetPath,
+      createExternalTreeContent(storage, targetPath, "manual-continent-a"),
+    );
+    const repository = createNovelWorldProposalRepository(storage);
+    const proposal = await repository.load(proposalId);
+    const reviewedContent = proposal.changes[0]?.currentContent ?? null;
+    const latestContent = createExternalTreeContent(
+      storage,
+      targetPath,
+      "manual-continent-b",
+    );
+    storage.setExternalText(targetPath, latestContent);
+
+    await expect(
+      repository.resolveConflict(
+        proposalId,
+        "update-tree",
+        {
+          strategy: "use-proposal",
+          expectedCurrentContent: reviewedContent,
+        },
+        "测试小说",
+      ),
+    ).rejects.toThrow("正式内容在冲突处理期间再次变化");
+    expect(storage.getText(targetPath)).toBe(latestContent);
   });
 
   it("rejects a change without touching the target file", async () => {

@@ -2020,9 +2020,14 @@ export default function CultivationEcologyWorkbench({
     setInspectorOpen(true);
     setFormationEditorId(null);
   };
-  const requestDeleteSystem = () => {
-    if (!activeSystem) return;
-    setSystemDeleteTarget({ id: activeSystem.id, name: activeSystem.name });
+  const requestDeleteSystem = (
+    targetSystem: CultivationSystem | null = activeSystem,
+  ) => {
+    if (!targetSystem) return;
+    setSystemDeleteTarget({
+      id: targetSystem.id,
+      name: targetSystem.name,
+    });
   };
   const confirmDeleteSystem = () => {
     if (!ecology || !systemDeleteTarget) return;
@@ -2206,21 +2211,35 @@ export default function CultivationEcologyWorkbench({
                     </span>
                     <ChevronRight className="h-3.5 w-3.5 ce-system-arrow" />
                   </button>
-                  <button
-                    type="button"
-                    className="ce-system-edit"
-                    title={`编辑体系「${system.name}」`}
-                    aria-label={`编辑体系「${system.name}」`}
-                    onClick={() => {
-                      setActiveSystemId(system.id);
-                      setScope("system");
-                      setModule("overview");
-                      setFormationEditorId(null);
-                      selectAndOpenInspector({ kind: "system", id: system.id });
-                    }}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="ce-system-actions">
+                    <button
+                      type="button"
+                      className="ce-system-action ce-system-edit"
+                      title={`编辑体系「${system.name}」`}
+                      aria-label={`编辑体系「${system.name}」`}
+                      onClick={() => {
+                        setActiveSystemId(system.id);
+                        setScope("system");
+                        setModule("overview");
+                        setFormationEditorId(null);
+                        selectAndOpenInspector({
+                          kind: "system",
+                          id: system.id,
+                        });
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      className="ce-system-action ce-system-delete"
+                      title={`删除体系「${system.name}」`}
+                      aria-label={`删除体系「${system.name}」`}
+                      onClick={() => requestDeleteSystem(system)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

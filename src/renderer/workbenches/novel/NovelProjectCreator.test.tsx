@@ -16,7 +16,10 @@ describe("NovelProjectCreator", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("小说名称"), {
+    fireEvent.change(screen.getByLabelText("项目名"), {
+      target: { value: "长夜:行-01" },
+    });
+    fireEvent.change(screen.getByLabelText("书名"), {
       target: { value: "长夜:行" },
     });
     expect(screen.queryByText("初始结构")).not.toBeInTheDocument();
@@ -33,16 +36,23 @@ describe("NovelProjectCreator", () => {
     fireEvent.click(screen.getByRole("option", { name: "东方玄幻" }));
     fireEvent.click(screen.getByRole("option", { name: "悬疑" }));
     fireEvent.click(screen.getByRole("button", { name: "完成" }));
-    fireEvent.change(screen.getByLabelText("目标字数"), {
+    fireEvent.change(screen.getByLabelText("总字数下限"), {
       target: { value: "50.5" },
     });
+    fireEvent.change(screen.getByLabelText("总字数上限"), {
+      target: { value: "60.5" },
+    });
+    fireEvent.change(screen.getByLabelText("每章字数"), {
+      target: { value: "2500" },
+    });
+    expect(screen.getByText("202 至 242 章")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "创建并打开" }));
 
     await waitFor(() => {
       expect(onCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspacePath: "F:\\Novels\\长夜-行",
-          displayName: "长夜:行",
+          workspacePath: "F:\\Novels\\长夜-行-01",
+          displayName: "长夜:行-01",
           icon: "📖",
           route: "overview",
           initialization: expect.objectContaining({
@@ -59,11 +69,15 @@ describe("NovelProjectCreator", () => {
     );
     const parsedMetadata = JSON.parse(novelMetadata.content);
     expect(parsedMetadata).toMatchObject({
+      projectName: "长夜:行-01",
       title: "长夜:行",
       genres: ["玄幻", "东方玄幻", "悬疑"],
-      targetWordCount: 505_000,
+      targetWordCountMin: 505_000,
+      targetWordCountMax: 605_000,
+      chapterWordCount: 2_500,
       workbenchId: "io.myagents.novel",
     });
+    expect(parsedMetadata).not.toHaveProperty("targetWordCount");
     expect(parsedMetadata).not.toHaveProperty("genre");
     expect(parsedMetadata).not.toHaveProperty("form");
   });

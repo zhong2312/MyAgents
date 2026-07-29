@@ -87,6 +87,9 @@ const MAX_CHARACTER_OPERATIONS = 40;
 const NARRATIVE_PROPOSAL_ROOT = "narrative/proposals";
 const MAX_NARRATIVE_CANDIDATES = 30;
 const NARRATIVE_ENGINEERING_PATH = "narrative/index.json";
+const NARRATIVE_ENGINEERING_SCHEMA_VERSION = 4;
+const NARRATIVE_PROPOSAL_SCHEMA_VERSION = 4;
+const TIMELINE_LIBRARY_PATH = "timeline/index.json";
 const NARRATIVE_LINE_COLORS = {
   main: "#b64a3a",
   emotion: "#c3812f",
@@ -106,6 +109,8 @@ type NarrativeArcKind =
   | "mystery"
   | "theme"
   | "custom";
+type NarrativeDirectoryKind = "volume" | "part" | "group";
+type NarrativeDirectoryStatus = "idea" | "planned" | "drafting" | "complete";
 
 type NarrativeLineInput = {
   candidateId: string;
@@ -135,6 +140,55 @@ type NarrativeStoryArcInput = {
   keyNodes: NarrativeKeyNodeInput[];
 };
 
+type NarrativeDirectoryInput = {
+  candidateId: string;
+  /** Existing directory ID when this candidate revises a directory. */
+  targetId?: string;
+  /** Another candidateId in this draft, an existing directory ID, or null. */
+  parentId: string | null;
+  kind: NarrativeDirectoryKind;
+  title: string;
+  description?: string;
+  status?: NarrativeDirectoryStatus;
+  order: number;
+};
+
+type NarrativeParagraphInput = {
+  candidateId: string;
+  /** Existing paragraph ID when preserving or revising a paragraph. */
+  targetId?: string;
+  order: number;
+  content: string;
+};
+
+type NarrativeSectionInput = {
+  candidateId: string;
+  /** Existing section ID when preserving or revising a section. */
+  targetId?: string;
+  order: number;
+  title: string;
+  description: string;
+  povCharacterId?: string | null;
+  lineIds?: string[];
+  arcIds?: string[];
+  paragraphs: NarrativeParagraphInput[];
+};
+
+type NarrativeChapterInput = {
+  candidateId: string;
+  /** Existing chapter ID when this candidate revises a chapter. */
+  targetId?: string;
+  /** Directory candidate ID, existing directory ID, or null for unassigned. */
+  directoryId: string | null;
+  title: string;
+  description: string;
+  status?: NarrativeDirectoryStatus;
+  order: number;
+  lineIds?: string[];
+  arcIds?: string[];
+  sections: NarrativeSectionInput[];
+};
+
 type NarrativeKeyNodeInput = {
   nodeId: string;
   title: string;
@@ -148,6 +202,8 @@ type NarrativeDraftPayload = {
   baseSourceHash: string;
   lines: NarrativeLineInput[];
   arcs: NarrativeStoryArcInput[];
+  directories: NarrativeDirectoryInput[];
+  chapters: NarrativeChapterInput[];
 };
 
 type CharacterProposalOperation = {
@@ -1271,9 +1327,13 @@ async function validateCharacterCultivationProfiles(
       Boolean(trackId || levelId) ||
       (Array.isArray(value.methodIds) && value.methodIds.length > 0) ||
       (Array.isArray(value.abilityIds) && value.abilityIds.length > 0) ||
-      (Array.isArray(value.activeConstraintIds) && value.activeConstraintIds.length > 0) ||
-      (Array.isArray(value.breakthroughHistory) && value.breakthroughHistory.length > 0) ||
-      (value.resourceBalances && typeof value.resourceBalances === "object" && Object.keys(value.resourceBalances).length > 0);
+      (Array.isArray(value.activeConstraintIds) &&
+        value.activeConstraintIds.length > 0) ||
+      (Array.isArray(value.breakthroughHistory) &&
+        value.breakthroughHistory.length > 0) ||
+      (value.resourceBalances &&
+        typeof value.resourceBalances === "object" &&
+        Object.keys(value.resourceBalances).length > 0);
     if (!systemId && hasBoundAssets)
       errors.push(`角色“${name}”的修行档案存在资产，但未绑定修行体系`);
     if (systemId && !systemIds.has(systemId))
@@ -1310,9 +1370,14 @@ async function validateCharacterCultivationProfiles(
       });
     }
     if (systemId) {
-      const system = ecology.data.systems.find((candidate) => candidate.id === systemId);
+      const system = ecology.data.systems.find(
+        (candidate) => candidate.id === systemId,
+      );
       if (system) {
-        const belongsToSystem = (id: string, kind: "method" | "ability" | "constraint" | "resource" | "transition") => {
+        const belongsToSystem = (
+          id: string,
+          kind: "method" | "ability" | "constraint" | "resource" | "transition",
+        ) => {
           const collection =
             kind === "method"
               ? system.methods
@@ -1324,29 +1389,45 @@ async function validateCharacterCultivationProfiles(
                     ? system.resources
                     : [
                         ...system.transitions,
-                        ...system.progressionTracks.flatMap((track) => track.transitions),
+                        ...system.progressionTracks.flatMap(
+                          (track) => track.transitions,
+                        ),
                       ];
           return collection.some((item) => item.id === id);
         };
         for (const id of Array.isArray(value.methodIds) ? value.methodIds : [])
           if (typeof id === "string" && !belongsToSystem(id, "method"))
             errors.push(`角色“${name}”的法门不属于所选修行体系：${id}`);
-        for (const id of Array.isArray(value.abilityIds) ? value.abilityIds : [])
+        for (const id of Array.isArray(value.abilityIds)
+          ? value.abilityIds
+          : [])
           if (typeof id === "string" && !belongsToSystem(id, "ability"))
             errors.push(`角色“${name}”的能力不属于所选修行体系：${id}`);
-        for (const id of Array.isArray(value.activeConstraintIds) ? value.activeConstraintIds : [])
+        for (const id of Array.isArray(value.activeConstraintIds)
+          ? value.activeConstraintIds
+          : [])
           if (typeof id === "string" && !belongsToSystem(id, "constraint"))
             errors.push(`角色“${name}”的活跃约束不属于所选修行体系：${id}`);
-        if (value.resourceBalances && typeof value.resourceBalances === "object")
+        if (
+          value.resourceBalances &&
+          typeof value.resourceBalances === "object"
+        )
           for (const id of Object.keys(value.resourceBalances))
             if (!belongsToSystem(id, "resource"))
               errors.push(`角色“${name}”的内部资源不属于所选修行体系：${id}`);
         if (Array.isArray(value.breakthroughHistory))
           for (const entry of value.breakthroughHistory) {
-            if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-            const transitionId = (entry as Record<string, unknown>).transitionId;
-            if (typeof transitionId === "string" && !belongsToSystem(transitionId, "transition"))
-              errors.push(`角色“${name}”的突破记录不属于所选修行体系：${transitionId}`);
+            if (!entry || typeof entry !== "object" || Array.isArray(entry))
+              continue;
+            const transitionId = (entry as Record<string, unknown>)
+              .transitionId;
+            if (
+              typeof transitionId === "string" &&
+              !belongsToSystem(transitionId, "transition")
+            )
+              errors.push(
+                `角色“${name}”的突破记录不属于所选修行体系：${transitionId}`,
+              );
           }
       }
     }
@@ -1458,7 +1539,10 @@ function parseCultivationDraftContent(content: string) {
   try {
     parsed = JSON.parse(content);
   } catch (error) {
-    return { ecology: null, errors: [`修行生态草稿不是有效 JSON：${message(error)}`] };
+    return {
+      ecology: null,
+      errors: [`修行生态草稿不是有效 JSON：${message(error)}`],
+    };
   }
   const checked = cultivationEcologySchema.safeParse(parsed);
   if (!checked.success) {
@@ -1559,7 +1643,10 @@ async function validateCultivationDraftHandler(args: {
     const currentHash = hashNovelWorkbenchDraftPayload(current ?? "");
     if (draft.payload.baseSourceHash !== currentHash) {
       return result(
-        { valid: false, errors: ["修行体系事实源已变化，请重新读取上下文并创建草稿"] },
+        {
+          valid: false,
+          errors: ["修行体系事实源已变化，请重新读取上下文并创建草稿"],
+        },
         true,
       );
     }
@@ -1625,7 +1712,10 @@ async function submitCultivationDraftHandler(args: {
       workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
     );
     if (beforeContent === null) throw new Error("修行体系事实源不存在");
-    if (hashNovelWorkbenchDraftPayload(beforeContent) !== draft.payload.baseSourceHash) {
+    if (
+      hashNovelWorkbenchDraftPayload(beforeContent) !==
+      draft.payload.baseSourceHash
+    ) {
       throw new Error("修行体系事实源已变化，请重新读取上下文并创建草稿");
     }
     const parsed = parseCultivationDraftContent(draft.payload.content);
@@ -1639,10 +1729,16 @@ async function submitCultivationDraftHandler(args: {
     if (await readOptional(proposalFile)) {
       await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
       return result(
-        await getProposalStatus(CULTIVATION_PROPOSAL_ROOT, proposalId, "changes"),
+        await getProposalStatus(
+          CULTIVATION_PROPOSAL_ROOT,
+          proposalId,
+          "changes",
+        ),
       );
     }
-    await fs.mkdir(join(workspace, CULTIVATION_PROPOSAL_ROOT), { recursive: true });
+    await fs.mkdir(join(workspace, CULTIVATION_PROPOSAL_ROOT), {
+      recursive: true,
+    });
     await fs.mkdir(join(proposalDirectory, "before"), { recursive: true });
     await fs.mkdir(join(proposalDirectory, "after"), { recursive: true });
     createdProposalDirectory = true;
@@ -1689,7 +1785,9 @@ async function submitCultivationDraftHandler(args: {
     });
   } catch (error) {
     if (createdProposalDirectory) {
-      await fs.rm(proposalDirectory, { recursive: true, force: true }).catch(() => {});
+      await fs
+        .rm(proposalDirectory, { recursive: true, force: true })
+        .catch(() => {});
     }
     return result({ submitted: false, error: message(error) }, true);
   }
@@ -1932,6 +2030,142 @@ async function getNarrativeContextHandler(args: {
   }
 }
 
+type TimelineContextScope =
+  | "overview"
+  | "events"
+  | "periods"
+  | "branches"
+  | "all";
+
+function filterTimelineRecords(
+  records: unknown[],
+  ids: ReadonlySet<string>,
+): unknown[] {
+  if (ids.size === 0) return records;
+  return records.filter((record) => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      return false;
+    }
+    const id = (record as Record<string, unknown>).id;
+    return typeof id === "string" && ids.has(id);
+  });
+}
+
+async function getTimelineContextHandler(args: {
+  scope?: TimelineContextScope;
+  ids?: string[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireWorkspace();
+    const content = await fs.readFile(
+      workspaceFile(workspace, TIMELINE_LIBRARY_PATH),
+      "utf8",
+    );
+    const document = JSON.parse(content) as unknown;
+    if (!document || typeof document !== "object" || Array.isArray(document)) {
+      throw new Error("时间线事实源不是有效 JSON 对象");
+    }
+    const library = document as Record<string, unknown>;
+    const calendars = arrayField(library, "calendars");
+    const periods = arrayField(library, "periods");
+    const views = arrayField(library, "views");
+    const branches = arrayField(library, "branches");
+    const events = arrayField(library, "events");
+    if (!calendars || !periods || !views || !branches || !events) {
+      throw new Error("时间线事实源缺少历法、纪元、视图、分支或事件数组");
+    }
+
+    const scope = args.scope ?? "overview";
+    const ids = new Set(args.ids ?? []);
+    const overview = {
+      schemaVersion: library.schemaVersion,
+      storyStartEventId: library.storyStartEventId ?? null,
+      factsThroughEventId: library.factsThroughEventId ?? null,
+      counts: {
+        calendars: calendars.length,
+        periods: periods.length,
+        views: views.length,
+        branches: branches.length,
+        events: events.length,
+        stateChanges: events.reduce<number>((total, event) => {
+          const stateChanges = arrayField(event, "stateChanges");
+          return total + (stateChanges?.length ?? 0);
+        }, 0),
+        foreshadowings: events.reduce<number>((total, event) => {
+          const foreshadowings = arrayField(event, "foreshadowings");
+          return total + (foreshadowings?.length ?? 0);
+        }, 0),
+      },
+      calendars: calendars.map((calendar) => {
+        const value = calendar as Record<string, unknown>;
+        return { id: value.id, name: value.name, unit: value.unit };
+      }),
+      periods: periods.map((period) => {
+        const value = period as Record<string, unknown>;
+        return {
+          id: value.id,
+          name: value.name,
+          parentPeriodId: value.parentPeriodId,
+          kind: value.kind,
+          scope: value.scope,
+          startSortKey: value.startSortKey,
+          endSortKey: value.endSortKey,
+        };
+      }),
+      branches: branches.map((branch) => {
+        const value = branch as Record<string, unknown>;
+        return {
+          id: value.id,
+          name: value.name,
+          parentBranchId: value.parentBranchId,
+          forkEventId: value.forkEventId,
+        };
+      }),
+      events: events.map((event) => {
+        const value = event as Record<string, unknown>;
+        return {
+          id: value.id,
+          branchId: value.branchId,
+          timeLabel: value.timeLabel,
+          sortKey: value.sortKey,
+          endSortKey: value.endSortKey,
+          periodId: value.periodId,
+          scope: value.scope,
+          narrativeOrder: value.narrativeOrder,
+          title: value.title,
+          kind: value.kind,
+          causeEventIds: value.causeEventIds,
+          chapterIds: value.chapterIds,
+          stateChangeCount: arrayField(event, "stateChanges")?.length ?? 0,
+          foreshadowingCount: arrayField(event, "foreshadowings")?.length ?? 0,
+        };
+      }),
+    };
+    const data =
+      scope === "events"
+        ? { events: filterTimelineRecords(events, ids) }
+        : scope === "periods"
+          ? { periods: filterTimelineRecords(periods, ids) }
+          : scope === "branches"
+            ? { branches: filterTimelineRecords(branches, ids) }
+            : scope === "all"
+              ? library
+              : overview;
+
+    return result({
+      mode: context.mode,
+      sourcePath: TIMELINE_LIBRARY_PATH,
+      source: "saved-facts",
+      sourceHash: createHash("sha256").update(content).digest("hex"),
+      scope,
+      data,
+      note: "工具返回的是已保存事实；会话初始消息中的当前页面草稿如有冲突，应以作者当前草稿为准。",
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
 function narrativeSourceHash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -2041,6 +2275,8 @@ function validateNarrativeDraftPayload(
   library: Record<string, unknown>,
 ): string[] {
   const errors: string[] = [];
+  const directoryInputs = payload.directories ?? [];
+  const chapterInputs = payload.chapters ?? [];
   if (!payload.title.trim()) errors.push("剧情提案标题不能为空");
   const existingLineIds = new Set(
     narrativeRecords(library, "lines").map((line) => String(line.id)),
@@ -2048,9 +2284,19 @@ function validateNarrativeDraftPayload(
   const existingArcIds = new Set(
     narrativeRecords(library, "arcs").map((arc) => String(arc.id)),
   );
+  const existingDirectories = narrativeRecords(library, "directories");
+  const existingDirectoryIds = new Set(
+    existingDirectories.map((directory) => String(directory.id)),
+  );
+  const existingChapters = narrativeRecords(library, "chapters");
+  const existingChaptersById = new Map(
+    existingChapters.map((chapter) => [String(chapter.id), chapter]),
+  );
   const candidateIds = new Set<string>();
   const targetLineIds = new Set<string>();
   const targetArcIds = new Set<string>();
+  const targetDirectoryIds = new Set<string>();
+  const targetChapterIds = new Set<string>();
   for (const [index, line] of payload.lines.entries()) {
     if (
       !ID_PATTERN.test(line.candidateId) ||
@@ -2100,8 +2346,88 @@ function validateNarrativeDraftPayload(
       ),
     );
   }
-  if (payload.lines.length + payload.arcs.length === 0)
-    errors.push("至少需要一条线路或一个故事弧候选");
+  const effectiveIdByCandidate = new Map<string, string>();
+  for (const directory of directoryInputs) {
+    effectiveIdByCandidate.set(
+      directory.candidateId,
+      directory.targetId ?? directory.candidateId,
+    );
+  }
+  const effectiveDirectoryKinds = new Map(
+    existingDirectories.map((directory) => [
+      String(directory.id),
+      narrativeString(directory, "kind", "group") as NarrativeDirectoryKind,
+    ]),
+  );
+  const effectiveDirectoryParents = new Map<string, string | null>(
+    existingDirectories.map((directory) => [
+      String(directory.id),
+      narrativeNullableId(directory, "parentId"),
+    ]),
+  );
+  for (const [index, directory] of directoryInputs.entries()) {
+    if (
+      !ID_PATTERN.test(directory.candidateId) ||
+      candidateIds.has(directory.candidateId)
+    ) {
+      errors.push(`目录候选 ${index + 1} 的 candidateId 非法或重复`);
+    }
+    candidateIds.add(directory.candidateId);
+    if (!directory.title.trim()) {
+      errors.push(`目录候选 ${index + 1} 缺少标题`);
+    }
+    if (directory.targetId) {
+      if (!existingDirectoryIds.has(directory.targetId)) {
+        errors.push(
+          `目录候选 ${index + 1} 的 targetId 不存在：${directory.targetId}`,
+        );
+      } else if (targetDirectoryIds.has(directory.targetId)) {
+        errors.push(`多个目录候选不能更新同一个目录：${directory.targetId}`);
+      }
+      targetDirectoryIds.add(directory.targetId);
+    }
+    const effectiveId = directory.targetId ?? directory.candidateId;
+    const effectiveParentId = directory.parentId
+      ? (effectiveIdByCandidate.get(directory.parentId) ?? directory.parentId)
+      : null;
+    effectiveDirectoryKinds.set(effectiveId, directory.kind);
+    effectiveDirectoryParents.set(effectiveId, effectiveParentId);
+  }
+  for (const [index, directory] of directoryInputs.entries()) {
+    const effectiveId = directory.targetId ?? directory.candidateId;
+    const parentId = effectiveDirectoryParents.get(effectiveId) ?? null;
+    const parentKind = parentId
+      ? effectiveDirectoryKinds.get(parentId)
+      : undefined;
+    if (parentId && !effectiveDirectoryKinds.has(parentId)) {
+      errors.push(
+        `目录候选 ${index + 1} 引用了不存在的父目录：${directory.parentId}`,
+      );
+    }
+    if (directory.kind === "volume" && parentId !== null) {
+      errors.push(`卷目录“${directory.title}”必须位于根层`);
+    }
+    if (directory.kind === "part" && parentKind !== "volume") {
+      errors.push(`篇目录“${directory.title}”必须归属于卷`);
+    }
+    if (
+      !directory.targetId &&
+      directory.kind === "group" &&
+      parentId === null
+    ) {
+      errors.push(`新建组目录“${directory.title}”必须指定父目录`);
+    }
+    const visited = new Set([effectiveId]);
+    let ancestorId = parentId;
+    while (ancestorId) {
+      if (visited.has(ancestorId)) {
+        errors.push(`目录候选“${directory.title}”形成了循环引用`);
+        break;
+      }
+      visited.add(ancestorId);
+      ancestorId = effectiveDirectoryParents.get(ancestorId) ?? null;
+    }
+  }
   const allLineIds = new Set([
     ...existingLineIds,
     ...payload.lines.map((line) => line.candidateId),
@@ -2115,6 +2441,187 @@ function validateNarrativeDraftPayload(
         `故事弧候选 ${index + 1} 关联了不存在的线路：${missing.join(", ")}`,
       );
   });
+  const allArcIds = new Set([
+    ...existingArcIds,
+    ...payload.arcs.map((arc) => arc.candidateId),
+  ]);
+  const allDirectoryIds = new Set([
+    ...existingDirectoryIds,
+    ...directoryInputs.map((directory) => directory.candidateId),
+  ]);
+  const referencedSectionsByChapter = new Map<string, Set<string>>();
+  for (const owner of [
+    ...narrativeRecords(library, "lines"),
+    ...narrativeRecords(library, "arcs"),
+  ]) {
+    for (const node of arrayField(owner, "keyNodes") ?? []) {
+      const nodeRecord = narrativeRecord(node, "关键节点");
+      for (const location of arrayField(nodeRecord, "locations") ?? []) {
+        const locationRecord = narrativeRecord(location, "关键节点关联位置");
+        const chapterId = narrativeString(locationRecord, "chapterId", "");
+        const sectionId = narrativeNullableId(locationRecord, "sectionId");
+        if (!chapterId || !sectionId) continue;
+        const referenced = referencedSectionsByChapter.get(chapterId) ?? new Set();
+        referenced.add(sectionId);
+        referencedSectionsByChapter.set(chapterId, referenced);
+      }
+    }
+  }
+  for (const [chapterIndex, chapter] of chapterInputs.entries()) {
+    if (
+      !ID_PATTERN.test(chapter.candidateId) ||
+      candidateIds.has(chapter.candidateId)
+    ) {
+      errors.push(`章节候选 ${chapterIndex + 1} 的 candidateId 非法或重复`);
+    }
+    candidateIds.add(chapter.candidateId);
+    if (!chapter.title.trim()) {
+      errors.push(`章节候选 ${chapterIndex + 1} 缺少标题`);
+    }
+    const existingChapter = chapter.targetId
+      ? existingChaptersById.get(chapter.targetId)
+      : undefined;
+    if (chapter.targetId) {
+      if (!existingChapter) {
+        errors.push(
+          `章节候选 ${chapterIndex + 1} 的 targetId 不存在：${chapter.targetId}`,
+        );
+      } else if (targetChapterIds.has(chapter.targetId)) {
+        errors.push(`多个章节候选不能更新同一章：${chapter.targetId}`);
+      }
+      targetChapterIds.add(chapter.targetId);
+    }
+    if (chapter.directoryId && !allDirectoryIds.has(chapter.directoryId)) {
+      errors.push(
+        `章节候选 ${chapterIndex + 1} 归属了不存在的目录：${chapter.directoryId}`,
+      );
+    }
+    const missingLineIds = [...new Set(chapter.lineIds ?? [])].filter(
+      (id) => !allLineIds.has(id),
+    );
+    if (missingLineIds.length > 0) {
+      errors.push(
+        `章节候选 ${chapterIndex + 1} 关联了不存在的线路：${missingLineIds.join(", ")}`,
+      );
+    }
+    const missingArcIds = [...new Set(chapter.arcIds ?? [])].filter(
+      (id) => !allArcIds.has(id),
+    );
+    if (missingArcIds.length > 0) {
+      errors.push(
+        `章节候选 ${chapterIndex + 1} 关联了不存在的故事弧：${missingArcIds.join(", ")}`,
+      );
+    }
+    if (chapter.sections.length === 0) {
+      errors.push(`章节候选 ${chapterIndex + 1} 至少需要一个节`);
+    }
+    const existingSections = new Map(
+      (arrayField(existingChapter, "sections") ?? []).map((section) => {
+        const record = narrativeRecord(section, "既有节");
+        return [String(record.id), record] as const;
+      }),
+    );
+    const retainedSectionIds = new Set<string>();
+    const targetSectionIds = new Set<string>();
+    for (const [sectionIndex, section] of chapter.sections.entries()) {
+      if (
+        !ID_PATTERN.test(section.candidateId) ||
+        candidateIds.has(section.candidateId)
+      ) {
+        errors.push(
+          `章节候选 ${chapterIndex + 1} 的第 ${sectionIndex + 1} 节 candidateId 非法或重复`,
+        );
+      }
+      candidateIds.add(section.candidateId);
+      if (!section.title.trim()) {
+        errors.push(`章节候选 ${chapterIndex + 1} 的第 ${sectionIndex + 1} 节缺少标题`);
+      }
+      const existingSection = section.targetId
+        ? existingSections.get(section.targetId)
+        : undefined;
+      if (section.targetId) {
+        if (!existingSection) {
+          errors.push(
+            `章节候选 ${chapterIndex + 1} 的节 targetId 不属于该章节：${section.targetId}`,
+          );
+        } else if (targetSectionIds.has(section.targetId)) {
+          errors.push(
+            `章节候选 ${chapterIndex + 1} 不能重复更新同一节：${section.targetId}`,
+          );
+        }
+        targetSectionIds.add(section.targetId);
+      }
+      retainedSectionIds.add(section.targetId ?? section.candidateId);
+      const sectionMissingLineIds = [...new Set(section.lineIds ?? [])].filter(
+        (id) => !allLineIds.has(id),
+      );
+      const sectionMissingArcIds = [...new Set(section.arcIds ?? [])].filter(
+        (id) => !allArcIds.has(id),
+      );
+      if (sectionMissingLineIds.length > 0) {
+        errors.push(
+          `章节候选 ${chapterIndex + 1} 的节“${section.title}”关联了不存在的线路：${sectionMissingLineIds.join(", ")}`,
+        );
+      }
+      if (sectionMissingArcIds.length > 0) {
+        errors.push(
+          `章节候选 ${chapterIndex + 1} 的节“${section.title}”关联了不存在的故事弧：${sectionMissingArcIds.join(", ")}`,
+        );
+      }
+      const existingParagraphs = new Set(
+        (arrayField(existingSection, "paragraphs") ?? []).map((paragraph) =>
+          String(narrativeRecord(paragraph, "既有段").id),
+        ),
+      );
+      const targetParagraphIds = new Set<string>();
+      for (const [paragraphIndex, paragraph] of section.paragraphs.entries()) {
+        if (
+          !ID_PATTERN.test(paragraph.candidateId) ||
+          candidateIds.has(paragraph.candidateId)
+        ) {
+          errors.push(
+            `章节候选 ${chapterIndex + 1} 的第 ${sectionIndex + 1} 节第 ${paragraphIndex + 1} 段 candidateId 非法或重复`,
+          );
+        }
+        candidateIds.add(paragraph.candidateId);
+        if (paragraph.targetId) {
+          if (!existingParagraphs.has(paragraph.targetId)) {
+            errors.push(
+              `章节候选 ${chapterIndex + 1} 的段 targetId 不属于该节：${paragraph.targetId}`,
+            );
+          } else if (targetParagraphIds.has(paragraph.targetId)) {
+            errors.push(
+              `章节候选 ${chapterIndex + 1} 的节“${section.title}”不能重复更新同一段：${paragraph.targetId}`,
+            );
+          }
+          targetParagraphIds.add(paragraph.targetId);
+        }
+        if (!paragraph.content.trim()) {
+          errors.push(
+            `章节候选 ${chapterIndex + 1} 的第 ${sectionIndex + 1} 节第 ${paragraphIndex + 1} 段内容不能为空`,
+          );
+        }
+      }
+    }
+    for (const referencedSectionId of chapter.targetId
+      ? (referencedSectionsByChapter.get(chapter.targetId) ?? [])
+      : []) {
+      if (!retainedSectionIds.has(referencedSectionId)) {
+        errors.push(
+          `章节候选 ${chapterIndex + 1} 删除了仍被线路或故事弧关键节点关联的节：${referencedSectionId}`,
+        );
+      }
+    }
+  }
+  if (
+    payload.lines.length +
+      payload.arcs.length +
+      directoryInputs.length +
+      chapterInputs.length ===
+    0
+  ) {
+    errors.push("至少需要一条线路、一个故事弧、一个目录或一个章节候选");
+  }
   return errors;
 }
 
@@ -2124,19 +2631,45 @@ function materializeNarrativeDraft(
 ): {
   lines: Record<string, unknown>[];
   arcs: Record<string, unknown>[];
+  directories: Record<string, unknown>[];
+  chapters: Record<string, unknown>[];
   updatedLineIds: readonly string[];
   updatedArcIds: readonly string[];
+  updatedDirectoryIds: readonly string[];
+  updatedChapterIds: readonly string[];
 } {
+  const directoryInputs = payload.directories ?? [];
+  const chapterInputs = payload.chapters ?? [];
   const existingLines = narrativeRecords(library, "lines");
   const existingArcs = narrativeRecords(library, "arcs");
+  const existingDirectories = narrativeRecords(library, "directories");
+  const existingChapters = narrativeRecords(library, "chapters");
   const existingLinesById = new Map(
     existingLines.map((line) => [String(line.id), line]),
   );
   const existingArcsById = new Map(
     existingArcs.map((arc) => [String(arc.id), arc]),
   );
+  const existingDirectoriesById = new Map(
+    existingDirectories.map((directory) => [String(directory.id), directory]),
+  );
+  const existingChaptersById = new Map(
+    existingChapters.map((chapter) => [String(chapter.id), chapter]),
+  );
   const knownLineIds = new Set(existingLinesById.keys());
   const knownArcIds = new Set(existingArcsById.keys());
+  const knownDirectoryIds = new Set(existingDirectoriesById.keys());
+  const knownChapterIds = new Set(existingChaptersById.keys());
+  const knownNestedIds = new Set<string>();
+  for (const chapter of existingChapters) {
+    for (const section of arrayField(chapter, "sections") ?? []) {
+      const sectionRecord = narrativeRecord(section, "既有节");
+      knownNestedIds.add(String(sectionRecord.id));
+      for (const paragraph of arrayField(sectionRecord, "paragraphs") ?? []) {
+        knownNestedIds.add(String(narrativeRecord(paragraph, "既有段").id));
+      }
+    }
+  }
   const knownNodeIds = new Set<string>();
   for (const owner of [...existingLines, ...existingArcs]) {
     for (const node of arrayField(owner, "keyNodes") ?? []) {
@@ -2199,6 +2732,7 @@ function materializeNarrativeDraft(
           : input.content,
     };
   });
+  const arcIds = new Map<string, string>();
   const updatedArcIds: string[] = [];
   const arcs = payload.arcs.map((input) => {
     const existing = input.targetId
@@ -2210,6 +2744,7 @@ function materializeNarrativeDraft(
     const id = input.targetId ?? narrativeId("arc", knownArcIds);
     if (existing) updatedArcIds.push(id);
     else knownArcIds.add(id);
+    arcIds.set(input.candidateId, id);
     return {
       id,
       title: input.title.trim(),
@@ -2250,7 +2785,162 @@ function materializeNarrativeDraft(
           : input.content,
     };
   });
-  return { lines, arcs, updatedLineIds, updatedArcIds };
+  const directoryIds = new Map<string, string>();
+  const updatedDirectoryIds: string[] = [];
+  for (const input of directoryInputs) {
+    const existing = input.targetId
+      ? existingDirectoriesById.get(input.targetId)
+      : undefined;
+    if (input.targetId && !existing) {
+      throw new Error(`目录更新目标不存在：${input.targetId}`);
+    }
+    const id = input.targetId ?? narrativeId("directory", knownDirectoryIds);
+    if (existing) updatedDirectoryIds.push(id);
+    else knownDirectoryIds.add(id);
+    directoryIds.set(input.candidateId, id);
+  }
+  const directories = directoryInputs.map((input) => {
+    const existing = input.targetId
+      ? existingDirectoriesById.get(input.targetId)
+      : undefined;
+    const id = directoryIds.get(input.candidateId);
+    if (!id) throw new Error(`目录候选未分配稳定 ID：${input.candidateId}`);
+    return {
+      id,
+      parentId:
+        input.parentId === null
+          ? null
+          : (directoryIds.get(input.parentId) ?? input.parentId),
+      kind: input.kind,
+      title: input.title.trim(),
+      description:
+        input.description === undefined
+          ? narrativeString(existing, "description", "")
+          : input.description,
+      status: input.status ?? narrativeString(existing, "status", "idea"),
+      order: input.order,
+    };
+  });
+  const chapterIds = new Map<string, string>();
+  const updatedChapterIds: string[] = [];
+  for (const input of chapterInputs) {
+    const existing = input.targetId
+      ? existingChaptersById.get(input.targetId)
+      : undefined;
+    if (input.targetId && !existing) {
+      throw new Error(`章节更新目标不存在：${input.targetId}`);
+    }
+    const id = input.targetId ?? narrativeId("chapter", knownChapterIds);
+    if (existing) updatedChapterIds.push(id);
+    else knownChapterIds.add(id);
+    chapterIds.set(input.candidateId, id);
+  }
+  const materializedAt = new Date().toISOString();
+  const chapters = chapterInputs.map((input) => {
+    const existing = input.targetId
+      ? existingChaptersById.get(input.targetId)
+      : undefined;
+    const id = chapterIds.get(input.candidateId);
+    if (!id) throw new Error(`章节候选未分配稳定 ID：${input.candidateId}`);
+    const existingSectionsById = new Map(
+      (arrayField(existing, "sections") ?? []).map((section) => {
+        const value = narrativeRecord(section, "既有节");
+        return [String(value.id), value] as const;
+      }),
+    );
+    const sections = input.sections.map((section) => {
+      const existingSection = section.targetId
+        ? existingSectionsById.get(section.targetId)
+        : undefined;
+      const sectionId =
+        section.targetId ?? narrativeId("section", knownNestedIds);
+      if (!section.targetId) knownNestedIds.add(sectionId);
+      const existingParagraphsById = new Map(
+        (arrayField(existingSection, "paragraphs") ?? []).map((paragraph) => {
+          const value = narrativeRecord(paragraph, "既有段");
+          return [String(value.id), value] as const;
+        }),
+      );
+      return {
+        id: sectionId,
+        order: section.order,
+        title: section.title.trim(),
+        description: section.description,
+        povCharacterId:
+          section.povCharacterId === undefined
+            ? narrativeNullableId(existingSection, "povCharacterId")
+            : section.povCharacterId,
+        lineIds: [
+          ...new Set(
+            (section.lineIds ?? narrativeIdList(existingSection, "lineIds")).map(
+              (lineId) => lineIds.get(lineId) ?? lineId,
+            ),
+          ),
+        ],
+        arcIds: [
+          ...new Set(
+            (section.arcIds ?? narrativeIdList(existingSection, "arcIds")).map(
+              (arcId) => arcIds.get(arcId) ?? arcId,
+            ),
+          ),
+        ],
+        paragraphs: section.paragraphs.map((paragraph) => {
+          const existingParagraph = paragraph.targetId
+            ? existingParagraphsById.get(paragraph.targetId)
+            : undefined;
+          const paragraphId =
+            paragraph.targetId ?? narrativeId("paragraph", knownNestedIds);
+          if (!paragraph.targetId) knownNestedIds.add(paragraphId);
+          return {
+            id: paragraphId,
+            order: paragraph.order,
+            content:
+              paragraph.content === undefined
+                ? narrativeString(existingParagraph, "content", "")
+                : paragraph.content,
+          };
+        }),
+      };
+    });
+    return {
+      id,
+      directoryId:
+        input.directoryId === null
+          ? null
+          : (directoryIds.get(input.directoryId) ?? input.directoryId),
+      manuscriptChapterId: narrativeNullableId(existing, "manuscriptChapterId"),
+      title: input.title.trim(),
+      description: input.description,
+      status: input.status ?? narrativeString(existing, "status", "idea"),
+      order: input.order,
+      updatedAt: materializedAt,
+      lineIds: [
+        ...new Set(
+          (input.lineIds ?? narrativeIdList(existing, "lineIds")).map(
+            (lineId) => lineIds.get(lineId) ?? lineId,
+          ),
+        ),
+      ],
+      arcIds: [
+        ...new Set(
+          (input.arcIds ?? narrativeIdList(existing, "arcIds")).map(
+            (arcId) => arcIds.get(arcId) ?? arcId,
+          ),
+        ),
+      ],
+      sections,
+    };
+  });
+  return {
+    lines,
+    arcs,
+    directories,
+    chapters,
+    updatedLineIds,
+    updatedArcIds,
+    updatedDirectoryIds,
+    updatedChapterIds,
+  };
 }
 
 async function readNarrativeSource(): Promise<{
@@ -2268,7 +2958,7 @@ async function readNarrativeSource(): Promise<{
   narrativeRecords(library, "arcs");
   narrativeRecords(library, "directories");
   narrativeRecords(library, "chapters");
-  if (library.schemaVersion !== 3)
+  if (library.schemaVersion !== NARRATIVE_ENGINEERING_SCHEMA_VERSION)
     throw new Error("请先在剧情工程页面保存一次，以完成旧数据迁移");
   return { workspace, content, library };
 }
@@ -2295,6 +2985,8 @@ async function createNarrativeDraftHandler(args: {
         baseSourceHash: args.baseSourceHash,
         lines: [],
         arcs: [],
+        directories: [],
+        chapters: [],
       },
       args.draftId,
     );
@@ -2369,6 +3061,64 @@ async function upsertNarrativeDraftArcsHandler(args: {
   }
 }
 
+async function upsertNarrativeDraftDirectoriesHandler(args: {
+  draftId: string;
+  directories: NarrativeDirectoryInput[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("narrative");
+    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
+      workspace,
+      "narrative",
+      args.draftId,
+      (payload) => {
+        const directories = new Map(
+          (payload.directories ?? []).map((directory) => [
+            directory.candidateId,
+            directory,
+          ]),
+        );
+        args.directories.forEach((directory) =>
+          directories.set(directory.candidateId, directory),
+        );
+        return { ...payload, directories: [...directories.values()] };
+      },
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertNarrativeDraftChaptersHandler(args: {
+  draftId: string;
+  chapters: NarrativeChapterInput[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("narrative");
+    const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
+      workspace,
+      "narrative",
+      args.draftId,
+      (payload) => {
+        const chapters = new Map(
+          (payload.chapters ?? []).map((chapter) => [
+            chapter.candidateId,
+            chapter,
+          ]),
+        );
+        args.chapters.forEach((chapter) =>
+          chapters.set(chapter.candidateId, chapter),
+        );
+        return { ...payload, chapters: [...chapters.values()] };
+      },
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
 async function validateNarrativeDraftHandler(args: {
   draftId: string;
 }): Promise<CallToolResult> {
@@ -2406,9 +3156,23 @@ async function submitNarrativeProposalHandler(args: {
   baseSourceHash: string;
   lines: Record<string, unknown>[];
   arcs: Record<string, unknown>[];
+  directories: Record<string, unknown>[];
+  chapters: Record<string, unknown>[];
+  baseLines: Record<string, unknown>[];
+  baseArcs: Record<string, unknown>[];
+  baseDirectories: Record<string, unknown>[];
+  baseChapters: Record<string, unknown>[];
   updatedLineIds: readonly string[];
   updatedArcIds: readonly string[];
-}): Promise<{ proposalId: string; lineCount: number; arcCount: number }> {
+  updatedDirectoryIds: readonly string[];
+  updatedChapterIds: readonly string[];
+}): Promise<{
+  proposalId: string;
+  lineCount: number;
+  arcCount: number;
+  directoryCount: number;
+  chapterCount: number;
+}> {
   const { workspace, context } = requireDraftMode("narrative");
   const proposalDirectory = workspaceFile(
     workspace,
@@ -2419,10 +3183,24 @@ async function submitNarrativeProposalHandler(args: {
       proposalId: args.proposalId,
       lineCount: args.lines.length,
       arcCount: args.arcs.length,
+      directoryCount: args.directories.length,
+      chapterCount: args.chapters.length,
     };
   await fs.mkdir(proposalDirectory, { recursive: true });
+  const baseLinesById = new Map(
+    args.baseLines.map((value) => [String(value.id), value]),
+  );
+  const baseArcsById = new Map(
+    args.baseArcs.map((value) => [String(value.id), value]),
+  );
+  const baseDirectoriesById = new Map(
+    args.baseDirectories.map((value) => [String(value.id), value]),
+  );
+  const baseChaptersById = new Map(
+    args.baseChapters.map((value) => [String(value.id), value]),
+  );
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: NARRATIVE_PROPOSAL_SCHEMA_VERSION,
     proposalId: args.proposalId,
     title: args.title.trim(),
     description: args.description?.trim() ?? "",
@@ -2438,12 +3216,28 @@ async function submitNarrativeProposalHandler(args: {
       summary: `${args.updatedLineIds.includes(String(value.id)) ? "更新" : "新增"}线路：${String(value.title)}`,
       status: "pending",
       value,
+      baseValue: baseLinesById.get(String(value.id)) ?? null,
     })),
     arcs: args.arcs.map((value) => ({
       candidateId: String(value.id),
       summary: `${args.updatedArcIds.includes(String(value.id)) ? "更新" : "新增"}故事弧：${String(value.title)}`,
       status: "pending",
       value,
+      baseValue: baseArcsById.get(String(value.id)) ?? null,
+    })),
+    directories: args.directories.map((value) => ({
+      candidateId: String(value.id),
+      summary: `${args.updatedDirectoryIds.includes(String(value.id)) ? "更新" : "新增"}目录：${String(value.title)}`,
+      status: "pending",
+      value,
+      baseValue: baseDirectoriesById.get(String(value.id)) ?? null,
+    })),
+    chapters: args.chapters.map((value) => ({
+      candidateId: String(value.id),
+      summary: `${args.updatedChapterIds.includes(String(value.id)) ? "更新" : "新增"}章节：${String(value.title)}`,
+      status: "pending",
+      value,
+      baseValue: baseChaptersById.get(String(value.id)) ?? null,
     })),
   };
   await fs.writeFile(
@@ -2455,6 +3249,8 @@ async function submitNarrativeProposalHandler(args: {
     proposalId: args.proposalId,
     lineCount: args.lines.length,
     arcCount: args.arcs.length,
+    directoryCount: args.directories.length,
+    chapterCount: args.chapters.length,
   };
 }
 
@@ -2494,8 +3290,16 @@ async function submitNarrativeDraftHandler(args: {
       baseSourceHash: draft.payload.baseSourceHash,
       lines: materialized.lines,
       arcs: materialized.arcs,
+      directories: materialized.directories,
+      chapters: materialized.chapters,
+      baseLines: narrativeRecords(source.library, "lines"),
+      baseArcs: narrativeRecords(source.library, "arcs"),
+      baseDirectories: narrativeRecords(source.library, "directories"),
+      baseChapters: narrativeRecords(source.library, "chapters"),
       updatedLineIds: materialized.updatedLineIds,
       updatedArcIds: materialized.updatedArcIds,
+      updatedDirectoryIds: materialized.updatedDirectoryIds,
+      updatedChapterIds: materialized.updatedChapterIds,
     });
     await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
     const status = await getNarrativeProposalStatusHandlerValue(proposalId);
@@ -2504,7 +3308,8 @@ async function submitNarrativeDraftHandler(args: {
       ...persisted,
       ...status,
       draftId: draft.draftId,
-      reviewAction: "请作者在剧情工程的线路或故事弧页面点击“审阅提案”。",
+      reviewAction:
+        "请作者在剧情工程点击“审阅提案”，逐项确认线路、故事弧、目录或章节候选。",
     });
   } catch (error) {
     return result({ submitted: false, error: message(error) }, true);
@@ -2526,6 +3331,8 @@ async function getNarrativeProposalStatusHandlerValue(
   const candidates = [
     ...(arrayField(manifest, "lines") ?? []),
     ...(arrayField(manifest, "arcs") ?? []),
+    ...(arrayField(manifest, "directories") ?? []),
+    ...(arrayField(manifest, "chapters") ?? []),
   ];
   const statuses = candidates.map((candidate) =>
     String(narrativeRecord(candidate, "剧情提案候选").status),
@@ -3383,6 +4190,81 @@ export async function createNovelWorkbenchServer() {
     content: z.string().max(160_000).optional(),
     keyNodes: z.array(narrativeKeyNodeInputSchema).min(1).max(30),
   });
+  const narrativeDirectoryInputSchema = z.object({
+    candidateId: z
+      .string()
+      .regex(ID_PATTERN)
+      .describe("本草稿内的目录候选 ID，也可供其它目录的 parentId 引用"),
+    targetId: z
+      .string()
+      .regex(ID_PATTERN)
+      .optional()
+      .describe("更新既有目录时填写其稳定 ID；省略则创建新目录"),
+    parentId: z
+      .string()
+      .regex(ID_PATTERN)
+      .nullable()
+      .describe("父目录候选 ID、已有目录稳定 ID；根卷使用 null"),
+    kind: z.enum(["volume", "part", "group"]),
+    title: z.string().trim().min(1).max(160),
+    description: z.string().max(160_000).optional(),
+    status: z.enum(["idea", "planned", "drafting", "complete"]).optional(),
+    order: z.number().int().nonnegative().max(100_000),
+  });
+  const narrativeParagraphInputSchema = z.object({
+    candidateId: z
+      .string()
+      .regex(ID_PATTERN)
+      .describe("本草稿内的段候选 ID"),
+    targetId: z
+      .string()
+      .regex(ID_PATTERN)
+      .optional()
+      .describe("更新既有段时填写其稳定 ID"),
+    order: z.number().int().nonnegative().max(100_000),
+    content: z.string().trim().min(1).max(160_000),
+  });
+  const narrativeSectionInputSchema = z.object({
+    candidateId: z
+      .string()
+      .regex(ID_PATTERN)
+      .describe("本草稿内的节候选 ID"),
+    targetId: z
+      .string()
+      .regex(ID_PATTERN)
+      .optional()
+      .describe("更新既有节时填写其稳定 ID；必须属于目标章节"),
+    order: z.number().int().nonnegative().max(100_000),
+    title: z.string().trim().min(1).max(160),
+    description: z.string().max(160_000).default(""),
+    povCharacterId: z.string().regex(ID_PATTERN).nullable().optional(),
+    lineIds: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
+    arcIds: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
+    paragraphs: z.array(narrativeParagraphInputSchema).max(100).default([]),
+  });
+  const narrativeChapterInputSchema = z.object({
+    candidateId: z
+      .string()
+      .regex(ID_PATTERN)
+      .describe("本草稿内的章节候选 ID"),
+    targetId: z
+      .string()
+      .regex(ID_PATTERN)
+      .optional()
+      .describe("更新既有章节时填写其稳定 ID；省略则创建新章节"),
+    directoryId: z
+      .string()
+      .regex(ID_PATTERN)
+      .nullable()
+      .describe("目录候选 ID、已有卷篇组目录稳定 ID，或 null 表示未归类"),
+    title: z.string().trim().min(1).max(160),
+    description: z.string().max(160_000).default(""),
+    status: z.enum(["idea", "planned", "drafting", "complete"]).optional(),
+    order: z.number().int().nonnegative().max(100_000),
+    lineIds: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
+    arcIds: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
+    sections: z.array(narrativeSectionInputSchema).min(1).max(50),
+  });
   const itemFieldValueSchema = z.union([
     z.string(),
     z.number(),
@@ -3554,6 +4436,17 @@ export async function createNovelWorkbenchServer() {
         getItemProposalStatusHandler,
       ),
       tool(
+        "novel_timeline_get_context",
+        "按总览、事件、纪元或分支范围读取已保存的时间线事实。默认只返回总览；需要完整字段时指定 scope，必要时用 ids 限定对象。初始消息里的当前页面草稿仍优先于这里的已保存事实。",
+        {
+          scope: z
+            .enum(["overview", "events", "periods", "branches", "all"])
+            .optional(),
+          ids: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
+        },
+        getTimelineContextHandler,
+      ),
+      tool(
         "novel_narrative_get_context",
         "按总览、线路、故事弧、目录或章节范围读取已保存的剧情工程事实。默认只返回总览；需要完整字段时指定 scope，必要时用 ids 限定对象。初始消息里的未保存界面草稿仍优先于这里的已保存事实。",
         {
@@ -3566,7 +4459,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_create_draft",
-        "在作者明确要求创建线路或故事弧后创建可恢复的剧情草稿。草稿包含关键节点候选，不会写入正式剧情工程。",
+        "在作者明确要求创建线路、故事弧、卷篇组目录或章节与节后创建可恢复的剧情草稿。草稿只保存候选，不会写入正式剧情工程。",
         {
           draftId: z.string().regex(ID_PATTERN).optional(),
           title: z.string().trim().min(1).max(160),
@@ -3577,7 +4470,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_get_draft",
-        "读取剧情工程 AI 草稿及其关键节点候选、revision、校验令牌和提交状态。",
+        "读取剧情工程 AI 草稿及其线路、故事弧、目录、章节候选、revision、校验令牌和提交状态。",
         {
           draftId: z.string().regex(ID_PATTERN),
         },
@@ -3608,8 +4501,32 @@ export async function createNovelWorkbenchServer() {
         upsertNarrativeDraftArcsHandler,
       ),
       tool(
+        "novel_narrative_upsert_draft_directories",
+        "向剧情工程草稿增量写入卷、篇、组目录候选。父目录可引用同一草稿中的 candidateId 或已有目录稳定 ID；卷必须位于根层，篇必须归属于卷。不得用故事弧代替目录。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          directories: z
+            .array(narrativeDirectoryInputSchema)
+            .min(1)
+            .max(MAX_NARRATIVE_CANDIDATES),
+        },
+        upsertNarrativeDraftDirectoriesHandler,
+      ),
+      tool(
+        "novel_narrative_upsert_draft_chapters",
+        "向剧情工程草稿增量写入章节候选；每章必须包含至少一个节，节内可包含多个段规划。更新既有章、节、段时分别填写 targetId 以保留稳定 ID；新建时省略 targetId。directoryId、lineIds、arcIds 可引用同一草稿候选或已有稳定 ID。该工具不创建正文。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          chapters: z
+            .array(narrativeChapterInputSchema)
+            .min(1)
+            .max(MAX_NARRATIVE_CANDIDATES),
+        },
+        upsertNarrativeDraftChaptersHandler,
+      ),
+      tool(
         "novel_narrative_validate_draft",
-        "校验剧情草稿的候选 id、关键节点、章节/节关联和故事弧线路引用；成功后返回 validationToken。",
+        "校验剧情草稿的候选 id、目录父子关系、章节目结构、关键节点关联及线路故事弧引用；成功后返回 validationToken。",
         { draftId: z.string().regex(ID_PATTERN) },
         validateNarrativeDraftHandler,
       ),
@@ -3624,7 +4541,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_get_proposal_status",
-        "从磁盘查询剧情提案是否真实存在及其线路、故事弧候选的待审、已采纳、已拒绝数量。",
+        "从磁盘查询剧情提案是否真实存在及其线路、故事弧、目录、章节候选的待审、已采纳、已拒绝数量。",
         { proposalId: z.string().regex(ID_PATTERN) },
         getNarrativeProposalStatusHandler,
       ),
@@ -3712,7 +4629,10 @@ export async function createNovelWorkbenchServer() {
         "把完整的修行生态 JSON 写入草稿。不会直接写入正式事实源；更新后必须重新校验。",
         {
           draftId: z.string().regex(ID_PATTERN),
-          content: z.string().min(2).max(8 * 1024 * 1024),
+          content: z
+            .string()
+            .min(2)
+            .max(8 * 1024 * 1024),
         },
         upsertCultivationDraftHandler,
       ),

@@ -6,9 +6,12 @@ describe("createNovelProjectInitialization", () => {
   it("builds a versioned Markdown and JSON project layout", () => {
     const initialization = createNovelProjectInitialization({
       projectId: "project-1",
+      projectName: "novel-2026-01",
       title: "长夜行",
       genres: ["玄幻", "东方玄幻"],
-      targetWordCount: 800_000,
+      targetWordCountMin: 800_000,
+      targetWordCountMax: 1_200_000,
+      chapterWordCount: 3_000,
       createdAt: "2026-07-14T12:00:00.000Z",
     });
 
@@ -90,9 +93,12 @@ describe("createNovelProjectInitialization", () => {
       schemaVersion: 1,
       projectId: "project-1",
       workbenchId: "io.myagents.novel",
+      projectName: "novel-2026-01",
       title: "长夜行",
       genres: ["玄幻", "东方玄幻"],
-      targetWordCount: 800_000,
+      targetWordCountMin: 800_000,
+      targetWordCountMax: 1_200_000,
+      chapterWordCount: 3_000,
       status: "planning",
       language: "zh-CN",
       createdAt: "2026-07-14T12:00:00.000Z",
@@ -103,9 +109,12 @@ describe("createNovelProjectInitialization", () => {
   it("does not initialize retired story planning files", () => {
     const initialization = createNovelProjectInitialization({
       projectId: "project-2",
+      projectName: "echo-short",
       title: "回声",
       genres: ["悬疑"],
-      targetWordCount: 20_000,
+      targetWordCountMin: 20_000,
+      targetWordCountMax: 30_000,
+      chapterWordCount: 2_000,
       createdAt: "2026-07-14T12:00:00.000Z",
     });
     expect(

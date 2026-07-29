@@ -14,9 +14,12 @@ describe("novel project schema", () => {
           schemaVersion: 1,
           projectId: "novel-1",
           workbenchId: "io.myagents.novel",
+          projectName: "novel-longnight",
           title: "长夜行",
           genres: ["玄幻", "东方玄幻"],
-          targetWordCount: 800_000,
+          targetWordCountMin: 800_000,
+          targetWordCountMax: 1_200_000,
+          chapterWordCount: 3_000,
           status: "planning",
           language: "zh-CN",
           createdAt: "2026-07-14T12:00:00.000Z",
@@ -25,9 +28,12 @@ describe("novel project schema", () => {
       ),
     ).toMatchObject({
       title: "长夜行",
+      projectName: "novel-longnight",
       schemaVersion: 1,
       genres: ["玄幻", "东方玄幻"],
-      targetWordCount: 800_000,
+      targetWordCountMin: 800_000,
+      targetWordCountMax: 1_200_000,
+      chapterWordCount: 3_000,
     });
     expect(
       parseNovelChapterIndex(
@@ -57,9 +63,58 @@ describe("novel project schema", () => {
         }),
       ),
     ).toMatchObject({
+      projectName: "旧项目",
       genres: ["悬疑"],
       targetWordCount: null,
+      targetWordCountMin: null,
+      targetWordCountMax: null,
+      chapterWordCount: null,
     });
+  });
+
+  it("normalizes the legacy single word target into an equal range", () => {
+    expect(
+      parseNovelMetadata(
+        JSON.stringify({
+          schemaVersion: 1,
+          projectId: "legacy-target",
+          workbenchId: "io.myagents.novel",
+          title: "旧目标",
+          genres: ["悬疑"],
+          targetWordCount: 300_000,
+          status: "planning",
+          language: "zh-CN",
+          createdAt: "2026-07-14T12:00:00.000Z",
+          updatedAt: "2026-07-14T12:00:00.000Z",
+        }),
+      ),
+    ).toMatchObject({
+      projectName: "旧目标",
+      targetWordCountMin: 300_000,
+      targetWordCountMax: 300_000,
+    });
+  });
+
+  it("rejects a reversed target word range", () => {
+    expect(() =>
+      parseNovelMetadata(
+        JSON.stringify({
+          schemaVersion: 1,
+          projectId: "invalid-range",
+          workbenchId: "io.myagents.novel",
+          projectName: "invalid-range",
+          title: "错误区间",
+          genres: ["悬疑"],
+          targetWordCountMin: 500_000,
+          targetWordCountMax: 300_000,
+          chapterWordCount: 2_000,
+          status: "planning",
+          language: "zh-CN",
+          createdAt: "2026-07-14T12:00:00.000Z",
+          updatedAt: "2026-07-14T12:00:00.000Z",
+        }),
+      ),
+    ).toThrow(/下限不得大于上限/);
   });
 
   it("rejects duplicate genres", () => {
@@ -153,5 +208,151 @@ describe("novel project schema", () => {
         }),
       ),
     ).toThrow(/必须与 number 使用同一六位编号/);
+  });
+
+  it("migrates v2 manuscript display numbers in separate narrative and free sequences", () => {
+    const index = parseNovelChapterIndex(
+      JSON.stringify({
+        schemaVersion: 2,
+        nextChapterNumber: 5,
+        structureMode: "free",
+        directories: [
+          {
+            id: "directory-narrative",
+            parentId: null,
+            kind: "volume",
+            title: "第一卷",
+            order: 0,
+            narrativeDirectoryId: "narrative-directory-1",
+          },
+          {
+            id: "directory-free",
+            parentId: null,
+            kind: "folder",
+            title: "自由内容",
+            order: 1,
+            narrativeDirectoryId: null,
+          },
+        ],
+        chapters: [
+          {
+            id: "chapter-000001",
+            number: 1,
+            title: "关联第一章",
+            path: "manuscript/chapters/000001.md",
+            status: "draft",
+            directoryId: "directory-narrative",
+            order: 0,
+            narrativeChapterId: "narrative-chapter-1",
+            trackingStatus: "idle",
+            lastTrackedAt: null,
+          },
+          {
+            id: "chapter-000002",
+            number: 2,
+            title: "自由第一章",
+            path: "manuscript/chapters/000002.md",
+            status: "draft",
+            directoryId: "directory-free",
+            order: 0,
+            narrativeChapterId: null,
+            trackingStatus: "idle",
+            lastTrackedAt: null,
+          },
+          {
+            id: "chapter-000003",
+            number: 3,
+            title: "关联第二章",
+            path: "manuscript/chapters/000003.md",
+            status: "draft",
+            directoryId: "directory-narrative",
+            order: 1,
+            narrativeChapterId: "narrative-chapter-2",
+            trackingStatus: "idle",
+            lastTrackedAt: null,
+          },
+          {
+            id: "chapter-000004",
+            number: 4,
+            title: "自由第二章",
+            path: "manuscript/chapters/000004.md",
+            status: "draft",
+            directoryId: "directory-free",
+            order: 1,
+            narrativeChapterId: null,
+            trackingStatus: "idle",
+            lastTrackedAt: null,
+          },
+        ],
+        typography: {
+          fontFamily: "system-serif",
+          fontSize: 18,
+          titleSize: 30,
+          lineHeight: 1.9,
+          paragraphSpacing: 12,
+          firstLineIndent: 2,
+          contentWidth: 760,
+          textAlign: "left",
+          paperTone: "warm",
+        },
+        trash: [],
+      }),
+    );
+
+    expect(index.schemaVersion).toBe(3);
+    expect(index.chapters.map((chapter) => chapter.displayNumber)).toEqual([
+      1, 1, 2, 2,
+    ]);
+  });
+
+  it("allows matching display numbers across scopes but not within one scope", () => {
+    const shared = {
+      schemaVersion: 3,
+      nextChapterNumber: 3,
+      structureMode: "free",
+      directories: [],
+      typography: {
+        fontFamily: "system-serif",
+        fontSize: 18,
+        titleSize: 30,
+        lineHeight: 1.9,
+        paragraphSpacing: 12,
+        firstLineIndent: 2,
+        contentWidth: 760,
+        textAlign: "left",
+        paperTone: "warm",
+      },
+      trash: [],
+    };
+    const chapter = (number: number, narrativeChapterId: string | null) => ({
+      id: `chapter-${String(number).padStart(6, "0")}`,
+      number,
+      displayNumber: 1,
+      title: "章节",
+      path: `manuscript/chapters/${String(number).padStart(6, "0")}.md`,
+      status: "draft",
+      directoryId: null,
+      order: number - 1,
+      narrativeChapterId,
+      trackingStatus: "idle",
+      lastTrackedAt: null,
+    });
+
+    expect(() =>
+      parseNovelChapterIndex(
+        JSON.stringify({
+          ...shared,
+          chapters: [chapter(1, "narrative-chapter-1"), chapter(2, null)],
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      parseNovelChapterIndex(
+        JSON.stringify({
+          ...shared,
+          chapters: [chapter(1, null), chapter(2, null)],
+        }),
+      ),
+    ).toThrow(/显示编号不得重复/);
   });
 });

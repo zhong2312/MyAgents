@@ -8,6 +8,7 @@ import type { LoadedNovelChapter } from "./repository";
 
 export type NarrativeAiTaskId =
   | "current"
+  | "outline"
   | "structure"
   | "weaving"
   | "chapters";
@@ -39,6 +40,11 @@ export const NARRATIVE_AI_TASKS: readonly {
     description: "围绕当前选中的线路、故事弧、目录、章节或检查项给出建议。",
   },
   {
+    id: "outline",
+    label: "大纲结构规划",
+    description: "规划卷、篇、组的层级、子主题与章节归属，并识别目录缺口。",
+  },
+  {
     id: "structure",
     label: "全局结构体检",
     description: "检查主线、支线、故事弧、章节分布和节奏缺口。",
@@ -51,7 +57,7 @@ export const NARRATIVE_AI_TASKS: readonly {
   {
     id: "chapters",
     label: "章节与节规划",
-    description: "从章节目标、冲突、变化和节级拆解提出可执行规划。",
+    description: "为当前目录创建章节候选，并在每章内拆分节与段规划。",
   },
 ];
 
@@ -93,11 +99,14 @@ function selectedEntityLabel(
     );
   }
   if (selection.view === "chapters") {
-    return (
-      library.chapters.find(
-        (chapter) => chapter.id === selection.selectedChapterId,
-      )?.title ?? "未选择章节"
+    const chapter = library.chapters.find(
+      (candidate) => candidate.id === selection.selectedChapterId,
     );
+    if (chapter) return chapter.title;
+    const directory = library.directories.find(
+      (candidate) => candidate.id === selection.selectedDirectoryId,
+    );
+    return directory ? `目录：${directory.title}` : "未选择章节目录";
   }
   return selection.view === "audit" ? "叙事检查" : "全书剧情工程";
 }
@@ -219,7 +228,7 @@ function buildSnapshot(
     })),
     manuscriptIndex: cap(manuscriptChapters, 180).map((chapter) => ({
       id: chapter.id,
-      number: chapter.number,
+      number: chapter.displayNumber,
       title: chapter.title,
       words: chapter.words,
     })),
@@ -333,15 +342,27 @@ export function buildNarrativeAiAgentRequest({
     hasUnsavedChanges,
   );
   const proposalMutationRule =
-    "更新已有线路或故事弧（例如补充关键节点、修订内容）时，必须在 upsert 工具中填写 targetId，且 targetId 必须是上下文中已有对象的稳定 ID。只有作者明确要求新增独立线路或故事弧时，才省略 targetId。不得仅因标题相同而新建副本。";
+    "更新已有线路、故事弧、目录或章节时，必须在对应 upsert 工具中填写 targetId，且 targetId 必须是上下文中已有对象的稳定 ID。更新章节时，既有节和段也必须分别用 targetId 保留稳定 ID；只有明确新增对象时才省略 targetId。不得仅因标题相同而新建副本。";
+  const outlineTaskRule =
+    task === "outline"
+      ? '\n\n本次是大纲结构规划：只处理卷、篇、组的层级、每层的主题或时空边界和排序。若快照不足以判断已保存的目录状态，可按需调用 novel_narrative_get_context({ scope: "outline" })。作者要求实际创建或调整大纲时，必须用 novel_narrative_upsert_draft_directories 写入目录候选：父目录引用同一草稿的 candidateId 或已有目录稳定 ID，根卷使用 null。卷、篇、组属于目录，不得创建同名故事弧代替目录；本任务不得用章节候选代替目录。'
+      : "";
+  const chapterTaskRule =
+    task === "chapters"
+      ? '\n\n本次是章节与节规划：目标是创建或更新正式可审阅的章节候选，而不是修改大纲目录说明。先按需调用 novel_narrative_get_context({ scope: "chapters" }) 和 novel_narrative_get_context({ scope: "outline" }) 获取完整章节与目录事实，再调用 novel_narrative_upsert_draft_chapters。每章必须归属当前选中目录（或作者指定目录），至少包含一个有标题和简述的节；节内可按需要提供多个段规划。章和节可关联线路、故事弧，段不关联。新建章、节、段省略 targetId；更新既有章时必须提交完整章节结构，并为保留的章、节、段填写各自 targetId。不得创建或修改正文 Markdown。'
+      : "";
+  const defaultInstruction =
+    task === "chapters"
+      ? "请为当前选中的目录规划并创建章节与节候选；根据已有线路和故事弧拆分每章的节，必要时补充段规划。"
+      : "请先给出最值得优先处理的三项建议。";
   const instruction = `${
-    userInstruction.trim() || "请先给出最值得优先处理的三项建议。"
-  }\n\n${proposalMutationRule}`;
+    userInstruction.trim() || defaultInstruction
+  }\n\n${proposalMutationRule}${outlineTaskRule}${chapterTaskRule}`;
   return {
     task,
     title: `剧情工程 · ${taskMeta.label}`,
     conversationKey: `novel.narrative.assist:${task}:${runId}`,
     historyGroupPath: ["剧情工程", taskMeta.label],
-    initialMessage: `你是 MyAgents 小说工作台的“剧情工程 AI 助手”。\n\n项目：${projectTitle}\n当前视图：${selection.view}\n当前对象：${target}\n本次任务：${taskMeta.label}\n任务说明：${taskMeta.description}\n作者补充要求：${instruction}\n\n下面是剧情工程的结构化快照（可能包含尚未保存的页面草稿）：\n<narrative-context>\n${context}\n</narrative-context>\n\n请按以下规则工作：\n1. 只基于快照和作者补充要求分析，不要假设未提供的事实。根据实际需要，自主选择 novel_narrative_get_context、novel_characters_get_context、novel_world_get_context、novel_items_get_context 获取补充事实；不要为了遍历模块而机械调用全部工具。\n2. 作者明确要求“创建线路”“建立故事弧”或同义动作时，必须先调用 novel_narrative_get_context 获取最新 sourceHash，再调用 novel_narrative_create_draft；随后用 novel_narrative_upsert_draft_lines 或 novel_narrative_upsert_draft_story_arcs 写入候选。每条线路和故事弧都必须设计至少一个有标题和内容的关键节点，可在节点中提供已有章节或节的关联位置；不要提交空节点。\n3. 草稿完成后必须调用 novel_narrative_validate_draft，再使用这次返回的 validationToken 调用 novel_narrative_submit_draft。最后调用 novel_narrative_get_proposal_status 回查提案。工具只会生成待审提案，不会直接创建正式线路或故事弧；只能向作者报告“提案已提交，请在剧情工程中审阅”，不得声称已经写入正式事实源。\n4. sourceHash 不匹配时，重新读取剧情工程事实并创建新草稿，不能用旧 hash 重试。若快照中的 hasUnsavedChanges 为 true，禁止继续创建草稿覆盖未保存页面；应请作者先保存页面或明确放弃草稿。\n5. 工具只能创建剧情规划提案，绝不修改正文。不得使用原始文件工具或向作者建议手工编辑项目文件。目录、章节、节、段的实际修改仍由剧情工程界面完成；节点关联只能使用工具支持的已有章节/节 id，不得假装完成不支持的写入。\n6. 非创建请求以分析和建议为主。每条建议使用“发现 / 原因 / 建议动作 / 影响范围”结构，并引用具体线路、故事弧、章节或节的标题；优先尊重非线性创作，不要把检查提示当成硬性写作规则。\n7. 结合人物库的角色弧关联，明确区分角色弧事实与剧情工程中的章节投影。\n\n先判断作者是否要求实际创建；需要创建时先调用工具并报告真实返回结果，否则给出简洁诊断摘要和按优先级排序的建议。`,
+    initialMessage: `你是 MyAgents 小说工作台的“剧情工程 AI 助手”。\n\n项目：${projectTitle}\n当前视图：${selection.view}\n当前对象：${target}\n本次任务：${taskMeta.label}\n任务说明：${taskMeta.description}\n作者补充要求：${instruction}\n\n下面是剧情工程的结构化快照（可能包含尚未保存的页面草稿）：\n<narrative-context>\n${context}\n</narrative-context>\n\n请按以下规则工作：\n1. 只基于快照和作者补充要求分析，不要假设未提供的事实。根据实际需要，自主选择 novel_narrative_get_context、novel_characters_get_context、novel_world_get_context、novel_items_get_context 获取补充事实；不要为了遍历模块而机械调用全部工具。\n2. 作者明确要求创建或更新线路、故事弧、卷篇组目录、章节或节时，必须先调用 novel_narrative_get_context 获取最新 sourceHash，再调用 novel_narrative_create_draft；随后分别使用 novel_narrative_upsert_draft_lines、novel_narrative_upsert_draft_story_arcs、novel_narrative_upsert_draft_directories 或 novel_narrative_upsert_draft_chapters 写入对应候选。线路和故事弧必须包含关键节点；目录必须提供正确的父目录、类型和顺序；章节必须包含至少一个节。\n3. 草稿完成后必须调用 novel_narrative_validate_draft，再使用这次返回的 validationToken 调用 novel_narrative_submit_draft。最后调用 novel_narrative_get_proposal_status 回查提案。工具只会生成待审提案，不会直接创建正式对象；只能向作者报告“提案已提交，请在剧情工程中审阅”，不得声称已经写入正式事实源。\n4. sourceHash 不匹配时，重新读取剧情工程事实并创建新草稿，不能用旧 hash 重试。若快照中的 hasUnsavedChanges 为 true，禁止继续创建草稿覆盖未保存页面；应请作者先保存页面或明确放弃草稿。\n5. 工具只能创建剧情规划提案，绝不修改正文。不得使用原始文件工具或向作者建议手工编辑项目文件。目录通过目录候选写入；章、节和段规划通过章节候选写入，节和段始终嵌套在章内。节点关联只能使用已有章节/节 id，不得假装完成不支持的写入。\n6. 非创建请求以分析和建议为主。每条建议使用“发现 / 原因 / 建议动作 / 影响范围”结构，并引用具体线路、故事弧、章节或节的标题；优先尊重非线性创作，不要把检查提示当成硬性写作规则。\n7. 结合人物库的角色弧关联，明确区分角色弧事实与剧情工程中的章节投影。\n\n先判断作者是否要求实际创建；需要创建时先调用工具并报告真实返回结果，否则给出简洁诊断摘要和按优先级排序的建议。`,
   };
 }

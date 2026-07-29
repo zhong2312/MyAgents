@@ -722,6 +722,7 @@
         "validateWorldProposal": "校验世界架构提案",
         "submitWorldProposal": "提交世界架构提案",
         "readNarrativeContext": "读取剧情工程上下文",
+        "readTimelineContext": "读取时间线上下文",
         "readItems": "读取物品库",
         "validateItemProposal": "校验物品库提案",
         "submitItemProposal": "提交物品库提案",

@@ -6,6 +6,7 @@ import {
   FolderTree,
   Layers3,
   Plus,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -30,6 +31,7 @@ interface NarrativeOutlineProps {
   readonly selectedId: string;
   readonly onSelect: (id: string) => void;
   readonly onChange: (library: NarrativeEngineering) => void;
+  readonly onOpenAi?: () => void;
 }
 
 const KIND_LABELS: Readonly<Record<NarrativeDirectory["kind"], string>> = {
@@ -76,6 +78,7 @@ export default function NarrativeOutline({
   selectedId,
   onSelect,
   onChange,
+  onOpenAi,
 }: NarrativeOutlineProps) {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const selected =
@@ -158,14 +161,26 @@ export default function NarrativeOutline({
               </div>
             </div>
           </div>
-          <button
-            type="button"
-            className="ns-button ne-outline-create-button"
-            onClick={() => setIsCreateDialogOpen(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新建目录
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="ns-icon-button border-0"
+              title="AI 规划目录"
+              aria-label="AI 规划目录"
+              disabled={!onOpenAi}
+              onClick={onOpenAi}
+            >
+              <Sparkles className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
+            </button>
+            <button
+              type="button"
+              className="ns-button ne-outline-create-button"
+              onClick={() => setIsCreateDialogOpen(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              新建目录
+            </button>
+          </div>
         </div>
         <div className="ne-panel-scroll ne-outline-sidebar-scroll flex-1 p-2">
           {library.directories.length === 0 ? (

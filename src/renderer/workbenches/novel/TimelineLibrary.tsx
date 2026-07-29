@@ -17,6 +17,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Sparkles,
   Trash2,
   Users,
   X,
@@ -68,11 +69,18 @@ import {
   type TimelineTimePrecision,
   type TimelineView,
 } from "./timelineLibrarySchema";
+import TimelineAiDialog from "./TimelineAiDialog";
+import {
+  buildTimelineAiAgentRequest,
+  type TimelineAiAgentRequest,
+  type TimelineAiTaskId,
+} from "./timelineAi";
 
 interface TimelineLibraryProps {
   readonly storage: WorkbenchStorage;
   readonly projectTitle: string;
   readonly isActive: boolean;
+  readonly onOpenAiAgent?: (request: TimelineAiAgentRequest) => Promise<void>;
 }
 
 interface ReferenceOption {
@@ -388,7 +396,7 @@ async function loadReferences(
     ? parseNovelChapterIndex(chapterFile.content).chapters.map((chapter) => ({
         id: chapter.id,
         name: chapter.title,
-        meta: `第 ${chapter.number} 章`,
+        meta: `第 ${chapter.displayNumber} 章`,
       }))
     : [];
   return {
@@ -423,6 +431,7 @@ export default function TimelineLibrary({
   storage,
   projectTitle,
   isActive,
+  onOpenAiAgent,
 }: TimelineLibraryProps) {
   const repository = useMemo(
     () => createNovelTimelineLibraryRepository(storage),
@@ -452,6 +461,7 @@ export default function TimelineLibrary({
     null,
   );
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isAiDialogOpen, setIsAiDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1012,6 +1022,44 @@ export default function TimelineLibrary({
     );
   };
 
+  const selectedLabel = selectedProjectedEvent
+    ? `事件：${selectedProjectedEvent.event.title}`
+    : selectedPeriod
+      ? `纪元：${selectedPeriod.name}`
+      : selectedBranch
+        ? `分支：${selectedBranch.name}`
+        : "全局时间线";
+  const foreshadowingCount =
+    loaded?.library.events.reduce(
+      (total, event) => total + event.foreshadowings.length,
+      0,
+    ) ?? 0;
+  const submitAiTask = async (
+    task: TimelineAiTaskId,
+    userInstruction: string,
+  ) => {
+    if (!loaded || !onOpenAiAgent) return;
+    const request = buildTimelineAiAgentRequest({
+      task,
+      projectTitle,
+      library: loaded.library,
+      selection: {
+        branchId: selectedBranchId,
+        viewId: selectedViewId,
+        periodId: selectedPeriodId,
+        eventId: selectedEventId,
+        eventDraft,
+      },
+      userInstruction,
+    });
+    setIsAiDialogOpen(false);
+    try {
+      await onOpenAiAgent(request);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  };
+
   return (
     <div className="timeline-library flex h-full min-h-0 flex-col overflow-hidden bg-[var(--paper)]">
       <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
@@ -1211,6 +1259,22 @@ export default function TimelineLibrary({
               </button>
               <button
                 type="button"
+                onClick={() => setIsAiDialogOpen(true)}
+                disabled={!onOpenAiAgent || !loaded}
+                title={
+                  !onOpenAiAgent
+                    ? "当前环境暂不支持 AI 共创"
+                    : loaded
+                      ? "使用 AI 校验和推演当前时间线"
+                      : "正在读取时间线"
+                }
+                className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium text-[var(--ink)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
+                <span className="max-lg:hidden">AI 推演</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => void createEvent()}
                 disabled={!selectedBranch || isSaving}
                 className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-3 text-sm font-medium text-white hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
@@ -1330,6 +1394,20 @@ export default function TimelineLibrary({
       </div>
       {isHelpOpen && (
         <TimelineHelpDialog onClose={() => setIsHelpOpen(false)} />
+      )}
+      {isAiDialogOpen && loaded && onOpenAiAgent && (
+        <TimelineAiDialog
+          projectTitle={projectTitle}
+          selectedLabel={selectedLabel}
+          counts={{
+            events: loaded.library.events.length,
+            periods: loaded.library.periods.length,
+            branches: loaded.library.branches.length,
+            foreshadowings: foreshadowingCount,
+          }}
+          onClose={() => setIsAiDialogOpen(false)}
+          onSubmit={submitAiTask}
+        />
       )}
     </div>
   );

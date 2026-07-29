@@ -722,6 +722,7 @@
         "validateWorldProposal": "Validate world proposal",
         "submitWorldProposal": "Submit world proposal",
         "readNarrativeContext": "Read narrative context",
+        "readTimelineContext": "Read timeline context",
         "readItems": "Read item library",
         "validateItemProposal": "Validate item proposal",
         "submitItemProposal": "Submit item proposal",

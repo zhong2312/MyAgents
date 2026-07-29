@@ -44,6 +44,7 @@ vi.mock("@mdxeditor/editor", async () => {
     }),
     BlockTypeSelect: Empty,
     BoldItalicUnderlineToggles: Empty,
+    CodeToggle: Empty,
     CreateLink: Empty,
     DiffSourceToggleWrapper: Passthrough,
     InsertTable: Empty,
@@ -59,6 +60,8 @@ vi.mock("@mdxeditor/editor", async () => {
     quotePlugin: () => ({}),
     tablePlugin: () => ({}),
     toolbarPlugin: () => ({}),
+    codeBlockPlugin: () => ({}),
+    codeMirrorPlugin: () => ({}),
   };
 });
 
@@ -108,6 +111,47 @@ function context(
 }
 
 describe("NovelWorkbenchRenderer storage loop", () => {
+  it("shows and updates project planning details from the overview", async () => {
+    const storage = createEmptyNovelStorage();
+    render(
+      <NovelWorkbenchRenderer
+        context={context(storage, "overview", vi.fn())}
+      />,
+    );
+
+    expect(await screen.findAllByText("25 至 35 万字")).toHaveLength(2);
+    expect(screen.getByText("100 至 140 章")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑资料" }));
+
+    expect(screen.getByLabelText("项目名")).toHaveValue("test-novel-01");
+    fireEvent.change(screen.getByLabelText("书名"), {
+      target: { value: "自由变更后的书名" },
+    });
+    fireEvent.change(screen.getByLabelText("总字数下限"), {
+      target: { value: "40" },
+    });
+    fireEvent.change(screen.getByLabelText("总字数上限"), {
+      target: { value: "60" },
+    });
+    fireEvent.change(screen.getByLabelText("每章字数"), {
+      target: { value: "2000" },
+    });
+    expect(screen.getByText("200 至 300 章")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "自由变更后的书名" }),
+    ).toBeInTheDocument();
+    const metadata = JSON.parse(storage.getText("novel.json") ?? "{}");
+    expect(metadata).toMatchObject({
+      projectName: "test-novel-01",
+      title: "自由变更后的书名",
+      targetWordCountMin: 400_000,
+      targetWordCountMax: 600_000,
+      chapterWordCount: 2_000,
+    });
+  });
+
   it("creates the first chapter, saves Markdown, and reloads it after remount", async () => {
     const storage = createEmptyNovelStorage();
     const navigate = vi.fn();

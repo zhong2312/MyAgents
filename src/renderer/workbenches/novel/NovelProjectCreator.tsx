@@ -1,18 +1,16 @@
-import {
-  BookOpen,
-  Check,
-  ChevronDown,
-  FolderOpen,
-  Loader2,
-  X,
-} from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { BookOpen, FolderOpen, Loader2, X } from "lucide-react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
-import { Popover, type WorkbenchProjectCreatorProps } from "@/workbench-sdk";
+import type { WorkbenchProjectCreatorProps } from "@/workbench-sdk";
+import NovelGenrePicker from "./NovelGenrePicker";
+import NovelPlanningFields from "./NovelPlanningFields";
 import { createNovelProjectInitialization } from "./projectInitialization";
-import { NOVEL_GENRE_GROUPS } from "./novelGenres";
-
-const DEFAULT_TARGET_WORD_COUNT_WAN = "100";
+import {
+  DEFAULT_CHAPTER_WORD_COUNT,
+  DEFAULT_TARGET_WORD_COUNT_MAX_WAN,
+  DEFAULT_TARGET_WORD_COUNT_MIN_WAN,
+  parseNovelPlanningInput,
+} from "./projectPlanning";
 
 function sanitizeFolderName(value: string): string {
   const withoutControls = Array.from(value.trim())
@@ -36,19 +34,23 @@ export default function NovelProjectCreator({
   onCreate,
   onClose,
 }: WorkbenchProjectCreatorProps) {
+  const [projectName, setProjectName] = useState("");
   const [title, setTitle] = useState("");
-  const [folderName, setFolderName] = useState("");
-  const [folderWasEdited, setFolderWasEdited] = useState(false);
   const [parentPath, setParentPath] = useState(defaultParentPath);
   const [genres, setGenres] = useState<string[]>(["玄幻"]);
-  const [targetWordCountWan, setTargetWordCountWan] = useState(
-    DEFAULT_TARGET_WORD_COUNT_WAN,
+  const [targetWordCountMinWan, setTargetWordCountMinWan] = useState(
+    DEFAULT_TARGET_WORD_COUNT_MIN_WAN,
+  );
+  const [targetWordCountMaxWan, setTargetWordCountMaxWan] = useState(
+    DEFAULT_TARGET_WORD_COUNT_MAX_WAN,
+  );
+  const [chapterWordCount, setChapterWordCount] = useState(
+    DEFAULT_CHAPTER_WORD_COUNT,
   );
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const genreTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -63,33 +65,24 @@ export default function NovelProjectCreator({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [genreMenuOpen, isCreating, onClose]);
 
-  const normalizedFolderName = sanitizeFolderName(folderName || title);
+  const normalizedFolderName = sanitizeFolderName(projectName);
   const workspacePath = useMemo(
     () => joinPath(parentPath, normalizedFolderName),
     [normalizedFolderName, parentPath],
   );
-  const parsedTargetWordCountWan = Number(targetWordCountWan);
-  const hasValidTargetWordCount =
-    targetWordCountWan.trim().length > 0 &&
-    Number.isFinite(parsedTargetWordCountWan) &&
-    parsedTargetWordCountWan > 0 &&
-    parsedTargetWordCountWan <= 10_000;
-  const genreSummary =
-    genres.length <= 2
-      ? genres.join("、")
-      : `${genres.slice(0, 2).join("、")} 等 ${genres.length} 项`;
+  const planning = parseNovelPlanningInput(
+    targetWordCountMinWan,
+    targetWordCountMaxWan,
+    chapterWordCount,
+  );
   const canCreate =
+    projectName.trim().length > 0 &&
     title.trim().length > 0 &&
     normalizedFolderName.length > 0 &&
     parentPath.trim().length > 0 &&
     genres.length > 0 &&
-    hasValidTargetWordCount &&
+    planning !== null &&
     !isCreating;
-
-  const handleTitleChange = (value: string) => {
-    setTitle(value);
-    if (!folderWasEdited) setFolderName(sanitizeFolderName(value));
-  };
 
   const handlePick = async () => {
     setIsPicking(true);
@@ -101,31 +94,24 @@ export default function NovelProjectCreator({
     }
   };
 
-  const toggleGenre = (genre: string) => {
-    setGenres((current) =>
-      current.includes(genre)
-        ? current.filter((item) => item !== genre)
-        : [...current, genre],
-    );
-  };
-
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!canCreate) return;
+    if (!canCreate || !planning) return;
     setError(null);
     setIsCreating(true);
     try {
       const createdAt = new Date().toISOString();
       await onCreate({
         workspacePath,
-        displayName: title.trim(),
+        displayName: projectName.trim(),
         icon: "📖",
         route: "overview",
         initialization: createNovelProjectInitialization({
           projectId: crypto.randomUUID(),
+          projectName: projectName.trim(),
           title: title.trim(),
           genres,
-          targetWordCount: Math.round(parsedTargetWordCountWan * 10_000),
+          ...planning,
           createdAt,
         }),
       });
@@ -143,6 +129,9 @@ export default function NovelProjectCreator({
       }}
     >
       <form
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="novel-project-creator-title"
         onSubmit={handleSubmit}
         className="max-h-[calc(100vh-32px)] w-full max-w-2xl overflow-y-auto rounded-2xl bg-[var(--paper-elevated)] shadow-xl"
       >
@@ -152,7 +141,10 @@ export default function NovelProjectCreator({
               <BookOpen className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <h2 className="text-lg font-semibold text-[var(--ink)]">
+              <h2
+                id="novel-project-creator-title"
+                className="text-lg font-semibold text-[var(--ink)]"
+              >
                 新建小说
               </h2>
               <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
@@ -173,21 +165,44 @@ export default function NovelProjectCreator({
         </header>
 
         <div className="space-y-5 px-6 py-5">
-          <div>
-            <label
-              htmlFor="novel-title"
-              className="mb-2 block text-sm font-medium text-[var(--ink)]"
-            >
-              小说名称
-            </label>
-            <input
-              id="novel-title"
-              autoFocus
-              value={title}
-              onChange={(event) => handleTitleChange(event.target.value)}
-              placeholder="例如：长夜行"
-              className="h-11 w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 text-base text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
-            />
+          <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
+            <div>
+              <label
+                htmlFor="novel-project-name"
+                className="mb-2 block text-sm font-medium text-[var(--ink)]"
+              >
+                项目名
+              </label>
+              <input
+                id="novel-project-name"
+                autoFocus
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+                placeholder="例如：长夜行-01"
+                className="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
+              />
+              <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                固定代号，创建后不可修改
+              </p>
+            </div>
+            <div>
+              <label
+                htmlFor="novel-title"
+                className="mb-2 block text-sm font-medium text-[var(--ink)]"
+              >
+                书名
+              </label>
+              <input
+                id="novel-title"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="例如：长夜行"
+                className="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
+              />
+              <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                可在总览页面自由修改
+              </p>
+            </div>
           </div>
 
           <div>
@@ -222,169 +237,37 @@ export default function NovelProjectCreator({
           </div>
 
           <div>
-            <label
-              htmlFor="novel-folder-name"
-              className="mb-2 block text-sm font-medium text-[var(--ink)]"
-            >
+            <span className="mb-2 block text-sm font-medium text-[var(--ink)]">
               项目目录
-            </label>
-            <input
-              id="novel-folder-name"
-              value={folderName}
-              onChange={(event) => {
-                setFolderWasEdited(true);
-                setFolderName(event.target.value);
-              }}
-              placeholder="跟随小说名称"
-              className="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
-            />
+            </span>
             <p
-              className="mt-2 truncate font-mono text-xs text-[var(--ink-muted)]"
+              className="flex h-10 items-center truncate rounded-md border border-[var(--line-subtle)] bg-[var(--paper-inset)]/55 px-3 font-mono text-xs text-[var(--ink-muted)]"
               title={workspacePath}
             >
-              {workspacePath || "选择保存位置后显示完整路径"}
+              {workspacePath || "填写项目名后生成目录"}
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
-            <div>
-              <span
-                id="novel-genre-label"
-                className="mb-2 block text-sm font-medium text-[var(--ink)]"
-              >
-                题材
-              </span>
-              <button
-                ref={genreTriggerRef}
-                type="button"
-                aria-labelledby="novel-genre-label"
-                aria-haspopup="listbox"
-                aria-expanded={genreMenuOpen}
-                onClick={() => setGenreMenuOpen((current) => !current)}
-                className="flex h-10 w-full items-center justify-between rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 text-left text-sm text-[var(--ink)] outline-none transition-colors hover:border-[var(--line-strong)] focus:border-[var(--accent-warm)]"
-              >
-                <span
-                  className={
-                    genres.length > 0
-                      ? "truncate"
-                      : "truncate text-[var(--ink-subtle)]"
-                  }
-                >
-                  {genreSummary || "请选择题材"}
-                </span>
-                <ChevronDown
-                  className={`h-3.5 w-3.5 text-[var(--ink-muted)] transition-transform ${genreMenuOpen ? "rotate-180" : ""}`}
-                />
-              </button>
-              <Popover
-                open={genreMenuOpen}
-                onClose={() => setGenreMenuOpen(false)}
-                anchorRef={genreTriggerRef}
-                placement="bottom-start"
-                offset={6}
-                className="w-[min(34rem,calc(100vw-2rem))]"
-              >
-                <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2.5">
-                  <span className="text-sm font-medium text-[var(--ink)]">
-                    小说题材
-                  </span>
-                  <span className="text-xs text-[var(--ink-muted)]">
-                    已选 {genres.length} 项
-                  </span>
-                </div>
-                <div
-                  role="listbox"
-                  aria-multiselectable="true"
-                  aria-labelledby="novel-genre-label"
-                  className="max-h-[min(28rem,calc(100vh-12rem))] overflow-y-auto"
-                >
-                  {NOVEL_GENRE_GROUPS.map((group) => (
-                    <section key={group.label} aria-label={group.label}>
-                      <div className="border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-3 py-2 text-xs font-semibold text-[var(--ink-muted)]">
-                        {group.label}
-                      </div>
-                      <div className="flex flex-wrap gap-1.5 border-b border-[var(--line-subtle)] bg-[var(--paper-inset)]/55 px-3 py-2.5">
-                        {group.options.map((option) => {
-                          const selected = genres.includes(option);
-                          return (
-                            <button
-                              key={option}
-                              type="button"
-                              role="option"
-                              aria-selected={selected}
-                              onClick={() => toggleGenre(option)}
-                              className={`flex min-h-8 items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm transition-colors ${
-                                selected
-                                  ? "border-[var(--accent-warm)] bg-[var(--accent-warm-muted)] font-medium text-[var(--accent-warm)]"
-                                  : "border-transparent bg-[var(--paper-elevated)] text-[var(--ink)] hover:bg-[var(--hover-bg)]"
-                              }`}
-                            >
-                              <span
-                                className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border ${
-                                  selected
-                                    ? "border-[var(--accent-warm)] bg-[var(--accent-warm)] text-white"
-                                    : "border-[var(--line-strong)] text-transparent"
-                                }`}
-                              >
-                                <Check className="h-3 w-3" />
-                              </span>
-                              {option}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </section>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between border-t border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2">
-                  <button
-                    type="button"
-                    onClick={() => setGenres([])}
-                    disabled={genres.length === 0}
-                    className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-40"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    清空
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setGenreMenuOpen(false)}
-                    className="flex items-center gap-1.5 rounded-md bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                    完成
-                  </button>
-                </div>
-              </Popover>
-            </div>
+          <NovelGenrePicker
+            id="novel-genre"
+            genres={genres}
+            open={genreMenuOpen}
+            disabled={isCreating}
+            onChange={setGenres}
+            onOpenChange={setGenreMenuOpen}
+          />
 
-            <div>
-              <label
-                htmlFor="novel-target-word-count"
-                className="mb-2 block text-sm font-medium text-[var(--ink)]"
-              >
-                目标字数
-              </label>
-              <div className="relative">
-                <input
-                  id="novel-target-word-count"
-                  type="number"
-                  min="0.1"
-                  max="10000"
-                  step="0.1"
-                  inputMode="decimal"
-                  value={targetWordCountWan}
-                  onChange={(event) =>
-                    setTargetWordCountWan(event.target.value)
-                  }
-                  aria-invalid={!hasValidTargetWordCount}
-                  className="h-10 w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 pr-14 text-sm text-[var(--ink)] outline-none transition-colors focus:border-[var(--accent-warm)] aria-invalid:border-[var(--error)]"
-                />
-                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-[var(--ink-muted)]">
-                  万字
-                </span>
-              </div>
-            </div>
+          <div className="border-t border-[var(--line-subtle)] pt-5">
+            <NovelPlanningFields
+              idPrefix="novel-create"
+              targetWordCountMinWan={targetWordCountMinWan}
+              targetWordCountMaxWan={targetWordCountMaxWan}
+              chapterWordCount={chapterWordCount}
+              disabled={isCreating}
+              onTargetWordCountMinWanChange={setTargetWordCountMinWan}
+              onTargetWordCountMaxWanChange={setTargetWordCountMaxWan}
+              onChapterWordCountChange={setChapterWordCount}
+            />
           </div>
 
           {error && (

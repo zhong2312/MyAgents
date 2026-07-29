@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const NARRATIVE_ENGINEERING_SCHEMA_VERSION = 3 as const;
+export const NARRATIVE_ENGINEERING_SCHEMA_VERSION = 4 as const;
 export const NARRATIVE_ENGINEERING_PATH = "narrative/index.json";
 
 const idSchema = z
@@ -222,6 +222,51 @@ export const narrativeChapterPlanSchema = z
 
 export type NarrativeChapterPlan = z.infer<typeof narrativeChapterPlanSchema>;
 
+export const simulationProposalNodeSchema = z
+  .object({
+    offset: z.number().int().positive(),
+    title: z.string().trim().min(1),
+    summary: textSchema,
+    checkpoint: textSchema,
+  })
+  .strict();
+
+export type SimulationProposalNode = z.infer<
+  typeof simulationProposalNodeSchema
+>;
+
+export const simulationProposalStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "rejected",
+]);
+export type SimulationProposalStatus = z.infer<
+  typeof simulationProposalStatusSchema
+>;
+
+export const simulationProposalSchema = z
+  .object({
+    id: idSchema,
+    title: z.string().trim().min(1),
+    description: textSchema,
+    premise: textSchema,
+    sourceChapterPlanId: idSchema.nullable(),
+    sourceManuscriptChapterId: idSchema.nullable(),
+    agentRole: textSchema,
+    coherence: z.number().int().min(0).max(100),
+    novelty: z.number().int().min(0).max(100),
+    risk: z.number().int().min(0).max(100),
+    riskLevel: z.enum(["low", "medium", "high"]),
+    tags: z.array(z.string().trim().min(1)).max(6),
+    nodes: z.array(simulationProposalNodeSchema).max(12),
+    status: simulationProposalStatusSchema,
+    createdAt: z.string().datetime(),
+    reviewedAt: z.string().datetime().nullable(),
+  })
+  .strict();
+
+export type SimulationProposal = z.infer<typeof simulationProposalSchema>;
+
 const legacyTrackFieldsSchema = z
   .object({
     lines: z.array(
@@ -286,6 +331,7 @@ export const narrativeEngineeringSchema = z
     arcs: z.array(storyArcSchema),
     directories: z.array(narrativeDirectorySchema),
     chapters: z.array(narrativeChapterPlanSchema),
+    simulationProposals: z.array(simulationProposalSchema),
     legacyArchive: legacyArchiveSchema.optional(),
   })
   .strict()
@@ -296,6 +342,7 @@ export const narrativeEngineeringSchema = z
         ["arcs", library.arcs],
         ["directories", library.directories],
         ["chapters", library.chapters],
+        ["simulationProposals", library.simulationProposals],
       ];
     collections.forEach(([key, records]) => {
       const ids = new Set<string>();
@@ -309,6 +356,42 @@ export const narrativeEngineeringSchema = z
         }
         ids.add(record.id);
       });
+    });
+
+    const directoryById = new Map(
+      library.directories.map((directory) => [directory.id, directory]),
+    );
+    library.directories.forEach((directory, directoryIndex) => {
+      if (directory.parentId && !directoryById.has(directory.parentId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["directories", directoryIndex, "parentId"],
+          message: "父目录不存在",
+        });
+      }
+      const visited = new Set([directory.id]);
+      let parentId = directory.parentId;
+      while (parentId) {
+        if (visited.has(parentId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["directories", directoryIndex, "parentId"],
+            message: "目录树不能循环引用",
+          });
+          break;
+        }
+        visited.add(parentId);
+        parentId = directoryById.get(parentId)?.parentId ?? null;
+      }
+    });
+    library.chapters.forEach((chapter, chapterIndex) => {
+      if (chapter.directoryId && !directoryById.has(chapter.directoryId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["chapters", chapterIndex, "directoryId"],
+          message: "章节归属目录不存在",
+        });
+      }
     });
 
     const nestedIds = new Set<string>();
@@ -451,6 +534,7 @@ export function createEmptyNarrativeEngineering(
     arcs: [],
     directories: [],
     chapters: [],
+    simulationProposals: [],
   };
 }
 
@@ -503,6 +587,18 @@ const narrativeEngineeringV2Schema = z
     updatedAt: z.string().datetime(),
     lines: z.array(plotLineV2Schema),
     arcs: z.array(storyArcV2Schema),
+    directories: z.array(narrativeDirectorySchema),
+    chapters: z.array(narrativeChapterPlanSchema),
+    legacyArchive: legacyArchiveSchema.optional(),
+  })
+  .strict();
+
+const narrativeEngineeringV3Schema = z
+  .object({
+    schemaVersion: z.literal(3),
+    updatedAt: z.string().datetime(),
+    lines: z.array(plotLineSchema),
+    arcs: z.array(storyArcSchema),
     directories: z.array(narrativeDirectorySchema),
     chapters: z.array(narrativeChapterPlanSchema),
     legacyArchive: legacyArchiveSchema.optional(),
@@ -723,6 +819,7 @@ function migrateLegacyEngineering(
     ),
     directories,
     chapters,
+    simulationProposals: [],
     legacyArchive: {
       sourceSchemaVersion: 1,
       migratedAt: new Date().toISOString(),
@@ -753,6 +850,7 @@ function migrateV2Engineering(
     arcs: legacy.arcs.map(migrateArcFromV2),
     directories: legacy.directories,
     chapters: legacy.chapters,
+    simulationProposals: [],
     legacyArchive: {
       sourceSchemaVersion: 2,
       migratedAt: new Date().toISOString(),
@@ -763,6 +861,16 @@ function migrateV2Engineering(
       storyArcNodeLinks: archive?.storyArcNodeLinks ?? [],
       trackFields: legacyTrackFields(legacy.lines, legacy.arcs),
     },
+  });
+}
+
+function migrateV3Engineering(
+  legacy: z.infer<typeof narrativeEngineeringV3Schema>,
+): NarrativeEngineering {
+  return narrativeEngineeringSchema.parse({
+    ...legacy,
+    schemaVersion: NARRATIVE_ENGINEERING_SCHEMA_VERSION,
+    simulationProposals: [],
   });
 }
 
@@ -813,6 +921,18 @@ export function parseNarrativeEngineering(
       throw new NarrativeEngineeringFormatError(formatIssues(legacy.error));
     }
     return migrateV2Engineering(legacy.data);
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    "schemaVersion" in value &&
+    value.schemaVersion === 3
+  ) {
+    const legacy = narrativeEngineeringV3Schema.safeParse(value);
+    if (!legacy.success) {
+      throw new NarrativeEngineeringFormatError(formatIssues(legacy.error));
+    }
+    return migrateV3Engineering(legacy.data);
   }
   const result = narrativeEngineeringSchema.safeParse(value);
   if (!result.success) {

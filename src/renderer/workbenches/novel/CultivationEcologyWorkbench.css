@@ -191,13 +191,19 @@
   min-width: 0;
 }
 .ce-system-entry .ce-system-arrow {
-  margin-right: 1.8rem;
+  margin-right: 3.7rem;
 }
-.ce-system-edit {
+.ce-system-actions {
   position: absolute;
   top: 50%;
   right: 0.4rem;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  transform: translateY(-50%);
+}
+.ce-system-action {
   display: flex;
   width: 1.75rem;
   height: 1.75rem;
@@ -207,12 +213,15 @@
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--paper-elevated) 88%, transparent);
   color: var(--ink-muted);
-  transform: translateY(-50%);
 }
-.ce-system-edit:hover,
-.ce-system-edit:focus-visible {
+.ce-system-action:hover,
+.ce-system-action:focus-visible {
   background: var(--paper-inset);
   color: var(--accent-warm);
+}
+.ce-system-delete:hover,
+.ce-system-delete:focus-visible {
+  color: var(--error);
 }
 .ce-system-item {
   align-items: flex-start;

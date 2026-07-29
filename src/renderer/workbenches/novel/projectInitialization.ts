@@ -18,17 +18,33 @@ import {
   createEmptyFactionLibrary,
   serializeFactionLibrary,
 } from "./factionLibrarySchema";
+import {
+  createEmptyNovelChapterIndex,
+  serializeNovelChapterIndex,
+} from "./projectSchema";
+import {
+  createEmptyManuscriptTrackingLedger,
+  createEmptyManuscriptContinuityState,
+  MANUSCRIPT_CONTINUITY_PATH,
+  MANUSCRIPT_TRACKING_PATH,
+  serializeManuscriptContinuityState,
+  serializeManuscriptTrackingLedger,
+} from "./manuscriptTrackingSchema";
 
 export interface NovelProjectInitializationInput {
   readonly projectId: string;
+  readonly projectName: string;
   readonly title: string;
   readonly genres: readonly string[];
-  readonly targetWordCount: number;
+  readonly targetWordCountMin: number;
+  readonly targetWordCountMax: number;
+  readonly chapterWordCount: number;
   readonly createdAt: string;
 }
 
 const DIRECTORIES = [
   "manuscript/chapters",
+  "manuscript/trash",
   "narrative",
   "inspiration",
   "settings",
@@ -77,7 +93,7 @@ function createIndex(key: string): string {
 function createFiles(
   input: NovelProjectInitializationInput,
 ): WorkbenchProjectTextFile[] {
-  const title = markdownTitle(input.title);
+  const projectName = markdownTitle(input.projectName);
   const files: WorkbenchProjectTextFile[] = [
     {
       path: "novel.json",
@@ -85,9 +101,12 @@ function createFiles(
         schemaVersion: 1,
         projectId: input.projectId,
         workbenchId: "io.myagents.novel",
+        projectName: input.projectName.trim(),
         title: input.title.trim(),
         genres: input.genres,
-        targetWordCount: input.targetWordCount,
+        targetWordCountMin: input.targetWordCountMin,
+        targetWordCountMax: input.targetWordCountMax,
+        chapterWordCount: input.chapterWordCount,
         status: "planning",
         language: "zh-CN",
         createdAt: input.createdAt,
@@ -96,9 +115,9 @@ function createFiles(
     },
     {
       path: "README.md",
-      content: `# ${title}
+      content: `# ${projectName}
 
-本目录是《${title}》的完整项目根目录。Markdown 与 JSON 是可人工编辑、可由 Git 管理的事实源；向量索引和派生检索图谱由 MyAgents 在工作区外重建。
+本目录是小说项目的完整根目录，当前书名与创作目标以 \`novel.json\` 为准。Markdown 与 JSON 是可人工编辑、可由 Git 管理的事实源；向量索引和派生检索图谱由 MyAgents 在工作区外重建。
 `,
     },
     {
@@ -112,7 +131,19 @@ Thumbs.db
     },
     {
       path: "manuscript/index.json",
-      content: json({ schemaVersion: 1, nextChapterNumber: 1, chapters: [] }),
+      content: serializeNovelChapterIndex(createEmptyNovelChapterIndex()),
+    },
+    {
+      path: MANUSCRIPT_TRACKING_PATH,
+      content: serializeManuscriptTrackingLedger(
+        createEmptyManuscriptTrackingLedger(input.createdAt),
+      ),
+    },
+    {
+      path: MANUSCRIPT_CONTINUITY_PATH,
+      content: serializeManuscriptContinuityState(
+        createEmptyManuscriptContinuityState(input.createdAt),
+      ),
     },
     ...createNarrativeEngineeringInitializationFiles(input.createdAt),
     ...createCharacterLibraryInitializationFiles(),

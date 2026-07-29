@@ -2,10 +2,13 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  FileCheck2,
   FilePenLine,
   FilePlus2,
   GitCompareArrows,
   Loader2,
+  Merge,
+  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
@@ -20,71 +23,32 @@ import {
 
 import {
   ConfirmDialog,
+  DraggableDialogFrame,
   ProposalReviewSurface,
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
+import type {
+  FileProposal,
+  FileProposalChange,
+  FileProposalConflictResolution,
+  FileProposalLoadError,
+  FileProposalRepository,
+  FileProposalStatus,
+} from "./fileProposal";
 import { createNovelWorldProposalRepository } from "./worldProposalRepository";
 
 const DiffViewer = lazy(() => import("@/workbench-sdk/DiffViewer"));
+const MonacoEditor = lazy(() => import("@/components/MonacoEditor"));
 
-export type FileProposalStatus =
-  | "pending"
-  | "partially-applied"
-  | "applied"
-  | "rejected";
-
-export interface FileProposalChange {
-  readonly id: string;
-  readonly targetPath: string;
-  readonly operation: "create" | "modify";
-  readonly summary: string;
-  readonly status: "pending" | "applied" | "rejected";
-  readonly beforeContent: string;
-  readonly afterContent: string;
-  readonly conflict: boolean;
-  readonly loadError: string | null;
-  readonly inferred?: boolean;
-}
-
-export interface FileProposal {
-  readonly manifest: {
-    readonly proposalId: string;
-    readonly title: string;
-    readonly description: string;
-    readonly createdAt: string;
-    readonly changes: readonly {
-      readonly status: FileProposalChange["status"];
-    }[];
-  };
-  readonly changes: readonly FileProposalChange[];
-}
-
-export interface FileProposalLoadError {
-  readonly proposalId: string;
-  readonly message: string;
-}
-
-export interface FileProposalRepository {
-  list(): Promise<{
-    readonly proposals: readonly FileProposal[];
-    readonly errors: readonly FileProposalLoadError[];
-  }>;
-  deleteProposals(proposalIds: readonly string[]): Promise<void>;
-  apply(
-    proposalId: string,
-    changeIds: readonly string[],
-    projectTitle: string,
-  ): Promise<FileProposal>;
-  reject(
-    proposalId: string,
-    changeIds: readonly string[],
-  ): Promise<FileProposal>;
-  delete(
-    proposalId: string,
-    changeIds: readonly string[],
-  ): Promise<FileProposal | null>;
-}
+export type {
+  FileProposal,
+  FileProposalChange,
+  FileProposalConflictResolution,
+  FileProposalLoadError,
+  FileProposalRepository,
+  FileProposalStatus,
+} from "./fileProposal";
 
 export interface WorldProposalReviewProps {
   readonly storage: WorkbenchStorage;
@@ -137,6 +101,360 @@ function getFileProposalStatus(
   return "pending";
 }
 
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
+const MISSING_JSON_VALUE = Symbol("missing-json-value");
+type MergeValue = JsonValue | typeof MISSING_JSON_VALUE;
+
+interface MergeDraft {
+  readonly content: string;
+  readonly conflicts: readonly string[];
+  readonly automatic: boolean;
+}
+
+function sameJsonValue(left: MergeValue, right: MergeValue): boolean {
+  if (left === MISSING_JSON_VALUE || right === MISSING_JSON_VALUE) {
+    return left === right;
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function isJsonObject(
+  value: MergeValue,
+): value is { readonly [key: string]: JsonValue } {
+  return (
+    value !== MISSING_JSON_VALUE &&
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function isIdObjectArray(value: JsonValue[]): boolean {
+  return value.every(
+    (item) =>
+      isJsonObject(item) &&
+      typeof (item as { readonly id?: unknown }).id === "string",
+  );
+}
+
+function mergeJsonValue(
+  baseline: MergeValue,
+  current: MergeValue,
+  proposal: MergeValue,
+  path: string,
+  conflicts: string[],
+): MergeValue {
+  if (sameJsonValue(current, baseline)) return proposal;
+  if (sameJsonValue(proposal, baseline) || sameJsonValue(current, proposal)) {
+    return current;
+  }
+
+  if (
+    isJsonObject(baseline) &&
+    isJsonObject(current) &&
+    isJsonObject(proposal)
+  ) {
+    const result: Record<string, JsonValue> = {};
+    const keys = new Set([
+      ...Object.keys(baseline),
+      ...Object.keys(current),
+      ...Object.keys(proposal),
+    ]);
+    for (const key of keys) {
+      const merged = mergeJsonValue(
+        Object.hasOwn(baseline, key) ? baseline[key] : MISSING_JSON_VALUE,
+        Object.hasOwn(current, key) ? current[key] : MISSING_JSON_VALUE,
+        Object.hasOwn(proposal, key) ? proposal[key] : MISSING_JSON_VALUE,
+        path ? `${path}.${key}` : key,
+        conflicts,
+      );
+      if (merged !== MISSING_JSON_VALUE) result[key] = merged;
+    }
+    return result;
+  }
+
+  if (
+    Array.isArray(baseline) &&
+    Array.isArray(current) &&
+    Array.isArray(proposal) &&
+    isIdObjectArray(baseline) &&
+    isIdObjectArray(current) &&
+    isIdObjectArray(proposal)
+  ) {
+    const byId = (items: JsonValue[]) =>
+      new Map(
+        items.map((item) => [
+          String((item as { readonly id: string }).id),
+          item,
+        ]),
+      );
+    const baselineById = byId(baseline);
+    const currentById = byId(current);
+    const proposalById = byId(proposal);
+    const ids = [
+      ...currentById.keys(),
+      ...[...proposalById.keys()].filter((id) => !currentById.has(id)),
+    ];
+    const result: JsonValue[] = [];
+    for (const id of ids) {
+      const merged = mergeJsonValue(
+        baselineById.get(id) ?? MISSING_JSON_VALUE,
+        currentById.get(id) ?? MISSING_JSON_VALUE,
+        proposalById.get(id) ?? MISSING_JSON_VALUE,
+        `${path}[id=${id}]`,
+        conflicts,
+      );
+      if (merged !== MISSING_JSON_VALUE) result.push(merged);
+    }
+    return result;
+  }
+
+  conflicts.push(path || "根内容");
+  return current;
+}
+
+function buildMergeDraft(change: FileProposalChange): MergeDraft {
+  const current = change.currentContent ?? "";
+  if (change.baseContentAvailable === false) {
+    return {
+      content: current || change.afterContent,
+      conflicts: ["旧提案未保存对象级基准，请人工核对当前内容与提案内容"],
+      automatic: false,
+    };
+  }
+  if (!change.targetPath.endsWith(".json")) {
+    return {
+      content: current || change.afterContent,
+      conflicts: ["文本文件需要人工合并"],
+      automatic: false,
+    };
+  }
+  try {
+    const baseline = JSON.parse(change.beforeContent || "null") as JsonValue;
+    const formal = JSON.parse(current || "null") as JsonValue;
+    const proposal = JSON.parse(change.afterContent) as JsonValue;
+    const conflicts: string[] = [];
+    const merged = mergeJsonValue(baseline, formal, proposal, "", conflicts);
+    return {
+      content: `${JSON.stringify(merged, null, 2)}\n`,
+      conflicts,
+      automatic: true,
+    };
+  } catch {
+    return {
+      content: current || change.afterContent,
+      conflicts: ["内容不是可自动合并的有效 JSON，请人工合并"],
+      automatic: false,
+    };
+  }
+}
+
+interface ConflictMergeDialogProps {
+  readonly change: FileProposalChange;
+  readonly loading: boolean;
+  readonly onApply: (content: string) => void;
+  readonly onClose: () => void;
+}
+
+function ConflictMergeDialog({
+  change,
+  loading,
+  onApply,
+  onClose,
+}: ConflictMergeDialogProps) {
+  const initial = useMemo(() => buildMergeDraft(change), [change]);
+  const [view, setView] = useState<"proposal" | "baseline" | "result">(
+    "proposal",
+  );
+  const [draft, setDraft] = useState(initial.content);
+  const [conflicts, setConflicts] = useState(initial.conflicts);
+
+  const rebuildAutomaticDraft = () => {
+    const next = buildMergeDraft(change);
+    setDraft(next.content);
+    setConflicts(next.conflicts);
+    setView("result");
+  };
+
+  return (
+    <DraggableDialogFrame
+      ariaLabel={`合并冲突 ${change.targetPath}`}
+      positioning="viewport"
+      overlayClassName="bg-black/30 backdrop-blur-[1px]"
+      className="h-[min(760px,calc(100vh-2rem))] w-[min(1180px,calc(100vw-2rem))]"
+      headerClassName="flex min-h-14 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4"
+      header={
+        <>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
+            <Merge className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-semibold">合并冲突</h2>
+            <p className="truncate font-mono text-xs text-[var(--ink-muted)]">
+              {change.targetPath}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭合并窗口"
+            title="关闭"
+            disabled={loading}
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] disabled:opacity-40"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </>
+      }
+    >
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--line)] bg-[var(--paper)] px-3 py-2">
+          <div className="flex items-center rounded-md bg-[var(--paper-inset)] p-1">
+            <button
+              type="button"
+              onClick={() => setView("proposal")}
+              className={`h-7 rounded px-3 text-xs ${
+                view === "proposal"
+                  ? "bg-[var(--paper-elevated)] shadow-sm"
+                  : "text-[var(--ink-muted)]"
+              }`}
+            >
+              正式内容 ↔ 提案
+            </button>
+            <button
+              type="button"
+              disabled={change.baseContentAvailable === false}
+              onClick={() => setView("baseline")}
+              className={`h-7 rounded px-3 text-xs disabled:opacity-35 ${
+                view === "baseline"
+                  ? "bg-[var(--paper-elevated)] shadow-sm"
+                  : "text-[var(--ink-muted)]"
+              }`}
+            >
+              生成基准 ↔ 正式内容
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("result")}
+              className={`h-7 rounded px-3 text-xs ${
+                view === "result"
+                  ? "bg-[var(--paper-elevated)] shadow-sm"
+                  : "text-[var(--ink-muted)]"
+              }`}
+            >
+              合并结果
+            </button>
+          </div>
+          <span className="min-w-0 flex-1" />
+          <button
+            type="button"
+            title="重新生成自动合并初稿"
+            onClick={rebuildAutomaticDraft}
+            className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-xs hover:bg-[var(--hover-bg)]"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> 自动合并
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(change.currentContent ?? "");
+              setView("result");
+            }}
+            className="h-8 rounded-md border border-[var(--line)] px-2.5 text-xs hover:bg-[var(--hover-bg)]"
+          >
+            以正式内容为初稿
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(change.afterContent);
+              setView("result");
+            }}
+            className="h-8 rounded-md border border-[var(--line)] px-2.5 text-xs hover:bg-[var(--hover-bg)]"
+          >
+            以提案为初稿
+          </button>
+        </div>
+        {conflicts.length > 0 && (
+          <div className="flex shrink-0 items-start gap-2 border-b border-[var(--line)] bg-[var(--warning-bg)] px-4 py-2 text-xs text-[var(--warning)]">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1">
+              自动合并保留了正式内容，仍有 {conflicts.length} 处需要核对：
+              {conflicts.slice(0, 4).join("、")}
+              {conflicts.length > 4 ? "…" : ""}
+            </span>
+          </div>
+        )}
+        <div className="min-h-0 flex-1">
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 正在载入编辑器
+              </div>
+            }
+          >
+            {view === "result" ? (
+              <MonacoEditor
+                value={draft}
+                onChange={setDraft}
+                language={languageForPath(change.targetPath)}
+                className="h-full"
+                autoFocus
+              />
+            ) : (
+              <DiffViewer
+                key={`${change.id}:${view}`}
+                original={
+                  view === "baseline"
+                    ? change.beforeContent
+                    : (change.currentContent ?? "")
+                }
+                modified={
+                  view === "baseline"
+                    ? (change.currentContent ?? "")
+                    : change.afterContent
+                }
+                language={languageForPath(change.targetPath)}
+                renderSideBySide
+              />
+            )}
+          </Suspense>
+        </div>
+        <footer className="flex h-14 shrink-0 items-center justify-end gap-2 border-t border-[var(--line)] bg-[var(--paper-elevated)] px-4">
+          <button
+            type="button"
+            disabled={loading}
+            onClick={onClose}
+            className="h-9 rounded-md border border-[var(--line)] px-4 text-xs font-medium hover:bg-[var(--hover-bg)] disabled:opacity-40"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={loading || !draft.trim()}
+            onClick={() => onApply(draft)}
+            className="flex h-9 items-center gap-1.5 rounded-md bg-[var(--accent-cool)] px-4 text-xs font-medium text-white disabled:opacity-40"
+          >
+            {loading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FileCheck2 className="h-3.5 w-3.5" />
+            )}
+            应用合并结果
+          </button>
+        </footer>
+      </div>
+    </DraggableDialogFrame>
+  );
+}
+
 function ChangeStatus({ change }: { readonly change: FileProposalChange }) {
   if (change.loadError) {
     return <span className="text-[var(--error)]">快照缺失</span>;
@@ -180,11 +498,15 @@ export default function WorldProposalReview({
   >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [action, setAction] = useState<
-    "apply" | "reject" | "delete" | "delete-proposals" | null
+    "apply" | "reject" | "delete" | "delete-proposals" | "resolve" | null
   >(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [proposalDeleteConfirmOpen, setProposalDeleteConfirmOpen] =
     useState(false);
+  const [conflictConfirm, setConflictConfirm] = useState<
+    "keep-current" | "use-proposal" | null
+  >(null);
+  const [mergeChangeId, setMergeChangeId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sideBySide, setSideBySide] = useState(true);
 
@@ -221,11 +543,25 @@ export default function WorldProposalReview({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (
+        event.key === "Escape" &&
+        !mergeChangeId &&
+        !conflictConfirm &&
+        !deleteConfirmOpen &&
+        !proposalDeleteConfirmOpen
+      ) {
+        onClose();
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, [
+    conflictConfirm,
+    deleteConfirmOpen,
+    mergeChangeId,
+    onClose,
+    proposalDeleteConfirmOpen,
+  ]);
 
   const selectedProposal =
     proposals.find(
@@ -262,6 +598,9 @@ export default function WorldProposalReview({
     selectedProposal?.changes.find(
       (change) => change.id === selectedChangeId,
     ) ?? selectedProposal?.changes[0];
+  const mergeChange = selectedProposal?.changes.find(
+    (change) => change.id === mergeChangeId,
+  );
 
   const selectedPendingIds = selectedProposal
     ? selectedProposal.changes
@@ -409,6 +748,48 @@ export default function WorldProposalReview({
         setSelectedProposalId("");
       }
       setDeleteConfirmOpen(false);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setAction(null);
+    }
+  };
+
+  const handleKeepCurrent = async () => {
+    if (!selectedProposal || !selectedChange?.conflict) return;
+    setAction("resolve");
+    setError(null);
+    try {
+      const next = await repository.reject(
+        selectedProposal.manifest.proposalId,
+        [selectedChange.id],
+      );
+      setProposals((current) => replaceProposal(current, next));
+      setConflictConfirm(null);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setAction(null);
+    }
+  };
+
+  const handleResolveConflict = async (
+    resolution: FileProposalConflictResolution,
+  ) => {
+    if (!selectedProposal || !selectedChange?.conflict) return;
+    setAction("resolve");
+    setError(null);
+    try {
+      const next = await repository.resolveConflict(
+        selectedProposal.manifest.proposalId,
+        selectedChange.id,
+        resolution,
+        projectTitle,
+      );
+      setProposals((current) => replaceProposal(current, next));
+      setConflictConfirm(null);
+      setMergeChangeId("");
+      onApplied?.();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -730,6 +1111,42 @@ export default function WorldProposalReview({
                       </span>
                     )}
                   </header>
+                  {selectedChange.conflict &&
+                    selectedChange.status === "pending" &&
+                    !selectedChange.loadError && (
+                      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--line)] bg-[var(--error-bg)] px-4 py-2">
+                        <div className="mr-auto flex min-w-60 items-start gap-2 text-xs text-[var(--error)]">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            正式内容在提案生成后发生了变化。请选择保留一方，或核对差异后合并。
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={action !== null}
+                          onClick={() => setConflictConfirm("keep-current")}
+                          className="h-8 rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 text-xs font-medium hover:bg-[var(--hover-bg)] disabled:opacity-40"
+                        >
+                          保留正式版本
+                        </button>
+                        <button
+                          type="button"
+                          disabled={action !== null}
+                          onClick={() => setConflictConfirm("use-proposal")}
+                          className="h-8 rounded-md border border-[var(--error)]/40 bg-[var(--paper)] px-3 text-xs font-medium text-[var(--error)] hover:bg-[var(--hover-bg)] disabled:opacity-40"
+                        >
+                          使用提案版本
+                        </button>
+                        <button
+                          type="button"
+                          disabled={action !== null}
+                          onClick={() => setMergeChangeId(selectedChange.id)}
+                          className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-cool)] px-3 text-xs font-medium text-white disabled:opacity-40"
+                        >
+                          <Merge className="h-3.5 w-3.5" /> 合并内容
+                        </button>
+                      </div>
+                    )}
                   <div className="min-h-0 flex-1">
                     {selectedChange.loadError ? (
                       <div className="flex h-full items-center justify-center p-8">
@@ -758,7 +1175,11 @@ export default function WorldProposalReview({
                       >
                         <DiffViewer
                           key={`${selectedProposal.manifest.proposalId}:${selectedChange.id}`}
-                          original={selectedChange.beforeContent}
+                          original={
+                            selectedChange.conflict
+                              ? (selectedChange.currentContent ?? "")
+                              : selectedChange.beforeContent
+                          }
                           modified={selectedChange.afterContent}
                           language={languageForPath(selectedChange.targetPath)}
                           renderSideBySide={sideBySide}
@@ -776,6 +1197,51 @@ export default function WorldProposalReview({
           </div>
         )}
       </ProposalReviewSurface>
+      {mergeChange && (
+        <ConflictMergeDialog
+          change={mergeChange}
+          loading={action === "resolve"}
+          onClose={() => {
+            if (action !== "resolve") setMergeChangeId("");
+          }}
+          onApply={(content) =>
+            void handleResolveConflict({
+              strategy: "merge",
+              expectedCurrentContent: mergeChange.currentContent,
+              content,
+            })
+          }
+        />
+      )}
+      {conflictConfirm === "keep-current" && selectedChange?.conflict && (
+        <ConfirmDialog
+          title="保留正式版本"
+          message="将保留当前正式内容，并把这项提案标记为已拒绝。提案记录仍会保留用于审计，是否继续？"
+          confirmText="保留正式版本"
+          cancelText="取消"
+          confirmVariant="primary"
+          loading={action === "resolve"}
+          onConfirm={() => void handleKeepCurrent()}
+          onCancel={() => setConflictConfirm(null)}
+        />
+      )}
+      {conflictConfirm === "use-proposal" && selectedChange?.conflict && (
+        <ConfirmDialog
+          title="使用提案版本"
+          message="将以提案内容替换当前正式内容。写入前会再次检查正式内容是否变化，并执行领域数据校验，是否继续？"
+          confirmText="使用提案版本"
+          cancelText="取消"
+          confirmVariant="danger"
+          loading={action === "resolve"}
+          onConfirm={() =>
+            void handleResolveConflict({
+              strategy: "use-proposal",
+              expectedCurrentContent: selectedChange.currentContent,
+            })
+          }
+          onCancel={() => setConflictConfirm(null)}
+        />
+      )}
       {deleteConfirmOpen && selectedProposal && (
         <ConfirmDialog
           title="删除提案内容"

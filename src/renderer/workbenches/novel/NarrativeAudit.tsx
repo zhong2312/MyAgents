@@ -22,7 +22,8 @@ export type NarrativeWorkspaceView =
   | "outline"
   | "chapters"
   | "schedule"
-  | "audit";
+  | "audit"
+  | "proposals";
 export type NarrativeAuditSeverity = "error" | "warning" | "info";
 
 export interface NarrativeAuditFinding {
