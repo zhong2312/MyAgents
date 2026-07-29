@@ -1204,6 +1204,72 @@ export function resolveProviderEnv(
   return result;
 }
 
+export type WorkbenchAiProviderSelection =
+  | {
+      ok: true;
+      providerEnv: ResolvedProviderEnv | undefined;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+/** Resolve and validate the provider/model pair used by workbench one-shot AI. */
+export function resolveWorkbenchAiProviderSelection(
+  providerId: string,
+  model: string,
+  config: AdminAppConfig,
+): WorkbenchAiProviderSelection {
+  if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
+    return {
+      ok: false,
+      error:
+        "Runtime-backed providers are not supported by workbench one-shot AI runs.",
+    };
+  }
+
+  const provider = findEffectiveProvider(providerId, config);
+  if (!provider || !isProviderEnabled(provider)) {
+    return {
+      ok: false,
+      error: `Provider "${providerId}" is unavailable.`,
+    };
+  }
+  if (isRuntimeBackedProvider(provider)) {
+    return {
+      ok: false,
+      error:
+        "Runtime-backed providers are not supported by workbench one-shot AI runs.",
+    };
+  }
+
+  const providerModels = Array.isArray(provider.models) ? provider.models : [];
+  if (
+    !providerModels.some(
+      (candidate: unknown) =>
+        candidate !== null &&
+        typeof candidate === "object" &&
+        "model" in candidate &&
+        candidate.model === model,
+    )
+  ) {
+    return {
+      ok: false,
+      error: `Model "${model}" is unavailable for provider "${providerId}".`,
+    };
+  }
+
+  const providerEnv = resolveProviderEnv(providerId, config);
+  if (provider.type !== "subscription" && !providerEnv) {
+    return {
+      ok: false,
+      error: `Provider "${providerId}" has no usable credentials.`,
+    };
+  }
+
+  return { ok: true, providerEnv };
+}
+
 export function materializeProviderRouteEnv(
   route: ProviderRoute | null | undefined,
   config?: AdminAppConfig,

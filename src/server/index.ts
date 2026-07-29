@@ -669,7 +669,7 @@ import {
   updateSessionMetadata,
   getAttachmentPath,
 } from './SessionStore';
-import { decodeProviderEnvSnapshot, findAgentByWorkspacePath, findProvider, getAllMcpServers, getEffectiveMcpServers, getEnabledMcpServerIds, isProviderDisabled, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
+import { decodeProviderEnvSnapshot, findAgentByWorkspacePath, findProvider, getAllMcpServers, getEffectiveMcpServers, getEnabledMcpServerIds, isProviderDisabled, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkbenchAiProviderSelection, resolveWorkspaceConfig } from './utils/admin-config';
 import { snapshotForOwnedSession } from './utils/session-snapshot';
 import { bindOwnedSnapshotToRuntimeIdentity } from './utils/session-materialization';
 import {
@@ -4157,38 +4157,19 @@ async function main() {
           }
           const providerId = payload.providerId.trim();
           const model = payload.model.trim();
-          if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
+          const appConfig = loadConfig();
+          const providerSelection = resolveWorkbenchAiProviderSelection(
+            providerId,
+            model,
+            appConfig,
+          );
+          if (!providerSelection.ok) {
             return jsonResponse({
               success: false,
-              error: 'Runtime-backed providers are not supported by workbench one-shot AI runs.',
+              error: providerSelection.error,
             }, 400);
           }
-          const provider = findProvider(providerId);
-          if (!provider || isProviderDisabled(providerId)) {
-            return jsonResponse({
-              success: false,
-              error: `Provider "${providerId}" is unavailable.`,
-            }, 400);
-          }
-          const providerModels = Array.isArray(provider.models) ? provider.models : [];
-          if (!providerModels.some((candidate: unknown) => (
-            candidate !== null
-            && typeof candidate === 'object'
-            && 'model' in candidate
-            && candidate.model === model
-          ))) {
-            return jsonResponse({
-              success: false,
-              error: `Model "${model}" is unavailable for provider "${providerId}".`,
-            }, 400);
-          }
-          const providerEnv = resolveProviderEnv(providerId) as ProviderEnv | undefined;
-          if (provider.type !== 'subscription' && !providerEnv) {
-            return jsonResponse({
-              success: false,
-              error: `Provider "${providerId}" has no usable credentials.`,
-            }, 400);
-          }
+          const providerEnv = providerSelection.providerEnv as ProviderEnv | undefined;
           const systemPrompt = typeof payload.systemPrompt === 'string'
             ? payload.systemPrompt.slice(0, 20_000)
             : 'Return only the requested result. Do not use Markdown fences.';
