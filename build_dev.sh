@@ -75,23 +75,26 @@ echo ""
 # 清理旧构建（包括 Rust 缓存的 resources）
 echo -e "${BLUE}[准备] 清理旧构建...${NC}"
 rm -rf "${PROJECT_DIR}/dist"
-# Tauri bundle 阶段需要 resources/ 下被引用的目录都存在（即使是空的——dev 模式
-# 下 Rust 端会 fallback 到顶层 node_modules）。文件级 resource（server-dist.js
-# / plugin-bridge-dist.mjs / cli/myagents.js）则由 tauri:build 的
-# beforeBuildCommand 通过 `npm run build:server/bridge/cli` 在构建期间生成，
-# 不需要额外占位文件。
+# Tauri 会原样递归复制 resources/ 下声明的目录，placeholder 不会覆盖上一次
+# release build 留下的 package.json/node_modules。dev build 因此必须先取得这些
+# staging 目录的完整 authority，再创建本次构建需要的精确内容。
+#
+# sharp / tsx 在 debug runtime 会 fallback 到项目根 node_modules，这里只保留
+# bundler 要求的空目录标记。Claude native binary 会在下方按 host arch 重新拷贝。
+rm -rf "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk"
 mkdir -p "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk"
+
+rm -rf "${PROJECT_DIR}/src-tauri/resources/sharp-runtime"
 mkdir -p "${PROJECT_DIR}/src-tauri/resources/sharp-runtime"
-[ -f "${PROJECT_DIR}/src-tauri/resources/sharp-runtime/.dev-placeholder" ] || \
-    echo "dev mode: sharp loads from top-level node_modules/sharp; this dir is prod-only" \
+echo "dev mode: sharp loads from top-level node_modules/sharp; this dir is prod-only" \
     > "${PROJECT_DIR}/src-tauri/resources/sharp-runtime/.dev-placeholder"
 
 # 填充 tsx-runtime（dev 模式 bridge.rs::find_tsx_runtime_loader 优先 fallback
 # 到项目根 node_modules/tsx，但 Tauri bundler 仍要求资源目录存在；填一个最小
 # 占位避免 cargo bundle 警告，prod build 才需要完整安装）。
+rm -rf "${PROJECT_DIR}/src-tauri/resources/tsx-runtime"
 mkdir -p "${PROJECT_DIR}/src-tauri/resources/tsx-runtime"
-[ -f "${PROJECT_DIR}/src-tauri/resources/tsx-runtime/.dev-placeholder" ] || \
-    echo "dev mode: tsx loads from top-level node_modules/tsx via find_tsx_runtime_loader fallback" \
+echo "dev mode: tsx loads from top-level node_modules/tsx via find_tsx_runtime_loader fallback" \
     > "${PROJECT_DIR}/src-tauri/resources/tsx-runtime/.dev-placeholder"
 
 # 确保 Node.js 运行时已下载且架构匹配当前主机。download_nodejs.sh 使用

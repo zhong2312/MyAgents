@@ -14,8 +14,8 @@
  *   - unbound        → list available channels; pick one → handover
  *   - already bound  → "已绑定 X·Y" header + other channels (switch) + 新会话
  *
- * Cron-protected sessions render the delete item as a disabled red row (same
- * tooltip wording as SessionHistoryDropdown).
+ * Persistent-owner protection is shown as a hint; Rust remains the live
+ * deletion authority after confirmation, so stale UI state never blocks it.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -35,8 +35,9 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { deleteSession, updateSession, type SessionMetadata } from '@/api/sessionClient';
+import { updateSession, type SessionMetadata } from '@/api/sessionClient';
 import { handoverSessionToChannel } from '@/api/sessionHandoverClient';
+import { useSessionDeletion } from '@/context/SessionDeletionContext';
 import { exportSessionAsMarkdown } from '@/utils/sessionExport';
 import { copyPlainText } from '@/utils/clipboard';
 import type { ChannelSurface } from '@/hooks/useSessionSurfaces';
@@ -73,8 +74,8 @@ export interface SessionMenuButtonProps {
     boundChannel: ChannelSurface | null;
     /** All online channels for this workspace's Agent — drives the bot submenu. */
     availableChannels: BotChannelCandidate[];
-    /** True while a Goal or user scheduler owns this session. */
-    schedulerProtected: boolean;
+    /** Snapshot hint that a non-Tab owner currently protects this Session. */
+    deleteProtected: boolean;
     /** Current favorite state from sessionMeta. */
     favorite: boolean;
     /** False when the title editor isn't mounted (placeholder titles like
@@ -94,12 +95,6 @@ export interface SessionMenuButtonProps {
     onShowContext?: () => void;
     /** Caller persists the change and updates sessionMeta optimistically. */
     onFavoriteChanged?: (next: boolean, updated: SessionMetadata | null) => void;
-    /**
-     * Move the mounted Chat tab off this session before storage deletion.
-     * The storage client deliberately refuses to delete live sidecars; only the
-     * caller owns enough lifecycle context to reset/switch the current tab.
-     */
-    prepareCurrentSessionForDelete: () => Promise<boolean>;
 }
 
 export default function SessionMenuButton({
@@ -108,16 +103,16 @@ export default function SessionMenuButton({
     workspacePath,
     boundChannel,
     availableChannels,
-    schedulerProtected,
+    deleteProtected,
     favorite,
     canRename,
     onOpenRename,
     onShowContext,
     onFavoriteChanged,
-    prepareCurrentSessionForDelete,
 }: SessionMenuButtonProps) {
     const { t } = useTranslation('chat');
     const toast = useToast();
+    const deleteSession = useSessionDeletion();
     const triggerRef = useRef<HTMLButtonElement | null>(null);
     const botMenuItemRef = useRef<HTMLButtonElement | null>(null);
     const [open, setOpen] = useState(false);
@@ -217,24 +212,22 @@ export default function SessionMenuButton({
     }, [onShowContext, closeAll]);
 
     const handleDeleteClick = useCallback(() => {
-        if (schedulerProtected) return;
         closeAll();
         setPendingDelete(true);
-    }, [schedulerProtected, closeAll]);
+    }, [closeAll]);
 
     const handleConfirmDelete = useCallback(async () => {
         setPendingDelete(false);
         try {
-            const sessionIdToDelete = sessionId;
-            const prepared = await prepareCurrentSessionForDelete();
-            if (!prepared) {
-                toast.error(t('shell.sessionMenu.toasts.deleteFailed'));
-                return;
-            }
-
-            const ok = await deleteSession(sessionIdToDelete);
-            if (ok) {
+            const result = await deleteSession(sessionId);
+            if (result.deleted) {
                 toast.success(t('shell.sessionMenu.toasts.deleted'));
+            } else if (result.reason === 'in-use') {
+                toast.warning(t('shell.sessionMenu.deleteBlockedByOwner'));
+            } else if (result.reason === 'transition-in-progress') {
+                toast.warning(t('shell.sessionMenu.deleteTransitionInProgress'));
+            } else if (result.reason === 'activity-unavailable') {
+                toast.warning(t('shell.sessionMenu.deleteActivityUnavailable'));
             } else {
                 toast.error(t('shell.sessionMenu.toasts.deleteFailed'));
             }
@@ -242,7 +235,7 @@ export default function SessionMenuButton({
             console.error('[SessionMenuButton] delete failed:', err);
             toast.error(t('shell.sessionMenu.toasts.deleteFailed'));
         }
-    }, [sessionId, prepareCurrentSessionForDelete, toast, t]);
+    }, [deleteSession, sessionId, toast, t]);
 
     // ─── Bot submenu ──────────────────────────────────────────────────────
 
@@ -389,27 +382,16 @@ export default function SessionMenuButton({
                     />
                 )}
                 <div className="my-1 border-t border-[var(--line-subtle)]" />
-                {/* macOS WebKit doesn't reliably surface `title` on a
-                 *  disabled button, so when the row is cron-protected we
-                 *  put the tooltip on a wrapping span (which still receives
-                 *  hover) and keep the button purely disabled. */}
-                {schedulerProtected ? (
-                    <span className="block" title={t('shell.sessionMenu.cronDeleteTooltip')}>
-                        <MenuItem
-                            icon={<Trash2 className="h-3.5 w-3.5" />}
-                            label={t('shell.sessionMenu.delete')}
-                            disabled
-                            tone="danger"
-                        />
-                    </span>
-                ) : (
-                    <MenuItem
-                        icon={<Trash2 className="h-3.5 w-3.5" />}
-                        label={t('shell.sessionMenu.delete')}
-                        onClick={handleDeleteClick}
-                        tone="danger"
-                    />
-                )}
+                {/* The snapshot only explains why deletion may be refused.
+                 * The click still reaches the lock-held Rust authority after
+                 * confirmation, so a stale projection cannot block deletion. */}
+                <MenuItem
+                    icon={<Trash2 className="h-3.5 w-3.5" />}
+                    label={t('shell.sessionMenu.delete')}
+                    onClick={handleDeleteClick}
+                    title={deleteProtected ? t('shell.sessionMenu.deleteBlockedByOwner') : undefined}
+                    tone="danger"
+                />
             </Popover>
 
             {/* Bot submenu — anchored to the menu item so it floats to the side. */}

@@ -32,6 +32,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:classification
+      - run: npm run test:build-scripts
       - run: npm run test:unit
       # `dom` project (jsdom, no secrets) holds security-invariant tests —
       # externalResourceGuard (zero-egress) + WidgetRenderer (about:srcdoc

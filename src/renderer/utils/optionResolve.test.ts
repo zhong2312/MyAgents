@@ -12,6 +12,7 @@ import {
   shouldBlockSendForLabsDisabledExternalRuntime,
   shouldDegradedLoad,
   shouldResetModelOnProviderChange,
+  shouldReuseSseSubscriptionForSessionChange,
   shouldSkipSnapshotWrite,
 } from './optionResolve';
 import { MANAGED_CODEX_PROVIDER, SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
@@ -536,6 +537,26 @@ describe('session-load transition classification (#255)', () => {
       wasPendingSession: false,
       isPendingSession: false,
       isResetSessionBirth: true,
+    })).toBe(false);
+  });
+});
+
+describe('SSE session binding handover (#491)', () => {
+  it('reuses the active subscription only for pending-to-real materialization', () => {
+    expect(shouldReuseSseSubscriptionForSessionChange({
+      attachedSessionId: 'pending-session',
+      nextSessionId: 'real-session',
+      isAttachedSessionPending: true,
+      isNextSessionPending: false,
+    })).toBe(true);
+  });
+
+  it('replaces the subscription for every real-session switch', () => {
+    expect(shouldReuseSseSubscriptionForSessionChange({
+      attachedSessionId: 'session-a',
+      nextSessionId: 'session-b',
+      isAttachedSessionPending: false,
+      isNextSessionPending: false,
     })).toBe(false);
   });
 });

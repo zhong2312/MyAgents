@@ -1,38 +1,34 @@
-import { act, render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useContext, useState } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CODEX_SUBSCRIPTION_PROVIDER_ID } from "../shared/config-types";
-import { CUSTOM_EVENTS } from "../shared/constants";
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
+import { CUSTOM_EVENTS } from '../shared/constants';
+import { SessionDeletionContext } from '@/context/SessionDeletionContext';
 
 const mocks = vi.hoisted(() => {
   const project = {
-    id: "helper-project",
-    name: "Novel",
-    path: "/Users/me/.myagents",
-    displayName: "MA Helper",
-    agentId: "helper-agent",
-    providerId: "stale-volcengine",
-    permissionMode: null,
-    workbenchId: "io.myagents.novel",
+    id: 'helper-project',
+    path: '/Users/me/.myagents',
+    displayName: 'MA Helper',
+    agentId: 'helper-agent',
   };
   const agent = {
-    id: "helper-agent",
-    name: "MA Helper",
+    id: 'helper-agent',
+    name: 'MA Helper',
     workspacePath: project.path,
-    runtime: "builtin",
-    permissionMode: "auto",
+    runtime: 'builtin',
+    permissionMode: 'auto',
     reasoningEffort: undefined as string | undefined,
-    runtimeConfig: undefined as
-      | { permissionMode?: string; reasoningEffort?: string }
-      | undefined,
+    runtimeConfig: undefined as { permissionMode?: string; reasoningEffort?: string } | undefined,
   };
   const provider = {
-    id: "provider-1",
-    name: "Provider",
-    type: "openai-compatible",
-    baseUrl: "https://example.com",
-    primaryModel: "mimo-v2.5-pro",
-    models: [{ id: "mimo-v2.5-pro", name: "mimo-v2.5-pro" }],
+    id: 'provider-1',
+    name: 'Provider',
+    type: 'openai-compatible',
+    baseUrl: 'https://example.com',
+    primaryModel: 'mimo-v2.5-pro',
+    models: [{ id: 'mimo-v2.5-pro', name: 'mimo-v2.5-pro' }],
   };
 
   return {
@@ -40,46 +36,54 @@ const mocks = vi.hoisted(() => {
     agent,
     provider,
     multiAgentRuntime: false,
-    resolveBuiltinSelection: vi.fn(
-      (): { provider: typeof provider; model: string } | undefined => ({
-        provider,
-        model: "mimo-v2.5-pro",
-      }),
-    ),
+    resolveBuiltinSelection: vi.fn(() => ({ provider, model: 'mimo-v2.5-pro' })),
     createSession: vi.fn(async () => ({
-      id: "prepared-managed-session",
+      id: 'prepared-managed-session',
       agentDir: project.path,
-      title: "Prepared",
-      createdAt: "2026-06-27T00:00:00.000Z",
-      lastActiveAt: "2026-06-27T00:00:00.000Z",
+      title: 'Prepared',
+      createdAt: '2026-06-27T00:00:00.000Z',
+      lastActiveAt: '2026-06-27T00:00:00.000Z',
     })),
-    getSessions: vi.fn(async () => [] as Array<Record<string, unknown>>),
-    toast: {
-      error: vi.fn(),
-      success: vi.fn(),
-      warning: vi.fn(),
-      info: vi.fn(),
-    },
+    deleteSession: vi.fn(async () => ({ deleted: true as const })),
+    deleteTargetSessionId: null as string | null,
+    deleteResults: [] as Array<{ deleted: boolean; reason?: string }>,
     startGlobalSidecar: vi.fn(async () => undefined),
     initGlobalSidecarReadyPromise: vi.fn(),
     markGlobalSidecarReady: vi.fn(),
-    getGlobalServerUrl: vi.fn(async () => "http://127.0.0.1:31415"),
+    getGlobalServerUrl: vi.fn(async () => 'http://127.0.0.1:31415'),
     ensureSessionSidecar: vi.fn(async () => ({ port: 31417, isNew: true })),
     activateSession: vi.fn(async () => undefined),
+    upgradeSessionId: vi.fn(async () => true),
+    getSessionActivation: vi.fn(async () => null as { tab_id: string | null; task_id: string | null } | null),
+    updateSessionTab: vi.fn(async () => undefined),
+    cancelBackgroundCompletion: vi.fn(async () => undefined),
     releaseTabSession: vi.fn(async () => false),
     getSessionPort: vi.fn(async () => null),
-    startBackgroundCompletion: vi.fn(async () => ({ started: false })),
+    hasSessionSidecar: vi.fn(async () => true),
+    startBackgroundCompletion: vi.fn(async () => ({ started: false, sessionId: 'session' })),
+    querySessionHasPersistentOwners: vi.fn(async () => false),
+    canRestoreSession: vi.fn(async () => true),
+    durableTabs: null as null | {
+      version: 1;
+      tabs: Array<{ id: string; agentDir: string; sessionId: string; title: string }>;
+      activeTabId: string | null;
+    },
+    lastExitWasClean: true,
     setAppActiveCorrelation: vi.fn(),
     setAppActiveTabId: vi.fn(),
+    track: vi.fn(),
     chatProps: [] as Array<Record<string, unknown>>,
+    tabProviderProps: [] as Array<Record<string, unknown>>,
     launcherProps: [] as Array<Record<string, unknown>>,
-    workbenchShellProps: [] as Array<Record<string, unknown>>,
+    sidebarProps: [] as Array<Record<string, unknown>>,
+    tabbarProps: [] as Array<Record<string, unknown>>,
+    settingsProps: [] as Array<Record<string, unknown>>,
   };
 });
 
-vi.mock("@/analytics", () => ({
+vi.mock('@/analytics', () => ({
   initAnalytics: vi.fn(async () => undefined),
-  track: vi.fn(),
+  track: mocks.track,
   setAnalyticsContext: vi.fn(),
   clearAnalyticsContext: vi.fn(),
   setPendingSurface: vi.fn(),
@@ -88,133 +92,167 @@ vi.mock("@/analytics", () => ({
   clearPendingSessionBirth: vi.fn(),
   birthContextForSurface: vi.fn((surface: string) => ({
     surface,
-    entryIntent: surface === "new_chat_button" ? "new_chat" : "unknown",
-    hasInitialMessage: surface !== "new_chat_button",
+    entryIntent: surface === 'new_chat_button' ? 'new_chat' : 'unknown',
+    hasInitialMessage: surface !== 'new_chat_button',
   })),
-  hashAgentName: vi.fn(async () => "agent-hash"),
-  hashAgentNameSync: vi.fn(() => "agent-hash"),
+  hashAgentName: vi.fn(async () => 'agent-hash'),
+  hashAgentNameSync: vi.fn(() => 'agent-hash'),
 }));
 
-vi.mock("@/api/tauriClient", () => ({
+vi.mock('@/api/tauriClient', () => ({
   stopTabSidecar: vi.fn(async () => undefined),
   setAppActiveCorrelation: mocks.setAppActiveCorrelation,
   startGlobalSidecar: mocks.startGlobalSidecar,
   initGlobalSidecarReadyPromise: mocks.initGlobalSidecarReadyPromise,
   markGlobalSidecarReady: mocks.markGlobalSidecarReady,
   getGlobalServerUrl: mocks.getGlobalServerUrl,
-  getSessionActivation: vi.fn(async () => null),
-  updateSessionTab: vi.fn(async () => undefined),
+  getSessionActivation: mocks.getSessionActivation,
+  updateSessionTab: mocks.updateSessionTab,
   ensureSessionSidecar: mocks.ensureSessionSidecar,
   releaseTabSession: mocks.releaseTabSession,
   activateSession: mocks.activateSession,
-  upgradeSessionId: vi.fn(async () => true),
+  upgradeSessionId: mocks.upgradeSessionId,
   getSessionPort: mocks.getSessionPort,
-  hasSessionSidecar: vi.fn(async () => true),
+  hasSessionSidecar: mocks.hasSessionSidecar,
   getSessionGeneration: vi.fn(async () => 1),
   stopSseProxy: vi.fn(async () => undefined),
   startBackgroundCompletion: mocks.startBackgroundCompletion,
-  cancelBackgroundCompletion: vi.fn(async () => undefined),
+  startBackgroundCompletionForDeletion: mocks.startBackgroundCompletion,
+  cancelBackgroundCompletion: mocks.cancelBackgroundCompletion,
   updateGlobalServerUrl: vi.fn(),
-  canRestoreSession: vi.fn(async () => true),
-  getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({
-    runningTaskCount: 0,
-    protectedSessionIds: [],
-  })),
+  canRestoreSession: mocks.canRestoreSession,
+  getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({ runningTaskCount: 0, deleteProtectedSessionIds: [] })),
+  querySessionHasPersistentOwners: mocks.querySessionHasPersistentOwners,
   sessionHasPersistentOwners: vi.fn(async () => false),
 }));
 
-vi.mock("@/api/apiFetch", () => ({
+vi.mock('@/api/apiFetch', () => ({
   apiGetJson: vi.fn(async () => ({ success: true })),
 }));
 
-vi.mock("@/api/cronTaskClient", () => ({
+vi.mock('@/api/cronTaskClient', () => ({
   getAllCronTasks: vi.fn(async () => []),
   getTabCronTask: vi.fn(async () => null),
   updateCronTaskTab: vi.fn(async () => undefined),
 }));
 
-vi.mock("@/api/sessionClient", () => ({
+vi.mock('@/api/sessionClient', () => ({
   createSession: mocks.createSession,
-  getSessions: mocks.getSessions,
+  deleteSession: mocks.deleteSession,
+  getSessions: vi.fn(async () => []),
   updateSession: vi.fn(async () => undefined),
 }));
 
-vi.mock("@/components/ChatBootOverlay", () => ({
+vi.mock('@/components/ChatBootOverlay', () => ({
   default: () => <div data-testid="chat-boot-overlay" />,
 }));
 
-vi.mock("@/components/ConfirmDialog", () => ({
+vi.mock('@/components/ConfirmDialog', () => ({
   default: () => <div data-testid="confirm-dialog" />,
 }));
 
-vi.mock("@/components/BugReportOverlay", () => ({
+vi.mock('@/components/BugReportOverlay', () => ({
   default: () => <div data-testid="bug-report-overlay" />,
 }));
 
-vi.mock("@/components/CustomTitleBar", () => ({
-  default: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="titlebar">{children}</div>
-  ),
-}));
-
-vi.mock("@/components/LinkContextMenuProvider", () => ({
-  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
-vi.mock("@/components/TabBar", () => ({
+vi.mock('@/components/CustomTitleBar', () => ({
   default: ({
-    tabs,
-    activeTabId,
+    children,
+    restoreCount = 0,
+    onRestoreSession,
   }: {
-    tabs: Array<{ id: string; title: string }>;
-    activeTabId: string | null;
+    children: React.ReactNode;
+    restoreCount?: number;
+    onRestoreSession?: () => void;
   }) => (
-    <div data-testid="tabbar-active">
-      {tabs.find((t) => t.id === activeTabId)?.title ?? "missing"}
+    <div data-testid="titlebar">
+      {restoreCount > 0 && (
+        <button data-testid="restore-session" onClick={onRestoreSession} />
+      )}
+      {children}
     </div>
   ),
 }));
 
-vi.mock("@/context/TabProvider", () => ({
-  default: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="tab-provider">{children}</div>
-  ),
-}));
-
-vi.mock("@/pages/Chat", () => ({
-  default: (props: Record<string, unknown>) => {
-    mocks.chatProps.push(props);
-    return <div data-testid="chat-page" />;
+vi.mock('@/components/global-sidebar/GlobalSidebar', () => ({
+  default: function MockGlobalSidebar(props: Record<string, unknown>) {
+    mocks.sidebarProps.push(props);
+    const deleteSession = useContext(SessionDeletionContext);
+    return (
+      <aside data-testid="global-sidebar">
+        <button
+          data-testid="app-delete-session"
+          onClick={() => {
+            if (!mocks.deleteTargetSessionId || !deleteSession) return;
+            void deleteSession(mocks.deleteTargetSessionId).then((result) => {
+              mocks.deleteResults.push(result);
+            });
+          }}
+        />
+      </aside>
+    );
   },
 }));
 
-vi.mock("@/pages/Launcher", () => ({
+vi.mock('@/components/LinkContextMenuProvider', () => ({
+  default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock('@/components/TabBar', () => ({
+  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onCloseTab: (tabId: string) => Promise<void> }) => {
+    mocks.tabbarProps.push(props);
+    return <div data-testid="tabbar-active">{props.tabs.find(t => t.id === props.activeTabId)?.title ?? 'missing'}</div>;
+  },
+}));
+
+vi.mock('@/context/TabProvider', () => ({
+  default: function MockTabProvider(props: Record<string, unknown> & { children: React.ReactNode }) {
+    mocks.tabProviderProps.push(props);
+    return <div data-testid="tab-provider">{props.children}</div>;
+  },
+}));
+
+vi.mock('@/pages/Chat', () => {
+  function MockChat(props: Record<string, unknown>) {
+    const [streamChunks, setStreamChunks] = useState(0);
+    mocks.chatProps.push(props);
+    return (
+      <button data-testid="chat-page" onClick={() => setStreamChunks((count) => count + 1)}>
+        {streamChunks}
+      </button>
+    );
+  }
+  return { default: MockChat };
+});
+
+vi.mock('@/pages/Launcher', () => ({
   default: (props: Record<string, unknown>) => {
     mocks.launcherProps.push(props);
     return <div data-testid="launcher-page" />;
   },
 }));
 
-vi.mock("@/pages/Settings", () => ({
-  default: () => <div data-testid="settings-page" />,
-}));
-
-vi.mock("@/pages/TaskCenter", () => ({
-  default: () => <div data-testid="taskcenter-page" />,
-}));
-
-vi.mock("@/workbench-sdk/WorkbenchShell", () => ({
+vi.mock('@/pages/Settings', () => ({
   default: (props: Record<string, unknown>) => {
-    mocks.workbenchShellProps.push(props);
-    return <div data-testid="workbench-shell" />;
+    mocks.settingsProps.push(props);
+    return <div data-testid="settings-page" />;
   },
 }));
 
-vi.mock("@/components/Toast", () => ({
-  useToast: () => mocks.toast,
+vi.mock('@/pages/TaskCenter', () => ({
+  default: () => <div data-testid="taskcenter-page" />,
 }));
 
-vi.mock("@/hooks/useUpdater", () => ({
+vi.mock('@/components/Toast', () => ({
+  useToast: () => ({
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  }),
+}));
+
+vi.mock('@/hooks/useUpdater', () => ({
   useUpdater: () => ({
     updateReady: false,
     updateVersion: null,
@@ -224,37 +262,38 @@ vi.mock("@/hooks/useUpdater", () => ({
     updatePreparing: false,
     pendingUpdateOnStartup: null,
     dismissPendingUpdate: vi.fn(),
-    checkForUpdate: vi.fn(async () => "up-to-date"),
+    checkForUpdate: vi.fn(async () => 'up-to-date'),
     restartAndUpdate: vi.fn(),
   }),
 }));
 
-vi.mock("@/hooks/useTrayEvents", () => ({
+vi.mock('@/hooks/useTrayEvents', () => ({
   useTrayEvents: vi.fn(),
 }));
 
-vi.mock("@/hooks/useHelperAgentModelDefaults", () => ({
+vi.mock('@/hooks/useHelperAgentModelDefaults', () => ({
   useHelperAgentModelDefaults: () => ({
     providerId: mocks.provider.id,
-    model: "mimo-v2.5-pro",
+    model: 'mimo-v2.5-pro',
     setDefaults: vi.fn(),
   }),
 }));
 
-vi.mock("@/hooks/useConfig", () => ({
+vi.mock('@/hooks/useConfig', () => ({
   useConfig: () => ({
     config: {
       projects: [mocks.project],
       agents: [mocks.agent],
       multiAgentRuntime: mocks.multiAgentRuntime,
-      defaultPermissionMode: "auto",
+      defaultPermissionMode: 'auto',
+      teamSpaceEnabled: true,
     },
     isLoading: false,
     error: null,
     projects: [mocks.project],
     providers: [mocks.provider],
-    apiKeys: { [mocks.provider.id]: "key" },
-    providerVerifyStatus: { [mocks.provider.id]: { status: "valid" } },
+    apiKeys: { [mocks.provider.id]: 'key' },
+    providerVerifyStatus: { [mocks.provider.id]: { status: 'valid' } },
     addProject: vi.fn(async () => mocks.project),
     updateProject: vi.fn(async () => undefined),
     patchProject: vi.fn(async () => undefined),
@@ -279,92 +318,101 @@ vi.mock("@/hooks/useConfig", () => ({
   }),
 }));
 
-vi.mock("@/hooks/useTabSwipeGesture", () => ({
+vi.mock('@/hooks/useTabSwipeGesture', () => ({
   useTabSwipeGesture: vi.fn(),
 }));
 
-vi.mock("@/utils/browserMock", () => ({
+vi.mock('@/hooks/useSpaceBuildCapability', () => ({
+  useSpaceBuildCapability: () => ({ isLoading: false, available: true, reason: null }),
+}));
+
+vi.mock('@/utils/browserMock', () => ({
   isBrowserDevMode: () => false,
   isTauriEnvironment: () => false,
 }));
 
-vi.mock("@/utils/frontendLogger", () => ({
+vi.mock('@/utils/frontendLogger', () => ({
   forceFlushLogs: vi.fn(async () => undefined),
   setLogServerUrl: vi.fn(),
   clearLogServerUrl: vi.fn(),
   setAppActiveTabId: mocks.setAppActiveTabId,
 }));
 
-vi.mock("@/utils/lastExitMarker", () => ({
-  consumeCleanExitMarker: vi.fn(async () => true),
+vi.mock('@/utils/lastExitMarker', () => ({
+  consumeCleanExitMarker: vi.fn(async () => mocks.lastExitWasClean),
 }));
 
-vi.mock("@/utils/tabPersistenceDurable", () => ({
+vi.mock('@/utils/tabPersistenceDurable', () => ({
   persistOpenTabsDurable: vi.fn(async () => undefined),
-  loadAndClearOpenTabsDurable: vi.fn(async () => null),
+  loadAndClearOpenTabsDurable: vi.fn(async () => mocks.durableTabs),
   clearOpenTabsDurable: vi.fn(async () => undefined),
 }));
 
-vi.mock("@/utils/tauriListen", () => ({
+vi.mock('@/utils/tauriListen', () => ({
   listenWithCleanup: vi.fn(async () => undefined),
 }));
 
-vi.mock("@/config/configService", () => ({
+vi.mock('@/config/configService', () => ({
   ensureSelfAwarenessWorkspace: vi.fn(async () => mocks.project),
   resolveBuiltinSelection: mocks.resolveBuiltinSelection,
-  pairBuiltinSelection: vi.fn((_provider, model) => ({
-    providerId: mocks.provider.id,
-    model,
-  })),
+  pairBuiltinSelection: vi.fn((_provider, model) => ({ providerId: mocks.provider.id, model })),
   isProviderAvailable: vi.fn(() => true),
 }));
 
-vi.mock("@/config/services/agentConfigService", () => ({
+vi.mock('@/config/services/agentConfigService', () => ({
   getAgentByWorkspacePath: vi.fn(() => mocks.agent),
   getAgentById: vi.fn(() => mocks.agent),
 }));
 
-import App from "./App";
+import App from './App';
 
-describe("App helper launch", () => {
+describe('App helper launch', () => {
   afterEach(() => {
     vi.clearAllMocks();
-    window.localStorage.clear();
+    localStorage.clear();
     mocks.chatProps.length = 0;
+    mocks.tabProviderProps.length = 0;
     mocks.launcherProps.length = 0;
-    mocks.workbenchShellProps.length = 0;
-    mocks.agent.runtime = "builtin";
-    mocks.agent.permissionMode = "auto";
+    mocks.sidebarProps.length = 0;
+    mocks.tabbarProps.length = 0;
+    mocks.settingsProps.length = 0;
+    mocks.deleteTargetSessionId = null;
+    mocks.deleteResults.length = 0;
+    mocks.durableTabs = null;
+    mocks.lastExitWasClean = true;
+    mocks.agent.runtime = 'builtin';
+    mocks.agent.permissionMode = 'auto';
     mocks.agent.reasoningEffort = undefined;
     mocks.agent.runtimeConfig = undefined;
     mocks.multiAgentRuntime = false;
-    mocks.getSessions.mockResolvedValue([]);
-    mocks.resolveBuiltinSelection.mockReturnValue({
-      provider: mocks.provider,
-      model: "mimo-v2.5-pro",
-    });
+    mocks.hasSessionSidecar.mockResolvedValue(true);
+    mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: true });
+    mocks.activateSession.mockResolvedValue(undefined);
+    mocks.upgradeSessionId.mockResolvedValue(true);
+    mocks.getSessionActivation.mockResolvedValue(null);
+    mocks.updateSessionTab.mockResolvedValue(undefined);
+    mocks.cancelBackgroundCompletion.mockResolvedValue(undefined);
+    mocks.querySessionHasPersistentOwners.mockResolvedValue(false);
+    mocks.canRestoreSession.mockResolvedValue(true);
+    mocks.resolveBuiltinSelection.mockReturnValue({ provider: mocks.provider, model: 'mimo-v2.5-pro' });
   });
 
   function managedCodexProvider() {
     return {
       ...mocks.provider,
       id: CODEX_SUBSCRIPTION_PROVIDER_ID,
-      name: "Codex Subscription",
-      type: "subscription",
-      baseUrl: "",
-      execution: {
-        kind: "runtime-backed" as const,
-        runtime: "codex" as const,
-        source: "managed-provider" as const,
-      },
-      primaryModel: "gpt-5.5",
-      models: [{ id: "gpt-5.5", name: "GPT-5.5" }],
+      name: 'Codex Subscription',
+      type: 'subscription',
+      baseUrl: '',
+      execution: { kind: 'runtime-backed' as const, runtime: 'codex' as const, source: 'managed-provider' as const },
+      primaryModel: 'gpt-5.5',
+      models: [{ id: 'gpt-5.5', name: 'GPT-5.5' }],
     };
   }
 
   function latestLauncherProps() {
     const props = mocks.launcherProps.at(-1);
-    if (!props) throw new Error("Launcher props were not captured");
+    if (!props) throw new Error('Launcher props were not captured');
     return props as {
       onLaunchProject: (
         project: typeof mocks.project,
@@ -376,50 +424,39 @@ describe("App helper launch", () => {
     };
   }
 
-  function latestWorkbenchShellProps() {
-    const props = mocks.workbenchShellProps.at(-1);
-    if (!props) throw new Error("WorkbenchShell props were not captured");
+  function latestSidebarProps() {
+    const props = mocks.sidebarProps.at(-1);
+    if (!props) throw new Error('GlobalSidebar props were not captured');
     return props as {
-      onOpenAgentSession: (
-        workspacePath: string,
-        request: {
-          version: 1;
-          title: string;
-          initialMessage: string;
-          promptId?: string;
-          presentation?: "tab" | "dialog";
-          conversationKey?: string;
-          forceNew?: boolean;
-          toolset?: { id: string; context?: Record<string, string> };
-        },
-      ) => Promise<void>;
+      onOpenCapabilities: () => void;
+      onOpenSettings: () => void;
+      onOpenTaskCenter: () => void;
+      onOpenSpace: () => void;
+      onOpenWorkspace: (
+        project: typeof mocks.project,
+        initialMessage?: unknown,
+        entryIntent?: 'open_workspace' | 'workspace_init',
+      ) => Promise<boolean>;
+      onOpenSession: (session: { id: string; agentDir: string; title: string }, project: typeof mocks.project) => Promise<boolean>;
     };
   }
 
-  async function openNovelWorkbench() {
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent(CUSTOM_EVENTS.OPEN_WORKBENCH, {
-          detail: {
-            workbenchId: "io.myagents.novel",
-            workspacePath: mocks.project.path,
-          },
-        }),
-      );
-    });
-    await waitFor(() =>
-      expect(mocks.workbenchShellProps.length).toBeGreaterThan(0),
-    );
+  function latestSettingsProps() {
+    const props = [...mocks.settingsProps]
+      .reverse()
+      .find((candidate) => candidate.mode === 'capabilities');
+    if (!props) throw new Error('Capabilities Settings props were not captured');
+    return props;
   }
 
-  it("prepares a managed Codex provider session when opening an empty Launcher workspace", async () => {
+  it('prepares a managed Codex provider session when opening an empty Launcher workspace', async () => {
     mocks.agent.runtimeConfig = {
-      permissionMode: "suggest",
-      reasoningEffort: "xhigh",
+      permissionMode: 'suggest',
+      reasoningEffort: 'xhigh',
     };
     mocks.resolveBuiltinSelection.mockReturnValue({
       provider: managedCodexProvider(),
-      model: "gpt-5.5",
+      model: 'gpt-5.5',
     });
 
     render(<App />);
@@ -431,19 +468,19 @@ describe("App helper launch", () => {
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith(
         mocks.project.path,
-        "codex",
+        'codex',
         expect.objectContaining({
-          runtimeSource: "managed-provider",
+          runtimeSource: 'managed-provider',
           providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-          model: "gpt-5.5",
-          permissionMode: "suggest",
-          reasoningEffort: "xhigh",
+          model: 'gpt-5.5',
+          permissionMode: 'suggest',
+          reasoningEffort: 'xhigh',
           providerExecutionIdentity: expect.objectContaining({
-            kind: "runtime-backed-provider",
+            kind: 'runtime-backed-provider',
             providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-            runtime: "codex",
-            runtimeSource: "managed-provider",
-            model: "gpt-5.5",
+            runtime: 'codex',
+            runtimeSource: 'managed-provider',
+            model: 'gpt-5.5',
           }),
           prepareForFirstUserMessage: true,
           materializationSourceSessionId: expect.stringMatching(/^pending-/),
@@ -451,20 +488,20 @@ describe("App helper launch", () => {
       );
     });
     expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
-      "prepared-managed-session",
+      'prepared-managed-session',
       mocks.project.path,
-      "tab",
+      'tab',
       expect.stringMatching(/^tab-/),
     );
   });
 
-  it("uses a Launcher birth hint before stale config when opening an empty workspace", async () => {
+  it('uses a Launcher birth hint before stale config when opening an empty workspace', async () => {
     const providerExecutionIdentity = {
-      kind: "runtime-backed-provider" as const,
+      kind: 'runtime-backed-provider' as const,
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-      runtime: "codex" as const,
-      runtimeSource: "managed-provider" as const,
-      model: "gpt-5.5",
+      runtime: 'codex' as const,
+      runtimeSource: 'managed-provider' as const,
+      model: 'gpt-5.5',
     };
 
     render(<App />);
@@ -474,13 +511,13 @@ describe("App helper launch", () => {
         mocks.project,
         undefined,
         undefined,
-        { surface: "agent_card", entryIntent: "open_workspace" },
+        { surface: 'agent_card', entryIntent: 'open_workspace' },
         {
           providerExecutionIdentity,
-          permissionMode: "fullAgency",
-          reasoningEffort: "xhigh",
-          mcpEnabledServers: ["filesystem"],
-          enabledPluginIds: ["plugin-a"],
+          permissionMode: 'fullAgency',
+          reasoningEffort: 'xhigh',
+          mcpEnabledServers: ['filesystem'],
+          enabledPluginIds: ['plugin-a'],
         },
       );
     });
@@ -488,16 +525,16 @@ describe("App helper launch", () => {
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith(
         mocks.project.path,
-        "codex",
+        'codex',
         expect.objectContaining({
-          runtimeSource: "managed-provider",
+          runtimeSource: 'managed-provider',
           providerExecutionIdentity,
           providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-          model: "gpt-5.5",
-          permissionMode: "no-restrictions",
-          reasoningEffort: "xhigh",
-          mcpEnabledServers: ["filesystem"],
-          enabledPluginIds: ["plugin-a"],
+          model: 'gpt-5.5',
+          permissionMode: 'no-restrictions',
+          reasoningEffort: 'xhigh',
+          mcpEnabledServers: ['filesystem'],
+          enabledPluginIds: ['plugin-a'],
           prepareForFirstUserMessage: true,
           materializationSourceSessionId: expect.stringMatching(/^pending-/),
         }),
@@ -505,12 +542,504 @@ describe("App helper launch", () => {
     });
   });
 
-  it("keeps external-runtime empty launches on the pending-session path", async () => {
+  it('opens a sidebar Session from a no-workspace functional Tab and revives the same Tab if its Sidecar died', async () => {
+    render(<App />);
+    act(() => latestSidebarProps().onOpenCapabilities());
+    await waitFor(() => {
+      expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2);
+    });
+
+    const session = {
+      id: 'sidebar-session',
+      agentDir: mocks.project.path,
+      title: 'Sidebar history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    await act(async () => {
+      await latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        session.id,
+        mocks.project.path,
+        'tab',
+        expect.stringMatching(/^tab-/),
+      );
+      expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+    });
+    const sessionTab = (mocks.tabbarProps.at(-1)?.tabs as Array<{ id: string; sessionId?: string }>).find(
+      (tab) => tab.sessionId === session.id,
+    );
+    expect(sessionTab).toBeTruthy();
+
+    mocks.hasSessionSidecar.mockResolvedValueOnce(false);
+    await act(async () => {
+      await latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+
+    expect(mocks.ensureSessionSidecar).toHaveBeenLastCalledWith(
+      session.id,
+      mocks.project.path,
+      'tab',
+      sessionTab?.id,
+    );
+    expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+
+    await act(async () => {
+      await (mocks.tabbarProps.at(-1)?.onCloseTab as (tabId: string) => Promise<void>)(sessionTab!.id);
+    });
+    expect(mocks.releaseTabSession).toHaveBeenCalledWith(session.id, sessionTab!.id);
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+    expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2);
+    await waitFor(() => {
+      expect(mocks.track).toHaveBeenCalledWith('history_open', expect.objectContaining({
+        session_id: session.id,
+        entry_source: 'global_sidebar',
+      }));
+    });
+  });
+
+  it('activates a new sidebar Session tab before its Sidecar is ready', async () => {
+    let resolveEnsure!: (result: { port: number; isNew: boolean }) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((resolve) => {
+      resolveEnsure = resolve;
+    }));
+    const session = {
+      id: 'slow-sidebar-session',
+      agentDir: mocks.project.path,
+      title: 'Slow sidebar history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let openPromise!: Promise<boolean>;
+    act(() => {
+      openPromise = latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Slow sidebar history');
+      expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2);
+    });
+    const pendingTab = (mocks.tabbarProps.at(-1)?.tabs as Array<{
+      sessionId?: string;
+      sidecarConfigDisposition?: string;
+    }>).find((tab) => tab.sessionId === session.id);
+    expect(pendingTab?.sidecarConfigDisposition).toBe('pending');
+    expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-page')).toBeInTheDocument();
+    expect(mocks.activateSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveEnsure({ port: 31417, isNew: true });
+      await openPromise;
+    });
+    expect(mocks.activateSession).toHaveBeenCalledWith(
+      session.id,
+      expect.stringMatching(/^tab-/),
+      null,
+      31417,
+      mocks.project.path,
+      false,
+    );
+    expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+  });
+
+  it('admits only one custom-event open transition for the same Session', async () => {
+    let resolveActivation!: (value: null) => void;
+    mocks.getSessionActivation.mockReturnValueOnce(new Promise((resolve) => {
+      resolveActivation = resolve;
+    }));
+    render(<App />);
+
+    const detail = {
+      sessionId: 'task-center-session',
+      workspacePath: mocks.project.path,
+    };
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SESSION_IN_NEW_TAB, { detail }));
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SESSION_IN_NEW_TAB, { detail }));
+    });
+
+    await waitFor(() => {
+      expect(mocks.getSessionActivation).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      resolveActivation(null);
+    });
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        detail.sessionId,
+        detail.workspacePath,
+        'tab',
+        expect.stringMatching(/^tab-/),
+      );
+    });
+  });
+
+  it('serializes Settings helper resume with deletion of the same Session', async () => {
+    let resolveActivation!: (value: null) => void;
+    mocks.getSessionActivation.mockReturnValueOnce(new Promise((resolve) => {
+      resolveActivation = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'helper-resume-session';
+    render(<App />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+        detail: {
+          description: '',
+          appVersion: '0.4.1',
+          resumeSessionId: mocks.deleteTargetSessionId,
+        },
+      }));
+    });
+    await waitFor(() => {
+      expect(mocks.getSessionActivation).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveActivation(null);
+    });
+  });
+
+  it('serializes cold restore activation with deletion of the same Session', async () => {
+    const sessionId = '11111111-2222-4333-8444-555555555555';
+    let resolveRestoreCheck!: (value: boolean) => void;
+    mocks.canRestoreSession.mockReturnValueOnce(new Promise((resolve) => {
+      resolveRestoreCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = sessionId;
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [{
+        id: 'restored-tab',
+        agentDir: mocks.project.path,
+        sessionId,
+        title: 'Restored history',
+      }],
+      activeTabId: 'restored-tab',
+    };
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => {
+      expect(mocks.canRestoreSession).toHaveBeenCalledWith(sessionId, mocks.project.path);
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveRestoreCheck(true);
+    });
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        sessionId,
+        mocks.project.path,
+        'tab',
+        'restored-tab',
+      );
+    });
+  });
+
+  it('preserves a cold restored Tab when an earlier deletion is refused', async () => {
+    const sessionId = '66666666-7777-4888-8999-000000000000';
+    let resolveOwnerCheck!: (value: boolean) => void;
+    mocks.querySessionHasPersistentOwners.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOwnerCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = sessionId;
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [{
+        id: 'refused-delete-restored-tab',
+        agentDir: mocks.project.path,
+        sessionId,
+        title: 'Still restorable',
+      }],
+      activeTabId: 'refused-delete-restored-tab',
+    };
+    render(<App />);
+
+    const restoreButton = await screen.findByTestId('restore-session');
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.querySessionHasPersistentOwners).toHaveBeenCalledWith(sessionId);
+    });
+
+    fireEvent.click(restoreButton);
+    await waitFor(() => {
+      expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Still restorable');
+    });
+    expect(mocks.canRestoreSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveOwnerCheck(true);
+    });
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'in-use',
+      }]);
+    });
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      id: string;
+      restoreState?: string;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({
+      id: 'refused-delete-restored-tab',
+      restoreState: 'cold',
+    }));
+  });
+
+  it('does not yank focus back when a slow sidebar Session finishes after the user switches tabs', async () => {
+    let resolveEnsure!: (result: { port: number; isNew: boolean }) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((resolve) => {
+      resolveEnsure = resolve;
+    }));
+    const session = {
+      id: 'background-ready-session',
+      agentDir: mocks.project.path,
+      title: 'Background ready history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let openPromise!: Promise<boolean>;
+    act(() => {
+      openPromise = latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+    await waitFor(() => expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Background ready history'));
+
+    act(() => latestSidebarProps().onOpenSettings());
+    await waitFor(() => {
+      const latest = mocks.tabbarProps.at(-1);
+      const active = (latest?.tabs as Array<{ id: string; view?: string }>).find(
+        (tab) => tab.id === latest?.activeTabId,
+      );
+      expect(active?.view).toBe('settings');
+    });
+
+    await act(async () => {
+      resolveEnsure({ port: 31417, isNew: false });
+      await openPromise;
+    });
+
+    const latest = mocks.tabbarProps.at(-1);
+    const active = (latest?.tabs as Array<{ id: string; view?: string }>).find(
+      (tab) => tab.id === latest?.activeTabId,
+    );
+    expect(active?.view).toBe('settings');
+  });
+
+  it('preserves Task ownership after optimistic activation of a cron-owned Session', async () => {
+    mocks.getSessionActivation.mockResolvedValue({ tab_id: null, task_id: 'cron-task-1' });
+    const session = {
+      id: 'cron-owned-session',
+      agentDir: mocks.project.path,
+      title: 'Cron-owned history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let opened = false;
+    await act(async () => {
+      opened = await latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+
+    const sessionTab = (mocks.tabbarProps.at(-1)?.tabs as Array<{ id: string; sessionId?: string }>).find(
+      (tab) => tab.sessionId === session.id,
+    );
+    expect(opened).toBe(true);
+    expect(mocks.getSessionActivation).toHaveBeenCalledWith(session.id);
+    expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+      session.id,
+      mocks.project.path,
+      'tab',
+      sessionTab?.id,
+    );
+    expect(sessionTab).toBeTruthy();
+    expect(mocks.updateSessionTab).toHaveBeenCalledWith(session.id, sessionTab?.id);
+    expect(mocks.activateSession).not.toHaveBeenCalled();
+    expect(mocks.cancelBackgroundCompletion).not.toHaveBeenCalled();
+  });
+
+  it('restores the previous active tab when an optimistic sidebar Session open fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let rejectEnsure!: (error: Error) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((_, reject) => {
+      rejectEnsure = reject;
+    }));
+    const session = {
+      id: 'failed-sidebar-session',
+      agentDir: mocks.project.path,
+      title: 'Failed sidebar history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let openPromise!: Promise<boolean>;
+    act(() => {
+      openPromise = latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+    await waitFor(() => expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Failed sidebar history'));
+
+    let opened = true;
+    await act(async () => {
+      rejectEnsure(new Error('ensure failed'));
+      opened = await openPromise;
+    });
+
+    expect(opened).toBe(false);
+    expect(screen.getByTestId('tabbar-active')).toHaveTextContent('New Tab');
+    expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(1);
+    errorSpy.mockRestore();
+  });
+
+  it('opens a sidebar workspace as a fresh Chat tab without replacing the functional tab', async () => {
+    render(<App />);
+    act(() => latestSidebarProps().onOpenCapabilities());
+    await waitFor(() => expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2));
+
+    let opened = false;
+    await act(async () => {
+      opened = await latestSidebarProps().onOpenWorkspace(mocks.project);
+    });
+
+    expect(opened).toBe(true);
+    await waitFor(() => {
+      expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        expect.any(String),
+        mocks.project.path,
+        'tab',
+        expect.stringMatching(/^tab-/),
+      );
+      expect(mocks.chatProps.length).toBeGreaterThan(0);
+    });
+    expect(mocks.track).toHaveBeenCalledWith('workspace_open', expect.objectContaining({
+      surface: 'global_sidebar',
+      entry_intent: 'open_workspace',
+    }));
+  });
+
+  it('keeps Settings and Capabilities as one tab each', async () => {
+    render(<App />);
+
+    act(() => latestSidebarProps().onOpenCapabilities());
+    await waitFor(() => expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2));
+    act(() => latestSidebarProps().onOpenCapabilities());
+    await waitFor(() => expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2));
+
+    await act(async () => latestSidebarProps().onOpenSettings());
+    await waitFor(() => expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3));
+    await act(async () => latestSidebarProps().onOpenSettings());
+
+    expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+  });
+
+  it('keeps Task Center and Team as one tab each', async () => {
+    render(<App />);
+
+    act(() => latestSidebarProps().onOpenTaskCenter());
+    await waitFor(() => expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2));
+    act(() => latestSidebarProps().onOpenTaskCenter());
+    await waitFor(() => expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2));
+
+    act(() => latestSidebarProps().onOpenSpace());
+    await waitFor(() => expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3));
+    act(() => latestSidebarProps().onOpenSpace());
+
+    expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(3);
+  });
+
+  it('routes capability deep links and item targets into the singleton Capabilities tab', async () => {
+    render(<App />);
+    const skillTarget = { kind: 'skill' as const, folderName: 'github', scope: 'user' as const };
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SETTINGS, {
+        detail: {
+          section: 'plugins',
+          mcpServerId: 'mcp-one',
+          officialToolId: 'image-understanding',
+          selectItem: skillTarget,
+        },
+      }));
+    });
+
+    await waitFor(() => expect(latestSettingsProps()).toEqual(expect.objectContaining({
+      mode: 'capabilities',
+      initialSection: 'plugins',
+      initialMcpId: 'mcp-one',
+      initialOfficialToolId: 'image-understanding',
+      initialSelect: skillTarget,
+    })));
+    const firstNonce = latestSettingsProps().navigationNonce as number;
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SETTINGS, {
+        detail: { section: 'mcp', mcpServerId: 'mcp-two' },
+      }));
+    });
+
+    await waitFor(() => expect(latestSettingsProps()).toEqual(expect.objectContaining({
+      mode: 'capabilities',
+      initialSection: 'mcp',
+      initialMcpId: 'mcp-two',
+      navigationNonce: firstNonce + 1,
+    })));
+    expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2);
+  });
+
+  it('keeps streaming-local Chat renders outside the global sidebar owner', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestSidebarProps().onOpenWorkspace(mocks.project);
+    });
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toHaveTextContent('0'));
+    const sidebarRenderCount = mocks.sidebarProps.length;
+
+    act(() => {
+      fireEvent.click(screen.getByTestId('chat-page'));
+      fireEvent.click(screen.getByTestId('chat-page'));
+      fireEvent.click(screen.getByTestId('chat-page'));
+    });
+
+    expect(screen.getByTestId('chat-page')).toHaveTextContent('3');
+    expect(mocks.sidebarProps).toHaveLength(sidebarRenderCount);
+  });
+
+  it('keeps external-runtime empty launches on the pending-session path', async () => {
     mocks.multiAgentRuntime = true;
-    mocks.agent.runtime = "codex";
+    mocks.agent.runtime = 'codex';
     mocks.resolveBuiltinSelection.mockReturnValue({
       provider: managedCodexProvider(),
-      model: "gpt-5.5",
+      model: 'gpt-5.5',
     });
 
     render(<App />);
@@ -524,301 +1053,307 @@ describe("App helper launch", () => {
     expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
       expect.stringMatching(/^pending-tab-/),
       mocks.project.path,
-      "tab",
+      'tab',
       expect.stringMatching(/^tab-/),
     );
   });
 
-  it("freezes an available provider selection for workbench Agent auto-send", async () => {
-    render(<App />);
-    await openNovelWorkbench();
-
-    await act(async () => {
-      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
-        version: 1,
-        title: "世界架构向导",
-        initialMessage: "创建小说世界",
-        promptId: "novel.world.guide",
-      });
-    });
-
-    await waitFor(() => {
-      expect(
-        mocks.chatProps.some((props) => {
-          const initialMessage = props.initialMessage as
-            | { builtinSelection?: { providerId: string; model: string } }
-            | undefined;
-          return (
-            initialMessage?.builtinSelection?.providerId ===
-              mocks.provider.id &&
-            initialMessage.builtinSelection.model === "mimo-v2.5-pro"
-          );
-        }),
-      ).toBe(true);
-    });
-    expect(mocks.resolveBuiltinSelection).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agent: mocks.agent,
-        workspace: mocks.project,
-      }),
-      expect.any(Object),
-      expect.any(Array),
-      expect.any(Object),
-      expect.any(Object),
-    );
-  });
-
-  it("does not start a workbench Agent session without an available provider", async () => {
-    mocks.resolveBuiltinSelection.mockReturnValue(undefined);
-    render(<App />);
-    await openNovelWorkbench();
-
-    await expect(
-      latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
-        version: 1,
-        title: "世界架构向导",
-        initialMessage: "创建小说世界",
-      }),
-    ).rejects.toThrow("当前没有可用的模型服务");
-    expect(mocks.ensureSessionSidecar).not.toHaveBeenCalled();
-  });
-
-  it("reopens an existing dialog surface without launching a second session", async () => {
-    render(<App />);
-    await openNovelWorkbench();
-
-    await act(async () => {
-      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
-        version: 1,
-        title: "世界架构向导",
-        initialMessage: "创建小说世界",
-        promptId: "novel.world.guide",
-        presentation: "dialog",
-        conversationKey: "novel.world.architecture",
-      });
-    });
-
-    await waitFor(() =>
-      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(1),
-    );
-
-    await act(async () => {
-      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
-        version: 1,
-        title: "世界架构向导",
-        initialMessage: "第二次不应该再发",
-        promptId: "novel.world.guide",
-        presentation: "dialog",
-        conversationKey: "novel.world.architecture",
-      });
-    });
-
-    // Focus path must not start another sidecar or re-bootstrap a new message.
-    expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(1);
-    expect(
-      mocks.chatProps.some((props) => {
-        const initialMessage = props.initialMessage as
-          | { text?: string }
-          | undefined;
-        return initialMessage?.text === "第二次不应该再发";
-      }),
-    ).toBe(false);
-    expect(mocks.toast.info).toHaveBeenCalledWith("已回到上次对话");
-  });
-
-  it("recreates an empty bound dialog session and re-sends initialMessage", async () => {
-    window.localStorage.clear();
-    mocks.getSessions.mockResolvedValue([
-      {
-        id: "empty-bound-session",
-        agentDir: mocks.project.path,
-        title: "空会话",
-        createdAt: "2026-06-27T00:00:00.000Z",
-        lastActiveAt: "2026-06-27T00:00:00.000Z",
-        stats: { turnCount: 0, totalInputTokens: 0, totalOutputTokens: 0 },
-      },
-    ]);
-    window.localStorage.setItem(
-      [
-        "myagents.workbench.agent-conversation.v1",
-        encodeURIComponent("io.myagents.novel"),
-        encodeURIComponent(mocks.project.path),
-        encodeURIComponent("novel.world.architecture"),
-      ].join(":"),
-      "empty-bound-session",
-    );
-
-    render(<App />);
-    await openNovelWorkbench();
-
-    await act(async () => {
-      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
-        version: 1,
-        title: "世界架构向导",
-        initialMessage: "重建后的开场",
-        promptId: "novel.world.guide",
-        presentation: "dialog",
-        conversationKey: "novel.world.architecture",
-      });
-    });
-
-    await waitFor(() => {
-      expect(
-        mocks.chatProps.some((props) => {
-          const initialMessage = props.initialMessage as
-            | { text?: string }
-            | undefined;
-          return initialMessage?.text === "重建后的开场";
-        }),
-      ).toBe(true);
-    });
-    expect(mocks.ensureSessionSidecar).toHaveBeenCalled();
-  });
-
-  it("forceNew ignores an existing dialog surface and starts a fresh session", async () => {
-    render(<App />);
-    await openNovelWorkbench();
-
-    await act(async () => {
-      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
-        version: 1,
-        title: "世界架构向导",
-        initialMessage: "第一次开场",
-        promptId: "novel.world.guide",
-        presentation: "dialog",
-        conversationKey: "novel.world.architecture",
-      });
-    });
-    await waitFor(() =>
-      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(1),
-    );
-
-    await act(async () => {
-      await latestWorkbenchShellProps().onOpenAgentSession(mocks.project.path, {
-        version: 1,
-        title: "世界架构向导",
-        initialMessage: "强制新开场",
-        promptId: "novel.world.guide",
-        presentation: "dialog",
-        conversationKey: "novel.world.architecture",
-        forceNew: true,
-      });
-    });
-
-    await waitFor(() =>
-      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(2),
-    );
-    expect(
-      mocks.chatProps.some((props) => {
-        const initialMessage = props.initialMessage as
-          | { text?: string }
-          | undefined;
-        return initialMessage?.text === "强制新开场";
-      }),
-    ).toBe(true);
-  });
-
-  it("commits the helper tab before launching so the active tab is renderable", async () => {
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  it('commits the helper tab before launching so the active tab is renderable', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
       render(<App />);
 
       await act(async () => {
-        window.dispatchEvent(
-          new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
-            detail: {
-              description: "help",
-              providerId: mocks.provider.id,
-              model: "mimo-v2.5-pro",
-              appVersion: "test",
-              images: [],
-            },
-          }),
-        );
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+          detail: {
+            description: 'help',
+            providerId: mocks.provider.id,
+            model: 'mimo-v2.5-pro',
+            appVersion: 'test',
+            images: [],
+          },
+        }));
       });
 
-      await waitFor(() =>
-        expect(mocks.ensureSessionSidecar).toHaveBeenCalled(),
-      );
+      await waitFor(() => expect(mocks.ensureSessionSidecar).toHaveBeenCalled());
 
       const launchStart = logSpy.mock.calls
-        .map((call) => String(call[0]))
-        .find((message) => message.includes("[App][launch] START"));
+        .map(call => String(call[0]))
+        .find(message => message.includes('[App][launch] START'));
 
-      expect(launchStart).toContain("view=launcher");
-      expect(launchStart).not.toContain("view=undefined");
+      expect(launchStart).toContain('view=launcher');
+      expect(launchStart).not.toContain('view=undefined');
       expect(mocks.setAppActiveTabId).toHaveBeenCalledWith(
         expect.stringMatching(/^tab-/),
         expect.arrayContaining([expect.stringMatching(/^tab-/)]),
       );
-      expect(mocks.setAppActiveCorrelation).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tabId: expect.stringMatching(/^tab-/),
-        }),
-      );
+      expect(mocks.setAppActiveCorrelation).toHaveBeenCalledWith(expect.objectContaining({
+        tabId: expect.stringMatching(/^tab-/),
+      }));
     } finally {
       logSpy.mockRestore();
     }
   });
 
-  it("releases the fork tab owner when fork tab activation fails", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  it('serializes fork owner acquisition with deletion of the forked Session', async () => {
+    render(<App />);
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+        detail: {
+          description: 'help',
+          providerId: mocks.provider.id,
+          model: 'mimo-v2.5-pro',
+          appVersion: 'test',
+          images: [],
+        },
+      }));
+    });
+    await waitFor(() => {
+      expect(mocks.chatProps.some((props) => typeof props.onForkSession === 'function')).toBe(true);
+    });
+
+    let resolveForkEnsure!: (result: { port: number; isNew: boolean }) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((resolve) => {
+      resolveForkEnsure = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'fork-delete-race';
+    const chatProps = [...mocks.chatProps]
+      .reverse()
+      .find((props) => typeof props.onForkSession === 'function') as {
+        onForkSession: (sessionId: string, agentDir: string, title: string) => Promise<boolean>;
+      };
+
+    let forkPromise!: Promise<boolean>;
+    act(() => {
+      forkPromise = chatProps.onForkSession(
+        mocks.deleteTargetSessionId!,
+        mocks.project.path,
+        'Fork race',
+      );
+    });
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        mocks.deleteTargetSessionId,
+        mocks.project.path,
+        'tab',
+        expect.stringMatching(/^tab-/),
+      );
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    let opened = false;
+    await act(async () => {
+      resolveForkEnsure({ port: 31417, isNew: true });
+      opened = await forkPromise;
+    });
+    expect(opened).toBe(true);
+  });
+
+  it('serializes pending-to-real identity adoption with deletion of the target Session', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        sessionId: string;
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+    expect(providerProps.sessionId).toMatch(/^pending-/);
+
+    let resolveUpgrade!: (upgraded: boolean) => void;
+    mocks.upgradeSessionId.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpgrade = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'real-session-delete-race';
+    let adoptionPromise!: Promise<boolean>;
+    act(() => {
+      adoptionPromise = providerProps.onSessionIdChange(mocks.deleteTargetSessionId!);
+    });
+    await waitFor(() => {
+      expect(mocks.upgradeSessionId).toHaveBeenCalledWith(
+        providerProps.sessionId,
+        mocks.deleteTargetSessionId,
+      );
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    let adopted = false;
+    await act(async () => {
+      resolveUpgrade(true);
+      adopted = await adoptionPromise;
+    });
+    expect(adopted).toBe(true);
+  });
+
+  it('lets an earlier deletion terminate a pending creator before it can adopt that identity', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        sessionId: string;
+        onSessionIdChange: (newSessionId: string) => Promise<boolean>;
+      };
+    expect(providerProps.sessionId).toMatch(/^pending-/);
+
+    let resolveOwnerCheck!: (hasOwners: boolean) => void;
+    mocks.querySessionHasPersistentOwners.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOwnerCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'delete-first-real-session';
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.querySessionHasPersistentOwners).toHaveBeenCalledWith(
+        mocks.deleteTargetSessionId,
+      );
+    });
+
+    let adopted = true;
+    await act(async () => {
+      adopted = await providerProps.onSessionIdChange(mocks.deleteTargetSessionId!);
+    });
+    expect(adopted).toBe(false);
+    expect(mocks.upgradeSessionId).not.toHaveBeenCalled();
+    expect(mocks.releaseTabSession).toHaveBeenCalledWith(
+      providerProps.sessionId,
+      expect.stringMatching(/^tab-/),
+    );
+
+    await act(async () => {
+      resolveOwnerCheck(false);
+    });
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{ deleted: true }]);
+    });
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      view?: string;
+      sessionId?: string | null;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({
+      view: 'launcher',
+      sessionId: null,
+    }));
+  });
+
+  it('keeps a refused deletion from reviving the pending creator it already defeated', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        sessionId: string;
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+
+    let resolveOwnerCheck!: (hasOwners: boolean) => void;
+    mocks.querySessionHasPersistentOwners.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOwnerCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'delete-first-owned-session';
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.querySessionHasPersistentOwners).toHaveBeenCalledWith(
+        mocks.deleteTargetSessionId,
+      );
+    });
+
+    await expect(providerProps.onSessionIdChange(
+      mocks.deleteTargetSessionId!,
+      { sidecarAlreadyMigrated: true },
+    )).resolves.toBe(false);
+    await act(async () => {
+      resolveOwnerCheck(true);
+    });
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{ deleted: false, reason: 'in-use' }]);
+    });
+    expect(mocks.upgradeSessionId).not.toHaveBeenCalled();
+    expect(mocks.releaseTabSession).toHaveBeenCalledWith(
+      mocks.deleteTargetSessionId,
+      expect.stringMatching(/^tab-/),
+    );
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      view?: string;
+      sessionId?: string | null;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({
+      view: 'launcher',
+      sessionId: null,
+    }));
+  });
+
+  it('releases the fork tab owner when fork tab activation fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
       render(<App />);
 
       await act(async () => {
-        window.dispatchEvent(
-          new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
-            detail: {
-              description: "help",
-              providerId: mocks.provider.id,
-              model: "mimo-v2.5-pro",
-              appVersion: "test",
-              images: [],
-            },
-          }),
-        );
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+          detail: {
+            description: 'help',
+            providerId: mocks.provider.id,
+            model: 'mimo-v2.5-pro',
+            appVersion: 'test',
+            images: [],
+          },
+        }));
       });
 
       await waitFor(() => {
-        expect(
-          mocks.chatProps.some(
-            (props) => typeof props.onForkSession === "function",
-          ),
-        ).toBe(true);
+        expect(mocks.chatProps.some((props) => typeof props.onForkSession === 'function')).toBe(true);
       });
 
-      mocks.activateSession.mockRejectedValueOnce(new Error("activate failed"));
+      mocks.activateSession.mockRejectedValueOnce(new Error('activate failed'));
       const chatProps = [...mocks.chatProps]
         .reverse()
-        .find((props) => typeof props.onForkSession === "function") as {
-        onForkSession: (
-          sessionId: string,
-          agentDir: string,
-          title: string,
-        ) => Promise<boolean>;
-      };
+        .find((props) => typeof props.onForkSession === 'function') as {
+          onForkSession: (sessionId: string, agentDir: string, title: string) => Promise<boolean>;
+        };
 
       let opened = true;
       await act(async () => {
-        opened = await chatProps.onForkSession(
-          "fork-session",
-          mocks.project.path,
-          "Fork",
-        );
+        opened = await chatProps.onForkSession('fork-session', mocks.project.path, 'Fork');
       });
 
       expect(opened).toBe(false);
       expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
-        "fork-session",
+        'fork-session',
         mocks.project.path,
-        "tab",
+        'tab',
         expect.stringMatching(/^tab-/),
       );
       expect(mocks.releaseTabSession).toHaveBeenCalledWith(
-        "fork-session",
+        'fork-session',
         expect.stringMatching(/^tab-/),
       );
     } finally {

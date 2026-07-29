@@ -30,7 +30,7 @@ export interface MenuItemProps {
     disabled?: boolean;
     active?: boolean;
     tone?: 'default' | 'danger';
-    /** Native browser tooltip — used for the disabled cron-protected delete row. */
+    /** Native browser tooltip for contextual action hints. */
     title?: string;
 }
 

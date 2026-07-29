@@ -22,6 +22,7 @@ html[data-theme-id='raycast'][data-color-scheme='light'] {
   --ink-subtle: #a2a2a2;
   --ink-faint: #c5c5c5;
   --paper: #ffffff;
+  --global-sidebar-bg: #f9f9f9;
   --paper-elevated: #ffffff;
   --message-user-bg: #fffafa;
   --paper-inset: #ededed;
@@ -111,11 +112,11 @@ html[data-theme-id='raycast'][data-color-scheme='light'] {
   --focus-border: #c83f45;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(3 3 3 / 0.18);
-  --code-bg: #101010;
-  --code-bg-a0: rgb(16 16 16 / 0);
-  --code-header-bg: #1a1a1a;
-  --code-text: #fefefe;
-  --code-line-number: #999999;
+  --code-bg: #f6f6f6;
+  --code-bg-a0: rgb(246 246 246 / 0);
+  --code-header-bg: #ebebeb;
+  --code-text: #242424;
+  --code-line-number: #808080;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #ffe0e0 0%, rgb(255 224 224 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #dfecea 0%, rgb(223 236 234 / 0) 55%),
@@ -132,6 +133,7 @@ html[data-theme-id='raycast'][data-color-scheme='dark'] {
   --ink-subtle: #616161;
   --ink-faint: #3e3e3e;
   --paper: #101010;
+  --global-sidebar-bg: #0e0e0e;
   --paper-elevated: #1a1a1a;
   --message-user-bg: #211b1b;
   --paper-inset: #090909;
@@ -235,17 +237,20 @@ html[data-theme-id='raycast'][data-color-scheme='dark'] {
   --theme-body-texture-blend: screen;
 }
 
-html[data-theme-id='raycast'] .theme-launcher-hero-title {
-  margin-bottom: 0.5rem;
+html[data-theme-id='raycast'] .theme-product-wordmark {
   font-family: var(--font-display);
-  font-size: 2.5rem;
-  font-weight: 300;
   letter-spacing: 0.015em;
   color: var(--ink);
   background: linear-gradient(150deg, var(--ink) 32%, var(--accent-warm) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+html[data-theme-id='raycast'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 300;
 }
 
 html[data-theme-id='raycast'] .theme-launcher-hero-slogan {

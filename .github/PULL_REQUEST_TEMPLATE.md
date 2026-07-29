@@ -16,6 +16,9 @@ Brief description of the changes in this PR.
 - [ ] I have run `npm run typecheck` and `npm run lint`
 - [ ] I have tested my changes locally
 - [ ] I have updated documentation if needed
+- [ ] I created these changes or have the right to submit them under the project's community and commercial licensing paths
+- [ ] I documented the source and license of any third-party code, prompts, assets, generated material, or dependencies added by this PR
+- [ ] I understand that a Contributor License Agreement may be required before merge
 
 ## Related Issues
 

@@ -6,6 +6,7 @@ description: >-
   也适用于在任意工作区规划怎样借助 MyAgents 的 Workspace、Session、Task、Goal、Provider、Runtime、MCP、Skill、Agent Channel、
   Cloud Space 等能力完成工作。它面向软件使用而非源码开发。需要查询或修改当前实例状态时再加载 `/myagents-cli`；
   已经出现报错、崩溃或实际行为偏离预期时，在内置小助理中转入 `/support`。
+author: MyAgents
 ---
 
 # MyAgents 产品使用知识库

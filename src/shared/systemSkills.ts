@@ -1,15 +1,17 @@
 /** Version shared with Rust's SYSTEM_SKILLS_VERSION contract. */
-export const SYSTEM_SKILLS_VERSION = '38';
+export const SYSTEM_SKILLS_VERSION = '40';
 
 /**
  * Product-owned skills that are part of MyAgents' always-available runtime
  * contract.
  *
- * These cannot be disabled as ordinary user skills. The memory skills back
- * managed workflows, while myagents-cli and myagents-docs are the product's
- * baseline operation and product-knowledge surfaces.
+ * These cannot be disabled as ordinary user skills. The task and memory
+ * skills back managed workflows, while myagents-cli and myagents-docs are the
+ * product's baseline operation and product-knowledge surfaces.
  */
 export const REQUIRED_SYSTEM_SKILLS = [
+  'task-alignment',
+  'task-implement',
   'myagents-memory-update',
   'myagents-memory-gardener',
   'myagents-memory-molt',

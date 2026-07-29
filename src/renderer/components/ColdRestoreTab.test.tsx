@@ -4,7 +4,8 @@
 // main regression risk. We render the real MemoizedTabContent with TabProvider
 // (and the heavy page components) mocked, and assert the cold tab renders a
 // placeholder while a live chat tab mounts TabProvider.
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Tab } from '@/types/tab';
@@ -22,9 +23,19 @@ vi.mock('@/context/TabProvider', () => ({
 // Stub the heavy page subtrees so importing App stays cheap and side-effect free.
 vi.mock('@/pages/Chat', () => ({ default: () => <div data-testid="chat" /> }));
 vi.mock('@/pages/Launcher', () => ({ default: () => <div data-testid="launcher" /> }));
-vi.mock('@/pages/Settings', () => ({ default: () => <div data-testid="settings" /> }));
+vi.mock('@/pages/Settings', () => ({
+  default: function MockSettings({ mode = 'settings' }: { mode?: 'settings' | 'capabilities' }) {
+    const [draft, setDraft] = useState('');
+    return (
+      <input
+        data-testid={`${mode}-draft`}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+    );
+  },
+}));
 vi.mock('@/pages/TaskCenter', () => ({ default: () => <div data-testid="taskcenter" /> }));
-vi.mock('@/workbench-sdk/WorkbenchShell', () => ({ default: () => <div data-testid="workbench" /> }));
 
 import { MemoizedTabContent } from '@/App';
 
@@ -46,10 +57,13 @@ const noopProps = {
   error: null,
   isDeferredMount: false,
   settingsInitialSection: undefined,
-  settingsInitialMcpId: undefined,
-  settingsInitialSelect: undefined,
+  capabilityInitialSection: 'skills' as const,
+  capabilityNavigationNonce: 0,
+  capabilityInitialMcpId: undefined,
+  capabilityInitialOfficialToolId: undefined,
+  capabilityInitialSelect: undefined,
+  onLauncherWorkspaceSelectionChange: vi.fn(),
   onLaunchProject: vi.fn(),
-  onBack: vi.fn(async () => {}),
   onSwitchSession: vi.fn(async () => {}),
   onOpenSessionInNewTab: vi.fn(async () => {}),
   onNewSession: vi.fn(async () => true),
@@ -59,9 +73,9 @@ const noopProps = {
   onRenameSession: vi.fn(),
   onForkSession: vi.fn(),
   onUpdateSessionId: vi.fn(async () => true),
+  claimSessionOpeningTransition: vi.fn(() => () => undefined),
   onClearInitialMessage: vi.fn(),
   onSidecarConfigAdopted: vi.fn(),
-  onUpdateWorkbenchRoute: vi.fn(),
   onSettingsSectionChange: vi.fn(),
   updateReady: false,
   updateVersion: null,
@@ -94,21 +108,29 @@ describe('cold restored tab', () => {
     expect(await screen.findByTestId('chat')).not.toBeNull();
   });
 
-  it('renders a workbench without mounting TabProvider', async () => {
-    tabProviderSpy.mockClear();
-    render(
-      <MemoizedTabContent
-        tab={coldTab({
-          view: 'workbench',
-          sessionId: null,
-          restoreState: undefined,
-          workbench: { workbenchId: 'io.myagents.testbench', route: 'home' },
-        })}
-        isActive
-        {...noopProps}
-      />,
+  it('keeps Settings and Capabilities UI state in their own mounted Tab slots', async () => {
+    const settingsTab: Tab = {
+      id: 'settings-tab', agentDir: null, sessionId: null, view: 'settings', title: 'Settings', sidecarConfigDisposition: 'push',
+    };
+    const capabilitiesTab: Tab = {
+      id: 'capabilities-tab', agentDir: null, sessionId: null, view: 'capabilities', title: 'Capabilities', sidecarConfigDisposition: 'push',
+    };
+    const contents = (active: 'settings' | 'capabilities') => (
+      <>
+        <MemoizedTabContent tab={settingsTab} isActive={active === 'settings'} {...noopProps} />
+        <MemoizedTabContent tab={capabilitiesTab} isActive={active === 'capabilities'} {...noopProps} />
+      </>
     );
-    expect(await screen.findByTestId('workbench')).not.toBeNull();
-    expect(tabProviderSpy).not.toHaveBeenCalled();
+    const view = render(contents('settings'));
+    const settingsDraft = await screen.findByTestId('settings-draft');
+    fireEvent.change(settingsDraft, { target: { value: 'provider draft' } });
+
+    view.rerender(contents('capabilities'));
+    const capabilitiesDraft = await screen.findByTestId('capabilities-draft');
+    fireEvent.change(capabilitiesDraft, { target: { value: 'mcp draft' } });
+
+    view.rerender(contents('settings'));
+    expect(screen.getByTestId('settings-draft')).toHaveValue('provider draft');
+    expect(screen.getByTestId('capabilities-draft')).toHaveValue('mcp draft');
   });
 });

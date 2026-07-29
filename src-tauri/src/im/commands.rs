@@ -1425,33 +1425,15 @@ pub async fn cmd_stop_agent_channel(
     agentId: String,
     channelId: String,
 ) -> Result<(), String> {
-    let lifecycle_lock = agent_channel_lifecycle_lock(&agentId, &channelId);
-    let _lifecycle_guard = lifecycle_lock.lock().await;
-
-    let bot_instance = {
-        let mut agents_guard = agentState.lock().await;
-        if let Some(agent) = agents_guard.get_mut(&agentId) {
-            agent.channels.remove(&channelId).map(|ch| ch.bot_instance)
-        } else {
-            None
-        }
-    };
-
-    if let Some(instance) = bot_instance {
-        shutdown_bot_instance(instance, &sidecarManager, &channelId).await?;
-    } else {
-        ulog_debug!(
-            "[agent] Channel {} not found in agent {}",
-            channelId,
-            agentId
-        );
-    }
-
-    let _ = app_handle.emit(
-        "agent:status-changed",
-        json!({ "agentId": agentId, "event": "channel_stopped" }),
-    );
-    Ok(())
+    stop_agent_channel_runtime(
+        &app_handle,
+        agentState.inner(),
+        sidecarManager.inner(),
+        &agentId,
+        &channelId,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Snapshot of channel refs needed for status collection (clone-then-drop pattern).

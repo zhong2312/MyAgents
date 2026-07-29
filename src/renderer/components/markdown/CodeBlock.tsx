@@ -36,16 +36,16 @@ export default function CodeBlock({ children, language, className }: CodeBlockPr
     }, [children]);
 
     return (
-        <div className="group relative my-3 w-full overflow-hidden rounded-lg">
+        <div className="markdown-code-block group relative w-full overflow-hidden rounded-md border border-[var(--line)] bg-[var(--paper-inset)]/30">
             {/* Header with language label and copy button */}
-            <div className="flex items-center justify-between bg-[var(--code-header-bg)] px-4 py-2 text-xs">
+            <div className="flex items-center justify-between border-b border-[var(--line)] bg-[var(--code-bg)] px-4 py-2 text-xs">
                 <span className="font-mono text-[var(--code-line-number)] uppercase tracking-wide">
                     {extractedLanguage}
                 </span>
                 <button
                     type="button"
                     onClick={handleCopy}
-                    className="flex items-center gap-1.5 rounded px-2 py-1 text-[var(--code-line-number)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                    className="flex items-center gap-1.5 rounded px-2 py-1 text-[var(--code-line-number)] transition-colors hover:bg-[var(--line-subtle)] hover:text-[var(--code-text)]"
                     title={copied ? t('markdown.copied') : t('markdown.copyCode')}
                 >
                     {copied ? (
@@ -66,8 +66,10 @@ export default function CodeBlock({ children, language, className }: CodeBlockPr
             <SyntaxHighlighter
                 language={extractedLanguage}
                 style={customTheme}
+                className="overflow-x-auto"
                 customStyle={{
                     margin: 0,
+                    background: 'transparent',
                     borderTopLeftRadius: 0,
                     borderTopRightRadius: 0,
                 }}

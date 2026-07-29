@@ -33,7 +33,7 @@ async function getAutostartPlugin(): Promise<AutostartPlugin | null> {
   }
 }
 
-export function useAutostart() {
+export function useAutostart(enabled = true) {
   const [isEnabled, setIsEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -111,8 +111,12 @@ export function useAutostart() {
 
   // Check status on mount
   useEffect(() => {
+    if (!enabled) {
+      setIsLoading(false);
+      return;
+    }
     checkStatus();
-  }, [checkStatus]);
+  }, [checkStatus, enabled]);
 
   return {
     isEnabled,

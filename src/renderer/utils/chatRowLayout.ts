@@ -18,7 +18,7 @@ const USER_COLLAPSE_VIEWPORT_RATIO = 0.5;
 const USER_COLLAPSE_CONFIDENCE_MULTIPLIER = 1.35;
 const CHARS_PER_PROSE_LINE = 72;
 const CODE_LINE_HEIGHT = 22;
-const PROSE_LINE_HEIGHT = 27;
+const PROSE_LINE_HEIGHT = 26;
 const BLOCK_HEADER_HEIGHT = 44;
 const BLOCK_GROUP_CHROME_HEIGHT = 28;
 const ATTACHMENT_PLACEHOLDER_HEIGHT = 160;
@@ -64,7 +64,7 @@ function estimateMarkdownHeight(text: string): {
     fenceLines.length * 46 +
     tableLines * 10 +
     headingCount * 12 +
-    listLines * 4;
+    listLines * 6;
 
   return {
     height,

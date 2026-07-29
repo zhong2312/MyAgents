@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /* @tailwindcss/typography 已于 v2.4 移除：其 prose 字阶（h1=2em/700 等）与产品
    Type Scale 冲突，5 个 markdown 预览面板已统一改用 .ai-message-content + 自家
@@ -90,12 +90,8 @@
 
 /* Overlay entry animations */
 @keyframes overlayFadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes overlayPanelIn {
@@ -118,6 +114,31 @@
   to {
     opacity: 1;
     transform: scale(1) translateY(0);
+  }
+}
+
+/* Composer toolbar menus are portaled and positioned with Floating UI's
+   transform. Animate the independent translate property so entry motion
+   never overrides that positioning transform. A vertical-only reveal avoids
+   the sideways growth produced by scaling from a left-aligned origin. */
+@keyframes composerToolbarMenuIn {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+.composer-toolbar-menu-enter {
+  animation: composerToolbarMenuIn var(--duration-normal) cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-toolbar-menu-enter {
+    animation: none;
   }
 }
 
@@ -152,12 +173,8 @@
 
 /* Fade-in animation for message list after session load completes */
 @keyframes message-list-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* ── Streaming leading-edge fade ──
@@ -168,30 +185,32 @@
    tail window slides, so each character fades in over a few reveal steps. The class only
    exists mid-stream → the final render is crisp. mask-image alpha values are taste params. */
 .md-stream-tail {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 0%,
-    #000 35%,
-    rgba(0, 0, 0, 0.2) 100%
-  );
-  mask-image: linear-gradient(
-    to right,
-    #000 0%,
-    #000 35%,
-    rgba(0, 0, 0, 0.2) 100%
-  );
+  -webkit-mask-image: linear-gradient(to right, #000 0%, #000 35%, rgba(0, 0, 0, 0.2) 100%);
+  mask-image: linear-gradient(to right, #000 0%, #000 35%, rgba(0, 0, 0, 0.2) 100%);
 }
 @media (prefers-reduced-motion: reduce) {
-  .md-stream-tail {
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
+  .md-stream-tail { -webkit-mask-image: none; mask-image: none; }
 }
 
 :root {
   /* Layout and spacing are product structure, not Theme identity. */
   --breakpoint-mobile: 640px;
+  --global-sidebar-expanded-width: 256px;
+  --global-sidebar-flyout-width: 320px;
+  --global-sidebar-rail-width: 64px;
+  --global-sidebar-toggle-left: 84px;
+  --global-sidebar-tabbar-toggle-inset: 60px;
+  --global-sidebar-tab-content-shift: 140px;
+  --global-sidebar-tab-content-shift-negative: -140px;
+  --global-sidebar-content-center-shift: 96px;
+  --global-sidebar-content-center-shift-negative: -96px;
+  --global-sidebar-brand-icon-size: 20px;
+  --global-sidebar-brand-icon-left: 22px;
+  --global-sidebar-rail-button-left: 12px;
   --sidebar-min-width: 320px;
+  --chat-workspace-panel-width: max(25%, var(--sidebar-min-width));
+  --chat-workspace-min-center-shift: 160px;
+  --chat-workspace-min-center-shift-negative: -160px;
   --header-height: 48px;
   --space-0: 0;
   --space-0-5: 2px;
@@ -205,6 +224,280 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
+}
+
+/* The compact website link owns the App Icon and wordmark in one normal-flow
+   box. Its 40px hit target shares x=12px with rail controls; a 10px inner
+   inset centers the 20px App Icon on the functional glyph axis at x=32px.
+   The 10px wordmark gap preserves the expanded label's established x=52px. */
+.global-sidebar-brand-link {
+  position: absolute;
+  top: var(--space-1);
+  left: var(--global-sidebar-rail-button-left);
+  column-gap: calc(var(--space-2) + var(--space-0-5));
+  padding-left: calc(
+    var(--global-sidebar-brand-icon-left) - var(--global-sidebar-rail-button-left)
+  );
+}
+
+.global-sidebar-brand-icon {
+  width: var(--global-sidebar-brand-icon-size);
+  height: var(--global-sidebar-brand-icon-size);
+  border-radius: 22%;
+}
+
+/* Sidebar layout reaches its final 256px/64px slot in one commit so Chat,
+   Browser, Terminal, and other resize-sensitive surfaces do not reflow on
+   every animation frame. A fixed paint-only material layer then reveals or
+   retracts the Theme surface at the same boundary the user perceives. */
+.global-sidebar {
+  isolation: isolate;
+}
+
+.global-sidebar::before {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--global-sidebar-expanded-width);
+  background: var(--global-sidebar-surface);
+  clip-path: inset(0 0 0 0);
+  content: '';
+  pointer-events: none;
+  transition: clip-path var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar[data-global-sidebar-mode='rail']::before {
+  clip-path: inset(
+    0
+    calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width))
+    0
+    0
+  );
+}
+
+.global-sidebar-copy {
+  opacity: 1;
+  clip-path: inset(0 0 0 0);
+  transform: translateX(0);
+  transition:
+    opacity var(--duration-fast) var(--ease-default),
+    clip-path var(--duration-normal) var(--ease-in-out),
+    transform var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar-nav-label {
+  position: absolute;
+  left: 40px;
+  width: calc(var(--global-sidebar-expanded-width) - 64px);
+  pointer-events: none;
+}
+
+.global-sidebar-nav-tip {
+  display: flex;
+}
+
+.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-copy {
+  opacity: 0;
+  clip-path: inset(0 100% 0 0);
+  transform: translateX(-6px);
+}
+
+[data-global-sidebar-workspace-region] {
+  animation: global-sidebar-expanded-content-in var(--duration-normal) var(--ease-in-out) both;
+}
+
+.global-sidebar[data-global-sidebar-mode='rail'] [data-global-sidebar-workspace-region] {
+  pointer-events: none;
+  animation-name: global-sidebar-expanded-content-out;
+}
+
+[data-global-sidebar-workspace-rail] {
+  animation: global-sidebar-rail-content-in var(--duration-normal) var(--ease-out) both;
+}
+
+/* Expanded navigation places each 16px glyph at x=24px (12px section inset
+   + 12px button inset). Rail buttons keep the same glyph coordinate by
+   anchoring their 40px hit targets at x=12px instead of re-centering them in
+   the 64px strip. Their x=32px center is therefore also the rail center. Apply
+   this to every rail stack so collapse never shifts a
+   subset of controls. */
+.global-sidebar-rail-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding-right: var(--global-sidebar-rail-button-left);
+  padding-left: var(--global-sidebar-rail-button-left);
+}
+
+[data-global-sidebar-flyout] {
+  animation: global-sidebar-flyout-in 140ms ease-out;
+  transform-origin: left center;
+}
+
+/* In manual macOS rail mode the single sidebar toggle keeps its window-fixed
+   x coordinate and visually moves onto the Tab titlebar surface. Reserve that
+   exact leading slot plus the titlebar's normal 8px content inset so the first
+   Tab never renders underneath or directly against the control. */
+[data-global-sidebar-tabbar-toggle='true'] ~ [data-tab-workspace]
+  > .custom-titlebar {
+  padding-left: var(--global-sidebar-tabbar-toggle-inset);
+}
+
+/* The layout slot still resolves in one commit. These FLIP-style compositor
+   offsets preserve the previous visual center while the sidebar material
+   boundary catches up, so the titlebar and active Tab feel attached to it. */
+[data-global-sidebar-motion='collapse'] ~ [data-tab-workspace]
+  > .custom-titlebar {
+  --app-shell-follow-offset: var(--global-sidebar-tab-content-shift);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-global-sidebar-motion='expand'] ~ [data-tab-workspace]
+  > .custom-titlebar {
+  --app-shell-follow-offset: var(--global-sidebar-tab-content-shift-negative);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+/* Windows keeps the toggle inside the rail, so its Tab row travels the full
+   256px → 64px delta. macOS grows its rail titlebar reservation to 60px, which
+   keeps the first Tab at the established window x=124px and preserves the
+   smaller 140px compositor offset above. */
+[data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='collapse']
+  ~ [data-tab-workspace] > .custom-titlebar {
+  --app-shell-follow-offset: calc(
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width)
+  );
+}
+
+[data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='expand']
+  ~ [data-tab-workspace] > .custom-titlebar {
+  --app-shell-follow-offset: calc(
+    var(--global-sidebar-rail-width) - var(--global-sidebar-expanded-width)
+  );
+}
+
+[data-global-sidebar-motion='collapse'] ~ [data-tab-workspace]
+  > [data-tab-content-workspace] {
+  --app-shell-follow-offset: var(--global-sidebar-content-center-shift);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-global-sidebar-motion='expand'] ~ [data-tab-workspace]
+  > [data-tab-content-workspace] {
+  --app-shell-follow-offset: var(--global-sidebar-content-center-shift-negative);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+@keyframes global-sidebar-flyout-in {
+  from { opacity: 0; transform: translateX(-4px) scale(0.99); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes global-sidebar-expanded-content-in {
+  from {
+    opacity: 0;
+    clip-path: inset(
+      0
+      calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width))
+      0
+      0
+    );
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    transform: translateX(0);
+  }
+}
+
+@keyframes global-sidebar-expanded-content-out {
+  from {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    clip-path: inset(
+      0
+      calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width))
+      0
+      0
+    );
+    transform: translateX(-6px);
+  }
+}
+
+@keyframes global-sidebar-rail-content-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes app-shell-sidebar-follow {
+  from { transform: translateX(var(--app-shell-follow-offset)); }
+  to { transform: translateX(0); }
+}
+
+/* Chat mirrors the App Shell choreography on the right: the workspace material
+   moves at the edge while the conversation keeps its prior visual center and
+   settles into the final one-shot flex layout. Overlay mode only moves the
+   panel because it does not resize the conversation. */
+[data-chat-workspace-panel-motion='expand'] {
+  animation: chat-workspace-panel-expand var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-chat-workspace-panel-motion='collapse'] {
+  animation: chat-workspace-panel-collapse var(--duration-normal) var(--ease-in-out) forwards;
+}
+
+[data-chat-workspace-motion='expand'] > [data-chat-conversation] {
+  --chat-workspace-follow-offset: max(16.6667%, var(--chat-workspace-min-center-shift));
+  animation: chat-workspace-conversation-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-chat-workspace-motion='collapse'] > [data-chat-conversation] {
+  --chat-workspace-follow-offset: min(-12.5%, var(--chat-workspace-min-center-shift-negative));
+  animation: chat-workspace-conversation-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+@keyframes chat-workspace-panel-expand {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes chat-workspace-panel-collapse {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes chat-workspace-conversation-follow {
+  from { transform: translateX(var(--chat-workspace-follow-offset)); }
+  to { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-sidebar::before,
+  .global-sidebar-copy {
+    transition: none;
+  }
+
+  [data-global-sidebar-workspace-region],
+  [data-global-sidebar-workspace-rail],
+  [data-global-sidebar-flyout],
+  [data-global-sidebar-motion] ~ [data-tab-workspace] > .custom-titlebar,
+  [data-global-sidebar-motion] ~ [data-tab-workspace] > [data-tab-content-workspace],
+  [data-chat-workspace-panel-motion],
+  [data-chat-workspace-motion] > [data-chat-conversation] {
+    animation: none;
+  }
+
+  .global-sidebar[data-global-sidebar-mode='rail'] [data-global-sidebar-workspace-region],
+  [data-chat-workspace-panel-motion='collapse'] {
+    visibility: hidden;
+  }
 }
 
 /* Viewport-locked app: prevent document-level scrolling entirely.
@@ -226,8 +519,9 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+
 body::before {
-  content: "";
+  content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
@@ -237,6 +531,7 @@ body::before {
   mix-blend-mode: var(--theme-body-texture-blend);
   z-index: 0;
 }
+
 
 #root {
   min-height: 100vh;
@@ -299,9 +594,7 @@ body::before {
 button {
   cursor: pointer;
   /* Always include transform in transition for smooth active feedback */
-  transition-property:
-    color, background-color, border-color, text-decoration-color, fill, stroke,
-    opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   transition-duration: 150ms;
 }
@@ -310,12 +603,8 @@ button {
    `:not(:has(...))` ensures only the innermost active element scales — when a
    nested button is pressed inside a card/row, the outer ancestor (which also
    matches :active per CSS rules) opts out, so only the actual button animates. */
-button:active:not(:disabled):not(
-    :has(:is(button, [role="button"], [data-tree-row]):active)
-  ),
-[role="button"]:active:not(
-    :has(:is(button, [role="button"], [data-tree-row]):active)
-  ) {
+button:active:not(:disabled):not(:has(:is(button, [role="button"], [data-tree-row]):active)),
+[role="button"]:active:not(:has(:is(button, [role="button"], [data-tree-row]):active)) {
   transform: scale(0.98);
 }
 
@@ -330,9 +619,7 @@ button:disabled {
   transition-duration: 100ms;
 }
 
-[data-tree-row]:active:not(
-    :has(:is(button, [role="button"], [data-tree-row]):active)
-  ) {
+[data-tree-row]:active:not(:has(:is(button, [role="button"], [data-tree-row]):active)) {
   transform: scale(0.98);
   background-color: var(--paper-inset) !important;
 }
@@ -383,14 +670,12 @@ html.platform-windows.platform-windows *::-webkit-scrollbar-thumb {
 }
 
 html.platform-windows.platform-windows.myagents-scrollbar-active::-webkit-scrollbar-thumb,
-html.platform-windows.platform-windows
-  .myagents-scrollbar-active::-webkit-scrollbar-thumb {
+html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrollbar-thumb {
   background-color: var(--ink-subtle);
 }
 
 html.platform-windows.platform-windows.myagents-scrollbar-active::-webkit-scrollbar-thumb:hover,
-html.platform-windows.platform-windows
-  .myagents-scrollbar-active::-webkit-scrollbar-thumb:hover {
+html.platform-windows.platform-windows .myagents-scrollbar-active::-webkit-scrollbar-thumb:hover {
   background-color: var(--ink-muted);
 }
 
@@ -412,11 +697,7 @@ html.platform-windows.platform-windows
 
 @media (prefers-reduced-motion: reduce) {
   @keyframes tab-dot-pulse {
-    0%,
-    100% {
-      opacity: 0;
-      transform: scale(1);
-    }
+    0%, 100% { opacity: 0; transform: scale(1); }
   }
 }
 
@@ -440,22 +721,14 @@ html.platform-windows.platform-windows
 }
 
 @keyframes shimmer-slide {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 /* Indeterminate progress bar animation (browser loading indicator) */
 @keyframes indeterminate {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(400%);
-  }
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
 }
 .animate-indeterminate {
   animation: indeterminate 1.5s ease-in-out infinite;
@@ -463,17 +736,14 @@ html.platform-windows.platform-windows
 
 /* PRD 0.2.17 — Agent Status Panel 点击 SubAgent 行后短暂高亮目标 TaskTool 卡片 */
 @keyframes agent-status-flash {
-  0% {
-    background-color: var(--accent-warm-subtle);
-  }
-  100% {
-    background-color: transparent;
-  }
+  0%   { background-color: var(--accent-warm-subtle); }
+  100% { background-color: transparent; }
 }
 .agent-status-flash {
   animation: agent-status-flash 1.5s ease-out;
   border-radius: 0.5rem;
 }
+
 
 /* Terminal-like monospace typography for tool calls */
 .tool-input {
@@ -482,8 +752,8 @@ html.platform-windows.platform-windows
   line-height: 1.6;
   letter-spacing: -0.01em;
   font-feature-settings:
-    "liga" 1,
-    "calt" 1;
+    'liga' 1,
+    'calt' 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -516,11 +786,7 @@ pre code {
 /* Create border with gaps for icons in expanded sections */
 .expanded-block-section {
   position: relative;
-  background-image: linear-gradient(
-    to bottom,
-    var(--expanded-block-line) 0%,
-    var(--expanded-block-line) 100%
-  );
+  background-image: linear-gradient(to bottom, var(--expanded-block-line) 0%, var(--expanded-block-line) 100%);
   background-size: 1px 100%;
   background-position: 0 0;
   background-repeat: repeat-y;
@@ -541,7 +807,7 @@ pre code {
   position: relative;
 }
 
-.expanded-block-section .flex.items-center.gap-1\.5 > svg.size-3:first-child {
+.expanded-block-section .flex.items-center.gap-1\.5>svg.size-3:first-child {
   position: relative;
   margin-left: -16.5px;
   z-index: 1;
@@ -549,7 +815,7 @@ pre code {
 
 /* Create background gap for thinking icon using pseudo-element on parent */
 .expanded-block-section .flex.items-center.gap-1\.5::before {
-  content: "";
+  content: '';
   position: absolute;
   left: -18.5px;
   width: 20px;
@@ -578,98 +844,9 @@ pre code {
    Launcher Page Styles
    ============================================ */
 
-/* Launcher two-column layout */
-.launcher-layout {
-  display: grid;
-  /* Left 60%, Right 40% (with min-width constraint) */
-  grid-template-columns: 60fr minmax(var(--sidebar-min-width), 40fr);
-  grid-template-areas: "brand workspaces";
-}
 
 .launcher-brand {
-  grid-area: brand;
   min-width: 0; /* Allow shrinking */
-}
-
-.launcher-workspaces {
-  grid-area: workspaces;
-  position: relative;
-}
-
-.workspace-card-channel-tags-fade {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - 18px),
-    transparent
-  );
-  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
-}
-
-.workspace-card-action-overlay {
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    color-mix(in srgb, var(--paper-elevated) 78%, transparent) 40%,
-    var(--paper-elevated) 78%
-  );
-}
-
-.launcher-history-row-title-fade {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - 22px),
-    transparent
-  );
-  mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
-}
-
-.launcher-history-row-action-overlay {
-  --launcher-history-row-overlay-bg: color-mix(
-    in srgb,
-    var(--paper) 92%,
-    var(--accent-warm)
-  );
-
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    color-mix(in srgb, var(--launcher-history-row-overlay-bg) 76%, transparent)
-      38%,
-    var(--launcher-history-row-overlay-bg) 78%
-  );
-}
-
-/* Floating divider between brand and workspaces */
-.launcher-workspaces::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 24px;
-  bottom: 24px;
-  z-index: 30;
-  width: 1px;
-  background: var(--line);
-  pointer-events: none;
-}
-
-/* Responsive: stack vertically below 640px (use --breakpoint-mobile) */
-@media (max-width: 639px) {
-  .launcher-layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-    grid-template-areas:
-      "brand"
-      "workspaces";
-  }
-
-  .launcher-brand {
-    min-height: 200px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .launcher-workspaces::before {
-    display: none;
-  }
 }
 
 /* Settings sidebar floating divider */
@@ -678,7 +855,7 @@ pre code {
 }
 
 .settings-sidebar::after {
-  content: "";
+  content: '';
   position: absolute;
   right: 0;
   top: 24px;
@@ -693,7 +870,7 @@ pre code {
 }
 
 .settings-nav-active::before {
-  content: "";
+  content: '';
   position: absolute;
   left: 0;
   top: 6px;
@@ -768,15 +945,13 @@ pre code {
    字阶分叉正是那段历史的产物）。 */
 .ai-message-content {
   font-size: var(--text-base);
-  line-height: 1.7;
-  letter-spacing: 0.01em;
+  line-height: 1.625;
+  letter-spacing: 0;
 }
 
-/* 间距规则已删（v2.4 cross-review）：本类沉睡期间遗留的 `p + p` / `li + li`
-   descendant 规则与 Markdown 组件的间距 utility（my-4 / space-y-2.5）构成双
-   owner——unlayered 作者样式恒胜 @layer utilities，接线后会无声压缩列表间距
-   （10px→8px）。间距的唯一 owner = Markdown 组件；本类只管 font-size /
-   line-height / letter-spacing 三件套。 */
+/* 具体段落、标题、列表与 compact 节奏的唯一 owner = Markdown.css 中的
+   `.markdown-content`。本类只给 host prose 容器提供默认正文 fallback，不能再
+   添加 descendant 间距规则，否则会重新形成跨文件双 owner。 */
 
 /* User message bubble */
 .user-message {
@@ -892,6 +1067,7 @@ code {
   color: var(--code-line-number);
 }
 
+
 /* ── Toolbar responsive: hide text labels when container is narrow ── */
 @container (max-width: 480px) {
   .toolbar-menus .toolbar-label {
@@ -910,7 +1086,7 @@ code {
 /* (PRD 0.2.34 P0-2). */
 .introduction-content {
   font-size: var(--text-base);
-  line-height: 1.7;
+  line-height: 1.625;
   color: var(--ink-muted);
 }
 
@@ -1020,8 +1196,7 @@ code {
   max-width: min(260px, calc(100vw - 16px));
   transform: translateX(-50%);
   padding: 6px 10px;
-  border: 1px solid
-    color-mix(in srgb, var(--button-dark-bg) 72%, var(--line-strong));
+  border: 1px solid color-mix(in srgb, var(--button-dark-bg) 72%, var(--line-strong));
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--button-dark-bg) 94%, transparent);
   color: var(--button-dark-text);

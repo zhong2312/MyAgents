@@ -303,11 +303,11 @@ export interface SpaceActions {
     skillName: string;
     target: "global" | "project";
     workspacePath?: string;
+    overwrite?: boolean;
   }) => Promise<{
     installedName: string;
     installedPath: string;
     target: string;
-    renamed: boolean;
   }>;
   registerAgent: (input: {
     displayName: string;

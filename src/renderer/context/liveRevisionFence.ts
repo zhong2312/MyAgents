@@ -24,6 +24,13 @@ export const EMPTY_LIVE_REVISION_FENCE: LiveRevisionFence = {
   buffered: [],
 };
 
+export function ownsLiveRevisionRestore(
+  fence: LiveRevisionFence,
+  restoreToken: number,
+): boolean {
+  return fence.restoreToken === restoreToken;
+}
+
 export function beginLiveRevisionRestore(
   previous: LiveRevisionFence,
   sessionId: string,

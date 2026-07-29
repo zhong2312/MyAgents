@@ -31,6 +31,7 @@ import {
   ensureSdkMcpInSync,
   initializeAgent,
 } from '../agent-session';
+import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import {
   getQueryMcpMutation,
   getQueryMcpPrewarmOwner,
@@ -96,6 +97,7 @@ describe('live Query MCP mutation/promotion ordering', () => {
       messageText: 'run task',
       wasQueued: false,
       resolve: () => undefined,
+      channelDelivery: NO_CHANNEL_DELIVERY,
     });
     oauth.release();
 

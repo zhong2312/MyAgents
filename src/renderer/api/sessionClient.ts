@@ -6,6 +6,7 @@ import { apiFetch, apiGetJson, apiPostJson } from './apiFetch';
 import {
     deleteSessionIfUnowned,
     isTauri,
+    type SessionDeleteResult,
 } from './tauriClient';
 import type { ContextUsage } from '../../shared/types/context-usage';
 import type { ProviderRoute } from '../../shared/providerRoute';
@@ -250,11 +251,14 @@ export async function getSessionDetails(sessionId: string): Promise<SessionData 
 /**
  * Delete a session
  */
-export async function deleteSession(sessionId: string): Promise<boolean> {
+export async function deleteSession(
+    sessionId: string,
+    releasableTabIds: readonly string[] = [],
+): Promise<SessionDeleteResult> {
     try {
-        return await deleteSessionIfUnowned(sessionId);
+        return await deleteSessionIfUnowned(sessionId, releasableTabIds);
     } catch {
-        return false;
+        return { deleted: false, reason: 'unexpected' };
     }
 }
 

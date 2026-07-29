@@ -5,11 +5,17 @@ import { useSettingsNavigation } from './hooks/useSettingsNavigation';
 
 function Probe(props: {
   initialSection?: string;
+  navigationNonce?: number;
   floatingBallDevGate?: boolean;
   onSectionChange?: () => void;
 }) {
-  const { activeSection } = useSettingsNavigation(props);
-  return <div data-testid="section">{activeSection}</div>;
+  const { activeSection, navigateToProxySettings } = useSettingsNavigation(props);
+  return (
+    <>
+      <div data-testid="section">{activeSection}</div>
+      <button type="button" onClick={navigateToProxySettings}>proxy</button>
+    </>
+  );
 }
 
 describe('useSettingsNavigation', () => {
@@ -35,5 +41,31 @@ describe('useSettingsNavigation', () => {
 
     await waitFor(() => expect(screen.getByTestId('section')).toHaveTextContent('about'));
     expect(onSectionChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-applies the same deep link when a new navigation intent arrives', async () => {
+    const onSectionChange = vi.fn();
+    const { rerender } = render(
+      <Probe initialSection="skills" navigationNonce={1} onSectionChange={onSectionChange} />,
+    );
+
+    await waitFor(() => expect(onSectionChange).toHaveBeenCalledTimes(1));
+    rerender(<Probe initialSection="skills" navigationNonce={2} onSectionChange={onSectionChange} />);
+
+    await waitFor(() => expect(onSectionChange).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('section')).toHaveTextContent('skills');
+  });
+
+  it('accepts a direct proxy deep link', async () => {
+    render(<Probe initialSection="proxy" />);
+
+    await waitFor(() => expect(screen.getByTestId('section')).toHaveTextContent('proxy'));
+  });
+
+  it('routes legacy proxy entry actions to the standalone proxy section', async () => {
+    render(<Probe initialSection="general" />);
+
+    screen.getByRole('button', { name: 'proxy' }).click();
+    await waitFor(() => expect(screen.getByTestId('section')).toHaveTextContent('proxy'));
   });
 });

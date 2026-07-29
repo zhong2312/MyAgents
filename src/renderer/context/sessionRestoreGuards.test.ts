@@ -7,6 +7,7 @@ import {
     appendUniqueMessageById,
     upsertMessageById,
     updateMessageById,
+    reconcileLiveRecoveryHistory,
 } from './sessionRestoreGuards';
 
 const SID = 'e959f73c-42af-4fb6-9c50-4b9c589ee975';
@@ -94,7 +95,7 @@ describe('shouldSkipHistoryReplay', () => {
                 isNewSession: true,
                 isLoadingSession: false,
                 isColdHistoryReplay: false,
-                isCurrentSessionLiveEcho: false,
+                isCurrentSessionReplay: false,
                 restoredSessionId: null,
                 currentSessionId: SID,
             }),
@@ -107,24 +108,25 @@ describe('shouldSkipHistoryReplay', () => {
                 isNewSession: true,
                 isLoadingSession: false,
                 isColdHistoryReplay: false,
-                isCurrentSessionLiveEcho: true,
+                isCurrentSessionReplay: true,
                 restoredSessionId: null,
                 currentSessionId: SID,
             }),
         ).toBe(false);
     });
 
-    it('skips reset-birth cold-history without suppressing the live user echo', () => {
+    it('accepts scoped reset-birth cold-history without suppressing the live user echo', () => {
         expect(
             shouldSkipHistoryReplay({
                 isNewSession: false,
                 isLoadingSession: false,
                 isColdHistoryReplay: true,
+                isCurrentSessionReplay: true,
                 isResetBirthPending: true,
                 restoredSessionId: null,
                 currentSessionId: SID,
             }),
-        ).toBe(true);
+        ).toBe(false);
 
         expect(
             shouldSkipHistoryReplay({
@@ -294,5 +296,49 @@ describe('updateMessageById', () => {
         const existing = [{ id: 'user-1', usage: 0 }];
 
         expect(updateMessageById(existing, 'assistant-42', message => ({ ...message, usage: 12 }))).toBe(existing);
+    });
+});
+
+describe('reconcileLiveRecoveryHistory', () => {
+    it('preserves paginated older rows and replaces the overlapping recent tail', () => {
+        const current = [
+            { id: 'old-1', value: 'old' },
+            { id: 'old-2', value: 'old' },
+            { id: 'tail-1', value: 'stale' },
+            { id: 'tail-2', value: 'stale' },
+        ];
+        const snapshot = [
+            { id: 'tail-1', value: 'authoritative' },
+            { id: 'tail-2', value: 'authoritative' },
+            { id: 'tail-3', value: 'new' },
+        ];
+
+        expect(reconcileLiveRecoveryHistory(current, snapshot)).toEqual({
+            messages: [current[0], current[1], ...snapshot],
+            hasOverlap: true,
+        });
+    });
+
+    it('fails closed to the snapshot when there is no overlap', () => {
+        const snapshot = [{ id: 'new-1' }, { id: 'new-2' }];
+        expect(reconcileLiveRecoveryHistory([{ id: 'stale-1' }], snapshot)).toEqual({
+            messages: snapshot,
+            hasOverlap: false,
+        });
+    });
+
+    it('reports overlap even when the snapshot starts at the current first row', () => {
+        const snapshot = [{ id: 'tail-1', value: 'authoritative' }];
+        expect(reconcileLiveRecoveryHistory([{ id: 'tail-1', value: 'stale' }], snapshot)).toEqual({
+            messages: snapshot,
+            hasOverlap: true,
+        });
+    });
+
+    it('accepts an authoritative empty snapshot', () => {
+        expect(reconcileLiveRecoveryHistory([{ id: 'stale-1' }], [])).toEqual({
+            messages: [],
+            hasOverlap: false,
+        });
     });
 });

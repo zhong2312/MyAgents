@@ -49,6 +49,7 @@ pub(crate) const MAX_SKILL_ZIP_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SKILL_ZIP_ENTRIES: usize = 512;
 const MAX_SKILL_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_SKILL_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
+const SKILL_INSTALL_CONFLICT_ERROR: &str = "SKILL_INSTALL_CONFLICT";
 const MAX_ATTACHMENT_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_UPLOAD_COUNT: usize = 5;
@@ -866,6 +867,8 @@ pub struct SpaceInstallSkillInput {
     pub target: SpaceSkillInstallTarget,
     #[serde(default)]
     pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1008,7 +1011,6 @@ pub struct SpaceInstallSkillResult {
     pub installed_name: String,
     pub installed_path: String,
     pub target: String,
-    pub renamed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2451,18 +2453,6 @@ pub async fn cmd_space_install_skill(
     input: SpaceInstallSkillInput,
 ) -> Result<SpaceInstallSkillResult, String> {
     let session = require_session()?;
-    let bytes = authorized_bytes_request(
-        &session.base_url,
-        &format!("/api/skills/{}/package.zip", url_component(&input.skill_id)),
-        &session.session_token,
-    )
-    .await?;
-    if bytes.len() > MAX_SKILL_ZIP_BYTES {
-        return Err(format!(
-            "Skill package exceeds {} bytes",
-            MAX_SKILL_ZIP_BYTES
-        ));
-    }
     let install_root = match input.target {
         SpaceSkillInstallTarget::Global => {
             let root = crate::app_dirs::myagents_data_dir()
@@ -2484,10 +2474,26 @@ pub async fn cmd_space_install_skill(
         }
     };
     let base_name = safe_local_name(&input.skill_name);
-    let (target_dir, installed_name, renamed) = choose_available_dir(&install_root, &base_name)?;
+    let target_dir = install_root.join(&base_name);
+    if skill_install_target_exists(&target_dir)? && !input.overwrite {
+        return Err(SKILL_INSTALL_CONFLICT_ERROR.to_string());
+    }
+
+    let bytes = authorized_bytes_request(
+        &session.base_url,
+        &format!("/api/skills/{}/package.zip", url_component(&input.skill_id)),
+        &session.session_token,
+    )
+    .await?;
+    if bytes.len() > MAX_SKILL_ZIP_BYTES {
+        return Err(format!(
+            "Skill package exceeds {} bytes",
+            MAX_SKILL_ZIP_BYTES
+        ));
+    }
     let staging_dir = install_root.join(format!(
         ".{}.myagents-installing-{}",
-        installed_name,
+        base_name,
         uuid::Uuid::new_v4()
     ));
     fs::create_dir_all(&staging_dir)
@@ -2496,9 +2502,27 @@ pub async fn cmd_space_install_skill(
         let _ = fs::remove_dir_all(&staging_dir);
         return Err(error);
     }
-    if let Err(error) = fs::rename(&staging_dir, &target_dir) {
-        let _ = fs::remove_dir_all(&staging_dir);
-        return Err(format!("Failed to commit skill install: {}", error));
+    let commit_lock = install_root.join(format!(".{base_name}.myagents-install.lock"));
+    let commit_staging = staging_dir.clone();
+    let commit_target = target_dir.clone();
+    let overwrite = input.overwrite;
+    let commit_result = crate::utils::file_lock::with_file_lock(
+        &commit_lock,
+        crate::utils::file_lock::FileLockOptions::default(),
+        move || {
+            Ok(commit_staged_skill_install(
+                &commit_staging,
+                &commit_target,
+                overwrite,
+            ))
+        },
+    )
+    .await
+    .map_err(String::from)
+    .and_then(|result| result);
+    if let Err(error) = commit_result {
+        let _ = remove_skill_install_entry(&staging_dir);
+        return Err(error);
     }
     let target = match input.target {
         SpaceSkillInstallTarget::Global => "global",
@@ -2506,10 +2530,9 @@ pub async fn cmd_space_install_skill(
     }
     .to_string();
     Ok(SpaceInstallSkillResult {
-        installed_name,
+        installed_name: base_name,
         installed_path: target_dir.to_string_lossy().to_string(),
         target,
-        renamed,
     })
 }
 
@@ -8350,23 +8373,87 @@ fn scan_local_skill_dir(
     Ok(())
 }
 
-fn choose_available_dir(root: &Path, base_name: &str) -> Result<(PathBuf, String, bool), String> {
-    for i in 0..1000 {
-        let name = if i == 0 {
-            base_name.to_string()
-        } else {
-            format!("{}-{}", base_name, i + 1)
-        };
-        let candidate = root.join(&name);
-        match fs::symlink_metadata(&candidate) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok((candidate, name, i != 0))
-            }
-            Err(e) => return Err(format!("Failed to inspect install target: {}", e)),
-        }
+fn skill_install_target_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Failed to inspect install target: {error}")),
     }
-    Err("Could not find an available install directory".to_string())
+}
+
+fn remove_skill_install_entry(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            remove_skill_install_symlink(path, &metadata.file_type())
+                .map_err(|error| format!("Failed to remove Skill symlink: {error}"))
+        }
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)
+            .map_err(|error| format!("Failed to remove Skill directory: {error}")),
+        Ok(_) => {
+            fs::remove_file(path).map_err(|error| format!("Failed to remove Skill path: {error}"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Failed to inspect Skill path: {error}")),
+    }
+}
+
+#[cfg(windows)]
+fn remove_skill_install_symlink(path: &Path, file_type: &fs::FileType) -> std::io::Result<()> {
+    use std::os::windows::fs::FileTypeExt;
+
+    if file_type.is_symlink_dir() {
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+#[cfg(not(windows))]
+fn remove_skill_install_symlink(path: &Path, _file_type: &fs::FileType) -> std::io::Result<()> {
+    fs::remove_file(path)
+}
+
+fn commit_staged_skill_install(
+    staging_dir: &Path,
+    target_dir: &Path,
+    overwrite: bool,
+) -> Result<(), String> {
+    let target_exists = skill_install_target_exists(target_dir)?;
+    if target_exists && !overwrite {
+        return Err(SKILL_INSTALL_CONFLICT_ERROR.to_string());
+    }
+    if !target_exists {
+        return fs::rename(staging_dir, target_dir)
+            .map_err(|error| format!("Failed to commit skill install: {error}"));
+    }
+
+    let target_name = target_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("skill");
+    let backup_dir = target_dir.with_file_name(format!(
+        ".{target_name}.myagents-replacing-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::rename(target_dir, &backup_dir)
+        .map_err(|error| format!("Failed to stage existing Skill: {error}"))?;
+    if let Err(error) = fs::rename(staging_dir, target_dir) {
+        let rollback_error = fs::rename(&backup_dir, target_dir).err();
+        if let Some(rollback_error) = rollback_error {
+            return Err(format!(
+                "Failed to commit skill install: {error}; failed to restore previous Skill: {rollback_error}"
+            ));
+        }
+        return Err(format!("Failed to commit skill install: {error}"));
+    }
+    if let Err(error) = remove_skill_install_entry(&backup_dir) {
+        ulog_warn!(
+            "[space] Skill installed but old staging directory could not be removed {}: {}",
+            backup_dir.display(),
+            error
+        );
+    }
+    Ok(())
 }
 
 fn extract_skill_zip(bytes: &[u8], target_dir: &Path) -> Result<(), String> {
@@ -8500,6 +8587,104 @@ fn url_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_install_conflict_keeps_existing_directory_unchanged() {
+        let root = tempfile::tempdir().expect("skill install root");
+        let target = root.path().join("shared-skill");
+        let staging = root.path().join(".shared-skill.installing");
+        fs::create_dir_all(&target).expect("existing target");
+        fs::create_dir_all(&staging).expect("staging target");
+        fs::write(target.join("SKILL.md"), "old").expect("old Skill");
+        fs::write(staging.join("SKILL.md"), "new").expect("new Skill");
+
+        assert_eq!(
+            commit_staged_skill_install(&staging, &target, false).unwrap_err(),
+            SKILL_INSTALL_CONFLICT_ERROR
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).expect("old Skill remains"),
+            "old"
+        );
+    }
+
+    #[test]
+    fn confirmed_skill_install_replaces_the_whole_directory() {
+        let root = tempfile::tempdir().expect("skill install root");
+        let target = root.path().join("shared-skill");
+        let staging = root.path().join(".shared-skill.installing");
+        fs::create_dir_all(&target).expect("existing target");
+        fs::create_dir_all(&staging).expect("staging target");
+        fs::write(target.join("SKILL.md"), "old").expect("old Skill");
+        fs::write(target.join("stale.txt"), "stale").expect("stale file");
+        fs::write(staging.join("SKILL.md"), "new").expect("new Skill");
+
+        commit_staged_skill_install(&staging, &target, true).expect("replace Skill");
+
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).expect("new Skill installed"),
+            "new"
+        );
+        assert!(!target.join("stale.txt").exists());
+        assert!(!staging.exists());
+        assert!(fs::read_dir(root.path())
+            .expect("install root")
+            .all(|entry| !entry
+                .expect("install entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("myagents-replacing")));
+    }
+
+    #[test]
+    fn failed_skill_install_commit_restores_the_previous_directory() {
+        let root = tempfile::tempdir().expect("skill install root");
+        let target = root.path().join("shared-skill");
+        let missing_staging = root.path().join(".shared-skill.missing");
+        fs::create_dir_all(&target).expect("existing target");
+        fs::write(target.join("SKILL.md"), "old").expect("old Skill");
+
+        let error = commit_staged_skill_install(&missing_staging, &target, true)
+            .expect_err("missing staging must fail");
+
+        assert!(error.contains("Failed to commit skill install"));
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).expect("old Skill restored"),
+            "old"
+        );
+        assert!(fs::read_dir(root.path())
+            .expect("install root")
+            .all(|entry| !entry
+                .expect("install entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("myagents-replacing")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confirmed_skill_install_replaces_a_symlink_without_following_it() {
+        let root = tempfile::tempdir().expect("skill install root");
+        let external = tempfile::tempdir().expect("external target");
+        let target = root.path().join("shared-skill");
+        let staging = root.path().join(".shared-skill.installing");
+        fs::write(external.path().join("sentinel"), "untouched").expect("external sentinel");
+        std::os::unix::fs::symlink(external.path(), &target).expect("target symlink");
+        fs::create_dir_all(&staging).expect("staging target");
+        fs::write(staging.join("SKILL.md"), "new").expect("new Skill");
+
+        commit_staged_skill_install(&staging, &target, true).expect("replace symlink slot");
+
+        assert!(target.is_dir());
+        assert!(!fs::symlink_metadata(&target)
+            .expect("installed target")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(external.path().join("sentinel")).expect("external untouched"),
+            "untouched"
+        );
+    }
 
     #[test]
     fn space_environment_serializes_only_current_public_values() {

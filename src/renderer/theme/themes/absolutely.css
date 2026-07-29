@@ -22,6 +22,7 @@ html[data-theme-id='absolutely'][data-color-scheme='light'] {
   --ink-subtle: #aaa69e;
   --ink-faint: #c4c0b9;
   --paper: #f9f9f7;
+  --global-sidebar-bg: #f5f4f1;
   --paper-elevated: #fffefa;
   --message-user-bg: #fffefb;
   --paper-inset: #ece8e2;
@@ -111,11 +112,11 @@ html[data-theme-id='absolutely'][data-color-scheme='light'] {
   --focus-border: #aa563b;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(45 45 43 / 0.18);
-  --code-bg: #2d2d2b;
-  --code-bg-a0: rgb(45 45 43 / 0);
-  --code-header-bg: #373633;
-  --code-text: #f9f9f7;
-  --code-line-number: #aaa69e;
+  --code-bg: #f3f1ed;
+  --code-bg-a0: rgb(243 241 237 / 0);
+  --code-header-bg: #e9e5df;
+  --code-text: #46453f;
+  --code-line-number: #858078;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #efd9cf 0%, rgb(239 217 207 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #dce5e0 0%, rgb(220 229 224 / 0) 55%),
@@ -132,6 +133,7 @@ html[data-theme-id='absolutely'][data-color-scheme='dark'] {
   --ink-subtle: #747069;
   --ink-faint: #57534d;
   --paper: #2d2d2b;
+  --global-sidebar-bg: #2a2a28;
   --paper-elevated: #373633;
   --message-user-bg: #3a3834;
   --paper-inset: #242321;
@@ -235,17 +237,20 @@ html[data-theme-id='absolutely'][data-color-scheme='dark'] {
   --theme-body-texture-blend: screen;
 }
 
-html[data-theme-id='absolutely'] .theme-launcher-hero-title {
-  margin-bottom: 0.5rem;
+html[data-theme-id='absolutely'] .theme-product-wordmark {
   font-family: var(--font-display);
-  font-size: 2.5rem;
-  font-weight: 300;
   letter-spacing: 0.015em;
   color: var(--ink);
   background: linear-gradient(150deg, var(--ink) 32%, var(--accent-warm) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+html[data-theme-id='absolutely'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 300;
 }
 
 html[data-theme-id='absolutely'] .theme-launcher-hero-slogan {

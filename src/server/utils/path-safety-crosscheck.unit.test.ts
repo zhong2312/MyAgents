@@ -26,7 +26,7 @@ describe('path-safety blacklist — Node ↔ shared fixture cross-check', () => 
     ['systemDirsPosix', 'systemDirsPosix'],
     ['systemDirsMacosExtra', 'systemDirsMacosExtra'],
     ['systemDirsWindows', 'systemDirsWindows'],
-    ['credentialSubdirs', 'credentialSubdirs'],
+    ['credentialPaths', 'credentialPaths'],
     ['macSensitiveSubdirs', 'macSensitiveSubdirs'],
     ['winSensitiveSubdirs', 'winSensitiveSubdirs'],
   ];

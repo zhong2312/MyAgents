@@ -20,6 +20,7 @@ import type {
   TurnOwner,
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
+import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -145,6 +146,8 @@ export type InjectedTurnRequest = {
   runtimeConfig?: RuntimeConfig | null;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
+  /** Explicit owner of any public assistant response produced by this injected turn. */
+  assistantChannelDelivery: AssistantChannelDelivery;
   timeoutMs: number;
   pollMs?: number;
   queueId?: string;
@@ -208,8 +211,10 @@ export type SessionEngineReplayMessage = Omit<SessionMessage, 'content' | 'attac
 };
 
 export type SessionEngineStreamReplaySnapshot = {
+  sessionId: string;
   initState: Record<string, unknown>;
   replayMessages: SessionEngineReplayMessage[];
+  liveStreamingMessage?: SessionEngineReplayMessage | null;
   systemInitPayload?: unknown;
   pendingInteractiveRequests: SessionEnginePendingInteractiveRequest[];
 };
@@ -264,6 +269,17 @@ export type SessionEngineMaterializePendingResult = {
   status?: number;
 };
 
+export type WorkbenchToolsetConfigurationResult = {
+  success: boolean;
+  toolsetId?: string;
+  mode?: string;
+  persisted?: boolean;
+  toolsReady?: boolean;
+  contextChanged?: boolean;
+  error?: string;
+  status?: number;
+};
+
 export type SessionEngineLiveOverlay = {
   isActive: boolean;
   runtime?: RuntimeType;
@@ -286,6 +302,10 @@ export type CapabilityOperationResult = {
   sessionId?: string;
   text?: string;
   images?: ImagePayload[];
+  /** Files intentionally left untouched by SDK rewind link-safety checks. */
+  skippedLinks?: number;
+  /** Outcome of the independent workspace checkpoint restoration during rewind. */
+  fileRewindStatus?: 'complete' | 'partial' | 'failed' | 'not_attempted';
 };
 
 export interface SessionEngine {
@@ -363,6 +383,7 @@ export interface SessionEngine {
   forkAtAssistantMessage(messageId: string): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
+  configureWorkbenchToolset(toolset: unknown): Promise<WorkbenchToolsetConfigurationResult>;
   updateAgents(agents: Record<string, unknown>): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,

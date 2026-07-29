@@ -556,7 +556,7 @@ export default memo(function BrandSection({
                 ModeSegment wrapper) separates "who we are" from "what
                 you're about to do". */}
             <div className="flex flex-1 flex-col items-center justify-center">
-                <h1 className="theme-launcher-hero-title">
+                <h1 className="theme-product-wordmark theme-launcher-hero-title">
                     {resolvedTheme.hero.productName}
                 </h1>
                 {/* 品牌 slogan 的 15px/17px 是 DESIGN.md §15.2 立档的展示型字号（display 用途），

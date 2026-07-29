@@ -75,6 +75,12 @@ describe('handleSessionOperationRoute', () => {
   });
 
   it('routes rewind, external retry, and fork to active engine operations', async () => {
+    mocks.engine.rewindToUserMessage.mockResolvedValueOnce({
+      success: true,
+      content: 'removed',
+      skippedLinks: 2,
+      fileRewindStatus: 'partial',
+    });
     const rewind = await handleSessionOperationRoute(
       '/chat/rewind',
       new Request('http://local/chat/rewind', {
@@ -100,7 +106,12 @@ describe('handleSessionOperationRoute', () => {
       { workspacePath: '/workspace' },
     );
 
-    expect(await readJson(rewind as Response)).toEqual({ success: true, content: 'removed' });
+    expect(await readJson(rewind as Response)).toEqual({
+      success: true,
+      content: 'removed',
+      skippedLinks: 2,
+      fileRewindStatus: 'partial',
+    });
     expect(await readJson(retry as Response)).toEqual({ success: true, content: 'retry text' });
     expect(await readJson(fork as Response)).toEqual({ success: true, newSessionId: 'forked' });
     expect(mocks.engine.rewindToUserMessage).toHaveBeenCalledWith('user-1');

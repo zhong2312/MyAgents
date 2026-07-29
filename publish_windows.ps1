@@ -40,11 +40,34 @@ function Cleanup-TempFiles {
     }
 }
 
+function Assert-ExactFileVersion {
+    param(
+        [System.IO.FileInfo]$File,
+        [string]$ExpectedVersion,
+        [string]$Label
+    )
+    $actual = $File.VersionInfo.ProductVersion
+    try {
+        $normalizedActual = ([Version]$actual).ToString(3)
+        $normalizedExpected = ([Version]$ExpectedVersion).ToString(3)
+    }
+    catch {
+        throw "$Label 的内嵌版本无法解析：$actual"
+    }
+    if ($normalizedActual -ne $normalizedExpected) {
+        throw "$Label 内版本 $actual 与待发布版本 $ExpectedVersion 不一致"
+    }
+}
+
 try {
 
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
 
+& npm run verify:license
+if ($LASTEXITCODE -ne 0) {
+    throw "许可证与版本发布契约校验失败"
+}
 # 读取版本号
 $TauriConf = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
 $Version = $TauriConf.version
@@ -157,11 +180,68 @@ Write-Host ""
 
 $TargetDir = Join-Path $BundleDir "x86_64-pc-windows-msvc\release\bundle\nsis"
 
-# 查找文件
-$NsisExe = Get-ChildItem -Path $TargetDir -Filter "*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch "portable" } | Select-Object -First 1
-$PortableZip = Get-ChildItem -Path $TargetDir -Filter "*portable*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-$UpdateZip = Get-ChildItem -Path $TargetDir -Filter "*.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-$SigFile = Get-ChildItem -Path $TargetDir -Filter "*.nsis.zip.sig" -ErrorAction SilentlyContinue | Select-Object -First 1
+# 精确解析本次产物。多份候选通常意味着旧构建残留，禁止静默 Select-Object -First 1。
+$NsisCandidates = @(Get-ChildItem -Path $TargetDir -Filter "*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch "portable" })
+$PortableCandidates = @(Get-ChildItem -Path $TargetDir -Filter "*portable*.zip" -ErrorAction SilentlyContinue)
+$UpdateCandidates = @(Get-ChildItem -Path $TargetDir -Filter "*.nsis.zip" -ErrorAction SilentlyContinue)
+$SigCandidates = @(Get-ChildItem -Path $TargetDir -Filter "*.nsis.zip.sig" -ErrorAction SilentlyContinue)
+
+foreach ($candidateSet in @(
+    @{ Label = "NSIS"; Items = $NsisCandidates },
+    @{ Label = "portable ZIP"; Items = $PortableCandidates },
+    @{ Label = "updater ZIP"; Items = $UpdateCandidates },
+    @{ Label = "updater signature"; Items = $SigCandidates }
+)) {
+    if ($candidateSet.Items.Count -gt 1) {
+        throw "$($candidateSet.Label) 存在 $($candidateSet.Items.Count) 份候选产物，拒绝选择不确定的旧文件"
+    }
+}
+
+$NsisExe = $NsisCandidates | Select-Object -First 1
+$PortableZip = $PortableCandidates | Select-Object -First 1
+$UpdateZip = $UpdateCandidates | Select-Object -First 1
+$SigFile = $SigCandidates | Select-Object -First 1
+
+if ($NsisExe) {
+    if ($NsisExe.Name -notlike "*$Version*") {
+        throw "NSIS 文件名不包含待发布版本 $Version：$($NsisExe.Name)"
+    }
+    Assert-ExactFileVersion -File $NsisExe -ExpectedVersion $Version -Label "NSIS 安装包"
+}
+if ($PortableZip) {
+    if ($PortableZip.Name -notlike "*$Version*") {
+        throw "便携包文件名不包含待发布版本 $Version：$($PortableZip.Name)"
+    }
+    $portableInspectionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("myagents-portable-inspect-" + [Guid]::NewGuid().ToString("N"))
+    try {
+        Expand-Archive -Path $PortableZip.FullName -DestinationPath $portableInspectionRoot -Force
+        $portableExe = Get-ChildItem -Path $portableInspectionRoot -Filter "myagents.exe" -File -Recurse | Select-Object -First 1
+        if (-not $portableExe) {
+            throw "便携包内缺少 myagents.exe"
+        }
+        Assert-ExactFileVersion -File $portableExe -ExpectedVersion $Version -Label "便携包"
+    }
+    finally {
+        Remove-Item $portableInspectionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+if ($UpdateZip) {
+    if ($UpdateZip.Name -notlike "*$Version*") {
+        throw "updater 文件名不包含待发布版本 $Version：$($UpdateZip.Name)"
+    }
+    $updateInspectionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("myagents-updater-inspect-" + [Guid]::NewGuid().ToString("N"))
+    try {
+        Expand-Archive -Path $UpdateZip.FullName -DestinationPath $updateInspectionRoot -Force
+        $updateInstaller = Get-ChildItem -Path $updateInspectionRoot -Filter "*.exe" -File -Recurse | Select-Object -First 1
+        if (-not $updateInstaller) {
+            throw "updater 包内缺少 NSIS 安装程序"
+        }
+        Assert-ExactFileVersion -File $updateInstaller -ExpectedVersion $Version -Label "updater 包"
+    }
+    finally {
+        Remove-Item $updateInspectionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Host "  物料清单 - v$Version" -ForegroundColor Cyan
 Write-Host "  -----------------------------------------"
@@ -273,7 +353,7 @@ else {
 }
 
 # 生成 latest_win.json (网站下载页 API)
-# 注意：只发布 NSIS 安装包，便携版暂不对外发布
+# 发布 NSIS 安装包、便携版与 updater 包。
 if ($NsisExe) {
     $latestWinDownloads = @{
         "win_x64" = @{

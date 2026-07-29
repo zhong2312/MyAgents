@@ -102,7 +102,7 @@ import {
 } from '../../../shared/official-tools';
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
-import { effectiveGeneralProxyScopeKey, normalizeProxyScope } from '../../../shared/proxyScope';
+import { normalizeProxyScope } from '../../../shared/proxyScope';
 import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
@@ -240,7 +240,7 @@ function isSubscriptionLoginActiveStatus(status: SubscriptionLoginStatus): boole
     return status === 'starting' || status === 'waiting';
 }
 
-export default function Settings({ initialSection, initialMcpId, initialOfficialToolId, initialSelect, onSectionChange, isActive, updateReady: propUpdateReady, updateVersion: propUpdateVersion, updateChecking, updateDownloading, updateInstalling, updatePreparing, onCheckForUpdate, onRestartAndUpdate }: SettingsProps) {
+export default function Settings({ mode = 'settings', initialSection, navigationNonce, initialMcpId, initialOfficialToolId, initialSelect, onSectionChange, isActive, updateReady: propUpdateReady, updateVersion: propUpdateVersion, updateChecking, updateDownloading, updateInstalling, updatePreparing, onCheckForUpdate, onRestartAndUpdate }: SettingsProps) {
     const {
         apiKeys,
         saveApiKey,
@@ -278,7 +278,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     tSettingsRef.current = tSettings;
 
     // Autostart hook for managing launch on startup
-    const { isEnabled: autostartEnabled, isLoading: autostartLoading, setAutostart } = useAutostart();
+    const { isEnabled: autostartEnabled, isLoading: autostartLoading, setAutostart } = useAutostart(mode === 'settings');
     const claudeTranscriptCleanupPeriodDays = useMemo(
         () => normalizeClaudeTranscriptCleanupPeriodDays(config.claudeTranscriptCleanupPeriodDays),
         [config.claudeTranscriptCleanupPeriodDays],
@@ -358,15 +358,19 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     const {
         activeSection,
         setActiveSection,
-        proxySectionRef,
-        highlightProxySection,
         navigateToProxySettings,
         notifySectionChange,
     } = useSettingsNavigation({
-        initialSection,
+        initialSection: mode === 'capabilities' ? (initialSection ?? 'skills') : initialSection,
+        navigationNonce,
         floatingBallDevGate: config.floatingBallDevGate,
         onSectionChange,
     });
+    useEffect(() => {
+        if (mode !== 'capabilities') return;
+        if (activeSection === 'skills' || activeSection === 'sub-agents' || activeSection === 'plugins' || activeSection === 'mcp') return;
+        setActiveSection('skills');
+    }, [activeSection, mode, setActiveSection]);
     // Agent overlay state for viewing agent config from Settings card list
     const [overlayAgent, setOverlayAgent] = useState<{ agentId?: string; workspacePath: string } | null>(null);
 
@@ -381,6 +385,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     const [summonAccelerator, setSummonAccelerator] = useState(DEFAULT_SUMMON_ACCELERATOR);
     const isMac = useMemo(() => navigator.platform.toLowerCase().includes('mac'), []);
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) return;
         invoke<{ enabled: boolean; accelerator: string }>('cmd_get_global_summon_shortcut')
             .then((cfg) => {
@@ -390,7 +395,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             .catch((e) => {
                 console.warn('[Settings] load global summon shortcut failed:', e);
             });
-    }, []);
+    }, [mode]);
     const applySummonShortcut = useCallback(async (next: { enabled: boolean; accelerator: string }) => {
         if (!isTauriEnvironment()) return;
         const prevEnabled = summonEnabled;
@@ -416,13 +421,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     // through the MemoizedTabContent tree (only Settings needs this value)
     const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) return;
         const ac = new AbortController();
         void listenWithCleanup<{ percent: number | null }>('updater:download-progress', (event) => {
             setDownloadProgress(event.payload.percent);
         }, ac.signal);
         return () => ac.abort();
-    }, []);
+    }, [mode]);
     // Reset progress when download completes (updateReady becomes true)
     useEffect(() => {
         if (propUpdateReady) setDownloadProgress(null);
@@ -433,26 +439,9 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         setOverlayAgent({ workspacePath: project.path });
     }, []);
 
-    // Propagate proxy config changes to all running Sidecars
-    const prevProxyRef = useRef<{ serialized: string; generalKey: string } | undefined>(undefined);
-    useEffect(() => {
-        const serialized = JSON.stringify(config.proxySettings ?? null);
-        const generalKey = effectiveGeneralProxyScopeKey(config.proxySettings);
-        if (prevProxyRef.current === undefined) {
-            prevProxyRef.current = { serialized, generalKey }; // First mount — don't trigger
-            return;
-        }
-        if (prevProxyRef.current.serialized === serialized) return;
-        const restartGeneralOwners = prevProxyRef.current.generalKey !== generalKey;
-        prevProxyRef.current = { serialized, generalKey };
-
-        invoke('cmd_propagate_proxy', { restartGeneralOwners }).catch(err =>
-            console.error('[Settings] Proxy propagation failed:', err)
-        );
-    }, [config.proxySettings]);
-
     // #230: The proxy host/port fields previously called updateConfig() on every
-    // keystroke. Each call writes config.json AND — via the effect above — fires
+    // keystroke. Each call writes config.json AND — via ConfigProvider's
+    // process-wide propagation effect — fires
     // cmd_propagate_proxy(), which POSTs /api/proxy/set to every active sidecar.
     // Typing "6666" therefore triggered 4 disk writes + 4 N-sidecar hot-reload
     // storms. Fix: edit into local draft state and commit to config only on blur
@@ -514,6 +503,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     }, [proxyPortDraft, config.proxySettings?.port, patchProxySettings]);
 
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!config.proxySettings?.enabled) {
             proxyProbeGenerationRef.current += 1;
             setProxyProbeState({ status: 'idle' });
@@ -551,7 +541,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     if (proxyProbeGenerationRef.current !== generation) return;
                     setProxyProbeState({
                         status: 'error',
-                        message: tSettings('general.proxyProbeFailed'),
+                        message: tSettings('proxy.probeFailed'),
                         detail: error instanceof Error ? error.message : String(error),
                     });
                 });
@@ -563,6 +553,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         config.proxySettings?.protocol,
         config.proxySettings?.host,
         config.proxySettings?.port,
+        mode,
         tSettings,
     ]);
 
@@ -608,13 +599,20 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
     // App version from Tauri
     const [appVersion, setAppVersion] = useState<string>('');
+    const sourceRevision = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(appVersion)
+        ? `v${appVersion}`
+        : 'main';
+    const sourceTreeUrl = `${MYAGENTS_GITHUB_URL}/tree/${sourceRevision}`;
+    const sourceLicenseUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/LICENSE`;
+    const sourceNoticesUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/THIRD_PARTY_NOTICES.md`;
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) {
             setAppVersion('dev');
             return;
         }
         getVersion().then(setAppVersion).catch(() => setAppVersion('unknown'));
-    }, []);
+    }, [mode]);
 
     // QR code URL for user community section
     // Tauri: Downloads on first launch and caches locally, CDN in browser
@@ -667,6 +665,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     // Limit to 3000 logs to prevent memory issues (matches UnifiedLogsPanel MAX_DISPLAY_LOGS)
     const MAX_LOGS = 3000;
     useEffect(() => {
+        if (mode !== 'settings') return;
         const handleReactLog = (event: Event) => {
             const customEvent = event as CustomEvent<LogEntry>;
             setSseLogs(prev => {
@@ -678,10 +677,11 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         return () => {
             window.removeEventListener(REACT_LOG_EVENT, handleReactLog);
         };
-    }, []);
+    }, [mode]);
 
     // Listen for Rust logs (Tauri only)
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) return;
         const ac = new AbortController();
         void listenWithCleanup<LogEntry>('log:rust', (event) => {
@@ -691,7 +691,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             });
         }, ac.signal);
         return () => ac.abort();
-    }, []);
+    }, [mode]);
 
     const clearLogs = useCallback(() => {
         setSseLogs([]);
@@ -1063,6 +1063,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
     // Load MCP config on mount
     useEffect(() => {
+        if (mode !== 'capabilities') return;
         const loadMcp = async () => {
             try {
                 const servers = await getAllMcpServers();
@@ -1075,13 +1076,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             }
         };
         loadMcp();
-    }, []);
+    }, [mode]);
 
     // Refresh MCP local state when tab becomes active (inactive → active transition).
     // Config/projects/providers/apiKeys are shared via ConfigProvider and auto-sync.
     // MCP servers are local state, so we reload them from disk on tab activation.
     const prevIsActiveRef = useRef(isActive);
     useEffect(() => {
+        if (mode !== 'capabilities') return;
         const wasInactive = !prevIsActiveRef.current;
         prevIsActiveRef.current = isActive;
         if (!wasInactive || !isActive) return;
@@ -1097,7 +1099,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                 console.warn('[Settings] Failed to reload MCP servers on activation:', err);
             }
         })();
-    }, [isActive]);
+    }, [isActive, mode]);
 
     // Toggle MCP server enabled status
     // For preset MCP (npx): warmup bun cache
@@ -1999,6 +2001,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     // Check subscription status on mount (with retry for sidecar startup)
     // Uses cached verification result if valid and not expired (30 days)
     useEffect(() => {
+        if (mode !== 'settings') return;
         let isMounted = true;
         let retryCount = 0;
         const maxRetries = 3;
@@ -2106,7 +2109,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             isMounted = false;
             clearTimeout(timer);
         };
-    }, []); // Only run on mount - refs handle the latest values
+    }, [mode]); // Only the Settings Tab owns provider verification; refs handle latest values
 
     // Force re-verify subscription (called from UI button)
     const handleReVerifySubscription = useCallback(async () => {
@@ -3048,6 +3051,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
     // Check for expired API Key verifications on mount (30-day expiry)
     useEffect(() => {
+        if (mode !== 'settings') return;
         // Delay to let component stabilize
         const timer = setTimeout(() => {
             allProvidersRef.current.forEach((provider: Provider) => {
@@ -3069,7 +3073,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         }, 1000); // 1s delay to avoid race conditions
 
         return () => clearTimeout(timer);
-    }, []); // Only run on mount - refs handle the latest values
+    }, [mode]); // Only the Settings Tab owns provider verification; refs handle latest values
 
     // Error detail popover ref (state is declared near verifyError)
     const errorDetailPopoverRef = useRef<HTMLDivElement>(null);
@@ -3917,23 +3921,68 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     return (
         <div className="settings-root flex h-full bg-[var(--paper)]">
             {/* Logs Panel */}
-            <UnifiedLogsPanel
-                sseLogs={sseLogs}
-                isVisible={showLogs}
-                onClose={() => setShowLogs(false)}
-                onClearAll={clearLogs}
-            />
+            {mode === 'settings' && (
+                <UnifiedLogsPanel
+                    sseLogs={sseLogs}
+                    isVisible={showLogs}
+                    onClose={() => setShowLogs(false)}
+                    onClearAll={clearLogs}
+                />
+            )}
 
-            <SettingsSidebar
-                activeSection={activeSection}
-                setActiveSection={setActiveSection}
-                showDevTools={config.showDevTools}
-                floatingBallDevGate={config.floatingBallDevGate}
-                onShowLogs={() => setShowLogs(true)}
-            />
+            {mode === 'settings' && (
+                <SettingsSidebar
+                    activeSection={activeSection}
+                    setActiveSection={setActiveSection}
+                    showDevTools={config.showDevTools}
+                    floatingBallDevGate={config.floatingBallDevGate}
+                    onShowLogs={() => setShowLogs(true)}
+                />
+            )}
 
             {/* Right content area — h-full ensures height is explicit for WebKit scroll */}
             <div className="h-full flex-1 overflow-y-auto overscroll-contain">
+                {mode === 'capabilities' && (
+                    <>
+                        <header className="mx-auto max-w-4xl px-8 pt-7" data-capabilities-page-header>
+                            <h1 className="text-xl font-semibold text-[var(--ink)]">{tSettings('capabilities.title')}</h1>
+                            <p className="mt-1 text-sm text-[var(--ink-muted)]">{tSettings('capabilities.description')}</p>
+                        </header>
+                        <div className="sticky top-0 z-20 mt-5 border-b border-[var(--line)] bg-[var(--paper)]/95 px-8 backdrop-blur-sm" data-capabilities-sticky-tabs>
+                            <nav
+                                className="mx-auto flex max-w-4xl gap-1"
+                                role="tablist"
+                                aria-label={tSettings('capabilities.navigation')}
+                            >
+                                {([
+                                    ['skills', 'capabilities.skills'],
+                                    ['plugins', 'capabilities.plugins'],
+                                    ['mcp', 'capabilities.tools'],
+                                ] as const).map(([section, labelKey]) => {
+                                    const selected = section === 'skills'
+                                        ? activeSection === 'skills' || activeSection === 'sub-agents'
+                                        : activeSection === section;
+                                    return (
+                                        <button
+                                            key={section}
+                                            type="button"
+                                            role="tab"
+                                            aria-selected={selected}
+                                            onClick={() => setActiveSection(section)}
+                                            className={`relative px-4 pb-3 pt-2 text-sm font-medium transition-colors ${
+                                                selected
+                                                    ? 'text-[var(--ink)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--accent)]'
+                                                    : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                            }`}
+                                        >
+                                            {tSettings(labelKey)}
+                                        </button>
+                                    );
+                                })}
+                            </nav>
+                        </div>
+                    </>
+                )}
                 {/* Skills + Sub-Agents section uses wider layout.
                  *  initialSelect is passed unfiltered — each panel's viewStateForSelect
                  *  is the single source of truth for which kinds it accepts. */}
@@ -4588,26 +4637,28 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 )}
                             </div>
 
+                        </div>
+                    )}
+
+                    {activeSection === 'proxy' && (
+                        <div className="space-y-6">
+                            <div>
+                                <h2 className="text-lg font-semibold text-[var(--ink)]">{tSettings('proxy.title')}</h2>
+                                <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                    {tSettings('proxy.description')}
+                                </p>
+                            </div>
+
                             {/* Network Proxy Settings */}
                             <div
-                                ref={proxySectionRef}
-                                className={`rounded-xl border bg-[var(--paper-elevated)] p-5 transition-all ${
-                                    highlightProxySection
-                                        ? 'border-[var(--accent)] shadow-[0_0_0_3px_var(--accent-warm-subtle)]'
-                                        : 'border-[var(--line)]'
-                                }`}
+                                className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5"
                             >
-                                <h3 className="text-base font-medium text-[var(--ink)]">{tSettings('general.proxyTitle')}</h3>
-                                <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                                    {tSettings('general.proxyDescription')}
-                                </p>
-
                                 {/* Enable toggle */}
-                                <div className="mt-4 flex items-center justify-between">
+                                <div className="flex items-center justify-between">
                                     <div className="flex-1 pr-4">
-                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.proxyEnableTitle')}</p>
+                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('proxy.enableTitle')}</p>
                                         <p className="text-xs text-[var(--ink-muted)]">
-                                            {tSettings('general.proxyEnableDescription')}
+                                            {tSettings('proxy.enableDescription')}
                                         </p>
                                     </div>
                                     <button
@@ -4634,7 +4685,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 <div className="mt-4 border-t border-[var(--line)] pt-4">
                                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                         <div className="min-w-0 flex-1">
-                                            <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.proxyScopeTitle')}</p>
+                                            <p className="text-sm font-medium text-[var(--ink)]">{tSettings('proxy.scopeTitle')}</p>
                                             <p
                                                 className="mt-1 truncate text-xs text-[var(--ink-muted)]"
                                                 title={proxyScopeSummary}
@@ -4654,7 +4705,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
-                                                    {tSettings('general.proxyScopeAll')}
+                                                    {tSettings('proxy.scopeAll')}
                                                 </button>
                                                 <button
                                                     type="button"
@@ -4666,7 +4717,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
-                                                    {tSettings('general.proxyScopeCustom')}
+                                                    {tSettings('proxy.scopeCustom')}
                                                 </button>
                                             </div>
                                             <button
@@ -4674,7 +4725,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 disabled={!config.proxySettings?.enabled}
                                                 onClick={() => setShowProxyScopeDialog(true)}
                                                 className="rounded-lg border border-[var(--line)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
-                                                aria-label={tSettings('general.proxyScopeDialogTitle')}
+                                                aria-label={tSettings('proxy.scopeDialogTitle')}
                                             >
                                                 <SlidersHorizontal size={16} />
                                             </button>
@@ -4687,7 +4738,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     <div className="mt-4 space-y-3 border-t border-[var(--line)] pt-4">
                                         {/* Protocol */}
                                         <div className="flex items-center gap-3">
-                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('general.proxyProtocol')}</label>
+                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('proxy.protocol')}</label>
                                             <CustomSelect
                                                 value={config.proxySettings?.protocol || PROXY_DEFAULTS.protocol}
                                                 options={[
@@ -4704,7 +4755,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
                                         {/* Host */}
                                         <div className="flex items-center gap-3">
-                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('general.proxyServer')}</label>
+                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('proxy.server')}</label>
                                             <input
                                                 type="text"
                                                 value={proxyHostDraft}
@@ -4718,7 +4769,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
                                         {/* Port */}
                                         <div className="flex items-center gap-3">
-                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('general.proxyPort')}</label>
+                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('proxy.port')}</label>
                                             <input
                                                 type="text"
                                                 inputMode="numeric"
@@ -4737,7 +4788,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
                                         {/* Preview */}
                                         <div className="mt-2 rounded-lg bg-[var(--paper-inset)] px-3 py-2">
-                                            <span className="text-xs text-[var(--ink-muted)]">{tSettings('general.proxyAddress')}</span>
+                                            <span className="text-xs text-[var(--ink-muted)]">{tSettings('proxy.address')}</span>
                                             <code className="text-xs font-mono text-[var(--ink)]">
                                                 {config.proxySettings?.protocol || PROXY_DEFAULTS.protocol}://{proxyHostDraft || PROXY_DEFAULTS.host}:{proxyPortDraft || PROXY_DEFAULTS.port}
                                             </code>
@@ -4763,18 +4814,24 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 )}
                                                 <span className="min-w-0 break-words">
                                                     {proxyProbeState.status === 'checking'
-                                                        ? tSettings('general.proxyChecking')
+                                                        ? tSettings('proxy.checking')
                                                         : proxyProbeState.message}
                                                 </span>
                                             </div>
                                         )}
 
                                         <p className="text-xs text-[var(--ink-faint)]">
-                                            {tSettings('general.proxyAppliedHint')}
+                                            {tSettings('proxy.appliedHint')}
                                         </p>
                                     </div>
                                 )}
                             </div>
+
+                        </div>
+                    )}
+
+                    {activeSection === 'general' && (
+                        <div className="mt-6 space-y-6">
 
                             {/* Log Export */}
                             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
@@ -4829,7 +4886,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <div className="rounded-2xl border border-[var(--line)] bg-gradient-to-br from-[var(--paper-inset)] to-[var(--paper)] p-8">
                                 <div className="flex flex-col items-center text-center">
                                     <h1
-                                        className="theme-launcher-hero-title cursor-default select-none"
+                                        className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"
                                         onClick={handleLogoTap}
                                     >
                                         MyAgents
@@ -5089,9 +5146,45 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 </div>
                             </div>
 
+                            {/* Open-source and commercial licensing */}
+                            <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                <h3 className="text-base font-medium text-[var(--ink)]">
+                                    {tSettings('about.licensingTitle')}
+                                </h3>
+                                <p className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">
+                                    {tSettings('about.licensingDescription')}
+                                </p>
+                                <div className="mt-4 flex flex-wrap gap-2 text-sm">
+                                    <ExternalLink
+                                        href={sourceLicenseUrl}
+                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                                    >
+                                        {tSettings('about.communityLicense')}
+                                    </ExternalLink>
+                                    <ExternalLink
+                                        href={sourceTreeUrl}
+                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                                    >
+                                        {tSettings('about.sourceCode')}
+                                    </ExternalLink>
+                                    <ExternalLink
+                                        href={sourceNoticesUrl}
+                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                                    >
+                                        {tSettings('about.thirdPartyNotices')}
+                                    </ExternalLink>
+                                    <ExternalLink
+                                        href="mailto:myagents.io@gmail.com"
+                                        className="rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
+                                    >
+                                        {tSettings('about.commercialLicensing')}
+                                    </ExternalLink>
+                                </div>
+                            </div>
+
                             {/* Copyright */}
                             <p className="text-center text-xs text-[var(--ink-muted)]">
-                                © 2026 Ethan L. All rights reserved.
+                                {tSettings('about.licensingCopyright')}
                             </p>
 
                             {/* Developer Section - Hidden by default, unlocked by tapping logo 5 times */}
@@ -5115,6 +5208,33 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 >
                                                     <span
                                                         className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.showDevTools ? 'translate-x-5' : 'translate-x-0'
+                                                            }`}
+                                                    />
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Legacy Chat History Entry */}
+                                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex-1 pr-4">
+                                                    <h3 className="text-sm font-medium text-[var(--ink)]">
+                                                        {tSettings('about.developer.chatHistoryEntryTitle')}
+                                                    </h3>
+                                                    <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                                        {tSettings('about.developer.chatHistoryEntryDescription')}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => updateConfig({ showChatHistoryEntry: config.showChatHistoryEntry !== true })}
+                                                    aria-label={tSettings('about.developer.chatHistoryEntryTitle')}
+                                                    aria-pressed={config.showChatHistoryEntry === true}
+                                                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${config.showChatHistoryEntry === true ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                                        }`}
+                                                >
+                                                    <span
+                                                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.showChatHistoryEntry === true ? 'translate-x-5' : 'translate-x-0'
                                                             }`}
                                                     />
                                                 </button>

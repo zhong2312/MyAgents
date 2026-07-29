@@ -87,6 +87,18 @@ describe('Theme architecture guardrails', () => {
     expect(source('src/renderer/theme/themes/preset-theme.ts')).not.toContain('myagents-default');
   });
 
+  it('keeps the global sidebar structural surface scoped to App Shell chrome', () => {
+    const consumers = rendererSourceFiles()
+      .filter(file => source(file.slice(root.length + 1)).includes('var(--global-sidebar-bg)'))
+      .map(file => file.slice(root.length + 1));
+
+    expect(consumers).toEqual([
+      'src/renderer/components/CustomTitleBar.tsx',
+      'src/renderer/components/TabBar.tsx',
+      'src/renderer/components/global-sidebar/GlobalSidebar.tsx',
+    ]);
+  });
+
   it('keeps Default Black equal to canonical host tokens except its light primary button pair', () => {
     const canonicalStylesheet = parseThemeStylesheet(
       source('src/renderer/theme/themes/myagents-default.css'),
@@ -129,11 +141,13 @@ describe('Theme architecture guardrails', () => {
     }
   });
 
-  it('reuses the Theme-owned brand title presentation on Launcher and About', () => {
+  it('reuses one Theme-owned product wordmark across Launcher, About, and the global sidebar', () => {
     const launcher = source('src/renderer/components/launcher/BrandSection.tsx');
     const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
-    expect(launcher).toContain('<h1 className="theme-launcher-hero-title">');
-    expect(settings).toContain('className="theme-launcher-hero-title cursor-default select-none"');
+    const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
+    expect(launcher).toContain('<h1 className="theme-product-wordmark theme-launcher-hero-title">');
+    expect(settings).toContain('className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"');
+    expect(sidebar).toContain('className="theme-product-wordmark global-sidebar-copy min-w-0 truncate text-sm font-medium"');
     expect(settings).not.toContain('className="brand-title');
   });
 

@@ -189,20 +189,21 @@ export function initLogger(getSseClients: () => ReturnType<typeof createSseClien
         }
     };
 
-    // Override console methods. PRD #132 — `safeOriginal` skips the write
-    // when stdio is closed so we don't reseed the recursive EPIPE loop.
+    // Override console methods. stdout remains useful for the pre-existing
+    // startup handshake and is dropped by Rust after this logger initializes.
+    // WARN/ERROR deliberately do NOT mirror to stderr: appendUnifiedLog below
+    // is their single persistence owner. Rust still captures true raw stderr
+    // (native/runtime crashes and pre-logger startup output).
     console.log = (...args: unknown[]) => {
         safeOriginal('log', args);
         createAndBroadcast('info', args);
     };
 
     console.error = (...args: unknown[]) => {
-        safeOriginal('error', args);
         createAndBroadcast('error', args);
     };
 
     console.warn = (...args: unknown[]) => {
-        safeOriginal('warn', args);
         createAndBroadcast('warn', args);
     };
 
@@ -252,12 +253,6 @@ export function sendLog(level: LogLevel, message: string, meta?: Record<string, 
         if (ctx.turnId) entry.turnId = ctx.turnId;
         if (ctx.runtime) entry.runtime = ctx.runtime;
     }
-
-    // PRD #132 — route through safeOriginal so this back-channel respects
-    // the same stdio-broken short-circuit as the patched `console.*`. A
-    // future caller of sendLog() during a closed-pipe state would otherwise
-    // re-seed the EPIPE recursion that #132 was designed to prevent.
-    safeOriginal(level === 'info' ? 'log' : level, [message]);
 
     // Store in history
     logHistory.push(entry);

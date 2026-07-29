@@ -156,7 +156,7 @@ pub(super) async fn enqueue_to_sidecar(
     bot_name: Option<&str>,
     group_context: Option<&GroupStreamContext>,
     metadata_birth_pending: bool,
-    config_held_by_tab: bool,
+    config_held_by_frontend: bool,
     allowed_users: Option<&[String]>,
     adapter_bridge_context: Option<(u16, String, Vec<String>)>,
 ) -> Result<Option<String>, RouteError> {
@@ -185,7 +185,7 @@ pub(super) async fn enqueue_to_sidecar(
         "permissionMode": permission_mode,
         "requestId": msg.request_id,
         "metadataBirthPending": metadata_birth_pending,
-        "configHeldByTab": config_held_by_tab,
+        "configHeldByTab": config_held_by_frontend,
         "hostInteraction": HostInteractionCapability::for_platform(&msg.platform),
     });
     if !is_external_runtime_type(runtime) {

@@ -736,7 +736,7 @@ export async function stopSseProxy(tabId: string): Promise<void> {
     }
 
     try {
-        await invoke('stop_sse_proxy', { tabId });
+        await invoke('stop_sse_proxy', { connectionKey: tabId });
         console.debug(`[tauriClient] Tab ${tabId} SSE proxy stopped`);
     } catch (error) {
         console.error(`[tauriClient] Failed to stop SSE proxy for tab ${tabId}:`, error);
@@ -1231,14 +1231,14 @@ export interface EnsureSidecarResult {
  *
  * @param sessionId - Session identifier
  * @param workspacePath - Workspace directory path
- * @param ownerType - Renderer owner type (`tab`)
- * @param ownerId - Tab ID
+ * @param ownerType - Renderer surface owner type
+ * @param ownerId - Stable surface ID
  * @returns {port, isNew} where isNew is true if a new Sidecar was started
  */
 export async function ensureSessionSidecar(
     sessionId: string,
     workspacePath: string,
-    ownerType: 'tab',
+    ownerType: 'tab' | 'companion',
     ownerId: string
 ): Promise<EnsureSidecarResult> {
     if (!isTauri()) {
@@ -1265,13 +1265,13 @@ export async function ensureSessionSidecar(
  * If this was the last owner, the Sidecar is stopped.
  *
  * @param sessionId - Session identifier
- * @param ownerType - Renderer owner type (`tab`)
- * @param ownerId - Tab ID
+ * @param ownerType - Renderer surface owner type
+ * @param ownerId - Stable surface ID
  * @returns true if the Sidecar was stopped (no more owners)
  */
 export async function releaseSessionSidecar(
     sessionId: string,
-    ownerType: 'tab',
+    ownerType: 'tab' | 'companion',
     ownerId: string
 ): Promise<boolean> {
     if (!isTauri()) {
@@ -1410,7 +1410,7 @@ export async function upgradeSessionId(
 export async function sessionHasPersistentOwners(sessionId: string): Promise<boolean> {
     if (!isTauri()) return false;
     try {
-        return await invoke<boolean>('cmd_session_has_persistent_owners', { sessionId });
+        return await querySessionHasPersistentOwners(sessionId);
     } catch (error) {
         // This query protects session identity from hot-swap. Unknown owner
         // state must keep the current Sidecar key stable rather than risk
@@ -1420,14 +1420,43 @@ export async function sessionHasPersistentOwners(sessionId: string): Promise<boo
     }
 }
 
-/** Atomically reject deletion when a scheduler or live Sidecar owns the session. */
-export async function deleteSessionIfUnowned(sessionId: string): Promise<boolean> {
+/** Raw owner query for user mutations that must preserve transport failures. */
+export async function querySessionHasPersistentOwners(sessionId: string): Promise<boolean> {
     if (!isTauri()) return false;
+    return await invoke<boolean>('cmd_session_has_persistent_owners', { sessionId });
+}
+
+export type SessionDeleteFailureReason =
+    | 'in-use'
+    | 'not-found'
+    | 'protected-session'
+    | 'invalid-session-id'
+    | 'authority-unavailable'
+    | 'transition-in-progress'
+    | 'activity-unavailable'
+    | 'unexpected';
+
+export type SessionDeleteResult =
+    | { deleted: true }
+    | { deleted: false; reason: SessionDeleteFailureReason };
+
+/**
+ * Atomically delete after releasing only the mounted Tab owners named by App.
+ * Any other owner keeps the Session protected.
+ */
+export async function deleteSessionIfUnowned(
+    sessionId: string,
+    releasableTabIds: readonly string[] = [],
+): Promise<SessionDeleteResult> {
+    if (!isTauri()) return { deleted: false, reason: 'authority-unavailable' };
     try {
-        return await invoke<boolean>('cmd_delete_session_if_unowned', { sessionId });
+        return await invoke<SessionDeleteResult>('cmd_delete_session_if_unowned', {
+            sessionId,
+            releasableTabIds: [...releasableTabIds],
+        });
     } catch (error) {
         console.error(`[tauriClient] Failed to delete session ${sessionId}:`, error);
-        return false;
+        return { deleted: false, reason: 'unexpected' };
     }
 }
 
@@ -1442,15 +1471,17 @@ export async function releaseTabSession(
 
 export interface UserSchedulerLifecycleSnapshot {
     runningTaskCount: number;
-    protectedSessionIds: string[];
+    /** Exact non-Tab owner projection used by the Rust deletion boundary. */
+    deleteProtectedSessionIds: string[];
 }
 
 /**
- * Lifecycle truth for user-owned schedulers. Includes Goal and ordinary Cron,
- * while excluding hidden managed jobs from user exit/delete affordances.
+ * Lifecycle truth for user exit and Session deletion affordances. The running
+ * count excludes hidden managed jobs; deletion protection includes every
+ * persistent owner because it mirrors the Rust mutation boundary.
  */
 export async function getUserSchedulerLifecycleSnapshot(): Promise<UserSchedulerLifecycleSnapshot> {
-    if (!isTauri()) return { runningTaskCount: 0, protectedSessionIds: [] };
+    if (!isTauri()) return { runningTaskCount: 0, deleteProtectedSessionIds: [] };
     try {
         return await invoke<UserSchedulerLifecycleSnapshot>('cmd_get_user_scheduler_lifecycle_snapshot');
     } catch (error) {
@@ -1491,7 +1522,7 @@ export interface BackgroundCompletionResult {
  *
  * @param sessionId - Session identifier
  * @returns { started: true } if AI is running and background completion started,
- *          { started: false } if AI is idle (no background completion needed)
+ *          { started: false } if AI is authoritatively idle
  */
 export async function startBackgroundCompletion(
     sessionId: string
@@ -1510,6 +1541,22 @@ export async function startBackgroundCompletion(
         console.error(`[tauriClient] Failed to start background completion for ${sessionId}:`, error);
         return { started: false, sessionId };
     }
+}
+
+/**
+ * Destructive handoff variant. Unlike the convenience wrapper above, this
+ * preserves transport and activity-check failures so deletion can keep the
+ * mounted Tab instead of mistaking uncertainty for idle.
+ */
+export async function startBackgroundCompletionForDeletion(
+    sessionId: string
+): Promise<BackgroundCompletionResult> {
+    if (!isTauri()) {
+        throw new Error('Session deletion activity authority is unavailable outside Tauri');
+    }
+    return await invoke<BackgroundCompletionResult>('cmd_start_background_completion', {
+        sessionId,
+    });
 }
 
 /**

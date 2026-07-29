@@ -31,6 +31,16 @@ export interface CapturedPlugin {
 }
 
 /**
+ * OpenClaw plugins receive MyAgents' logger and may emit a debug line for
+ * every full-snapshot partial callback. Those callbacks are transport detail:
+ * pending-dispatch already owns terminal counts and canonical final logging.
+ * Keep the rule protocol-shaped (callback name), never plugin-id-shaped.
+ */
+export function shouldSuppressPluginDebugLog(args: readonly unknown[]): boolean {
+  return args.some(arg => typeof arg === 'string' && /\bonPartialReply\b/.test(arg));
+}
+
+/**
  * Create an OpenClaw-compatible API object for plugin registration.
  */
 export function createCompatApi(config: Record<string, unknown>) {
@@ -77,7 +87,9 @@ export function createCompatApi(config: Record<string, unknown>) {
       info: (...args: unknown[]) => console.log('[plugin]', ...args),
       warn: (...args: unknown[]) => console.warn('[plugin]', ...args),
       error: (...args: unknown[]) => console.error('[plugin]', ...args),
-      debug: (...args: unknown[]) => console.debug('[plugin]', ...args),
+      debug: (...args: unknown[]) => {
+        if (!shouldSuppressPluginDebugLog(args)) console.debug('[plugin]', ...args);
+      },
     },
 
     /**

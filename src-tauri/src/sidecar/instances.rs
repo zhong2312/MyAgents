@@ -143,6 +143,15 @@ pub fn start_tab_sidecar<R: Runtime>(
     if mgmt_port > 0 {
         cmd.env("MYAGENTS_MANAGEMENT_PORT", mgmt_port.to_string());
     }
+    // Global and legacy instance Sidecars consume the same Management API as
+    // Session Sidecars. Reserve a process-global generation before spawn and
+    // inject the manager key instead of fabricating a Session identity.
+    let sidecar_generation = manager_guard.next_generation(tab_id);
+    cmd.env("MYAGENTS_SIDECAR_ID", tab_id);
+    cmd.env(
+        "MYAGENTS_SIDECAR_GENERATION",
+        sidecar_generation.to_string(),
+    );
 
     // Inject runtime type for Agent Runtime selection (v0.1.59)
     // This path is used by start_sidecar (generic, IM/Agent channels).
@@ -183,6 +192,7 @@ pub fn start_tab_sidecar<R: Runtime>(
 
     // Spawn
     let mut child = cmd.spawn().map_err(|e| {
+        manager_guard.clear_generation(tab_id);
         ulog_error!("[sidecar] Failed to spawn: {}", e);
         format!("Failed to spawn sidecar: {}", e)
     })?;
@@ -242,6 +252,7 @@ pub fn start_tab_sidecar<R: Runtime>(
         #[cfg(target_os = "windows")]
         maybe_mark_crashed_node(&status, &node_path);
         let diag = diagnose_immediate_exit(&status, &node_path);
+        manager_guard.clear_generation(tab_id);
         return Err(diag);
     }
 

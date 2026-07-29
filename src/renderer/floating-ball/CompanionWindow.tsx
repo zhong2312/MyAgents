@@ -1,7 +1,7 @@
 /**
  * Companion chat window (PRD 0.2.35) — the transparent NSPanel that holds the
  * Mino desktop-channel conversation. Visual spec: the sign-off'd playground
- * (specs/playground/0.2.35_floating_ball.html) — one glass sheet, no chrome
+ * (specs/playgrounds/0.2.35_floating_ball.html) — one glass sheet, no chrome
  * until hover, conversation + hairline input area.
  *
  * Mode model（透明度 = 投入度）:

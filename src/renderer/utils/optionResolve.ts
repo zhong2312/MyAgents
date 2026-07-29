@@ -350,6 +350,23 @@ export function isResetSessionBirth(args: {
 }
 
 /**
+ * Pending -> real materialization is the only identity upgrade the generic
+ * binding effect can prove from its own inputs. Explicit reset/migration owners
+ * relabel their active attachment atomically when that operation is accepted;
+ * every real -> real change reaching this helper is therefore a true switch.
+ */
+export function shouldReuseSseSubscriptionForSessionChange(args: {
+  attachedSessionId: string | null;
+  nextSessionId: string | null | undefined;
+  isAttachedSessionPending: boolean;
+  isNextSessionPending: boolean;
+}): boolean {
+  if (!args.attachedSessionId || !args.nextSessionId) return false;
+  if (args.attachedSessionId === args.nextSessionId) return false;
+  return args.isAttachedSessionPending && !args.isNextSessionPending;
+}
+
+/**
  * A real persisted-session switch must run loadSession, even if the renderer
  * still thinks the previous session is active. Pending->real and reset-birth
  * transitions are the live sidecar becoming durable; initial null->persisted

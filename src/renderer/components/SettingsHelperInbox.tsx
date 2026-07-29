@@ -229,7 +229,6 @@ export default function SettingsHelperInbox({
                         agentDir={helperAgentDir}
                         currentSessionId={null}
                         onSelectSession={handleSelectHistorySession}
-                        prepareCurrentSessionForDelete={async () => true}
                         isOpen={showHistory}
                         onClose={() => setShowHistory(false)}
                         triggerRef={historyBtnRef}

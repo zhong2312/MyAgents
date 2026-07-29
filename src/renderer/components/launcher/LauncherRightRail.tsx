@@ -147,7 +147,7 @@ export default memo(function LauncherRightRail({
     const loadMoreRef = useRef<HTMLDivElement | null>(null);
     const {
         sessions,
-        protectedSchedulerSessionIds,
+        deleteProtectedSessionIds,
         sessionTagsMap,
         isSessionsLoading: isHistoryLoading,
         error,
@@ -257,7 +257,7 @@ export default memo(function LauncherRightRail({
         [filteredSessions, visibleHistoryCount],
     );
 
-    const cronProtectedSessionIds = protectedSchedulerSessionIds;
+    const cronProtectedSessionIds = deleteProtectedSessionIds;
 
     useEffect(() => {
         const root = scrollRootRef.current;
@@ -293,8 +293,8 @@ export default memo(function LauncherRightRail({
         const { id } = pendingDeleteSession;
         setPendingDeleteSession(null);
         try {
-            const success = await actions.deleteSession(id);
-            if (success) toast.success(t('rightRail.deleted'));
+            const result = await actions.deleteSession(id);
+            if (result.deleted) toast.success(t('rightRail.deleted'));
             else toast.error(t('rightRail.deleteFailedRetry'));
         } catch (err) {
             console.error('[LauncherRightRail] Delete session failed:', err);

@@ -9,6 +9,8 @@ export function getFixedTabChromeTitle(
   switch (view) {
     case 'settings':
       return t('tabs.settings');
+    case 'capabilities':
+      return t('tabs.capabilities');
     case 'taskcenter':
       return t('tabs.taskCenter');
     case 'space':

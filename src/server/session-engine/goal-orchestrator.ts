@@ -475,7 +475,8 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
         queueId: string;
         expectedControlRevision: number;
         channelDeliveryExpected: boolean;
-        turn: Omit<InjectedTurnRequest, 'queueId' | 'turnOwner' | 'onTerminal' | 'beforeDispatch'>;
+        turn: Omit<InjectedTurnRequest,
+          'queueId' | 'turnOwner' | 'onTerminal' | 'beforeDispatch' | 'assistantChannelDelivery'>;
       },
     ): Promise<InjectedTurnResult> {
       const lifecycle = createGoalTurnLifecycle(client, {
@@ -488,6 +489,9 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
       });
       const result = await engine.runInjectedTurn({
         ...request.turn,
+        assistantChannelDelivery: request.channelDeliveryExpected
+          ? 'caller-owned'
+          : 'session-binding',
         queueId: request.queueId,
         turnOwner: { kind: 'goal', id: request.goal.id },
         onTerminal: lifecycle.onTerminal,

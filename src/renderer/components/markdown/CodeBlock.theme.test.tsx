@@ -6,11 +6,23 @@ import { ThemeRegistry, ThemeRuntimeProvider } from '@/theme';
 import { syntheticTheme } from '@/theme/__tests__/syntheticTheme';
 import { myAgentsDefaultTheme } from '@/theme/themes/myagents-default';
 
-const syntaxCapture = vi.hoisted(() => ({ styles: [] as Array<Record<string, CSSProperties>> }));
+const syntaxCapture = vi.hoisted(() => ({
+  styles: [] as Array<Record<string, CSSProperties>>,
+  customStyles: [] as CSSProperties[],
+}));
 
 vi.mock('react-syntax-highlighter', () => ({
-  Prism: ({ style, children }: { style: Record<string, CSSProperties>; children: string }) => {
+  Prism: ({
+    style,
+    customStyle,
+    children,
+  }: {
+    style: Record<string, CSSProperties>;
+    customStyle: CSSProperties;
+    children: string;
+  }) => {
     syntaxCapture.styles.push(style);
+    syntaxCapture.customStyles.push(customStyle);
     return <pre data-testid="syntax">{children}</pre>;
   },
 }));
@@ -30,6 +42,24 @@ describe('CodeBlock Theme adapter', () => {
     );
 
     expect(syntaxCapture.styles.at(-1)?.['code[class*="language-"]']?.color).toBe('#21002f');
+
+    const codeBlock = view.container.querySelector('.markdown-code-block');
+    expect(codeBlock).toHaveClass(
+      'rounded-md',
+      'border',
+      'border-[var(--line)]',
+      'bg-[var(--paper-inset)]/30',
+    );
+    expect(codeBlock?.firstElementChild).toHaveClass(
+      'border-b',
+      'border-[var(--line)]',
+      'bg-[var(--code-bg)]',
+    );
+    expect(syntaxCapture.customStyles.at(-1)?.background).toBe('transparent');
+    expect(view.getByRole('button')).toHaveClass(
+      'hover:bg-[var(--line-subtle)]',
+      'hover:text-[var(--code-text)]',
+    );
 
     view.rerender(
       <ThemeRuntimeProvider

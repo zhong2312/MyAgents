@@ -272,55 +272,6 @@ mkdir -p "${SDK_DEST}"
 # `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
 # use. Removing the bundle saves ~84MB DMG size + ~1-2min build time.
 
-# 预装 sharp 图像处理（替代 jimp，libvips 原生，上游 claude-code 同款）
-# 需要 sharp + @img/sharp-darwin-{arm64,x64} + @img/sharp-libvips-darwin-{arm64,x64}
-# 为什么不用 agent-browser 的 lockfile 模式：sharp 的 optional deps 按 host 平台过滤，
-# 单 lockfile 只能锁定一个架构。改为 package.json 显式声明 + 强制安装所有 darwin 变体。
-echo -e "  ${CYAN}预装 sharp 图像处理（libvips 原生）...${NC}"
-SHARP_DIR="${PROJECT_DIR}/src-tauri/resources/sharp-runtime"
-rm -rf "${SHARP_DIR}"
-mkdir -p "${SHARP_DIR}"
-cat > "${SHARP_DIR}/package.json" <<'SHARP_PKG'
-{
-  "name": "sharp-runtime",
-  "private": true,
-  "version": "1.0.0",
-  "dependencies": { "sharp": "0.34.5" }
-}
-SHARP_PKG
-(cd "${SHARP_DIR}" && npm install --no-audit --no-fund --no-save --ignore-scripts)
-if [ $? -ne 0 ]; then
-    echo -e "${RED}✗ sharp 主包预装失败${NC}"
-    exit 1
-fi
-# 强制安装所有 macOS 架构的 @img/sharp-* 和 @img/sharp-libvips-*（精确版本锁定，避免 patch 漂移）
-# npm install 默认只装 host arch 的 optional dep，这里显式补全另一个 arch
-(cd "${SHARP_DIR}" && npm install --no-save --force --no-audit --no-fund --ignore-scripts \
-    @img/sharp-darwin-arm64@0.34.5 @img/sharp-darwin-x64@0.34.5 \
-    @img/sharp-libvips-darwin-arm64@1.2.4 @img/sharp-libvips-darwin-x64@1.2.4)
-if [ $? -ne 0 ]; then
-    echo -e "${RED}✗ sharp 跨架构包安装失败${NC}"
-    exit 1
-fi
-# 验证两个架构的原生二进制都存在
-for ARCH in arm64 x64; do
-    SHARP_NODE="${SHARP_DIR}/node_modules/@img/sharp-darwin-${ARCH}/lib/sharp-darwin-${ARCH}.node"
-    SHARP_DYLIB_DIR="${SHARP_DIR}/node_modules/@img/sharp-libvips-darwin-${ARCH}/lib"
-    if [ ! -f "$SHARP_NODE" ]; then
-        echo -e "${RED}✗ sharp-darwin-${ARCH}.node 缺失${NC}"
-        exit 1
-    fi
-    if [ ! -d "$SHARP_DYLIB_DIR" ] || [ -z "$(ls "$SHARP_DYLIB_DIR"/*.dylib 2>/dev/null)" ]; then
-        echo -e "${RED}✗ sharp-libvips-darwin-${ARCH} dylib 缺失${NC}"
-        exit 1
-    fi
-done
-# 删除 linux/win32 的 @img/sharp-* 包（避免公证扫描非 darwin 原生代码）
-find "${SHARP_DIR}/node_modules/@img" -maxdepth 1 -type d \
-    \( -name "sharp-linux*" -o -name "sharp-win32*" -o -name "sharp-libvips-linux*" -o -name "sharp-libvips-win32*" -o -name "sharp-wasm32" \) \
-    -exec rm -rf {} + 2>/dev/null || true
-echo -e "${GREEN}  ✓ sharp 预装完成 (darwin arm64 + x64)${NC}"
-
 # 构建前端
 echo -e "  ${CYAN}构建前端...${NC}"
 npm run build:web
@@ -409,37 +360,6 @@ echo ""
 # NOTE: agent-browser-cli signing block removed — bundle no longer ships.
 # AI installs the CLI on first use via the agent-browser skill (npm install -g).
 
-# ========================================
-# 签名 sharp 原生二进制
-# ========================================
-echo -e "  ${CYAN}签名 sharp 原生二进制 (.node + libvips .dylib)...${NC}"
-SHARP_SIGNED_COUNT=0
-SHARP_FAILED_COUNT=0
-
-# @img/sharp-darwin-<arch>/lib/*.node 和 @img/sharp-libvips-darwin-<arch>/lib/*.dylib 都需要签名
-# 不签的话公证会拒；sharp 在 TCC 下不需要额外权限（纯 CPU 图像处理）。
-while IFS= read -r binary; do
-    echo -e "    ${CYAN}签名: $(echo "$binary" | sed "s|.*/node_modules/||")${NC}"
-    if codesign --force --options runtime --timestamp \
-        --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
-        ((SHARP_SIGNED_COUNT++))
-    else
-        echo -e "    ${YELLOW}警告: 签名失败 - $binary${NC}"
-        ((SHARP_FAILED_COUNT++))
-    fi
-done < <(find "${SHARP_DIR}/node_modules/@img" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null)
-
-if [ $SHARP_FAILED_COUNT -gt 0 ]; then
-    echo -e "${RED}错误: sharp 原生二进制签名失败 (${SHARP_FAILED_COUNT} 个)，公证必定失败${NC}"
-    exit 1
-fi
-if [ $SHARP_SIGNED_COUNT -eq 0 ]; then
-    echo -e "${RED}错误: 未签名任何 sharp 二进制，sharp 预装可能失败${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ sharp 签名完成 (${SHARP_SIGNED_COUNT} 个文件)${NC}"
-echo ""
-
 # 构建 Tauri 应用
 echo -e "${BLUE}[7/7] 构建 Tauri 应用 (Release + 签名 + 公证)...${NC}"
 echo -e "${YELLOW}这可能需要 5-10 分钟 (包含公证等待时间)...${NC}"
@@ -464,7 +384,13 @@ if [ -z "$SDK_VERSION" ]; then
     exit 1
 fi
 
-expected_claude_sdk_macho_arch() {
+SHARP_VERSION=$(node -p "require('./package.json').dependencies.sharp" 2>/dev/null || true)
+if [[ ! "$SHARP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo -e "${RED}✗ package.json 中的 sharp 必须使用精确版本，当前值: ${SHARP_VERSION:-missing}${NC}"
+    exit 1
+fi
+
+expected_macho_arch() {
     case "$1" in
         arm64) echo "arm64" ;;
         x64) echo "x86_64" ;;
@@ -485,7 +411,7 @@ validate_macho_binary() {
     fi
 
     ARCHES=$(lipo -archs "$BINARY" 2>/dev/null || true)
-    if [[ " $ARCHES " != *" $EXPECTED_ARCH "* ]]; then
+    if [ "$ARCHES" != "$EXPECTED_ARCH" ]; then
         echo -e "    ${YELLOW}⚠ ${LABEL} 架构不匹配: expected=${EXPECTED_ARCH}, actual=${ARCHES:-unknown}${NC}"
         return 1
     fi
@@ -506,10 +432,84 @@ validate_macho_binary() {
     return 0
 }
 
+prepare_sharp_runtime() {
+    local ARCH="$1"
+    local EXPECTED_ARCH
+    local SHARP_DIR="${PROJECT_DIR}/src-tauri/resources/sharp-runtime"
+    local SHARP_NODE="${SHARP_DIR}/node_modules/@img/sharp-darwin-${ARCH}/lib/sharp-darwin-${ARCH}.node"
+    local SHARP_DYLIB_DIR="${SHARP_DIR}/node_modules/@img/sharp-libvips-darwin-${ARCH}/lib"
+    local SHARP_NATIVE_COUNT=0
+    local SHARP_SIGNED_COUNT=0
+
+    if ! EXPECTED_ARCH=$(expected_macho_arch "$ARCH"); then
+        echo -e "${RED}✗ 不支持的 sharp macOS 架构: $ARCH${NC}"
+        exit 1
+    fi
+
+    echo -e "  ${CYAN}填充 sharp-runtime (darwin-${ARCH})...${NC}"
+    rm -rf "$SHARP_DIR"
+    mkdir -p "$SHARP_DIR"
+    cat > "${SHARP_DIR}/package.json" <<SHARP_PKG
+{
+  "name": "sharp-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": { "sharp": "${SHARP_VERSION}" }
+}
+SHARP_PKG
+
+    # staging 每个 target 都从空目录开始。sharp 自己的 optionalDependencies
+    # 是平台包版本的唯一 authority；--os/--cpu 只选择当前 target，避免在两个
+    # thin app 中各塞一份用不到的另一架构 libvips。
+    if ! (cd "$SHARP_DIR" && npm install --no-save --package-lock=false --force \
+        --no-audit --no-fund --ignore-scripts --os=darwin --cpu="$ARCH"); then
+        echo -e "${RED}✗ sharp darwin-${ARCH} 预装失败${NC}"
+        exit 1
+    fi
+
+    if [ ! -f "$SHARP_NODE" ]; then
+        echo -e "${RED}✗ sharp-darwin-${ARCH}.node 缺失${NC}"
+        exit 1
+    fi
+    if [ ! -d "$SHARP_DYLIB_DIR" ] || [ -z "$(find "$SHARP_DYLIB_DIR" -maxdepth 1 -type f -name '*.dylib' -print -quit)" ]; then
+        echo -e "${RED}✗ sharp-libvips-darwin-${ARCH} dylib 缺失${NC}"
+        exit 1
+    fi
+
+    # Tauri 会复制整个目录，所以验证并签名目录里的每一个原生文件，而不是只
+    # 信任 npm package 名。exact-arch 校验同时阻止另一架构或 universal 文件
+    # 偷渡进当前 thin app。
+    while IFS= read -r binary; do
+        SHARP_NATIVE_COUNT=$((SHARP_NATIVE_COUNT + 1))
+        if ! validate_macho_binary "$binary" "$EXPECTED_ARCH" "sharp darwin-${ARCH}: ${binary#${SHARP_DIR}/}"; then
+            echo -e "${RED}✗ sharp-runtime 含非目标架构或损坏的原生文件${NC}"
+            exit 1
+        fi
+    done < <(find "${SHARP_DIR}/node_modules/@img" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null)
+
+    if [ "$SHARP_NATIVE_COUNT" -eq 0 ]; then
+        echo -e "${RED}✗ sharp-runtime 未包含任何原生文件${NC}"
+        exit 1
+    fi
+
+    while IFS= read -r binary; do
+        echo -e "    ${CYAN}签名: ${binary#${SHARP_DIR}/node_modules/}${NC}"
+        xattr -d com.apple.quarantine "$binary" 2>/dev/null || true
+        if ! codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
+            echo -e "${RED}✗ sharp 原生二进制签名失败: $binary${NC}"
+            exit 1
+        fi
+        SHARP_SIGNED_COUNT=$((SHARP_SIGNED_COUNT + 1))
+    done < <(find "${SHARP_DIR}/node_modules/@img" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null)
+
+    echo -e "  ${GREEN}✓ sharp-runtime 就绪 (darwin-${ARCH}, ${SHARP_SIGNED_COUNT} 个原生文件)${NC}"
+}
+
 validate_claude_sdk_package() {
     local ARCH="$1"
     local EXPECTED_ARCH
-    EXPECTED_ARCH=$(expected_claude_sdk_macho_arch "$ARCH")
+    EXPECTED_ARCH=$(expected_macho_arch "$ARCH")
     local PKG_NAME="@anthropic-ai/claude-agent-sdk-darwin-${ARCH}"
     local PKG_DIR="${PROJECT_DIR}/node_modules/${PKG_NAME}"
     local PKG_JSON="${PKG_DIR}/package.json"
@@ -603,6 +603,9 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     echo -e "  ${CYAN}确保 Node.js 匹配目标架构 (${NODE_TARGET_ARCH})...${NC}"
     "${PROJECT_DIR}/scripts/download_nodejs.sh" --target "$NODE_TARGET_ARCH"
 
+    # ---- 重新填充 sharp-runtime 资源以匹配目标架构 ----
+    prepare_sharp_runtime "$NODE_TARGET_ARCH"
+
     # ---- 重新填充 tsx-runtime 资源以匹配目标架构 ----
     # `setup-tsx-runtime.mjs` 用 npm 的 --os/--cpu 选择对应平台的
     # `@esbuild/<triple>` 二进制；跨架构 Mac DMG 必须按 TARGET 重灌。
@@ -669,7 +672,7 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     fi
     CLAUDE_SRC="${PROJECT_DIR}/node_modules/@anthropic-ai/claude-agent-sdk-${SDK_TRIPLE}/claude"
     CLAUDE_DEST="${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk/claude"
-    CLAUDE_EXPECTED_ARCH=$(expected_claude_sdk_macho_arch "$SDK_ARCH")
+    CLAUDE_EXPECTED_ARCH=$(expected_macho_arch "$SDK_ARCH")
     echo -e "  ${CYAN}拷贝 Claude native binary (${SDK_TRIPLE})...${NC}"
     if ! validate_claude_sdk_package "$SDK_ARCH"; then
         echo -e "    ${RED}✗ Claude native binary 未通过完整性校验: $CLAUDE_SRC${NC}"

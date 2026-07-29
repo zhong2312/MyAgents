@@ -7,20 +7,6 @@ import type {
   SessionEngineSnapshotMaterializePatch,
 } from "../session-engine/types";
 import type { InteractionScenario } from "../system-prompt";
-import {
-  configureNovelWorkbenchToolset,
-  getNovelWorkbenchContext,
-  getNovelWorkbenchToolsetSnapshot,
-  NOVEL_WORKBENCH_TOOLSET_ID,
-} from "../novel-workbench-context";
-import {
-  ensureSdkMcpInSync,
-  forceReloadActiveSession,
-} from "../agent-session";
-import {
-  getSessionMetadata,
-  updateSessionMetadata,
-} from "../SessionStore";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -115,74 +101,10 @@ export async function handleSessionConfigRoute(
       const payload = (await request.json()) as {
         toolset?: { id?: unknown; context?: unknown };
       };
-      if (payload.toolset?.id !== NOVEL_WORKBENCH_TOOLSET_ID) {
-        return jsonResponse(
-          { success: false, error: "Unknown workbench Agent toolset." },
-          400,
-        );
-      }
-      const engine = getSessionEngine();
-      if (engine.kind !== "builtin") {
-        return jsonResponse(
-          {
-            success: false,
-            error:
-              "Controlled workbench tools currently require the builtin runtime.",
-          },
-          400,
-        );
-      }
-      const activeSession = engine.getCurrentSessionContext();
-      const workspace = activeSession.workspacePath?.trim();
-      if (!workspace) {
-        return jsonResponse(
-          {
-            success: false,
-            error: "Agent session has no workspace path.",
-          },
-          409,
-        );
-      }
-      const previousContext = getNovelWorkbenchContext();
-      const boundSessionId = activeSession.sessionId?.trim() || "default";
-      const context = configureNovelWorkbenchToolset(payload.toolset, {
-        sessionId: boundSessionId,
-        workspace,
-      });
-      const contextChanged =
-        previousContext?.mode !== context.mode ||
-        previousContext?.promptId !== context.promptId ||
-        previousContext?.promptVersion !== context.promptVersion ||
-        previousContext?.sessionId !== context.sessionId ||
-        previousContext?.workspace !== context.workspace;
-      const toolsetSnapshot = getNovelWorkbenchToolsetSnapshot();
-      const existingMetadata = getSessionMetadata(boundSessionId);
-      if (existingMetadata && toolsetSnapshot) {
-        const updated = await updateSessionMetadata(boundSessionId, {
-          workbenchToolset: toolsetSnapshot,
-        });
-        if (!updated) {
-          throw new Error("Failed to persist workbench Agent toolset.");
-        }
-      }
-
-      // Always verify the live Query, including when the in-memory context is
-      // unchanged. A cold-resumed SDK process may have been created before the
-      // renderer repeated this binding and therefore still lack the adapter.
-      const toolsReady = await ensureSdkMcpInSync();
-      if (!toolsReady) {
-        // No live Query yet, or a turn currently owns it. The next Query is
-        // rebuilt from the context already bound above.
-        forceReloadActiveSession("mcp");
-      }
-      return jsonResponse({
-        success: true,
-        toolsetId: payload.toolset.id,
-        mode: context.mode,
-        persisted: Boolean(existingMetadata && toolsetSnapshot),
-        toolsReady,
-        contextChanged,
-      });
+      const result = await getSessionEngine().configureWorkbenchToolset(
+        payload.toolset,
+      );
+      return jsonResponse(result, result.success ? 200 : (result.status ?? 400));
     } catch (error) {
       console.error("[api/workbench-agent/configure] Error:", error);
       return jsonResponse(

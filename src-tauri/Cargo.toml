@@ -1,9 +1,9 @@
 [package]
 name = "myagents"
-version = "0.3.4"
+version = "0.4.1"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/hAcKlyc/MyAgents"
 homepage = "https://myagents.io"
 edition = "2021"
@@ -104,12 +104,8 @@ macos-accessibility-client = "0.0.1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "block2"] }
-# `macos_traffic_light::apply_inset` — replicates wry/tao internal
-# `inset_traffic_lights` against the post-build NSWindow because Tauri 2.10.x
-# `WebviewWindowBuilder::traffic_light_position` only writes the webview side
-# (see module docstring). Same crate version (0.3.2) as the other objc2-*
-# deps above; transitively pulled already by wry — adding it directly so we
-# can import the AppKit types.
+# Main-window traffic-light layout owner. Keep the feature surface limited to
+# the NSWindow chrome/view types used by `macos_traffic_light.rs`.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow", "NSView", "NSResponder", "NSButton", "NSControl", "std"] }
 
 # Windows platform APIs:
@@ -153,4 +149,5 @@ junction = "1.0"
 tauri-winrt-notification = "0.7"
 
 [dev-dependencies]
+tauri = { version = "2.11.2", features = ["test"] }
 tempfile = "3.10"

@@ -1,117 +1,145 @@
-//! Position the macOS NSWindow standard buttons (red/yellow/green traffic
-//! lights) for the Overlay title-bar style.
+//! Keep the main window's macOS traffic lights attached to AppKit layout.
 //!
-//! ## Why this exists
+//! Tauri's fluent `WebviewWindowBuilder::traffic_light_position` stores the
+//! inset on Wry's content-view parent. Wry reapplies it only from `drawRect:`,
+//! but AppKit can resize/zoom the window and relayout its titlebar without
+//! invalidating that content view for drawing. A post-build write establishes
+//! the first frame but is then overwritten by the next native chrome layout.
 //!
-//! Tauri 2.10.x has a quirk in `WebviewWindowBuilder::traffic_light_position`:
-//! it only writes the value into `webview_builder.webview_attributes`, which
-//! is consumed at runtime via `wry::WryWebViewParent::drawRect` override
-//! (`wry-0.54.4/src/wkwebview/class/wry_web_view_parent.rs:41-46`). The
-//! parallel call on the underlying TAO `WindowBuilder` — which
-//! `tauri.conf.json`'s `trafficLightPosition` does as a second step in
-//! `tauri-runtime-wry-2.10.1/src/lib.rs:848-852` — is missing.
-//!
-//! For our `Overlay + hidden_title + fullSizeContentView` window, the wry
-//! `drawRect` path empirically doesn't fire reliably (the parent view has
-//! no opaque content to draw, AppKit skips the callback), and the buttons
-//! end up at the OS default position — visibly misaligned with our custom
-//! titlebar.
-//!
-//! ## What this does
-//!
-//! Replicates wry's and tao's internal `inset_traffic_lights` algorithm
-//! (verbatim — see source refs below), but called on the already-built
-//! NSWindow after `WebviewWindowBuilder::build()`. This hits the same
-//! NSWindow chrome positioning the v0.2.15 config-based path used.
-//!
-//! ## References
-//!
-//! - `wry-0.54.4/src/wkwebview/class/wry_web_view_parent.rs::inset_traffic_lights`
-//! - `tao-0.34.8/src/platform_impl/macos/view.rs::inset_traffic_lights`
-//!   (identical algorithm; both reposition NSStandardWindowButtons + resize
-//!   the title bar container view)
-//! - Tauri upstream issue (Tauri 2.10.x): the builder method should mirror
-//!   the config path by also setting on the underlying TAO `WindowBuilder`.
-//!
-//! ## TODO: remove when upstream fixes
-//!
-//! This module exists purely to work around the Tauri 2.10.x builder bug.
-//! When Tauri's `WebviewWindowBuilder::traffic_light_position` is fixed to
-//! also call through to the TAO window builder (matching the config path),
-//! delete this module + the `apply_inset` call in `lib.rs::setup` and put
-//! `.traffic_light_position(LogicalPosition::new(14.0, 20.0))` back on the
-//! builder chain. Track at: tauri-apps/tauri WebviewWindowBuilder traffic
-//! light position parity issue.
+//! This module observes the exact `NSWindow` at AppKit's synchronous geometry
+//! notification boundary. The callback runs on the same main-thread lifecycle
+//! that just laid out the titlebar, before Tauri queues its higher-level
+//! `WindowEvent`, so the invariant is restored without chasing a later frame.
 
-#![cfg(target_os = "macos")]
+use core::ffi::c_void;
 
-use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+use objc2::ffi::{objc_setAssociatedObject, OBJC_ASSOCIATION_RETAIN_NONATOMIC};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
+use objc2_app_kit::{
+    NSView, NSWindow, NSWindowButton, NSWindowDidChangeBackingPropertiesNotification,
+    NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification,
+    NSWindowDidResizeNotification,
+};
+use objc2_foundation::{
+    MainThreadMarker, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
+};
 use tauri::{Runtime, WebviewWindow};
 
-/// Apply the traffic-light inset to the given window's NSWindow chrome
-/// **once**. For persistence across resize / fullscreen / scale-factor
-/// changes — which can relayout the AppKit titlebar subviews and reset
-/// button frames — use [`install_inset_persistence`] instead.
+static TRAFFIC_LIGHT_OBSERVER_KEY: u8 = 0;
+
+#[derive(Debug)]
+struct TrafficLightObserverIvars {
+    x: f64,
+    y: f64,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements. The observer is
+    // main-thread-only because every observed NSWindow is main-thread-only.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "MyAgentsTrafficLightLayoutObserver"]
+    #[ivars = TrafficLightObserverIvars]
+    struct TrafficLightObserver;
+
+    // SAFETY: NSObjectProtocol has no additional implementation requirements.
+    unsafe impl NSObjectProtocol for TrafficLightObserver {}
+
+    impl TrafficLightObserver {
+        // SAFETY: Registered only with NSNotificationCenter using this exact
+        // selector and an NSWindow object filter below.
+        #[unsafe(method(windowGeometryDidChange:))]
+        fn window_geometry_did_change(&self, notification: &NSNotification) {
+            let Some(object) = notification.object() else {
+                return;
+            };
+            let Ok(window) = object.downcast::<NSWindow>() else {
+                return;
+            };
+
+            unsafe {
+                inset_traffic_lights(&window, self.ivars().x, self.ivars().y);
+            }
+        }
+    }
+);
+
+impl TrafficLightObserver {
+    fn new(mtm: MainThreadMarker, x: f64, y: f64) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(TrafficLightObserverIvars { x, y });
+        // SAFETY: NSObject's `init` signature is correct for this subclass.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Install the one native owner for the main window's traffic-light inset.
 ///
-/// `x` is the close button's distance from the window's left edge (logical
-/// pixels). `y` is added to the close button's height to form the title-bar
-/// container height — increasing `y` pushes buttons further down inside the
-/// container. Historical values from v0.2.15 `tauri.conf.json`: `x=14, y=20`.
-///
-/// Returns `Err` if `ns_window()` fails or returns null. Returns `Ok` if
-/// the call ran — the inner [`inset_traffic_lights`] silently no-ops when
-/// the standard window buttons aren't yet present (e.g. fired before
-/// window chrome is constructed). Callers treat any error as non-fatal —
-/// the window just keeps macOS default button positions.
-pub fn apply_inset<R: Runtime>(window: &WebviewWindow<R>, x: f64, y: f64) -> Result<(), String> {
+/// The observer is retained as an associated object of the exact NSWindow, so
+/// its lifetime matches the window without a process-global registry. Modern
+/// NotificationCenter uses zeroing weak references for selector observers;
+/// releasing the associated observer with the window therefore cannot leave a
+/// dangling callback.
+pub fn install_native_layout_owner<R: Runtime>(
+    window: &WebviewWindow<R>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| "traffic-light owner must be installed on the main thread".to_owned())?;
     let ns_window_ptr = window.ns_window().map_err(|e| e.to_string())?;
     if ns_window_ptr.is_null() {
-        return Err("ns_window() returned null".to_string());
+        return Err("ns_window() returned null".to_owned());
     }
 
-    // SAFETY: `apply_inset` is only called from Tauri `setup` and from the
-    // `on_window_event` callback below, both of which run on the main
-    // thread (Tauri dispatches events to the main thread). The NSWindow
-    // pointer returned by Tauri's `ns_window()` is valid for the lifetime
-    // of the `WebviewWindow` (which the caller holds), and the `&NSWindow`
-    // borrow we construct here is only used synchronously inside this
-    // function — it doesn't escape and so cannot outlive `window`.
-    let ns_window: &NSWindow = unsafe { &*(ns_window_ptr as *const NSWindow) };
+    // SAFETY: Tauri's NSWindow pointer is valid while `window` is alive. This
+    // function is main-thread-gated above, and neither reference escapes.
+    let ns_window = unsafe { &*(ns_window_ptr as *const NSWindow) };
+    let observer = TrafficLightObserver::new(mtm, x, y);
+    let center = NSNotificationCenter::defaultCenter();
 
-    unsafe { inset_traffic_lights(ns_window, x, y) };
+    // SAFETY: These are immutable notification-name constants exported by
+    // AppKit and available on every supported macOS version.
+    let geometry_notifications = unsafe {
+        [
+            NSWindowDidResizeNotification,
+            NSWindowDidEnterFullScreenNotification,
+            NSWindowDidExitFullScreenNotification,
+            NSWindowDidChangeBackingPropertiesNotification,
+        ]
+    };
+
+    for name in geometry_notifications {
+        unsafe {
+            center.addObserver_selector_name_object(
+                &observer,
+                sel!(windowGeometryDidChange:),
+                Some(name),
+                Some(ns_window),
+            );
+        }
+    }
+
+    // Retain the observer for exactly the NSWindow lifetime. Association is
+    // installed before the initial inset so any immediately nested AppKit
+    // layout notification already has a live receiver.
+    unsafe {
+        objc_setAssociatedObject(
+            (ns_window as *const NSWindow)
+                .cast_mut()
+                .cast::<AnyObject>(),
+            (&TRAFFIC_LIGHT_OBSERVER_KEY as *const u8).cast::<c_void>(),
+            Retained::as_ptr(&observer).cast_mut().cast::<AnyObject>(),
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC,
+        );
+        inset_traffic_lights(ns_window, x, y);
+    }
+
     Ok(())
 }
 
-/// Install a `WindowEvent::Resized` / `WindowEvent::ScaleFactorChanged`
-/// listener that re-applies the inset on each event. The wry/tao internal
-/// path re-fires via the `drawRect:` callback chain on every redraw, which
-/// is what makes config-based traffic_light_position persist through
-/// resize/fullscreen/Retina-toggle. Our post-build call fires only once,
-/// so without this listener the buttons can jump back to macOS defaults
-/// on any layout transition.
-///
-/// Call once during `setup`, after `apply_inset`. The listener is owned by
-/// Tauri and runs until the window is destroyed.
-pub fn install_inset_persistence<R: Runtime>(window: &WebviewWindow<R>, x: f64, y: f64) {
-    let weak = window.clone();
-    window.on_window_event(move |event| {
-        use tauri::WindowEvent;
-        match event {
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                // Best-effort re-apply. We swallow errors here because the
-                // window may already be tearing down; logging would spam.
-                let _ = apply_inset(&weak, x, y);
-            }
-            _ => {}
-        }
-    });
-}
-
-/// Mirror of `wry::WryWebViewParent::inset_traffic_lights` and
-/// `tao::view::inset_traffic_lights` — both are byte-for-byte identical.
-/// Repositions the three NSStandardWindowButtons (close/min/zoom) and
-/// resizes the enclosing title-bar container view so the button cluster
-/// sits at logical `(x, y)` from the window's top-left.
+/// Mirrors Wry/TAO's internal `inset_traffic_lights` algorithm.
 unsafe fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
     let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
         return;
@@ -121,9 +149,6 @@ unsafe fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
     };
     let zoom = window.standardWindowButton(NSWindowButton::ZoomButton);
 
-    // Walk up two levels: NSStandardWindowButton → NSTitlebarView → NSTitlebarContainerView.
-    // Same path wry/tao use; if AppKit ever changes this hierarchy these
-    // unwraps would surface as a panic on first window display.
     let Some(parent) = close.superview() else {
         return;
     };
@@ -139,15 +164,14 @@ unsafe fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
     title_bar_container_view.setFrame(title_bar_rect);
 
     let space_between = NSView::frame(&miniaturize).origin.x - close_rect.origin.x;
-
     let mut buttons = vec![close, miniaturize];
-    if let Some(z) = zoom {
-        buttons.push(z);
+    if let Some(zoom) = zoom {
+        buttons.push(zoom);
     }
 
-    for (i, btn) in buttons.into_iter().enumerate() {
-        let mut rect = NSView::frame(&btn);
-        rect.origin.x = x + (i as f64 * space_between);
-        btn.setFrameOrigin(rect.origin);
+    for (index, button) in buttons.into_iter().enumerate() {
+        let mut rect = NSView::frame(&button);
+        rect.origin.x = x + index as f64 * space_between;
+        button.setFrameOrigin(rect.origin);
     }
 }

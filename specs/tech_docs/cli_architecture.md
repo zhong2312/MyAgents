@@ -253,7 +253,14 @@ app 启动 → ConfigProvider → invoke('cmd_sync_cli')
 
 三个版本门控**独立运作**，修改各自内容只需 bump 对应版本即可。
 
-`SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI 或其它模块再复制第三份。当前 Required 包括 `myagents-memory-update`、`myagents-memory-gardener`、`myagents-memory-molt`、`myagents-cli`、`myagents-docs`。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
+对应变更必须在这个局部边界内完成：
+
+- 修改 `bundled-agents/myagents_helper/` 的 CLAUDE.md 或 Skills：bump `ADMIN_AGENT_VERSION`。
+- 修改 `src/cli/myagents.ts` 或 `src/cli/myagents.cmd`：bump `CLI_VERSION`；若 CLI surface 改变，还要同步 `bundled-skills/myagents-cli/SKILL.md` 并 bump `SYSTEM_SKILLS_VERSION`。
+- 修改 `SYSTEM_SKILLS` 清单内的 `bundled-skills/<name>/`：bump `SYSTEM_SKILLS_VERSION`。
+- 新增 system skill：加入 Rust `SYSTEM_SKILLS` 与 Node `src/server/index.ts::SYSTEM_SKILLS` 两个清单并 bump 版本。未进清单的 utility skill 首次 seed 后归用户，不使用强制更新语义。
+
+`SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI、文档或其它模块再复制第三份。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
 ## Rust CLI 入口（场景 2）
 
@@ -383,6 +390,14 @@ CLI → Admin API → atomicModifyConfig() → 写 config.json（磁盘优先）
 的 renderer surface 收到后重读完整磁盘快照。浮球等轻量 WebView 不挂 `ConfigProvider`，不消费这条刷新链。
 普通 `config set`、MCP 等写操作不拥有这条 app-wide model refresh 路径；新增全窗口同步需求时必须先明确
 其磁盘 authority 与完整 snapshot owner，不能把局部 Sidecar broadcast 泛化成应用级协议。
+
+Agent 的破坏性生命周期 intent 还必须收敛 Rust live owner：`agent channel remove` 先从
+`config.json` 删除精确 Channel，再调用 Management API `/api/agent/stop-channel`；`agent disable`、
+`agent set <id> enabled false` 与 `agent archive` 先提交 durable disabled/archived 状态，再调用
+`/api/agent/stop-channels`。Rust 在既有 Channel lifecycle lock 内 shutdown runtime、释放 Sidecar owner、
+终止 Plugin Bridge 并注销 plugin-use registry；整组停止的锁集合必须合并 durable 与 live Channel ID，
+从而等待尚未登记进 `ManagedAgents` 的启动流程。Management API 失败时 CLI 必须明确报告“配置已提交但
+live runtime 未收敛”，不能把当前 Sidecar 的 `config:changed` 当作生命周期完成信号。
 
 这确保了 CLI model mutation 和 GUI 模型配置产生相同的应用级效果。`model add/remove` 的 provider 文件必须持有 `${providerPath}.lock` 并原子替换；Provider 文件是定义权威，`availableProvidersJson` 只是 Rust IM 的派生投影。新增先提交可幂等重试的定义文件再重建投影；删除先提交 config 清理再删除定义文件，使 config 失败时定义天然保持不变，不引入跨文件伪事务。投影的 availability、primary 与 wire shape 只由 `src/shared/availableProvidersProjection.ts` 生成，renderer/Node 仅分别负责目录读取和持久化，禁止复制投影策略。GUI 不读取该投影作为 Provider authority，而是以一次 `config.json` 读取派生 credential/verify，并结合同代 projects/provider 文件形成完整 snapshot；所有磁盘 refresh 经 ConfigProvider 的同一个 snapshot commit owner，本地磁盘提交也推进同一 revision，拒绝旧读覆盖新写。应用级事件 payload 永远为空，不能把 API key/MCP env 放进 Tauri event；Management API 返回失败时 model mutation 必须向 CLI 报告“已写盘但 app-wide refresh 失败”，不得返回局部 success。
 

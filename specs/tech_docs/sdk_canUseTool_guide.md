@@ -6,6 +6,10 @@
 
 `canUseTool` 是 Claude Agent SDK 提供的回调，允许在 Agent 调用工具前进行权限检查。
 
+### 工具可见性不等于授权
+
+`query({ options: { tools } })` 控制模型能看到的 SDK 内置工具目录；它不是权限 allowlist。MyAgents 产品会话的唯一目录 owner 是 `src/server/sdk-builtin-tools.ts::SDK_BUILTIN_TOOLS`，而纯控制面 Query（Provider 验证、订阅登录、标题生成、视觉识别）传 `tools: []`，避免无关工具进入上下文。工具真正执行时仍必须经过 `allowedTools` / `disallowedTools`、`canUseTool` 与下面说明的 hooks；不要因为工具出现在 `Options.tools` 就认为它已获授权，也不要在调用点复制一份目录。
+
 ## 关键配置
 
 ### permissionMode 与 canUseTool 的关系

@@ -222,6 +222,12 @@ describe('normalizeChatQueueResponseMode', () => {
   });
 });
 
+describe('Chat history entry developer gate', () => {
+  it('defaults the legacy Chat history entry to hidden', () => {
+    expect(DEFAULT_CONFIG.showChatHistoryEntry).toBe(false);
+  });
+});
+
 describe('Zhipu preset models', () => {
   it('ships GLM-5.2 in both Coding Plan and API presets with official 1M window metadata', () => {
     for (const providerId of ['zhipu', 'zhipu-ai']) {

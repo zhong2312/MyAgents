@@ -39,6 +39,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='light'] {
   --ink-faint: #c4b8ad;
 
   --paper: #faf6ee;
+  --global-sidebar-bg: #f5efe5;
   --paper-elevated: #fffcf7;
   --message-user-bg: #fffefa;
   --paper-inset: #e8dccf;
@@ -133,11 +134,11 @@ html[data-theme-id='myagents-default'][data-color-scheme='light'] {
   --focus-border: #1c1612;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(28 22 18 / 0.18);
-  --code-bg: #1e1e1e;
-  --code-bg-a0: rgb(30 30 30 / 0);
-  --code-header-bg: #2d2d2d;
-  --code-text: #d4d4d4;
-  --code-line-number: #858585;
+  --code-bg: #f3ede4;
+  --code-bg-a0: rgb(243 237 228 / 0);
+  --code-header-bg: #e9dfd4;
+  --code-text: #2e2825;
+  --code-line-number: #8b7d70;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #efd0bd 0%, rgb(239 208 189 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #cdddd5 0%, rgb(205 221 213 / 0) 55%),
@@ -156,6 +157,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --ink-faint: #4a4038;
 
   --paper: #1a1614;
+  --global-sidebar-bg: #181412;
   --paper-elevated: #242018;
   --message-user-bg: #2a251d;
   --paper-inset: #12100e;
@@ -253,8 +255,8 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --code-bg: #141210;
   --code-bg-a0: rgb(20 18 16 / 0);
   --code-header-bg: #1e1a16;
-  --code-text: #d4d4d4;
-  --code-line-number: #685c52;
+  --code-text: #d4c8bc;
+  --code-line-number: #7f7368;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #2a2018 0%, rgb(42 32 24 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #1a2420 0%, rgb(26 36 32 / 0) 55%),
@@ -264,18 +266,22 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --theme-body-texture-blend: screen;
 }
 
-.theme-launcher-hero-title,
-html[data-theme-id='myagents-default'] .theme-launcher-hero-title {
-  margin-bottom: 0.5rem;
+.theme-product-wordmark,
+html[data-theme-id='myagents-default'] .theme-product-wordmark {
   font-family: var(--font-display);
-  font-size: 2.5rem;
-  font-weight: 250;
   letter-spacing: 0.02em;
   color: var(--ink);
   background: linear-gradient(155deg, var(--ink) 30%, var(--accent-warm) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.theme-launcher-hero-title,
+html[data-theme-id='myagents-default'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 250;
 }
 
 .theme-launcher-hero-slogan,

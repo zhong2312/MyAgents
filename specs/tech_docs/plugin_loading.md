@@ -5,7 +5,7 @@
 > 关联：
 > - PRD：`specs/prd/prd_0.2.17_plugin_basic_support.md`
 > - 研究：`specs/research/0514_research_claude_plugin_mechanism.md`
-> - 当前 SDK 版本：`@anthropic-ai/claude-agent-sdk@0.3.201`；插件入口仍是 `Options.plugins: SdkPluginConfig[]`（仅 `type: 'local'`）
+> - 当前 SDK 版本：`@anthropic-ai/claude-agent-sdk@0.3.220`；插件入口仍是 `Options.plugins: SdkPluginConfig[]`（仅 `type: 'local'`）
 
 ---
 
@@ -123,6 +123,10 @@ per-Tab override 设置：renderer 在 chat 输入框「插件」子菜单勾选
 → schedule restart → 下次 pre-warm 拿到新 plugin 列表。
 
 外部 Runtime（Claude Code CLI / Codex / Gemini）路径不走这里——它们各自管自己的 plugin 体系。
+
+SDK `system/init.plugins` 会回报实际加载项的 `{ name, path, version? }`，用于低频
+runtime 诊断；它不取代 MyAgents Plugin Store。设置页中的安装版本、启停和卸载仍以
+Plugin Store 为唯一权威，避免把一次 Session 的加载快照误当成全局安装状态。
 
 ### Slash 菜单发现（plugin skills / commands）
 

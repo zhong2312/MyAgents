@@ -13,8 +13,11 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/api/sessionClient', () => ({
-  deleteSession: mocks.deleteSession,
   updateSession: mocks.updateSession,
+}));
+
+vi.mock('@/context/SessionDeletionContext', () => ({
+  useSessionDeletion: () => mocks.deleteSession,
 }));
 
 vi.mock('@/api/sessionHandoverClient', () => ({
@@ -39,12 +42,11 @@ function renderMenu(overrides: Partial<ComponentProps<typeof SessionMenuButton>>
         workspacePath="/Users/zhihu/Documents/project/MyAgents"
         boundChannel={null}
         availableChannels={[]}
-        schedulerProtected={false}
+        deleteProtected={false}
         favorite={false}
         canRename
         onOpenRename={vi.fn()}
         onFavoriteChanged={vi.fn()}
-        prepareCurrentSessionForDelete={vi.fn().mockResolvedValue(true)}
         {...overrides}
       />
     </ToastProvider>,
@@ -160,35 +162,40 @@ describe('SessionMenuButton', () => {
     expect(screen.getByText('mino-bot')).toBeInTheDocument();
   });
 
-  it('moves the current tab off the session before deleting storage', async () => {
-    const prepareCurrentSessionForDelete = vi.fn().mockResolvedValue(true);
-    mocks.deleteSession.mockResolvedValue(true);
-    renderMenu({ prepareCurrentSessionForDelete });
+  it('routes deletion through the App-owned Session lifecycle capability', async () => {
+    mocks.deleteSession.mockResolvedValue({ deleted: true });
+    renderMenu();
 
     fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
     fireEvent.click(screen.getByText('删除对话'));
     fireEvent.click(screen.getByRole('button', { name: '删除' }));
 
     await waitFor(() => {
-      expect(prepareCurrentSessionForDelete).toHaveBeenCalledTimes(1);
       expect(mocks.deleteSession).toHaveBeenCalledWith(SESSION_ID);
     });
-    expect(prepareCurrentSessionForDelete.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.deleteSession.mock.invocationCallOrder[0],
-    );
   });
 
-  it('does not delete storage when the current tab cannot move away from the session', async () => {
-    const prepareCurrentSessionForDelete = vi.fn().mockResolvedValue(false);
-    renderMenu({ prepareCurrentSessionForDelete });
+  it('lets the Rust authority decide a protected deletion and explains its refusal', async () => {
+    mocks.deleteSession.mockResolvedValue({ deleted: false, reason: 'in-use' });
+    renderMenu({ deleteProtected: true });
 
     fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
     fireEvent.click(screen.getByText('删除对话'));
     fireEvent.click(screen.getByRole('button', { name: '删除' }));
 
-    await waitFor(() => {
-      expect(prepareCurrentSessionForDelete).toHaveBeenCalledTimes(1);
-    });
-    expect(mocks.deleteSession).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith(SESSION_ID));
+    expect(await screen.findByText(/该对话仍在使用中/)).toBeInTheDocument();
+  });
+
+  it('explains that an uncertain activity check kept the chat', async () => {
+    mocks.deleteSession.mockResolvedValue({ deleted: false, reason: 'activity-unavailable' });
+    renderMenu();
+
+    fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
+    fireEvent.click(screen.getByText('删除对话'));
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+
+    await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith(SESSION_ID));
+    expect(await screen.findByText(/暂时无法确认该对话是否仍在运行/)).toBeInTheDocument();
   });
 });

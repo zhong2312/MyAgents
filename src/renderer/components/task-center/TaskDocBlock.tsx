@@ -191,11 +191,9 @@ export function TaskDocBlock({
             }}
           >
             <div ref={contentRef} className="p-4">
-              {/* `compact` drops Markdown's body from text-base (16px)
-                  to text-sm (14px), matching the
-                  edit-mode textareas (同为 text-sm=14px font-mono).
-                  preview → edit feels continuous rather than a
-                  font-size jump. */}
+              {/* `compact` keeps the whole Markdown rhythm at the 14px density
+                  used by the edit-mode textarea, so preview → edit does not
+                  jump in either type size or vertical spacing. */}
               <Markdown compact>{content}</Markdown>
             </div>
             {showFade && (

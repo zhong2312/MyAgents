@@ -6,6 +6,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImagePreviewProvider } from '@/context/ImagePreviewContext';
 import type { Provider } from '@/config/types';
 import { i18n } from '@/i18n';
+import { CUSTOM_EVENTS } from '../../shared/constants';
+import {
+  CC_PERMISSION_MODES,
+  CODEX_PERMISSION_MODES,
+  GEMINI_PERMISSION_MODES,
+} from '../../shared/types/runtime';
 import SimpleChatInput, { type SimpleChatInputHandle } from './SimpleChatInput';
 import { ToastProvider } from './Toast';
 
@@ -60,6 +66,125 @@ describe('SimpleChatInput send paths', () => {
     workspaceMocks.service.addGitignore.mockResolvedValue({ success: true });
     workspaceMocks.service.searchFiles.mockResolvedValue([]);
     workspaceMocks.service.listSlashCommands.mockResolvedValue([]);
+  });
+
+  it('uses stable line icons for the three builtin permission modes', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'builtin',
+      permissionMode: 'fullAgency',
+      onPermissionModeChange: vi.fn(),
+    });
+
+    const modeButton = screen.getByTitle('切换执行模式');
+    expect(modeButton.querySelector('.lucide-lock-open')).toBeInTheDocument();
+
+    await user.click(modeButton);
+
+    expect(document.querySelector('.lucide-shield-check')).toBeInTheDocument();
+    expect(document.querySelector('.lucide-eye')).toBeInTheDocument();
+    expect(document.querySelectorAll('.lucide-lock-open')).toHaveLength(2);
+    expect(screen.queryByText(/⚡|📋|🚀/u)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      name: 'Claude Code',
+      runtime: 'claude-code' as const,
+      modes: CC_PERMISSION_MODES,
+      expectedIcons: ['shield-question-mark', 'eye', 'file-pen-line', 'lock-open'],
+    },
+    {
+      name: 'Gemini',
+      runtime: 'gemini' as const,
+      modes: GEMINI_PERMISSION_MODES,
+      expectedIcons: ['shield-question-mark', 'file-pen-line', 'lock-open', 'eye'],
+    },
+    {
+      name: 'Codex',
+      runtime: 'codex' as const,
+      modes: CODEX_PERMISSION_MODES,
+      expectedIcons: ['shield-question-mark', 'file-pen-line', 'shield-check', 'lock-open'],
+    },
+  ])('maps $name permission boundaries to the shared line icon vocabulary', async ({ runtime, modes, expectedIcons }) => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({ runtime, runtimePermissionModes: modes });
+
+    await user.click(screen.getByTitle('切换执行模式'));
+
+    for (const iconName of expectedIcons) {
+      expect(document.querySelector(`.lucide-${iconName}`)).toBeInTheDocument();
+    }
+  });
+
+  it.each(['chat', 'launcher'] as const)('keeps the scheduled-task action inside the animated plus menu in %s mode', async (mode) => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onCronButtonClick = vi.fn();
+    renderInput({ mode, onCronButtonClick });
+
+    expect(screen.queryByRole('button', { name: '定时任务' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByTitle('添加上下文'));
+
+    const cronButton = screen.getByRole('button', { name: '定时任务' });
+    expect(cronButton.querySelector('.lucide-timer')).toBeInTheDocument();
+    expect(cronButton.closest('.composer-toolbar-menu-enter')).toBeInTheDocument();
+
+    await user.click(cronButton);
+
+    expect(onCronButtonClick).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: '定时任务' })).not.toBeInTheDocument();
+  });
+
+  it('uses the same upward entry motion for all three left-side toolbar menus', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'builtin',
+      permissionMode: 'auto',
+      onPermissionModeChange: vi.fn(),
+    });
+
+    for (const title of ['添加上下文', '切换执行模式', '使用工具']) {
+      await user.click(screen.getByTitle(title));
+      expect(document.querySelectorAll('.composer-toolbar-menu-enter')).toHaveLength(1);
+    }
+  });
+
+  it('matches the mention and slash picker elevations to the composer', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput();
+
+    const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+    await user.type(textarea, '@');
+
+    const emptySearchHint = await screen.findByText('输入文件名搜索...');
+    const mentionPicker = emptySearchHint.closest('[style*="box-shadow"]');
+    expect(mentionPicker).toHaveStyle({ boxShadow: 'var(--shadow-md)' });
+
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    try {
+      await user.clear(textarea);
+      await user.type(textarea, '/');
+
+      const slashCommand = await screen.findByText('/compact');
+      const slashPicker = slashCommand.closest('[style*="box-shadow"]');
+      expect(slashPicker).toHaveStyle({ boxShadow: 'var(--shadow-md)' });
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
   });
 
   it('sends text from the Chat input surface', async () => {
@@ -304,6 +429,107 @@ describe('SimpleChatInput send paths', () => {
     expect(onModelChange).not.toHaveBeenCalled();
   });
 
+  it('centers the selected model inside the menu scroll container when opened', async () => {
+    const user = userEvent.setup();
+    const provider = {
+      id: 'provider-a',
+      name: 'Provider A',
+      vendor: 'A',
+      cloudProvider: '模型官方',
+      type: 'api',
+      primaryModel: 'model-0',
+      isBuiltin: false,
+      config: { baseUrl: 'https://a.example.com' },
+      models: Array.from({ length: 12 }, (_, index) => ({
+        model: `model-${index}`,
+        modelName: `Model ${index}`,
+      })),
+    } as Provider;
+    const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-model-list') ? 100 : 0;
+    });
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-model-list') ? 500 : 0;
+    });
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-selected-model-row') ? 20 : 0;
+    });
+    const offsetTop = vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-selected-model-row') ? 300 : 0;
+    });
+
+    try {
+      renderInput({
+        runtime: 'builtin',
+        provider,
+        providers: [provider],
+        selectedModel: 'model-9',
+        apiKeys: { 'provider-a': 'key-a' },
+      });
+
+      await user.click(screen.getByTitle('切换模型'));
+
+      await screen.findByText('Provider A');
+      const list = document.querySelector('[data-model-list]');
+      expect(list).not.toBeNull();
+      expect(list).toHaveProperty('scrollTop', 260);
+    } finally {
+      clientHeight.mockRestore();
+      scrollHeight.mockRestore();
+      offsetHeight.mockRestore();
+      offsetTop.mockRestore();
+    }
+  });
+
+  it('opens Model Providers from the builtin AgentSDK model menu', async () => {
+    const user = userEvent.setup();
+    const provider = {
+      id: 'codex-sub',
+      name: 'Codex (订阅)',
+      vendor: 'OpenAI',
+      cloudProvider: '模型官方',
+      type: 'subscription',
+      primaryModel: 'gpt-5.6-sol',
+      isBuiltin: true,
+      config: {},
+      models: [{ model: 'gpt-5.6-sol', modelName: 'GPT-5.6-Sol' }],
+    } as Provider;
+    const openSettings = vi.fn();
+    window.addEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
+
+    try {
+      renderInput({
+        runtime: 'builtin',
+        provider,
+        providers: [provider],
+        providerAvailable: true,
+        availableProviderIds: ['codex-sub'],
+        selectedModel: 'gpt-5.6-sol',
+      });
+
+      await user.click(screen.getByTitle('切换模型'));
+      await user.click(screen.getByRole('button', { name: '管理自定义模型服务' }));
+
+      expect(openSettings).toHaveBeenCalledTimes(1);
+      expect((openSettings.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ section: 'providers' });
+      expect(screen.queryByRole('button', { name: '管理自定义模型服务' })).not.toBeInTheDocument();
+    } finally {
+      window.removeEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
+    }
+  });
+
+  it('does not show the custom model service row for user-managed CLI runtimes', async () => {
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'codex',
+      runtimeModels: [{ value: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', isDefault: true }],
+    });
+
+    await user.click(screen.getByTitle('切换模型'));
+
+    expect(screen.queryByRole('button', { name: '管理自定义模型服务' })).not.toBeInTheDocument();
+  });
+
   it('sends text from the Launcher input surface', async () => {
     const user = userEvent.setup();
     const onSend = renderInput({ mode: 'launcher' });
@@ -357,6 +583,50 @@ describe('SimpleChatInput send paths', () => {
     expect(workspaceMocks.service.importBase64Files).not.toHaveBeenCalled();
     expect(workspaceMocks.service.copyPaths).not.toHaveBeenCalled();
     expect(workspaceMocks.service.prepareUserImageAttachments).not.toHaveBeenCalled();
+  });
+
+  it('opens the image preview with a single click on a pasted attachment', async () => {
+    const user = userEvent.setup();
+    renderInput({ mode: 'launcher' });
+    const textarea = screen.getByPlaceholderText('今天，想干点啥？');
+    const image = new File(['png'], 'clip.png', { type: 'image/png' });
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [
+          {
+            kind: 'file',
+            getAsFile: () => image,
+          },
+        ],
+      },
+    });
+
+    const thumbnail = await screen.findByRole('button', { name: 'clip.png' });
+    await user.click(thumbnail);
+
+    expect(screen.getByAltText('clip.png')).toBeInTheDocument();
+  });
+
+  it('accepts up to eight pasted image attachments', async () => {
+    renderInput({ mode: 'launcher' });
+    const textarea = screen.getByPlaceholderText('今天，想干点啥？');
+    const images = Array.from(
+      { length: 9 },
+      (_, index) => new File(['png'], `clip-${index + 1}.png`, { type: 'image/png' }),
+    );
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: images.map((image) => ({
+          kind: 'file',
+          getAsFile: () => image,
+        })),
+      },
+    });
+
+    await waitFor(() => expect(screen.getAllByAltText('attachment')).toHaveLength(8));
+    expect(screen.queryByRole('button', { name: 'clip-9.png' })).not.toBeInTheDocument();
   });
 
   it('pastes non-image attachments as workspace file references', async () => {

@@ -6,6 +6,8 @@
  * deliberately knows nothing about platform pacing, CardKit, or retry policy.
  */
 
+import { summarizeSensitiveValueForLog } from '../utils/log-summary';
+
 type MaybePromise<T> = T | Promise<T>;
 
 export type OpenClawReplyPayload = Record<string, unknown> & {
@@ -86,6 +88,22 @@ function cleanupDispatch(dispatch: PendingDispatch): void {
     requestIdByStreamId.delete(streamId);
   }
   dispatch.streamIds.clear();
+}
+
+function logCanonicalFinal(
+  dispatch: PendingDispatch,
+  outcome: 'completed' | 'aborted',
+  payloads: readonly OpenClawReplyPayload[],
+): void {
+  const composedText = payloads
+    .map(payload => typeof payload.text === 'string' ? payload.text : '')
+    .filter(Boolean)
+    .join('\n');
+  const textSummary = summarizeSensitiveValueForLog(composedText.trim() ? composedText : null);
+  console.log(
+    `[pending-dispatch] canonical_final pluginId=${dispatch.pluginId} requestId=${dispatch.requestId} `
+      + `outcome=${outcome} count=${payloads.length} chars=${textSummary.chars} hash=${textSummary.hash ?? 'none'}`,
+  );
 }
 
 function settleResolved(
@@ -318,11 +336,8 @@ export function completePendingDispatch(
   dispatch.producerTerminalAcceptedAt = Date.now();
   dispatch.finalPayloadsReceived += finalPayloads.length;
   if (finalPayloads.length > 0) dispatch.canonicalFinalAcceptedAt = Date.now();
+  logCanonicalFinal(dispatch, 'completed', finalPayloads);
   for (const payload of finalPayloads) enqueue(dispatch, { kind: 'final', payload });
-  console.log(
-    `[pending-dispatch] canonical_final_enqueued pluginId=${dispatch.pluginId} requestId=${requestId} `
-      + `count=${finalPayloads.length}`,
-  );
   enqueue(dispatch, { kind: 'complete', outcome: 'completed' });
   console.log(
     `[pending-dispatch] complete_barrier_accepted pluginId=${dispatch.pluginId} requestId=${requestId}`,
@@ -339,6 +354,7 @@ export function abortPendingDispatch(
   dispatch.finalPayloadsReceived += 1;
   dispatch.canonicalFinalAcceptedAt = Date.now();
   dispatch.queue = dispatch.queue.filter(operation => operation.kind !== 'partial');
+  logCanonicalFinal(dispatch, 'aborted', [terminalPayload]);
   enqueue(dispatch, { kind: 'final', payload: terminalPayload });
   enqueue(dispatch, { kind: 'complete', outcome: 'aborted' });
   console.log(

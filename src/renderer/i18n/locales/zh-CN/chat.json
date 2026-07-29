@@ -17,6 +17,7 @@
     "reasoningEffort": "推理强度",
     "reasoningDefault": "默认",
     "reasoningRequirement": "需服务商支持该参数，以实际生效为准",
+    "customModelService": "管理自定义模型服务",
     "systemBusy": "正在执行系统任务，请稍等",
     "stopping": "正在停止...",
     "providerUnavailableDefault": "请前往设置页面设置模型供应商",
@@ -45,7 +46,7 @@
     "pluginsSettings": "设置 → 插件",
     "noPluginsSuffix": "可以从 GitHub 或本地路径安装。",
     "cronEnabled": "定时已启用",
-    "cron": "定时",
+    "cron": "定时任务",
     "switchModel": "切换模型",
     "imageFilteredOnSend": "{{model}} 不支持图片，已自动过滤 {{count}} 张图片，仅文本已送达",
     "undoFilesAdded": "已撤销 {{count}} 个文件的添加",
@@ -305,7 +306,6 @@
       "agentSettings": "Agent 设置",
       "searchPlaceholder": "搜索文件及内容...",
       "exitSearch": "退出搜索",
-      "stats": "{{files}} 文件 · {{folders}} 文件夹",
       "loading": "加载中...",
       "copyCount": "复制 ({{count}})",
       "cutCount": "剪切 ({{count}})",
@@ -396,7 +396,9 @@
       "tokenStats": "会话 Token 消耗统计",
       "contextUsage": "上下文 Token 使用详情",
       "bindBot": "绑定聊天机器人",
-      "cronDeleteTooltip": "请先停止或取消当前目标/定时任务后再删除",
+      "deleteBlockedByOwner": "该对话仍在使用中。请先完成、归档或删除关联任务/目标，等待后台回复结束，或解绑聊天机器人后再删除",
+      "deleteTransitionInProgress": "该对话正在打开或切换，请稍后再删除",
+      "deleteActivityUnavailable": "暂时无法确认该对话是否仍在运行，已保留对话，请稍后重试",
       "delete": "删除对话",
       "bound": "已绑定",
       "switchToOther": "切换到其他",
@@ -425,11 +427,8 @@
       }
     },
     "history": {
-      "title": "历史记录",
-      "workspaceTitle": "历史会话",
+      "title": "工作区历史记录",
       "loading": "加载中...",
-      "loadFailed": "加载失败，点击重试",
-      "refresh": "刷新历史会话",
       "empty": "暂无历史记录",
       "current": "当前",
       "turnCount": "{{count}} 轮",
@@ -443,7 +442,9 @@
       "unfavorite": "取消收藏",
       "exportMarkdown": "导出为 md 文件",
       "viewStats": "查看统计",
-      "cronDeleteTooltip": "请先停止或取消当前目标/定时任务后再删除",
+      "deleteBlockedByOwner": "该对话仍在使用中。请先完成、归档或删除关联任务/目标，等待后台回复结束，或解绑聊天机器人后再删除",
+      "deleteTransitionInProgress": "该对话正在打开或切换，请稍后再删除",
+      "deleteActivityUnavailable": "暂时无法确认该对话是否仍在运行，已保留对话，请稍后重试",
       "delete": "删除对话",
       "deleteDialog": {
         "title": "删除对话",
@@ -716,20 +717,6 @@
         "imMedia": "IM 媒体",
         "imBridgeTools": "插件工具"
       },
-      "nativeTools": {
-        "novelWorkbench": "小说工作台",
-        "readWorld": "读取世界架构",
-        "validateWorldProposal": "校验世界架构提案",
-        "submitWorldProposal": "提交世界架构提案",
-        "readNarrativeContext": "读取剧情工程上下文",
-        "readTimelineContext": "读取时间线上下文",
-        "readItems": "读取物品库",
-        "validateItemProposal": "校验物品库提案",
-        "submitItemProposal": "提交物品库提案",
-        "readCharacters": "读取人物库",
-        "validateCharacterProposal": "校验人物库提案",
-        "submitCharacterProposal": "提交人物库提案"
-      },
       "taskOp": {
         "loadingList": "加载任务列表...",
         "emptyList": "暂无任务",
@@ -755,6 +742,8 @@
         "toolCalls": "调用工具 {{count}} 次",
         "toolCallsShort": "{{count}} 次工具调用",
         "tokenUsage": "消耗 {{tokens}} token",
+        "resolvedModel": "模型 {{model}}",
+        "modelsUsed": "模型 {{models}}",
         "statusCompleted": "完成",
         "statusError": "错误",
         "statusRunning": "运行中",
@@ -763,6 +752,10 @@
         "backgroundRunning": "后台运行中",
         "traceTitle": "调用记录 ({{count}})",
         "output": "输出"
+      },
+      "grep": {
+        "partialLines": "显示第 {{start}}–{{end}} 行，共 {{total}} 行",
+        "partialFiles": "显示第 {{start}}–{{end}} 个文件，共 {{total}} 个文件"
       },
       "webSearch": {
         "initializing": "正在初始化搜索...",
@@ -786,6 +779,8 @@
         "moreOutput": "还有更多终端内容未显示",
         "contentTruncated": "终端内容过长，仅展示安全范围内的内容",
         "duration": "耗时 {{duration}}",
+        "backgroundedAfter": "等待 {{duration}} 后转入后台",
+        "backgroundCwdUnchanged": "会话工作目录未改变",
         "status": {
           "initializing": "初始化中",
           "running": "运行中",
@@ -965,6 +960,9 @@
       "unknownError": "未知错误",
       "rewindFailedWithError": "时间回溯失败：{{error}}",
       "rewindFailedRetry": "时间回溯失败，请重试",
+      "rewindPartialLinks": "对话已回溯，但为保证安全，有 {{count}} 个链接文件未恢复。",
+      "rewindFilesFailed": "对话已回溯，但工作区文件恢复失败，文件保持当前状态。",
+      "rewindFilesNotAttempted": "对话已回溯，但没有可用的文件检查点，工作区文件保持当前状态。",
       "retryFailedWithError": "重试失败：{{error}}",
       "retryFailed": "重试失败",
       "forkOpenFailed": "创建分支失败：无法打开新会话",
@@ -1032,6 +1030,30 @@
         "model_error": {
           "label": "模型返回错误",
           "detail": "模型侧返回错误，请查看日志定位具体原因。"
+        },
+        "api_error": {
+          "label": "API 请求失败",
+          "detail": "模型供应商 API 请求失败。请检查网络、凭据、供应商状态或日志中的响应信息。"
+        },
+        "malformed_tool_use_exhausted": {
+          "label": "工具调用格式多次失败",
+          "detail": "模型多次生成无效的工具调用格式，SDK 已停止本轮执行。可重新发送或调整模型。"
+        },
+        "budget_exhausted": {
+          "label": "已达到本轮执行预算",
+          "detail": "本轮已达到 SDK 执行预算，尚未正常完成。可继续对话或调整任务范围。"
+        },
+        "structured_output_retry_exhausted": {
+          "label": "结构化输出生成失败",
+          "detail": "模型多次重试后仍未生成符合要求的结构化输出。"
+        },
+        "tool_deferred_unavailable": {
+          "label": "延迟工具已不可用",
+          "detail": "先前延迟的工具在继续执行时已不可用，本轮未正常完成。"
+        },
+        "turn_setup_failed": {
+          "label": "本轮启动失败",
+          "detail": "SDK 无法完成本轮执行前的初始化。请检查配置、Provider 和运行日志。"
         }
       }
     },

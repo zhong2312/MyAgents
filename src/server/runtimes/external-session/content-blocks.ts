@@ -14,6 +14,14 @@ const pendingToolInputs = new Map<string, { name: string; inputJson: string }>()
 const childToolToParent = new Map<string, string>();
 const pendingSubagentCallsByParent = new Map<string, PersistSubagentCall[]>();
 const subagentAttachmentParents = new Map<string, string>();
+const pendingSubagentAttachmentUpdates = new Map<string, Array<{
+  pendingId: string;
+  attachment: ToolAttachment;
+}>>();
+const pendingTopLevelAttachmentUpdates = new Map<string, Array<{
+  pendingId: string;
+  attachment: ToolAttachment;
+}>>();
 const subagentTraceBuffers = new Map<string, string>();
 
 export function resetExternalContentState(): void {
@@ -28,6 +36,8 @@ export function resetExternalContentState(): void {
   childToolToParent.clear();
   pendingSubagentCallsByParent.clear();
   subagentAttachmentParents.clear();
+  pendingSubagentAttachmentUpdates.clear();
+  pendingTopLevelAttachmentUpdates.clear();
   subagentTraceBuffers.clear();
 }
 
@@ -364,7 +374,20 @@ export function applyExternalSubagentToolResult(input: {
     call.isError = input.isError ?? false;
     call.isLoading = false;
     if (input.metadata !== undefined) call.resultMeta = input.metadata;
-    if (hasAttachments) call.attachments = input.attachments;
+    if (hasAttachments) {
+      const attachments = input.attachments!;
+      call.attachments = attachments;
+      const pending = pendingSubagentAttachmentUpdates.get(input.toolUseId);
+      if (pending) {
+        for (const update of pending) {
+          const idx = attachments.findIndex((attachment) => attachment.pendingId === update.pendingId);
+          if (idx >= 0) attachments[idx] = update.attachment;
+        }
+        pendingSubagentAttachmentUpdates.delete(input.toolUseId);
+      }
+    } else {
+      pendingSubagentAttachmentUpdates.delete(input.toolUseId);
+    }
   }
   if (hasAttachments) subagentAttachmentParents.set(input.toolUseId, input.parentToolUseId);
   childToolToParent.delete(input.toolUseId);
@@ -384,7 +407,18 @@ export function applyExternalToolResultToContent(input: {
       block.tool.isError = input.isError ?? false;
       block.tool.resultMeta = input.metadata;
       if (input.attachments && input.attachments.length > 0) {
-        block.tool.attachments = input.attachments;
+        const attachments = input.attachments;
+        block.tool.attachments = attachments;
+        const pending = pendingTopLevelAttachmentUpdates.get(input.toolUseId);
+        if (pending) {
+          for (const update of pending) {
+            const idx = attachments.findIndex((attachment) => attachment.pendingId === update.pendingId);
+            if (idx >= 0) attachments[idx] = update.attachment;
+          }
+          pendingTopLevelAttachmentUpdates.delete(input.toolUseId);
+        }
+      } else {
+        pendingTopLevelAttachmentUpdates.delete(input.toolUseId);
       }
       const display = buildFilePatchDisplayDescriptor(block.tool);
       if (display) block.tool.display = display;
@@ -410,7 +444,7 @@ export function appendExternalToolResultDeltaToContent(toolUseId: string, delta:
 }
 
 export function getExternalSubagentAttachmentParent(toolUseId: string): string | undefined {
-  return subagentAttachmentParents.get(toolUseId);
+  return subagentAttachmentParents.get(toolUseId) ?? childToolToParent.get(toolUseId);
 }
 
 export function applyExternalSubagentAttachmentUpdate(input: {
@@ -418,32 +452,54 @@ export function applyExternalSubagentAttachmentUpdate(input: {
   toolUseId: string;
   pendingId: string;
   attachment: ToolAttachment;
-}): boolean {
+}): 'applied' | 'deferred' | 'missing' {
   const call = findExternalSubagentCall(input.parentToolUseId, input.toolUseId);
-  if (!call?.attachments) return false;
+  if (!call) return 'missing';
+  if (!call.attachments) {
+    let pending = pendingSubagentAttachmentUpdates.get(input.toolUseId);
+    if (!pending) {
+      pending = [];
+      pendingSubagentAttachmentUpdates.set(input.toolUseId, pending);
+    }
+    const existing = pending.find((update) => update.pendingId === input.pendingId);
+    if (existing) existing.attachment = input.attachment;
+    else pending.push({ pendingId: input.pendingId, attachment: input.attachment });
+    return 'deferred';
+  }
   const idx = call.attachments.findIndex((attachment) => attachment.pendingId === input.pendingId);
-  if (idx < 0) return false;
+  if (idx < 0) return 'missing';
   call.attachments[idx] = input.attachment;
-  return true;
+  return 'applied';
 }
 
 export function applyExternalToolAttachmentUpdate(input: {
   toolUseId: string;
   pendingId: string;
   attachment: ToolAttachment;
-}): boolean {
+}): 'applied' | 'deferred' | 'missing' {
   for (let i = currentContentBlocks.length - 1; i >= 0; i -= 1) {
     const block = currentContentBlocks[i];
-    if (block.type === 'tool_use' && block.tool?.id === input.toolUseId && block.tool.attachments) {
+    if (block.type === 'tool_use' && block.tool?.id === input.toolUseId) {
+      if (!block.tool.attachments) {
+        let pending = pendingTopLevelAttachmentUpdates.get(input.toolUseId);
+        if (!pending) {
+          pending = [];
+          pendingTopLevelAttachmentUpdates.set(input.toolUseId, pending);
+        }
+        const existing = pending.find((update) => update.pendingId === input.pendingId);
+        if (existing) existing.attachment = input.attachment;
+        else pending.push({ pendingId: input.pendingId, attachment: input.attachment });
+        return 'deferred';
+      }
       const idx = block.tool.attachments.findIndex((attachment) => attachment.pendingId === input.pendingId);
       if (idx >= 0) {
         block.tool.attachments[idx] = input.attachment;
-        return true;
+        return 'applied';
       }
-      return false;
+      return 'missing';
     }
   }
-  return false;
+  return 'missing';
 }
 
 export function applyExternalReplayedToolResultToContent(input: {

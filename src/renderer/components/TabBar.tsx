@@ -195,8 +195,9 @@ export default memo(function TabBar({
                         <div
                             className="absolute left-0 top-0 bottom-0 w-6 z-10 pointer-events-none"
                             style={{
-                                // #333: same-color 0-alpha endpoint, never the `transparent` keyword (see index.css --*-a0)
-                                background: 'linear-gradient(to right, var(--paper) 0%, var(--paper-a0) 100%)',
+                                background: 'var(--global-sidebar-bg)',
+                                WebkitMaskImage: 'linear-gradient(to right, #000 0%, rgba(0, 0, 0, 0) 100%)',
+                                maskImage: 'linear-gradient(to right, #000 0%, rgba(0, 0, 0, 0) 100%)',
                             }}
                         />
                     )}
@@ -206,7 +207,9 @@ export default memo(function TabBar({
                         <div
                             className="absolute right-0 top-0 bottom-0 w-6 z-10 pointer-events-none"
                             style={{
-                                background: 'linear-gradient(to left, var(--paper) 0%, var(--paper-a0) 100%)',
+                                background: 'var(--global-sidebar-bg)',
+                                WebkitMaskImage: 'linear-gradient(to left, #000 0%, rgba(0, 0, 0, 0) 100%)',
+                                maskImage: 'linear-gradient(to left, #000 0%, rgba(0, 0, 0, 0) 100%)',
                             }}
                         />
                     )}
@@ -251,8 +254,8 @@ export default memo(function TabBar({
                         <button
                             ref={overflowButtonRef}
                             type="button"
-                            className={`flex flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]/60 hover:text-[var(--ink)] ${
-                                menuOpen ? 'bg-[var(--paper-inset)] text-[var(--ink)]' : ''
+                            className={`flex flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
+                                menuOpen ? 'bg-[var(--hover-bg)] text-[var(--ink)]' : ''
                             }`}
                             style={{ width: TAB_BAR_BUTTON_WIDTH_PX, height: TAB_BAR_BUTTON_WIDTH_PX }}
                             onClick={() => setMenuOpen((open) => !open)}
@@ -283,6 +286,8 @@ export default memo(function TabBar({
                                     ? getFolderName(tab.agentDir)
                                     : tab.view === 'settings'
                                       ? t('tabs.settings')
+                                      : tab.view === 'capabilities'
+                                        ? t('tabs.capabilities')
                                       : tab.view === 'taskcenter'
                                         ? t('tabs.taskCenter')
                                         : tab.view === 'space'
@@ -332,7 +337,7 @@ export default memo(function TabBar({
                     list so extreme widths keep the recovery affordance visible first. */}
                 {canAddTab && (
                     <button
-                        className="flex flex-shrink-0 items-center justify-center rounded-md transition-all duration-150 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]/60 hover:text-[var(--ink)]"
+                        className="flex flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-all duration-150 hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                         style={{ width: TAB_BAR_BUTTON_WIDTH_PX, height: TAB_BAR_BUTTON_WIDTH_PX }}
                         onClick={onNewTab}
                         title={`${t('tabs.newTab')} (${navigator.platform.toLowerCase().includes('mac') ? '⌘T' : 'Ctrl+T'})`}

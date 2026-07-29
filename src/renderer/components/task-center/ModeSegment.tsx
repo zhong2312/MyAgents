@@ -3,7 +3,7 @@
 //
 // v0.1.69 redesign: replaced the prior "text | text" pipe layout with the
 // macOS-settings-style icon segmented control (variant F in the
-// `specs/playground/mode-segment.html` sandbox). The segmented control
+// `specs/playgrounds/mode-segment.html` sandbox). The segmented control
 // reads as one affordance rather than two free-floating buttons — it's
 // clearer that these are mutually-exclusive modes of a single surface.
 // (Chat surface previously used a "compact" variant; after the v0.1.69

@@ -200,6 +200,7 @@ describe('admin-api help registry', () => {
     expect(readme.success).toBe(true);
     expect(shortText).not.toContain('{"kind":"loop"}');
     expect(readmeText).not.toContain('{"kind":"loop"}');
+    expect(shortText).toContain('--prompt-file is supported');
     expect(handleHelp({ path: ['goal'] }).success).toBe(true);
   });
 
@@ -1499,6 +1500,166 @@ describe('admin-api MCP remove/disable legacy HTTP servers', () => {
   });
 });
 
+describe('admin-api Agent runtime lifecycle convergence', () => {
+  it('removes the durable channel before stopping that exact Rust runtime', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-channel-remove',
+        name: 'Channel Remove',
+        enabled: true,
+        channels: [
+          { id: 'channel-remove', type: 'openclaw:weixin', enabled: true },
+          { id: 'channel-keep', type: 'telegram', enabled: true },
+        ],
+      }],
+    });
+    let persistedChannelsAtStop: unknown;
+    managementApiMocks.managementApi.mockImplementation(async () => {
+      const agent = (readConfig().agents as Record<string, unknown>[])[0];
+      persistedChannelsAtStop = agent.channels;
+      return { ok: true, stopped: true };
+    });
+    const { handleAgentChannelRemove } = await import('./admin-api');
+
+    const result = await handleAgentChannelRemove({
+      agentId: 'agent-channel-remove',
+      channelId: 'channel-remove',
+    });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/stop-channel',
+      'POST',
+      { agentId: 'agent-channel-remove', channelId: 'channel-remove' },
+      expect.any(Object),
+    );
+    expect(persistedChannelsAtStop).toEqual([
+      { id: 'channel-keep', type: 'telegram', enabled: true },
+    ]);
+  });
+
+  it('retries exact runtime cleanup after the durable channel is already absent', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-channel-retry',
+        name: 'Channel Retry',
+        enabled: true,
+        channels: [],
+      }],
+    });
+    const { handleAgentChannelRemove } = await import('./admin-api');
+
+    const result = await handleAgentChannelRemove({
+      agentId: 'agent-channel-retry',
+      channelId: 'historically-deleted-channel',
+    });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/stop-channel',
+      'POST',
+      {
+        agentId: 'agent-channel-retry',
+        channelId: 'historically-deleted-channel',
+      },
+      expect.any(Object),
+    );
+  });
+
+  it('reports a truthful partial failure when config deletion lands but runtime stop fails', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-channel-stop-fails',
+        name: 'Channel Stop Fails',
+        enabled: true,
+        channels: [{ id: 'channel-stop-fails', type: 'openclaw:weixin', enabled: true }],
+      }],
+    });
+    managementApiMocks.managementApi.mockResolvedValue({
+      ok: false,
+      error: 'injected Rust lifecycle failure',
+    });
+    const { handleAgentChannelRemove } = await import('./admin-api');
+
+    const result = await handleAgentChannelRemove({
+      agentId: 'agent-channel-stop-fails',
+      channelId: 'channel-stop-fails',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('was removed');
+    expect(result.error).toContain('injected Rust lifecycle failure');
+    const agent = (readConfig().agents as Record<string, unknown>[])[0];
+    expect(agent.channels).toEqual([]);
+  });
+
+  it.each([
+    ['agent disable', async (api: typeof import('./admin-api')) => api.handleAgentDisable({ id: 'agent-disable' })],
+    ['agent set enabled=false', async (api: typeof import('./admin-api')) => api.handleAgentSet({
+      id: 'agent-disable',
+      key: 'enabled',
+      value: false,
+    })],
+  ])('%s persists disabled before stopping all Rust channel runtimes', async (_label, run) => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-disable',
+        name: 'Disable',
+        enabled: true,
+        channels: [{ id: 'channel-1', type: 'openclaw:weixin', enabled: true }],
+      }],
+    });
+    let persistedEnabledAtStop: unknown;
+    managementApiMocks.managementApi.mockImplementation(async () => {
+      const agent = (readConfig().agents as Record<string, unknown>[])[0];
+      persistedEnabledAtStop = agent.enabled;
+      return { ok: true, stoppedChannels: 1 };
+    });
+    const api = await import('./admin-api');
+
+    const result = await run(api);
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/stop-channels',
+      'POST',
+      { agentId: 'agent-disable' },
+      expect.any(Object),
+    );
+    expect(persistedEnabledAtStop).toBe(false);
+  });
+
+  it('still converges runtime state when archiving an already-disabled Agent', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-archive-disabled',
+        name: 'Archive Disabled',
+        enabled: false,
+        workspacePath: '/tmp/archive-disabled',
+        channels: [{ id: 'channel-1', type: 'openclaw:weixin', enabled: true }],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-archive-disabled',
+      name: 'Archive Disabled',
+      path: '/tmp/archive-disabled',
+      agentId: 'agent-archive-disabled',
+    }]);
+    managementApiMocks.managementApi.mockResolvedValue({ ok: true, stoppedChannels: 1 });
+    const { handleAgentArchive } = await import('./admin-api');
+
+    const result = await handleAgentArchive({ id: 'agent-archive-disabled' });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/stop-channels',
+      'POST',
+      { agentId: 'agent-archive-disabled' },
+      expect.any(Object),
+    );
+  });
+});
+
 describe('admin-api Agent workspace archive', () => {
   it('archives a linked agent workspace and pauses proactive agent state', async () => {
     const { handleAgentArchive, handleAgentList } = await import('./admin-api');
@@ -1533,6 +1694,7 @@ describe('admin-api Agent workspace archive', () => {
       '/api/agent/stop-channels',
       'POST',
       { agentId: 'agent-1' },
+      expect.any(Object),
     );
 
     const archivedList = handleAgentList({ lifecycle: 'archived' });

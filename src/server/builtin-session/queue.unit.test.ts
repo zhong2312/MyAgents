@@ -19,6 +19,7 @@ import {
   setTurnAdmissionTicket,
 } from './queue';
 import type { MessageQueueItem } from './types';
+import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 
 function queueItem(id: string): MessageQueueItem {
   return {
@@ -28,6 +29,7 @@ function queueItem(id: string): MessageQueueItem {
     wasQueued: false,
     resolve: () => undefined,
     turnOwner: { kind: 'goal', id: 'goal-1' },
+    channelDelivery: NO_CHANNEL_DELIVERY,
   };
 }
 
@@ -101,6 +103,7 @@ describe('builtin promoted queue item', () => {
   it('releases only the exact provisional SDK in-flight owner', () => {
     setInFlightQueueItem('realtime-before-yield', {
       messageText: 'queued',
+      channelDelivery: NO_CHANNEL_DELIVERY,
     });
 
     expect(clearInFlightSlotIfMatches('other')).toBe(false);
@@ -113,7 +116,10 @@ describe('builtin promoted queue item', () => {
     const item = queueItem('mutation-requeue');
     item.wasQueued = true;
     beginPromotedItem(item);
-    setInFlightQueueItem(item.id, { messageText: item.messageText });
+    setInFlightQueueItem(item.id, {
+      messageText: item.messageText,
+      channelDelivery: NO_CHANNEL_DELIVERY,
+    });
 
     requeuePromotedItemBeforeSdkDispatch(item);
 

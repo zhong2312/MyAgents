@@ -4,6 +4,7 @@ import {
   beginLiveRevisionRestore,
   completeLiveRevisionRestore,
   ingestLiveRevisionEvent,
+  ownsLiveRevisionRestore,
   type BufferedLiveRevisionEvent,
 } from './liveRevisionFence';
 
@@ -18,6 +19,14 @@ function event(liveRevision: number, connectionGeneration = 1): BufferedLiveRevi
 }
 
 describe('live revision restore fence', () => {
+  it('lets only the current restore token release shared restore state', () => {
+    const first = beginLiveRevisionRestore(EMPTY_LIVE_REVISION_FENCE, 'session-a', 1);
+    const second = beginLiveRevisionRestore(first, 'session-a', 2);
+
+    expect(ownsLiveRevisionRestore(second, first.restoreToken)).toBe(false);
+    expect(ownsLiveRevisionRestore(second, second.restoreToken)).toBe(true);
+  });
+
   it('drops snapshot-covered events and replays the contiguous tail once', () => {
     let fence = beginLiveRevisionRestore(EMPTY_LIVE_REVISION_FENCE, 'session-a', 1);
     fence = ingestLiveRevisionEvent(fence, event(2)).fence;

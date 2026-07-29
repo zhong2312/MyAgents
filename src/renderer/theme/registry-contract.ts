@@ -2,7 +2,7 @@
 export const REQUIRED_THEME_CSS_TOKENS = [
   '--font-body', '--font-display', '--font-code',
   '--ink', '--ink-secondary', '--ink-muted', '--ink-subtle', '--ink-faint',
-  '--paper', '--paper-elevated', '--message-user-bg', '--paper-inset',
+  '--paper', '--global-sidebar-bg', '--paper-elevated', '--message-user-bg', '--paper-inset',
   '--paper-a0', '--paper-elevated-a0', '--message-user-bg-a0', '--paper-inset-a0', '--hover-bg',
   '--accent', '--accent-warm', '--accent-warm-hover', '--accent-warm-subtle',
   '--accent-warm-muted', '--accent-warm-subtle-a0', '--accent-cool', '--accent-cool-hover', '--on-accent',

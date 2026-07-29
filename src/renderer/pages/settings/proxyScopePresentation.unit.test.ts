@@ -8,12 +8,12 @@ describe('describeProxyScopeSummary', () => {
       enabled: false,
       scope: { mode: 'all' },
       selectedProviderNames: ['Anthropic'],
-    }).key).toBe('general.proxyScopeDisabledHint');
+    }).key).toBe('proxy.scopeDisabledHint');
     expect(describeProxyScopeSummary({
       enabled: true,
       scope: { mode: 'all' },
       selectedProviderNames: ['Anthropic'],
-    }).key).toBe('general.proxyScopeAllSummary');
+    }).key).toBe('proxy.scopeAllSummary');
   });
 
   it('covers explicit zero and general-only custom scopes', () => {
@@ -21,12 +21,12 @@ describe('describeProxyScopeSummary', () => {
       enabled: true,
       scope: { mode: 'custom', generalRequests: false, providerIds: [] },
       selectedProviderNames: [],
-    }).key).toBe('general.proxyScopeCustomEmptySummary');
+    }).key).toBe('proxy.scopeCustomEmptySummary');
     expect(describeProxyScopeSummary({
       enabled: true,
       scope: { mode: 'custom', generalRequests: true, providerIds: [] },
       selectedProviderNames: [],
-    }).key).toBe('general.proxyScopeCustomGeneralOnlySummary');
+    }).key).toBe('proxy.scopeCustomGeneralOnlySummary');
   });
 
   it('distinguishes general on and off with selected providers', () => {
@@ -35,9 +35,9 @@ describe('describeProxyScopeSummary', () => {
       scope: { mode: 'custom', generalRequests: true, providerIds: ['anthropic-sub'] },
       selectedProviderNames: ['Anthropic'],
     })).toEqual({
-      key: 'general.proxyScopeCustomGeneralOnSummary',
+      key: 'proxy.scopeCustomGeneralOnSummary',
       values: {
-        providerSummaryKey: 'general.proxyScopeProviderNames',
+        providerSummaryKey: 'proxy.scopeProviderNames',
         names: 'Anthropic',
       },
     });
@@ -46,9 +46,9 @@ describe('describeProxyScopeSummary', () => {
       scope: { mode: 'custom', generalRequests: false, providerIds: ['a', 'b', 'c', 'd'] },
       selectedProviderNames: ['A', 'B', 'C', 'D'],
     })).toEqual({
-      key: 'general.proxyScopeCustomGeneralOffSummary',
+      key: 'proxy.scopeCustomGeneralOffSummary',
       values: {
-        providerSummaryKey: 'general.proxyScopeProviderCount',
+        providerSummaryKey: 'proxy.scopeProviderCount',
         count: 4,
       },
     });

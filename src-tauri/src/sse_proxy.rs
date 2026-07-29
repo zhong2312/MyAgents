@@ -1,6 +1,6 @@
 // SSE Proxy module - Connects to sidecar SSE and forwards events via Tauri
 // This bypasses WebView CORS restrictions entirely
-// Supports multiple connections (one per Tab)
+// Supports multiple renderer-surface subscriptions (Chat Tabs and Companion)
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -9,17 +9,23 @@ use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
-use crate::{ulog_debug, ulog_error, ulog_info};
+use crate::sidecar::{ManagedSidecarManager, SidecarOwner};
+use crate::{ulog_debug, ulog_info, ulog_warn};
 
 /// Monotonically increasing connection id used to distinguish a "stale" task
 /// (one whose entry has already been replaced by a newer connection) from
 /// the live one. Pattern 1, audit A: SSE proxy task exits without clearing
 /// `running=true` → tab permanently muted on reconnect because new
 /// `start_sse_proxy` saw `running == true` and returned Ok early.
-static SSE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static SSE_SUBSCRIPTION_GENERATION: AtomicU64 = AtomicU64::new(1);
+static SSE_TRANSPORT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-fn next_generation() -> u64 {
-    SSE_GENERATION.fetch_add(1, Ordering::Relaxed)
+fn next_subscription_generation() -> u64 {
+    SSE_SUBSCRIPTION_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+fn next_transport_generation() -> u64 {
+    SSE_TRANSPORT_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
 // Timeout constants (in seconds)
@@ -41,6 +47,8 @@ fn next_generation() -> u64 {
 //
 // TODO v0.2.0: Make these configurable via Settings
 const SSE_READ_TIMEOUT_SECS: u64 = 60;
+const SSE_RETRY_BASE_DELAY_MS: u64 = 250;
+const SSE_RETRY_MAX_DELAY_MS: u64 = 5_000;
 const HTTP_PROXY_TIMEOUT_SECS: u64 = 120;
 const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 = 360;
 
@@ -127,11 +135,13 @@ fn request_target_is_loopback(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Single SSE connection for a Tab
+/// One long-lived SSE subscription for a renderer surface.
 struct SseConnection {
     /// Generation id assigned at spawn time; spawned task captures this and
     /// only clears its entry on exit if the entry's generation still matches.
     generation: u64,
+    session_id_hint: String,
+    owner: SidecarOwner,
     /// Shared running flag - used to gracefully stop the SSE stream
     running: Arc<AtomicBool>,
     /// Task handle for aborting if graceful stop fails
@@ -139,12 +149,18 @@ struct SseConnection {
 }
 
 impl SseConnection {
-    fn new(generation: u64) -> Self {
+    fn new(generation: u64, session_id_hint: String, owner: SidecarOwner) -> Self {
         Self {
             generation,
+            session_id_hint,
+            owner,
             running: Arc::new(AtomicBool::new(false)),
             abort_handle: None,
         }
+    }
+
+    fn matches_target(&self, session_id_hint: &str, owner: &SidecarOwner) -> bool {
+        self.session_id_hint == session_id_hint && &self.owner == owner
     }
 
     /// Treat a connection whose task has finished (handle finished, or
@@ -170,9 +186,9 @@ impl SseConnection {
     }
 }
 
-/// State for managing multiple SSE connections (one per Tab)
+/// State for managing renderer-surface SSE subscriptions.
 pub struct SseProxyState {
-    /// Tab ID -> SSE connection
+    /// Stable renderer connection key -> SSE subscription.
     connections: Mutex<HashMap<String, SseConnection>>,
 }
 
@@ -184,34 +200,61 @@ impl Default for SseProxyState {
     }
 }
 
-/// Start SSE proxy connection for a specific Tab
+fn frontend_sidecar_owner(owner_type: &str, owner_id: String) -> Result<SidecarOwner, String> {
+    if owner_id.is_empty() {
+        return Err("SSE sidecar owner id must not be empty".to_string());
+    }
+    match owner_type {
+        "tab" => Ok(SidecarOwner::Tab(owner_id)),
+        "companion" => Ok(SidecarOwner::Companion(owner_id)),
+        _ => Err(format!(
+            "Unsupported SSE sidecar owner type: {}",
+            owner_type
+        )),
+    }
+}
+
+/// Start a long-lived SSE subscription for a renderer surface.
 #[tauri::command]
 pub async fn start_sse_proxy(
     app: AppHandle,
     state: tauri::State<'_, Arc<SseProxyState>>,
-    url: String,
-    tab_id: Option<String>,
+    sidecar_manager: tauri::State<'_, ManagedSidecarManager>,
+    connection_key: String,
+    session_id_hint: String,
+    sidecar_owner_type: String,
+    sidecar_owner_id: String,
 ) -> Result<(), String> {
-    let tab_id = tab_id.unwrap_or_else(|| "__default__".to_string());
+    if connection_key.is_empty() {
+        return Err("SSE connection key must not be empty".to_string());
+    }
+    if session_id_hint.is_empty() {
+        return Err("SSE session id hint must not be empty".to_string());
+    }
+    let owner = frontend_sidecar_owner(&sidecar_owner_type, sidecar_owner_id)?;
 
     let mut connections = state.connections.lock().await;
 
-    // Check if already running for this tab. Pattern 1, audit A: only
+    // Check if this exact subscription is already running. Pattern 1, audit A: only
     // short-circuit when the previous task is *actually* alive — a finished
     // JoinHandle / cleared running flag means the prior task crashed without
     // cleanup, and we must replace it (otherwise the tab stays muted forever).
-    if let Some(conn) = connections.get(&tab_id) {
-        if conn.is_alive() {
+    if let Some(conn) = connections.get(&connection_key) {
+        if conn.is_alive() && conn.matches_target(&session_id_hint, &owner) {
             ulog_debug!(
-                "[sse-proxy] Tab {} already has an active connection",
-                tab_id
+                "[sse-proxy] Subscription {} already active for hint {} and owner {:?}",
+                connection_key,
+                session_id_hint,
+                owner
             );
             return Ok(());
         }
         ulog_debug!(
-            "[sse-proxy] Tab {} prior task ended (gen={}); replacing",
-            tab_id,
-            conn.generation
+            "[sse-proxy] Replacing subscription {} (old_gen={}, old_hint={}, old_owner={:?})",
+            connection_key,
+            conn.generation,
+            conn.session_id_hint,
+            conn.owner
         );
     }
 
@@ -232,37 +275,38 @@ pub async fn start_sse_proxy(
     // Both branches resolve correctly because A's cleanup is gated on
     // generation match. Keep this comment in place — removing it makes the
     // race look like a bug.
-    if let Some(mut conn) = connections.remove(&tab_id) {
+    if let Some(mut conn) = connections.remove(&connection_key) {
         conn.stop();
     }
 
     // Allocate this connection's generation and create the entry.
-    let my_gen = next_generation();
-    let mut conn = SseConnection::new(my_gen);
+    let my_gen = next_subscription_generation();
+    let mut conn = SseConnection::new(my_gen, session_id_hint.clone(), owner.clone());
     conn.running.store(true, Ordering::SeqCst);
 
     let app_handle = app.clone();
-    let tab_id_clone = tab_id.clone();
+    let connection_key_clone = connection_key.clone();
     // Share the same running flag with the spawned task
     let running = conn.running.clone();
     let state_for_task = (*state).clone();
+    let manager_for_task = sidecar_manager.inner().clone();
+    let session_id_hint_for_task = session_id_hint.clone();
+    let owner_for_task = owner.clone();
 
-    // Spawn async task to handle SSE stream
+    // Spawn one task for the whole subscription lifetime. Individual HTTP
+    // streams are attempts inside this supervisor, not connection owners.
     let handle = tauri::async_runtime::spawn(async move {
-        let outcome = connect_sse(&app_handle, &url, &running, &tab_id_clone).await;
-        match outcome {
-            Ok(_) => {
-                ulog_debug!(
-                    "[sse-proxy] Tab {} connection closed normally",
-                    tab_id_clone
-                );
-            }
-            Err(e) => {
-                ulog_error!("[sse-proxy] Tab {} connection error: {}", tab_id_clone, e);
-                // Emit error with tab_id prefix so frontend can filter
-                let _ = app_handle.emit(&format!("sse:{}:error", tab_id_clone), e.to_string());
-            }
-        }
+        run_sse_supervisor(
+            &app_handle,
+            &manager_for_task,
+            &state_for_task,
+            &running,
+            &connection_key_clone,
+            my_gen,
+            &session_id_hint_for_task,
+            &owner_for_task,
+        )
+        .await;
 
         // Pattern 1: on task exit, clear the running flag and remove the
         // entry — but only if the entry still belongs to *this* generation
@@ -270,21 +314,21 @@ pub async fn start_sse_proxy(
         // this, audit A would still bite: stale `running=true` → next
         // connect short-circuits and the tab is muted.
         let mut connections = state_for_task.connections.lock().await;
-        match connections.get_mut(&tab_id_clone) {
+        match connections.get_mut(&connection_key_clone) {
             Some(entry) if entry.generation == my_gen => {
                 entry.running.store(false, Ordering::SeqCst);
                 entry.abort_handle = None;
-                connections.remove(&tab_id_clone);
+                connections.remove(&connection_key_clone);
                 ulog_debug!(
-                    "[sse-proxy] Tab {} cleaned own entry (gen={})",
-                    tab_id_clone,
+                    "[sse-proxy] Subscription {} cleaned own entry (gen={})",
+                    connection_key_clone,
                     my_gen
                 );
             }
             Some(entry) => {
                 ulog_debug!(
-                    "[sse-proxy] Tab {} task exit (gen={}) superseded by gen={}; not clearing",
-                    tab_id_clone,
+                    "[sse-proxy] Subscription {} task exit (gen={}) superseded by gen={}; not clearing",
+                    connection_key_clone,
                     my_gen,
                     entry.generation
                 );
@@ -294,30 +338,31 @@ pub async fn start_sse_proxy(
     });
 
     conn.abort_handle = Some(handle);
-    connections.insert(tab_id.clone(), conn);
+    connections.insert(connection_key.clone(), conn);
 
     ulog_info!(
-        "[sse-proxy] Started connection for tab {} (gen={})",
-        tab_id,
-        my_gen
+        "[sse-proxy] Installed subscription {} (gen={}, hint={}, owner={:?})",
+        connection_key,
+        my_gen,
+        session_id_hint,
+        owner
     );
 
     Ok(())
 }
 
-/// Stop SSE proxy connection for a specific Tab
+/// Stop one renderer subscription. This is the only operation that ends the
+/// supervisor's retry lifetime; transient transport failures never remove it.
 #[tauri::command]
 pub async fn stop_sse_proxy(
     state: tauri::State<'_, Arc<SseProxyState>>,
-    tab_id: Option<String>,
+    connection_key: String,
 ) -> Result<(), String> {
-    let tab_id = tab_id.unwrap_or_else(|| "__default__".to_string());
-
     let mut connections = state.connections.lock().await;
 
-    if let Some(mut conn) = connections.remove(&tab_id) {
+    if let Some(mut conn) = connections.remove(&connection_key) {
         conn.stop();
-        ulog_info!("[sse-proxy] Stopped connection for tab {}", tab_id);
+        ulog_info!("[sse-proxy] Stopped subscription {}", connection_key);
     }
 
     Ok(())
@@ -330,27 +375,248 @@ pub async fn stop_all_sse_proxies(
 ) -> Result<(), String> {
     let mut connections = state.connections.lock().await;
 
-    for (tab_id, mut conn) in connections.drain() {
+    for (connection_key, mut conn) in connections.drain() {
         conn.stop();
-        ulog_info!("[sse-proxy] Stopped connection for tab {}", tab_id);
+        ulog_info!("[sse-proxy] Stopped subscription {}", connection_key);
     }
 
     Ok(())
 }
 
-/// Connect to SSE endpoint and forward events with Tab prefix
-async fn connect_sse(
-    app: &AppHandle,
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TauriSseEnvelope {
+    transport_generation: u64,
+    data: String,
+}
+
+enum SseAttemptOutcome {
+    Stopped,
+    Disconnected {
+        made_progress: bool,
+        transport_generation: Option<u64>,
+        reason: String,
+    },
+}
+
+fn retry_delay_ms(consecutive_failures: u32) -> u64 {
+    let exponent = consecutive_failures.saturating_sub(1).min(20);
+    SSE_RETRY_BASE_DELAY_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(SSE_RETRY_MAX_DELAY_MS)
+}
+
+fn next_retry_failure_count(previous: u32, made_progress: bool) -> u32 {
+    if made_progress {
+        1
+    } else {
+        previous.saturating_add(1)
+    }
+}
+
+async fn run_sse_supervisor<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    state: &SseProxyState,
+    running: &AtomicBool,
+    connection_key: &str,
+    subscription_generation: u64,
+    session_id_hint: &str,
+    owner: &SidecarOwner,
+) {
+    let mut consecutive_failures = 0_u32;
+    let mut last_base_url: Option<String> = None;
+
+    while running.load(Ordering::SeqCst) {
+        // Hold the std::sync::Mutex only for the authoritative lookup. Never
+        // carry it into an HTTP await or retry sleep.
+        let base_url = {
+            let mut manager = match sidecar_manager.lock() {
+                Ok(manager) => manager,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            manager.resolve_session_sidecar_url_for_frontend_owner(session_id_hint, owner)
+        };
+
+        let base_url = match base_url {
+            Ok(base_url) => base_url,
+            Err(reason) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                let delay_ms = retry_delay_ms(consecutive_failures);
+                if consecutive_failures == 1 || consecutive_failures % 10 == 0 {
+                    ulog_warn!(
+                        "[sse-proxy] Subscription {} waiting for Sidecar (attempt={}, retry_delay_ms={}): {}",
+                        connection_key,
+                        consecutive_failures,
+                        delay_ms,
+                        reason
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                continue;
+            }
+        };
+
+        if last_base_url.as_deref() != Some(base_url.as_str()) {
+            ulog_info!(
+                "[sse-proxy] Subscription {} resolved Sidecar endpoint {}",
+                connection_key,
+                base_url
+            );
+            last_base_url = Some(base_url.clone());
+        }
+
+        let stream_url = format!("{}/chat/stream", base_url.trim_end_matches('/'));
+        match connect_sse_attempt(
+            app,
+            state,
+            subscription_generation,
+            &stream_url,
+            running,
+            connection_key,
+        )
+        .await
+        {
+            SseAttemptOutcome::Stopped => break,
+            SseAttemptOutcome::Disconnected {
+                made_progress,
+                transport_generation,
+                reason,
+            } => {
+                consecutive_failures =
+                    next_retry_failure_count(consecutive_failures, made_progress);
+                let delay_ms = retry_delay_ms(consecutive_failures);
+                if consecutive_failures == 1 || consecutive_failures % 10 == 0 {
+                    ulog_warn!(
+                        "[sse-proxy] Subscription {} transport disconnected (transport_generation={:?}, attempt={}, retry_delay_ms={}): {}",
+                        connection_key,
+                        transport_generation,
+                        consecutive_failures,
+                        delay_ms,
+                        reason
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+
+    ulog_debug!(
+        "[sse-proxy] Subscription {} supervisor stopped",
+        connection_key
+    );
+}
+
+/// Run one HTTP transport attempt and forward events with the subscription
+/// prefix. Returning `Disconnected` is normal: the caller owns retry.
+fn log_sse_info<R: tauri::Runtime>(app: &AppHandle<R>, message: String) {
+    #[cfg(not(test))]
+    crate::logger::info(app, message);
+    #[cfg(test)]
+    let _ = (app, message);
+}
+
+fn log_sse_error<R: tauri::Runtime>(app: &AppHandle<R>, message: String) {
+    #[cfg(not(test))]
+    crate::logger::error(app, message);
+    #[cfg(test)]
+    let _ = (app, message);
+}
+
+/// Emit only while this exact subscription generation is still authoritative.
+/// The connections lock is intentionally held through the synchronous Tauri
+/// emit and terminal-claim enqueue: once stop/replacement returns, an older
+/// supervisor can no longer publish into listeners installed for the same key.
+async fn emit_sse_event_if_current<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    state: &SseProxyState,
+    connection_key: &str,
+    subscription_generation: u64,
+    transport_generation: u64,
+    event_name: String,
+    data: String,
+) -> bool {
+    let connections = state.connections.lock().await;
+    let is_current = connections.get(connection_key).is_some_and(|entry| {
+        entry.generation == subscription_generation && entry.running.load(Ordering::SeqCst)
+    });
+    if !is_current {
+        return false;
+    }
+
+    if event_name == "chat:message-complete"
+        || event_name == "chat:message-stopped"
+        || event_name == "chat:message-error"
+    {
+        log_sse_info(
+            app,
+            format!(
+                "[sse-proxy] Subscription {} emitting critical event: {}",
+                connection_key, event_name
+            ),
+        );
+        if let Some(terminal) = crate::notification::completion_terminal_from_sse_data(&data) {
+            let notification_app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::notification::submit_session_completion(&notification_app, terminal);
+            });
+        }
+    }
+
+    let prefixed_event = format!("sse:{}:{}", connection_key, event_name);
+    let envelope = TauriSseEnvelope {
+        transport_generation,
+        data,
+    };
+    if let Err(error) = app.emit(&prefixed_event, envelope) {
+        log_sse_error(
+            app,
+            format!(
+                "[sse-proxy] Subscription {} failed to emit {}: {}",
+                connection_key, prefixed_event, error
+            ),
+        );
+    }
+    true
+}
+
+async fn connect_sse_attempt<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    state: &SseProxyState,
+    subscription_generation: u64,
     url: &str,
     running: &AtomicBool,
-    tab_id: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::logger;
+    connection_key: &str,
+) -> SseAttemptOutcome {
+    connect_sse_attempt_with_read_timeout(
+        app,
+        state,
+        subscription_generation,
+        url,
+        running,
+        connection_key,
+        std::time::Duration::from_secs(SSE_READ_TIMEOUT_SECS),
+    )
+    .await
+}
+
+async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    state: &SseProxyState,
+    subscription_generation: u64,
+    url: &str,
+    running: &AtomicBool,
+    connection_key: &str,
+    read_timeout: std::time::Duration,
+) -> SseAttemptOutcome {
     use futures_util::StreamExt;
 
-    logger::info(
+    log_sse_info(
         app,
-        format!("[sse-proxy] Tab {} connecting to {}", tab_id, url),
+        format!(
+            "[sse-proxy] Subscription {} opening transport",
+            connection_key
+        ),
     );
 
     // Build client with read_timeout (idle timeout) for SSE long connections
@@ -361,38 +627,54 @@ async fn connect_sse(
     // Without this, small SSE events may be buffered and delayed, causing UI to feel unresponsive
     // Force HTTP/1.1 for compatibility with Bun server (HTTP/2 may cause connection issues on Windows)
     // Use short-lived connection pool to balance performance and stability
-    let client = crate::local_http::builder()
-        .read_timeout(std::time::Duration::from_secs(SSE_READ_TIMEOUT_SECS))
+    let client = match crate::local_http::builder()
+        .read_timeout(read_timeout)
         .tcp_nodelay(true)
         .http1_only() // Force HTTP/1.1 for SSE compatibility
         .pool_idle_timeout(std::time::Duration::from_secs(5))
         .pool_max_idle_per_host(2)
         .build()
-        .map_err(|e| format!("[sse-proxy] Failed to create HTTP client: {}", e))?;
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return SseAttemptOutcome::Disconnected {
+                made_progress: false,
+                transport_generation: None,
+                reason: format!("failed to create local HTTP client: {}", error),
+            };
+        }
+    };
 
-    let response = client
+    let response = match client
         .get(url)
         .header("Accept", "text/event-stream")
         .send()
-        .await?;
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return SseAttemptOutcome::Disconnected {
+                made_progress: false,
+                transport_generation: None,
+                reason: format!("connect failed: {}", error),
+            };
+        }
+    };
 
     if !response.status().is_success() {
-        let err = format!(
-            "[sse-proxy] Tab {} connection failed: {}",
-            tab_id,
-            response.status()
-        );
-        logger::error(app, &err);
-        return Err(err.into());
+        return SseAttemptOutcome::Disconnected {
+            made_progress: false,
+            transport_generation: None,
+            reason: format!("HTTP status {}", response.status()),
+        };
     }
 
-    logger::info(
+    let transport_generation = next_transport_generation();
+    log_sse_info(
         app,
         format!(
-            "[sse-proxy] Tab {} connected, status: {}, read_timeout: {}s (heartbeat interval: 15s)",
-            tab_id,
-            response.status(),
-            SSE_READ_TIMEOUT_SECS
+            "[sse-proxy] Subscription {} transport connected (transport_generation={})",
+            connection_key, transport_generation
         ),
     );
 
@@ -448,106 +730,48 @@ async fn connect_sse(
                     // O(1) amortised drain.
                     buffer.drain(..pos + sep_len);
 
-                    // Re-check `running` BEFORE emitting. Without this fence,
-                    // a stop_sse_proxy() call that fires between `stream.next()`
-                    // resolving and the inner emit loop running would still
-                    // dispatch the buffered events. The renderer side will
-                    // already have called `unlisten()` for those event names,
-                    // so each emit produces a "Couldn't find callback id N"
-                    // warning on the JS console (12+ such warnings observed
-                    // in the 2026-05-07 logs across tab-close events).
-                    // Dropping the events here is safe: the renderer treats
-                    // a closed-tab SSE stream as terminated, and the
-                    // sidecar persists state independently of SSE delivery.
+                    // Fast local cancellation check before the authoritative
+                    // generation fence below.
                     if !running.load(Ordering::SeqCst) {
                         break;
                     }
 
-                    // Parse and emit SSE event with Tab prefix
+                    // Parse and emit with the renderer-surface prefix.
                     if let Some((event_name, data)) = parse_sse_event(&event_str) {
-                        // Log critical state-changing events
-                        if event_name == "chat:message-complete"
-                            || event_name == "chat:message-stopped"
-                            || event_name == "chat:message-error"
+                        if !emit_sse_event_if_current(
+                            app,
+                            state,
+                            connection_key,
+                            subscription_generation,
+                            transport_generation,
+                            event_name,
+                            data,
+                        )
+                        .await
                         {
-                            logger::info(
-                                app,
-                                format!(
-                                    "[sse-proxy] Tab {} emitting critical event: {}",
-                                    tab_id, event_name
-                                ),
-                            );
-                            if let Some(terminal) =
-                                crate::notification::completion_terminal_from_sse_data(&data)
-                            {
-                                let notification_app = app.clone();
-                                tauri::async_runtime::spawn_blocking(move || {
-                                    crate::notification::submit_session_completion(
-                                        &notification_app,
-                                        terminal,
-                                    );
-                                });
-                            }
-                        }
-                        // Emit with tab_id prefix: sse:tab_id:event_name
-                        let prefixed_event = format!("sse:{}:{}", tab_id, event_name);
-                        if let Err(e) = app.emit(&prefixed_event, data) {
-                            logger::error(
-                                app,
-                                format!(
-                                    "[sse-proxy] Tab {} failed to emit {}: {}",
-                                    tab_id, prefixed_event, e
-                                ),
-                            );
+                            return SseAttemptOutcome::Stopped;
                         }
                     }
                 }
             }
             Some(Err(e)) => {
-                // Log detailed error information for debugging
-                let err_detail = format!("{:?}", e); // Debug format shows more details
-                let buffer_preview = if buffer.len() > 200 {
-                    format!(
-                        "{}...(truncated, total {} bytes)",
-                        String::from_utf8_lossy(&buffer[..200]),
-                        buffer.len(),
-                    )
-                } else {
-                    String::from_utf8_lossy(&buffer).to_string()
+                return SseAttemptOutcome::Disconnected {
+                    made_progress: chunk_count > 0,
+                    transport_generation: Some(transport_generation),
+                    reason: format!("stream error after {} chunks: {}", chunk_count, e),
                 };
-
-                logger::error(app, format!(
-                    "[sse-proxy] Tab {} stream error after {} chunks\n  Error: {}\n  Error detail: {}\n  Buffer preview: {:?}",
-                    tab_id, chunk_count, e, err_detail, buffer_preview
-                ));
-
-                let err = format!(
-                    "[sse-proxy] Tab {} stream error after {} chunks: {}",
-                    tab_id, chunk_count, e
-                );
-                return Err(err.into());
             }
             None => {
-                logger::info(
-                    app,
-                    format!(
-                        "[sse-proxy] Tab {} stream ended after {} chunks",
-                        tab_id, chunk_count
-                    ),
-                );
-                break;
+                return SseAttemptOutcome::Disconnected {
+                    made_progress: chunk_count > 0,
+                    transport_generation: Some(transport_generation),
+                    reason: format!("stream ended after {} chunks", chunk_count),
+                };
             }
         }
     }
 
-    logger::info(
-        app,
-        format!(
-            "[sse-proxy] Tab {} connection closed, processed {} chunks",
-            tab_id, chunk_count
-        ),
-    );
-    Ok(())
+    SseAttemptOutcome::Stopped
 }
 
 /// Parse SSE event format
@@ -1161,6 +1385,358 @@ fn origin_of(absolute_url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tauri::Listener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn loopback_response(raw_response: &'static [u8]) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback server");
+        let address = listener.local_addr().expect("loopback address");
+        tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(raw_response)
+                .await
+                .expect("write test response");
+            let _ = socket.shutdown().await;
+        });
+        format!("http://{}/chat/stream", address)
+    }
+
+    async fn loopback_port_with_request_signal(
+        raw_response: &'static [u8],
+    ) -> (u16, tokio::sync::oneshot::Receiver<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback server");
+        let port = listener.local_addr().expect("loopback address").port();
+        let (requested_tx, requested_rx) = tokio::sync::oneshot::channel();
+        tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(raw_response)
+                .await
+                .expect("write test response");
+            let _ = socket.shutdown().await;
+            let _ = requested_tx.send(());
+        });
+        (port, requested_rx)
+    }
+
+    async fn stalled_loopback_stream() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stalled loopback server");
+        let address = listener.local_addr().expect("stalled loopback address");
+        tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept stalled request");
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
+                )
+                .await
+                .expect("write stalled headers");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        });
+        format!("http://{}/chat/stream", address)
+    }
+
+    async fn active_test_state(connection_key: &str, generation: u64) -> Arc<SseProxyState> {
+        let state = Arc::new(SseProxyState::default());
+        let connection = SseConnection::new(
+            generation,
+            "session-test".to_string(),
+            SidecarOwner::Tab("tab-test".to_string()),
+        );
+        connection.running.store(true, Ordering::SeqCst);
+        state
+            .connections
+            .lock()
+            .await
+            .insert(connection_key.to_string(), connection);
+        state
+    }
+
+    #[test]
+    fn frontend_sse_owner_contract_reuses_existing_owner_variants() {
+        assert_eq!(
+            frontend_sidecar_owner("tab", "tab-a".to_string()),
+            Ok(SidecarOwner::Tab("tab-a".to_string()))
+        );
+        assert_eq!(
+            frontend_sidecar_owner("companion", "floating-ball".to_string()),
+            Ok(SidecarOwner::Companion("floating-ball".to_string()))
+        );
+        assert!(frontend_sidecar_owner("task", "task-a".to_string()).is_err());
+        assert!(frontend_sidecar_owner("tab", String::new()).is_err());
+    }
+
+    #[test]
+    fn sse_retry_delay_is_bounded_exponential() {
+        assert_eq!(retry_delay_ms(0), SSE_RETRY_BASE_DELAY_MS);
+        assert_eq!(retry_delay_ms(1), 250);
+        assert_eq!(retry_delay_ms(2), 500);
+        assert_eq!(retry_delay_ms(3), 1_000);
+        assert_eq!(retry_delay_ms(6), SSE_RETRY_MAX_DELAY_MS);
+        assert_eq!(retry_delay_ms(u32::MAX), SSE_RETRY_MAX_DELAY_MS);
+    }
+
+    #[test]
+    fn successful_transport_resets_backoff_before_the_next_disconnect() {
+        assert_eq!(next_retry_failure_count(7, true), 1);
+        assert_eq!(retry_delay_ms(next_retry_failure_count(7, true)), 250);
+        assert_eq!(next_retry_failure_count(7, false), 8);
+    }
+
+    #[test]
+    fn tauri_sse_envelope_exposes_transport_generation_without_changing_data() {
+        let envelope = TauriSseEnvelope {
+            transport_generation: 42,
+            data: r#"{"sessionId":"s1","payload":"hello"}"#.to_string(),
+        };
+        let json = serde_json::to_value(envelope).expect("serialize SSE envelope");
+
+        assert_eq!(json["transportGeneration"], 42);
+        assert_eq!(json["data"], r#"{"sessionId":"s1","payload":"hello"}"#);
+    }
+
+    #[test]
+    fn transport_generation_is_monotonic_across_attempts() {
+        let first = next_transport_generation();
+        let second = next_transport_generation();
+        assert!(second > first);
+    }
+
+    #[tokio::test]
+    async fn sse_attempt_classifies_connect_failure_and_non_success_status() {
+        let app = tauri::test::mock_app();
+        let running = AtomicBool::new(true);
+        let state = active_test_state("test", 1).await;
+
+        let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve unavailable port");
+        let unavailable_url = format!(
+            "http://{}/chat/stream",
+            unavailable.local_addr().expect("unavailable address")
+        );
+        drop(unavailable);
+        match connect_sse_attempt(app.handle(), &state, 1, &unavailable_url, &running, "test").await
+        {
+            SseAttemptOutcome::Disconnected { made_progress, .. } => {
+                assert!(!made_progress)
+            }
+            SseAttemptOutcome::Stopped => panic!("connect failure must be retryable"),
+        }
+
+        let status_url = loopback_response(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        match connect_sse_attempt(app.handle(), &state, 1, &status_url, &running, "test").await {
+            SseAttemptOutcome::Disconnected {
+                made_progress,
+                reason,
+                ..
+            } => {
+                assert!(!made_progress);
+                assert!(reason.contains("503"));
+            }
+            SseAttemptOutcome::Stopped => panic!("HTTP status must be retryable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sse_attempt_forwards_one_generation_on_every_event_then_retries_eof() {
+        let app = tauri::test::mock_app();
+        let payloads = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let payloads_for_listener = payloads.clone();
+        app.listen("sse:test:chat:message-chunk", move |event: tauri::Event| {
+            payloads_for_listener
+                .lock()
+                .expect("payload lock")
+                .push(event.payload().to_string());
+        });
+        let url = loopback_response(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: chat:message-chunk\ndata: first\n\nevent: chat:message-chunk\ndata: second\n\n",
+        )
+        .await;
+        let running = AtomicBool::new(true);
+        let state = active_test_state("test", 1).await;
+
+        match connect_sse_attempt(app.handle(), &state, 1, &url, &running, "test").await {
+            SseAttemptOutcome::Disconnected {
+                made_progress,
+                reason,
+                ..
+            } => {
+                assert!(made_progress);
+                assert!(reason.contains("stream ended"));
+            }
+            SseAttemptOutcome::Stopped => panic!("EOF must be retryable"),
+        }
+
+        let payloads = payloads.lock().expect("payload lock");
+        assert_eq!(payloads.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(&payloads[0]).expect("first envelope");
+        let second: serde_json::Value =
+            serde_json::from_str(&payloads[1]).expect("second envelope");
+        assert_eq!(first["data"], "first");
+        assert_eq!(second["data"], "second");
+        assert_eq!(first["transportGeneration"], second["transportGeneration"]);
+    }
+
+    #[tokio::test]
+    async fn sse_attempt_treats_truncated_body_as_retryable_stream_error() {
+        let app = tauri::test::mock_app();
+        let url = loopback_response(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 256\r\nConnection: close\r\n\r\nevent: chat:message-chunk\ndata: partial\n\n",
+        )
+        .await;
+        let running = AtomicBool::new(true);
+        let state = active_test_state("test", 1).await;
+
+        match connect_sse_attempt(app.handle(), &state, 1, &url, &running, "test").await {
+            SseAttemptOutcome::Disconnected {
+                made_progress,
+                reason,
+                ..
+            } => {
+                assert!(made_progress);
+                assert!(reason.contains("stream error"));
+            }
+            SseAttemptOutcome::Stopped => panic!("body error must be retryable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sse_attempt_treats_read_timeout_as_retryable_without_progress() {
+        let app = tauri::test::mock_app();
+        let url = stalled_loopback_stream().await;
+        let running = AtomicBool::new(true);
+        let state = active_test_state("test", 1).await;
+
+        match connect_sse_attempt_with_read_timeout(
+            app.handle(),
+            &state,
+            1,
+            &url,
+            &running,
+            "test",
+            std::time::Duration::from_millis(25),
+        )
+        .await
+        {
+            SseAttemptOutcome::Disconnected {
+                made_progress,
+                reason,
+                ..
+            } => {
+                assert!(!made_progress);
+                assert!(reason.contains("stream error"));
+            }
+            SseAttemptOutcome::Stopped => panic!("read timeout must be retryable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn replaced_subscription_generation_cannot_emit_to_reused_event_namespace() {
+        let app = tauri::test::mock_app();
+        let payloads = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let payloads_for_listener = payloads.clone();
+        app.listen("sse:fb:chat:message-chunk", move |event: tauri::Event| {
+            payloads_for_listener
+                .lock()
+                .expect("payload lock")
+                .push(event.payload().to_string());
+        });
+        let state = active_test_state("fb", 2).await;
+
+        let emitted = emit_sse_event_if_current(
+            app.handle(),
+            &state,
+            "fb",
+            1,
+            99,
+            "chat:message-chunk".to_string(),
+            "stale old-session chunk".to_string(),
+        )
+        .await;
+
+        assert!(!emitted);
+        assert!(payloads.lock().expect("payload lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn supervisor_retries_and_resolves_the_sidecar_port_again() {
+        let app = tauri::test::mock_app();
+        let (first_port, first_requested) = loopback_port_with_request_signal(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let (second_port, second_requested) = loopback_port_with_request_signal(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: chat:message-chunk\ndata: recovered\n\n",
+        )
+        .await;
+        let owner = SidecarOwner::Tab("tab-test".to_string());
+        let manager: ManagedSidecarManager =
+            Arc::new(std::sync::Mutex::new(crate::sidecar::SidecarManager::new()));
+        manager
+            .lock()
+            .expect("manager lock")
+            .insert_test_ready_frontend_sidecar("session-test", first_port, owner.clone());
+        let state = active_test_state("test", 1).await;
+        let running = Arc::new(AtomicBool::new(true));
+
+        let task = tauri::async_runtime::spawn({
+            let app_handle = app.handle().clone();
+            let manager = manager.clone();
+            let state = state.clone();
+            let running = running.clone();
+            let owner = owner.clone();
+            async move {
+                run_sse_supervisor(
+                    &app_handle,
+                    &manager,
+                    &state,
+                    &running,
+                    "test",
+                    1,
+                    "session-test",
+                    &owner,
+                )
+                .await;
+            }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), first_requested)
+            .await
+            .expect("first attempt timeout")
+            .expect("first attempt signal");
+        manager
+            .lock()
+            .expect("manager lock")
+            .set_test_sidecar_port("session-test", second_port);
+        tokio::time::timeout(std::time::Duration::from_secs(2), second_requested)
+            .await
+            .expect("second attempt timeout")
+            .expect("second attempt signal");
+
+        running.store(false, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("supervisor stop timeout")
+            .expect("supervisor task");
+    }
 
     #[test]
     fn loopback_sidecar_urls_bypass_proxy() {

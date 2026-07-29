@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "MyAgents",
-  "version": "0.3.4",
+  "version": "0.4.1",
   "identifier": "com.myagents.app",
   "build": {
     "frontendDist": "../dist",
@@ -25,6 +25,7 @@
   },
   "bundle": {
     "active": true,
+    "license": "AGPL-3.0-only",
     "targets": [
       "dmg",
       "app",
@@ -54,6 +55,11 @@
       "../bundled-agents": "bundled-agents",
       "../src-tauri/resources/cli": "cli",
       "../mino": "mino",
+      "../LICENSE": "legal/LICENSE",
+      "../LICENSING.md": "legal/LICENSING.md",
+      "../COMMERCIAL-LICENSING.md": "legal/COMMERCIAL-LICENSING.md",
+      "../TRADEMARKS.md": "legal/TRADEMARKS.md",
+      "../THIRD_PARTY_NOTICES.md": "legal/THIRD_PARTY_NOTICES.md",
       "infoplist/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
       "infoplist/zh-Hans.lproj/InfoPlist.strings": "zh-Hans.lproj/InfoPlist.strings"
     },

@@ -660,7 +660,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                     ) : (
                         <div className="h-full overflow-auto bg-[var(--paper-elevated)] p-6">
                             {content ? (
-                                // ai-message-content = 聊天正文同一 prose 上下文（16px/1.7），
+                                // ai-message-content = 聊天正文同一 prose 上下文（16px/1.625），
                                 // 替代 typography plugin 的 prose（其自带字阶与产品字阶冲突，
                                 // PRD 0.2.34 Part 2 F4）。Markdown 组件自带全部元素样式。
                                 <div className="ai-message-content">

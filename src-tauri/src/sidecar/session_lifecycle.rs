@@ -21,6 +21,17 @@ pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool
         || crate::task_scheduler::has_persistent_task_for_session(session_id).await)
 }
 
+async fn has_non_tab_session_owner(
+    session_id: &str,
+    agents: &crate::im::ManagedAgents,
+    im_bots: &crate::im::ManagedImBots,
+) -> Result<bool, String> {
+    if has_persisted_session_owner(session_id).await? {
+        return Ok(true);
+    }
+    Ok(crate::im::session_delivery::has_session_binding(agents, im_bots, session_id).await)
+}
+
 // ============= Session-Centric Sidecar API (v0.1.11) =============
 
 /// Result returned from ensure_session_sidecar
@@ -804,6 +815,7 @@ fn create_new_session_sidecar<R: Runtime>(
         cmd.env("MYAGENTS_RUNTIME_SOURCE", runtime_source);
     }
     let sidecar_generation = manager_guard.next_generation(session_id);
+    cmd.env("MYAGENTS_SIDECAR_ID", session_id);
     cmd.env(
         "MYAGENTS_SIDECAR_GENERATION",
         sidecar_generation.to_string(),
@@ -1162,6 +1174,7 @@ pub async fn cmd_ensure_session_sidecar(
 ) -> Result<EnsureSidecarResult, String> {
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
+        "companion" => SidecarOwner::Companion(ownerId),
         "task" => SidecarOwner::Task(ownerId),
         "im_bot" | "agent" => SidecarOwner::Agent(ownerId),
         _ => return Err(format!("Invalid owner type: {}", ownerType)),
@@ -1187,6 +1200,7 @@ pub fn cmd_release_session_sidecar(
 ) -> Result<bool, String> {
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
+        "companion" => SidecarOwner::Companion(ownerId),
         "background_completion" => SidecarOwner::BackgroundCompletion(ownerId),
         "im_bot" | "agent" => SidecarOwner::Agent(ownerId),
         _ => return Err(format!("Invalid owner type: {}", ownerType)),
@@ -1254,6 +1268,8 @@ pub async fn cmd_upgrade_session_id(
 #[allow(non_snake_case)]
 pub async fn cmd_session_has_persistent_owners(
     state: tauri::State<'_, ManagedSidecarManager>,
+    agent_state: tauri::State<'_, crate::im::ManagedAgents>,
+    im_state: tauri::State<'_, crate::im::ManagedImBots>,
     sessionId: String,
 ) -> Result<bool, String> {
     let sidecars = state.inner().clone();
@@ -1262,24 +1278,48 @@ pub async fn cmd_session_has_persistent_owners(
         manager.session_has_persistent_owners(&sessionId)
     };
     Ok(has_live_owner
-        || crate::task_scheduler::has_persistent_task_for_session(&sessionId).await
-        || crate::session_goal::get_session_goal_manager()
-            .has_session_identity_protection(&sessionId)
-            .await
-            .map_err(|error| error.to_string())?)
+        || has_non_tab_session_owner(&sessionId, agent_state.inner(), im_state.inner()).await?)
 }
 
-/// Delete a transcript only while no persistent scheduler or Sidecar owner can
-/// claim the session. The per-Session lifecycle guard stays held across the
-/// local DELETE, so a Task/Goal/Agent cannot appear between validation and mutation.
+/// Delete a transcript while releasing only the exact mounted Tab owners named
+/// by App. The per-Session lifecycle guard stays held across owner validation,
+/// the local DELETE, and successful owner release, so every refusal preserves
+/// both storage and the mounted owner set.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDeleteCommandResult {
+    deleted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
+impl SessionDeleteCommandResult {
+    fn deleted() -> Self {
+        Self {
+            deleted: true,
+            reason: None,
+        }
+    }
+
+    fn refused(reason: &'static str) -> Self {
+        Self {
+            deleted: false,
+            reason: Some(reason),
+        }
+    }
+}
+
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn cmd_delete_session_if_unowned(
     state: tauri::State<'_, ManagedSidecarManager>,
+    agent_state: tauri::State<'_, crate::im::ManagedAgents>,
+    im_state: tauri::State<'_, crate::im::ManagedImBots>,
     sessionId: String,
-) -> Result<bool, String> {
+    releasableTabIds: Vec<String>,
+) -> Result<SessionDeleteCommandResult, String> {
     if !is_canonical_session_id(&sessionId) {
-        return Err("Invalid session ID".to_string());
+        return Ok(SessionDeleteCommandResult::refused("invalid-session-id"));
     }
     // Fast negative for the common active Task/Goal case. A fresh Session
     // creator may retain the lifecycle guard until metadata birth; waiting on
@@ -1287,31 +1327,61 @@ pub async fn cmd_delete_session_if_unowned(
     // owner would make a delete click hang for the entire AI turn. This is
     // only a UX shortcut: the same predicate is checked again under the guard
     // below, which remains the correctness boundary for false -> true races.
-    if has_persisted_session_owner(&sessionId).await? {
-        return Ok(false);
+    if has_non_tab_session_owner(&sessionId, agent_state.inner(), im_state.inner()).await? {
+        return Ok(SessionDeleteCommandResult::refused("in-use"));
     }
     let _lifecycle = acquire_session_lifecycle(&[&sessionId]).await;
-    if has_persisted_session_owner(&sessionId).await? {
-        return Ok(false);
+    // Do not lock IM routers while holding the Session lifecycle fence: IM
+    // message/runtime paths take router → lifecycle. Configured dormant
+    // bindings are disk-only and safe to repeat here. Any live binding that
+    // appears after the preflight first attaches an Agent owner under this same
+    // fence, and `session_has_owners` below catches it.
+    if has_persisted_session_owner(&sessionId).await?
+        || crate::im::session_delivery::configured_session_binding_exists(&sessionId)
+    {
+        return Ok(SessionDeleteCommandResult::refused("in-use"));
     }
     let sidecars = state.inner().clone();
+    let releasable_tab_ids = releasableTabIds.into_iter().collect::<HashSet<_>>();
 
     tauri::async_runtime::spawn_blocking(move || {
+        let session_port = {
+            let manager = sidecars.lock().map_err(|error| error.to_string())?;
+            if manager.session_has_unreleasable_owners(&sessionId, &releasable_tab_ids) {
+                return Ok(SessionDeleteCommandResult::refused("in-use"));
+            }
+            manager
+                .get_session_sidecar(&sessionId)
+                .filter(|sidecar| sidecar.is_reusable())
+                .map(|sidecar| sidecar.port)
+        };
+        if let Some(port) = session_port {
+            match super::background::check_sidecar_is_busy(port) {
+                Some(false) => {}
+                Some(true) => return Ok(SessionDeleteCommandResult::refused("in-use")),
+                None => return Ok(SessionDeleteCommandResult::refused("activity-unavailable")),
+            }
+        }
+
+        // The activity request intentionally runs without the manager lock.
+        // Revalidate owners before the storage mutation while the outer
+        // per-Session lifecycle fence still excludes new owner acquisition.
         let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
-        if manager.session_has_owners(&sessionId) {
-            return Ok(false);
+        if manager.session_has_unreleasable_owners(&sessionId, &releasable_tab_ids) {
+            return Ok(SessionDeleteCommandResult::refused("in-use"));
         }
-        let instance = manager
-            .get_instance_mut(GLOBAL_SIDECAR_ID)
-            .ok_or_else(|| "Global Sidecar is not running".to_string())?;
-        if !instance.is_running() {
-            return Err("Global Sidecar is not running".to_string());
-        }
-        let port = instance.port;
-        let delete_authority = instance
-            .session_delete_authority
-            .clone()
-            .ok_or_else(|| "Global Sidecar deletion authority is unavailable".to_string())?;
+        let (port, delete_authority) = {
+            let Some(instance) = manager.get_instance_mut(GLOBAL_SIDECAR_ID) else {
+                return Ok(SessionDeleteCommandResult::refused("authority-unavailable"));
+            };
+            if !instance.is_running() {
+                return Ok(SessionDeleteCommandResult::refused("authority-unavailable"));
+            }
+            let Some(delete_authority) = instance.session_delete_authority.clone() else {
+                return Ok(SessionDeleteCommandResult::refused("authority-unavailable"));
+            };
+            (instance.port, delete_authority)
+        };
         let client = crate::local_http::blocking_builder()
             .timeout(Duration::from_secs(15))
             .build()
@@ -1322,19 +1392,32 @@ pub async fn cmd_delete_session_if_unowned(
             .send()
             .map_err(|error| format!("Failed to delete session: {error}"))?;
         let status = response.status();
-        if !status.is_success() {
+        let result = if status.is_success() {
+            SessionDeleteCommandResult::deleted()
+        } else {
             let body = response
                 .text()
                 .unwrap_or_else(|_| "<unreadable response>".to_string());
-            return match status.as_u16() {
-                403 | 404 | 409 => Ok(false),
-                _ => Err(format!(
-                    "Global Sidecar failed to delete session (HTTP {status}): {body}"
-                )),
-            };
+            match status.as_u16() {
+                403 => return Ok(SessionDeleteCommandResult::refused("protected-session")),
+                404 => SessionDeleteCommandResult::refused("not-found"),
+                409 => return Ok(SessionDeleteCommandResult::refused("in-use")),
+                _ => {
+                    return Err(format!(
+                        "Global Sidecar failed to delete session (HTTP {status}): {body}"
+                    ))
+                }
+            }
+        };
+
+        // Success and not-found are both terminal/idempotent outcomes. Release
+        // only the App-authorized Tab owners after storage has reached that
+        // terminal state; every refusal above leaves them untouched.
+        for tab_id in &releasable_tab_ids {
+            manager.release_tab_session(&sessionId, tab_id, false);
         }
         manager.deactivate_session(&sessionId);
-        Ok(true)
+        Ok(result)
     })
     .await
     .map_err(|error| format!("Session deletion task failed: {error:?}"))?
@@ -1360,7 +1443,8 @@ pub async fn cmd_release_tab_session(
 mod session_lifecycle_tests {
     use super::{
         acquire_session_lifecycle, is_canonical_session_id, resolve_runtime_identity_for_owner,
-        validate_sidecar_runtime_invariant, RuntimeIdentity, SidecarOwner,
+        validate_sidecar_runtime_invariant, RuntimeIdentity, SessionDeleteCommandResult,
+        SidecarOwner,
     };
     use std::time::Duration;
 
@@ -1441,6 +1525,18 @@ mod session_lifecycle_tests {
             assert!(!is_canonical_session_id(invalid), "accepted {invalid:?}");
         }
         assert!(!is_canonical_session_id(&"a".repeat(100)));
+    }
+
+    #[test]
+    fn deletion_result_preserves_machine_readable_refusal_reasons() {
+        assert_eq!(
+            serde_json::to_value(SessionDeleteCommandResult::deleted()).unwrap(),
+            serde_json::json!({ "deleted": true })
+        );
+        assert_eq!(
+            serde_json::to_value(SessionDeleteCommandResult::refused("in-use")).unwrap(),
+            serde_json::json!({ "deleted": false, "reason": "in-use" })
+        );
     }
 
     #[tokio::test]

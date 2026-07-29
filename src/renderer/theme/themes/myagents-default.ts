@@ -1,59 +1,12 @@
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-
 import './myagents-default.css';
 import stylesheetText from './myagents-default.css?inline';
-import type { SyntaxStyle, ThemeDefinition, ThemeSchemeDefinition } from '../types';
+import { createPrismStyle } from '../prism-style';
+import type { ThemeDefinition, ThemeSchemeDefinition } from '../types';
 
 const fontCode = "ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB', monospace";
 const xtermFont = "'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'PingFang SC', 'Microsoft YaHei', monospace";
 const mermaidFont = "'Avenir Next', 'Gill Sans', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', sans-serif";
 const widgetFont = "system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif";
-
-type ImportedSyntaxStyle = Record<string, Record<string, string | number | undefined>>;
-
-const obsoleteOneDarkProperties = new Set([
-  'MozHyphens',
-  'MozTabSize',
-  'OTabSize',
-  'Opacity',
-  'WebkitHyphens',
-  'msHyphens',
-]);
-
-function normalizeImportedPrismStyle(source: ImportedSyntaxStyle): SyntaxStyle {
-  return Object.fromEntries(Object.entries(source).map(([selector, sourceStyle]) => [
-    selector,
-    Object.fromEntries(Object.entries(sourceStyle).flatMap(([property, value]) => (
-      value === undefined || obsoleteOneDarkProperties.has(property)
-        ? []
-        : [[property, String(value)]]
-    ))),
-  ]));
-}
-
-const normalizedOneDark = normalizeImportedPrismStyle(oneDark as ImportedSyntaxStyle);
-
-function prismStyle(): SyntaxStyle {
-  return {
-    ...normalizedOneDark,
-    'pre[class*="language-"]': {
-      ...normalizedOneDark['pre[class*="language-"]'],
-      background: 'var(--code-bg)',
-      borderRadius: '0.5rem',
-      padding: '1rem',
-      margin: '0',
-      fontSize: 'var(--text-sm)',
-      lineHeight: '1.6',
-    },
-    'code[class*="language-"]': {
-      ...normalizedOneDark['code[class*="language-"]'],
-      background: 'transparent',
-      fontSize: 'var(--text-sm)',
-      lineHeight: '1.6',
-      fontFamily: 'var(--font-code)',
-    },
-  };
-}
 
 const widgetStructure = {
   '--widget-font-body': widgetFont,
@@ -167,7 +120,18 @@ const light: ThemeSchemeDefinition = {
       lineColor: '#8a7a6a', secondaryColor: '#f5efe8', tertiaryColor: '#fff8f0',
     },
   },
-  prism: prismStyle(),
+  prism: createPrismStyle({
+    background: '#f3ede4',
+    text: '#2e2825',
+    textSecondary: '#6f6156',
+    muted: '#8b7d70',
+    accent: '#c26d3a',
+    success: '#2d8a5e',
+    error: '#dc2626',
+    warning: '#d97706',
+    info: '#4a7ab5',
+    cool: '#2e6f5e',
+  }),
   widget: { variables: lightWidgetVariables },
 };
 
@@ -226,7 +190,18 @@ const dark: ThemeSchemeDefinition = {
       lineColor: '#8a7a6a', secondaryColor: '#2a2420', tertiaryColor: '#1e1a18',
     },
   },
-  prism: prismStyle(),
+  prism: createPrismStyle({
+    background: '#141210',
+    text: '#d4c8bc',
+    textSecondary: '#cfc5ba',
+    muted: '#7f7368',
+    accent: '#d4803f',
+    success: '#4aad7a',
+    error: '#ef4444',
+    warning: '#f59e0b',
+    info: '#6b9fd4',
+    cool: '#4aad8a',
+  }),
   widget: { variables: darkWidgetVariables },
 };
 

@@ -22,7 +22,7 @@ import PathInputDialog from '@/components/PathInputDialog';
 import ConfirmDialog from '@/components/ConfirmDialog';
 // P1: click-opened overlays — lazy so their subtrees (which transitively pull
 // Markdown → mermaid/katex/syntax-highlighter) leave the eager entry chunk.
-const TaskCenterOverlay = lazy(() => import('@/components/TaskCenterOverlay'));
+const HistorySearchOverlayContent = lazy(() => import('@/components/HistorySearchOverlayContent'));
 import { BrandSection, LauncherRightRail, TemplateLibraryDialog, WorkspaceEditDialog } from '@/components/launcher';
 import type { WorkbenchCreateAction } from '@/components/launcher/AddWorkspaceMenu';
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
@@ -1317,12 +1317,12 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 />
             </main>
 
-            {/* Task Center Overlay */}
+            {/* History Search Overlay */}
             {showOverlay && (
                 <Suspense fallback={null}>
-                    <TaskCenterOverlay
+                    <HistorySearchOverlayContent
                         projects={visibleProjects}
-                        onOpenTask={handleOverlayOpenTask}
+                        onOpenSession={handleOverlayOpenTask}
                         onClose={handleCloseOverlay}
                         taskCenterData={taskCenterData}
                         initialMode={overlayMode}

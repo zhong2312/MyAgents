@@ -9,6 +9,9 @@ use super::*;
 pub enum SidecarOwner {
     /// Tab ID that owns part of this Sidecar
     Tab(String),
+    /// Floating companion surface. It is frontend-config-authoritative like a
+    /// Tab, but the main App cannot release it during Tab lifecycle changes.
+    Companion(String),
     /// Task Center task.
     Task(String),
     /// Session-owned Goal. The Goal persists independently from any Tab or Task.
@@ -394,6 +397,33 @@ mod lifecycle_contract_tests {
         assert!(third > second);
     }
 
+    #[test]
+    fn management_process_identity_covers_global_and_session_sidecars() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        let session_generation = manager.current_generation("session-a");
+        assert!(manager.is_live_process("session-a", session_generation));
+
+        let global_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            SidecarInstance {
+                process: spawn_test_child(),
+                port: 31419,
+                agent_dir: None,
+                healthy: true,
+                is_global: true,
+                session_delete_authority: None,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        assert!(manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation));
+        assert!(!manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation + 1));
+
+        manager.remove_instance(GLOBAL_SIDECAR_ID);
+        assert!(!manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation));
+    }
+
     fn spawn_test_child() -> Child {
         #[cfg(windows)]
         let mut cmd = {
@@ -449,19 +479,114 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
-    fn session_has_tab_owner_tracks_desktop_owner_presence() {
+    fn sse_owner_resolver_uses_exact_hint_and_requires_owner_match() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        insert_test_sidecar(&mut manager, "session-b", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session-a")
+            .owners = owners(vec![SidecarOwner::Tab("tab-other".to_string())]);
+
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+        let error = manager
+            .resolve_session_sidecar_url_for_frontend_owner("session-a", &owner)
+            .expect_err("an exact hint with the wrong owner must fail closed");
+
+        assert!(error.contains("not owned"));
+        assert_eq!(
+            manager.resolve_session_sidecar_url_for_frontend_owner("session-b", &owner),
+            Ok("http://127.0.0.1:31418".to_string())
+        );
+    }
+
+    #[test]
+    fn sse_owner_resolver_follows_pending_to_real_key_upgrade() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "pending-tab-a", SidecarState::Healthy);
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+
+        assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
+        assert_eq!(
+            manager.resolve_session_sidecar_url_for_frontend_owner("pending-tab-a", &owner),
+            Ok("http://127.0.0.1:31418".to_string())
+        );
+    }
+
+    #[test]
+    fn sse_owner_resolver_rejects_ambiguous_companion_handover() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-old", SidecarState::Healthy);
+        insert_test_sidecar(&mut manager, "session-new", SidecarState::Healthy);
+        let owner = SidecarOwner::Companion("floating-ball".to_string());
+        for session_id in ["session-old", "session-new"] {
+            manager
+                .get_session_sidecar_mut(session_id)
+                .expect("session sidecar")
+                .owners = owners(vec![owner.clone()]);
+        }
+
+        assert_eq!(
+            manager.resolve_session_sidecar_url_for_frontend_owner("session-new", &owner),
+            Ok("http://127.0.0.1:31418".to_string())
+        );
+        let error = manager
+            .resolve_session_sidecar_url_for_frontend_owner("missing-hint", &owner)
+            .expect_err("owner-only fallback must reject multiple matches");
+        assert!(error.contains("ambiguously matches"));
+        assert!(error.contains("session-new"));
+        assert!(error.contains("session-old"));
+    }
+
+    #[test]
+    fn session_has_frontend_owner_tracks_tab_and_companion_presence() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
 
-        assert!(manager.session_has_tab_owner("session-a"));
+        assert!(manager.session_has_frontend_owner("session-a"));
+
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .owners = owners(vec![SidecarOwner::Companion("floating-ball".to_string())]);
+
+        assert!(manager.session_has_frontend_owner("session-a"));
+        assert!(manager.session_has_persistent_owners("session-a"));
 
         manager
             .get_session_sidecar_mut("session-a")
             .expect("session sidecar")
             .owners = owners(vec![SidecarOwner::Agent("agent-a".to_string())]);
 
-        assert!(!manager.session_has_tab_owner("session-a"));
-        assert!(!manager.session_has_tab_owner("missing-session"));
+        assert!(!manager.session_has_frontend_owner("session-a"));
+        assert!(!manager.session_has_frontend_owner("missing-session"));
+    }
+
+    #[test]
+    fn healthy_inbox_attachment_adds_agent_owner_before_returning_port() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+
+        assert_eq!(
+            manager.attach_owner_to_healthy_session(
+                "session-a",
+                SidecarOwner::Agent("inbox-deliver-a".to_string()),
+            ),
+            Some(31418)
+        );
+        assert!(manager.session_has_persistent_owners("session-a"));
+
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .state = SidecarState::Dead;
+        assert_eq!(
+            manager.attach_owner_to_healthy_session(
+                "session-a",
+                SidecarOwner::Agent("inbox-deliver-b".to_string()),
+            ),
+            None
+        );
     }
 
     #[test]
@@ -485,7 +610,7 @@ mod lifecycle_contract_tests {
                 .and_then(|activation| activation.tab_id.as_deref()),
             Some("tab-a")
         );
-        assert!(manager.session_has_tab_owner("session-a"));
+        assert!(manager.session_has_frontend_owner("session-a"));
     }
 
     #[test]
@@ -514,6 +639,44 @@ mod lifecycle_contract_tests {
                 .get("session-a")
                 .and_then(|activation| activation.tab_id.as_deref()),
             None
+        );
+    }
+
+    #[test]
+    fn deletion_protection_snapshot_excludes_plain_tabs_and_includes_recovering_owners() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "tab-only", SidecarState::Healthy);
+        insert_test_sidecar(&mut manager, "agent-owned", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("agent-owned")
+            .expect("agent sidecar")
+            .owners = owners(vec![SidecarOwner::Agent("agent-a".to_string())]);
+
+        insert_test_sidecar(&mut manager, "companion-owned", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("companion-owned")
+            .expect("companion sidecar")
+            .owners = owners(vec![SidecarOwner::Companion("floating-ball".to_string())]);
+
+        insert_test_sidecar(&mut manager, "recovering", SidecarState::Dead);
+        manager
+            .get_session_sidecar_mut("recovering")
+            .expect("recovering sidecar")
+            .owners = owners(vec![SidecarOwner::BackgroundCompletion(
+            "recovering".to_string(),
+        )]);
+        let recovering = manager.remove_sidecar("recovering").expect("dead sidecar");
+        manager
+            .recovering_sidecars
+            .insert("recovering".to_string(), recovering);
+
+        assert_eq!(
+            manager.persistent_owner_session_ids(),
+            vec![
+                "agent-owned".to_string(),
+                "companion-owned".to_string(),
+                "recovering".to_string(),
+            ]
         );
     }
 
@@ -588,6 +751,7 @@ mod lifecycle_contract_tests {
     fn every_sidecar_owner_variant_blocks_session_deletion() {
         let owner_variants = vec![
             SidecarOwner::Tab("tab-a".to_string()),
+            SidecarOwner::Companion("floating-ball".to_string()),
             SidecarOwner::Task("task-a".to_string()),
             SidecarOwner::Goal("goal-a".to_string()),
             SidecarOwner::BackgroundCompletion("session-a".to_string()),
@@ -604,6 +768,31 @@ mod lifecycle_contract_tests {
 
             assert!(manager.session_has_owners("session-a"));
         }
+    }
+
+    #[test]
+    fn deletion_releases_only_the_exact_tabs_authorized_by_app() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        let allowed = HashSet::from(["tab-a".to_string()]);
+
+        assert!(!manager.session_has_unreleasable_owners("session-a", &allowed));
+
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .owners
+            .insert(SidecarOwner::Tab("tab-b".to_string()));
+        assert!(manager.session_has_unreleasable_owners("session-a", &allowed));
+
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .owners = owners(vec![
+            SidecarOwner::Tab("tab-a".to_string()),
+            SidecarOwner::Agent("agent-a".to_string()),
+        ]);
+        assert!(manager.session_has_unreleasable_owners("session-a", &allowed));
     }
 
     #[test]

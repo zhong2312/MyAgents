@@ -155,6 +155,14 @@ impl SidecarManager {
             && self.sidecar_generations.get(session_id).copied() == Some(generation)
     }
 
+    /// Validate the process identity injected into either a Session Sidecar or
+    /// the canonical Global Sidecar. Both process types consume the management
+    /// API, while only Session Sidecars live in `sidecars`.
+    pub fn is_live_process(&self, sidecar_id: &str, generation: u64) -> bool {
+        (self.sidecars.contains_key(sidecar_id) || self.instances.contains_key(sidecar_id))
+            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation)
+    }
+
     /// Allocate the next instance ID and stash it as this session's current
     /// generation. The ID comes from the process-global atomic counter, so
     /// it is unique for the whole process lifetime — repeated sidecars under
@@ -221,7 +229,11 @@ impl SidecarManager {
 
     /// Remove and return an instance (will be dropped, killing the process)
     pub fn remove_instance(&mut self, tab_id: &str) -> Option<SidecarInstance> {
-        self.instances.remove(tab_id)
+        let removed = self.instances.remove(tab_id);
+        if removed.is_some() {
+            self.sidecar_generations.remove(tab_id);
+        }
+        removed
     }
 
     /// Get all Tab IDs
@@ -454,6 +466,132 @@ impl SidecarManager {
         })
     }
 
+    /// Resolve the current ready Sidecar URL for a renderer-owned long-lived
+    /// subscription. The Session hint gives an exact match during normal
+    /// operation; the stable owner is the fallback after pending -> real key
+    /// migration. Both reads stay inside the SidecarManager authority so SSE
+    /// retry never caches or reconstructs a second owner -> port map.
+    pub fn resolve_session_sidecar_url_for_frontend_owner(
+        &mut self,
+        session_id_hint: &str,
+        owner: &SidecarOwner,
+    ) -> Result<String, String> {
+        if let Some(sidecar) = self.sidecars.get_mut(session_id_hint) {
+            if !sidecar.owners.contains(owner) {
+                return Err(format!(
+                    "session hint {} is not owned by {:?}",
+                    session_id_hint, owner
+                ));
+            }
+            return if sidecar.is_ready_for_requests() {
+                Ok(format!("http://127.0.0.1:{}", sidecar.port))
+            } else {
+                Err(format!(
+                    "session hint {} sidecar is not ready",
+                    session_id_hint
+                ))
+            };
+        }
+
+        if let Some(sidecar) = self.recovering_sidecars.get(session_id_hint) {
+            if !sidecar.owners.contains(owner) {
+                return Err(format!(
+                    "recovering session hint {} is not owned by {:?}",
+                    session_id_hint, owner
+                ));
+            }
+            return Err(format!(
+                "session hint {} sidecar is recovering",
+                session_id_hint
+            ));
+        }
+
+        let mut matches: Vec<(String, Option<u16>)> = Vec::new();
+        for (session_id, sidecar) in &mut self.sidecars {
+            if sidecar.owners.contains(owner) {
+                let ready_port = sidecar.is_ready_for_requests().then_some(sidecar.port);
+                matches.push((session_id.clone(), ready_port));
+            }
+        }
+        for (session_id, sidecar) in &self.recovering_sidecars {
+            if sidecar.owners.contains(owner) {
+                matches.push((session_id.clone(), None));
+            }
+        }
+
+        match matches.as_slice() {
+            [(_session_id, Some(port))] => Ok(format!("http://127.0.0.1:{}", port)),
+            [(session_id, None)] => Err(format!(
+                "owner {:?} sidecar {} is not ready",
+                owner, session_id
+            )),
+            [] => Err(format!(
+                "no session sidecar found for hint {} and owner {:?}",
+                session_id_hint, owner
+            )),
+            _ => {
+                let mut session_ids = matches
+                    .into_iter()
+                    .map(|(session_id, _)| session_id)
+                    .collect::<Vec<_>>();
+                session_ids.sort();
+                Err(format!(
+                    "owner {:?} ambiguously matches sessions {}",
+                    owner,
+                    session_ids.join(",")
+                ))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_ready_frontend_sidecar(
+        &mut self,
+        session_id: &str,
+        port: u16,
+        owner: SidecarOwner,
+    ) {
+        #[cfg(windows)]
+        let mut process = {
+            let mut command = crate::process_cmd::new("powershell");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut process = {
+            let mut command = crate::process_cmd::new("sleep");
+            command.arg("60");
+            command
+        };
+        process
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        self.insert_sidecar(
+            session_id,
+            SessionSidecar {
+                process: process.spawn().expect("spawn test sidecar process"),
+                port,
+                session_id: session_id.to_string(),
+                workspace_path: PathBuf::from("/tmp/sse-supervisor-test"),
+                state: SidecarState::Healthy,
+                owners: std::iter::once(owner).collect(),
+                created_at: std::time::Instant::now(),
+                runtime: None,
+                runtime_source: None,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_sidecar_port(&mut self, session_id: &str, port: u16) {
+        self.sidecars
+            .get_mut(session_id)
+            .expect("test sidecar")
+            .port = port;
+    }
+
     /// Check if a Session has an active Sidecar (Starting or Healthy)
     pub fn has_session_sidecar(&mut self, session_id: &str) -> bool {
         if let Some(sidecar) = self.sidecars.get_mut(session_id) {
@@ -645,6 +783,23 @@ impl SidecarManager {
         found
     }
 
+    /// Atomically attach an owner to an already-healthy Session Sidecar and
+    /// return its port. Callers hold the Session lifecycle fence while using
+    /// this to prevent deletion between lookup and owner attachment.
+    pub fn attach_owner_to_healthy_session(
+        &mut self,
+        session_id: &str,
+        owner: SidecarOwner,
+    ) -> Option<u16> {
+        let sidecar = self.sidecars.get_mut(session_id)?;
+        if !matches!(sidecar.state, SidecarState::Healthy) {
+            return None;
+        }
+        let port = sidecar.port;
+        sidecar.add_owner(owner);
+        Some(port)
+    }
+
     /// Remove an owner from a Session's Sidecar
     /// If this was the last owner, the Sidecar and its session identity are
     /// removed together (the process is killed via Drop).
@@ -816,7 +971,8 @@ impl SidecarManager {
         self.session_owners(session_id).any(|owner| {
             matches!(
                 owner,
-                SidecarOwner::Task(_)
+                SidecarOwner::Companion(_)
+                    | SidecarOwner::Task(_)
                     | SidecarOwner::Goal(_)
                     | SidecarOwner::BackgroundCompletion(_)
                     | SidecarOwner::Agent(_)
@@ -824,20 +980,49 @@ impl SidecarManager {
         })
     }
 
-    /// Check if a session's Sidecar currently has any desktop Tab owner.
+    /// Snapshot the Session identities protected by non-Tab Sidecar owners.
+    /// Renderer deletion affordances use this as a projection only; the
+    /// in-lock `session_has_owners` check remains the mutation authority.
+    pub fn persistent_owner_session_ids(&self) -> Vec<String> {
+        let mut session_ids = self
+            .sidecars
+            .keys()
+            .chain(self.recovering_sidecars.keys())
+            .filter(|session_id| self.session_has_persistent_owners(session_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        session_ids.sort();
+        session_ids.dedup();
+        session_ids
+    }
+
+    /// Check if a session's Sidecar currently has a frontend surface owner.
     ///
-    /// IM uses this as a runtime-only config hold signal: while a desktop Tab is
-    /// attached to an IM-bound session, subsequent IM turns must keep using the
+    /// IM uses this as a runtime-only config hold signal: while a desktop Tab or
+    /// floating companion is attached, subsequent IM turns must keep using the
     /// live Sidecar config instead of following Agent defaults changed elsewhere.
-    pub fn session_has_tab_owner(&self, session_id: &str) -> bool {
+    pub fn session_has_frontend_owner(&self, session_id: &str) -> bool {
         self.session_owners(session_id)
-            .any(|owner| matches!(owner, SidecarOwner::Tab(_)))
+            .any(|owner| matches!(owner, SidecarOwner::Tab(_) | SidecarOwner::Companion(_)))
     }
 
     /// Ownership is independent of process liveness: a dead Sidecar entry with
     /// owners is restartable and still protects the session transcript.
     pub fn session_has_owners(&self, session_id: &str) -> bool {
         self.session_owners(session_id).next().is_some()
+    }
+
+    /// Whether deletion is blocked by any owner other than the exact mounted
+    /// Tabs that App has authorized this transaction to release.
+    pub fn session_has_unreleasable_owners(
+        &self,
+        session_id: &str,
+        releasable_tab_ids: &std::collections::HashSet<String>,
+    ) -> bool {
+        self.session_owners(session_id).any(|owner| match owner {
+            SidecarOwner::Tab(tab_id) => !releasable_tab_ids.contains(tab_id),
+            _ => true,
+        })
     }
 
     fn session_owners<'a>(&'a self, session_id: &'a str) -> impl Iterator<Item = &'a SidecarOwner> {

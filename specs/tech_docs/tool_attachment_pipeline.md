@@ -174,7 +174,7 @@ UnifiedEvent 扩展：
 
 | 层 | 位置 | 防的攻击 |
 |---|---|---|
-| Node path-safety 黑名单 | `src/server/utils/path-safety.ts::validateExternalReadPathNode` | `/etc/passwd`、`~/.ssh/id_rsa` 等系统/凭据目录 |
+| Node path-safety 黑名单 | `src/server/utils/path-safety.ts::validateExternalReadPathNode` | `/etc/passwd`、`~/.ssh/id_rsa` 等系统/凭据路径；Managed Codex 仅精确保护 `auth.json` |
 | Canonicalize symlinks（读侧） | 同上，`canonicalizeSymlinks:true` | `~/.codex/evil.png → /etc/passwd` symlink 逃逸 |
 | 拒绝 symlink leaf | `lstatSync.isSymbolicLink()` | 防范 fs.realpath 行为漂移 |
 | Positive allow-list | `tool-attachments.ts::isAllowedExternalAttachmentPrefix` | 拒绝引用 `~/Documents/secrets.docx` 等"既不在黑名单也不该读"的路径；只允许 `~/.codex/` `~/.myagents/` `~/Documents/` `~/Desktop/` `~/Downloads/` 及子目录 |
@@ -223,6 +223,11 @@ undici 自有 `fetch` + `withAbortSignal`，**不是**红线表里的 `cancellab
 落盘完成后再 `JSON.stringify(content-blocks snapshot)` 写盘——避免"placeholder 飞越 turn boundary
 落到磁盘永远 stranded"。session resume 时反查 PersistContentBlock attachments，调
 `rebuildAttachmentRegistryFromBlocks` 把 Codex savedPath 重新 register 进 in-process map。
+
+历史兼容边界：旧版宽泛 Managed Codex 路径黑名单已经持久化出的
+`error://rejected_path` 附件只含错误码，不含 `savedPath`，resume 时会被注册表重建跳过。
+因此收紧黑名单不会让这些旧卡片自动恢复；需要重新执行图片生成。新生成的图片会按
+`savedPath` 注册为 `/api/attachment/tool/...` URL。
 
 ---
 
@@ -279,7 +284,7 @@ attachment。任何触发这种路径的入口视为 bug。
 
 | Codex item.type | 修复内容 |
 |---|---|
-| `imageGeneration` | 优先 savedPath（零拷贝引用），fallback `result` base64 落盘 |
+| `imageGeneration` | 优先 savedPath（零拷贝引用），fallback `result` base64 落盘；Managed `CODEX_HOME` 仅精确保护 `auth.json`，生成图路径可正常注册为 attachment URL |
 | `mcpToolCall` | `result.content[]` 走 MCP ContentBlock union（text / image / audio / resource_link）；attachments 收集图片/音频 |
 | `dynamicToolCall` | `contentItems[]` 处理 `inputImage{imageUrl}`；namespace / durationMs 透出 |
 | `webSearch` | `action` union 全分支（search/openPage/findInPage/other），多 query 显示 |

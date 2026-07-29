@@ -903,6 +903,8 @@ export interface AppConfig {
    *  仅桌面交互发送读取；IM/Task/Inbox 等非桌面来源保持既有语义。 */
   chatQueueResponseMode?: ChatQueueResponseMode;
   showDevTools: boolean; // 显示开发者工具 (Logs/System Info)
+  /** 开发者开关：在 AI 对话页顶栏显示旧的工作区历史入口。默认关闭。 */
+  showChatHistoryEntry?: boolean;
   multiAgentRuntime?: boolean; // 多 Agent Runtime 模式（开发者，默认关闭）
   experimentalSplitView?: boolean; // 实验性：文件预览在右侧分屏而非弹窗
   /** 实验室：用户注册 CLI 工具注册表（PRD 0.2.36）。默认关。
@@ -1175,7 +1177,7 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
   },
 ];
 
-/** Anthropic 官方默认别名（对齐 SDK 0.3.201 当前模型族：fable5/opus48/sonnet5/haiku45）。
+/** Anthropic 官方默认别名（对齐 SDK 0.3.220 当前模型族：fable5/opus48/sonnet5/haiku45）。
  *  显式 pin 可避免未来 SDK 默认变动时用户体验突变。 */
 const ANTHROPIC_ALIASES = {
   fable: "claude-fable-5",
@@ -2776,6 +2778,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   forceWakeLock: false, // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）
   chatQueueResponseMode: "realtime",
   showDevTools: false,
+  showChatHistoryEntry: false,
   cliToolRegistryEnabled: false, // 默认关闭用户注册 CLI 工具注册表（实验室）
   teamSpaceEnabled: false, // 默认关闭实验室 Team Space 入口
   spaceEnvironment: "production",

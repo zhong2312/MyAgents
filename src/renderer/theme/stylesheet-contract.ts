@@ -191,10 +191,10 @@ function normalizeSelector(selector: string): string | null {
   if (invalidAttributeValue || normalizedAttributes.includes('\\')) return null;
   const normalized = normalizedAttributes.replace(/\s+/g, ' ');
   if (
-    /^html\[data-theme-id='[a-z0-9-]+'\](?:\[data-color-scheme='(?:light|dark)'\])?(?: \.theme-launcher-hero-(?:title|slogan))?$/.test(normalized)
+    /^html\[data-theme-id='[a-z0-9-]+'\](?:\[data-color-scheme='(?:light|dark)'\])?(?: \.(?:theme-product-wordmark|theme-launcher-hero-(?:title|slogan)))?$/.test(normalized)
     || /^html\[data-color-scheme='(?:light|dark)'\]$/.test(normalized)
     || normalized === ':root'
-    || /^\.theme-launcher-hero-(?:title|slogan)$/.test(normalized)
+    || /^\.(?:theme-product-wordmark|theme-launcher-hero-(?:title|slogan))$/.test(normalized)
   ) {
     return normalized;
   }

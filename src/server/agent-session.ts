@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import { SDK_BUILTIN_TOOLS } from './sdk-builtin-tools';
 import {
   decideBackgroundAgentPermission,
   isBackgroundAgentToolRequest,
@@ -18,9 +19,12 @@ import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNp
 import { applyProviderContextWindowSuffix, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
+import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
+import { summarizeSensitiveSdkMessage } from './utils/sdk-log-summary';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
 import {
   decideInFlightCancelSettlement,
+  reconcileInterruptReceipt,
   terminalEventMatchesInFlight,
   type InFlightAsyncCancelResult,
 } from './utils/inflight-terminal';
@@ -35,6 +39,7 @@ import {
   type InvalidResumeAnchorKind,
 } from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
+import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
   SESSION_PLANS_GITIGNORE_PATTERN,
@@ -69,6 +74,7 @@ import {
   getNovelWorkbenchContext,
   getNovelWorkbenchToolsetSnapshot,
   NOVEL_WORKBENCH_SDK_ADAPTER_ID,
+  NOVEL_WORKBENCH_TOOLSET_ID,
   novelWorkbenchMutationDenyMessage,
   shouldBlockNovelWorkbenchRawMutation,
 } from './novel-workbench-context';
@@ -112,6 +118,7 @@ import {
 import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
 import type { OfficialToolId } from '../shared/official-tools';
+import type { WorkbenchAgentToolsetRequest } from '../shared/workbench-sdk';
 import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, deleteSession, migratePendingSessionIdentity, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
@@ -197,6 +204,10 @@ import {
   visibleDesktopMirrorText,
   type MirrorImage,
 } from './utils/im-mirror';
+import {
+  SESSION_BOUND_CHANNEL_DELIVERY,
+  type TurnChannelDelivery,
+} from './session-core/channel-delivery';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
 import {
   LOCAL_COMMAND_OUTPUT_TAG,
@@ -279,6 +290,7 @@ import {
   getCommittingTurnAdmissionQueueId,
   getInFlightMetadata,
   getInFlightQueueId,
+  getInterruptingInFlightQueueId,
   isPromotedItemCanceled,
   getMessageQueue,
   getPendingMidTurnQueue,
@@ -331,7 +343,7 @@ import {
   markCurrentTurnHasOutput,
   notifyQueuedTurnStopped,
   popPendingOutputOwner as turnPopPendingOutputOwner,
-  pushPendingOutputOwner as turnPushPendingOutputOwner,
+  admitPendingOutputOwnerForYield as turnAdmitPendingOutputOwnerForYield,
   removePendingOutputOwnerByQueueId as turnRemovePendingOutputOwnerByQueueId,
   resetTurnUsage as resetBuiltinTurnUsage,
   setAssistantMessagePresent,
@@ -343,6 +355,9 @@ import {
   setCurrentTurnInboxMeta,
   setCurrentTurnImTerminalEmitted,
   setCurrentTurnProviderAnalytics,
+  stageCurrentOutputOwnerAssistantChannelBlock,
+  clearCurrentOutputOwnerAssistantChannelBlocks,
+  type PendingOutputOwner,
   setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setLatestMainAssistantUsage,
@@ -775,13 +790,14 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
 
 let isInterruptingResponse = false;
 let isStreamingMessage = false;
-// Every `system` subtype defined in SDK 0.3.201 (sdk.d.ts) — handled here or
+// Every `system` subtype defined in SDK 0.3.220 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
 // emitting a message kind we have never seen; the loop logs it once per
 // process instead of letting it vanish silently. Update this set when bumping
 // the SDK (grep sdk.d.ts for `type: 'system'` blocks).
 const KNOWN_SYSTEM_SUBTYPES = new Set([
-  'api_retry', 'commands_changed', 'compact_boundary', 'elicitation_complete',
+  'api_retry', 'background_tasks_changed', 'commands_changed', 'compact_boundary',
+  'control_request_progress', 'elicitation_complete',
   'files_persisted', 'hook_progress', 'hook_response', 'hook_started',
   'informational', 'init', 'local_command_output', 'memory_recall',
   'mirror_error', 'model_refusal_fallback', 'model_refusal_no_fallback',
@@ -792,7 +808,7 @@ const KNOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 const warnedUnknownSystemSubtypes = new Set<string>();
 // Top-level half of the same sentinel: every `type` value an SDKMessage union
-// member carries in 0.3.201. Verified 1:1 against sdk.d.ts at upgrade time
+// member carries in 0.3.220. Verified 1:1 against sdk.d.ts at upgrade time
 // (the system-typed members are covered by KNOWN_SYSTEM_SUBTYPES above).
 const KNOWN_MESSAGE_TYPES = new Set([
   'assistant', 'user', 'result', 'system', 'stream_event', 'rate_limit_event',
@@ -806,6 +822,10 @@ type PostInterruptTurnEndOutcome = 'result-claimed' | 'session-ended';
 // installs its waiter, closing the former resolve-before-listen race.
 let postInterruptTurnEndOutcome: PostInterruptTurnEndOutcome | null = null;
 let postInterruptTurnEndResolve: ((outcome: PostInterruptTurnEndOutcome) => void) | null = null;
+// Public SDK interrupt receipt for the current cooperative interrupt only.
+// `null` means the CLI did not advertise/return a receipt. Queue ids are the
+// same UUIDs stamped by messageGenerator, so no parallel identity map exists.
+let interruptSurvivingQueueIds: ReadonlySet<string> | null = null;
 
 function settlePostInterruptTurnEnd(outcome: PostInterruptTurnEndOutcome): void {
   if (!isInterruptingResponse) return;
@@ -816,6 +836,10 @@ function settlePostInterruptTurnEnd(outcome: PostInterruptTurnEndOutcome): void 
     postInterruptTurnEndResolve = null;
     resolve(settled);
   }
+}
+
+function didInFlightSurviveInterrupt(queueId: string): boolean | null {
+  return interruptSurvivingQueueIds?.has(queueId) ?? null;
 }
 // Count of MCP tool_use blocks emitted by the model in the current turn that
 // haven't seen their matching tool_result yet. Read by the post-interrupt
@@ -923,48 +947,46 @@ async function cancelSdkAsyncMessage(queueId: string): Promise<InFlightAsyncCanc
   }
 }
 
-// ===== Desktop → IM mirror state (PRD 0.2.14 Phase C) =====
-//
-// `currentTurnMirrorEnabled` is set when a desktop user message is finalized
-// (any of three push sites in this file) and cleared when the AI turn ends or
-// is aborted. While it's true, `content_block_stop` for text blocks fires a
-// mirror call with the accumulated block text.
-//
-// `pendingTextBlockTexts` accumulates `text_delta` per stream index so we
-// can ship a complete block text at content_block_stop. Cleared with the
-// flag at turn boundaries.
-let currentTurnMirrorEnabled = false;
-let currentTurnMirrorSessionId: string | null = null;
+// ===== Session-bound channel delivery =====
+// User ingress projection and assistant egress ownership are deliberately
+// independent. Assistant ownership and completed blocks live on the existing
+// per-yield output-owner FIFO; this local state only serializes transport calls.
+let channelDeliveryTail: Promise<void> = Promise.resolve();
 const pendingTextBlockTexts: Map<number, string> = new Map();
 
-function clearMirrorState(): void {
-  currentTurnMirrorEnabled = false;
-  currentTurnMirrorSessionId = null;
+function clearChannelDeliveryState(): void {
+  // Completed blocks are held by the output-owner FIFO and are discarded when
+  // that owner is popped on error/stop. Only an open stream block lives here.
   pendingTextBlockTexts.clear();
 }
 
-function maybeAccumulateMirrorChunk(index: number, chunk: string): void {
-  if (!currentTurnMirrorEnabled) return;
+function appendChannelDelivery(label: string, deliver: () => Promise<void>): void {
+  channelDeliveryTail = channelDeliveryTail
+    .then(deliver)
+    .catch((error) => {
+      console.warn(`[agent] ${label} channel delivery failed:`, error);
+    });
+}
+
+function maybeAccumulateChannelDeliveryChunk(index: number, chunk: string): void {
+  if (peekPendingOutputOwner()?.assistantChannelDelivery !== 'session-binding') return;
   const prev = pendingTextBlockTexts.get(index) ?? '';
   pendingTextBlockTexts.set(index, prev + chunk);
 }
 
-/** Fire-and-forget user-side mirror. Caller decides whether to invoke based on
- *  metadata.source — this helper is the single source of formatting + transport. */
-function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefined): void {
+function deliverSessionBoundDesktopUser(content: string, images: MirrorImage[] | undefined): void {
   // Only fire if there's a chance an IM channel is bound. Rust silently
   // no-ops if not, but skipping the round-trip when content is trivially
   // empty avoids needless network chatter.
   const visibleContent = visibleDesktopMirrorText(content);
   if (!visibleContent && (!images || images.length === 0)) return;
-  currentTurnMirrorEnabled = true;
-  currentTurnMirrorSessionId = sessionId;
-  void mirrorIfChannelBound({
-    sessionId,
+  const deliverySessionId = sessionId;
+  appendChannelDelivery('user', () => mirrorIfChannelBound({
+    sessionId: deliverySessionId,
     role: 'user',
     text: visibleContent,
     images,
-  });
+  }));
 }
 
 async function surfaceBuiltinUserMessage(
@@ -998,10 +1020,8 @@ async function surfaceBuiltinUserMessage(
     phase,
     lastActiveAt,
   );
-  if (surface.message.metadata?.source === 'desktop') {
-    fireDesktopUserMirror(messageText, surface.mirrorImages);
-  } else {
-    clearMirrorState();
+  if (surface.channelDelivery.user === 'session-binding') {
+    deliverSessionBoundDesktopUser(messageText, surface.mirrorImages);
   }
   return activityMerged;
 }
@@ -1045,9 +1065,8 @@ async function surfaceInFlightQueueItem(
       .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
   }
 
-  // PRD 0.2.14 — desktop → IM mirror (queued replay / confirmed boundary path).
-  if (meta?.source === 'desktop') {
-    fireDesktopUserMirror(userMessage.content as string, meta.mirrorImages);
+  if (meta?.channelDelivery.user === 'session-binding') {
+    deliverSessionBoundDesktopUser(userMessage.content as string, meta?.mirrorImages);
   }
 
   console.log(`[agent] In-flight queue item ${queueId} surfaced via queue:started (${options.reason})`);
@@ -1108,18 +1127,9 @@ function preserveInFlightAfterTerminalBoundary(reason: string): void {
   console.log(`[agent] In-flight queue item ${queueId} preserved after terminal boundary — awaiting SDK replay or assistant-start confirmation (${reason})`);
 }
 
-/** Fire-and-forget assistant text-block mirror. Called from content_block_stop.
- *  The session id captured at user-message time guards against turn boundary
- *  drift (resetSession during a streaming turn). */
-function fireDesktopAssistantBlockMirror(text: string): void {
-  if (!text) return;
-  if (!currentTurnMirrorEnabled) return;
-  const sid = currentTurnMirrorSessionId ?? sessionId;
-  void mirrorIfChannelBound({
-    sessionId: sid,
-    role: 'assistant',
-    text,
-  });
+/** Stage one completed top-level assistant text block on the current yield. */
+function stageSessionBoundAssistantBlock(text: string): void {
+  stageCurrentOutputOwnerAssistantChannelBlock(text);
 }
 
 let isApiRetrying = false;  // Track api_retry state to clear when streaming resumes
@@ -1157,6 +1167,11 @@ function assistantTextForTransientRetryRetraction(message: MessageWire): string 
 }
 
 function retractTransientProviderTextOutput(resultText: string): void {
+  // The retry resumes the same logical SDK yield. Any text staged for the
+  // retracted provider error belongs to that attempt and must not survive,
+  // whether its content block already closed or is still open.
+  clearCurrentOutputOwnerAssistantChannelBlocks();
+  pendingTextBlockTexts.clear();
   const expected = normalizeAssistantRetryText(resultText);
   if (!expected) return;
   const tail = transcriptState.messages[transcriptState.messages.length - 1];
@@ -1265,48 +1280,84 @@ function emitImEvent(type: ImEventType, data?: unknown): void {
 }
 
 /** Push one output-owner slot for every message yielded to SDK stdin. */
-function pushPendingOutputOwner(queueId: string, requestId: string | null | undefined): void {
-  turnPushPendingOutputOwner(queueId, requestId);
-}
-
-/** Pop the queue head — called from handleMessageComplete / Stopped / Error
- *  on SDK `result` boundary (one yield → one result). Returns popped id. */
-function popPendingRequest(): string | null {
-  return turnPopPendingOutputOwner()?.requestId ?? null;
+function pushPendingOutputOwner(item: MessageQueueItem): void {
+  turnAdmitPendingOutputOwnerForYield({
+    queueId: item.id,
+    requestId: item.requestId,
+    assistantChannelDelivery: item.channelDelivery.assistant,
+    channelSessionId: sessionId,
+  }, item.transientProviderRetry !== undefined);
 }
 
 function removePendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
   return turnRemovePendingOutputOwnerByQueueId(queueId);
 }
 
-function completeCurrentImRequest(data?: unknown): void {
-  emitImEvent('complete', data);
-  const completedReq = popPendingRequest();
-  if (completedReq) {
-    imRequestRegistry.setStatus(completedReq, 'completed');
-    imRequestRegistry.unregister(completedReq);
-    setCurrentTurnImTerminalEmitted(true);
+function takeCurrentOutputOwner(): PendingOutputOwner | null {
+  return turnPopPendingOutputOwner();
+}
+
+function finalizeOutputOwnerRequest(
+  owner: PendingOutputOwner | null,
+  type: 'complete' | 'cancelled' | 'error',
+  status: 'completed' | 'cancelled' | 'failed',
+  data?: unknown,
+  markCurrentTurn = false,
+): void {
+  if (!owner?.requestId) return;
+  imEventBus.emit(owner.requestId, type, data);
+  imRequestRegistry.setStatus(owner.requestId, status);
+  imRequestRegistry.unregister(owner.requestId);
+  if (markCurrentTurn) setCurrentTurnImTerminalEmitted(true);
+}
+
+function completeOutputOwnerAfterPersistence(
+  owner: PendingOutputOwner | null,
+  data: unknown,
+  persistence: Promise<unknown>,
+  deliverSessionBoundAssistant: boolean,
+): void {
+  if (!owner) return;
+  const durableSuccess = persistence.then(
+    () => deliverSessionBoundAssistant,
+    () => false,
+  );
+  if (owner.assistantChannelDelivery === 'session-binding') {
+    // Reserve each block on the session-wide transport tail at the SDK result
+    // boundary. The work waits for durability without leaving this owner at
+    // the FIFO head where a later realtime yield could inherit it.
+    for (const text of owner.assistantChannelTextBlocks) {
+      appendChannelDelivery('assistant', async () => {
+        if (!await durableSuccess) return;
+        await mirrorIfChannelBound({
+          sessionId: owner.channelSessionId,
+          role: 'assistant',
+          text,
+        });
+      });
+    }
   }
+  void persistence.then(
+    () => finalizeOutputOwnerRequest(owner, 'complete', 'completed', data),
+    (error) => finalizeOutputOwnerRequest(
+      owner,
+      'error',
+      'failed',
+      buildImErrorPayload(error instanceof Error ? error.message : String(error)),
+    ),
+  );
+}
+
+function failOutputOwner(owner: PendingOutputOwner | null, data?: unknown): void {
+  finalizeOutputOwnerRequest(owner, 'error', 'failed', data);
 }
 
 function cancelCurrentImRequest(data?: unknown): void {
-  emitImEvent('cancelled', data);
-  const cancelledReq = popPendingRequest();
-  if (cancelledReq) {
-    imRequestRegistry.setStatus(cancelledReq, 'cancelled');
-    imRequestRegistry.unregister(cancelledReq);
-    setCurrentTurnImTerminalEmitted(true);
-  }
+  finalizeOutputOwnerRequest(takeCurrentOutputOwner(), 'cancelled', 'cancelled', data, true);
 }
 
 function failCurrentImRequest(data?: unknown): void {
-  emitImEvent('error', data);
-  const failedReq = popPendingRequest();
-  if (failedReq) {
-    imRequestRegistry.setStatus(failedReq, 'failed');
-    imRequestRegistry.unregister(failedReq);
-    setCurrentTurnImTerminalEmitted(true);
-  }
+  finalizeOutputOwnerRequest(takeCurrentOutputOwner(), 'error', 'failed', data, true);
 }
 
 /** Clear the entire queue — called from abortPersistentSession /
@@ -1808,6 +1859,90 @@ async function backfillNovelWorkbenchToolsetMetadata(
   }
 }
 
+/** Bind a host-owned workbench toolset to the active builtin SDK session. */
+export async function configureWorkbenchToolset(
+  toolset: unknown,
+): Promise<{
+  success: boolean;
+  toolsetId?: string;
+  mode?: string;
+  persisted?: boolean;
+  toolsReady?: boolean;
+  contextChanged?: boolean;
+  error?: string;
+  status?: number;
+}> {
+  if (
+    !toolset ||
+    typeof toolset !== 'object' ||
+    Array.isArray(toolset) ||
+    (toolset as { id?: unknown }).id !== NOVEL_WORKBENCH_TOOLSET_ID
+  ) {
+    return {
+      success: false,
+      status: 400,
+      error: 'Unknown workbench Agent toolset.',
+    };
+  }
+
+  const workspace = agentDir?.trim();
+  if (!workspace) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Agent session has no workspace path.',
+    };
+  }
+
+  try {
+    const previousContext = getNovelWorkbenchContext();
+    const boundSessionId = sessionId.trim() || 'default';
+    const context = configureNovelWorkbenchToolset(toolset, {
+      sessionId: boundSessionId,
+      workspace,
+    });
+    const contextChanged =
+      previousContext?.mode !== context.mode ||
+      previousContext?.promptId !== context.promptId ||
+      previousContext?.promptVersion !== context.promptVersion ||
+      previousContext?.sessionId !== context.sessionId ||
+      previousContext?.workspace !== context.workspace;
+    const toolsetSnapshot = getNovelWorkbenchToolsetSnapshot();
+    const existingMetadata = getSessionMetadata(boundSessionId);
+    if (existingMetadata && toolsetSnapshot) {
+      const updated = await updateSessionMetadata(boundSessionId, {
+        workbenchToolset: toolsetSnapshot,
+      });
+      if (!updated) {
+        throw new Error('Failed to persist workbench Agent toolset.');
+      }
+    }
+
+    // A cold-resumed SDK process may have been created before this rebinding.
+    const toolsReady = await ensureSdkMcpInSync();
+    if (!toolsReady) {
+      forceReloadActiveSession('mcp');
+    }
+    return {
+      success: true,
+      toolsetId: (toolset as WorkbenchAgentToolsetRequest).id,
+      mode: context.mode,
+      persisted: Boolean(existingMetadata && toolsetSnapshot),
+      toolsReady,
+      contextChanged,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      status: 400,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to configure workbench Agent',
+    };
+  }
+}
+
 /** 当前正在流式传输的 assistant 消息 ID（未在流式传输时返回 null） */
 export function getStreamingAssistantId(): string | null {
   if (!isStreamingMessage || !isAssistantMessagePresent()) return null;
@@ -1934,6 +2069,7 @@ function promoteNextFromPending(): void {
     requestId: pending.sourceItem.requestId,
     analyticsSource: pending.sourceItem.analyticsSource,
     analyticsOrigin: pending.sourceItem.analyticsOrigin,
+    channelDelivery: pending.sourceItem.channelDelivery,
   });
   console.log(`[agent] Promoting next pending mid-turn message: queueId=${pending.queueId} (pending remaining=${getPendingMidTurnQueue().length})`);
   // Re-emit queue:added with isInFlight=true. Frontend's queue:added handler
@@ -2007,6 +2143,7 @@ function startNextTurnQueuedItem(
     queueId: item.queueId,
     message: userMessage,
     mirrorImages: item.mirrorImages,
+    channelDelivery: sourceItem.channelDelivery,
   };
   if (sourceItem.beforeDispatch) {
     sourceItem.deferredUserSurface = surface;
@@ -3332,7 +3469,7 @@ export function forceReloadActiveSession(reason: RestartReason = 'mcp'): void {
   }
 }
 
-function schedulePreWarm(): void {
+function schedulePreWarm(delayMs = 500): void {
   if (lifecycleState.preWarmTimer) clearTimeout(lifecycleState.preWarmTimer);
   if (!agentDir) return;
   if (lifecycleState.preWarmDisabled) return;
@@ -3393,7 +3530,7 @@ function schedulePreWarm(): void {
     startStreamingSession(true).catch((error) => {
       console.error('[agent] pre-warm failed:', error);
     });
-  }, 500));
+  }, Math.max(0, delayMs)));
 }
 
 /**
@@ -6952,6 +7089,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   getProviderEnv: () => configState.currentProviderEnv,
   getCurrentModel: () => configState.currentModel,
   getIsInterruptingResponse: () => isInterruptingResponse,
+  didInFlightSurviveInterrupt,
   setStreamingMessage: (value) => { isStreamingMessage = value; },
   resetInFlightToolCount: () => { inFlightToolCount = 0; },
   resetWatchdogFired: () => { watchdogFired = false; },
@@ -6964,10 +7102,12 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   endTurnAbort,
   abortTurnAbort,
   clearAmbientTurnId: (sid) => clearAmbientLogContextField(sid, 'turnId'),
-  completeCurrentImRequest,
+  takeCurrentOutputOwner,
+  completeOutputOwnerAfterPersistence,
+  failOutputOwner,
   cancelCurrentImRequest,
   failCurrentImRequest,
-  clearMirrorState,
+  clearMirrorState: clearChannelDeliveryState,
   clearStreamTurnMaps: () => {
     streamIndexToToolId.clear();
     streamIndexToBlockType.clear();
@@ -6995,6 +7135,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   trackServer,
   firePostTurnTitleHook,
   appendTextChunk,
+  stageAssistantChannelBlock: stageSessionBoundAssistantBlock,
   localizeImError,
   setLastAgentError: (error) => { lastAgentError = error; },
   buildTurnProviderAnalytics,
@@ -8073,7 +8214,20 @@ export async function initializeAgent(
       throw new Error(`[agent] refusing initial prompt for unindexed existing session ${sessionId}; session metadata must exist before starting a sidecar with --session-id`);
     }
     await materializeInitialPromptSessionMetadata(trimmedInitialPrompt);
-    void enqueueUserMessage(trimmedInitialPrompt);
+    void enqueueUserMessage(
+      trimmedInitialPrompt,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY },
+    );
   } else {
     // Pre-warm subprocess + MCP so first message is fast.
     // Only start immediately if MCP is already resolved (IM Bot sessions that
@@ -8429,7 +8583,7 @@ async function enqueueWatchdogResumeReminderAtQueueFront(
     return { queued: false, error: 'session switched during watchdog reminder persist' };
   }
 
-  clearMirrorState();
+  clearChannelDeliveryState();
 
   const queueItem: MessageQueueItem = {
     id: randomUUID(),
@@ -8438,6 +8592,7 @@ async function enqueueWatchdogResumeReminderAtQueueFront(
     wasQueued: false,
     resolve: () => {},
     providerAnalytics: buildTurnProviderAnalytics(configState.currentProviderEnv),
+    channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
   };
 
   console.log('[agent] Watchdog auto-resume inserted reminder at recovery queue front');
@@ -8516,6 +8671,9 @@ async function consumePendingContinueAfterAbort(
           undefined,        // metadata - synthetic, no source attribution
           undefined,        // requestId - synthetic, no IM trace
           undefined,        // inboxMeta - synthetic, no inbox pushback
+          undefined,        // analyticsSource - keep current attribution
+          undefined,        // analyticsOrigin - keep current attribution
+          { channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY },
         );
 
     if (sessionId !== sessionIdSnapshot) {
@@ -8626,6 +8784,7 @@ export async function enqueueUserMessage(
     /** Infrastructure-only gate after Query-changing config, before user/session persistence. */
     beforeUserPersistence?: import('./session-core/turn-queue').DispatchGuard;
     beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
+    channelDelivery: TurnChannelDelivery;
   },
 ): Promise<EnqueueResult> {
   const trimmed = text.trim();
@@ -8637,6 +8796,10 @@ export async function enqueueUserMessage(
 
   const canLazyMaterializeForThisMessage = () =>
     isLazySessionMaterializationAllowed() || options?.allowLazySessionMaterialization === true;
+  if (!options?.channelDelivery) {
+    return { queued: false, error: 'Missing explicit channel delivery ownership' };
+  }
+  const channelDelivery = options.channelDelivery;
 
   const queueId = options?.queueId ?? randomUUID();
   const deferVisibleAdmission = options?.beforeUserPersistence !== undefined;
@@ -9314,6 +9477,7 @@ export async function enqueueUserMessage(
       turnOwner: options?.turnOwner,
       onTerminal: admissionCallbacks.onTerminal,
       beforeDispatch: options?.beforeDispatch,
+      channelDelivery,
       deferredSessionMetadata,
       deferVisibleAdmission,
       settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
@@ -9378,6 +9542,7 @@ export async function enqueueUserMessage(
           analyticsSource: analyticsSource ?? currentScenario.type,
           analyticsOrigin,
           mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
+          channelDelivery,
         });
         wakeGenerator(queueItem);
         console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
@@ -9463,6 +9628,7 @@ export async function enqueueUserMessage(
     message: userMessage,
     sessionBirthOrigin: options?.sessionBirthOrigin,
     mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
+    channelDelivery,
   };
   if (!options?.beforeDispatch) {
     await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
@@ -9489,6 +9655,7 @@ export async function enqueueUserMessage(
     turnOwner: options?.turnOwner,
     onTerminal: admissionCallbacks.onTerminal,
     beforeDispatch: options?.beforeDispatch,
+    channelDelivery,
     deferredSessionMetadata,
     deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
     deferVisibleAdmission,
@@ -9694,7 +9861,9 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
   }
 
   setInterruptingInFlightQueueId(getInFlightQueueId());
+  const interruptTargetQueueId = getInterruptingInFlightQueueId();
   isInterruptingResponse = true;
+  interruptSurvivingQueueIds = null;
   postInterruptTurnEndOutcome = null;
   postInterruptTurnEndResolve = null;
   try {
@@ -9702,7 +9871,33 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     // interrupt() is cooperative — the SDK subprocess must be responsive to process it.
     // If a MCP tool is hung (e.g., Playwright screenshot on heavy page), the subprocess
     // may be blocked on I/O and unable to handle the interrupt signal.
-    const interruptPromise = lifecycleState.query.interrupt();
+    const interruptQuery = lifecycleState.query;
+    const interruptPromise = reconcileInterruptReceipt({
+      requestReceipt: async () => {
+        await interruptQuery.interrupt();
+        return undefined;
+      },
+      // A timed-out request can still resolve after this interrupt owner has
+      // finished or the Query has been replaced. Ignore that stale receipt.
+      isCurrentOwner: () => isInterruptingResponse && lifecycleState.query === interruptQuery,
+      getPostInterruptOutcome: () => postInterruptTurnEndOutcome,
+      interruptTargetQueueId,
+      getCurrentQueueId: getInFlightQueueId,
+      onReceipt: (stillQueued) => {
+        interruptSurvivingQueueIds = stillQueued;
+        console.log(`[agent] Interrupt receipt: stillQueued=${stillQueued.size}`);
+      },
+      onUnavailable: () => {
+        console.log('[agent] Interrupt receipt unavailable (older CLI capability)');
+      },
+      dropExactInFlight: () => {
+        dropInFlightQueueItem(
+          'late interrupt receipt confirms queued item was cancelled',
+          'cancelled',
+        );
+      },
+      scheduleDrain: () => schedulePostTerminalQueueDrain('stopped'),
+    });
     const timeoutPromise = new Promise<void>((_, reject) => {
       setTimeout(() => reject(new Error('Interrupt timeout')), 5000);
     });
@@ -9781,6 +9976,7 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     return true;
   } finally {
     isInterruptingResponse = false;
+    interruptSurvivingQueueIds = null;
     setInterruptingInFlightQueueId(null);
     postInterruptTurnEndResolve = null;
     postInterruptTurnEndOutcome = null;
@@ -10143,6 +10339,8 @@ export async function rewindSession(userMessageId: string): Promise<{
   error?: string;
   content?: string;
   attachments?: MessageWire['attachments'];
+  skippedLinks?: number;
+  fileRewindStatus?: FileRewindStatus;
 }> {
   const doRewind = async () => {
     // 1. 找到目标 user message
@@ -10167,23 +10365,27 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    跳过不属于当前 session 的 UUID：SDK 不认识，调用必定失败且日志噪声。
     //    跳过无 sdkUuid 的用户消息：旧存储加载或 SDK 尚未回传 UUID。
     const targetUserUuid = targetMessage.sdkUuid;
-    if (lifecycleState.query && targetUserUuid && !lifecycleState.abortRequested && transcriptState.currentSessionUuids.has(targetUserUuid)) {
-      try {
-        const REWIND_FILES_TIMEOUT_MS = 5_000;
-        const result = await Promise.race([
-          lifecycleState.query.rewindFiles(targetUserUuid),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('rewindFiles timeout')), REWIND_FILES_TIMEOUT_MS)
-          ),
-        ]);
-        console.log('[agent] rewindFiles result:', JSON.stringify(result));
-        if (!result.canRewind) {
-          console.warn('[agent] rewindFiles cannot rewind:', result.error);
-        }
-      } catch (err) {
-        console.error('[agent] rewindFiles error:', err);
-        // 文件回溯失败不阻断消息截断
-      }
+    const fileRewind = await attemptFileRewind({
+      query: lifecycleState.query,
+      targetUserUuid,
+      abortRequested: lifecycleState.abortRequested,
+      isCurrentSessionUuid: Boolean(targetUserUuid && transcriptState.currentSessionUuids.has(targetUserUuid)),
+    });
+    const { skippedLinks, fileRewindStatus } = fileRewind;
+    if (fileRewind.diagnostics) {
+      console.log(
+        '[agent] rewindFiles result:'
+        + ` canRewind=${fileRewind.diagnostics.canRewind}`
+        + ` filesChanged=${fileRewind.diagnostics.filesChanged}`
+        + ` insertions=${fileRewind.diagnostics.insertions}`
+        + ` deletions=${fileRewind.diagnostics.deletions}`
+        + ` skippedLinks=${skippedLinks}`,
+      );
+    }
+    if (fileRewindStatus === 'partial') {
+      console.warn(`[agent] rewindFiles partially restored files: skippedLinks=${skippedLinks}`);
+    } else if (fileRewindStatus === 'failed') {
+      console.error('[agent] rewindFiles failed or was refused (details withheld from logs)');
     } else if (!targetUserUuid) {
       console.log('[agent] rewind: target user message has no sdkUuid, skipping rewindFiles');
     }
@@ -10256,7 +10458,13 @@ export async function rewindSession(userMessageId: string): Promise<{
     // 8. 预热下次 session
     schedulePreWarm();
 
-    return { success: true as const, content: removedContent, attachments: removedAttachments };
+    return {
+      success: true as const,
+      content: removedContent,
+      attachments: removedAttachments,
+      fileRewindStatus,
+      ...(skippedLinks > 0 ? { skippedLinks } : {}),
+    };
   };
 
   const promise = doRewind();
@@ -10621,6 +10829,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let preWarmStartedOk = false; // Tracks whether pre-warm received system_init
   let abortedByTimeout = false; // Distinguishes timeout abort from config-change abort
   let detectedAlreadyInUse = false; // stderr reported "Session ID already in use"
+  let sdkLaunchRetryDelayMs: number | undefined;
   const recentSdkStderr: string[] = [];
   streamIndexToToolId.clear();
   streamIndexToBlockType.clear();
@@ -10902,6 +11111,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       getSessionMetadata(sessionId),
       configState.currentEnabledOfficialToolIds,
     );
+    const claudeCodeExecutable = resolveClaudeCodeCli();
 
     const commonQueryOptions = {
       enableFileCheckpointing: true,
@@ -10913,7 +11123,16 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       settingSources: buildSettingSources(),
       settings: {
         cleanupPeriodDays: claudeTranscriptCleanupPeriodDays,
+        // MyAgents does not expose Anthropic feedback submission. Keep the
+        // upstream draft feature off explicitly instead of inheriting a CLI
+        // default that may change in a patch release.
+        feedbackDrafts: 'off' as const,
         plansDirectory: getSessionPlansDirectorySetting(sessionId),
+        // MyAgents owns provider routing and outbound-network policy. Without
+        // this, Claude Code's WebFetch tool sends the target hostname to
+        // api.anthropic.com for a domain-safety preflight even when inference
+        // is routed through a user-selected third-party provider.
+        skipWebFetchPreflight: true,
         // The Artifact tool (SDK 0.3.16x+) publishes HTML/MD to claude.ai —
         // an outward data flow MyAgents has not product-decided to expose.
         // Keep the tool surface frozen; revisit as its own feature if wanted.
@@ -10946,7 +11165,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // window back to the registry value. SDK strips the suffix back out
       // before the wire (normalizeModelStringForAPI in model.ts:616).
       model: applyProviderContextWindowSuffix(configState.currentModel, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID),
-      pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
+      pathToClaudeCodeExecutable: claudeCodeExecutable,
       env,
       stderr: (message: string) => {
         recentSdkStderr.push(message);
@@ -10987,6 +11206,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         askUserQuestion: { previewFormat: 'html' as const },
       },
       mcpServers: sdkMcpServersInitial,
+      // Product visibility boundary. Permission policy remains separately
+      // owned by allowedTools/disallowedTools/canUseTool/Hooks below.
+      tools: [...SDK_BUILTIN_TOOLS],
       // PRD 0.2.17 — Claude plugin injection. SDK accepts
       // `plugins: [{ type: 'local', path }]`; it then scans each path for
       // .claude-plugin/plugin.json and wires up the contained
@@ -11554,10 +11776,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
 
     try {
-      activeQuery = query({
+      activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
         prompt: promptGen,
         options: { ...sessionOption, ...commonQueryOptions },
-      });
+      }));
       setQuerySession(activeQuery);
     } catch (queryError: unknown) {
       // Defensive fallback: metadata lost but SDK disk data exists → switch to resume
@@ -11567,14 +11789,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       if (!resumeFrom && msg.includes('already in use')) {
         console.warn(`[agent] Session ${effectiveSdkSessionId} already exists on disk, switching to resume`);
         sessionRegistered = true;
-        activeQuery = query({
+        activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
           prompt: promptGen,
           options: {
             resume: effectiveSdkSessionId,
             ...(rewindResumeAt ? { resumeSessionAt: rewindResumeAt } : {}),
             ...commonQueryOptions,
           },
-        });
+        }));
         setQuerySession(activeQuery);
       } else {
         throw queryError;
@@ -11876,19 +12098,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
       // stream_event is high-frequency (per token delta) — skip logging entirely.
       // All other types are low-frequency and logged with type-specific detail:
-      //   system/init  — full JSON dump (once per session, all fields for diagnostics)
-      //   result       — full JSON dump, long strings truncated to 100 chars
+      //   system/init  — redacted counts/model summary (no workspace/plugin paths)
+      //   result       — redacted terminal/usage summary (no assistant/error content)
       //   rate_limit   — key fields (was previously silenced)
       //   others       — compact one-line summary
       if (sdkMessage.type !== 'stream_event') {
         const msg = sdkMessage as Record<string, unknown>;
+        const safeSdkLogMessage = summarizeSensitiveSdkMessage(sdkMessage);
 
         if (sdkMessage.type === 'system' && msg.subtype === 'init') {
-          // Full system_init — all fields visible for diagnostics (MCP status, tools, model, etc.)
-          console.log(`[agent][sdk] system_init: ${logStringify(sdkMessage)}`);
+          console.log(`[agent][sdk] system_init: ${logStringify(safeSdkLogMessage)}`);
         } else if (sdkMessage.type === 'result') {
-          // Full result — truncate long strings to 100 chars (e.g. result text)
-          console.log(`[agent][sdk] result: ${logStringify(sdkMessage, 100)}`);
+          console.log(`[agent][sdk] result: ${logStringify(safeSdkLogMessage)}`);
         } else if (sdkMessage.type === 'rate_limit_event') {
           const rli = msg.rate_limit_info as Record<string, unknown> | undefined;
           if (rli) {
@@ -11922,7 +12143,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
       } else {
         try {
-          const line = `${localTimestamp()} ${logStringify(sdkMessage)}`;
+          const line = `${localTimestamp()} ${logStringify(summarizeSensitiveSdkMessage(sdkMessage))}`;
           appendLogLine(line);
         } catch (error) {
           console.log('[agent][sdk] (unserializable)', error);
@@ -12243,7 +12464,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
 
         // Sentinel for system message kinds added by FUTURE SDK versions.
-        // The set below enumerates every system subtype in SDK 0.3.201
+        // The set below enumerates every system subtype in SDK 0.3.220
         // (handled or deliberately untouched) — a subtype outside it means the
         // SDK started emitting something we have never seen. Without this log
         // line, new message kinds vanish silently (the pre-0.3.173 default,
@@ -12321,9 +12542,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                     markCurrentTurnHasOutput();
                     // IM stream: forward non-subagent text delta to event bus (Pattern B)
                     emitImEvent('delta', streamEvent.delta.text);
-                    // PRD 0.2.14 — accumulate per-block text for desktop→IM mirror
-                    // (no-op when current turn isn't desktop-driven).
-                    maybeAccumulateMirrorChunk(streamEvent.index, streamEvent.delta.text);
+                    // Accumulate complete assistant blocks only when the Session
+                    // binding owns this turn's assistant delivery.
+                    maybeAccumulateChannelDeliveryChunk(streamEvent.index, streamEvent.delta.text);
                   }
                 } else {
                   console.log(`[agent] Filtered decorative text from stream (${decorativeCheck.reason})`);
@@ -12565,13 +12786,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               emitImEvent('block-end', '');
               imTextBlockIndices.delete(streamEvent.index);
             }
-            // PRD 0.2.14 — desktop turn AI text block done → mirror to bound channel.
-            // Q1·C: one mirror call per text block, with accumulated body. No-op
-            // when the turn isn't desktop-driven (currentTurnMirrorEnabled=false).
+            // One bound-channel delivery per completed top-level text block.
             const mirroredBlockText = pendingTextBlockTexts.get(streamEvent.index);
             if (mirroredBlockText !== undefined) {
               pendingTextBlockTexts.delete(streamEvent.index);
-              fireDesktopAssistantBlockMirror(mirroredBlockText);
+              stageSessionBoundAssistantBlock(mirroredBlockText);
             }
           }
         }
@@ -12955,6 +13174,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               broadcast('chat:message-chunk', nonStreamedText);
               markCurrentTurnHasOutput();
               emitImEvent('delta', nonStreamedText);
+              stageSessionBoundAssistantBlock(nonStreamedText);
             }
           }
         }
@@ -12962,7 +13182,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
-        // half lives in the system block above): a type outside the 0.3.201
+        // half lives in the system block above): a type outside the 0.3.220
         // union means a NEWER SDK started emitting a message kind this loop
         // has never seen — log once instead of letting it vanish silently.
         warnedUnknownMessageTypes.add(sdkMessage.type);
@@ -13123,16 +13343,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // Fall through to error handling so IM SSE stream closes properly
     }
 
-    // Enhanced error diagnostics for Windows subprocess failures
+    // Cross-platform SDK subprocess diagnostics. Deterministic executable
+    // denials also carry the Rust circuit's next legal probe delay.
     let userFacingError = errorMessage;
     const sdkSubprocessDiagnostic = diagnoseSdkSubprocessFailure({
+      error,
       errorMessage,
       stderr: recentSdkStderr,
     });
     if (sdkSubprocessDiagnostic) {
+      sdkLaunchRetryDelayMs = sdkSubprocessDiagnostic.automaticRetryDelayMs;
       console.error(
-        `[agent] Windows SDK subprocess failure classified: kind=${sdkSubprocessDiagnostic.kind} ` +
-        `code=${sdkSubprocessDiagnostic.exitCodeHex ?? 'unknown'} os=${process.env.OS || 'unknown'}`,
+        `[agent] SDK subprocess failure classified: kind=${sdkSubprocessDiagnostic.kind} ` +
+        `code=${sdkSubprocessDiagnostic.errorCode ?? sdkSubprocessDiagnostic.exitCodeHex ?? 'unknown'} ` +
+        `platform=${process.platform}`,
       );
       userFacingError = sdkSubprocessDiagnostic.userMessage;
     }
@@ -13297,7 +13521,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // sessionRegistered 不修改 — pre-warm 永不触碰此标志
 
       if (!preWarmStartedOk) {
-        if (!lifecycleState.abortRequested || abortedByTimeout) {
+        if (sdkLaunchRetryDelayMs !== undefined) {
+          resetPreWarmFailCount();
+          console.warn(
+            `[agent] pre-warm SDK launch blocked; next application probe in ${sdkLaunchRetryDelayMs}ms`,
+          );
+        } else if (!lifecycleState.abortRequested || abortedByTimeout) {
           const failCount = incrementPreWarmFailCount();
           console.warn(`[agent] pre-warm failed, failCount=${failCount}${abortedByTimeout ? ' (timeout)' : ''}`);
         } else {
@@ -13306,16 +13535,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
 
       if (!preWarmStartedOk || lifecycleState.abortRequested) {
-        schedulePreWarm();
+        schedulePreWarm(sdkLaunchRetryDelayMs);
       }
     } else if (!lifecycleState.abortRequested && sessionRegistered) {
       // 非主动中止的意外退出（subprocess crash / error）→ 安排恢复。
       // 包含 sessionState === 'error' 的情况 — session 刚死，必须恢复，
       // 否则用户再发消息时无可用 subprocess。
       // Error 已通过 catch block 广播给前端（line 4702），用户已知出错。
-      console.log('[agent] Unexpected session exit, scheduling recovery pre-warm');
+      console.log(
+        `[agent] Unexpected session exit, scheduling recovery pre-warm`
+        + (sdkLaunchRetryDelayMs !== undefined ? ` in ${sdkLaunchRetryDelayMs}ms` : ''),
+      );
       resetPreWarmFailCount(); // 新的故障上下文，重置重试计数
-      schedulePreWarm();
+      schedulePreWarm(sdkLaunchRetryDelayMs);
     }
 
     // Safety net: detect orphaned transcriptState.messages left in queue with no session or timer to process them.
@@ -13339,15 +13571,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         if (lifecycleState.preWarmTimer) {
           clearPreWarmTimer();
         }
-        console.warn(`[agent] Safety net: ${turnBoundaryQueueLength} turn-boundary message(s), starting recovery turn`);
         resetPreWarmFailCount();
-        if (!startNextTurnQueuedItem('recovery')) {
-          schedulePreWarm();
+        if (sdkLaunchRetryDelayMs !== undefined) {
+          console.warn(`[agent] Safety net: ${turnBoundaryQueueLength} turn-boundary message(s), waiting for SDK launch probe`);
+          schedulePreWarm(sdkLaunchRetryDelayMs);
+        } else {
+          console.warn(`[agent] Safety net: ${turnBoundaryQueueLength} turn-boundary message(s), starting recovery turn`);
+          if (!startNextTurnQueuedItem('recovery')) {
+            schedulePreWarm();
+          }
         }
       } else if (!lifecycleState.preWarmTimer) {
         console.warn(`[agent] Safety net: ${messageQueueLength + turnBoundaryQueueLength} orphaned message(s) in queue, scheduling recovery`);
         resetPreWarmFailCount();
-        schedulePreWarm();
+        schedulePreWarm(sdkLaunchRetryDelayMs);
       }
     }
   }
@@ -13667,6 +13904,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         requestId: item.requestId,
         analyticsSource: item.analyticsSource,
         analyticsOrigin: item.analyticsOrigin,
+        channelDelivery: item.channelDelivery,
       });
       // Re-emit queue:added with isInFlight=true so the frontend pill's
       // UI marks it as handed to SDK; cancellation now goes through
@@ -13778,8 +14016,10 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       return;
     }
 
-    // Pattern B+G: every SDK yield gets an output-owner FIFO slot.
-    pushPendingOutputOwner(item.id, item.requestId);
+    // Pattern B+G: every logical SDK yield gets one output-owner FIFO slot.
+    // A transient provider-text retry re-yields the same logical turn and
+    // therefore reuses the owner retained when the retry was selected.
+    pushPendingOutputOwner(item);
 
     // PRD 0.2.18 Session Inbox — per-turn binding (read at result handler /
     // abort path). Bound here at generator yield (NOT at enqueue), so the

@@ -17,6 +17,15 @@ pub struct BackgroundCompletionResult {
     pub session_id: String,
 }
 
+impl BackgroundCompletionResult {
+    fn new(session_id: &str, started: bool) -> Self {
+        Self {
+            started,
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
 /// Check if a Sidecar's session is currently in "running" state
 /// by calling GET /api/session-state
 #[derive(Debug, Deserialize)]
@@ -24,7 +33,15 @@ pub struct BackgroundCompletionResult {
 struct SidecarSessionSnapshot {
     session_state: String,
     #[serde(default)]
+    is_busy: bool,
+    #[serde(default)]
     completion_terminal: Option<crate::notification::SessionCompletionTerminal>,
+}
+
+impl SidecarSessionSnapshot {
+    fn is_busy(&self) -> bool {
+        self.is_busy || matches!(self.session_state.as_str(), "running" | "starting")
+    }
 }
 
 fn check_sidecar_session_snapshot(port: u16) -> Option<SidecarSessionSnapshot> {
@@ -49,16 +66,19 @@ pub(super) fn check_sidecar_session_state(port: u16) -> Option<String> {
     check_sidecar_session_snapshot(port).map(|snapshot| snapshot.session_state)
 }
 
+pub(super) fn check_sidecar_is_busy(port: u16) -> Option<bool> {
+    check_sidecar_session_snapshot(port).map(|snapshot| snapshot.is_busy())
+}
+
 /// Start background completion for a session.
 /// Adds a BackgroundCompletion owner and spawns a polling thread.
-/// Returns { started: true } if AI is actively running, { started: false } if idle.
+/// Returns an error when the Sidecar exists but its activity cannot be checked;
+/// destructive callers must not interpret that uncertainty as idle.
 pub fn start_background_completion<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
     session_id: &str,
 ) -> Result<BackgroundCompletionResult, String> {
-    let result_id = session_id.to_string();
-
     // Phase 1: Check if sidecar exists and get port (with lock)
     let port = {
         let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
@@ -80,28 +100,30 @@ pub fn start_background_completion<R: Runtime>(
                 "[bg-completion] No running sidecar for session {}",
                 session_id
             );
-            return Ok(BackgroundCompletionResult {
-                started: false,
-                session_id: result_id,
-            });
+            return Ok(BackgroundCompletionResult::new(session_id, false));
         }
     };
 
-    // Phase 2: Check session state (without lock - HTTP call).
+    // Phase 2: Check session activity (without lock - HTTP call).
     // (issue #174) `starting` is also "in flight" — the SDK subprocess has
     // been launched but system_init hasn't arrived, and the user might be
     // closing the tab in the up-to-10-minute startup-timeout window. Treat
     // it the same as `running` so background completion attaches and keeps
     // the bootstrapping subprocess alive instead of killing it on tab close.
-    let state = check_sidecar_session_state(port);
-    let is_active = matches!(state.as_deref(), Some("running") | Some("starting"));
-
-    if !is_active {
-        ulog_info!("[bg-completion] Session {} is not active (state: {:?}), no background completion needed", session_id, state);
-        return Ok(BackgroundCompletionResult {
-            started: false,
-            session_id: result_id,
-        });
+    let is_busy = check_sidecar_is_busy(port);
+    if is_busy.is_none() {
+        ulog_warn!(
+            "[bg-completion] Unable to read session state for {}",
+            session_id
+        );
+        return Err(format!("Unable to read session activity for {session_id}"));
+    }
+    if is_busy != Some(true) {
+        ulog_info!(
+            "[bg-completion] Session {} is not busy, no background completion needed",
+            session_id
+        );
+        return Ok(BackgroundCompletionResult::new(session_id, false));
     }
 
     // Phase 3: Add BackgroundCompletion owner (with lock)
@@ -114,10 +136,7 @@ pub fn start_background_completion<R: Runtime>(
                     "[bg-completion] Session {} already has a BackgroundCompletion owner",
                     session_id
                 );
-                return Ok(BackgroundCompletionResult {
-                    started: true,
-                    session_id: result_id,
-                });
+                return Ok(BackgroundCompletionResult::new(session_id, true));
             }
             sidecar.add_owner(bg_owner);
             ulog_info!(
@@ -130,10 +149,9 @@ pub fn start_background_completion<R: Runtime>(
                 "[bg-completion] Sidecar disappeared during state check for session {}",
                 session_id
             );
-            return Ok(BackgroundCompletionResult {
-                started: false,
-                session_id: result_id,
-            });
+            return Err(format!(
+                "Sidecar disappeared during activity check for {session_id}"
+            ));
         }
     }
 
@@ -146,10 +164,7 @@ pub fn start_background_completion<R: Runtime>(
         poll_background_completion(&app_handle_clone, &manager_clone, &session_id_clone, port);
     });
 
-    Ok(BackgroundCompletionResult {
-        started: true,
-        session_id: result_id,
-    })
+    Ok(BackgroundCompletionResult::new(session_id, true))
 }
 
 /// Start a BackgroundCompletion owner for a headless message/event delivery.
@@ -164,7 +179,6 @@ pub fn start_headless_background_completion<R: Runtime>(
     manager: &ManagedSidecarManager,
     session_id: &str,
 ) -> Result<BackgroundCompletionResult, String> {
-    let result_id = session_id.to_string();
     let port = {
         let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
         let Some(sidecar) = manager_guard.sidecars.get_mut(session_id) else {
@@ -172,20 +186,14 @@ pub fn start_headless_background_completion<R: Runtime>(
                 "[bg-completion] No running sidecar for headless session {}",
                 session_id
             );
-            return Ok(BackgroundCompletionResult {
-                started: false,
-                session_id: result_id,
-            });
+            return Ok(BackgroundCompletionResult::new(session_id, false));
         };
         if !sidecar.is_reusable() {
             ulog_debug!(
                 "[bg-completion] Sidecar for headless session {} is not reusable",
                 session_id
             );
-            return Ok(BackgroundCompletionResult {
-                started: false,
-                session_id: result_id,
-            });
+            return Ok(BackgroundCompletionResult::new(session_id, false));
         }
 
         let port = sidecar.port;
@@ -195,10 +203,7 @@ pub fn start_headless_background_completion<R: Runtime>(
                 "[bg-completion] Session {} already has a BackgroundCompletion owner",
                 session_id
             );
-            return Ok(BackgroundCompletionResult {
-                started: true,
-                session_id: result_id,
-            });
+            return Ok(BackgroundCompletionResult::new(session_id, true));
         }
         sidecar.add_owner(bg_owner);
         ulog_info!(
@@ -217,10 +222,7 @@ pub fn start_headless_background_completion<R: Runtime>(
         poll_background_completion(&app_handle_clone, &manager_clone, &session_id_clone, port);
     });
 
-    Ok(BackgroundCompletionResult {
-        started: true,
-        session_id: result_id,
-    })
+    Ok(BackgroundCompletionResult::new(session_id, true))
 }
 
 /// Polling loop that runs in a background thread.
@@ -362,6 +364,33 @@ fn poll_background_completion<R: Runtime>(
             "sidecarStopped": sidecar_stopped,
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SidecarSessionSnapshot;
+
+    #[test]
+    fn busy_snapshot_includes_accepted_queue_work_and_legacy_active_states() {
+        let queued: SidecarSessionSnapshot = serde_json::from_value(serde_json::json!({
+            "sessionState": "idle",
+            "isBusy": true
+        }))
+        .unwrap();
+        assert!(queued.is_busy());
+
+        let legacy_running: SidecarSessionSnapshot = serde_json::from_value(serde_json::json!({
+            "sessionState": "running"
+        }))
+        .unwrap();
+        assert!(legacy_running.is_busy());
+
+        let idle: SidecarSessionSnapshot = serde_json::from_value(serde_json::json!({
+            "sessionState": "idle"
+        }))
+        .unwrap();
+        assert!(!idle.is_busy());
+    }
 }
 
 /// Cancel background completion for a session (e.g., when user reconnects).

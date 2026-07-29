@@ -13,26 +13,22 @@
  * before that the session shows the default truncated-first-message title.
  */
 
-import { randomUUID } from "crypto";
-import { homedir } from "os";
-import { join } from "path";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import {
-  resolveClaudeCodeCli,
-  buildClaudeSessionEnv,
-  startOneShotBridge,
-  type ProviderEnv,
-} from "./agent-session";
-import { applyProviderContextWindowSuffix } from "./utils/model-capabilities";
-import { SUBSCRIPTION_PROVIDER_ID } from "../shared/config-types";
-import { isLikelyErrorTitle } from "../shared/titleFilters";
-import { capTitleAtBoundary } from "../shared/sessionTitle";
-import { ClaudeCodeRuntime } from "./runtimes/claude-code";
-import { CodexRuntime } from "./runtimes/codex";
-import { GeminiRuntime } from "./runtimes/gemini";
-import type { AgentRuntime, RuntimeProcess } from "./runtimes/types";
-import type { RuntimeType } from "../shared/types/runtime";
-import { ensureDirSync } from "./utils/fs-utils";
+import { randomUUID } from 'crypto';
+import { homedir } from 'os';
+import { join } from 'path';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, type ProviderEnv } from './agent-session';
+import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
+import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
+import { isLikelyErrorTitle } from '../shared/titleFilters';
+import { capTitleAtBoundary } from '../shared/sessionTitle';
+import { ClaudeCodeRuntime } from './runtimes/claude-code';
+import { CodexRuntime } from './runtimes/codex';
+import { GeminiRuntime } from './runtimes/gemini';
+import type { AgentRuntime, RuntimeProcess } from './runtimes/types';
+import type { RuntimeType } from '../shared/types/runtime';
+import { ensureDirSync } from './utils/fs-utils';
+import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 
 const TITLE_MAX_LENGTH = 30;
 export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
@@ -53,23 +49,9 @@ const PER_MESSAGE_LIMIT = 200;
  * than relying on permission mode) removes the tools from the model's context
  * entirely, so even bypassPermissions has nothing to auto-execute. */
 const TITLE_GEN_DISALLOWED_TOOLS = [
-  "Task",
-  "Bash",
-  "BashOutput",
-  "KillShell",
-  "Glob",
-  "Grep",
-  "Read",
-  "Edit",
-  "MultiEdit",
-  "Write",
-  "NotebookEdit",
-  "WebFetch",
-  "WebSearch",
-  "TodoWrite",
-  "SlashCommand",
-  "ExitPlanMode",
-  "AskUserQuestion",
+  'Task', 'Bash', 'BashOutput', 'KillShell', 'Glob', 'Grep', 'Read', 'Edit',
+  'MultiEdit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite',
+  'SlashCommand', 'ExitPlanMode', 'AskUserQuestion',
 ];
 
 const SYSTEM_PROMPT = `You are a session title generator for a chat app. Weeks later the user will
@@ -126,7 +108,7 @@ function buildUserPrompt(rounds: TitleRound[]): string {
   });
   // Restate the hard constraints at the very END (recency): weaker / smaller
   // title-gen models follow the last instruction most reliably.
-  return `<conversation>\n${parts.join("\n\n")}\n</conversation>\n\nWrite the session title. Keep the most distinctive anchor (name / number / file), match the user's language, ≤30 chars, output only the title.`;
+  return `<conversation>\n${parts.join('\n\n')}\n</conversation>\n\nWrite the session title. Keep the most distinctive anchor (name / number / file), match the user's language, ≤30 chars, output only the title.`;
 }
 
 /**
@@ -136,15 +118,15 @@ function buildUserPrompt(rounds: TitleRound[]): string {
 function cleanTitle(raw: string): string {
   let cleaned = raw.trim();
   // Remove surrounding quotes (single, double, Chinese quotes)
-  cleaned = cleaned.replace(/^["'「『《【"']+|["'」』》】"']+$/g, "");
+  cleaned = cleaned.replace(/^["'「『《【"']+|["'」』》】"']+$/g, '');
   // Remove trailing punctuation
-  cleaned = cleaned.replace(/[。，、；：！？.,:;!?…]+$/, "");
+  cleaned = cleaned.replace(/[。，、；：！？.,:;!?…]+$/, '');
   // Remove common AI preamble patterns
-  cleaned = cleaned.replace(/^(标题[：:]|Title[：:])\s*/i, "");
+  cleaned = cleaned.replace(/^(标题[：:]|Title[：:])\s*/i, '');
   // Defense-in-depth: strip angle brackets so a model-injected "<script>" never reaches
   // a consumer that might render titles as HTML/Markdown raw. Frontend uses text nodes
   // today, but title is long-lived metadata and cheap to harden here.
-  cleaned = cleaned.replace(/[<>]/g, "");
+  cleaned = cleaned.replace(/[<>]/g, '');
   cleaned = cleaned.trim();
   // #245 backstop: if the title looks like an upstream-error string (SDK 4xx/5xx
   // surface, openai-bridge [Error]: …) the title-gen LLM has either echoed
@@ -153,7 +135,7 @@ function cleanTitle(raw: string): string {
   // back to its truncated-first-message default. Primary gate is the renderer
   // shouldRecordTurnForTitle; this catches paths it can't cover (loaded-history
   // reconstruction, title-gen call hitting its own 4xx).
-  if (isLikelyErrorTitle(cleaned)) return "";
+  if (isLikelyErrorTitle(cleaned)) return '';
   // Boundary-aware cap: a blind slice(0,30) severs Latin words ("…SSE 流式调" →
   // "…SSE 流"); capTitleAtBoundary backs a mid-word cut off to the last space.
   // Pure CJK (no whitespace) still hard-cuts at the limit.
@@ -172,41 +154,27 @@ type SdkResultLikeMessage = {
   messages?: Array<{ role: string; content?: SdkTextContentBlock[] }>;
 };
 
-function textFromContentBlocks(
-  content: SdkTextContentBlock[] | undefined,
-): string {
-  if (!Array.isArray(content)) return "";
+function textFromContentBlocks(content: SdkTextContentBlock[] | undefined): string {
+  if (!Array.isArray(content)) return '';
   return content
-    .map((block) => (typeof block?.text === "string" ? block.text : ""))
-    .join("")
+    .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+    .join('')
     .trim();
 }
 
-export function extractTitleTextFromSdkMessage(
-  message: unknown,
-): string | null {
-  if (!message || typeof message !== "object") return null;
+export function extractTitleTextFromSdkMessage(message: unknown): string | null {
+  if (!message || typeof message !== 'object') return null;
   const typed = message as SdkAssistantLikeMessage & SdkResultLikeMessage;
-  if (typed.type === "assistant") {
+  if (typed.type === 'assistant') {
     const text = textFromContentBlocks(typed.message?.content);
     return text || null;
   }
-  if (
-    typed.type === "result" &&
-    typed.subtype === "success" &&
-    Array.isArray(typed.messages)
-  ) {
-    const lastAssistant = typed.messages
-      .filter((m) => m.role === "assistant")
-      .pop();
+  if (typed.type === 'result' && typed.subtype === 'success' && Array.isArray(typed.messages)) {
+    const lastAssistant = typed.messages.filter(m => m.role === 'assistant').pop();
     const text = textFromContentBlocks(lastAssistant?.content);
     return text || null;
   }
-  if (
-    typed.type === "result" &&
-    typed.subtype === "success" &&
-    typeof typed.result === "string"
-  ) {
+  if (typed.type === 'result' && typed.subtype === 'success' && typeof typed.result === 'string') {
     const text = typed.result.trim();
     return text || null;
   }
@@ -223,67 +191,65 @@ export interface OneShotTextRequest {
 }
 
 /**
- * Stateless, tool-free text generation used by small embedded AI actions.
- * It shares MyAgents provider routing but never joins or mutates a Chat session.
+ * Stateless, tool-free text generation for compact workbench actions. It uses
+ * the normal provider route but never joins or persists a Chat session.
  */
 export async function generateOneShotText(
   request: OneShotTextRequest,
 ): Promise<string | null> {
-  const bridge =
-    request.providerEnv?.apiProtocol === "openai"
-      ? startOneShotBridge(
-          request.providerEnv,
-          request.model,
-          `workbench-run:${request.providerEnv.baseUrl ?? "anthropic"}`,
-        )
-      : null;
-  const oneShot = query({
+  const bridge = request.providerEnv?.apiProtocol === 'openai'
+    ? startOneShotBridge(
+      request.providerEnv,
+      request.model,
+      `workbench-run:${request.providerEnv.baseUrl ?? 'anthropic'}`,
+    )
+    : null;
+  const cliPath = resolveClaudeCodeCli();
+  const oneShot = await createGuardedSdkQuery(cliPath, () => query({
     prompt: request.prompt,
     options: {
       maxTurns: 1,
       cwd: request.workspacePath,
       settingSources: [],
-      permissionMode: "bypassPermissions",
+      permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
-      pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
+      pathToClaudeCodeExecutable: cliPath,
       env: buildClaudeSessionEnv(request.providerEnv, request.model, {
         bridgeToken: bridge?.token,
         providerId: request.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
       }),
       systemPrompt: request.systemPrompt,
-      thinking: { type: "disabled" },
-      effort: "low",
+      thinking: { type: 'disabled' },
+      effort: 'low',
       includePartialMessages: false,
       persistSession: false,
       mcpServers: {},
       tools: [],
-      ...(request.model
-        ? {
-            model: applyProviderContextWindowSuffix(
-              request.model,
-              request.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
-            ),
-          }
-        : {}),
+      ...(request.model ? {
+        model: applyProviderContextWindowSuffix(
+          request.model,
+          request.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+        ),
+      } : {}),
     },
-  });
+  }));
   try {
     const queryPromise = (async (): Promise<string | null> => {
       let latest: string | null = null;
-      for await (const sdkMessage of oneShot) {
-        latest = extractTitleTextFromSdkMessage(sdkMessage) ?? latest;
+      for await (const message of oneShot) {
+        latest = extractTitleTextFromSdkMessage(message) ?? latest;
       }
       return latest;
     })();
-    const timeout = new Promise<null>((resolveTimeout) => {
-      setTimeout(() => resolveTimeout(null), request.timeoutMs ?? 60_000);
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), request.timeoutMs ?? 60_000);
     });
     const output = await Promise.race([queryPromise, timeout]);
     if (output === null) {
       try {
         oneShot.return(undefined as never);
       } catch {
-        // Best-effort subprocess cleanup after timeout.
+        // Best-effort SDK subprocess cleanup after the request deadline.
       }
     }
     return output?.trim() || null;
@@ -307,14 +273,9 @@ export async function generateTitle(
   // OpenAI-protocol — the SDK subprocess routes to ITS upstream via a
   // dedicated /bridge/<token> path, fully isolated from the active session.
   // For Anthropic-direct / subscription title-gen, no token is needed.
-  const bridge =
-    providerEnv?.apiProtocol === "openai"
-      ? startOneShotBridge(
-          providerEnv,
-          model,
-          `title-gen:${providerEnv.baseUrl ?? "anthropic"}`,
-        )
-      : null;
+  const bridge = providerEnv?.apiProtocol === 'openai'
+    ? startOneShotBridge(providerEnv, model, `title-gen:${providerEnv.baseUrl ?? 'anthropic'}`)
+    : null;
   try {
     return await generateTitleInner(rounds, model, providerEnv, bridge?.token);
   } finally {
@@ -333,7 +294,7 @@ async function generateTitleInner(
 
   try {
     const cliPath = resolveClaudeCodeCli();
-    const cwd = join(homedir(), ".myagents", "projects");
+    const cwd = join(homedir(), '.myagents', 'projects');
     ensureDirSync(cwd);
 
     // Pass `model` as the override so CLAUDE_CODE_AUTO_COMPACT_WINDOW is
@@ -346,21 +307,21 @@ async function generateTitleInner(
 
     async function* titlePrompt() {
       yield {
-        type: "user" as const,
-        message: { role: "user" as const, content: prompt },
+        type: 'user' as const,
+        message: { role: 'user' as const, content: prompt },
         parent_tool_use_id: null,
         session_id: sessionId,
       };
     }
 
-    const titleQuery = query({
+    const titleQuery = await createGuardedSdkQuery(cliPath, () => query({
       prompt: titlePrompt(),
       options: {
         maxTurns: 1,
         sessionId,
         cwd,
-        settingSources: ["project"],
-        permissionMode: "bypassPermissions",
+        settingSources: ['project'],
+        permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         pathToClaudeCodeExecutable: cliPath,
         env,
@@ -368,8 +329,8 @@ async function generateTitleInner(
         // Title generation is a short text-classification task. Adaptive thinking
         // can spend the whole one-shot budget on hidden reasoning or delay first
         // text on strong reasoning models, so force the cheapest text path.
-        thinking: { type: "disabled" },
-        effort: "low",
+        thinking: { type: 'disabled' },
+        effort: 'low',
         includePartialMessages: false,
         persistSession: false,
         mcpServers: {},
@@ -386,16 +347,9 @@ async function generateTitleInner(
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
         // uses the 1M path even for a one-shot title-gen subprocess. SDK strips
         // the suffix before the wire.
-        ...(model
-          ? {
-              model: applyProviderContextWindowSuffix(
-                model,
-                providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
-              ),
-            }
-          : {}),
+        ...(model ? { model: applyProviderContextWindowSuffix(model, providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID) } : {}),
       },
-    });
+    }));
 
     let titleText: string | null = null;
 
@@ -416,27 +370,19 @@ async function generateTitleInner(
 
     // If timeout won, terminate the SDK iterator to release the subprocess
     if (titleText === null) {
-      try {
-        titleQuery.return(undefined as never);
-      } catch {
-        /* ignore */
-      }
+      try { titleQuery.return(undefined as never); } catch { /* ignore */ }
     }
 
     if (!titleText) {
-      console.warn(
-        `[title-generator] No title text returned (${Date.now() - startTime}ms)`,
-      );
+      console.warn(`[title-generator] No title text returned (${Date.now() - startTime}ms)`);
       return null;
     }
 
     const cleaned = cleanTitle(titleText);
-    console.log(
-      `[title-generator] Generated title: "${cleaned}" (${Date.now() - startTime}ms, ${rounds.length} rounds)`,
-    );
+    console.log(`[title-generator] Generated title: "${cleaned}" (${Date.now() - startTime}ms, ${rounds.length} rounds)`);
     return cleaned.length > 0 ? cleaned : null;
   } catch (err) {
-    console.warn("[title-generator] SDK query failed:", err);
+    console.warn('[title-generator] SDK query failed:', err);
     return null;
   }
 }
@@ -452,16 +398,11 @@ async function generateTitleInner(
  */
 function createFreshRuntime(type: RuntimeType): AgentRuntime {
   switch (type) {
-    case "claude-code":
-      return new ClaudeCodeRuntime();
-    case "codex":
-      return new CodexRuntime();
-    case "gemini":
-      return new GeminiRuntime();
+    case 'claude-code': return new ClaudeCodeRuntime();
+    case 'codex': return new CodexRuntime();
+    case 'gemini': return new GeminiRuntime();
     default:
-      throw new Error(
-        `Unsupported external runtime for title generation: ${type}`,
-      );
+      throw new Error(`Unsupported external runtime for title generation: ${type}`);
   }
 }
 
@@ -482,14 +423,10 @@ function createFreshRuntime(type: RuntimeType): AgentRuntime {
  */
 function titlePermissionMode(runtimeType: RuntimeType): string {
   switch (runtimeType) {
-    case "claude-code":
-      return "fullAgency"; // tools stripped via disallowedTools
-    case "codex":
-      return "suggest"; // → approval=untrusted + sandbox=read-only
-    case "gemini":
-      return "default"; // → approval-required (no yolo)
-    default:
-      return "auto";
+    case 'claude-code': return 'fullAgency';  // tools stripped via disallowedTools
+    case 'codex': return 'suggest';           // → approval=untrusted + sandbox=read-only
+    case 'gemini': return 'default';          // → approval-required (no yolo)
+    default: return 'auto';
   }
 }
 
@@ -520,23 +457,15 @@ export async function generateTitleExternal(
   try {
     runtime = createFreshRuntime(runtimeType);
   } catch (err) {
-    console.warn("[title-generator] external runtime unavailable:", err);
+    console.warn('[title-generator] external runtime unavailable:', err);
     return null;
   }
 
-  let collected = "";
+  let collected = '';
   let handle: RuntimeProcess | null = null;
   let resolved = false;
-  let settle: (val: string | null) => void = () => {
-    /* placeholder replaced by promise ctor */
-  };
-  let outcome:
-    | "ok"
-    | "empty"
-    | "timeout"
-    | "start-failed"
-    | "error"
-    | "permission" = "timeout";
+  let settle: (val: string | null) => void = () => { /* placeholder replaced by promise ctor */ };
+  let outcome: 'ok' | 'empty' | 'timeout' | 'start-failed' | 'error' | 'permission' = 'timeout';
 
   const resultPromise = new Promise<string | null>((resolve) => {
     settle = (val: string | null) => {
@@ -549,70 +478,61 @@ export async function generateTitleExternal(
   // Hoist startSession out of the Promise ctor so we can await it on the timeout path —
   // without that, a 30s timeout during Gemini's cold-start handshake leaves `handle === null`
   // forever, stranding the child process + its GEMINI_SYSTEM_MD tmp file.
-  const startPromise = runtime.startSession(
-    {
-      sessionId: titleSessionId,
-      workspacePath,
-      initialMessage: userPrompt,
-      systemPromptAppend: SYSTEM_PROMPT,
-      ...(model ? { model } : {}),
-      permissionMode: titlePermissionMode(runtimeType),
-      // Strip all tools from the model's context (Claude Code honours this;
-      // Codex/Gemini are constrained by the read-only/approval mode above).
-      disallowedTools: TITLE_GEN_DISALLOWED_TOOLS,
-      maxTurns: 1,
-      // Placeholder — title-gen passes its own systemPromptAppend and explicit permissionMode,
-      // so scenario-driven branches in each runtime (default-mode/L2-prompt) never fire.
-      scenario: { type: "desktop" },
-    },
-    (event) => {
-      // Guard: events can still stream in after we've settled (timeout winner / late turn_complete).
-      if (resolved) return;
-      if (event.kind === "text_delta") {
-        collected += event.text;
-      } else if (event.kind === "turn_complete") {
-        outcome = collected ? "ok" : "empty";
+  const startPromise = runtime.startSession({
+    sessionId: titleSessionId,
+    workspacePath,
+    initialMessage: userPrompt,
+    systemPromptAppend: SYSTEM_PROMPT,
+    ...(model ? { model } : {}),
+    permissionMode: titlePermissionMode(runtimeType),
+    // Strip all tools from the model's context (Claude Code honours this;
+    // Codex/Gemini are constrained by the read-only/approval mode above).
+    disallowedTools: TITLE_GEN_DISALLOWED_TOOLS,
+    maxTurns: 1,
+    // Placeholder — title-gen passes its own systemPromptAppend and explicit permissionMode,
+    // so scenario-driven branches in each runtime (default-mode/L2-prompt) never fire.
+    scenario: { type: 'desktop' },
+  }, (event) => {
+    // Guard: events can still stream in after we've settled (timeout winner / late turn_complete).
+    if (resolved) return;
+    if (event.kind === 'text_delta') {
+      collected += event.text;
+    } else if (event.kind === 'turn_complete') {
+      outcome = collected ? 'ok' : 'empty';
+      settle(collected || null);
+    } else if (event.kind === 'session_complete') {
+      // On non-success (Gemini session/prompt error, Codex turn error) a few tokens may have
+      // streamed before the failure — those partial fragments make garbage titles. Settle null.
+      if (event.subtype === 'success') {
+        outcome = collected ? 'ok' : 'empty';
         settle(collected || null);
-      } else if (event.kind === "session_complete") {
-        // On non-success (Gemini session/prompt error, Codex turn error) a few tokens may have
-        // streamed before the failure — those partial fragments make garbage titles. Settle null.
-        if (event.subtype === "success") {
-          outcome = collected ? "ok" : "empty";
-          settle(collected || null);
-        } else {
-          outcome = "error";
-          settle(null);
-        }
-      } else if (event.kind === "permission_request") {
-        // Title-gen is text-only and forces the most permissive mode per runtime so this shouldn't
-        // fire. If it does (e.g. Gemini set_mode non-fatally fell back to default), don't deadlock
-        // waiting on an approval we'd never grant — settle with whatever text we have and let the
-        // cleanup path kill the process. No respondPermission call needed.
-        outcome = "permission";
-        settle(collected || null);
+      } else {
+        outcome = 'error';
+        settle(null);
       }
-    },
-  );
+    } else if (event.kind === 'permission_request') {
+      // Title-gen is text-only and forces the most permissive mode per runtime so this shouldn't
+      // fire. If it does (e.g. Gemini set_mode non-fatally fell back to default), don't deadlock
+      // waiting on an approval we'd never grant — settle with whatever text we have and let the
+      // cleanup path kill the process. No respondPermission call needed.
+      outcome = 'permission';
+      settle(collected || null);
+    }
+  });
 
-  startPromise
-    .then((h) => {
-      handle = h;
-      // Late handle after timeout already fired — kill immediately, nobody else will.
-      if (resolved) {
-        runtime.stopSession(h).catch(() => {
-          /* ignore */
-        });
-      }
-    })
-    .catch((err) => {
-      outcome = "start-failed";
-      console.warn("[title-generator] external startSession failed:", err);
-      settle(null);
-    });
+  startPromise.then((h) => {
+    handle = h;
+    // Late handle after timeout already fired — kill immediately, nobody else will.
+    if (resolved) {
+      runtime.stopSession(h).catch(() => { /* ignore */ });
+    }
+  }).catch((err) => {
+    outcome = 'start-failed';
+    console.warn('[title-generator] external startSession failed:', err);
+    settle(null);
+  });
 
-  const timeoutPromise = new Promise<null>((resolve) =>
-    setTimeout(() => resolve(null), EXTERNAL_TIMEOUT_MS),
-  );
+  const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), EXTERNAL_TIMEOUT_MS));
   const titleText = await Promise.race([resultPromise, timeoutPromise]);
 
   // #296 review (Codex C2): mark the attempt finished now. If the TIMEOUT won the
@@ -632,24 +552,14 @@ export async function generateTitleExternal(
   //   3. startPromise rejects during the grace window → .catch above already fired, no handle to
   //      stop. Swallow rejection in the race so we don't propagate.
   if (handle) {
-    try {
-      await runtime.stopSession(handle);
-    } catch {
-      /* ignore */
-    }
+    try { await runtime.stopSession(handle); } catch { /* ignore */ }
   } else {
     const lateHandle = await Promise.race([
       startPromise.catch(() => null),
-      new Promise<RuntimeProcess | null>((r) =>
-        setTimeout(() => r(null), 5_000),
-      ),
+      new Promise<RuntimeProcess | null>((r) => setTimeout(() => r(null), 5_000)),
     ]);
     if (lateHandle) {
-      try {
-        await runtime.stopSession(lateHandle);
-      } catch {
-        /* ignore */
-      }
+      try { await runtime.stopSession(lateHandle); } catch { /* ignore */ }
     }
   }
 
@@ -657,15 +567,11 @@ export async function generateTitleExternal(
   if (!titleText || !titleText.trim()) {
     // Preserve the outcome tag the callback/catch/timeout set so ops can distinguish
     // timeout / start-failed / error / empty in the logs.
-    console.warn(
-      `[title-generator] external ${runtimeType} produced no title (outcome=${outcome}, ${durationMs}ms)`,
-    );
+    console.warn(`[title-generator] external ${runtimeType} produced no title (outcome=${outcome}, ${durationMs}ms)`);
     return null;
   }
 
   const cleaned = cleanTitle(titleText);
-  console.log(
-    `[title-generator] Generated title via ${runtimeType}: "${cleaned}" (outcome=${outcome}, ${durationMs}ms, ${rounds.length} rounds)`,
-  );
+  console.log(`[title-generator] Generated title via ${runtimeType}: "${cleaned}" (outcome=${outcome}, ${durationMs}ms, ${rounds.length} rounds)`);
   return cleaned.length > 0 ? cleaned : null;
 }

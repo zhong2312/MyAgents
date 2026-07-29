@@ -980,6 +980,62 @@ describe('myagents CLI IM contracts', () => {
 });
 
 describe('myagents CLI cron time handling', () => {
+  it('uses the same guarded prompt-file input for cron add and update', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-cron-prompt-file-'));
+    try {
+      const promptPath = join(dir, 'prompt.txt');
+      const prompt = 'line one\n`literal` $(not-executed)\nline three';
+      writeFileSync(promptPath, prompt, 'utf8');
+
+      expect(buildRequestBody('cron', 'add', [], {
+        promptFile: promptPath,
+      })).toMatchObject({ message: prompt });
+      expect(buildRequestBody('cron', 'update', ['task-1'], {
+        promptFile: promptPath,
+      })).toEqual({
+        taskId: 'task-1',
+        patch: { prompt },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ambiguous, valueless, and empty cron update inputs', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-cron-empty-prompt-'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const emptyPromptPath = join(dir, 'prompt.txt');
+      writeFileSync(emptyPromptPath, ' \n\t', 'utf8');
+      expect(() => buildRequestBody('cron', 'update', ['task-1'], {
+        prompt: 'inline',
+        promptFile: '/tmp/prompt.txt',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('cron', 'update', ['task-1'], {
+        message: 'inline alias',
+        promptFile: '/tmp/prompt.txt',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('cron', 'update', ['task-1'], {
+        promptFile: true,
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('cron', 'update', ['task-1'], {
+        prompt: '   ',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('cron', 'update', ['task-1'], {
+        promptFile: emptyPromptPath,
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('cron', 'update', ['task-1'], {}))
+        .toThrow('process.exit(2)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('adds a default IANA timezone to bare cron schedules on create paths', () => {
     expect(normalizeScheduleFlag('0 9 * * *', {
       fillMissingCronTimezone: true,

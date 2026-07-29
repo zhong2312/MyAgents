@@ -51,6 +51,16 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
    - `chore:` Maintenance tasks
 6. Push and create a Pull Request
 
+By submitting a contribution, you confirm that you created it or have the
+right to submit it, and that it may be distributed as part of MyAgents under
+the project's community license and separate commercial licenses. If a
+Contributor License Agreement is requested for your contribution, it must be
+completed before merge.
+
+Do not submit third-party code, prompts, assets, generated material, or other
+content unless its source and license are documented and compatible with both
+distribution paths. See [LICENSING.md](LICENSING.md).
+
 ### Development Setup
 
 ```bash
@@ -136,6 +146,14 @@ Feel free to open an issue or reach out at myagents.io@gmail.com
    - `test:` 添加测试
    - `chore:` 维护任务
 6. 推送并创建 Pull Request
+
+提交贡献即表示你确认该内容由你创作，或你拥有提交该内容的充分权利，并同意项目方可以在
+MyAgents 的社区许可证和单独商业许可证下分发该贡献。如果项目要求签署贡献者许可协议
+（CLA），必须在合并前完成。
+
+请勿提交来源或授权不明确的第三方代码、Prompt、素材、生成内容或其他材料。引入第三方内容
+时必须记录来源和许可证，并确认其与两条发行路径兼容。参见
+[LICENSING.md](LICENSING.md)。
 
 ### 开发环境设置
 

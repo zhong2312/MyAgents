@@ -1,6 +1,6 @@
 /**
  * Shared utilities for Task Center components
- * (RecentTasks, TaskCenterOverlay, CronTaskDetailPanel, SessionHistoryDropdown)
+ * (RecentTasks, HistorySearchOverlayContent, CronTaskDetailPanel, SessionHistoryDropdown)
  */
 
 import type { SessionMetadata } from '@/api/sessionClient';

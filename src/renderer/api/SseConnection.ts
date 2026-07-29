@@ -1,13 +1,13 @@
 /**
- * SseConnection - Instance-based SSE connection for per-Tab isolation
+ * SseConnection - Instance-based SSE connection for renderer-surface isolation
  * 
- * Each Tab creates an independent SSE connection, allowing multiple
- * concurrent agent sessions without interference.
+ * Each Chat Tab or Companion surface creates an independent subscription,
+ * allowing concurrent agent sessions without interference.
  * 
  * Tauri mode:
- * - Rust SSE proxy supports multiple connections (keyed by tabId)
- * - Events are prefixed with tabId: sse:tabId:event-name
- * - Each Tab only receives events from its own connection
+ * - Rust SSE proxy supports multiple subscriptions keyed by connectionId
+ * - Events are prefixed with connectionId: sse:connectionId:event-name
+ * - Each surface only receives events from its own subscription
  * 
  * Browser mode (development):
  * - Uses native EventSource with full multiple connection support
@@ -117,6 +117,16 @@ export type SseEventHandler = (
 ) => void;
 export type SseConnectionStatusHandler = (status: 'connected' | 'disconnected' | 'reconnecting' | 'failed') => void;
 
+export type SseSidecarOwner = {
+    type: 'tab' | 'companion';
+    id: string;
+};
+
+type TauriSseEnvelope = {
+    transportGeneration: number;
+    data: string;
+};
+
 // Reconnection configuration
 const RECONNECT_MAX_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 1000;
@@ -128,11 +138,12 @@ const RECONNECT_MAX_DELAY_MS = 10000;
 export class SseConnection {
     private eventSource: EventSource | null = null;
     private tauriUnlisteners: UnlistenFn[] = [];
-    private tauriConnected = false;
+    private tauriActive = false;
     private eventHandler: SseEventHandler | null = null;
     private statusHandler: SseConnectionStatusHandler | null = null;
     private connectionId: string;
     private sessionIdRef?: React.MutableRefObject<string | null>; // For Session-centric port lookup
+    private sidecarOwner: SseSidecarOwner;
 
     // Reconnection state
     private reconnectAttempts = 0;
@@ -141,9 +152,14 @@ export class SseConnection {
     private shouldReconnect = true; // Set to false when intentionally disconnecting
     private connectionGeneration = 0;
 
-    constructor(connectionId: string, sessionIdRef?: React.MutableRefObject<string | null>) {
+    constructor(
+        connectionId: string,
+        sessionIdRef?: React.MutableRefObject<string | null>,
+        sidecarOwner: SseSidecarOwner = { type: 'tab', id: connectionId },
+    ) {
         this.connectionId = connectionId;
         this.sessionIdRef = sessionIdRef;
+        this.sidecarOwner = sidecarOwner;
     }
 
     /**
@@ -170,10 +186,11 @@ export class SseConnection {
     }
 
     /**
-     * Check if connected
+     * Check whether this renderer surface owns an active subscription.
+     * This deliberately does not claim that an HTTP stream is currently live.
      */
-    isConnected(): boolean {
-        return this.eventSource !== null || this.tauriConnected;
+    isActive(): boolean {
+        return this.eventSource !== null || this.tauriActive;
     }
 
     /**
@@ -269,6 +286,36 @@ export class SseConnection {
         console.warn(`[SSE ${this.connectionId}] Unrecognized event dropped: ${eventName}`);
     }
 
+    private handleTauriEnvelope(eventName: string, envelope: TauriSseEnvelope): void {
+        if (!this.shouldReconnect) return;
+        if (
+            !envelope
+            || !Number.isSafeInteger(envelope.transportGeneration)
+            || envelope.transportGeneration <= 0
+            || typeof envelope.data !== 'string'
+        ) {
+            console.warn(`[SSE ${this.connectionId}] Invalid Tauri SSE envelope dropped`);
+            return;
+        }
+
+        if (envelope.transportGeneration < this.connectionGeneration) {
+            console.debug(
+                `[SSE ${this.connectionId}] Stale transport generation dropped:`,
+                envelope.transportGeneration,
+            );
+            return;
+        }
+
+        if (envelope.transportGeneration > this.connectionGeneration) {
+            this.connectionGeneration = envelope.transportGeneration;
+            // Establish the restore fence before applying the first business
+            // event from this physical stream.
+            this.notifyStatus('connected');
+        }
+
+        this.handleSseEvent(eventName, envelope.data);
+    }
+
     /**
      * Connect using browser EventSource with auto-reconnection
      */
@@ -308,22 +355,18 @@ export class SseConnection {
     }
 
     /**
-     * Connect using Tauri SSE proxy (multi-instance)
-     * Each Tab has its own SSE connection with tab-prefixed events
+     * Connect using the Tauri SSE subscription proxy.
+     * Each renderer surface has its own connection-key-prefixed events.
      */
     private async connectTauri(): Promise<void> {
-        if (this.tauriConnected) return;
+        if (this.tauriActive) return;
 
-        // Use Tab-specific server URL (or fixed port if provided)
-        const serverUrl = await this.getServerUrl();
-        // Cancellation checkpoint — disconnect() flips shouldReconnect=false; a
-        // concurrent caller's disconnect must be able to cancel an in-flight
-        // connect, otherwise listeners registered below leak past disconnect().
-        if (!this.shouldReconnect) return;
-        const sseUrl = `${serverUrl}/chat/stream`;
+        const sessionIdHint = this.sessionIdRef?.current;
+        if (!sessionIdHint) {
+            throw new Error(`[SSE ${this.connectionId}] Cannot attach without a Session id hint`);
+        }
 
-        console.debug(`[SSE ${this.connectionId}] Connecting Tauri SSE proxy:`, sseUrl);
-        this.connectionGeneration += 1;
+        console.debug(`[SSE ${this.connectionId}] Installing Tauri SSE subscription`);
 
         // Set up listeners for Tab-prefixed SSE event types.
         // The whole listen-loop is wrapped in try/catch so that a rejection
@@ -334,8 +377,8 @@ export class SseConnection {
         try {
             for (const eventName of ALL_EVENTS) {
                 const tauriEventName = `sse:${this.connectionId}:${eventName}`;
-                const unlisten = await listen<string>(tauriEventName, (event) => {
-                    this.handleSseEvent(eventName, event.payload);
+                const unlisten = await listen<TauriSseEnvelope>(tauriEventName, (event) => {
+                    this.handleTauriEnvelope(eventName, event.payload);
                 });
                 // Cancellation checkpoint — listen() has resolved so the
                 // listener IS installed; if disconnect raced us, unlisten
@@ -347,30 +390,21 @@ export class SseConnection {
                 }
                 this.tauriUnlisteners.push(unlisten);
             }
-
-            // Listen for Tab-specific SSE proxy errors
-            const errorUnlisten = await listen<string>(`sse:${this.connectionId}:error`, (event) => {
-                console.error(`[SSE ${this.connectionId}] Proxy error:`, event.payload);
-                // Trigger reconnection on Tauri SSE errors
-                if (this.shouldReconnect && !this.isReconnecting) {
-                    this.scheduleTauriReconnect();
-                }
-            });
-            if (!this.shouldReconnect) {
-                try { errorUnlisten(); } catch { /* best-effort */ }
-                this.cleanupTauriListeners();
-                return;
-            }
-            this.tauriUnlisteners.push(errorUnlisten);
         } catch (error) {
             console.error(`[SSE ${this.connectionId}] listen() registration failed:`, error);
             this.cleanupTauriListeners();
             throw error;
         }
 
-        // Start the Rust SSE proxy with Tab ID
+        // Command acknowledgement means the long-lived subscription is
+        // installed. Only a forwarded envelope proves a physical transport.
         try {
-            await invoke('start_sse_proxy', { url: sseUrl, tabId: this.connectionId });
+            await invoke('start_sse_proxy', {
+                connectionKey: this.connectionId,
+                sessionIdHint,
+                sidecarOwnerType: this.sidecarOwner.type,
+                sidecarOwnerId: this.sidecarOwner.id,
+            });
         } catch (error) {
             console.error(`[SSE ${this.connectionId}] Failed to start Tauri SSE proxy:`, error);
             // start failed → no proxy held; just clean up the listeners we
@@ -382,16 +416,13 @@ export class SseConnection {
         // flipped shouldReconnect to false; tear down the proxy we just
         // started and our listeners so nothing leaks.
         if (!this.shouldReconnect) {
-            try { await invoke('stop_sse_proxy', { tabId: this.connectionId }); }
+            try { await invoke('stop_sse_proxy', { connectionKey: this.connectionId }); }
             catch (error) { console.error(`[SSE ${this.connectionId}] stop_sse_proxy after cancel failed:`, error); }
             this.cleanupTauriListeners();
             return;
         }
-        this.tauriConnected = true;
-        this.reconnectAttempts = 0;
-        this.isReconnecting = false;
-        this.notifyStatus('connected');
-        console.debug(`[SSE ${this.connectionId}] Tauri SSE proxy started`);
+        this.tauriActive = true;
+        console.debug(`[SSE ${this.connectionId}] Tauri SSE subscription installed`);
     }
 
     /**
@@ -423,9 +454,9 @@ export class SseConnection {
 
         // Idempotent guard: only skip when there is genuinely nothing to clean
         // up. Note tauriUnlisteners.length: connectTauri() may have already
-        // pushed listeners while tauriConnected is still false.
+        // pushed listeners while tauriActive is still false.
         if (
-            !this.tauriConnected
+            !this.tauriActive
             && !this.eventSource
             && this.tauriUnlisteners.length === 0
         ) {
@@ -441,18 +472,18 @@ export class SseConnection {
         this.isReconnecting = false;
 
         // Stop the Rust SSE proxy if we ever started it.
-        if (this.tauriConnected) {
+        if (this.tauriActive) {
             try {
-                await invoke('stop_sse_proxy', { tabId: this.connectionId });
+                await invoke('stop_sse_proxy', { connectionKey: this.connectionId });
             } catch (error) {
                 console.error(`[SSE ${this.connectionId}] Failed to stop Tauri SSE proxy:`, error);
             }
-            this.tauriConnected = false;
+            this.tauriActive = false;
         }
 
         // Always tear down listeners we registered, regardless of whether
         // start_sse_proxy completed — connectTauri() may have queued listeners
-        // before flipping tauriConnected, and our cancellation checkpoints
+        // before flipping tauriActive, and our cancellation checkpoints
         // also rely on this method to clean up partial state.
         this.cleanupTauriListeners();
 
@@ -523,64 +554,6 @@ export class SseConnection {
     }
 
     /**
-     * Schedule a Tauri SSE reconnection attempt
-     * Similar to scheduleReconnect but for Tauri proxy
-     */
-    private scheduleTauriReconnect(): void {
-        if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-            console.error(`[SSE ${this.connectionId}] Max Tauri reconnection attempts reached`);
-            this.isReconnecting = false;
-            this.notifyStatus('failed');
-            return;
-        }
-
-        this.isReconnecting = true;
-        this.reconnectAttempts++;
-
-        const delay = Math.min(
-            RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
-            RECONNECT_MAX_DELAY_MS
-        );
-
-        // Throttle reconnect logs: first attempt + every 10th
-        if (this.reconnectAttempts === 1) {
-            console.warn(`[SSE ${this.connectionId}] Connection failed, retrying...`);
-        } else if (this.reconnectAttempts % 10 === 0) {
-            console.debug(`[SSE ${this.connectionId}] Still reconnecting (attempt ${this.reconnectAttempts})`);
-        }
-        this.notifyStatus('reconnecting');
-
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-        }
-
-        this.reconnectTimer = setTimeout(async () => {
-            if (!this.shouldReconnect) return;
-
-            try {
-                // Stop existing proxy
-                if (this.tauriConnected) {
-                    await invoke('stop_sse_proxy', { tabId: this.connectionId });
-                    this.tauriConnected = false;
-                }
-                // Clear listeners (uses the same idempotent helper as
-                // disconnect()/connectTauri() cancellation paths).
-                this.cleanupTauriListeners();
-
-                const attempts = this.reconnectAttempts;
-                await this.connectTauri();
-                if (attempts > 0) {
-                    console.log(`[SSE ${this.connectionId}] Reconnected after ${attempts} attempts`);
-                }
-            } catch (_error) {
-                if (this.shouldReconnect) {
-                    this.scheduleTauriReconnect();
-                }
-            }
-        }, delay);
-    }
-
-    /**
      * Reset reconnection state (call when intentionally connecting)
      */
     resetReconnectState(): void {
@@ -617,9 +590,14 @@ export class SseConnection {
 
 /**
  * Create a new SSE connection instance
- * @param connectionId - Tab ID for this connection
- * @param sessionIdRef - Ref to current sessionId for Session-centric port lookup
+ * @param connectionId - Stable Tauri event namespace for this renderer surface
+ * @param sessionIdRef - Ref to current Session identity (and browser-mode port lookup)
+ * @param sidecarOwner - Existing Sidecar owner identity; defaults to the Tab owner
  */
-export function createSseConnection(connectionId: string, sessionIdRef?: React.MutableRefObject<string | null>): SseConnection {
-    return new SseConnection(connectionId, sessionIdRef);
+export function createSseConnection(
+    connectionId: string,
+    sessionIdRef?: React.MutableRefObject<string | null>,
+    sidecarOwner?: SseSidecarOwner,
+): SseConnection {
+    return new SseConnection(connectionId, sessionIdRef, sidecarOwner);
 }

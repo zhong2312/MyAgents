@@ -15,6 +15,7 @@ export async function managementApi(
   if (!MGMT_PORT) {
     return {
       ok: false,
+      code: 'management_unavailable',
       error: 'Management API not available (app may still be starting)',
       recoveryHint: {
         recoveryCommand: 'myagents status',

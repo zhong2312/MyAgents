@@ -351,8 +351,15 @@ function formatLabel(format: BashStreamFormat, t: ChatTranslator): string {
 
 function buildMetaItems(model: BashTranscriptModel, t: ChatTranslator): string[] {
   const durationLabel = formatBashDuration(model.meta.durationMs);
+  const backgroundAfter = formatBashDuration(model.meta.timedOutAfterMs);
   return [
     model.meta.cwd,
+    backgroundAfter
+      ? t('shell.toolChrome.bash.backgroundedAfter', { duration: backgroundAfter })
+      : null,
+    model.meta.backgroundCwdHint
+      ? t('shell.toolChrome.bash.backgroundCwdUnchanged')
+      : null,
     durationLabel ? t('shell.toolChrome.bash.duration', { duration: durationLabel }) : null,
     model.meta.processId ? `PID ${model.meta.processId}` : null,
     model.meta.exitCode !== undefined ? `exit ${model.meta.exitCode}` : null,

@@ -24,6 +24,9 @@ const TRACE_VIRTUALIZE_THRESHOLD = 30;
 // Constants
 const DEFAULT_LINE_HEIGHT = 22;
 const DEFAULT_MAX_LINES = 5;
+const MAX_TASK_MODEL_PATH_ITEMS = 8;
+const MAX_TASK_MODEL_ID_LENGTH = 128;
+const MAX_TASK_MODEL_METADATA_ITEMS = 32;
 
 interface TaskToolProps {
   tool: ToolUseSimple;
@@ -43,7 +46,10 @@ interface TaskResult {
   totalDurationMs?: number;
   totalTokens?: number;
   totalToolUseCount?: number;
+  resolvedModel?: string;
+  modelsUsed?: string[];
   output_file?: string;  // 后台任务输出文件路径
+  outputFile?: string;   // SDK 0.3.220 async_launched output
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -55,6 +61,40 @@ function formatTokens(tokens: number): string {
   if (tokens < 1000) return `${tokens}`;
   if (tokens < 1000000) return `${(tokens / 1000).toFixed(1)}k`;
   return `${(tokens / 1000000).toFixed(2)}M`;
+}
+
+function resolveTaskModels(result: TaskResult | null): string[] {
+  if (!result) return [];
+  const rawModels: unknown[] = Array.isArray(result.modelsUsed) ? result.modelsUsed : [];
+  const normalizeModel = (model: unknown): string | null => {
+    if (typeof model !== 'string') return null;
+    const normalized = model.trim();
+    return normalized.length > 0 && normalized.length <= MAX_TASK_MODEL_ID_LENGTH
+      ? normalized
+      : null;
+  };
+  const finalModel = normalizeModel(result.resolvedModel);
+  if (rawModels.length > MAX_TASK_MODEL_METADATA_ITEMS) {
+    return finalModel ? [finalModel] : [];
+  }
+  const models: string[] = [];
+  const seen = new Set<string>();
+  for (const rawModel of rawModels) {
+    const model = normalizeModel(rawModel);
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    models.push(model);
+    if (models.length > MAX_TASK_MODEL_PATH_ITEMS) {
+      // An incomplete truncated path is misleading; retain only the SDK's
+      // authoritative final model for malformed/unexpectedly large payloads.
+      return finalModel ? [finalModel] : [];
+    }
+  }
+  if (!finalModel) return models;
+  if (!seen.has(finalModel) && models.length >= MAX_TASK_MODEL_PATH_ITEMS) {
+    return [finalModel];
+  }
+  return [...models.filter(model => model !== finalModel), finalModel];
 }
 
 // 可折叠内容组件 - 默认最多显示 5 行
@@ -237,6 +277,7 @@ function TaskCompletedStats({
     : result.totalTokens || 0;
   const toolCount = stats?.toolCount || result.totalToolUseCount || 0;
   const duration = result.totalDurationMs;
+  const models = resolveTaskModels(result);
 
   const bgColor = isSuccess
     ? 'bg-[var(--success)]/10 hover:bg-[var(--success)]/15'
@@ -291,6 +332,14 @@ function TaskCompletedStats({
             <span>{t('shell.toolChrome.task.tokenUsage', { tokens: formatTokens(totalTokens) })}</span>
           </div>
         )}
+
+        {models.length > 0 && (
+          <div data-task-models="true" className="min-w-0 truncate font-mono">
+            {models.length > 1
+              ? t('shell.toolChrome.task.modelsUsed', { models: models.join(' → ') })
+              : t('shell.toolChrome.task.resolvedModel', { model: models[0] })}
+          </div>
+        )}
       </div>
 
       {/* 展开/收起箭头 */}
@@ -308,11 +357,13 @@ function TaskCompletedStats({
 function TaskBackgroundStats({
   stats,
   terminalStatus,
-  startTime
+  startTime,
+  result,
 }: {
   stats: BackgroundTaskStats | null;
   terminalStatus: BackgroundTaskTerminalStatus | null;
   startTime: number;
+  result: TaskResult | null;
 }) {
   const { t } = useTranslation('chat');
   const [frontendElapsed, setFrontendElapsed] = useState(0);
@@ -343,6 +394,7 @@ function TaskBackgroundStats({
 
   // Use backend elapsed if available and larger, otherwise frontend timer
   const elapsed = stats?.elapsed && stats.elapsed > frontendElapsed ? stats.elapsed : frontendElapsed;
+  const models = resolveTaskModels(result);
 
   return (
     <div className="flex w-full items-center justify-between text-xs rounded-lg bg-[var(--accent)]/5 px-3 py-2 cursor-default transition-colors">
@@ -385,6 +437,14 @@ function TaskBackgroundStats({
           <div className="flex items-center gap-1">
             <Wrench className="size-3.5" />
             <span>{t('shell.toolChrome.task.toolCalls', { count: stats.toolCount })}</span>
+          </div>
+        )}
+
+        {models.length > 0 && (
+          <div data-task-models="true" className="min-w-0 truncate font-mono">
+            {models.length > 1
+              ? t('shell.toolChrome.task.modelsUsed', { models: models.join(' → ') })
+              : t('shell.toolChrome.task.resolvedModel', { model: models[0] })}
           </div>
         )}
       </div>
@@ -590,7 +650,10 @@ export default function TaskTool({ tool }: TaskToolProps) {
   const bgComplete = bgTerminalStatus !== null;
 
   // Live stats polling (for tool count display during execution, NOT for completion)
-  const outputFile = isBackgroundTask ? parsedResult?.output_file ?? null : null;
+  const outputFileCandidate = parsedResult?.outputFile ?? parsedResult?.output_file;
+  const outputFile = isBackgroundTask && typeof outputFileCandidate === 'string'
+    ? outputFileCandidate
+    : null;
   const tabApi = useTabApiOptional();
   const noopApiPost = useCallback(async <T,>(_path: string, _body?: unknown): Promise<T> => { throw new Error('no apiPost'); }, []);
   const { stats: bgStats } = useBackgroundTaskPolling({
@@ -638,6 +701,7 @@ export default function TaskTool({ tool }: TaskToolProps) {
             stats={bgStats}
             terminalStatus={bgTerminalStatus}
             startTime={tool.taskStartTime || bgFallbackStartTime}
+            result={parsedResult}
           />
         ) : parsedResult ? (
           <TaskCompletedStats

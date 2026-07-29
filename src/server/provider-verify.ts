@@ -12,6 +12,8 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, getSidecarPort, type ProviderEnv } from './agent-session';
 import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
 import { ensureDirSync } from './utils/fs-utils';
+import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
+import { sdkSubprocessUserMessage } from './utils/sdk-subprocess-diagnostics';
 import { getLastBridgeError } from './openai-bridge';
 import { getProxyForProviderUrl } from './proxy-state';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
@@ -229,7 +231,7 @@ async function verifyViaSdk(
       ? { type: 'adaptive' as const }
       : { type: 'disabled' as const };
 
-    const testQuery = query({
+    const testQuery = await createGuardedSdkQuery(cliPath, () => query({
       prompt: simplePrompt(),
       options: {
         maxTurns: 1,
@@ -249,11 +251,12 @@ async function verifyViaSdk(
         includePartialMessages: true,
         persistSession: false,
         mcpServers: {},
+        tools: [],
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
         // uses the 1M path.
         ...(opts.model ? { model: applyProviderContextWindowSuffix(opts.model, opts.providerId) } : {}),
       },
-    });
+    }));
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<{ success: false; error: string; detail?: string }>((resolve) => {
       timeoutId = setTimeout(() => {
@@ -361,6 +364,10 @@ async function verifyViaSdk(
     diagController.abort();
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[${logPrefix}] SDK exception: ${errorMsg}`);
+    const sdkLaunchMessage = sdkSubprocessUserMessage(error, stderrMessages);
+    if (sdkLaunchMessage) {
+      return { success: false, error: sdkLaunchMessage, detail: errorMsg };
+    }
     const parsed = parseError(errorMsg);
     const stderrHint = stderrMessages.length > 0
       ? ` (详情: ${stderrMessages.join('; ').slice(0, 200)})`
@@ -509,7 +516,7 @@ export async function fetchSdkSupportedModels(): Promise<Array<{ value: string; 
     providerId: SUBSCRIPTION_PROVIDER_ID,
   });
 
-  const testQuery = query({
+  const testQuery = await createGuardedSdkQuery(cliPath, () => query({
     prompt: '1+1=',
     options: {
       maxTurns: 0,
@@ -526,9 +533,10 @@ export async function fetchSdkSupportedModels(): Promise<Array<{ value: string; 
       env,
       persistSession: false,
       mcpServers: {},
+      tools: [],
       systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const },
     },
-  });
+  }));
 
   const INIT_TIMEOUT_MS = 30000;
   try {
@@ -539,6 +547,10 @@ export async function fetchSdkSupportedModels(): Promise<Array<{ value: string; 
       ),
     ]);
     return initResult.models ?? [];
+  } catch (error) {
+    const sdkLaunchMessage = sdkSubprocessUserMessage(error);
+    if (sdkLaunchMessage) throw new Error(sdkLaunchMessage);
+    throw error;
   } finally {
     try { testQuery.return(undefined as never); } catch { /* cleanup */ }
   }

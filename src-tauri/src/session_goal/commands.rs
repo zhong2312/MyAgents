@@ -4,38 +4,48 @@ use super::{get_session_goal_manager, GoalStatus, SessionGoalConfig, SessionGoal
 #[serde(rename_all = "camelCase")]
 pub struct UserSchedulerLifecycleSnapshot {
     running_task_count: usize,
-    protected_session_ids: Vec<String>,
+    delete_protected_session_ids: Vec<String>,
 }
 
 #[tauri::command]
 pub async fn cmd_get_user_scheduler_lifecycle_snapshot(
+    state: tauri::State<'_, crate::sidecar::ManagedSidecarManager>,
+    agent_state: tauri::State<'_, crate::im::ManagedAgents>,
+    im_state: tauri::State<'_, crate::im::ManagedImBots>,
 ) -> Result<UserSchedulerLifecycleSnapshot, String> {
     let mut running_task_count = 0usize;
-    let mut protected_session_ids = std::collections::HashSet::new();
     if let Some(store) = crate::task::get_task_store() {
         for task in store.list(Default::default()).await {
             if task.status == crate::task::TaskStatus::Running {
                 running_task_count += 1;
-                if let Some(session_id) = task.preselected_session_id {
-                    protected_session_ids.insert(session_id);
-                }
-                for session_id in task.session_ids {
-                    protected_session_ids.insert(session_id);
-                }
             }
         }
     }
+    let mut delete_protected_session_ids = crate::task_scheduler::persistent_task_session_ids()
+        .await
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
     let (running_goals, goal_sessions) = get_session_goal_manager()
         .lifecycle_snapshot()
         .await
         .map_err(|error| error.to_string())?;
     running_task_count += running_goals;
-    protected_session_ids.extend(goal_sessions);
-    let mut protected_session_ids = protected_session_ids.into_iter().collect::<Vec<_>>();
-    protected_session_ids.sort();
+    delete_protected_session_ids.extend(goal_sessions);
+    delete_protected_session_ids.extend(
+        state
+            .lock()
+            .map_err(|error| error.to_string())?
+            .persistent_owner_session_ids(),
+    );
+    delete_protected_session_ids.extend(
+        crate::im::session_delivery::bound_session_ids(agent_state.inner(), im_state.inner()).await,
+    );
+    let mut delete_protected_session_ids =
+        delete_protected_session_ids.into_iter().collect::<Vec<_>>();
+    delete_protected_session_ids.sort();
     Ok(UserSchedulerLifecycleSnapshot {
         running_task_count,
-        protected_session_ids,
+        delete_protected_session_ids,
     })
 }
 

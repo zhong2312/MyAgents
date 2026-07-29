@@ -22,6 +22,7 @@ html[data-theme-id='codex'][data-color-scheme='light'] {
   --ink-subtle: #a0a2a7;
   --ink-faint: #c2c4c8;
   --paper: #ffffff;
+  --global-sidebar-bg: #f8f8f9;
   --paper-elevated: #ffffff;
   --message-user-bg: #fbfcfd;
   --paper-inset: #eaecef;
@@ -111,11 +112,11 @@ html[data-theme-id='codex'][data-color-scheme='light'] {
   --focus-border: #0169cc;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(13 13 13 / 0.18);
-  --code-bg: #111111;
-  --code-bg-a0: rgb(17 17 17 / 0);
-  --code-header-bg: #1a1a1a;
-  --code-text: #fcfcfc;
-  --code-line-number: #999999;
+  --code-bg: #f5f6f7;
+  --code-bg-a0: rgb(245 246 247 / 0);
+  --code-header-bg: #e9ebee;
+  --code-text: #292929;
+  --code-line-number: #7d7f84;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #dcecff 0%, rgb(220 236 255 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #dcece7 0%, rgb(220 236 231 / 0) 55%),
@@ -132,6 +133,7 @@ html[data-theme-id='codex'][data-color-scheme='dark'] {
   --ink-subtle: #626262;
   --ink-faint: #404040;
   --paper: #111111;
+  --global-sidebar-bg: #0f0f0f;
   --paper-elevated: #1a1a1a;
   --message-user-bg: #202020;
   --paper-inset: #090909;
@@ -235,17 +237,20 @@ html[data-theme-id='codex'][data-color-scheme='dark'] {
   --theme-body-texture-blend: screen;
 }
 
-html[data-theme-id='codex'] .theme-launcher-hero-title {
-  margin-bottom: 0.5rem;
+html[data-theme-id='codex'] .theme-product-wordmark {
   font-family: var(--font-display);
-  font-size: 2.5rem;
-  font-weight: 300;
   letter-spacing: 0.015em;
   color: var(--ink);
   background: linear-gradient(150deg, var(--ink) 32%, var(--accent-warm) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+html[data-theme-id='codex'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 300;
 }
 
 html[data-theme-id='codex'] .theme-launcher-hero-slogan {

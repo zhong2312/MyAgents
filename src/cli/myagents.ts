@@ -2705,6 +2705,35 @@ function readTextFileFlag(path: string, flagName: string): string {
   }
 }
 
+function resolveCronPromptText(flags: Record<string, unknown>): string | undefined {
+  for (const flagName of ['prompt', 'message', 'promptFile'] as const) {
+    const value = flags[flagName];
+    if (value !== undefined && typeof value !== 'string') {
+      const displayName = flagName === 'promptFile' ? 'prompt-file' : flagName;
+      console.error(`Error: --${displayName} requires a value.`);
+      process.exit(2);
+    }
+  }
+
+  const prompt = flags.prompt as string | undefined;
+  const message = flags.message as string | undefined;
+  const promptFile = flags.promptFile as string | undefined;
+  if (promptFile !== undefined && (prompt !== undefined || message !== undefined)) {
+    console.error('Error: --prompt-file cannot be combined with --prompt or --message.');
+    process.exit(2);
+  }
+  const resolved = promptFile !== undefined
+    ? readTextFileFlag(promptFile, 'prompt-file')
+    // Preserve the established alias behavior: --prompt wins when both inline
+    // spellings are supplied.
+    : prompt ?? message;
+  if (resolved !== undefined && resolved.trim().length === 0) {
+    console.error('Error: cron prompt cannot be empty.');
+    process.exit(2);
+  }
+  return resolved;
+}
+
 function resolveSpaceCommentBody(flags: Record<string, unknown>, workspacePath: string): string {
   if (typeof flags.body === 'string') return flags.body;
   if (typeof flags.bodyFile === 'string') {
@@ -3984,45 +4013,9 @@ export function buildRequestBody(
   // Cron commands
   if (group === 'cron') {
     if (action === 'add') {
-      // Resolve prompt: --prompt-file (industry standard for long text, avoids
-      // shell escape hell for multiline / quoted / backtick content) takes
-      // precedence over --prompt when both are set. `--message` is accepted
-      // as an alias because the internal wire field is `message` and users
-      // naturally reach for it (see issue #101). --prompt wins when both set.
-      let promptText = (flags.prompt as string | undefined) ?? (flags.message as string | undefined);
-      if (flags.promptFile && typeof flags.promptFile === 'string') {
-        try {
-          // Lazy load — keep CLI startup fast for non-cron commands.
-          const fs = require('fs') as typeof import('fs');
-          // Size guard: 1 MB is already pathologically large for a cron prompt
-          // (~250k English words). Refuse /dev/zero, runaway files, binaries
-          // disguised as text, etc., with a clear error instead of blocking
-          // the CLI or flooding Admin API.
-          const MAX_PROMPT_BYTES = 1024 * 1024;
-          const stat = fs.statSync(flags.promptFile);
-          if (stat.size > MAX_PROMPT_BYTES) {
-            console.error(`Error: --prompt-file "${flags.promptFile}" is ${stat.size} bytes, exceeds ${MAX_PROMPT_BYTES} (1 MB) limit`);
-            process.exit(1);
-          }
-          const raw = fs.readFileSync(flags.promptFile, 'utf-8');
-          // NUL-byte guard: a prompt with embedded NULs is almost certainly a
-          // binary file being passed in by mistake, and most downstream JSON
-          // serialisation / log processing chokes on them. Refuse explicitly.
-          if (raw.includes('\0')) {
-            console.error(`Error: --prompt-file "${flags.promptFile}" contains NUL bytes (is this a binary file?)`);
-            process.exit(1);
-          }
-          promptText = raw;
-        } catch (err) {
-          console.error(`Error: failed to read --prompt-file "${flags.promptFile}": ${err instanceof Error ? err.message : String(err)}`);
-          // exit(1) matches the existing CLI convention: 1 = business error,
-          // 3 = can't connect to Sidecar. Anything CLI-local falls under 1.
-          process.exit(1);
-        }
-      }
       return {
         name: flags.name,
-        message: promptText,
+        message: resolveCronPromptText(flags),
         workspacePath: flags.workspace,
         schedule: normalizeScheduleFlag(flags.schedule, { fillMissingCronTimezone: true }),
         intervalMinutes: flags.every ? Number(flags.every) : undefined,
@@ -4044,14 +4037,16 @@ export function buildRequestBody(
       // Map CLI flags to Rust field names expected by update_task_fields
       const patch: Record<string, unknown> = {};
       if (flags.name !== undefined) patch.name = flags.name;
-      // Accept --message as an alias for --prompt (mirrors `cron add`).
-      // --prompt wins when both are set.
-      const updatePrompt = (flags.prompt as string | undefined) ?? (flags.message as string | undefined);
+      const updatePrompt = resolveCronPromptText(flags);
       if (updatePrompt !== undefined) patch.prompt = updatePrompt;
       if (flags.schedule !== undefined) patch.schedule = normalizeScheduleFlag(flags.schedule);
       if (flags.every !== undefined) patch.intervalMinutes = Number(flags.every);
       if (flags.model !== undefined) patch.model = flags.model;
       if (flags.permissionMode !== undefined) patch.permissionMode = flags.permissionMode;
+      if (Object.keys(patch).length === 0) {
+        console.error('Error: cron update requires at least one update option.');
+        process.exit(2);
+      }
       return { taskId: rest[0] || flags.id, patch };
     }
     if (action === 'runs') {

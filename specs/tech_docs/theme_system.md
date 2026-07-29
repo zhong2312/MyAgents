@@ -113,16 +113,21 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] { ... }
 Token 组：
 
 - 字体：body/display/code 运行时角色；
-- Ink/Paper 及同色 0-alpha 渐变端点；
+- Ink/Paper、全局 App Shell 侧栏结构面 `--global-sidebar-bg`，以及同色 0-alpha 渐变端点；侧栏值由每套 Theme 的 light/dark 独立设计在 `paper → paper-inset` 之间，页面与卡片不得借此翻转通用 Paper 层级；
 - Accent、Heartbeat、Success/Error/Warning/Info；所有实色 action/status surface 都有独立配对 foreground（`--on-*`），不能跨语义借用；
 - Button（primary / 固定深色 surface 各自有配对 foreground）、Border、Focus、Toggle；
 - `--theme-radius-*`、`--theme-shadow-*`、工具/动作局部 shadow；
 - Code、Animation；
 - body background/texture/blend；
 - Floating Ball 全部 `--fb-*`；
-- Launcher Hero title/slogan selector。
+- 产品字标基类与 Launcher Hero title/slogan selector；字标基类拥有跨 Launcher、About、全局侧栏共享的字体、字距和渐变，Hero selector 只拥有展示字号、字重与响应式布局。
 
 `index.css` 只保留 Type Scale、布局/交互结构、使用语义 Token 的通用 selector，以及一个不携带视觉值的 Tailwind v4 `@theme inline` 编译桥。该桥把 `font-sans/mono`、`rounded*`、`shadow*`和 `duration-*` utility 映射到当前 Theme 的 runtime Token；Theme package **禁止**声明 raw `@theme`，因为 runtime 注入的 CSS 不再经 Tailwind 编译，会让 utility 静默退回 framework default。新增会随完整 Theme 改变的颜色、字体、材质、阴影或圆角，必须先进入 Theme contract/default package，再按需要扩展无值桥接，不能落回组件常量。
+
+Code Token 必须在每套 Theme 的 light/dark scheme 内分别设计：light 代码面位于 `paper → paper-inset`
+之间，dark 代码面位于或略高于 `paper-inset`，Header 再向对应方向推进一级。Prism 由同一组
+Theme 语义色生成并在各自代码背景上满足正文对比度；CodeBlock、Mermaid、Bash、FilePatch
+只消费 Token / Adapter，禁止用 Theme ID 或 DOM scheme 分支补本地 palette。
 
 ## 5. Runtime 与首帧
 
@@ -208,7 +213,7 @@ default + system，不能阻断窗口创建。
 
 | Surface | 正确消费方式 | 切换约束 |
 |---|---|---|
-| Launcher | `ResolvedTheme.hero` + Theme CSS selector | 不硬编码产品名/slogan；背景不改变布局 |
+| Launcher / About / GlobalSidebar 品牌 | `ResolvedTheme.hero` + Theme 产品字标/Hero CSS selector | 产品字标字体、字距和渐变同源；Hero 与紧凑侧栏只分离尺寸/字重角色，不复制品牌配色；背景不改变布局 |
 | CSS host / Space / Floating Ball | root semantic Token | `.dark` 不是状态源；Space 不建立局部 Theme scope |
 | xterm | `adapters.xterm` | 原位改 options；字体 family/size/lineHeight 变化后复用唯一 fit-and-resize owner 重算 cols/rows 并同步现有 PTY；split 首次展示/变宽以 ResizeObserver 的 geometry quiet window 判稳后再创建或 resize PTY，不复制 Theme-owned transition duration；不重建 Terminal/PTY/buffer |
 | Monaco | `adapters.monaco` | define 冲突安全名称并 `setTheme`；不换 model/editor |
@@ -254,6 +259,7 @@ Space 是全局 Theme 的标准 CSS host surface：组件直接消费 root seman
   逐 Token 锁定其余值等于 canonical；`verify:theme-presets` 先按 Vite production 使用的
   esbuild CSS minifier 序列化七套实际 stylesheet，再经 optional factory 完成精确八套 Registry
   注册并逐套 resolve light/dark；
+- structural surface contract：八套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar` 是唯一宿主消费点，右侧页面、卡片和顶部 Tab 栏不随该 Token 改写；
 - dark control contrast：八套 Theme 的 Primary 正常/hover 均验证 4.5:1，深色 action
   surface 锁定白色/近白前景；全部 production Theme 的 dark Switch thumb 锁定为白色/近白控制面；
 - build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际

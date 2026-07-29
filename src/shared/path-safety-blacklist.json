@@ -3,7 +3,7 @@
   "systemDirsPosix": ["/etc", "/var", "/usr", "/bin", "/sbin", "/boot", "/root", "/sys", "/proc", "/dev"],
   "systemDirsMacosExtra": ["/private/etc", "/private/var"],
   "systemDirsWindows": ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "C:\\ProgramData", "C:\\Recovery", "C:\\$Recycle.Bin"],
-  "credentialSubdirs": [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config/op", ".myagents/codex", ".myagents/credentials"],
+  "credentialPaths": [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config/op", ".myagents/codex/auth.json", ".myagents/credentials"],
   "macSensitiveSubdirs": ["Library/Keychains", "Library/Cookies", "Library/Mail", "Library/Messages", "Library/Safari"],
   "winSensitiveSubdirs": ["AppData/Local/Microsoft"]
 }

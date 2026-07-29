@@ -79,6 +79,11 @@ import { getSessionEngine } from './session-engine';
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
 // 30s buffer so the inner timeout always wins. Used by skill install routes.
 const SKILL_INSTALL_LOOPBACK_TIMEOUT_MS = 330_000;
+// A graceful Channel shutdown can spend up to ~20s draining one runtime, and
+// Agent disable/archive may stop several sequentially. Do not let the generic
+// 10s loopback budget turn a successful destructive lifecycle into an unknown
+// transport outcome before Rust releases the Bridge/plugin-use registry.
+const AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS = 300_000;
 import { resolve } from 'path';
 import { setMcpServers, setAgents, getMcpServers, getAgentState, getSidecarPort, forceReloadActiveSession } from './agent-session';
 import { loadEnabledAgents } from './agents/agent-loader';
@@ -1228,7 +1233,21 @@ export async function handleAgentEnable(payload: { id: string }): Promise<AdminR
 
 export async function handleAgentDisable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
-  return modifyAgent(id, agent => ({ ...agent, enabled: false }), 'disable');
+  const result = await modifyAgent(id, agent => ({ ...agent, enabled: false }), 'disable');
+  if (!result.success) return result;
+
+  const stopped = await managementApi(
+    '/api/agent/stop-channels',
+    'POST',
+    { agentId: id },
+    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
+  );
+  if (stopped.ok !== true) {
+    const failure = mgmtError(stopped, 'Failed to stop Agent channels');
+    failure.error = `Agent '${id}' was disabled in config, but its running channels could not be stopped: ${failure.error}`;
+    return failure;
+  }
+  return result;
 }
 
 export async function handleAgentArchive(payload: { id?: string }): Promise<AdminResponse> {
@@ -1289,14 +1308,24 @@ export async function handleAgentArchive(payload: { id?: string }): Promise<Admi
     await modifyAgent(id, current => ({ ...current, enabled: false }), 'archive');
   }
 
-  const stopResult = wasEnabled
-    ? await managementApi('/api/agent/stop-channels', 'POST', { agentId: id })
-    : { ok: true, stoppedChannels: 0 };
+  // Always converge the Rust runtime, even when the durable Agent was already
+  // disabled. Older CLI paths could leave exactly that disk/live drift behind.
+  const stopResult = await managementApi(
+    '/api/agent/stop-channels',
+    'POST',
+    { agentId: id },
+    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
+  );
   if (!wasEnabled) {
     broadcast('config:changed', { section: 'project', action: 'archive', id });
   }
 
-  const stopOk = stopResult.ok !== false;
+  const stopOk = stopResult.ok === true;
+  if (!stopOk) {
+    const failure = mgmtError(stopResult, 'Failed to stop Agent channels');
+    failure.error = `Agent workspace '${id}' was archived, but its running channels could not be stopped: ${failure.error}`;
+    return failure;
+  }
   return {
     success: true,
     data: {
@@ -1305,12 +1334,9 @@ export async function handleAgentArchive(payload: { id?: string }): Promise<Admi
       archivedAt,
       agentEnabledBeforeArchive,
       alreadyArchived,
-      stoppedChannels: stopOk ? (stopResult.stoppedChannels ?? 0) : 0,
-      stopWarning: stopOk ? undefined : String(stopResult.error ?? 'Failed to stop running channels'),
+      stoppedChannels: stopResult.stoppedChannels ?? 0,
     },
-    hint: stopOk
-      ? 'Agent workspace archived.'
-      : `Agent workspace archived, but running channels may stop after restart: ${String(stopResult.error ?? 'unknown error')}`,
+    hint: 'Agent workspace archived.',
   };
 }
 
@@ -1413,18 +1439,13 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
     return { success: false, error: `Cannot directly set field '${key}'. Use specific commands instead.` };
   }
 
-  if (key === 'enabled' && value === true) {
-    const agent = (loadConfig().agents ?? []).find(a => a.id === id);
-    if (agent && getArchivedProjectForAgent(agent)) {
-      return {
-        success: false,
-        error: `Agent '${id}' belongs to an archived workspace.`,
-        recoveryHint: {
-          recoveryCommand: `myagents agent unarchive ${id}`,
-          message: 'Unarchive the Agent workspace before setting enabled=true.',
-        },
-      };
+  if (key === 'enabled') {
+    if (typeof value !== 'boolean') {
+      return { success: false, error: 'enabled must be a boolean' };
     }
+    return value
+      ? handleAgentEnable({ id })
+      : handleAgentDisable({ id });
   }
 
   // `runtime` field has a cross-runtime scrub policy (see
@@ -1682,8 +1703,19 @@ export async function handleAgentChannelRemove(payload: { agentId: string; chann
     ...agent,
     channels: (agent.channels ?? []).filter(ch => ch.id !== channelId),
   }), 'channel-remove');
-  if (result.success) {
-    trackServer('agent_channel_remove', { source: cliSource(), platform });
+  if (!result.success) return result;
+
+  trackServer('agent_channel_remove', { source: cliSource(), platform });
+  const stopped = await managementApi(
+    '/api/agent/stop-channel',
+    'POST',
+    { agentId, channelId },
+    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
+  );
+  if (stopped.ok !== true) {
+    const failure = mgmtError(stopped, 'Failed to stop Agent channel');
+    failure.error = `Channel '${channelId}' was removed from Agent '${agentId}' config, but its running runtime could not be stopped: ${failure.error}`;
+    return failure;
   }
   return result;
 }
@@ -1981,7 +2013,8 @@ Options for 'add':
 
 Options for 'update' <id>:
   Same flags as add (plus --model, --permissionMode). --message is also
-  accepted as an alias for --prompt here.
+  accepted as an alias for --prompt here. --prompt-file is supported and
+  cannot be combined with --prompt or --message.
 
 See 'myagents cron readme' for long-form usage + exit-from-task flow.`,
 
@@ -3871,8 +3904,9 @@ CREATE OPTIONS (myagents cron add ...)
                                   current session workspace.
 
 UPDATE OPTIONS (myagents cron update <taskId> ...)
-  --name / --prompt / --message / --schedule / --every / --model / --permissionMode
-  (Same semantics as create. --message is an alias for --prompt.)
+  --name / --prompt / --message / --prompt-file / --schedule / --every / --model / --permissionMode
+  (Same semantics as create. --message is an alias for --prompt; file and inline
+   prompt sources are mutually exclusive.)
 
 EXAMPLES
   # Short prompt, 30 min interval

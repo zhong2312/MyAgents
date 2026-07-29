@@ -1,7 +1,49 @@
 import { describe, expect, it } from 'vitest';
-import { diagnoseSdkSubprocessFailure } from './sdk-subprocess-diagnostics';
+import {
+  diagnoseSdkSubprocessFailure,
+  SdkChildLaunchCircuitOpenError,
+} from './sdk-subprocess-diagnostics';
 
 describe('diagnoseSdkSubprocessFailure', () => {
+  it('classifies Darwin spawn EPERM as a deterministic executable denial', () => {
+    const diagnostic = diagnoseSdkSubprocessFailure({
+      platform: 'darwin',
+      errorMessage: "Failed to spawn Claude Code process: EPERM: operation not permitted, spawn '/Applications/MyAgents.app/Contents/Resources/claude-agent-sdk/claude'",
+    });
+
+    expect(diagnostic).toMatchObject({
+      kind: 'sdk-child-spawn-denied',
+      errorCode: 'EPERM',
+      automaticRetryDelayMs: 1_000,
+    });
+    expect(diagnostic?.userMessage).toContain('macOS');
+    expect(diagnostic?.userMessage).toContain('EPERM');
+  });
+
+  it('classifies an application-level circuit rejection without resetting its retry window', () => {
+    const diagnostic = diagnoseSdkSubprocessFailure({
+      platform: 'darwin',
+      error: new SdkChildLaunchCircuitOpenError('EACCES', 42_000, 'darwin'),
+    });
+
+    expect(diagnostic).toMatchObject({
+      kind: 'sdk-child-launch-circuit-open',
+      errorCode: 'EACCES',
+      automaticRetryDelayMs: 42_000,
+    });
+  });
+
+  it.each(['EACCES', 'ENOEXEC'] as const)(
+    'classifies Darwin spawn %s as a deterministic executable denial',
+    (code) => {
+      const diagnostic = diagnoseSdkSubprocessFailure({
+        platform: 'darwin',
+        errorMessage: `Failed to spawn Claude Code process: spawn claude ${code}`,
+      });
+      expect(diagnostic).toMatchObject({ kind: 'sdk-child-spawn-denied', errorCode: code });
+    },
+  );
+
   it('exit code 1 WITH bash-missing evidence → confident Git for Windows guidance', () => {
     const diagnostic = diagnoseSdkSubprocessFailure({
       platform: 'win32',
@@ -76,7 +118,7 @@ describe('diagnoseSdkSubprocessFailure', () => {
     expect(diagnostic?.exitCode).toBeUndefined();
   });
 
-  it('does not classify non-Windows failures', () => {
+  it('does not classify unrelated non-Windows failures', () => {
     expect(diagnoseSdkSubprocessFailure({
       platform: 'darwin',
       errorMessage: 'Claude Code process exited with code 3221226505',

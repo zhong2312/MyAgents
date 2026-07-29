@@ -356,7 +356,7 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
   {
     path: "/api/workbench-agent/configure",
     method: "POST",
-    engineMethod: "host-owned toolset configuration",
+    engineMethod: "configureWorkbenchToolset",
     requiredFields: ["toolset"],
     responseKeys: ["success", "toolsetId", "mode", "error"],
     failureStatuses: [400],

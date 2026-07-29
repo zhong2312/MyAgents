@@ -15,5 +15,5 @@ export const BUILTIN_FALLBACK_SLASH_COMMANDS: SlashCommand[] = [
 export const LINE_HEIGHT = 26;
 export const MAX_LINES = 9;
 export const LAUNCHER_MIN_LINES = 3;
-export const MAX_IMAGES = 5;
+export const MAX_IMAGES = 8;
 export const MAX_IMAGE_SIZE = USER_IMAGE_ATTACHMENT_MAX_BYTES;

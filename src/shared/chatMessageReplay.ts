@@ -22,3 +22,14 @@ export function createLiveUserMessageReplay<TMessage>(
     sessionId,
   };
 }
+
+export function createColdHistoryMessageReplay<TMessage>(
+  sessionId: string,
+  message: TMessage,
+): ChatMessageReplayPayload<TMessage> {
+  return {
+    message,
+    replayKind: COLD_HISTORY_REPLAY_KIND,
+    sessionId,
+  };
+}

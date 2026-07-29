@@ -31,11 +31,17 @@ describe('describeTerminalReason — known reasons map to severity', () => {
     expect(describeTerminalReason('prompt_too_long')).toMatchObject({ severity: 'error' });
     expect(describeTerminalReason('blocking_limit')).toMatchObject({ severity: 'error' });
     expect(describeTerminalReason('stop_hook_prevented')).toMatchObject({ severity: 'error' });
+    expect(describeTerminalReason('api_error')).toMatchObject({ severity: 'error' });
+    expect(describeTerminalReason('malformed_tool_use_exhausted')).toMatchObject({ severity: 'error' });
+    expect(describeTerminalReason('structured_output_retry_exhausted')).toMatchObject({ severity: 'error' });
+    expect(describeTerminalReason('tool_deferred_unavailable')).toMatchObject({ severity: 'error' });
+    expect(describeTerminalReason('turn_setup_failed')).toMatchObject({ severity: 'error' });
   });
 
   it('maps notice-level reasons with severity "notice"', () => {
     expect(describeTerminalReason('max_turns')).toMatchObject({ severity: 'notice' });
     expect(describeTerminalReason('rapid_refill_breaker')).toMatchObject({ severity: 'notice' });
+    expect(describeTerminalReason('budget_exhausted')).toMatchObject({ severity: 'notice' });
   });
 
   it('maps background handoff as an informational reason', () => {
@@ -76,6 +82,11 @@ describe('shouldOfferTerminalReasonDiagnostics', () => {
     expect(shouldOfferTerminalReasonDiagnostics('hook_stopped')).toBe(true);
     expect(shouldOfferTerminalReasonDiagnostics('image_error')).toBe(true);
     expect(shouldOfferTerminalReasonDiagnostics('model_error')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('api_error')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('malformed_tool_use_exhausted')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('structured_output_retry_exhausted')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('tool_deferred_unavailable')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('turn_setup_failed')).toBe(true);
   });
 
   it('does not offer diagnostics for normal or self-recovering reasons', () => {
@@ -85,6 +96,7 @@ describe('shouldOfferTerminalReasonDiagnostics', () => {
     expect(shouldOfferTerminalReasonDiagnostics('rapid_refill_breaker')).toBe(false);
     expect(shouldOfferTerminalReasonDiagnostics('tool_deferred')).toBe(false);
     expect(shouldOfferTerminalReasonDiagnostics('background_requested')).toBe(false);
+    expect(shouldOfferTerminalReasonDiagnostics('budget_exhausted')).toBe(false);
   });
 
   it('offers diagnostics for unknown future reasons', () => {
@@ -118,6 +130,8 @@ describe('isAbortedTerminalReason — #307 abort detection', () => {
     expect(isAbortedTerminalReason('model_error')).toBe(false);
     expect(isAbortedTerminalReason('max_turns')).toBe(false);
     expect(isAbortedTerminalReason('some_future_reason')).toBe(false);
+    expect(isAbortedTerminalReason('api_error')).toBe(false);
+    expect(isAbortedTerminalReason('budget_exhausted')).toBe(false);
   });
 });
 
@@ -147,6 +161,12 @@ describe('shouldRecordTurnForTitle — #245 round-acceptance gate', () => {
     expect(shouldRecordTurnForTitle('hook_stopped')).toBe(false);
     expect(shouldRecordTurnForTitle('image_error')).toBe(false);
     expect(shouldRecordTurnForTitle('model_error')).toBe(false);
+    expect(shouldRecordTurnForTitle('api_error')).toBe(false);
+    expect(shouldRecordTurnForTitle('malformed_tool_use_exhausted')).toBe(false);
+    expect(shouldRecordTurnForTitle('budget_exhausted')).toBe(false);
+    expect(shouldRecordTurnForTitle('structured_output_retry_exhausted')).toBe(false);
+    expect(shouldRecordTurnForTitle('tool_deferred_unavailable')).toBe(false);
+    expect(shouldRecordTurnForTitle('turn_setup_failed')).toBe(false);
   });
 
   it('rejects max_turns and tool_deferred (text may be truncated mid-thought; conservative)', () => {

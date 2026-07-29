@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import AgentCapabilitiesPanel from './AgentCapabilitiesPanel';
@@ -45,5 +45,21 @@ describe('AgentCapabilitiesPanel — divider ownership (#314)', () => {
         expect(panel).not.toBeNull();
         const borderEls = panel!.querySelectorAll('.border-b, .border-t');
         expect(borderEls.length).toBe(0);
+    });
+
+    it('starts collapsed and reveals capabilities only after an explicit toggle', () => {
+        renderPanel({
+            enabledAgents: { planner: { description: 'planning agent', scope: 'user' } },
+            enabledSkills: [{ name: 'docx', description: 'word docs', scope: 'user' }],
+            enabledCommands: [{ name: 'help', description: 'show help', scope: 'user' }],
+        });
+
+        const toggle = screen.getByRole('button', { expanded: false });
+        expect(screen.queryByText('docx')).not.toBeInTheDocument();
+
+        fireEvent.click(toggle);
+
+        expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        expect(screen.getByText('docx')).toBeInTheDocument();
     });
 });

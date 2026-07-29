@@ -29,6 +29,7 @@ import {
 import { isAbortRequested } from '../builtin-session/lifecycle';
 import type { MessageQueueItem } from '../builtin-session/types';
 import type { DispatchGuard } from '../session-core/turn-queue';
+import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 
 describe('injected-turn cancellation before user persistence', () => {
   afterEach(() => {
@@ -85,6 +86,7 @@ describe('injected-turn cancellation before user persistence', () => {
         queueId: 'cancel-before-persistence',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-1' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence,
         beforeDispatch,
       },
@@ -138,6 +140,7 @@ describe('injected-turn cancellation before user persistence', () => {
         queueId: 'deferred-session-metadata',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-2' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence,
         beforeDispatch,
       },
@@ -167,6 +170,7 @@ describe('injected-turn cancellation before user persistence', () => {
       resolve: vi.fn(),
       beforeDispatch,
       settleDispatchAcceptance: vi.fn(),
+      channelDelivery: NO_CHANNEL_DELIVERY,
     };
     beginPromotedItem(item);
 
@@ -198,6 +202,7 @@ describe('injected-turn cancellation before user persistence', () => {
       messageText: 'commit prepared session',
       wasQueued: false,
       resolve: vi.fn(),
+      channelDelivery: NO_CHANNEL_DELIVERY,
     };
     beginPromotedItem(item);
     setCommittingTurnAdmissionQueueId(item.id);
@@ -214,6 +219,7 @@ describe('injected-turn cancellation before user persistence', () => {
       messageText: 'commit prepared session',
       wasQueued: false,
       resolve: vi.fn(),
+      channelDelivery: NO_CHANNEL_DELIVERY,
     };
     beginPromotedItem(item);
     setCommittingTurnAdmissionQueueId(item.id);
@@ -253,6 +259,7 @@ describe('injected-turn cancellation before user persistence', () => {
         queueId: 'concurrent-infrastructure-a',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-a' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence: first.guard,
         beforeDispatch: finalGuard(),
       },
@@ -266,6 +273,7 @@ describe('injected-turn cancellation before user persistence', () => {
         queueId: 'concurrent-infrastructure-b',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-b' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence: second.guard,
         beforeDispatch: finalGuard(),
       },

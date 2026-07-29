@@ -105,6 +105,14 @@ pub async fn start_management_api() -> Result<u16, String> {
 
     let app = Router::new()
         .route("/api/app/config-changed", post(app_config_changed_handler))
+        .route(
+            "/api/runtime/sdk-child/admit",
+            post(sdk_child_admit_handler),
+        )
+        .route(
+            "/api/runtime/sdk-child/settle",
+            post(sdk_child_settle_handler),
+        )
         .route("/api/cron/create", post(create_cron_handler))
         .route("/api/cron/list", get(list_cron_handler))
         .route("/api/cron/update", post(update_cron_handler))
@@ -142,6 +150,7 @@ pub async fn start_management_api() -> Result<u16, String> {
             "/api/agent/reload-config",
             post(agent_reload_config_handler),
         )
+        .route("/api/agent/stop-channel", post(agent_stop_channel_handler))
         .route(
             "/api/agent/stop-channels",
             post(agent_stop_channels_handler),
@@ -277,6 +286,159 @@ fn no_store_json(value: serde_json::Value) -> (HeaderMap, Json<serde_json::Value
 
 fn sidecar_identity_matches(current_generation: Option<u64>, requested_generation: u64) -> bool {
     current_generation == Some(requested_generation)
+}
+
+fn validate_current_sidecar_request(
+    headers: &HeaderMap,
+    sidecar_id: &str,
+) -> Result<(), serde_json::Value> {
+    let generation = request_sidecar_generation(headers).map_err(|Json(value)| value)?;
+    let Some(sidecars) = get_sidecar_state() else {
+        return Err(serde_json::json!({
+            "ok": false,
+            "code": "management_unavailable",
+            "error": "Sidecar manager is not initialized",
+        }));
+    };
+    let is_current = sidecars
+        .lock()
+        .map(|manager| manager.is_live_process(sidecar_id, generation))
+        .map_err(|error| {
+            serde_json::json!({
+                "ok": false,
+                "code": "management_unavailable",
+                "error": format!("Sidecar lock poisoned: {error}"),
+            })
+        })?;
+    if !is_current {
+        return Err(serde_json::json!({
+            "ok": false,
+            "code": "stale_sidecar",
+            "error": "Sidecar identity is no longer current",
+        }));
+    }
+    Ok(())
+}
+
+fn is_executable_identity(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_launch_error_code(value: &str) -> bool {
+    matches!(value, "EPERM" | "EACCES" | "ENOEXEC")
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkChildAdmissionRequest {
+    sidecar_id: String,
+    executable_identity: String,
+}
+
+async fn sdk_child_admit_handler(
+    headers: HeaderMap,
+    Json(req): Json<SdkChildAdmissionRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    let sidecar_id = req.sidecar_id.trim();
+    let executable_identity = req.executable_identity.trim();
+    if sidecar_id.is_empty() || !is_executable_identity(executable_identity) {
+        return no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "invalid_request",
+            "error": "sidecarId and a 64-character executableIdentity are required",
+        }));
+    }
+    if let Err(value) = validate_current_sidecar_request(&headers, sidecar_id) {
+        return no_store_json(value);
+    }
+
+    let admission = crate::runtime_launch_guard::admit_sdk_child(executable_identity);
+    if !admission.admitted {
+        ulog_warn!(
+            "[runtime-launch-guard] SDK child admission denied identity={} retry_after_ms={}",
+            &executable_identity[..8],
+            admission.retry_after_ms,
+        );
+    }
+    no_store_json(serde_json::json!({
+        "ok": true,
+        "admitted": admission.admitted,
+        "errorCode": admission.error_code,
+        "retryAfterMs": admission.retry_after_ms,
+        "admissionEpoch": admission.admission_epoch,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkChildSettlementRequest {
+    sidecar_id: String,
+    executable_identity: String,
+    admission_epoch: u64,
+    outcome: String,
+    error_code: Option<String>,
+}
+
+async fn sdk_child_settle_handler(
+    headers: HeaderMap,
+    Json(req): Json<SdkChildSettlementRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    let sidecar_id = req.sidecar_id.trim();
+    let executable_identity = req.executable_identity.trim();
+    if sidecar_id.is_empty()
+        || req.admission_epoch == 0
+        || !is_executable_identity(executable_identity)
+    {
+        return no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "invalid_request",
+            "error": "sidecarId, admissionEpoch, and a 64-character executableIdentity are required",
+        }));
+    }
+    if let Err(value) = validate_current_sidecar_request(&headers, sidecar_id) {
+        return no_store_json(value);
+    }
+
+    let outcome = match req.outcome.as_str() {
+        "ready" => crate::runtime_launch_guard::LaunchOutcome::Ready,
+        "spawn_denied" => crate::runtime_launch_guard::LaunchOutcome::SpawnDenied,
+        "released" => crate::runtime_launch_guard::LaunchOutcome::Released,
+        _ => {
+            return no_store_json(serde_json::json!({
+                "ok": false,
+                "code": "invalid_request",
+                "error": "outcome must be ready, spawn_denied, or released",
+            }));
+        }
+    };
+    let error_code = req.error_code.as_deref();
+    if outcome == crate::runtime_launch_guard::LaunchOutcome::SpawnDenied
+        && !error_code.is_some_and(is_launch_error_code)
+    {
+        return no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "invalid_request",
+            "error": "spawn_denied requires EPERM, EACCES, or ENOEXEC",
+        }));
+    }
+
+    crate::runtime_launch_guard::settle_sdk_child(
+        executable_identity,
+        req.admission_epoch,
+        outcome,
+        error_code,
+    );
+    if outcome == crate::runtime_launch_guard::LaunchOutcome::SpawnDenied {
+        ulog_warn!(
+            "[runtime-launch-guard] SDK child execution denied identity={} code={}",
+            &executable_identity[..8],
+            error_code.unwrap_or("unknown"),
+        );
+    }
+    no_store_json(serde_json::json!({ "ok": true }))
 }
 
 async fn grok_bearer_handler(
@@ -2046,6 +2208,59 @@ struct AgentStopChannelsRequest {
     agent_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentStopChannelRequest {
+    agent_id: String,
+    channel_id: String,
+}
+
+async fn agent_stop_channel_handler(
+    Json(req): Json<AgentStopChannelRequest>,
+) -> Json<serde_json::Value> {
+    let Some(agents) = get_agents() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Agent state unavailable"
+        }));
+    };
+    let Some(sidecar_manager) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Sidecar manager unavailable"
+        }));
+    };
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "App not initialized"
+        }));
+    };
+
+    match im::stop_agent_channel_runtime(
+        &app_handle,
+        agents,
+        sidecar_manager,
+        &req.agent_id,
+        &req.channel_id,
+    )
+    .await
+    {
+        Ok(stopped) => Json(serde_json::json!({
+            "ok": true,
+            "agentId": req.agent_id,
+            "channelId": req.channel_id,
+            "stopped": stopped
+        })),
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "agentId": req.agent_id,
+            "channelId": req.channel_id,
+            "error": error
+        })),
+    }
+}
+
 async fn agent_stop_channels_handler(
     Json(req): Json<AgentStopChannelsRequest>,
 ) -> Json<serde_json::Value> {
@@ -2062,18 +2277,25 @@ async fn agent_stop_channels_handler(
         }));
     };
 
-    let stopped = im::stop_agent_channels_for_archive(agents, sidecar_manager, &req.agent_id).await;
-    ulog_info!(
-        "[management] stopped {} channel(s) for archived agent {}",
-        stopped,
-        req.agent_id
-    );
-
-    Json(serde_json::json!({
-        "ok": true,
-        "agentId": req.agent_id,
-        "stoppedChannels": stopped
-    }))
+    match im::stop_agent_channels_runtime(agents, sidecar_manager, &req.agent_id).await {
+        Ok(stopped) => {
+            ulog_info!(
+                "[management] stopped {} channel(s) for agent {}",
+                stopped,
+                req.agent_id
+            );
+            Json(serde_json::json!({
+                "ok": true,
+                "agentId": req.agent_id,
+                "stoppedChannels": stopped
+            }))
+        }
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "agentId": req.agent_id,
+            "error": error
+        })),
+    }
 }
 
 // ===== Bridge Message handler (OpenClaw Channel Plugin → Rust) =====
@@ -3500,18 +3722,15 @@ async fn inbox_deliver_handler(Json(req): Json<InboxDeliverRequest>) -> Json<ser
         .as_ref()
         .map(std::path::PathBuf::from);
 
-    let outcome = if resume_path.is_some() {
-        let Some(app_handle) = crate::logger::get_app_handle() else {
-            return Json(serde_json::json!({
-                "ok": false,
-                "error": "global AppHandle not initialized — cannot resume dead session"
-            }));
-        };
-        crate::inbox::deliver::deliver_with_resume(app_handle, manager, req.message, resume_path)
-            .await
-    } else {
-        crate::inbox::deliver::deliver_inbox_message(manager, req.message).await
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "global AppHandle not initialized — cannot deliver inbox message"
+        }));
     };
+    let outcome =
+        crate::inbox::deliver::deliver_with_resume(app_handle, manager, req.message, resume_path)
+            .await;
 
     Json(serde_json::json!({
         "ok": true,

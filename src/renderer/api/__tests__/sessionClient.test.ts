@@ -32,58 +32,58 @@ describe('deleteSession', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.isTauri.mockReturnValue(true);
-        mocks.deleteSessionIfUnowned.mockResolvedValue(true);
+        mocks.deleteSessionIfUnowned.mockResolvedValue({ deleted: true });
         mocks.apiFetch.mockResolvedValue(okResponse());
     });
 
     it('delegates desktop deletion to the atomic Rust owner boundary', async () => {
-        await expect(deleteSession('session-1')).resolves.toBe(true);
+        await expect(deleteSession('session-1', ['tab-a'])).resolves.toEqual({ deleted: true });
 
-        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-1');
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-1', ['tab-a']);
         expect(mocks.apiFetch).not.toHaveBeenCalled();
     });
 
     it('refuses to delete storage while any sidecar owner is still alive', async () => {
-        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
+        mocks.deleteSessionIfUnowned.mockResolvedValue({ deleted: false, reason: 'in-use' });
 
-        await expect(deleteSession('session-live')).resolves.toBe(false);
+        await expect(deleteSession('session-live')).resolves.toEqual({ deleted: false, reason: 'in-use' });
 
         expect(mocks.apiFetch).not.toHaveBeenCalled();
     });
 
     it('does not release any owner as a side effect of storage deletion', async () => {
-        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
+        mocks.deleteSessionIfUnowned.mockResolvedValue({ deleted: false, reason: 'in-use' });
 
-        await expect(deleteSession('session-owned')).resolves.toBe(false);
+        await expect(deleteSession('session-owned')).resolves.toEqual({ deleted: false, reason: 'in-use' });
 
         expect(mocks.apiFetch).not.toHaveBeenCalled();
     });
 
     it('fails closed in browser development mode where Rust cannot fence owners', async () => {
         mocks.isTauri.mockReturnValue(false);
-        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
+        mocks.deleteSessionIfUnowned.mockResolvedValue({ deleted: false, reason: 'authority-unavailable' });
 
-        await expect(deleteSession('session-browser')).resolves.toBe(false);
+        await expect(deleteSession('session-browser')).resolves.toEqual({ deleted: false, reason: 'authority-unavailable' });
 
-        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-browser');
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-browser', []);
         expect(mocks.apiFetch).not.toHaveBeenCalled();
     });
 
     it('fails closed when sidecar presence cannot be verified', async () => {
-        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
+        mocks.deleteSessionIfUnowned.mockResolvedValue({ deleted: false, reason: 'unexpected' });
 
-        await expect(deleteSession('session-unknown')).resolves.toBe(false);
+        await expect(deleteSession('session-unknown')).resolves.toEqual({ deleted: false, reason: 'unexpected' });
 
         expect(mocks.apiFetch).not.toHaveBeenCalled();
-        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-unknown');
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-unknown', []);
     });
 
-    it('returns false when the atomic desktop deletion rejects the deletion', async () => {
-        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
+    it('preserves the atomic boundary refusal reason', async () => {
+        mocks.deleteSessionIfUnowned.mockResolvedValue({ deleted: false, reason: 'not-found' });
 
-        await expect(deleteSession('missing-session')).resolves.toBe(false);
+        await expect(deleteSession('missing-session')).resolves.toEqual({ deleted: false, reason: 'not-found' });
 
-        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('missing-session');
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('missing-session', []);
     });
 });
 

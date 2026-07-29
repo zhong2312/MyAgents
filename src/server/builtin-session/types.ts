@@ -21,6 +21,7 @@ import type {
 } from '../session-core/turn-queue';
 import type { SessionActivityTurnFacts } from '../session-core/session-activity-policy';
 import type { SessionMaterializationScenario } from '../utils/session-materialization';
+import type { TurnChannelDelivery } from '../session-core/channel-delivery';
 
 export type BuiltinSessionState = 'idle' | 'starting' | 'running' | 'error';
 
@@ -120,6 +121,7 @@ type DeferredUserSurfaceBase = {
   message: MessageWire;
   sessionBirthOrigin?: SessionOrigin;
   mirrorImages?: MirrorImage[];
+  channelDelivery: TurnChannelDelivery;
 };
 
 export type DeferredUserSurface = DeferredUserSurfaceBase & (
@@ -167,6 +169,7 @@ export type MessageQueueItem = {
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
+  channelDelivery: TurnChannelDelivery;
   /** SessionStore work held until the runtime admission commit for guarded turns. */
   deferredSessionMetadata?: {
     scenario: SessionMaterializationScenario;
@@ -224,6 +227,7 @@ export type InFlightMetadata = {
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
   mirrorImages?: MirrorImage[];
+  channelDelivery: TurnChannelDelivery;
 };
 
 export type BuiltinTurnUsage = {

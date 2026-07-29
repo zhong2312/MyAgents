@@ -435,8 +435,8 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               <span>via {SOURCE_LABELS[imSource as MessageSource] ?? imSource}</span>
             </div>
           )}
-          {/* text-base 自带 1.7 行高（@theme 配对），与 .ai-message-content 一致 —— 用户气泡
-              与 AI 正文同为 prose 档，行高不再分叉（PRD 0.2.34 P2-5） */}
+          {/* 用户与 AI 正文都由 Markdown 默认变体承载 16px/1.625；article 的
+              text-base 只负责气泡内非 Markdown prose fallback。 */}
           <div className="group/user-actions flex w-fit max-w-[85%] flex-col items-end">
             <article className="relative w-fit max-w-full rounded-2xl border border-[var(--line)] bg-[var(--message-user-bg)] p-4 text-base text-[var(--ink)] select-text">
               {/* System injection tag badge */}
@@ -537,11 +537,9 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               {renderWidgetSegments(message.content, isLoading)}
             </div>
           ) : (
-            /* ai-message-content：聊天 AI 正文的 prose 上下文（16px/1.7/0.01em）。
-               v2.4 之前该 CSS 类是死代码（定义了却从未接线），聊天正文实际靠 UA 默认
-               16px + 段落 leading-relaxed——DESIGN.md 宣称的 1.7 从未上屏。三个
-               assistant 分支（string/blocks/widget-segment）+ 5 个预览面板现在共享
-               同一容器类（PRD 0.2.34 Part 2）。 */
+            /* ai-message-content 标记 host prose 上下文；具体 16px/1.625、零字距和
+               各语义块节奏由 Markdown 默认变体统一拥有。三个 assistant 分支
+               （string/blocks/widget-segment）与文档预览共用这一条路径。 */
             <div className="ai-message-content text-[var(--ink)] select-text">
               {/* Tail-fade only while text is the actively-streaming edge — `streamingTextActive`
                   clears on the text block's content-block-stop, so it doesn't linger during a

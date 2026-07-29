@@ -31,6 +31,32 @@ export type TransientProviderTextError = {
   userMessage: string;
 };
 
+export type BuiltinSdkTerminalDisposition = 'complete' | 'stopped' | 'error';
+
+/**
+ * Decide whether a builtin SDK result represents a genuinely completed turn.
+ *
+ * `is_error` alone is not authoritative: the SDK can emit a success-shaped
+ * result for limits, setup failures, or other non-completed terminal reasons.
+ * Missing terminal_reason remains compatible with older SDK/bridge payloads,
+ * while unknown future values fail closed instead of completing Task/Goal
+ * owners with a partial answer.
+ */
+export function classifyBuiltinSdkTerminalResult(params: {
+  isError: boolean;
+  terminalReason?: unknown;
+}): BuiltinSdkTerminalDisposition {
+  const terminalReason = params.terminalReason;
+  if (typeof terminalReason === 'string' && terminalReason.startsWith('aborted_')) {
+    return 'stopped';
+  }
+  if (params.isError) return 'error';
+  if (terminalReason == null || terminalReason === '' || terminalReason === 'completed') {
+    return 'complete';
+  }
+  return 'error';
+}
+
 export type TransientProviderTextRetryDecision =
   | {
       retry: true;

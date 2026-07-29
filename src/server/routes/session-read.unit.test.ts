@@ -53,6 +53,7 @@ describe('handleSessionReadRoute', () => {
   });
 
   it('reads live session state and latest result from the active engine', async () => {
+    mocks.engine.getLiveSessionState.mockReturnValue({ sessionState: 'idle', isBusy: true });
     mocks.engine.getSessionCompletionTerminal.mockReturnValue({
       sessionId: 'sid',
       workspacePath: '/tmp/workspace',
@@ -73,6 +74,7 @@ describe('handleSessionReadRoute', () => {
 
     expect(await readJson(stateResponse as Response)).toEqual({
       sessionState: 'idle',
+      isBusy: true,
       completionTerminal: {
         sessionId: 'sid',
         workspacePath: '/tmp/workspace',

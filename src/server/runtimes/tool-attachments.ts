@@ -197,6 +197,7 @@ async function saveBase64Source(
  * Positive allow-list for external-path attachments. Allows references to:
  *   - the MyAgents trusted root (own writes)
  *   - Codex's own caches under ~/.codex/ (savedPath from imageGeneration)
+ *   - Managed Codex output under ~/.myagents/ (with auth.json still blacklisted)
  *   - the OS user's typical "documents" dirs (when Codex saves a generated
  *     file into the working directory) — but still subject to blacklist
  *
@@ -214,7 +215,7 @@ function isAllowedExternalAttachmentPrefix(canonical: string): boolean {
     path.join(HOME, '.myagents'),
     // Codex can also save into the project workspace; the workspacePath isn't
     // known here, so we allow ~/Documents and ~/Desktop as a pragmatic default.
-    // These are still subject to blacklist (no credential subdirs etc.).
+    // These are still subject to blacklist (no credential paths etc.).
     path.join(HOME, 'Documents'),
     path.join(HOME, 'Desktop'),
     path.join(HOME, 'Downloads'),

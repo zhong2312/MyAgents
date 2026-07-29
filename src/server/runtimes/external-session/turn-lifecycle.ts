@@ -15,6 +15,11 @@ import type {
   SessionCompletionStatus,
   SessionCompletionTerminal,
 } from '../../../shared/sessionCompletion';
+import {
+  reconcileRealtimeAssistantChannelDelivery,
+  type AssistantChannelDelivery,
+  type TurnChannelDelivery,
+} from '../../session-core/channel-delivery';
 
 let turnCompleted = false;
 let lastTurnSucceeded = false;
@@ -31,17 +36,14 @@ let activeTurnPromotion: ExternalTurnPromotionToken | null = null;
 let terminalObserverBarrier: Promise<void> = Promise.resolve();
 let currentTurnActivityFacts: SessionActivityTurnFacts | null = null;
 let lastSessionCompletionTerminal: SessionCompletionTerminal | null = null;
-type ExternalAssistantMirrorDisposition = 'mirror-completed-blocks' | 'reply-router-only' | 'disabled';
-type ExternalTurnMirrorState =
-  | { kind: 'inactive'; assistantDisposition: 'reply-router-only' | 'disabled' }
-  | {
-    kind: 'active';
-    assistantDisposition: Exclude<ExternalAssistantMirrorDisposition, 'disabled'>;
-    deliveryTail: Promise<boolean>;
-  };
-let currentTurnMirrorState: ExternalTurnMirrorState = {
-  kind: 'inactive',
-  assistantDisposition: 'disabled',
+type ExternalTurnChannelDeliveryState = {
+  assistantDisposition: AssistantChannelDelivery;
+  pendingAssistantDeliveries: Array<() => Promise<void>>;
+};
+let channelDeliveryTail: Promise<void> = Promise.resolve();
+let currentTurnChannelDeliveryState: ExternalTurnChannelDeliveryState = {
+  assistantDisposition: 'none',
+  pendingAssistantDeliveries: [],
 };
 let currentTurnBinding: {
   queueId: string;
@@ -51,96 +53,126 @@ let currentTurnBinding: {
 
 const turnFinalization = new TurnFinalizationGate();
 
-export type ExternalTurnMirrorAdmission =
+export type ExternalUserChannelAdmission =
+  | { kind: 'skip' }
   | {
-    kind: 'skip';
-    assistantDisposition: 'reply-router-only' | 'disabled';
-  }
-  | {
-    kind: 'deliver-desktop-user';
+    kind: 'deliver-session-bound-user';
     waitForPersistence: Promise<boolean>;
     deliverUser: () => Promise<void>;
   };
 
-function appendExternalMirrorUserDelivery(
-  priorTail: Promise<boolean>,
-  admission: Extract<ExternalTurnMirrorAdmission, { kind: 'deliver-desktop-user' }>,
-): Promise<boolean> {
-  return priorTail
-    .then(async (priorSucceeded) => {
+function appendExternalUserChannelDelivery(
+  admission: Extract<ExternalUserChannelAdmission, { kind: 'deliver-session-bound-user' }>,
+): void {
+  channelDeliveryTail = channelDeliveryTail
+    .then(async () => {
       const persisted = await admission.waitForPersistence;
-      if (!persisted) return false;
+      if (!persisted) return;
       await admission.deliverUser();
-      return priorSucceeded;
     })
     .catch((error) => {
-      console.warn('[external-session] desktop mirror admission delivery failed:', error);
-      return false;
+      console.warn('[external-session] user channel delivery failed:', error);
     });
 }
 
-/** Begin a new turn's mirror lifecycle after its first user transcript append.
- * The lifecycle owner serializes user/assistant delivery without blocking the
- * runtime dispatch path. */
-export function admitExternalTurnMirror(admission: ExternalTurnMirrorAdmission): void {
-  if (admission.kind === 'skip') {
-    currentTurnMirrorState = {
-      kind: 'inactive',
-      assistantDisposition: admission.assistantDisposition,
-    };
-    return;
-  }
-  currentTurnMirrorState = {
-    kind: 'active',
-    assistantDisposition: 'mirror-completed-blocks',
-    deliveryTail: appendExternalMirrorUserDelivery(Promise.resolve(true), admission),
-  };
-}
-
-/** Add a runtime-accepted Desktop realtime steer to the active turn. An IM
- * request keeps ReplyRouter ownership of assistant delivery; every other turn
- * gains Desktop mirror ownership for subsequent completed text blocks. */
-export function admitExternalRealtimeDesktopMirror(
-  admission: Extract<ExternalTurnMirrorAdmission, { kind: 'deliver-desktop-user' }>,
+/** Begin a new turn's explicit channel-delivery lifecycle. */
+export function admitExternalTurnChannelDelivery(
+  delivery: TurnChannelDelivery,
+  userAdmission: ExternalUserChannelAdmission,
 ): void {
-  const priorState = currentTurnMirrorState;
-  const assistantDisposition = priorState.assistantDisposition === 'reply-router-only'
-    ? 'reply-router-only'
-    : 'mirror-completed-blocks';
-  currentTurnMirrorState = {
-    kind: 'active',
-    assistantDisposition,
-    deliveryTail: appendExternalMirrorUserDelivery(
-      priorState.kind === 'active' ? priorState.deliveryTail : Promise.resolve(true),
-      admission,
-    ),
+  currentTurnChannelDeliveryState = {
+    assistantDisposition: delivery.assistant,
+    pendingAssistantDeliveries: [],
   };
+  if (userAdmission.kind === 'deliver-session-bound-user') {
+    appendExternalUserChannelDelivery(userAdmission);
+  }
 }
 
-/** Queue one completed assistant block behind every admitted Desktop user
- * delivery for this turn. Returns false when another owner (ReplyRouter) or a
- * non-Desktop turn owns delivery. */
-export function enqueueExternalAssistantMirror(
+/** Join a runtime-accepted realtime message to the active turn without letting
+ * a Desktop note displace ReplyRouter/outbox ownership of the combined answer. */
+export function admitExternalRealtimeChannelDelivery(
+  delivery: TurnChannelDelivery,
+  userAdmission: ExternalUserChannelAdmission,
+): void {
+  const priorState = currentTurnChannelDeliveryState;
+  currentTurnChannelDeliveryState = {
+    assistantDisposition: reconcileRealtimeAssistantChannelDelivery(
+      priorState.assistantDisposition,
+      delivery.assistant,
+    ),
+    pendingAssistantDeliveries: priorState.pendingAssistantDeliveries,
+  };
+  if (userAdmission.kind === 'deliver-session-bound-user') {
+    appendExternalUserChannelDelivery(userAdmission);
+  }
+}
+
+/** Stage one completed assistant block until the terminal owner proves success. */
+export function stageExternalAssistantChannelDelivery(
   deliverAssistant: () => Promise<void>,
 ): boolean {
-  const state = currentTurnMirrorState;
-  if (state.kind !== 'active' || state.assistantDisposition !== 'mirror-completed-blocks') {
+  const state = currentTurnChannelDeliveryState;
+  if (state.assistantDisposition !== 'session-binding') {
     return false;
   }
-  currentTurnMirrorState = {
-    ...state,
-    deliveryTail: state.deliveryTail
-      .then(async (admissionsSucceeded) => {
-        if (!admissionsSucceeded) return false;
-        await deliverAssistant();
-        return true;
-      })
-      .catch((error) => {
-        console.warn('[external-session] assistant mirror delivery failed:', error);
-        return false;
-      }),
-  };
+  state.pendingAssistantDeliveries.push(deliverAssistant);
   return true;
+}
+
+export type ExternalAssistantChannelDeliveryBatch = Readonly<{
+  assistantDisposition: AssistantChannelDelivery;
+  pendingAssistantDeliveries: ReadonlyArray<() => Promise<void>>;
+  settle: (deliver: boolean) => void;
+}>;
+
+/** Detach the terminalizing turn's delivery batch before any finalization await. */
+export function captureExternalAssistantChannelDelivery(): ExternalAssistantChannelDeliveryBatch {
+  const captured = currentTurnChannelDeliveryState;
+  currentTurnChannelDeliveryState = {
+    assistantDisposition: 'none',
+    pendingAssistantDeliveries: [],
+  };
+  let settleDecision!: (deliver: boolean) => void;
+  const deliveryDecision = new Promise<boolean>((resolve) => { settleDecision = resolve; });
+  let settled = false;
+  const settle = (deliver: boolean) => {
+    if (settled) return;
+    settled = true;
+    settleDecision(deliver);
+  };
+  if (captured.assistantDisposition === 'session-binding') {
+    // Reserve this turn's assistant positions before any persistence await.
+    // A concurrently admitted next turn therefore joins after this batch even
+    // though durability decides later whether these positions emit or skip.
+    for (const deliverAssistant of captured.pendingAssistantDeliveries) {
+      channelDeliveryTail = channelDeliveryTail
+        .then(async () => {
+          if (!await deliveryDecision) return;
+          await deliverAssistant();
+        })
+        .catch((error) => {
+          console.warn('[external-session] assistant channel delivery failed:', error);
+        });
+    }
+  }
+  return { ...captured, settle };
+}
+
+/** Commit a captured batch only after the runtime's success terminal is durable. */
+export function commitExternalAssistantChannelDelivery(
+  batch: ExternalAssistantChannelDeliveryBatch,
+): boolean {
+  if (batch.assistantDisposition !== 'session-binding') return false;
+  batch.settle(true);
+  return batch.pendingAssistantDeliveries.length > 0;
+}
+
+/** Release a reserved batch without emitting after failure, stop, or persist failure. */
+export function discardExternalAssistantChannelDelivery(
+  batch: ExternalAssistantChannelDeliveryBatch,
+): void {
+  batch.settle(false);
 }
 
 export type ExternalTurnOutcome = Readonly<{
@@ -253,7 +285,11 @@ export function resetExternalTurnLifecycleState(): void {
   currentTurnBinding = null;
   currentTurnActivityFacts = null;
   lastSessionCompletionTerminal = null;
-  currentTurnMirrorState = { kind: 'inactive', assistantDisposition: 'disabled' };
+  currentTurnChannelDeliveryState = {
+    assistantDisposition: 'none',
+    pendingAssistantDeliveries: [],
+  };
+  channelDeliveryTail = Promise.resolve();
   terminalObserverBarrier = Promise.resolve();
 }
 
@@ -396,7 +432,10 @@ export function resetExternalTurnAccumulators(): void {
   currentTurnUsage = null;
   currentTurnContextUsage = null;
   currentTurnEstimatedInputTokens = 0;
-  currentTurnMirrorState = { kind: 'inactive', assistantDisposition: 'disabled' };
+  currentTurnChannelDeliveryState = {
+    assistantDisposition: 'none',
+    pendingAssistantDeliveries: [],
+  };
 }
 
 export function setExternalTurnCompleted(value: boolean): void {

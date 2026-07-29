@@ -11,24 +11,24 @@ export function describeProxyScopeSummary(args: {
   selectedProviderNames: string[];
 }): ProxyScopeSummaryDescriptor {
   const { enabled, scope, selectedProviderNames } = args;
-  if (!enabled) return { key: 'general.proxyScopeDisabledHint' };
-  if (scope.mode === 'all') return { key: 'general.proxyScopeAllSummary' };
+  if (!enabled) return { key: 'proxy.scopeDisabledHint' };
+  if (scope.mode === 'all') return { key: 'proxy.scopeAllSummary' };
 
   const generalRequests = scope.generalRequests === true;
   if (!generalRequests && selectedProviderNames.length === 0) {
-    return { key: 'general.proxyScopeCustomEmptySummary' };
+    return { key: 'proxy.scopeCustomEmptySummary' };
   }
   if (generalRequests && selectedProviderNames.length === 0) {
-    return { key: 'general.proxyScopeCustomGeneralOnlySummary' };
+    return { key: 'proxy.scopeCustomGeneralOnlySummary' };
   }
 
   const providerSummary: ProxyScopeSummaryDescriptor = selectedProviderNames.length <= 3
-    ? { key: 'general.proxyScopeProviderNames', values: { names: selectedProviderNames.join(', ') } }
-    : { key: 'general.proxyScopeProviderCount', values: { count: selectedProviderNames.length } };
+    ? { key: 'proxy.scopeProviderNames', values: { names: selectedProviderNames.join(', ') } }
+    : { key: 'proxy.scopeProviderCount', values: { count: selectedProviderNames.length } };
   return {
     key: generalRequests
-      ? 'general.proxyScopeCustomGeneralOnSummary'
-      : 'general.proxyScopeCustomGeneralOffSummary',
+      ? 'proxy.scopeCustomGeneralOnSummary'
+      : 'proxy.scopeCustomGeneralOffSummary',
     values: {
       providerSummaryKey: providerSummary.key,
       ...providerSummary.values,

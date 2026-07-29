@@ -41,6 +41,8 @@ export interface BashTranscriptModel {
     durationMs?: number;
     processId?: string;
     exitCode?: number;
+    timedOutAfterMs?: number;
+    backgroundCwdHint?: string;
   };
 }
 
@@ -59,6 +61,8 @@ interface ParsedSdkBashResult {
   stderr: string;
   interrupted: boolean;
   background: boolean;
+  timedOutAfterMs?: number;
+  backgroundCwdHint?: string;
 }
 
 const SHELL_WRAPPER_PATTERN = /^\s*((?:"[^"]+"|'[^']+'|[^\s]+))\s+-(?:lc|cl)(?:\s|$)/;
@@ -93,6 +97,8 @@ const SDK_BASH_OUTPUT_KEYS = new Set([
   'isImage',
   'backgroundTaskId',
   'backgroundedByUser',
+  'timedOutAfterMs',
+  'backgroundCwdHint',
   'dangerouslyDisableSandbox',
   'returnCodeInterpretation',
   'noOutputExpected',
@@ -162,6 +168,8 @@ export function resolveBashTranscriptModel(tool: ToolUseSimple): BashTranscriptM
       durationMs: nonNegativeNumberOrUndefined(tool.resultMeta?.durationMs),
       processId: stringOrUndefined(tool.resultMeta?.processId),
       exitCode: finiteNumberOrUndefined(tool.resultMeta?.exitCode),
+      timedOutAfterMs: parsedResult?.timedOutAfterMs,
+      backgroundCwdHint: parsedResult?.backgroundCwdHint,
     },
   };
 }
@@ -525,7 +533,12 @@ function parseSdkBashResult(result?: string): ParsedSdkBashResult | null {
       stdout: parsed.stdout,
       stderr: parsed.stderr,
       interrupted: parsed.interrupted,
-      background: typeof parsed.backgroundTaskId === 'string' || parsed.backgroundedByUser === true,
+      background:
+        typeof parsed.backgroundTaskId === 'string'
+        || parsed.backgroundedByUser === true
+        || nonNegativeNumberOrUndefined(parsed.timedOutAfterMs) !== undefined,
+      timedOutAfterMs: nonNegativeNumberOrUndefined(parsed.timedOutAfterMs),
+      backgroundCwdHint: stringOrUndefined(parsed.backgroundCwdHint),
     };
   } catch {
     return null;

@@ -641,11 +641,9 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         for (const line of lines) {
           if (!line.trim()) continue;
           lineCount++;
-          // Log first few lines and then periodically for diagnostics
-          if (lineCount <= 5 || lineCount % 50 === 0) {
-            const preview = line.length > 500 ? line.slice(0, 500) + '...' : line;
-            console.log(`[claude-code] stdout line #${lineCount}: ${preview}`);
-          }
+          // Raw NDJSON is transport. With --include-partial-messages it can
+          // contain text/thinking/tool deltas, so diagnostics begin only after
+          // parseLine() has reduced the frame to a semantic event summary.
           const parsed = this.parseLine(line);
           if (parsed) {
             const events = Array.isArray(parsed) ? parsed : [parsed];

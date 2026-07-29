@@ -49,6 +49,9 @@ import {
     resolveFloatingBallBoundSession,
     getSnapshot,
     subscribe,
+    subscribePassive,
+    ensureWorkspaceSessions,
+    setSidebarWorkspaceSessionDemand,
     __resetTaskCenterStoreForTest,
     __setTaskCenterSessionsForTest,
 } from './taskCenterStore';
@@ -84,7 +87,7 @@ function deferred<T>() {
 beforeEach(() => {
     __resetTaskCenterStoreForTest();
     vi.clearAllMocks();
-    sessionClientMocks.deleteSession.mockResolvedValue(true);
+    sessionClientMocks.deleteSession.mockResolvedValue({ deleted: true });
     sessionClientMocks.getSessions.mockResolvedValue([]);
     cronTaskMocks.getAllCronTasks.mockResolvedValue([]);
     cronTaskMocks.getBackgroundSessions.mockResolvedValue([]);
@@ -210,6 +213,243 @@ describe('store snapshot', () => {
         expect(a.sessionTagsMap.size).toBe(0);
     });
 
+    it('keeps passive App-shell subscription idle and loads only requested workspaces', async () => {
+        sessionClientMocks.getSessions.mockImplementation(async (agentDir?: string) => (
+            agentDir === '/work/mino'
+                ? [{ ...favoriteSession(false), agentDir, id: 'mino-session' }]
+                : []
+        ));
+        const listener = vi.fn();
+        const unsubscribe = subscribePassive(listener);
+        try {
+            expect(sessionClientMocks.getSessions).not.toHaveBeenCalled();
+            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
+
+            ensureWorkspaceSessions(['/work/mino']);
+            await vi.waitFor(() => {
+                expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['mino-session']);
+            });
+
+            expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(1);
+            expect(sessionClientMocks.getSessions).toHaveBeenCalledWith('/work/mino');
+            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('ignores an on-demand workspace response from an invalidated generation', async () => {
+        const staleFetch = deferred<SessionMetadata[]>();
+        sessionClientMocks.getSessions.mockReturnValueOnce(staleFetch.promise);
+        ensureWorkspaceSessions(['/work/stale']);
+
+        __resetTaskCenterStoreForTest();
+        sessionClientMocks.getSessions.mockResolvedValueOnce([
+            { ...favoriteSession(false), agentDir: '/work/current', id: 'current-session' },
+        ]);
+        ensureWorkspaceSessions(['/work/current']);
+        await vi.waitFor(() => {
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['current-session']);
+        });
+
+        staleFetch.resolve([
+            { ...favoriteSession(false), agentDir: '/work/stale', id: 'stale-session' },
+        ]);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['current-session']);
+    });
+
+    it('keeps concurrent workspace loading and errors isolated by normalized path', async () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        sessionClientMocks.getSessions.mockImplementation(async (agentDir?: string) => {
+            if (agentDir === '/work/a') throw new Error('workspace A unavailable');
+            if (agentDir === '/work/b') {
+                return [{ ...favoriteSession(false), agentDir, id: 'session-b' }];
+            }
+            return [];
+        });
+
+        try {
+            ensureWorkspaceSessions(['/work/a', '/work/b']);
+            await vi.waitFor(() => {
+                expect(getSnapshot().workspaceSessionStates.get('/work/a')?.error).toBeTruthy();
+                expect(getSnapshot().workspaceSessionStates.get('/work/b')).toEqual({
+                    isLoading: false,
+                    error: null,
+                });
+            });
+
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['session-b']);
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
+
+    it('prevents an older passive workspace response from overwriting a full fetch', async () => {
+        const staleWorkspaceFetch = deferred<SessionMetadata[]>();
+        sessionClientMocks.getSessions.mockImplementation((agentDir?: string) => {
+            if (agentDir) return staleWorkspaceFetch.promise;
+            return Promise.resolve([
+                { ...favoriteSession(false), agentDir: '/work/a', id: 'full-session' },
+            ]);
+        });
+
+        setSidebarWorkspaceSessionDemand(['/work/a']);
+        const unsubscribe = subscribe(() => undefined);
+        try {
+            await vi.waitFor(() => {
+                expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['full-session']);
+            });
+
+            staleWorkspaceFetch.resolve([
+                { ...favoriteSession(false), agentDir: '/work/a', id: 'stale-session' },
+            ]);
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['full-session']);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('hands an interrupted full load back to the passive workspace demand', async () => {
+        const interruptedFullFetch = deferred<SessionMetadata[]>();
+        sessionClientMocks.getSessions.mockImplementation((agentDir?: string) => {
+            if (!agentDir) return interruptedFullFetch.promise;
+            return Promise.resolve([
+                { ...favoriteSession(false), agentDir, id: 'passive-session' },
+            ]);
+        });
+
+        const unsubscribe = subscribe(() => undefined);
+        setSidebarWorkspaceSessionDemand(['/work/a']);
+        unsubscribe();
+
+        await vi.waitFor(() => {
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['passive-session']);
+        });
+        interruptedFullFetch.resolve([
+            { ...favoriteSession(false), agentDir: '/work/a', id: 'interrupted-session' },
+        ]);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['passive-session']);
+    });
+
+    it('does not let a sessions-only refresh overwrite passive authority after unsubscribe', async () => {
+        const staleRefresh = deferred<SessionMetadata[]>();
+        sessionClientMocks.getSessions
+            .mockResolvedValueOnce([])
+            .mockImplementation((agentDir?: string) => {
+                if (agentDir === '/work/a') {
+                    return Promise.resolve([
+                        { ...favoriteSession(false), agentDir, id: 'passive-session' },
+                    ]);
+                }
+                return staleRefresh.promise;
+            });
+
+        const unsubscribe = subscribe(() => undefined);
+        await vi.waitFor(() => expect(getSnapshot().isLoading).toBe(false));
+        setSidebarWorkspaceSessionDemand(['/work/a']);
+        actions.refreshSessions();
+        unsubscribe();
+
+        await vi.waitFor(() => {
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['passive-session']);
+        });
+
+        staleRefresh.resolve([
+            { ...favoriteSession(false), agentDir: '/work/a', id: 'stale-refresh-session' },
+        ]);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['passive-session']);
+    });
+
+    it('queues a forced workspace refresh behind an existing request', async () => {
+        const firstFetch = deferred<SessionMetadata[]>();
+        sessionClientMocks.getSessions
+            .mockReturnValueOnce(firstFetch.promise)
+            .mockResolvedValueOnce([
+                { ...favoriteSession(false), agentDir: '/work/a', id: 'fresh-session' },
+            ]);
+
+        ensureWorkspaceSessions(['/work/a']);
+        ensureWorkspaceSessions(['/work/a'], true);
+        expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(1);
+
+        firstFetch.resolve([
+            { ...favoriteSession(false), agentDir: '/work/a', id: 'stale-session' },
+        ]);
+
+        await vi.waitFor(() => expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => {
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['fresh-session']);
+        });
+    });
+
+    it('marks demanded workspaces complete as soon as the full Session slice arrives', async () => {
+        const sessionsFetch = deferred<SessionMetadata[]>();
+        const slowCronFetch = deferred<CronTask[]>();
+        sessionClientMocks.getSessions.mockReturnValueOnce(sessionsFetch.promise);
+        cronTaskMocks.getAllCronTasks.mockReturnValueOnce(slowCronFetch.promise);
+
+        const unsubscribe = subscribe(() => undefined);
+        setSidebarWorkspaceSessionDemand(['/work/a']);
+        sessionsFetch.resolve([
+            { ...favoriteSession(false), agentDir: '/work/a', id: 'full-session' },
+        ]);
+
+        try {
+            await vi.waitFor(() => {
+                expect(getSnapshot().workspaceSessionStates.get('/work/a')).toEqual({
+                    isLoading: false,
+                    error: null,
+                });
+            });
+            expect(getSnapshot().isLoading).toBe(true);
+
+            slowCronFetch.resolve([]);
+            await vi.waitFor(() => expect(getSnapshot().isLoading).toBe(false));
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('prevents stale passive decorations from overwriting a newer full snapshot', async () => {
+        const staleCronFetch = deferred<CronTask[]>();
+        cronTaskMocks.getAllCronTasks
+            .mockReturnValueOnce(staleCronFetch.promise)
+            .mockResolvedValueOnce([{ id: 'fresh-cron' }] as unknown as CronTask[]);
+        sessionClientMocks.getSessions.mockImplementation(async (agentDir?: string) => (
+            agentDir
+                ? [{ ...favoriteSession(false), agentDir, id: 'workspace-session' }]
+                : [{ ...favoriteSession(false), agentDir: '/work/a', id: 'full-session' }]
+        ));
+
+        setSidebarWorkspaceSessionDemand(['/work/a']);
+        const unsubscribe = subscribe(() => undefined);
+        try {
+            await vi.waitFor(() => {
+                expect(getSnapshot().cronTasks.map((task) => task.id)).toEqual(['fresh-cron']);
+            });
+
+            staleCronFetch.resolve([{ id: 'stale-cron' }] as unknown as CronTask[]);
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(getSnapshot().cronTasks.map((task) => task.id)).toEqual(['fresh-cron']);
+        } finally {
+            unsubscribe();
+        }
+    });
+
     it('publishes sessions before slower non-history slices finish', async () => {
         const cronFetch = deferred<CronTask[]>();
         sessionClientMocks.getSessions.mockResolvedValueOnce([
@@ -233,6 +473,19 @@ describe('store snapshot', () => {
         } finally {
             unsubscribe();
         }
+    });
+});
+
+describe('actions.deleteSession', () => {
+    it('treats an already-absent Session as an idempotent deletion success', async () => {
+        __setTaskCenterSessionsForTest([favoriteSession(false)]);
+        sessionClientMocks.deleteSession.mockResolvedValueOnce({
+            deleted: false,
+            reason: 'not-found',
+        });
+
+        await expect(actions.deleteSession('s1')).resolves.toEqual({ deleted: true });
+        expect(getSnapshot().sessions).toEqual([]);
     });
 });
 

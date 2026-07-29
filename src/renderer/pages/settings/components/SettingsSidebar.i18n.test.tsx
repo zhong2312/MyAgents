@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -30,6 +30,28 @@ describe('SettingsSidebar i18n', () => {
     expect(screen.getByRole('button', { name: 'General' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Model Providers' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Desktop Pet' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Network Proxy' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Plugins' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument();
     expect(screen.getByTitle('View Rust logs')).toBeInTheDocument();
+  });
+
+  it('keeps the product-defined settings order', () => {
+    render(<SidebarProbe />);
+
+    const labels = within(screen.getByRole('navigation'))
+      .getAllByRole('button')
+      .map(button => button.textContent);
+    expect(labels).toEqual([
+      'Model Providers',
+      'General',
+      'Channel',
+      'Desktop Pet',
+      'Usage',
+      'Network Proxy',
+      'Shortcuts',
+      'About',
+    ]);
   });
 });

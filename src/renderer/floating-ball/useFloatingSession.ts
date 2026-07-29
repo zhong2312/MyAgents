@@ -1118,8 +1118,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         // permission/ask/plan 事件，handler 会用已切到新 sid 的 ref → 用户的回应
         // POST 到新 sid、旧后端 pending 永久挂起。SSE 连接读的是 sessionIdRef，
         // 断开后再换 ref 即可干净重建。
-        sseRef.current?.disconnect();
+        const previousSse = sseRef.current;
         sseRef.current = null;
+        if (previousSse) {
+            await previousSse.disconnect();
+        }
         sessionIdRef.current = sid;
         setSessionId(sid);
         setAnalyticsContext({ sessionId: sid });
@@ -1128,26 +1131,29 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             stage = 'ensure-session-sidecar';
             // Ensure = pre-warm：伴侣窗作为长寿 owner 让 sidecar 常驻（唤起即出字
             // 的体感来源，PRD §10「最高效 = 预热」）。
-            await ensureSessionSidecar(sid, workspace, 'tab', OWNER_ID);
+            await ensureSessionSidecar(sid, workspace, 'companion', OWNER_ID);
             ownerEnsured = true;
             console.info(`[fb-session] ensure sidecar ok session=${sid} elapsed=${elapsedMs(startedAt)}`);
             stage = 'sync-config';
-            // Floating companion is a Tab owner, so it must push the same
+            // Floating companion is a frontend owner, so it must push the same
             // frontend-authoritative MCP/sub-agent config as Chat before turns.
             await syncFloatingSidecarConfig(sid, workspace, configSnapshot, projectSnapshot);
             console.info(`[fb-session] sync config ok session=${sid} elapsed=${elapsedMs(startedAt)}`);
             stage = 'connect-sse';
             // SSE（事件名/payload 与 Tab 完全同构，白名单已覆盖）。
-            const sse = createSseConnection('fb', sessionIdRef);
+            const sse = createSseConnection('fb', sessionIdRef, {
+                type: 'companion',
+                id: OWNER_ID,
+            });
             sse.setEventHandler((eventName, data) => handleSseEventRef.current(eventName, data));
             sseRef.current = sse;
             await sse.connect();
             console.info(`[fb-session] sse connected session=${sid} elapsed=${elapsedMs(startedAt)}`);
         } catch (err) {
-            sseRef.current?.disconnect();
+            await sseRef.current?.disconnect();
             sseRef.current = null;
             if (ownerEnsured) {
-                await releaseSessionSidecar(sid, 'tab', OWNER_ID).catch(() => false);
+                await releaseSessionSidecar(sid, 'companion', OWNER_ID).catch(() => false);
             }
             console.error(
                 `[fb-session] connect failed session=${sid} stage=${stage} elapsed=${elapsedMs(startedAt)} error=${describeError(err)}`,
@@ -1200,7 +1206,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                                     }
                                 }
                                 await startBackgroundCompletion(oldSid);
-                                await releaseSessionSidecar(oldSid, 'tab', OWNER_ID);
+                                await releaseSessionSidecar(oldSid, 'companion', OWNER_ID);
                             } catch (err) {
                                 console.warn('[fb] migrated old session handover failed (non-fatal):', err);
                             }
@@ -1397,7 +1403,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         if (base) await floatingProxyFetch(oldSid, `${base}/chat/stop`, { method: 'POST' });
                     }
                     await startBackgroundCompletion(oldSid);
-                    await releaseSessionSidecar(oldSid, 'tab', OWNER_ID);
+                    await releaseSessionSidecar(oldSid, 'companion', OWNER_ID);
                 } catch (err) {
                     console.warn(`[fb-session] old session handover failed old=${oldSid} error=${describeError(err)}`);
                 }
@@ -1667,11 +1673,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
      *  没有这步，关掉悬浮球后 Mino sidecar 会常驻到 app 退出（review C2）。 */
     const suspend = useCallback(async () => {
         const sid = sessionIdRef.current;
-        sseRef.current?.disconnect();
+        await sseRef.current?.disconnect();
         sseRef.current = null;
         if (sid) {
             try {
-                await releaseSessionSidecar(sid, 'tab', OWNER_ID);
+                await releaseSessionSidecar(sid, 'companion', OWNER_ID);
             } catch (err) {
                 console.warn('[fb] release sidecar failed:', err);
             }

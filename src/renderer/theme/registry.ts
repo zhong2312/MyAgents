@@ -41,6 +41,17 @@ const ALLOWED_PRISM_HOST_VARIABLES = new Set<string>([
   '--text-xs', '--text-sm', '--text-base', '--text-lg', '--text-xl', '--text-2xl', '--text-3xl',
 ]);
 
+const THEME_PRESENTATION_CLASS_NAMES = [
+  '.theme-product-wordmark',
+  '.theme-launcher-hero-title',
+  '.theme-launcher-hero-slogan',
+] as const;
+
+const RESPONSIVE_HERO_CLASS_NAMES = [
+  '.theme-launcher-hero-title',
+  '.theme-launcher-hero-slogan',
+] as const;
+
 function assertRecord(value: unknown, path: string): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`[theme] ${path} must be an object`);
@@ -65,17 +76,11 @@ function assertStylesheetAtRuleScope(
 ): void {
   const themeRootSelector = `html[data-theme-id='${definition.id}']`;
   const allowedHeroSelectorLists: string[][] = definition.id === CANONICAL_THEME_ID
-    ? [
-      ['.theme-launcher-hero-title', `${themeRootSelector} .theme-launcher-hero-title`],
-      ['.theme-launcher-hero-slogan', `${themeRootSelector} .theme-launcher-hero-slogan`],
-    ]
-    : [
-      [`${themeRootSelector} .theme-launcher-hero-title`],
-      [`${themeRootSelector} .theme-launcher-hero-slogan`],
-    ];
+    ? RESPONSIVE_HERO_CLASS_NAMES.map(className => [className, `${themeRootSelector} ${className}`])
+    : RESPONSIVE_HERO_CLASS_NAMES.map(className => [`${themeRootSelector} ${className}`]);
 
   for (const block of topLevelBlocks.filter(candidate => candidate.prelude.trim().startsWith('@'))) {
-    // Theme packages own runtime tokens plus Launcher Hero presentation. Keep
+    // Theme packages own runtime tokens plus brand and Launcher Hero presentation. Keep
     // global side-effect rules such as @property/@font-face out of the package,
     // while retaining the canonical responsive Hero typography.
     const decodedPrelude = decodeCssEscapes(block.prelude.trim());
@@ -125,7 +130,7 @@ function assertStylesheetSelectorScope(blocks: readonly ThemeCssBlock[], definit
         `${themeRootSelector}[data-color-scheme='${scheme}']`,
       ]);
     }
-    for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
+    for (const className of THEME_PRESENTATION_CLASS_NAMES) {
       allowedSelectorLists.push([className, `${themeRootSelector} ${className}`]);
     }
   } else {
@@ -133,7 +138,7 @@ function assertStylesheetSelectorScope(blocks: readonly ThemeCssBlock[], definit
     for (const scheme of ['light', 'dark'] as const) {
       allowedSelectorLists.push([`${themeRootSelector}[data-color-scheme='${scheme}']`]);
     }
-    for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
+    for (const className of THEME_PRESENTATION_CLASS_NAMES) {
       allowedSelectorLists.push([`${themeRootSelector} ${className}`]);
     }
   }
@@ -352,13 +357,13 @@ function validateStylesheet(definition: ThemeDefinition): ThemePreviewSwatches {
       `${definition.id}.${scheme} root`,
     );
   }
-  for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
+  for (const className of THEME_PRESENTATION_CLASS_NAMES) {
     assertCanonicalFallbackScope(
       blocks,
       definition,
       className,
       `${themeRootSelector} ${className}`,
-      `${definition.id} Hero ${className}`,
+      `${definition.id} presentation ${className}`,
     );
   }
   assertStylesheetSelectorScope(blocks, definition);
@@ -411,19 +416,19 @@ function validateStylesheet(definition: ThemeDefinition): ThemePreviewSwatches {
     previewSwatches[scheme] = primary;
   }
 
-  for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
-    const heroSelector = `${themeRootSelector} ${className}`;
-    const acceptedHeroSelectorLists = definition.id === CANONICAL_THEME_ID
-      ? [[className, heroSelector]]
-      : [[heroSelector]];
-    const heroBlocks = collectContractBlocks(
+  for (const className of THEME_PRESENTATION_CLASS_NAMES) {
+    const presentationSelector = `${themeRootSelector} ${className}`;
+    const acceptedPresentationSelectorLists = definition.id === CANONICAL_THEME_ID
+      ? [[className, presentationSelector]]
+      : [[presentationSelector]];
+    const presentationBlocks = collectContractBlocks(
       topLevelBlocks,
-      heroSelector,
-      acceptedHeroSelectorLists,
-      `${definition.id} Hero ${className}`,
+      presentationSelector,
+      acceptedPresentationSelectorLists,
+      `${definition.id} presentation ${className}`,
     );
-    if (heroBlocks.length === 0) {
-      throw new Error(`[theme] ${definition.id}: stylesheet missing Hero selector ${className}`);
+    if (presentationBlocks.length === 0) {
+      throw new Error(`[theme] ${definition.id}: stylesheet missing presentation selector ${className}`);
     }
   }
   return previewSwatches;

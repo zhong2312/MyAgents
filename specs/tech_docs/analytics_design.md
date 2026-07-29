@@ -41,6 +41,7 @@ replacement id.
 `surface` identifies the UI or product surface within a source:
 
 - `launcher_input`
+- `global_sidebar`
 - `agent_card`
 - `history_click`
 - `new_chat_button`
@@ -53,6 +54,12 @@ replacement id.
 - `im`
 - `floating_ball`
 - `unknown`
+
+Global Sidebar keeps the established event names: fresh workspace launches emit
+`workspace_open` with `surface='global_sidebar'`; existing sessions emit
+`history_open` with `entry_source='global_sidebar'`. Expanded-sidebar and rail
+flyout interactions share this value because they are two projections of the
+same navigation surface.
 
 ### Entry Intent
 

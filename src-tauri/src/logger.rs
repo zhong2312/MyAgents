@@ -427,7 +427,18 @@ fn format_line(entry: &LogEntry) -> String {
 }
 
 /// Append log entry to unified log file (via buffered writer).
+const fn should_persist_logs() -> bool {
+    // Rust unit tests share the developer's real HOME by default. Persisting
+    // their synthetic failures into ~/.myagents/logs makes production triage
+    // indistinguishable from test activity. Test output still reaches the
+    // normal Rust log capture; only the user-owned unified file sink is off.
+    !cfg!(test)
+}
+
 fn persist_log(entry: &LogEntry) {
+    if !should_persist_logs() {
+        return;
+    }
     enqueue_or_sync_append(format_line(entry));
 }
 
@@ -719,7 +730,12 @@ macro_rules! __ulog_assign {
 
 #[cfg(test)]
 mod renderer_boot_tests {
-    use super::{format_renderer_boot_event, LogLevel};
+    use super::{format_renderer_boot_event, should_persist_logs, LogLevel};
+
+    #[test]
+    fn unit_tests_never_persist_into_the_users_unified_log() {
+        assert!(!should_persist_logs());
+    }
 
     #[test]
     fn renderer_boot_ingress_is_stage_limited_and_single_line() {

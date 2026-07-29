@@ -23,7 +23,7 @@ import {
   TerminalSquare,
   Search,
   Globe,
-  PanelRightClose,
+  PanelRight,
   X,
 } from "lucide-react";
 import Tip from "@/components/Tip";
@@ -3003,9 +3003,6 @@ const DirectoryPanel = memo(
           }
         >
           <div className="flex items-center gap-2">
-            <span className="text-base font-semibold text-[var(--ink)]">
-              {t("workspaceFiles.directory.title")}
-            </span>
             {/* Search toggle button */}
             <Tip
               label={
@@ -3083,10 +3080,30 @@ const DirectoryPanel = memo(
           </div>
           {/* Right side buttons */}
           <div className="flex items-center gap-1">
+            {onOpenConfig && (
+              <Tip
+                label={t("workspaceFiles.directory.openAgentSettings")}
+                position="bottom"
+                align="end"
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenConfig();
+                  }}
+                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  {t("workspaceFiles.directory.agentSettings")}
+                </button>
+              </Tip>
+            )}
             {!isNarrowMode && onCollapse && (
               <Tip
                 label={t("workspaceFiles.directory.collapseWorkspace")}
                 position="bottom"
+                align="end"
               >
                 <button
                   type="button"
@@ -3095,46 +3112,37 @@ const DirectoryPanel = memo(
                     onCollapse();
                   }}
                   aria-label={t("workspaceFiles.directory.collapseWorkspace")}
-                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                  title={t("workspaceFiles.directory.collapseWorkspace")}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
-                  <PanelRightClose className="h-4 w-4" />
+                  <PanelRight className="h-4 w-4" />
                 </button>
               </Tip>
             )}
-            {onOpenConfig && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenConfig();
-                }}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                title={t("workspaceFiles.directory.openAgentSettings")}
-              >
-                <SlidersHorizontal className="h-4 w-4" />
-                {t("workspaceFiles.directory.agentSettings")}
-              </button>
-            )}
             {/* Collapse toggle button - only in narrow mode, positioned at far right */}
             {isNarrowMode && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsCollapsed(!isCollapsed);
-                }}
-                className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                title={
-                  isCollapsed
-                    ? t("workspaceFiles.directory.expandWorkspace")
-                    : t("workspaceFiles.directory.foldWorkspace")
-                }
+              <Tip
+                label={isCollapsed
+                  ? t("workspaceFiles.directory.expandWorkspace")
+                  : t("workspaceFiles.directory.foldWorkspace")}
+                position="bottom"
+                align="end"
               >
-                <ChevronUp
-                  className={`h-4 w-4 transition-transform ${isCollapsed ? "rotate-180" : ""}`}
-                />
-              </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsCollapsed(!isCollapsed);
+                  }}
+                  aria-label={isCollapsed
+                    ? t("workspaceFiles.directory.expandWorkspace")
+                    : t("workspaceFiles.directory.foldWorkspace")}
+                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                >
+                  <ChevronUp
+                    className={`h-4 w-4 transition-transform ${isCollapsed ? "rotate-180" : ""}`}
+                  />
+                </button>
+              </Tip>
             )}
           </div>
         </div>
@@ -3182,7 +3190,7 @@ const DirectoryPanel = memo(
                   <WorkspaceIcon icon={projectIcon} size={28} />
                 </span>
                 <div className="min-w-0 flex-1">
-                  {/* First row: name, git branch, stats */}
+                  {/* First row: name and git branch */}
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium text-[var(--ink)]">
                       {projectDisplayName || folderName}
@@ -3191,14 +3199,6 @@ const DirectoryPanel = memo(
                       <span className="flex items-center gap-0.5 rounded-md bg-[var(--accent-warm-subtle)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
                         <GitBranch className="h-3 w-3" />
                         {gitBranch}
-                      </span>
-                    )}
-                    {directoryInfo && (
-                      <span className="ml-auto flex-shrink-0 text-xs text-[var(--ink-muted)]">
-                        {t("workspaceFiles.directory.stats", {
-                          files: directoryInfo.summary.totalFiles,
-                          folders: directoryInfo.summary.totalDirs,
-                        })}
                       </span>
                     )}
                   </div>

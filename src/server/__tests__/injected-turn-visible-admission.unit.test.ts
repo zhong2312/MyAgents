@@ -28,6 +28,7 @@ import {
   resetQueueForTest,
   setTurnAdmissionTicket,
 } from '../builtin-session/queue';
+import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import type { MessageQueueItem } from '../builtin-session/types';
 import type { DispatchGuard } from '../session-core/turn-queue';
 
@@ -70,6 +71,7 @@ describe('injected-turn invisible admission reservation', () => {
         queueId: 'invisible-direct-admission',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-direct' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence: acceptedGuard(),
         beforeDispatch: acceptedGuard(),
       },
@@ -96,6 +98,7 @@ describe('injected-turn invisible admission reservation', () => {
         queueId: 'invisible-turn-boundary-admission',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-queued' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence: acceptedGuard(),
         beforeDispatch: acceptedGuard(),
       },
@@ -123,6 +126,7 @@ describe('injected-turn invisible admission reservation', () => {
         queueId: 'invisible-reset-message',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-reset-message' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence: acceptedGuard(),
         beforeDispatch: acceptedGuard(),
       },
@@ -148,6 +152,7 @@ describe('injected-turn invisible admission reservation', () => {
         queueId: 'invisible-reset-boundary',
         queueResponseModeOverride: 'turn',
         turnOwner: { kind: 'task', id: 'task-reset-boundary' },
+        channelDelivery: NO_CHANNEL_DELIVERY,
         beforeUserPersistence: acceptedGuard(),
         beforeDispatch: acceptedGuard(),
       },
@@ -175,6 +180,7 @@ describe('injected-turn invisible admission reservation', () => {
       resolve: vi.fn(),
       beforeDispatch,
       onTerminal,
+      channelDelivery: NO_CHANNEL_DELIVERY,
     };
     beginPromotedItem(item);
     setQuerySession({

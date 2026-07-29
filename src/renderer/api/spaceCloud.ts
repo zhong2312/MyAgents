@@ -910,6 +910,10 @@ export function spaceErrorMessage(
   return normalizeSpaceError(error, context).userMessage;
 }
 
+export function isSpaceSkillInstallConflict(error: unknown): boolean {
+  return String(error).includes("SKILL_INSTALL_CONFLICT");
+}
+
 export function spaceErrorCode(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
   const maybeError = error as Partial<SpaceApiEnvelope<unknown>> & {
@@ -1471,12 +1475,12 @@ export function spaceInstallSkill(input: {
   skillName: string;
   target: "global" | "project";
   workspacePath?: string;
+  overwrite?: boolean;
 }) {
   return inv<{
     installedName: string;
     installedPath: string;
     target: string;
-    renamed: boolean;
   }>("cmd_space_install_skill", {
     input,
   });

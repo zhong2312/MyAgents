@@ -185,8 +185,10 @@ export async function handleSessionReadRoute(
 ): Promise<Response | null> {
   if (pathname === '/api/session-state' && request.method === 'GET') {
     const engine = getSessionEngine();
+    const liveState = engine.getLiveSessionState();
     return jsonResponse({
-      sessionState: engine.getLiveSessionState().sessionState,
+      sessionState: liveState.sessionState,
+      isBusy: liveState.isBusy,
       completionTerminal: engine.getSessionCompletionTerminal(),
     });
   }

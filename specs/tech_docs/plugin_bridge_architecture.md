@@ -77,7 +77,7 @@ Rust spawn_plugin_bridge()
    └─ 敏感配置通过 BRIDGE_PLUGIN_CONFIG 环境变量传递（不暴露到 ps）
    └─ 注入 per-channel OpenClaw 状态目录（OPENCLAW_STATE_DIR / OPENCLAW_CONFIG_PATH / OPENCLAW_OAUTH_DIR；名字以上游 utils.ts/paths.ts 实际消费者为准）
    └─ 注入 proxy_config 环境变量
-4. stdout/stderr → 统一日志（过滤 heartbeat 噪音）
+4. stdout/stderr → 统一日志（Rust 是 Bridge 进程唯一持久化 owner；过滤 heartbeat 噪音）
 5. Health check: GET /health × 30 次, 500ms 间隔, 最多 15s
   ↓
 Bridge HTTP Server 就绪
@@ -214,6 +214,8 @@ Bridge 的 pending queue 只做一项背压优化：相邻、同 stream、同 la
 
 turn 的 canonical final 由 Sidecar terminal outcome 产生，以 `finalPayloads` 原样穿过 Rust/Bridge。raw `block-end` 只表示 SDK 内容块边界，不参与拼接最终文本。
 
+统一日志同样服从 terminal ownership：插件 logger 的逐次 `onPartialReply` debug snapshot 不落盘；assistant 正文唯一由 Sidecar Runtime terminal 记录，pending dispatch 在 `complete/abort` 边界只把 `finalPayloads` 组合后记录一条无正文的 `canonical_final`（count / chars / hash），避免同一 IM 回复在 Runtime 与 Bridge 各留一份文本。partial 的数量、coalesced 数与 terminal timing 可继续作为无正文诊断字段。
+
 Bridge 的 `dispatcher_delivery_idle` 只表示 core dispatcher queue 已 drain；shim 在既有 `markDispatchIdle → onIdle` 边界记录 `plugin_delivery_settled`，它才覆盖插件私有的异步 renderer 收尾（飞书为 CardKit 终态更新）。该 observer 只测量现有 lifecycle promise，不读写平台状态，也不改变投递结果。
 
 一旦 Bridge 注册 pending dispatcher，Rust 就必须为该 request 产生且仅产生一个 terminal：进入模型的请求由 Sidecar outcome 完成；命令、白名单拒绝、群聊 activation 拒绝等 admission 分支用空 `complete` 或带提示的 `abort` 收口。协议请求不能落入磁盘 buffer，也不能只发送普通 `/send-text` 后悬空 dispatcher。
@@ -233,7 +235,8 @@ Rust `BridgeAdapter::send_file/send_photo` 会把 `{ filename, data }` POST 到 
 
 | 场景 | 检测方式 | 恢复策略 |
 |------|---------|---------|
-| Bridge 进程崩溃 | Health check 连续 3 次失败 | Rust 自动重启 Bridge |
+| Bridge 进程崩溃 | `/health/live` 连续 3 次失败（旧 Bridge 的 404 才回退 `/health`） | Rust 自动重启 Bridge |
+| 上游 Gateway 暂时不可用 | `/health/functional` 非 2xx / 请求失败 | 仅在 degraded/recovered 状态切换时记日志；Bridge 保持存活，不清理插件连接与 backoff 状态 |
 | 插件注册失败 | `register()` 抛异常 | 存入 `gatewayError`，`/status` 返回错误 |
 | Gateway 启动失败 | `startAccount()` 抛异常 | Bridge 保持存活，用户可从 UI 重试 |
 | SDK shim 被覆盖 | 启动时 version 检查 | 自动重新安装 shim |
@@ -332,7 +335,10 @@ git diff src/server/plugin-bridge/sdk-shim/  # 审查变更
 
 | 端点 | 方法 | 用途 |
 |------|------|------|
-| `/health` | GET | Rust 健康检查 |
+| `/health` | GET | `/health/live` 的 legacy alias |
+| `/health/live` | GET | Bridge 进程存活探针；运行期 watchdog 唯一重启依据 |
+| `/health/ready` | GET | 插件已加载且 gateway 已注册/启动 |
+| `/health/functional` | GET | 上游 gateway 最近仍能成功工作；只用于诊断，不触发进程重启 |
 | `/status` | GET | 就绪状态 + 错误信息 |
 | `/capabilities` | GET | 插件能力标记 |
 | `/send-text` | POST | 发送消息 |

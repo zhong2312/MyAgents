@@ -50,6 +50,7 @@ describe('analytics tracker active context', () => {
       is_cron: false,
     });
     track('workspace_open', {
+      surface: 'global_sidebar',
       agent_hash: null,
       runtime: 'builtin',
       entry_intent: 'open_workspace',
@@ -69,6 +70,7 @@ describe('analytics tracker active context', () => {
       params: expect.objectContaining({
         session_id: null,
         tab_id: 'tab-active',
+        surface: 'global_sidebar',
       }),
     }));
   });

@@ -16,15 +16,14 @@ export function classifySessionActivity(sessionState: SessionState): SessionActi
 /**
  * Pure guard for session-scoped SSE snapshots.
  *
- * A Tab can switch from session A to a pending session B while A's SSE
- * connection is still draining cached/live events. Snapshot-style events must
- * only update state when they came through the SSE connection currently bound
- * to this tab's session.
+ * A Tab can switch Session identity while an SSE stream is still draining
+ * cached/live events. The event's captured Session id is the business scope;
+ * the connection label is only a transport attachment hint and may legitimately
+ * lag during a same-Sidecar reset/migration handover.
  *
- * The one valid mismatch is a new-session birth: the SSE stream may still be
- * labelled with the tab's pending id while the SDK snapshot already carries
- * the newly minted concrete session id. Payload session ids make that upgrade
- * window explicit; every other connected/current mismatch is stale.
+ * Concrete current sessions therefore accept only matching stamped payloads,
+ * even if the stream was attached under the previous Session key. Pending and
+ * legacy unscoped paths retain the stricter attachment checks below.
  */
 export function shouldAcceptSessionScopedSseSnapshot(p: {
     connectedSessionId: string | null;
@@ -33,6 +32,14 @@ export function shouldAcceptSessionScopedSseSnapshot(p: {
     isConnectedSessionPending: boolean;
     isCurrentSessionPending: boolean;
 }): boolean {
+    if (
+        p.payloadSessionId &&
+        p.currentSessionId &&
+        !p.isCurrentSessionPending
+    ) {
+        return p.payloadSessionId === p.currentSessionId;
+    }
+
     const isBootstrappingCurrentSession =
         p.connectedSessionId === null &&
         p.currentSessionId !== null &&

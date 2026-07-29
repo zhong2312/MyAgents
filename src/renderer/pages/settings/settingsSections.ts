@@ -1,5 +1,6 @@
 export type SettingsSection =
   | 'general'
+  | 'proxy'
   | 'shortcuts'
   | 'providers'
   | 'mcp'
@@ -13,6 +14,7 @@ export type SettingsSection =
 
 export const VALID_SECTIONS: SettingsSection[] = [
   'general',
+  'proxy',
   'shortcuts',
   'providers',
   'mcp',

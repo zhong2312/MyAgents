@@ -15,6 +15,11 @@
  * Launcher tab subscribes to already-warm data — instant, zero fetch, no
  * spinner — which supersedes and removes `taskCenterCache.ts`.
  *
+ * The app-global sidebar is a passive projection over this same authority. It
+ * demand-loads only expanded workspace Session slices and never starts Task
+ * polling/listeners. Full Task Center/search reads take over through the same
+ * generation fence, then hand current workspace demand back on teardown.
+ *
  * Carried-over invariants from C-2:
  *  - tombstones: a deleted session must not resurrect (cross-instance) if a
  *    revalidate transiently re-returns it;
@@ -43,6 +48,7 @@ import { perfMark } from '@/utils/perfMark';
 import { RENDERER_PERF_PHASE } from '../../shared/perfTrace';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { isManagedScheduledJob } from '../../shared/managedScheduledJob';
+import { normalizeWorkspacePathIdentity } from '../../shared/workspacePath';
 import type { CronTask } from '@/types/cronTask';
 import type { Task } from '../../shared/types/task';
 
@@ -63,15 +69,21 @@ export type SessionTag =
 export interface TaskCenterData {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
-    protectedSchedulerSessionIds: ReadonlySet<string>;
+    deleteProtectedSessionIds: ReadonlySet<string>;
     tasks: Task[];
     sessionTagsMap: Map<string, SessionTag[]>;
     cronBotInfoMap: Map<string, { name: string; platform: string }>;
     isLoading: boolean;
     isSessionsLoading: boolean;
     error: string | null;
+    workspaceSessionStates: ReadonlyMap<string, WorkspaceSessionLoadState>;
     refresh: (scope?: TaskCenterRefreshScope, options?: TaskCenterRefreshOptions) => void;
     actions: TaskCenterActions;
+}
+
+export interface WorkspaceSessionLoadState {
+    isLoading: boolean;
+    error: string | null;
 }
 
 export type TaskCenterRefreshScope = 'all' | 'sessions' | 'cronTasks' | 'tasks' | 'backgroundSessions' | 'agentStatuses';
@@ -84,7 +96,10 @@ export interface TaskCenterRefreshOptions {
 }
 
 export interface TaskCenterActions {
-    deleteSession: (sessionId: string) => Promise<boolean>;
+    deleteSession: (
+        sessionId: string,
+        releasableTabIds?: readonly string[],
+    ) => ReturnType<typeof deleteSessionApi>;
     setSessionFavorite: (sessionId: string, favorite: boolean) => Promise<boolean>;
     refreshSessions: () => void;
     refreshCronTasks: () => void;
@@ -190,7 +205,7 @@ function filterManagedCronTasks(data: CronTask[]): CronTask[] {
 interface StoreState {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
-    protectedSchedulerSessionIds: string[];
+    deleteProtectedSessionIds: string[];
     tasks: Task[];
     backgroundSessionIds: string[];
     agentStatuses: AgentStatusMap;
@@ -200,12 +215,13 @@ interface StoreState {
     isLoading: boolean;
     isSessionsLoading: boolean;
     error: string | null;
+    workspaceSessionStates: ReadonlyMap<string, WorkspaceSessionLoadState>;
 }
 
 let state: StoreState = {
     sessions: [],
     cronTasks: [],
-    protectedSchedulerSessionIds: [],
+    deleteProtectedSessionIds: [],
     tasks: [],
     backgroundSessionIds: [],
     agentStatuses: {},
@@ -214,10 +230,19 @@ let state: StoreState = {
     isLoading: true,
     isSessionsLoading: true,
     error: null,
+    workspaceSessionStates: new Map(),
 };
 
 const listeners = new Set<() => void>();
+const passiveListeners = new Set<() => void>();
 const deletedSessionIds = new Set<string>(); // cross-instance tombstones
+const loadedWorkspaceSessionKeys = new Set<string>();
+const workspaceSessionRequests = new Map<string, Promise<void>>();
+const workspaceForceAfterRequest = new Set<string>();
+const demandedWorkspaceDirs = new Map<string, string>();
+let sessionDecorationRequest: Promise<void> | null = null;
+let onDemandGeneration = 0;
+let fullSessionAuthoritySeq: number | null = null;
 
 interface FavoriteMutation {
     desired: boolean;
@@ -295,13 +320,14 @@ function buildSnapshot(): TaskCenterData {
     return {
         sessions: state.sessions,
         cronTasks: state.cronTasks,
-        protectedSchedulerSessionIds: new Set(state.protectedSchedulerSessionIds),
+        deleteProtectedSessionIds: new Set(state.deleteProtectedSessionIds),
         tasks: state.tasks,
         sessionTagsMap: mapsCache.sessionTagsMap,
         cronBotInfoMap: mapsCache.cronBotInfoMap,
         isLoading: state.isLoading,
         isSessionsLoading: state.isSessionsLoading,
         error: state.error,
+        workspaceSessionStates: state.workspaceSessionStates,
         refresh,
         actions,
     };
@@ -311,6 +337,7 @@ function setState(patch: Partial<StoreState>): void {
     state = { ...state, ...patch };
     snapshot = buildSnapshot();
     for (const l of listeners) l();
+    for (const l of passiveListeners) l();
 }
 
 function patchSessionFavorite(sessionId: string, favorite: boolean): void {
@@ -319,6 +346,51 @@ function patchSessionFavorite(sessionId: string, favorite: boolean): void {
             session.id === sessionId ? { ...session, favorite } : session,
         ),
     });
+}
+
+function patchWorkspaceSessionState(key: string, patch: Partial<WorkspaceSessionLoadState>): void {
+    const current = state.workspaceSessionStates.get(key) ?? { isLoading: false, error: null };
+    const next = new Map(state.workspaceSessionStates);
+    next.set(key, { ...current, ...patch });
+    setState({ workspaceSessionStates: next });
+}
+
+/**
+ * Transfer Session/decorations request authority from passive workspace reads
+ * to a full Task Center/search read. Outstanding promises cannot be cancelled,
+ * so the shared generation makes their eventual writes no-ops.
+ */
+function beginFullSessionAuthority(requestSeq: number): void {
+    onDemandGeneration++;
+    workspaceSessionRequests.clear();
+    workspaceForceAfterRequest.clear();
+    sessionDecorationRequest = null;
+    fullSessionAuthoritySeq = requestSeq;
+    if (demandedWorkspaceDirs.size > 0) {
+        const next = new Map(state.workspaceSessionStates);
+        for (const key of demandedWorkspaceDirs.keys()) {
+            next.set(key, {
+                isLoading: !loadedWorkspaceSessionKeys.has(key),
+                error: null,
+            });
+        }
+        setState({ workspaceSessionStates: next });
+    }
+}
+
+function adoptFullSessionIndexForDemand(): void {
+    if (demandedWorkspaceDirs.size === 0) return;
+    const next = new Map(state.workspaceSessionStates);
+    for (const key of demandedWorkspaceDirs.keys()) {
+        loadedWorkspaceSessionKeys.add(key);
+        next.set(key, { isLoading: false, error: null });
+    }
+    setState({ workspaceSessionStates: next });
+}
+
+function resumeDemandedWorkspaceSessions(force = true): void {
+    if (started || fullSessionAuthoritySeq !== null || demandedWorkspaceDirs.size === 0) return;
+    ensureWorkspaceSessions([...demandedWorkspaceDirs.values()], force);
 }
 
 async function runFavoriteMutation(sessionId: string, previous: boolean, mutation: FavoriteMutation): Promise<boolean> {
@@ -336,7 +408,7 @@ async function runFavoriteMutation(sessionId: string, previous: boolean, mutatio
             lastPersisted = !!updated.favorite;
             patchSessionFavorite(sessionId, lastPersisted);
             if (mutation.desired === lastPersisted) {
-                refresh('sessions', { force: true, reason: 'set-session-favorite', silent: true });
+                if (started) refresh('sessions', { force: true, reason: 'set-session-favorite', silent: true });
                 return true;
             }
         }
@@ -356,6 +428,9 @@ async function runFavoriteMutation(sessionId: string, previous: boolean, mutatio
 async function fetchData(retryCount = 0, silent = false): Promise<void> {
     const requestSeq = startRequest('all');
     const gen = lifecycleGen;
+    beginFullSessionAuthority(requestSeq);
+    let retryScheduled = false;
+    let fullSucceeded = false;
     if (retryCount === 0 && !silent) {
         setState({
             isLoading: true,
@@ -381,6 +456,9 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
                 sessions: sortSessionsByLastActive(filterTombstoned(sessionsData, deletedSessionIds)),
                 isSessionsLoading: false,
             });
+            // Session availability should not wait for slower cron/config/tag
+            // decoration slices. Empty-but-loaded workspaces are complete too.
+            adoptFullSessionIndexForDemand();
             return sessionsData;
         });
         const agentStatusPromise = isTauriEnvironment()
@@ -394,7 +472,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
             getAllCronTasks().then(filterManagedCronTasks).catch(() => { ok.cron = false; return state.cronTasks; }),
             getUserSchedulerLifecycleSnapshot().catch(() => {
                 ok.lifecycle = false;
-                return { runningTaskCount: 0, protectedSessionIds: state.protectedSchedulerSessionIds };
+                return { runningTaskCount: 0, deleteProtectedSessionIds: state.deleteProtectedSessionIds };
             }),
             fetchTaskList().catch(() => { ok.tasks = false; return state.tasks; }),
             getBackgroundSessions().catch(() => { ok.bg = false; return state.backgroundSessionIds; }),
@@ -420,7 +498,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         if (isLatest('sessions', requestSeq)) patch.isSessionsLoading = false;
         if (ok.cron && isLatest('cronTasks', requestSeq)) patch.cronTasks = filterManagedCronTasks(cronData);
         if (ok.lifecycle && isLatest('cronTasks', requestSeq)) {
-            patch.protectedSchedulerSessionIds = schedulerLifecycle.protectedSessionIds;
+            patch.deleteProtectedSessionIds = schedulerLifecycle.deleteProtectedSessionIds;
         }
         if (ok.tasks && isLatest('tasks', requestSeq)) patch.tasks = newTasks;
         if (ok.bg && isLatest('backgroundSessions', requestSeq)) patch.backgroundSessionIds = bgSessions;
@@ -432,12 +510,14 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         patch.isLoading = false;
         if (!silent) patch.error = null;
         setState(patch);
+        fullSucceeded = true;
         lastFullFetchAt = Date.now();
         perfMark(RENDERER_PERF_PHASE.tabDataReady, { surface: 'taskcenter' });
     } catch (err) {
         if (gen !== lifecycleGen) return; // stopped mid-fetch → don't retry with zero subscribers
         console.error('[taskCenterStore] Failed to load data:', err);
         if (!silent && retryCount < MAX_AUTO_RETRIES) {
+            retryScheduled = true;
             retryTimer = setTimeout(() => { void fetchData(retryCount + 1, silent); }, RETRY_DELAY_MS);
         } else if (!silent) {
             setState({
@@ -448,15 +528,31 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         } else {
             setState({ isLoading: false, isSessionsLoading: false });
         }
+    } finally {
+        if (fullSessionAuthoritySeq === requestSeq && !retryScheduled) {
+            fullSessionAuthoritySeq = null;
+            if (!fullSucceeded) resumeDemandedWorkspaceSessions(true);
+        }
     }
 }
 
 function refreshSessionsNow(): void {
     const s = startRequest('sessions');
+    const gen = lifecycleGen;
+    beginFullSessionAuthority(s);
+    let succeeded = false;
     getSessions().then((data) => {
+        if (gen !== lifecycleGen || fullSessionAuthoritySeq !== s) return;
         if (!isLatest('sessions', s)) return;
         setState({ sessions: sortSessionsByLastActive(filterTombstoned(data, deletedSessionIds)) });
-    }).catch((err) => console.warn('[taskCenterStore] refresh sessions failed:', err));
+        adoptFullSessionIndexForDemand();
+        succeeded = true;
+    }).catch((err) => console.warn('[taskCenterStore] refresh sessions failed:', err))
+        .finally(() => {
+            if (fullSessionAuthoritySeq !== s) return;
+            fullSessionAuthoritySeq = null;
+            if (!succeeded) resumeDemandedWorkspaceSessions(true);
+        });
 }
 function refreshCronTasksNow(): void {
     const s = startRequest('cronTasks');
@@ -465,7 +561,7 @@ function refreshCronTasksNow(): void {
             if (isLatest('cronTasks', s)) {
                 setState({
                     cronTasks: filterManagedCronTasks(data),
-                    protectedSchedulerSessionIds: lifecycle.protectedSessionIds,
+                    deleteProtectedSessionIds: lifecycle.deleteProtectedSessionIds,
                 });
             }
         })
@@ -491,6 +587,115 @@ function refreshAgentStatusNow(): void {
         .catch((err) => console.warn('[taskCenterStore] load tauri api failed:', err));
 }
 
+async function refreshSessionDecorationsOnDemand(): Promise<void> {
+    if (sessionDecorationRequest) return sessionDecorationRequest;
+    const generation = onDemandGeneration;
+    sessionDecorationRequest = (async () => {
+        const [cronData, schedulerLifecycle, bgSessions, agentStatuses, appConfig] = await Promise.all([
+            getAllCronTasks().then(filterManagedCronTasks).catch(() => state.cronTasks),
+            getUserSchedulerLifecycleSnapshot().catch(() => ({
+                runningTaskCount: 0,
+                deleteProtectedSessionIds: state.deleteProtectedSessionIds,
+            })),
+            getBackgroundSessions().catch(() => state.backgroundSessionIds),
+            isTauriEnvironment()
+                ? import('@tauri-apps/api/core')
+                    .then(({ invoke }) => invoke<AgentStatusMap>('cmd_all_agents_status'))
+                    .catch(() => state.agentStatuses)
+                : Promise.resolve(state.agentStatuses),
+            loadAppConfig().catch(() => null),
+        ]);
+        if (generation !== onDemandGeneration) return;
+        setState({
+            cronTasks: cronData,
+            deleteProtectedSessionIds: schedulerLifecycle.deleteProtectedSessionIds,
+            backgroundSessionIds: bgSessions,
+            agentStatuses,
+            ...(appConfig ? {
+                agents: appConfig.agents ?? [],
+                floatingBallSessionId: resolveFloatingBallBoundSession(appConfig),
+            } : {}),
+        });
+    })().finally(() => {
+        if (generation === onDemandGeneration) sessionDecorationRequest = null;
+    });
+    return sessionDecorationRequest;
+}
+
+function mergeWorkspaceSessions(agentDir: string, sessions: SessionMetadata[]): void {
+    const targetKey = normalizeWorkspacePathIdentity(agentDir);
+    const retained = state.sessions.filter(
+        (session) => normalizeWorkspacePathIdentity(session.agentDir) !== targetKey,
+    );
+    setState({
+        sessions: sortSessionsByLastActive(filterTombstoned([...retained, ...sessions], deletedSessionIds)),
+    });
+}
+
+/**
+ * Demand-load only the Session metadata for workspaces whose trees are open.
+ * This writes into the same Task Center store authority without activating its
+ * full tasks/cron/session polling lifecycle.
+ */
+export function ensureWorkspaceSessions(agentDirs: readonly string[], force = false): void {
+    const unique = new Map<string, string>();
+    for (const agentDir of agentDirs) {
+        const key = normalizeWorkspacePathIdentity(agentDir);
+        if (key) unique.set(key, agentDir);
+    }
+    if (unique.size === 0) return;
+
+    for (const [key, agentDir] of unique) demandedWorkspaceDirs.set(key, agentDir);
+    if (started || fullSessionAuthoritySeq !== null) return;
+
+    void refreshSessionDecorationsOnDemand();
+    for (const [key, agentDir] of unique) {
+        if (!force && loadedWorkspaceSessionKeys.has(key)) continue;
+        if (workspaceSessionRequests.has(key)) {
+            if (force) workspaceForceAfterRequest.add(key);
+            continue;
+        }
+        patchWorkspaceSessionState(key, { isLoading: true, error: null });
+        const generation = onDemandGeneration;
+        const request = getSessions(agentDir)
+            .then((sessions) => {
+                if (generation !== onDemandGeneration) return;
+                loadedWorkspaceSessionKeys.add(key);
+                mergeWorkspaceSessions(agentDir, sessions);
+                patchWorkspaceSessionState(key, { isLoading: false, error: null });
+            })
+            .catch((err) => {
+                if (generation !== onDemandGeneration) return;
+                console.warn(`[taskCenterStore] workspace sessions failed (${agentDir}):`, err);
+                patchWorkspaceSessionState(key, {
+                    isLoading: false,
+                    error: taskText('tasks.loadFailedRetry'),
+                });
+            })
+            .finally(() => {
+                if (generation !== onDemandGeneration) return;
+                workspaceSessionRequests.delete(key);
+                if (workspaceForceAfterRequest.delete(key)) {
+                    const demandedDir = demandedWorkspaceDirs.get(key);
+                    if (demandedDir) ensureWorkspaceSessions([demandedDir], true);
+                }
+            });
+        workspaceSessionRequests.set(key, request);
+    }
+}
+
+/** Replace the App Shell's current expansion demand without starting full polling. */
+export function setSidebarWorkspaceSessionDemand(agentDirs: readonly string[]): void {
+    const next = new Map<string, string>();
+    for (const agentDir of agentDirs) {
+        const key = normalizeWorkspacePathIdentity(agentDir);
+        if (key) next.set(key, agentDir);
+    }
+    demandedWorkspaceDirs.clear();
+    for (const [key, agentDir] of next) demandedWorkspaceDirs.set(key, agentDir);
+    ensureWorkspaceSessions(agentDirs);
+}
+
 function debounced(key: string, fn: () => void, delayMs: number): void {
     if (refreshTimers[key]) clearTimeout(refreshTimers[key]!);
     refreshTimers[key] = setTimeout(() => { refreshTimers[key] = null; fn(); }, delayMs);
@@ -511,13 +716,18 @@ export const refresh = (scope: TaskCenterRefreshScope = 'all', options: TaskCent
 };
 
 export const actions: TaskCenterActions = {
-    deleteSession: async (sessionId: string) => {
-        const success = await deleteSessionApi(sessionId);
-        if (!success) return false;
+    deleteSession: async (sessionId: string, releasableTabIds = []) => {
+        const result = await deleteSessionApi(sessionId, releasableTabIds);
+        if (!result.deleted && result.reason !== 'not-found') {
+            if (result.reason === 'in-use') {
+                refresh('cronTasks', { force: true, reason: 'delete-session-in-use', silent: true });
+            }
+            return result;
+        }
         deletedSessionIds.add(sessionId); // tombstone — survives across all subscribers
         setState({ sessions: state.sessions.filter((s) => s.id !== sessionId) });
-        refresh('sessions', { force: true, reason: 'delete-session', silent: true });
-        return true;
+        if (started) refresh('sessions', { force: true, reason: 'delete-session', silent: true });
+        return result.deleted ? result : { deleted: true };
     },
     setSessionFavorite: async (sessionId: string, favorite: boolean) => {
         const existing = favoriteMutations.get(sessionId);
@@ -557,6 +767,7 @@ function registerTauriListeners(): void {
     void listenWithCleanup('session:background-complete', () => {
         debounced('background', refreshBackgroundNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
+        debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
     void listenWithCleanup('cron:task-stopped', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
     void listenWithCleanup('cron:task-started', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
@@ -577,11 +788,16 @@ function registerTauriListeners(): void {
     void listenWithCleanup('agent:status-changed', () => {
         debounced('agent', refreshAgentStatusNow, 1000);
         debounced('sessions', refreshSessionsNow, 1000);
+        debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
-    void listenWithCleanup('task:status-changed', () => debounced('tasks', refreshTasksNow, 500), ac.signal);
+    void listenWithCleanup('task:status-changed', () => {
+        debounced('tasks', refreshTasksNow, 500);
+        debounced('cron', refreshCronTasksNow, 100);
+    }, ac.signal);
     void listenWithCleanup('task:session-rebound', () => {
         debounced('tasks', refreshTasksNow, 100);
         debounced('sessions', refreshSessionsNow, 100);
+        debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
 
     cleanupTauriListeners = () => {
@@ -611,6 +827,11 @@ function maybeStop(): void {
     for (const k of Object.keys(refreshTimers)) {
         if (refreshTimers[k]) { clearTimeout(refreshTimers[k]!); refreshTimers[k] = null; }
     }
+    // Hand Session authority back to the always-mounted App Shell projection.
+    // Any full request from the just-unmounted Task Center is now stale by
+    // lifecycleGen; the demand generation below owns the next write.
+    fullSessionAuthoritySeq = null;
+    resumeDemandedWorkspaceSessions(true);
 }
 
 export function subscribe(listener: () => void): () => void {
@@ -622,15 +843,31 @@ export function subscribe(listener: () => void): () => void {
     };
 }
 
+/** Subscribe to the shared snapshot without starting the full Task Center lifecycle. */
+export function subscribePassive(listener: () => void): () => void {
+    passiveListeners.add(listener);
+    return () => {
+        passiveListeners.delete(listener);
+    };
+}
+
 export function getSnapshot(): TaskCenterData {
     return snapshot;
 }
 
 /** Test-only: reset all module state between cases. */
 export function __resetTaskCenterStoreForTest(): void {
-    state = { sessions: [], cronTasks: [], protectedSchedulerSessionIds: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null };
+    onDemandGeneration++;
+    state = { sessions: [], cronTasks: [], deleteProtectedSessionIds: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null, workspaceSessionStates: new Map() };
     listeners.clear();
+    passiveListeners.clear();
     deletedSessionIds.clear();
+    loadedWorkspaceSessionKeys.clear();
+    workspaceSessionRequests.clear();
+    workspaceForceAfterRequest.clear();
+    demandedWorkspaceDirs.clear();
+    sessionDecorationRequest = null;
+    fullSessionAuthoritySeq = null;
     favoriteMutations.clear();
     mapsCache = null;
     snapshot = buildSnapshot();

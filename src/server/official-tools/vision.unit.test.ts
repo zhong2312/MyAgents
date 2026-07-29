@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SdkChildLaunchCircuitOpenError } from '../utils/sdk-subprocess-diagnostics';
 
 const mocks = vi.hoisted(() => ({
   workspace: '',
@@ -100,6 +101,16 @@ function configureVisionProvider() {
 }
 
 describe('official vision tool', () => {
+  it('maps SDK launch circuit denial to an actionable service error', () => {
+    const response = visionErrorResponse(
+      new SdkChildLaunchCircuitOpenError('EPERM', 42_000, 'darwin'),
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.error).toContain('macOS');
+    expect(response.error).not.toContain('SDK_CHILD_LAUNCH_CIRCUIT_OPEN');
+  });
+
   beforeEach(() => {
     mocks.workspace = mkdtempSync(join(tmpdir(), 'myagents-vision-unit-'));
     mocks.capturedPromptText = '';

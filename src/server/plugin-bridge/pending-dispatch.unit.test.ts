@@ -100,6 +100,7 @@ describe('request-scoped pending dispatch transport', () => {
   });
 
   it('treats block boundaries as barriers and forwards canonical finals unchanged', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const events: Array<{ kind: string; payload?: Record<string, unknown> }> = [];
     const completion = registerPendingDispatch('request-1', 'chat-1', {
       onPartialReply: payload => { events.push({ kind: 'partial', payload }); },
@@ -111,20 +112,32 @@ describe('request-scoped pending dispatch transport', () => {
     enqueueBlockBoundary('stream-1');
     bindPendingStream('request-1', 'stream-2');
     enqueuePartial('stream-2', { text: 'second block' }, 'answer');
-    completePendingDispatch('request-1', [
-      { mediaUrl: 'attachment://one' },
-      { text: 'answer' },
-      { text: 'independent error', isError: true },
-    ]);
+    try {
+      completePendingDispatch('request-1', [
+        { mediaUrl: 'attachment://one' },
+        { text: 'answer' },
+        { text: 'independent error', isError: true },
+      ]);
 
-    await expect(completion).resolves.toEqual({ queuedFinal: 3, counts: { final: 3 } });
-    expect(events).toEqual([
-      { kind: 'partial', payload: { text: 'first block' } },
-      { kind: 'partial', payload: { text: 'second block' } },
-      { kind: 'final', payload: { mediaUrl: 'attachment://one' } },
-      { kind: 'final', payload: { text: 'answer' } },
-      { kind: 'final', payload: { text: 'independent error', isError: true } },
-    ]);
+      await expect(completion).resolves.toEqual({ queuedFinal: 3, counts: { final: 3 } });
+      expect(events).toEqual([
+        { kind: 'partial', payload: { text: 'first block' } },
+        { kind: 'partial', payload: { text: 'second block' } },
+        { kind: 'final', payload: { mediaUrl: 'attachment://one' } },
+        { kind: 'final', payload: { text: 'answer' } },
+        { kind: 'final', payload: { text: 'independent error', isError: true } },
+      ]);
+      const canonical = log.mock.calls
+        .map(args => args.join(' '))
+        .filter(message => message.includes('[pending-dispatch] canonical_final'));
+      expect(canonical).toHaveLength(1);
+      expect(canonical[0]).toMatch(/outcome=completed count=3 chars=24 hash=[a-f0-9]{12}$/);
+      expect(canonical[0]).not.toContain('answer');
+      expect(canonical.some(message => message.includes('first block'))).toBe(false);
+      expect(canonical.some(message => message.includes('second block'))).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('drops queued replaceable partials on abort, delivers the terminal payload, and resolves normally', async () => {

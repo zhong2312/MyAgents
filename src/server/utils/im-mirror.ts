@@ -1,6 +1,7 @@
 /**
- * im-mirror — fan out desktop-driven session activity to a bound IM channel
- * (PRD 0.2.14 Phase C).
+ * im-mirror — transport Session-owned user/assistant delivery to a bound IM
+ * channel. Turn owners decide admission; this module only projects payloads
+ * and performs the best-effort management API call.
  *
  * The function `mirrorIfChannelBound` posts to Rust's `/api/im/mirror`
  * management API endpoint. Rust looks up which IM channel currently binds
@@ -9,7 +10,7 @@
  * server returns `{ mirrored: false }` and we silently move on — that's
  * the common case for pure-desktop sessions.
  *
- * What we mirror (Q1·C / Q2 / Q5 lockdown):
+ * What the transport accepts:
  *   * user role: full text with `[From: 桌面端用户消息]` prefix, plus PNG/JPG
  *     attachments inline.
  *   * assistant role: AI text block (one call per content_block_stop). NO
@@ -28,6 +29,7 @@
 import { stripLeadingSystemReminder } from '../../shared/systemReminder';
 import type { ResolvedImagePayload } from '../runtimes/types';
 import { cancellableFetch } from './cancellation';
+import { isSilentAssistantChannelText } from '../session-core/channel-delivery';
 
 export interface MirrorImage {
     mimeType: string;
@@ -93,7 +95,7 @@ export function resolvedImagesToMirrorImages(
 const LOG = '[mirror]';
 
 /**
- * Fire-and-forget mirror call. Caller MUST NOT await this on the critical
+ * Best-effort bound-channel delivery. Caller MUST NOT await this on the critical
  * path of message persistence (we don't want IM latency to gate Sidecar
  * forward progress). The promise still resolves so call sites that want to
  * observe completion (tests) can opt in.
@@ -113,6 +115,7 @@ export async function mirrorIfChannelBound(payload: MirrorPayload): Promise<void
     const hasText = !!(payload.text && payload.text.trim().length > 0);
     const hasImages = !!(payload.images && payload.images.length > 0);
     if (!hasText && !hasImages) return;
+    if (payload.role === 'assistant' && payload.text && isSilentAssistantChannelText(payload.text)) return;
 
     const url = `http://127.0.0.1:${port}/api/im/mirror`;
     try {

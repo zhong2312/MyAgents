@@ -39,6 +39,16 @@ SDK 自 0.2.113+ 以 `bun build --compile` 的 native binary 形式分发（SDK 
 
 构建脚本按 `per-target` loop 从 `node_modules/@anthropic-ai/claude-agent-sdk-<triple>/` 拷贝并 codesign（macOS）。
 
+### SDK native child 确定性启动拒绝
+
+`EPERM`、`EACCES`、`ENOEXEC` 表示操作系统在 executable launch 边界拒绝 SDK native child；它们不同于 Provider、网络或模型错误。所有生产 builtin `query()` 必须经 `src/server/utils/sdk-child-launch-guard.ts::createGuardedSdkQuery()`：
+
+- Tauri `runtime_launch_guard.rs` 按 executable canonical path + metadata hash 持有应用级 circuit；一个 Sidecar 的拒绝对所有 Global / Session Sidecar 生效，external runtime 不进入该 circuit。
+- 首次拒绝后每分钟最多放行一个 half-open probe。probe 是 Rust-owned lease，即使 Sidecar 退出或 settlement 丢失也会自动到期。
+- admission epoch 随 settlement 返回；旧 `ready` 不得清除更新的 failure epoch。只有 `initializationResult()` 成功才算 control plane ready。
+- executable identity 在应用更新/重装后变化，旧 circuit 自动失效。普通 Provider / network failure 只释放本次 admission，不打开 circuit。
+- Desktop 与 IM 显示可操作的更新/重装提示；内部 epoch/circuit 标记不得泄漏到用户错误文本。
+
 ## 应用结构
 
 ```
@@ -123,6 +133,14 @@ skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_P
 4. **CLI 打包**：esbuild bundle `src/cli/myagents.ts` → `resources/cli/myagents.js`
 5. **SDK native binary**：按 target triple 拷贝 + codesign
 6. **Tauri 构建**：`npm run tauri:build -- --target <triple>`
+
+`src-tauri/resources/` 是当前构建的 staging，不是跨构建缓存。构建脚本必须在
+Tauri 读取前完整替换自己负责的目录：macOS release 在每个 target loop 内分别
+生成 Node、Sharp、TSX 和 Claude 资源，其中 Sharp / Claude 的 Mach-O 会显式
+校验为目标架构；
+`build_dev.sh` 则清空 production-only 的 Sharp / TSX，仅留下 bundler 占位符，
+同时按 host 架构重新生成 Node 与 Claude。目录存在或 `.dev-placeholder` 都不能
+代表目录内容属于当前构建。
 
 v0.2.0 之前这些步骤用 `bun build` + `bun install` — 完全切到 Node.js 生态后，lockfile 从 `bun.lock` 迁到 `package-lock.json`。
 

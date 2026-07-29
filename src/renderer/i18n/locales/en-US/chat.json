@@ -17,6 +17,7 @@
     "reasoningEffort": "Reasoning effort",
     "reasoningDefault": "Default",
     "reasoningRequirement": "Requires provider support; actual behavior depends on the provider.",
+    "customModelService": "Manage custom model services",
     "systemBusy": "A system task is running. Please wait.",
     "stopping": "Stopping...",
     "providerUnavailableDefault": "Set up a model provider in Settings first.",
@@ -305,7 +306,6 @@
       "agentSettings": "Agent settings",
       "searchPlaceholder": "Search files and contents...",
       "exitSearch": "Exit search",
-      "stats": "{{files}} files · {{folders}} folders",
       "loading": "Loading...",
       "copyCount": "Copy ({{count}})",
       "cutCount": "Cut ({{count}})",
@@ -396,7 +396,9 @@
       "tokenStats": "Session token usage",
       "contextUsage": "Context token details",
       "bindBot": "Bind chat bot",
-      "cronDeleteTooltip": "Stop or cancel the active Goal or scheduled task before deleting this chat",
+      "deleteBlockedByOwner": "This chat is still in use. Complete, archive, or delete its task or Goal; wait for background completion; or unbind the chat bot before deleting.",
+      "deleteTransitionInProgress": "This chat is opening or switching. Try deleting it again in a moment.",
+      "deleteActivityUnavailable": "Unable to confirm whether this chat is still running. It was kept; try again in a moment.",
       "delete": "Delete chat",
       "bound": "Bound",
       "switchToOther": "Switch to another",
@@ -425,11 +427,8 @@
       }
     },
     "history": {
-      "title": "History",
-      "workspaceTitle": "Chat history",
+      "title": "Workspace history",
       "loading": "Loading...",
-      "loadFailed": "Could not load. Click to retry.",
-      "refresh": "Refresh chat history",
       "empty": "No history yet",
       "current": "Current",
       "turnCount": "{{count}} turn(s)",
@@ -443,7 +442,9 @@
       "unfavorite": "Unfavorite",
       "exportMarkdown": "Export as Markdown",
       "viewStats": "View stats",
-      "cronDeleteTooltip": "Stop or cancel the active Goal or scheduled task before deleting this chat",
+      "deleteBlockedByOwner": "This chat is still in use. Complete, archive, or delete its task or Goal; wait for background completion; or unbind the chat bot before deleting.",
+      "deleteTransitionInProgress": "This chat is opening or switching. Try deleting it again in a moment.",
+      "deleteActivityUnavailable": "Unable to confirm whether this chat is still running. It was kept; try again in a moment.",
       "delete": "Delete chat",
       "deleteDialog": {
         "title": "Delete chat",
@@ -716,20 +717,6 @@
         "imMedia": "IM media",
         "imBridgeTools": "Plugin tools"
       },
-      "nativeTools": {
-        "novelWorkbench": "Novel workbench",
-        "readWorld": "Read world architecture",
-        "validateWorldProposal": "Validate world proposal",
-        "submitWorldProposal": "Submit world proposal",
-        "readNarrativeContext": "Read narrative context",
-        "readTimelineContext": "Read timeline context",
-        "readItems": "Read item library",
-        "validateItemProposal": "Validate item proposal",
-        "submitItemProposal": "Submit item proposal",
-        "readCharacters": "Read character library",
-        "validateCharacterProposal": "Validate character proposal",
-        "submitCharacterProposal": "Submit character proposal"
-      },
       "taskOp": {
         "loadingList": "Loading task list...",
         "emptyList": "No tasks yet",
@@ -755,6 +742,8 @@
         "toolCalls": "Called {{count}} tool(s)",
         "toolCallsShort": "{{count}} tool call(s)",
         "tokenUsage": "Used {{tokens}} tokens",
+        "resolvedModel": "Model {{model}}",
+        "modelsUsed": "Models {{models}}",
         "statusCompleted": "Completed",
         "statusError": "Error",
         "statusRunning": "Running",
@@ -763,6 +752,10 @@
         "backgroundRunning": "Background running",
         "traceTitle": "Call trace ({{count}})",
         "output": "Output"
+      },
+      "grep": {
+        "partialLines": "Showing lines {{start}}–{{end}} of {{total}}",
+        "partialFiles": "Showing files {{start}}–{{end}} of {{total}}"
       },
       "webSearch": {
         "initializing": "Initializing search...",
@@ -786,6 +779,8 @@
         "moreOutput": "More terminal content is hidden",
         "contentTruncated": "Terminal content is too long; showing the safe inline range",
         "duration": "Duration {{duration}}",
+        "backgroundedAfter": "Backgrounded after {{duration}}",
+        "backgroundCwdUnchanged": "Session working directory unchanged",
         "status": {
           "initializing": "Initializing",
           "running": "Running",
@@ -965,6 +960,9 @@
       "unknownError": "Unknown error",
       "rewindFailedWithError": "Time rewind failed: {{error}}",
       "rewindFailedRetry": "Time rewind failed. Please try again.",
+      "rewindPartialLinks": "Conversation rewound, but {{count}} linked file(s) were left unchanged for safety.",
+      "rewindFilesFailed": "Conversation rewound, but workspace files could not be restored and remain unchanged.",
+      "rewindFilesNotAttempted": "Conversation rewound without a usable file checkpoint; workspace files remain unchanged.",
       "retryFailedWithError": "Retry failed: {{error}}",
       "retryFailed": "Retry failed",
       "forkOpenFailed": "Failed to create branch: cannot open a new chat.",
@@ -1032,6 +1030,30 @@
         "model_error": {
           "label": "Model returned an error",
           "detail": "The model returned an error. Check logs for the specific cause."
+        },
+        "api_error": {
+          "label": "API request failed",
+          "detail": "The model provider API request failed. Check the network, credentials, provider status, or response details in logs."
+        },
+        "malformed_tool_use_exhausted": {
+          "label": "Tool-call formatting repeatedly failed",
+          "detail": "The model repeatedly produced invalid tool-call formatting, so the SDK stopped this turn. Retry or choose another model."
+        },
+        "budget_exhausted": {
+          "label": "Turn budget reached",
+          "detail": "This turn reached the SDK execution budget before completing. Continue the chat or narrow the task."
+        },
+        "structured_output_retry_exhausted": {
+          "label": "Structured output generation failed",
+          "detail": "The model still could not produce valid structured output after retries."
+        },
+        "tool_deferred_unavailable": {
+          "label": "Deferred tool unavailable",
+          "detail": "A previously deferred tool was unavailable when execution resumed, so the turn did not complete normally."
+        },
+        "turn_setup_failed": {
+          "label": "Turn setup failed",
+          "detail": "The SDK could not initialize this turn. Check configuration, the provider, and runtime logs."
         }
       }
     },

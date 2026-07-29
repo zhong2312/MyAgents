@@ -4,6 +4,8 @@ import { join } from 'path';
 import { query, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { buildClaudeSessionEnv, resolveClaudeCodeCli, type ProviderEnv } from './agent-session';
 import { ensureDirSync } from './utils/fs-utils';
+import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
+import { sdkSubprocessUserMessage } from './utils/sdk-subprocess-diagnostics';
 import { parseClaudeOAuthCallbackInput } from './subscription-auth-parser';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 
@@ -19,7 +21,7 @@ export interface SubscriptionLoginState {
 }
 
 type ClaudeAuthStartResult = {
-  // Verified against @anthropic-ai/claude-agent-sdk 0.3.201 runtime:
+  // Verified against @anthropic-ai/claude-agent-sdk 0.3.220 runtime:
   // Query.claudeAuthenticate(true) resolves to `{ manualUrl, automaticUrl }`.
   // The installed sdk.d.ts currently omits this control-plane method.
   manualUrl?: unknown;
@@ -61,7 +63,8 @@ export function getSubscriptionLoginState(): SubscriptionLoginState {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return sdkSubprocessUserMessage(error)
+    ?? (error instanceof Error ? error.message : String(error));
 }
 
 function isActiveStatus(status: SubscriptionLoginStatus): boolean {
@@ -227,7 +230,7 @@ export async function startSubscriptionLogin(): Promise<SubscriptionLoginState> 
     const cwd = join(homedir(), '.myagents', 'projects');
     ensureDirSync(cwd);
     const officialSubscriptionProvider: ProviderEnv = { providerId: SUBSCRIPTION_PROVIDER_ID };
-    const authQuery = query({
+    const authQuery = await createGuardedSdkQuery(cliPath, () => query({
       prompt: parkedPrompt(),
       options: {
         maxTurns: 1,
@@ -244,8 +247,9 @@ export async function startSubscriptionLogin(): Promise<SubscriptionLoginState> 
         includePartialMessages: false,
         persistSession: false,
         mcpServers: {},
+        tools: [],
       },
-    }) as ClaudeAuthQuery;
+    })) as ClaudeAuthQuery;
 
     const attempt: ActiveLoginAttempt = { query: authQuery, stopPrompt };
     activeAttempt = attempt;

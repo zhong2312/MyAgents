@@ -1,11 +1,9 @@
 /**
  * 回归不变量：聊天 assistant 正文容器 MUST 携带 `ai-message-content`。
  *
- * 背景（PRD 0.2.34 Part 2）：该 CSS 类自诞生起是死代码——index.css 定义了
- * 16px/1.7/0.01em 的 prose 上下文、DESIGN.md §10 也如此宣称，但 Message.tsx
- * 从未引用它，聊天正文实际靠 UA 默认 16px + 段落 leading-relaxed 渲染，
- * "宣称的 1.7 行高"从未上屏。两轮扫描 + 一轮 cross-review 都没发现，因为
- * 大家只验了"CSS 值与文档一致"，没验"选择器是否命中元素"。
+ * 背景（PRD 0.2.34 Part 2）：该 CSS 类曾长期是死代码，导致规范和实际渲染
+ * 分叉。本测试继续固定 host prose 接线；具体字号、行高、列表与 compact 节奏
+ * 现由内层 `.markdown-content` 单一拥有并由 Markdown.typography.test 覆盖。
  *
  * 本测试把接线本身固化为不变量：下次重构 Message.tsx 时该类再静默脱落，
  * 这里会先红。覆盖 string 与 ContentBlock[] 两个 assistant 分支（第三个
@@ -39,6 +37,7 @@ vi.mock('@/hooks/useWorkspaceFileService', () => ({
 vi.mock('@/analytics', () => ({ track: vi.fn() }));
 
 import Message from '@/components/Message';
+import { renderWithTheme } from '@/test/renderWithTheme';
 import type { Message as MessageType } from '@/types/chat';
 import {
     SPACE_ISSUE_CONTEXT_TAG,
@@ -85,6 +84,26 @@ describe('assistant 正文 prose 上下文接线（ai-message-content）', () =>
         const prose = container.querySelector('.ai-message-content');
         expect(prose).not.toBeNull();
         expect(prose!.textContent).toContain('块模式下的 AI 回复文本');
+    });
+});
+
+describe('chat Markdown fenced code horizontal scroll ownership', () => {
+    const longCode = [
+        '```text',
+        'a long unwrapped code line that must stay inside its own horizontal scroll surface',
+        '```',
+    ].join('\n');
+
+    it('keeps user/query code blocks horizontally scrollable', () => {
+        const { container } = renderWithTheme(<Message message={userMessage(longCode)} />);
+
+        expect(container.querySelector('.user-message-content pre')).toHaveClass('overflow-x-auto');
+    });
+
+    it('keeps assistant code blocks horizontally scrollable', () => {
+        const { container } = renderWithTheme(<Message message={assistantMessage(longCode)} />);
+
+        expect(container.querySelector('.ai-message-content pre')).toHaveClass('overflow-x-auto');
     });
 });
 

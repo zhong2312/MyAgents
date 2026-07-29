@@ -68,6 +68,7 @@ export type Source = 'desktop' | 'floating_ball' | 'cli' | 'cli_agent' | 'cron' 
  */
 export type Surface =
   | 'launcher_input'
+  | 'global_sidebar'
   | 'agent_card'
   | 'history_click'
   | 'new_chat_button'
@@ -123,6 +124,7 @@ export type AssistantEntry =
  * 让旧报表继续按 `history_open` 聚合。
  */
 export type HistoryEntrySource =
+  | 'global_sidebar'
   | 'launcher_recent'
   | 'launcher_overlay'
   | 'chat_dropdown'
@@ -270,6 +272,8 @@ export interface SessionNewParams {
  * 走 `history_open` 路径。
  */
 export interface WorkspaceOpenParams {
+  /** UI surface that initiated the workspace open. */
+  surface: Surface;
   /** SHA-256(local_pepper + ':' + agent_name) 前 16 字节 hex；pepper 永不上传，
    *  无绑定 agent 填 null。详见 `analytics/hash.ts`。 */
   agent_hash: string | null;

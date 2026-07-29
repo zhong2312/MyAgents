@@ -237,7 +237,7 @@ myagents cron list --workspace <abs>                    # 查看指定工作区�
 myagents cron add --name "..." --prompt "..." --schedule "..." --workspace <abs>
                                                         # --schedule "0 18 * * *" 标准 cron / --every 15 每 N 分钟
                                                         # --prompt-file <path> 也行（多行 / 含 backtick 用这个，1MB 上限）
-myagents cron update <taskId> [--name X --prompt X --schedule X --every N --model X --permissionMode X]
+myagents cron update <taskId> [--name X] [--prompt X | --prompt-file path] [--schedule X --every N --model X --permissionMode X]
                                                         # 改任意字段，没传的不动
 myagents cron start <taskId>                            # 启动已停止的任务
 myagents cron stop <taskId>                             # 停止运行中的任务

@@ -62,22 +62,22 @@ export function shouldAcceptLiveTurnEvent(p: {
  *
  * Reset-session birth has one extra transient: `/chat/reset` can synchronize
  * the renderer/Rust to the freshly minted backend id before the later
- * `chat:system-init` confirms it. During that window, cold-history replay must
- * still stay out of the empty new tab. A live echo may end the birth guard only
- * after its source session matches the Tab's current SSE/session identity.
+ * `chat:system-init` confirms it. During that window, only replay stamped for
+ * the current Session may cross the birth guard. This includes cold history
+ * from a physical reconnect; REST-restored sessions still reject cold history.
  */
 export function shouldSkipHistoryReplay(p: {
     isNewSession: boolean;
     isLoadingSession: boolean;
     isColdHistoryReplay: boolean;
-    isCurrentSessionLiveEcho?: boolean;
+    isCurrentSessionReplay?: boolean;
     isResetBirthPending?: boolean;
     restoredSessionId: string | null;
     currentSessionId: string | null;
 }): boolean {
     if (p.isLoadingSession) return true;
-    if (p.isNewSession && !p.isCurrentSessionLiveEcho) return true;
-    if (p.isColdHistoryReplay && p.isResetBirthPending) return true;
+    if (p.isNewSession && !p.isCurrentSessionReplay) return true;
+    if (p.isColdHistoryReplay && p.isResetBirthPending && !p.isCurrentSessionReplay) return true;
     return (
         p.isColdHistoryReplay &&
         isRestoredSession(p.restoredSessionId, p.currentSessionId)
@@ -144,4 +144,29 @@ export function updateMessageById<T extends { id: string }>(
     const next = [...messages];
     next[idx] = updated;
     return next;
+}
+
+/**
+ * Replace the authoritative recent tail from a live REST snapshot while
+ * preserving older pages that were already paginated into the viewport.
+ * If the two views do not overlap, fail closed to the snapshot instead of
+ * guessing an ordering relationship.
+ */
+export function reconcileLiveRecoveryHistory<T extends { id: string }>(
+    current: T[],
+    snapshot: T[],
+): { messages: T[]; hasOverlap: boolean } {
+    if (snapshot.length === 0) {
+        return { messages: [], hasOverlap: false };
+    }
+
+    const overlapIndex = current.findIndex(message => message.id === snapshot[0].id);
+    if (overlapIndex < 0) {
+        return { messages: snapshot, hasOverlap: false };
+    }
+
+    return {
+        messages: [...current.slice(0, overlapIndex), ...snapshot],
+        hasOverlap: true,
+    };
 }

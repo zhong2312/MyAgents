@@ -38,6 +38,7 @@ import {
   hasExternalQueuedTurnByOwner,
   hasExternalRuntimeProcess,
   isExternalSessionActive,
+  isExternalSessionBusy,
   isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
   popLastUserMessageForRetry,
@@ -61,6 +62,7 @@ import type {
   InjectedTurnRequest,
   InjectedTurnResult,
   SessionEngine,
+  SessionEngineReplayMessage,
 } from './types';
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
@@ -80,6 +82,14 @@ import {
 } from '../proxy-state';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
+import type { SessionMessage } from '../types/session';
+import { shrinkReplayContentForClient } from '../utils/session-message-preview';
+import {
+  DESKTOP_CHANNEL_DELIVERY,
+  IM_CHANNEL_DELIVERY,
+  SESSION_BOUND_CHANNEL_DELIVERY,
+  injectedTurnChannelDelivery,
+} from '../session-core/channel-delivery';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -134,6 +144,13 @@ async function stopExternalTarget(): Promise<boolean> {
 
 function getRuntimeSessionId(): string {
   return getExternalSessionId() || getCurrentBoundSessionId() || getSessionId();
+}
+
+function sessionMessageToReplayMessage(message: SessionMessage): SessionEngineReplayMessage {
+  return {
+    ...message,
+    content: shrinkReplayContentForClient(message.content),
+  };
 }
 
 function getRuntimeWorkspacePath(): string {
@@ -194,7 +211,7 @@ export function createExternalSessionEngine(): SessionEngine {
     kind: 'external',
 
     isBusy() {
-      return isExternalSessionActive();
+      return isExternalSessionBusy();
     },
 
     getRuntimeIdentity() {
@@ -211,7 +228,7 @@ export function createExternalSessionEngine(): SessionEngine {
     getLiveSessionState() {
       return {
         sessionState: getExternalSessionState(),
-        isBusy: isExternalSessionActive(),
+        isBusy: isExternalSessionBusy(),
       };
     },
 
@@ -223,12 +240,22 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     getStreamReplaySnapshot() {
+      // The bound identity is promoted before the lifecycle id during startup.
+      // Stream replay must follow the accepted Session, not the lagging runtime
+      // lifecycle, or pending→real reconnects query an empty snapshot.
+      const sessionId = getCurrentBoundSessionId() || getRuntimeSessionId();
+      const liveSnapshot = getExternalLiveSessionSnapshot(sessionId);
       const systemInitPayload = getExternalSystemInitPayload();
       return {
+        sessionId,
         initState: { ...getAgentState(), sessionState: getExternalSessionState() },
-        replayMessages: [],
+        replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
+        liveStreamingMessage: liveSnapshot?.liveStreamingMessage
+          ? sessionMessageToReplayMessage(liveSnapshot.liveStreamingMessage)
+          : null,
         systemInitPayload: systemInitPayload ?? undefined,
-        pendingInteractiveRequests: getExternalPendingInteractiveRequests(),
+        pendingInteractiveRequests: liveSnapshot?.pendingInteractiveRequests
+          ?? getExternalPendingInteractiveRequests(),
       };
     },
 
@@ -325,6 +352,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: DESKTOP_CHANNEL_DELIVERY,
         },
       );
       const dispatchAcceptance = observeExternalDispatch(sent.dispatch, request.queueId);
@@ -358,6 +386,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: IM_CHANNEL_DELIVERY,
         },
       );
       const dispatchAcceptance = observeExternalDispatch(
@@ -413,6 +442,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
       if (!result.queued) {
@@ -443,6 +473,7 @@ export function createExternalSessionEngine(): SessionEngine {
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,
           birthOrigin: request.birthOrigin,
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
     },
@@ -484,6 +515,7 @@ export function createExternalSessionEngine(): SessionEngine {
             }
           },
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
         },
       );
       const result = await waitForDeadline(sendPromise, deadline - Date.now());
@@ -744,6 +776,14 @@ export function createExternalSessionEngine(): SessionEngine {
 
     async updateMcpServers(servers) {
       return { success: true, servers: servers.map(s => s.id), skipped: 'external-runtime' };
+    },
+
+    async configureWorkbenchToolset() {
+      return {
+        success: false,
+        status: 400,
+        error: 'Controlled workbench tools currently require the builtin runtime.',
+      };
     },
 
     async updateAgents() {

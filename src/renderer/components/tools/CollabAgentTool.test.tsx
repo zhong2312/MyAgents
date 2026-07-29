@@ -120,6 +120,70 @@ describe('TaskTool renders a CollabAgent card with a nested trace', () => {
     expect(screen.getByText('后台运行中')).toBeInTheDocument();
   });
 
+  it('shows the SDK-resolved model path in the existing completed stats row', () => {
+    const { container } = render(<TaskTool tool={taskTool({
+      result: JSON.stringify({
+        status: 'completed',
+        content: [{ type: 'text', text: 'done' }],
+        resolvedModel: 'claude-sonnet-5',
+        modelsUsed: ['claude-haiku-4-5', 'claude-sonnet-5'],
+        totalDurationMs: 50,
+        totalTokens: 12,
+        totalToolUseCount: 1,
+      }),
+    })} />);
+
+    expect(container.querySelector('[data-task-models]')).toHaveTextContent(
+      '模型 claude-haiku-4-5 → claude-sonnet-5',
+    );
+  });
+
+  it('keeps the SDK-resolved final model last when it appeared earlier in the path', () => {
+    const { container } = render(<TaskTool tool={taskTool({
+      result: JSON.stringify({
+        status: 'completed',
+        content: [{ type: 'text', text: 'done' }],
+        resolvedModel: 'model-a',
+        modelsUsed: ['model-a', 'model-b', 'model-a'],
+      }),
+    })} />);
+
+    expect(container.querySelector('[data-task-models]')).toHaveTextContent(
+      '模型 model-b → model-a',
+    );
+  });
+
+  it('bounds malformed model paths and preserves only the authoritative final model', () => {
+    const { container } = render(<TaskTool tool={taskTool({
+      result: JSON.stringify({
+        status: 'completed',
+        content: [{ type: 'text', text: 'done' }],
+        resolvedModel: 'final-model',
+        modelsUsed: Array.from({ length: 20 }, (_, index) => `model-${index}`),
+      }),
+    })} />);
+
+    expect(container.querySelector('[data-task-models]')).toHaveTextContent('模型 final-model');
+    expect(container.querySelector('[data-task-models]')).not.toHaveTextContent('model-0');
+  });
+
+  it('shows the SDK-resolved model for an async-launched background task', () => {
+    const { container } = render(<TaskTool tool={taskTool({
+      result: JSON.stringify({
+        status: 'async_launched',
+        agentId: 'agent-1',
+        prompt: 'audit',
+        outputFile: '/tmp/agent-1.output',
+        resolvedModel: 'claude-sonnet-5',
+        modelsUsed: ['claude-sonnet-5'],
+      }),
+    })} />);
+
+    expect(container.querySelector('[data-task-models]')).toHaveTextContent(
+      '模型 claude-sonnet-5',
+    );
+  });
+
   it('exposes a reachable trace toggle that reveals the sub-agent tool calls', () => {
     const { container } = render(<TaskTool tool={collabTool({
       result: 'Tool: spawnAgent\nPrompt: henan worker', // non-JSON collab summary

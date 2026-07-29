@@ -36,6 +36,7 @@ describe('tabContentKind', () => {
     it('dispatches non-chat views by view field', () => {
         expect(tabContentKind(tab({ view: 'launcher' }), false)).toBe('launcher');
         expect(tabContentKind(tab({ view: 'settings' }), false)).toBe('settings');
+        expect(tabContentKind(tab({ view: 'capabilities' }), false)).toBe('capabilities');
         expect(tabContentKind(tab({ view: 'taskcenter' }), false)).toBe('taskcenter');
         expect(tabContentKind(tab({ view: 'space' }), false)).toBe('space');
         expect(tabContentKind(tab({ view: 'workbench', workbench: { workbenchId: 'io.myagents.test', route: 'home' } }), false)).toBe('workbench');

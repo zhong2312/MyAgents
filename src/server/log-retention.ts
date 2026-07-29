@@ -20,10 +20,10 @@
  *                  user with hundreds of sessions could fill disk silently.
  *                  Now bounded.
  *
- * Crash logs (`~/.myagents/logs/crash/*.log`) are managed in
- * `index.ts` with a count-based eviction (`CRASH_LOG_MAX_FILES = 20`)
- * and are intentionally NOT touched here — they're rare, valuable, and
- * each crash file is small.
+ * Crash artifacts (`~/.myagents/logs/crash/*.log`) have a separate policy
+ * owned by the always-present Tauri application process. Node Sidecars only
+ * own their individual lazy writer and single-file ceiling; they never race
+ * to evict files from the shared directory.
  *
  * Policy per source (each independent):
  *

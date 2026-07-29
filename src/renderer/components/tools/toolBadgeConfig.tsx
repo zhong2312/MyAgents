@@ -914,7 +914,23 @@ export function getToolExpandedLabel(tool: ToolUseSimple, t?: ToolChromeTranslat
  * falls back to deriving from `content` for older payloads or `output_mode: "content"`
  * results that omit the count fields.
  */
-function parseGrepStats(result: string | undefined): { matches: number; files: number } | null {
+export type GrepResultStats = {
+  matches: number;
+  files: number;
+  returnedLines?: number;
+  totalFiles?: number;
+  totalLines?: number;
+  appliedLimit?: number;
+  appliedOffset?: number;
+};
+
+function nonNegativeSafeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+export function parseGrepStats(result: string | undefined): GrepResultStats | null {
   if (!result) return null;
   const trimmed = result.trimStart();
   if (!trimmed.startsWith('{')) return null;
@@ -924,18 +940,44 @@ function parseGrepStats(result: string | undefined): { matches: number; files: n
       numLines?: number;
       numFiles?: number;
       content?: string;
+      totalFiles?: number;
+      totalLines?: number;
+      appliedLimit?: number;
+      appliedOffset?: number;
     };
     if (!parsed || typeof parsed !== 'object') return null;
-    const files = typeof parsed.numFiles === 'number' ? parsed.numFiles : 0;
+    const files = nonNegativeSafeInteger(parsed.numFiles) ?? 0;
     const sdkMatches =
-      typeof parsed.numMatches === 'number' ? parsed.numMatches
-      : typeof parsed.numLines === 'number' ? parsed.numLines
-      : null;
-    if (sdkMatches !== null) return { matches: sdkMatches, files };
+      nonNegativeSafeInteger(parsed.numMatches)
+      ?? nonNegativeSafeInteger(parsed.numLines)
+      ?? null;
+    const paginationValues = [
+      parsed.numFiles,
+      parsed.numLines,
+      parsed.totalFiles,
+      parsed.totalLines,
+      parsed.appliedLimit,
+      parsed.appliedOffset,
+    ];
+    const hasMalformedPagination = paginationValues.some(value => (
+      value !== undefined && nonNegativeSafeInteger(value) === undefined
+    ));
+    const pagination = hasMalformedPagination ? {} : {
+      returnedLines: nonNegativeSafeInteger(parsed.numLines),
+      totalFiles: nonNegativeSafeInteger(parsed.totalFiles),
+      totalLines: nonNegativeSafeInteger(parsed.totalLines),
+      appliedLimit: nonNegativeSafeInteger(parsed.appliedLimit),
+      appliedOffset: nonNegativeSafeInteger(parsed.appliedOffset),
+    };
+    if (sdkMatches !== null) return { matches: sdkMatches, files, ...pagination };
     // Fallback: derive from content (only valid for output_mode: 'content').
     const content = typeof parsed.content === 'string' ? parsed.content : '';
-    if (!content) return { matches: 0, files };
-    return { matches: content.split('\n').filter(Boolean).length, files };
+    if (!content) return { matches: 0, files, ...pagination };
+    return {
+      matches: content.split('\n').filter(Boolean).length,
+      files,
+      ...pagination,
+    };
   } catch { /* not JSON */ }
   return null;
 }

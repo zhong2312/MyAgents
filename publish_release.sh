@@ -23,6 +23,11 @@ ENV_FILE="${PROJECT_DIR}/.env"
 # 配置
 R2_BUCKET="myagents-releases"
 DOWNLOAD_BASE_URL="https://download.myagents.io"
+DMG_MOUNT=""
+
+cd "${PROJECT_DIR}"
+npm run verify:license
+LEGAL_FILES=$(node scripts/verify-license-contract.mjs --list-legal-files)
 
 # 架构名称辅助函数（避免重复计算逻辑）
 get_arch_suffix() {
@@ -118,6 +123,10 @@ EOF
 
 # 清理函数（确保敏感临时文件被删除）
 cleanup() {
+    if [ -n "$DMG_MOUNT" ] && mount | grep -q "on ${DMG_MOUNT} "; then
+        hdiutil detach "$DMG_MOUNT" -quiet 2>/dev/null || true
+    fi
+    [ -n "$DMG_MOUNT" ] && rmdir "$DMG_MOUNT" 2>/dev/null || true
     rm -f "$RCLONE_CONFIG" 2>/dev/null || true
     [ -n "$MANIFEST_DIR" ] && rm -rf "$MANIFEST_DIR" 2>/dev/null || true
 }
@@ -154,6 +163,92 @@ if [ -d "$INTEL_DIR" ]; then
     INTEL_TAR=$(find "${INTEL_DIR}/macos" -name "*.app.tar.gz" ! -name "*.sig" 2>/dev/null | head -1)
     INTEL_SIG=$(find "${INTEL_DIR}/macos" -name "*.app.tar.gz.sig" 2>/dev/null | head -1)
 fi
+
+assert_single_artifact() {
+    local directory="$1"
+    local pattern="$2"
+    local label="$3"
+    local count
+    count=$(find "$directory" -maxdepth 1 -type f -name "$pattern" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$count" -gt 1 ]; then
+        echo -e "${RED}错误: ${label} 存在 ${count} 份候选产物，拒绝选择不确定的旧文件${NC}"
+        exit 1
+    fi
+}
+
+validate_macos_artifacts() {
+    local bundle_dir="$1"
+    local dmg="$2"
+    local updater_tar="$3"
+    local app_path="${bundle_dir}/macos/MyAgents.app"
+    local embedded_version
+
+    assert_single_artifact "${bundle_dir}/dmg" "*.dmg" "DMG"
+    assert_single_artifact "${bundle_dir}/macos" "*.app.tar.gz" "updater tar"
+    assert_single_artifact "${bundle_dir}/macos" "*.app.tar.gz.sig" "updater signature"
+
+    if [ ! -d "$app_path" ]; then
+        echo -e "${RED}错误: 找不到用于验证发布身份的 ${app_path}${NC}"
+        exit 1
+    fi
+    embedded_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${app_path}/Contents/Info.plist")
+    if [ "$embedded_version" != "$VERSION" ]; then
+        echo -e "${RED}错误: App 内版本 ${embedded_version} 与待发布版本 ${VERSION} 不一致${NC}"
+        exit 1
+    fi
+    for legal_file in $LEGAL_FILES; do
+        if [ ! -f "${app_path}/Contents/Resources/legal/${legal_file}" ]; then
+            echo -e "${RED}错误: App 缺少 legal/${legal_file}${NC}"
+            exit 1
+        fi
+    done
+    if [ -n "$dmg" ]; then
+        if [[ "$(basename "$dmg")" != *"$VERSION"* ]]; then
+            echo -e "${RED}错误: DMG 文件名不包含待发布版本 ${VERSION}: $(basename "$dmg")${NC}"
+            exit 1
+        fi
+        DMG_MOUNT=$(mktemp -d)
+        hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$DMG_MOUNT" -quiet
+        local dmg_app="${DMG_MOUNT}/MyAgents.app"
+        if [ ! -d "$dmg_app" ]; then
+            echo -e "${RED}错误: DMG 内缺少 MyAgents.app${NC}"
+            exit 1
+        fi
+        local dmg_version
+        dmg_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${dmg_app}/Contents/Info.plist")
+        if [ "$dmg_version" != "$VERSION" ]; then
+            echo -e "${RED}错误: DMG 内版本 ${dmg_version} 与待发布版本 ${VERSION} 不一致${NC}"
+            exit 1
+        fi
+        for legal_file in $LEGAL_FILES; do
+            if [ ! -f "${dmg_app}/Contents/Resources/legal/${legal_file}" ]; then
+                echo -e "${RED}错误: DMG 内 App 缺少 legal/${legal_file}${NC}"
+                exit 1
+            fi
+        done
+        hdiutil detach "$DMG_MOUNT" -quiet
+        rmdir "$DMG_MOUNT"
+        DMG_MOUNT=""
+    fi
+    if [ -n "$updater_tar" ]; then
+        local updater_version
+        updater_version=$(tar -xOf "$updater_tar" "MyAgents.app/Contents/Info.plist" \
+            | plutil -extract CFBundleShortVersionString raw -o - -)
+        if [ "$updater_version" != "$VERSION" ]; then
+            echo -e "${RED}错误: updater 包内版本 ${updater_version} 与待发布版本 ${VERSION} 不一致${NC}"
+            exit 1
+        fi
+        for legal_file in $LEGAL_FILES; do
+            if ! tar -tzf "$updater_tar" | grep -q "/Contents/Resources/legal/${legal_file}$"; then
+                echo -e "${RED}错误: updater 包缺少 legal/${legal_file}${NC}"
+                exit 1
+            fi
+        done
+    fi
+}
+
+[ -d "$ARM_DIR" ] && validate_macos_artifacts "$ARM_DIR" "$ARM_DMG" "$ARM_TAR"
+[ -d "$INTEL_DIR" ] && validate_macos_artifacts "$INTEL_DIR" "$INTEL_DMG" "$INTEL_TAR"
 
 # 显示物料清单
 echo -e "  ${CYAN}┌─────────────────────────────────────────────────────────┐${NC}"

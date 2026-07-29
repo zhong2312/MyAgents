@@ -1,6 +1,7 @@
 // DispatchTaskDialog — Full-featured modal for creating a Task.
 // Two invocation paths, single surface:
-//   • `thought` present → "派发为任务": prefills name/body/tags from the thought,
+//   • `thought` present → "派发为任务": prefills name/body from the thought and
+//     preserves its existing tags as provenance without exposing extra form chrome,
 //     links `sourceThoughtId` so the thought card knows about the derived task.
 //   • `thought` absent  → "新建任务": starts from a blank slate. Used by the
 //     Launcher recent-tasks "+" button and the Task Center overlay header.
@@ -130,7 +131,6 @@ export function DispatchTaskDialog({
   const [taskMd, setTaskMd] = useState(thought?.content ?? '');
   const [verifyMd, setVerifyMd] = useState('');
   const [verifyExpanded, setVerifyExpanded] = useState(false);
-  const [tagsInput, setTagsInput] = useState(thought?.tags.join(', ') ?? '');
 
   // Schedule-specific state (mirrors cron TaskCreateModal fields)
   const [atDateTime, setAtDateTime] = useState(() =>
@@ -238,10 +238,6 @@ export function DispatchTaskDialog({
     if (errors.length > 0 || busy || !workspace) return;
     setBusy(true);
     try {
-      const tags = tagsInput
-        .split(/[,，]/)
-        .map((t) => t.trim())
-        .filter((t) => t.length > 0);
       // v0.1.69 — scheduling detail lives on dedicated Task fields so the
       // backend no longer has to deduce "when to fire" from
       // endConditions.deadline (which means "when to stop running").
@@ -288,7 +284,7 @@ export function DispatchTaskDialog({
         permissionMode: advPermissionMode,
         mcpEnabledServers: advMcpEnabledServers,
         sourceThoughtId: thought?.id,
-        tags,
+        tags: thought?.tags ?? [],
         notification,
       });
       // verify.md is a separate `write_doc` call. We do this before the
@@ -326,7 +322,6 @@ export function DispatchTaskDialog({
     errors.length,
     busy,
     workspace,
-    tagsInput,
     buildEndConditions,
     isScheduled,
     atDateTime,
@@ -340,7 +335,7 @@ export function DispatchTaskDialog({
     executionMode,
     isOnce,
     runMode,
-    thought?.id,
+    thought,
     notification,
     providers,
     toast,
@@ -477,19 +472,6 @@ export function DispatchTaskDialog({
               setMcpEnabledServers={setAdvMcpEnabledServers}
             />
 
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-[var(--ink-secondary)]">
-                {t('dispatch.tags')}
-                <span className="ml-1 font-normal text-[var(--ink-muted)]">{t('dispatch.tagsHint')}</span>
-              </label>
-              <input
-                type="text"
-                value={tagsInput}
-                onChange={(e) => setTagsInput(e.target.value)}
-                placeholder={t('dispatch.tagsPlaceholder')}
-                className={INPUT_CLS}
-              />
-            </div>
           </div>
 
           <div className={SECTION_DIVIDER} />

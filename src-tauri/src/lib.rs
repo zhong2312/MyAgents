@@ -7,6 +7,7 @@ pub mod browser;
 pub mod cli;
 mod commands;
 pub mod config_io;
+mod crash_artifact_retention;
 pub mod cron_task;
 pub mod device_identity;
 pub mod floating_ball;
@@ -35,6 +36,7 @@ pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
+pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
 pub mod session_metadata;
@@ -67,6 +69,11 @@ use tauri::{
     WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::MacosLauncher;
+
+#[cfg(target_os = "macos")]
+const MAIN_TRAFFIC_LIGHT_X: f64 = 15.0;
+#[cfg(target_os = "macos")]
+const MAIN_TRAFFIC_LIGHT_Y: f64 = 20.0;
 
 // Note: lib.rs is the crate root, so `#[macro_export]` macros (ulog_info!,
 // ulog_error!, etc.) are already in scope here without `use`. Importing them
@@ -788,6 +795,10 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
+            // Tauri is the only process guaranteed to exist for the whole app
+            // lifetime, so it owns shared crash-artifact cleanup. The first
+            // sweep handles upgrade backlog without requiring any Sidecar.
+            crash_artifact_retention::start_crash_artifact_retention_owner();
             tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
             space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);
@@ -802,10 +813,8 @@ pub fn run() {
             // Why programmatic instead of config: Tauri 2.x has no setter for
             // `on_navigation` on an already-created window. So
             // `tauri.conf.json` has `windows: []` and we build here. All other
-            // original config (size, decorations, traffic light position) is
-            // replicated below. `WebviewUrl::default()` resolves to the
-            // configured devUrl (dev) / `tauri://localhost` (prod)
-            // automatically — no manual dev/prod branching needed.
+            // original config is replicated below; macOS traffic-light layout
+            // is installed against the built NSWindow after this chain.
             //
             // Order: must be BEFORE macos_arrow_filter::install_arrow_key_filter
             // because the filter looks up the WryWebView ObjC class which is
@@ -903,45 +912,13 @@ pub fn run() {
                 }
             });
 
-            // Platform-specific window chrome — macOS uses the Overlay title
-            // bar style (custom titlebar + native traffic lights).
-            //
-            // We INTENTIONALLY do NOT call `.traffic_light_position(...)` on
-            // this builder. In Tauri 2.10.x `WebviewWindowBuilder::traffic_light_position`
-            // only mutates `webview_builder.webview_attributes` (consumed by
-            // `wry::WryWebViewParent::drawRect` override) — the parallel call
-            // on the underlying TAO `WindowBuilder` is missing. The original
-            // `tauri.conf.json` `trafficLightPosition` path went through BOTH
-            // (config → `tao::window.with_traffic_light_inset` + wry), and
-            // the TAO/window-level call is the one that reliably positions
-            // the NSWindow chrome buttons. Going through only wry's
-            // `drawRect` override is unreliable in our
-            // `Overlay + hidden_title + fullSizeContentView` setup —
-            // empirically the buttons stay at OS defaults and we get visible
-            // misalignment with the custom titlebar.
-            //
-            // Instead, after `.build()` below we apply the inset directly via
-            // AppKit (`macos_traffic_light::apply_inset`) — same algorithm
-            // as wry/tao internal `inset_traffic_lights`, called on the
-            // already-constructed NSWindow so we hit the chrome-positioning
-            // path that worked in v0.2.15 (where config set both).
-            //
-            // History: v0.2.15 main used `tauri.conf.json
-            // trafficLightPosition: {x:14, y:20}` — visually correct.
-            // c3ef3c7f migrated to programmatic builder w/ same values —
-            // visually broken. 0c74c61c misdiagnosed as a 4px miscenter and
-            // changed Y to 14 — still broken (different symptom, same root
-            // cause). This block removes the broken builder call; the
-            // post-build call below restores the v0.2.15 behaviour.
+            // Overlay chrome gets one continuous positioning owner after the
+            // NSWindow exists. Do not seed Wry's separate draw-time inset here.
             #[cfg(target_os = "macos")]
             let main_window_builder = main_window_builder
                 .hidden_title(true)
                 .title_bar_style(tauri::TitleBarStyle::Overlay);
 
-            // `main_window` is only consumed by the macOS-gated traffic-light
-            // inset block below. On other platforms the `.build()?` call
-            // remains for its side effect (constructing + showing the window);
-            // the binding itself is intentionally unused, hence the cfg_attr.
             let main_window = main_window_builder
                 .build()
                 .map_err(|e| {
@@ -949,22 +926,22 @@ pub fn run() {
                     e
                 })?;
 
-            // Restore v0.2.15 traffic light placement via direct AppKit (see
-            // long-form rationale above). x=14, y=20 are the historical
-            // values from `tauri.conf.json`. Failure here is non-fatal —
-            // window starts with default macOS button positions instead.
-            //
-            // The post-build `apply_inset` only fires once. `install_inset_persistence`
-            // adds a `WindowEvent::Resized` / `ScaleFactorChanged` listener
-            // that re-applies on layout transitions (fullscreen toggle,
-            // maximize, Retina display change). Without it the buttons jump
-            // back to macOS defaults on any layout event.
+            // x=15 gives the native cluster a conventional leading inset and
+            // leaves the same optical gap before the fixed toggle slot. The
+            // shared sidebar/titlebar surface means the cluster no longer has
+            // to stay geometrically centered inside the 64px rail. y=20 keeps
+            // the established vertical alignment. Install the owner before
+            // the first visible frame.
             #[cfg(target_os = "macos")]
-            {
-                if let Err(e) = macos_traffic_light::apply_inset(&main_window, 14.0, 20.0) {
-                    ulog_warn!("[main-window] traffic light inset failed: {}", e);
-                }
-                macos_traffic_light::install_inset_persistence(&main_window, 14.0, 20.0);
+            if let Err(e) = macos_traffic_light::install_native_layout_owner(
+                &main_window,
+                MAIN_TRAFFIC_LIGHT_X,
+                MAIN_TRAFFIC_LIGHT_Y,
+            ) {
+                ulog_warn!(
+                    "[main-window] Failed to install traffic-light layout owner: {}",
+                    e
+                );
             }
 
             let resolved_native_theme = preferred_native_theme

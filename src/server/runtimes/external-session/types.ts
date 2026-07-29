@@ -14,6 +14,7 @@ import type {
   TurnOwner,
   TurnTerminalObserver,
 } from '../../session-core/turn-queue';
+import type { TurnChannelDelivery } from '../../session-core/channel-delivery';
 
 export interface PersistToolResultMeta {
   exitCode?: number | null;
@@ -179,6 +180,7 @@ export interface ExternalSendContext {
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
+  channelDelivery: TurnChannelDelivery;
 }
 
 export interface ExternalSystemInitPayload {

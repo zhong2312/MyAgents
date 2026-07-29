@@ -333,8 +333,8 @@ curl -s https://download.myagents.io/update/darwin-aarch64.json | jq .
 ### 6. 提交代码和打 Tag
 
 ```bash
-git add -A
-git commit -m "chore: release v0.1.0"
+git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock CHANGELOG.md
+git commit -m "chore: release v0.1.0" -m "Prepare the tracked version metadata and changelog for the v0.1.0 release."
 git tag v0.1.0
 git push origin main --tags
 ```

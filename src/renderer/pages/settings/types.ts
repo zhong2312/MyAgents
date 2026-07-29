@@ -27,7 +27,9 @@ export interface ProviderVerifyError {
 }
 
 export interface SettingsProps {
+  mode?: 'settings' | 'capabilities';
   initialSection?: string;
+  navigationNonce?: number;
   initialMcpId?: string;
   initialOfficialToolId?: OfficialToolId;
   initialSelect?: CapabilityInitialSelect;

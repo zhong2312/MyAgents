@@ -99,7 +99,8 @@ export function useAttachmentHandling({
   onWorkspaceRefresh,
 }: UseAttachmentHandlingParams) {
   const { t } = useTranslation('chat');
-  const [images, setImages] = useState<ImageAttachment[]>([]);
+  const [images, setImageState] = useState<ImageAttachment[]>([]);
+  const imageCountRef = useRef(0);
   const mountedRef = useRef(true);
   const activeReadersRef = useRef<Set<FileReader>>(new Set());
   const workspaceIdentity = normalizeWorkspacePathIdentity(workspacePath ?? '');
@@ -142,6 +143,28 @@ export function useAttachmentHandling({
     return mountedRef.current && currentImportScopeRef.current === scope;
   }, []);
 
+  const setImages = useCallback<Dispatch<SetStateAction<ImageAttachment[]>>>((next) => {
+    if (typeof next === 'function') {
+      setImageState((prev) => {
+        const resolved = next(prev);
+        imageCountRef.current = resolved.length;
+        return resolved;
+      });
+      return;
+    }
+    imageCountRef.current = next.length;
+    setImageState(next);
+  }, []);
+
+  const reserveImageSlot = useCallback(() => {
+    if (imageCountRef.current >= MAX_IMAGES) {
+      toastRef.current.warning(t('input.attachments.maxImages', { count: MAX_IMAGES }));
+      return false;
+    }
+    imageCountRef.current += 1;
+    return true;
+  }, [t, toastRef]);
+
   const insertReferenceText = useCallback((paths: string[]): number => {
     const currentInput = inputValueRef.current;
     const cursorPos = Math.min(
@@ -176,12 +199,10 @@ export function useAttachmentHandling({
       forgetReader(reader);
       if (!isImportScopeCurrent(importScope)) return;
       const dataUrl = e.target?.result as string;
-      setImages((prev) => {
-        if (prev.length >= MAX_IMAGES) {
-          toastRef.current.warning(t('input.attachments.maxImages', { count: MAX_IMAGES }));
-          return prev;
-        }
-        return [...prev, {
+      if (!reserveImageSlot()) return;
+      setImageState((prev) => [
+        ...prev,
+        {
           id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           file,
           preview: dataUrl,
@@ -189,13 +210,13 @@ export function useAttachmentHandling({
           name: file.name,
           mimeType: file.type,
           sizeBytes: file.size,
-        }];
-      });
+        },
+      ]);
     };
     reader.onerror = () => forgetReader(reader);
     reader.onabort = () => forgetReader(reader);
     reader.readAsDataURL(file);
-  }, [forgetReader, isImportScopeCurrent, toastRef, t]);
+  }, [forgetReader, isImportScopeCurrent, reserveImageSlot, toastRef, t]);
 
   const addPreparedImageAttachment = useCallback((attachment: PreparedImageAttachment) => {
     const preview = resolveAttachmentUrl({ relativePath: attachment.relativePath });
@@ -203,12 +224,10 @@ export function useAttachmentHandling({
       toastRef.current.warning(t('input.attachments.previewFailed', { name: attachment.name }));
       return;
     }
-    setImages((prev) => {
-      if (prev.length >= MAX_IMAGES) {
-        toastRef.current.warning(t('input.attachments.maxImages', { count: MAX_IMAGES }));
-        return prev;
-      }
-      return [...prev, {
+    if (!reserveImageSlot()) return;
+    setImageState((prev) => [
+      ...prev,
+      {
         id: attachment.id,
         file: new File([], attachment.name, { type: attachment.mimeType }),
         preview,
@@ -217,13 +236,13 @@ export function useAttachmentHandling({
         mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
         relativePath: attachment.relativePath,
-      }];
-    });
-  }, [toastRef, t]);
+      },
+    ]);
+  }, [reserveImageSlot, toastRef, t]);
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => prev.filter((img) => img.id !== id));
-  }, []);
+  }, [setImages]);
 
   const fileToBase64 = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {

@@ -27,6 +27,171 @@ pub(super) fn legacy_bot_lifecycle_lock(bot_id: &str) -> Arc<Mutex<()>> {
     lifecycle_lock(format!("legacy:{bot_id}"))
 }
 
+fn agent_channel_ids_for_stop(
+    durable_ids: impl IntoIterator<Item = String>,
+    live_ids: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut channel_ids = durable_ids.into_iter().chain(live_ids).collect::<Vec<_>>();
+    channel_ids.sort();
+    channel_ids.dedup();
+    channel_ids
+}
+
+async fn lock_agent_channels_for_stop(
+    agent_id: &str,
+    channel_ids: &[String],
+) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+    let locks = channel_ids
+        .iter()
+        .map(|channel_id| agent_channel_lifecycle_lock(agent_id, channel_id))
+        .collect::<Vec<_>>();
+    let mut guards = Vec::with_capacity(locks.len());
+    for lock in locks {
+        guards.push(lock.lock_owned().await);
+    }
+    guards
+}
+
+/// Stop one exact Agent Channel runtime through its lifecycle owner.
+///
+/// The durable config writer must commit deletion/disablement first. Acquiring
+/// the same lifecycle lock as start/restart after that commit prevents the
+/// monitor from resurrecting a Channel from an older config snapshot.
+pub(crate) async fn stop_agent_channel_runtime(
+    app_handle: &AppHandle,
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+    agent_id: &str,
+    channel_id: &str,
+) -> Result<bool, String> {
+    let lifecycle_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+
+    let (bot_instance, heartbeat_handle) = {
+        let mut agents_guard = agent_state.lock().await;
+        if let Some(agent) = agents_guard.get_mut(agent_id) {
+            let instance = agent
+                .channels
+                .remove(channel_id)
+                .map(|channel| channel.bot_instance);
+            let heartbeat = if agent.channels.is_empty() {
+                agent.heartbeat_wake_tx = None;
+                agent.heartbeat_config = None;
+                agent.memory_evolution_config = None;
+                agent.heartbeat_handle.take()
+            } else {
+                None
+            };
+            (instance, heartbeat)
+        } else {
+            (None, None)
+        }
+    };
+
+    if let Some(handle) = heartbeat_handle {
+        handle.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    let stopped = bot_instance.is_some();
+    if let Some(instance) = bot_instance {
+        shutdown_bot_instance(instance, sidecar_manager, channel_id).await?;
+    } else {
+        ulog_debug!(
+            "[agent] Channel {} not found in agent {}",
+            channel_id,
+            agent_id
+        );
+    }
+
+    let _ = app_handle.emit(
+        "agent:status-changed",
+        json!({ "agentId": agent_id, "event": "channel_stopped" }),
+    );
+    Ok(stopped)
+}
+
+/// Stop all running channels and the heartbeat runner for one Agent runtime.
+/// Durable channel identities are included in the lock set so a start that is
+/// still creating (and therefore not yet published in `ManagedAgents`) cannot
+/// appear after disable/archive has reported success.
+pub(crate) async fn stop_agent_channels_runtime(
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+    agent_id: &str,
+) -> Result<usize, String> {
+    let durable_ids = super::config_store::read_agent_configs_from_disk()
+        .into_iter()
+        .find(|agent| agent.id == agent_id)
+        .map(|agent| {
+            agent
+                .channels
+                .into_iter()
+                .map(|channel| channel.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let live_ids = {
+        let guard = agent_state.lock().await;
+        guard
+            .get(agent_id)
+            .map(|agent| {
+                agent
+                    .config
+                    .channels
+                    .iter()
+                    .map(|channel| channel.id.clone())
+                    .chain(agent.channels.keys().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let channel_ids = agent_channel_ids_for_stop(durable_ids, live_ids);
+    let _lifecycle_guards = lock_agent_channels_for_stop(agent_id, &channel_ids).await;
+
+    let maybe_agent = {
+        let mut guard = agent_state.lock().await;
+        guard.remove(agent_id)
+    };
+
+    let Some(mut agent) = maybe_agent else {
+        return Ok(0);
+    };
+
+    if let Some(handle) = agent.heartbeat_handle.take() {
+        handle.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    let mut stopped = 0usize;
+    let mut failures = Vec::new();
+    for (channel_id, channel) in agent.channels {
+        if let Err(err) =
+            shutdown_bot_instance(channel.bot_instance, sidecar_manager, &channel_id).await
+        {
+            ulog_warn!(
+                "[im] Agent shutdown: channel {} of agent {} graceful shutdown failed: {}",
+                channel_id,
+                agent_id,
+                err
+            );
+            failures.push(format!("{}: {}", channel_id, err));
+        }
+        stopped += 1;
+    }
+
+    if failures.is_empty() {
+        Ok(stopped)
+    } else {
+        Err(format!(
+            "Failed to stop {} channel(s) for Agent {}: {}",
+            failures.len(),
+            agent_id,
+            failures.join("; ")
+        ))
+    }
+}
+
 fn filter_legacy_provider_command_providers(
     mut providers: Vec<serde_json::Value>,
 ) -> Vec<serde_json::Value> {
@@ -239,7 +404,7 @@ pub(super) async fn shutdown_bot_instance(
     // Kill bridge process and unregister sender (OpenClaw only)
     if let Some(bp_mutex) = instance.bridge_process {
         let mut bp = bp_mutex.lock().await;
-        bp.kill().await;
+        bp.kill().await?;
         bridge::unregister_bridge_sender(bot_id).await;
     }
 
@@ -252,7 +417,7 @@ pub(super) async fn shutdown_bot_instance(
     .await;
 
     // Release all Sidecar sessions
-    instance.router.lock().await.release_all(sidecar_manager);
+    instance.router.lock().await.release_all(sidecar_manager)?;
 
     // Final health state: mark as Stopped and persist
     instance.health.set_status(ImStatus::Stopped).await;
@@ -622,8 +787,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             ulog_error!("[im] {}", err_msg);
             // Clean up bridge process if it was spawned (OpenClaw only)
             if let Some(mut bp) = bridge_process_handle.take() {
-                bp.kill_sync();
-                bridge::unregister_bridge_sender(&bot_id).await;
+                match bp.kill_sync() {
+                    Ok(()) => bridge::unregister_bridge_sender(&bot_id).await,
+                    Err(kill_error) => {
+                        ulog_error!(
+                            "[im] Failed to terminate Plugin Bridge after verification error: {}",
+                            kill_error
+                        );
+                    }
+                }
             }
             // Also clear bot_username on the error path. Otherwise a historical
             // dirty value (pre-v0.2.10 bridge wrote `pluginName` like
@@ -2687,10 +2859,10 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     .lock()
                                     .await
                                     .metadata_birth_pending(&session_key);
-                                let buf_config_held_by_tab = task_manager
+                                let buf_config_held_by_frontend = task_manager
                                     .lock()
                                     .unwrap()
-                                    .session_has_tab_owner(&sidecar_session_id_initial);
+                                    .session_has_frontend_owner(&sidecar_session_id_initial);
                                 let result = enqueue_to_sidecar(
                                     &task_stream_client,
                                     port,
@@ -2705,7 +2877,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     task_bot_name.as_deref(),
                                     None,
                                     buf_metadata_birth_pending,
-                                    buf_config_held_by_tab,
+                                    buf_config_held_by_frontend,
                                     Some(&allowed_snapshot_buf),
                                     bridge_ctx_buf,
                                 )
@@ -2828,10 +3000,10 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             .lock()
                             .await
                             .metadata_birth_pending(&session_key);
-                        let config_held_by_tab = task_manager
+                        let config_held_by_frontend = task_manager
                             .lock()
                             .unwrap()
-                            .session_has_tab_owner(&sidecar_session_id_initial);
+                            .session_has_frontend_owner(&sidecar_session_id_initial);
                         let allowed_snapshot = task_allowed_users.read().await.clone();
                         let bridge_ctx = task_adapter.bridge_context();
                         match enqueue_to_sidecar(
@@ -2848,7 +3020,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             task_bot_name.as_deref(),
                             group_ctx.as_ref(),
                             metadata_birth_pending,
-                            config_held_by_tab,
+                            config_held_by_frontend,
                             Some(&allowed_snapshot),
                             bridge_ctx,
                         )
@@ -3427,6 +3599,48 @@ pub async fn get_all_bots_status(im_state: &ManagedImBots) -> HashMap<String, Im
 mod tests {
     use super::*;
     use crate::im::types::AskUserQuestionOption;
+
+    #[test]
+    fn all_stop_lock_set_unions_durable_and_live_channel_ids() {
+        let channel_ids = agent_channel_ids_for_stop(
+            vec!["starting".to_string(), "shared".to_string()],
+            vec!["running".to_string(), "shared".to_string()],
+        );
+
+        assert_eq!(channel_ids, vec!["running", "shared", "starting"]);
+    }
+
+    #[tokio::test]
+    async fn all_stop_waits_for_a_durable_channel_start_lock() {
+        let agent_id = "issue-496-start-race";
+        let channel_id = "starting-channel";
+        let start_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
+        let start_guard = start_lock.lock().await;
+        let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
+
+        let stop_waiter = tauri::async_runtime::spawn({
+            let channel_ids = vec![channel_id.to_string()];
+            async move {
+                let _guards = lock_agent_channels_for_stop(agent_id, &channel_ids).await;
+                let _ = acquired_tx.send(());
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            matches!(
+                acquired_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "all-stop must wait until an in-flight start publishes its runtime"
+        );
+
+        drop(start_guard);
+        tokio::time::timeout(Duration::from_secs(1), stop_waiter)
+            .await
+            .expect("all-stop should acquire the start lock after publication")
+            .expect("lock waiter should not panic");
+    }
 
     #[test]
     fn proxy_restart_admission_gate_counts_preexisting_enqueue_work() {

@@ -854,7 +854,7 @@ pub fn cmd_template_apply_preview<R: Runtime>(
     source_path: Option<String>,
     dest_path: String,
 ) -> Result<TemplateApplyPreview, String> {
-    // `validate_workspace_dest` forbids system/credential dirs (mirroring the
+    // `validate_workspace_dest` forbids system/credential paths (mirroring the
     // file-read/write commands' blacklist) so a misbehaving renderer can't redirect a
     // template apply at e.g. `~/.ssh` or `/etc`.
     let dst = validate_workspace_dest(&dest_path)?;
@@ -865,6 +865,7 @@ pub fn cmd_template_apply_preview<R: Runtime>(
     let mut add = Vec::new();
     for rel in files {
         let target = dst.join(&rel);
+        validate_template_target(&target)?;
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         if target.exists() {
             overwrite.push(rel_str);
@@ -894,7 +895,7 @@ pub fn cmd_apply_template_to_workspace<R: Runtime>(
         src,
         dst
     );
-    merge_dir_recursive(&src, &dst).map_err(|e| format!("Failed to apply template: {}", e))?;
+    merge_dir_recursive_validated(&src, &dst)?;
     Ok(())
 }
 
@@ -1044,7 +1045,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "42";
+const CLI_VERSION: &str = "43";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1207,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "38";
+const SYSTEM_SKILLS_VERSION: &str = "40";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1562,6 +1563,44 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Merge a renderer-selected template into a workspace while validating every
+/// final output path. Validating only the workspace root is insufficient when
+/// the blacklist contains an exact file such as Managed Codex `auth.json`.
+fn merge_dir_recursive_validated(src: &Path, dst: &Path) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Failed to get home dir")?;
+    merge_dir_recursive_validated_with_home(src, dst, &home)
+}
+
+fn merge_dir_recursive_validated_with_home(
+    src: &Path,
+    dst: &Path,
+    home: &Path,
+) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("Failed to create template directory: {e}"))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read template: {e}"))? {
+        let entry = entry.map_err(|e| format!("Failed to read template entry: {e}"))?;
+        let name = entry.file_name();
+        if name == ".git" || name == "node_modules" {
+            continue;
+        }
+        let ft = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect template entry: {e}"))?;
+        if ft.is_symlink() {
+            continue;
+        }
+        let target = dst.join(&name);
+        validate_template_target_with_home(&target, home)?;
+        if ft.is_dir() {
+            merge_dir_recursive_validated_with_home(&entry.path(), &target, home)?;
+        } else {
+            fs::copy(entry.path(), &target)
+                .map_err(|e| format!("Failed to copy template file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod system_skills_tests {
     use super::{
@@ -1569,6 +1608,7 @@ mod system_skills_tests {
         is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
         SystemSkillSync, ADMIN_AGENT_VERSION, CLI_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
+    use crate::workspace_files::skills_config::REQUIRED_SYSTEM_SKILLS;
     use std::fs;
 
     // Issue #321: a Windows install shipped some system-skill source dirs
@@ -1589,9 +1629,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v37_updates_goal_cli_skill_and_preserves_v36_contracts() {
-        assert_eq!(CLI_VERSION, "42");
-        assert_eq!(SYSTEM_SKILLS_VERSION, "38");
+    fn v40_updates_system_skill_metadata_and_preserves_existing_contracts() {
+        assert_eq!(CLI_VERSION, "43");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "40");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1603,8 +1643,12 @@ mod system_skills_tests {
         assert!(bundled.contains("myagents goal create --objective-file goal-objective.txt"));
         assert!(bundled.contains("workspace 或系统 temp 均可"));
         assert!(bundled.contains("--max-executions <正整数>"));
+        assert!(bundled.contains(
+            "myagents cron update <taskId> [--name X] [--prompt X | --prompt-file path]"
+        ));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
+        assert!(memory_update.contains("author: MyAgents"));
         assert!(memory_update
             .contains("仅当系统或用户明确指定完整名称 `myagents-memory-update` 时使用"));
         assert!(memory_update.contains("不要根据任务语义或相似表述自行触发"));
@@ -1619,10 +1663,28 @@ mod system_skills_tests {
 
         let product_docs = include_str!("../../bundled-skills/myagents-docs/SKILL.md");
         assert!(product_docs.contains("name: myagents-docs"));
+        assert!(product_docs.contains("author: MyAgents"));
         assert!(product_docs.contains("它面向软件使用而非源码开发"));
         assert!(product_docs.contains("随后加载 `/myagents-cli`"));
         assert!(product_docs.contains("在内置小助理里加载 `/support`"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-docs"));
+
+        for content in [
+            include_str!("../../bundled-skills/myagents-memory-gardener/SKILL.md"),
+            include_str!("../../bundled-skills/myagents-memory-molt/SKILL.md"),
+        ] {
+            assert!(content.contains("author: MyAgents"));
+        }
+    }
+
+    #[test]
+    fn required_system_skills_are_versioned_bundle_skills() {
+        for name in REQUIRED_SYSTEM_SKILLS {
+            assert!(
+                SYSTEM_SKILLS.contains(name),
+                "required system skill {name} must use the versioned bundle sync path"
+            );
+        }
     }
 
     #[test]
@@ -1907,14 +1969,14 @@ const FORBIDDEN_SYSTEM_DIRS: &[&str] = &[
     "/private/etc",
     "/private/var",
 ];
-const CREDENTIAL_SUBDIRS: &[&str] = &[
+const CREDENTIAL_PATHS: &[&str] = &[
     ".ssh",
     ".gnupg",
     ".aws",
     ".kube",
     ".docker",
     ".config/op",
-    ".myagents/codex",
+    ".myagents/codex/auth.json",
     ".myagents/credentials",
 ];
 #[cfg(target_os = "macos")]
@@ -1928,11 +1990,11 @@ const MAC_SENSITIVE_SUBDIRS: &[&str] = &[
 #[cfg(windows)]
 const WIN_SENSITIVE_SUBDIRS: &[&str] = &["AppData/Local/Microsoft"];
 
-/// Validate that a file path does not target sensitive system or credential directories.
+/// Validate that a file path does not target sensitive system or credential paths.
 /// Resolves `..` components to prevent path traversal. Mirrors `isSafeReadPath()` in Bun.
 ///
 /// `pub(crate)` so workspace_files::path_safety can reuse the exact same blacklist —
-/// duplicating it would be a pit-of-failure (two places to update for new credential dirs).
+/// duplicating it would be a pit-of-failure (two places to update for new credential paths).
 #[cfg(any(windows, test))]
 fn normalize_windows_security_path(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
@@ -1983,9 +2045,7 @@ fn path_starts_with_identity(path: &Path, root: &Path) -> bool {
     }
 }
 
-fn reject_blacklisted_path(resolved: &Path) -> Result<(), String> {
-    let home = dirs::home_dir().unwrap_or_default();
-
+fn reject_blacklisted_path_with_home(resolved: &Path, home: &Path) -> Result<(), String> {
     for dir in FORBIDDEN_SYSTEM_DIRS {
         if path_starts_with_identity(resolved, Path::new(dir)) {
             return Err("Access denied: protected system directory".to_string());
@@ -1993,9 +2053,9 @@ fn reject_blacklisted_path(resolved: &Path) -> Result<(), String> {
     }
 
     if !home.as_os_str().is_empty() {
-        for name in CREDENTIAL_SUBDIRS {
+        for name in CREDENTIAL_PATHS {
             if path_starts_with_identity(resolved, &home.join(name)) {
-                return Err("Access denied: protected credential directory".to_string());
+                return Err("Access denied: protected credential path".to_string());
             }
         }
 
@@ -2034,7 +2094,7 @@ fn resolve_nearest_existing_path_identity(path: &Path) -> Option<PathBuf> {
     }
 }
 
-pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
+fn validate_file_path_with_home(raw_path: &str, home: &Path) -> Result<PathBuf, String> {
     let path = normalize_security_path(PathBuf::from(raw_path));
 
     if !path.is_absolute() {
@@ -2053,18 +2113,38 @@ pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
         }
     }
 
-    reject_blacklisted_path(&resolved)?;
+    reject_blacklisted_path_with_home(&resolved, home)?;
     if let Some(real_identity) = resolve_nearest_existing_path_identity(&resolved) {
-        reject_blacklisted_path(&real_identity)?;
+        reject_blacklisted_path_with_home(&real_identity, home)?;
     }
 
     Ok(resolved)
 }
 
+pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
+    let home = dirs::home_dir().unwrap_or_default();
+    validate_file_path_with_home(raw_path, &home)
+}
+
+fn validate_template_target_with_home(target: &Path, home: &Path) -> Result<(), String> {
+    validate_file_path_with_home(&target.to_string_lossy(), home)
+        .map(|_| ())
+        .map_err(|e| format!("Template target rejected: {e}"))
+}
+
+fn validate_template_target(target: &Path) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Failed to get home dir")?;
+    validate_template_target_with_home(target, &home)
+}
+
 #[cfg(test)]
 mod path_safety_crosscheck_tests {
-    use super::{normalize_windows_path_identity, CREDENTIAL_SUBDIRS, FORBIDDEN_SYSTEM_DIRS};
+    use super::{
+        merge_dir_recursive_validated_with_home, normalize_windows_path_identity,
+        validate_file_path_with_home, CREDENTIAL_PATHS, FORBIDDEN_SYSTEM_DIRS,
+    };
     use serde_json::Value;
+    use std::{fs, path::Path};
 
     // Rust side of the Node↔Rust blacklist cross-check (PRD 0.2.15 §7.2). Asserts
     // the lists THIS platform compiled equal the shared fixture; the Node test
@@ -2084,9 +2164,56 @@ mod path_safety_crosscheck_tests {
     }
 
     #[test]
-    fn credential_subdirs_match_fixture() {
-        let owned: Vec<String> = CREDENTIAL_SUBDIRS.iter().map(|s| s.to_string()).collect();
-        assert_eq!(owned, arr(&fixture(), "credentialSubdirs"));
+    fn credential_paths_match_fixture() {
+        let owned: Vec<String> = CREDENTIAL_PATHS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(owned, arr(&fixture(), "credentialPaths"));
+    }
+
+    #[test]
+    fn managed_codex_blacklist_protects_only_auth_file() {
+        let home = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/controlled-test-home");
+        assert!(validate_file_path_with_home(
+            &home.join(".myagents/codex/auth.json").to_string_lossy(),
+            &home,
+        )
+        .is_err());
+        assert!(validate_file_path_with_home(
+            &home
+                .join(".myagents/codex/generated_images/thread/call.png")
+                .to_string_lossy(),
+            &home,
+        )
+        .is_ok());
+        assert!(validate_file_path_with_home(
+            &home.join(".myagents/codex/config.toml").to_string_lossy(),
+            &home,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn template_merge_cannot_overwrite_managed_codex_auth() {
+        let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("managed-codex-template-test-")
+            .tempdir_in(target_dir)
+            .unwrap();
+        let home = tmp.path().join("home");
+        let src = tmp.path().join("template");
+        let dst = home.join(".myagents/codex");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("auth.json"), "replacement").unwrap();
+        fs::write(dst.join("auth.json"), "original").unwrap();
+
+        let result = merge_dir_recursive_validated_with_home(&src, &dst, &home);
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(dst.join("auth.json")).unwrap(),
+            "original"
+        );
     }
 
     #[test]

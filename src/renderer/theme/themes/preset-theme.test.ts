@@ -62,16 +62,16 @@ describe('preset Theme construction', () => {
     expect(definition.schemes.dark.widget.variables['--widget-accent']).toBeTruthy();
   });
 
-  it('pairs Prism base text with the dark code surface instead of page ink', () => {
+  it('pairs light Prism colors with the Theme-owned light code surface', () => {
     const definition = createPresetTheme(absolutelyThemeManifest);
     const prism = definition.schemes.light.prism;
-    expect(prism['pre[class*="language-"]']?.color).toBe('#f9f9f7');
-    expect(prism['code[class*="language-"]']?.color).toBe('#f9f9f7');
+    expect(prism['pre[class*="language-"]']?.color).toBe('#46453f');
+    expect(prism['code[class*="language-"]']?.color).toBe('#46453f');
 
     for (const [selector, style] of Object.entries(prism)) {
       if (!style.color?.startsWith('#')) continue;
       expect(
-        contrast(style.color, '#2d2d2b'),
+        contrast(style.color, '#f3f1ed'),
         `Claude light Prism ${selector}`,
       ).toBeGreaterThanOrEqual(4.5);
     }

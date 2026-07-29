@@ -3,6 +3,7 @@ name: myagents-memory-gardener
 description: >
   仅当系统或用户明确指定完整名称 `myagents-memory-gardener` 时使用；
   不要根据任务语义或相似表述自行触发。
+author: MyAgents
 ---
 
 # MyAgents Memory Gardener

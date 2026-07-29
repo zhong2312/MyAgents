@@ -623,6 +623,12 @@ describe('ThemeRegistry', () => {
     ['missing Token', (definition: ThemeDefinition) => {
       definition.stylesheetText = definition.stylesheetText.replace(/\s*--ink\s*:[^;]+;/, '');
     }],
+    ['missing product wordmark', (definition: ThemeDefinition) => {
+      definition.stylesheetText = definition.stylesheetText.replace(
+        /\nhtml\[data-theme-id='[^']+'\] \.theme-product-wordmark \{[^}]*\}\n/,
+        '\n',
+      );
+    }],
     ['missing scheme', (definition: ThemeDefinition) => {
       delete (definition.schemes as Partial<ThemeDefinition['schemes']>).dark;
     }],

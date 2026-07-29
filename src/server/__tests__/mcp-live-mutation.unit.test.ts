@@ -5,6 +5,7 @@ import {
   ensureSdkMcpInSync,
   initializeAgent,
 } from '../agent-session';
+import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 import {
   getQueryMcpMutation,
   getQueryMcpPrewarmOwner,
@@ -117,6 +118,7 @@ describe('live Query MCP mutation ownership', () => {
       messageText: 'run task',
       wasQueued: false,
       resolve: () => undefined,
+      channelDelivery: NO_CHANNEL_DELIVERY,
     });
 
     await expect(ensureSdkMcpInSync()).resolves.toBe(false);
@@ -136,6 +138,7 @@ describe('live Query MCP mutation ownership', () => {
       wasQueued: false,
       resolve: () => undefined,
       turnOwner: { kind: 'task', id: 'task-1' },
+      channelDelivery: NO_CHANNEL_DELIVERY,
     };
     beginPromotedItem(item);
     const promotedCancellation = getPromotedItemCancellation(item.id);

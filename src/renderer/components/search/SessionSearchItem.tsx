@@ -17,8 +17,9 @@ interface SessionSearchItemProps {
     hit: SessionSearchHit;
     session?: SessionMetadata; // The full session metadata if available
     project?: Project;
-    isCronProtected: boolean;
+    deleteProtected: boolean;
     onClick: () => void;
+    onContextMenu: (e: React.MouseEvent<HTMLDivElement>) => void;
     onShowStats: (e: React.MouseEvent) => void;
     onDelete: (e: React.MouseEvent) => void;
 }
@@ -27,8 +28,9 @@ export default memo(function SessionSearchItem({
     hit,
     session,
     project,
-    isCronProtected,
+    deleteProtected,
     onClick,
+    onContextMenu,
     onShowStats,
     onDelete,
 }: SessionSearchItemProps) {
@@ -44,7 +46,12 @@ export default memo(function SessionSearchItem({
         <div
             role="button"
             onClick={onClick}
-            className="group relative flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--hover-bg)]"
+            onMouseDown={(event) => {
+                if (event.button === 2) event.preventDefault();
+            }}
+            onContextMenu={onContextMenu}
+            className="group relative flex w-full cursor-pointer select-none items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--hover-bg)]"
+            data-history-search-session-row
         >
             {/* Left column: Time — fixed width so content column is consistently left-aligned */}
             <div className="mt-1 flex w-16 shrink-0 items-center gap-1 whitespace-nowrap text-xs text-[var(--ink-muted)]/50">
@@ -101,23 +108,13 @@ export default memo(function SessionSearchItem({
                         >
                             <BarChart2 className="h-3.5 w-3.5" />
                         </button>
-                        {isCronProtected ? (
-                            <button
-                                disabled
-                                title={t('historyOverlay.deleteBlocked')}
-                                className="flex h-7 w-7 cursor-not-allowed items-center justify-center rounded-md text-[var(--ink-muted)] opacity-40"
-                            >
-                                <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                        ) : (
-                            <button
-                                onClick={onDelete}
-                                title={t('historyOverlay.delete')}
-                                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
-                            >
-                                <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                        )}
+                        <button
+                            onClick={onDelete}
+                            title={deleteProtected ? t('historyOverlay.deleteBlocked') : t('historyOverlay.delete')}
+                            className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                     </div>
                 </div>
             </div>

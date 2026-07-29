@@ -3,7 +3,7 @@
  * Used in the Chat sidebar (DirectoryPanel) to show Sub-Agents, Skills, Commands
  *
  * Interactions:
- * - Default expanded, click header to toggle
+ * - Default collapsed, click header to toggle
  * - Hover: tooltip with scope + description
  * - Click Skills/Commands: insert /name into chat input
  * - Click Agent: toast hint (AI decides when to use)
@@ -124,7 +124,7 @@ export default memo(function AgentCapabilitiesPanel({
     heightRatio = 0.4,
 }: AgentCapabilitiesPanelProps) {
     const { t } = useTranslation('settings');
-    const [isExpanded, setIsExpanded] = useState(true); // Default expanded
+    const [isExpanded, setIsExpanded] = useState(false);
     const toast = useToast();
     const toastRef = useRef(toast);
     useEffect(() => { toastRef.current = toast; }, [toast]);
@@ -268,6 +268,7 @@ export default memo(function AgentCapabilitiesPanel({
             <div data-capabilities-panel className="flex shrink-0 flex-col">
                 <button
                     onClick={toggleExpand}
+                    aria-expanded={isExpanded}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--ink)] transition-colors"
                 >
                     {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
@@ -294,6 +295,7 @@ export default memo(function AgentCapabilitiesPanel({
             {/* Header - always visible */}
             <button
                 onClick={toggleExpand}
+                aria-expanded={isExpanded}
                 className="flex w-full shrink-0 items-center gap-2 px-3 py-2 text-sm text-[var(--ink)] transition-colors"
             >
                 {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}

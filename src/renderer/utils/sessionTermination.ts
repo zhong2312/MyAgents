@@ -36,6 +36,7 @@ export function resetTabToLauncher(tab: Tab): Tab {
         // real disposition). MUST be explicit: `...tab` would otherwise carry a stale
         // 'pending'/'adopt' onto a launcher tab.
         sidecarConfigDisposition: 'push',
+        restoreState: undefined,
         initialMessage: undefined,
         isGenerating: false,
         hasUnread: false,

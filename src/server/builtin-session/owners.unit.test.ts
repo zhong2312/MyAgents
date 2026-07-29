@@ -48,7 +48,9 @@ import {
 } from './queue';
 import {
   beginTurn,
+  admitPendingOutputOwnerForYield,
   clearPendingOutputOwners,
+  clearCurrentOutputOwnerAssistantChannelBlocks,
   getCurrentTurnIdentity,
   getCurrentTurnQueueId,
   getCurrentTurnText,
@@ -56,6 +58,8 @@ import {
   notifyCurrentTurnTerminal,
   notifyQueuedTurnStopped,
   pushPendingOutputOwner,
+  popPendingOutputOwner,
+  stageCurrentOutputOwnerAssistantChannelBlock,
   replaceCurrentTurnUsage,
   removePendingOutputOwnerByQueueId,
   resetTurnForTest,
@@ -100,6 +104,7 @@ import {
   snapshotTranscript,
 } from './transcript';
 import type { MessageQueueItem } from './types';
+import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
 
 function queueItem(id: string, requestId = id): MessageQueueItem {
   return {
@@ -109,6 +114,7 @@ function queueItem(id: string, requestId = id): MessageQueueItem {
     messageText: `message ${id}`,
     wasQueued: true,
     resolve: vi.fn(),
+    channelDelivery: NO_CHANNEL_DELIVERY,
   };
 }
 
@@ -387,7 +393,11 @@ describe('builtin-session owners', () => {
     pushMessage(queueItem('q1', 'r1'));
     pushPendingMidTurn(pendingItem('q2', 'r2'));
     pushTurnBoundary({ queueId: 'q3', ready: true, messageText: 'turn', requestId: 'r3' });
-    setInFlightQueueItem('q4', { messageText: 'flight', requestId: 'r4' });
+    setInFlightQueueItem('q4', {
+      messageText: 'flight',
+      requestId: 'r4',
+      channelDelivery: NO_CHANNEL_DELIVERY,
+    });
 
     expect(findQueuedItemLocation('q1')?.location).toBe('message');
     expect(findQueuedItemLocation('q2')?.location).toBe('pending-mid-turn');
@@ -432,8 +442,18 @@ describe('builtin-session owners', () => {
   });
 
   it('turn owner keeps the output-owner FIFO and notifies the current queue item once', async () => {
-    pushPendingOutputOwner('q1', 'r1');
-    pushPendingOutputOwner('q2', 'r2');
+    pushPendingOutputOwner({
+      queueId: 'q1',
+      requestId: 'r1',
+      assistantChannelDelivery: 'reply-router',
+      channelSessionId: 'session-1',
+    });
+    pushPendingOutputOwner({
+      queueId: 'q2',
+      requestId: 'r2',
+      assistantChannelDelivery: 'reply-router',
+      channelSessionId: 'session-1',
+    });
     expect(getPendingImRequestIds()).toEqual(['r1', 'r2']);
     expect(removePendingOutputOwnerByQueueId('q2')).toBe(true);
     expect(clearPendingOutputOwners()).toEqual(['r1']);
@@ -469,6 +489,27 @@ describe('builtin-session owners', () => {
     notifyCurrentTurnTerminal('complete');
     await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses one output owner across a transient provider retry and drops retracted blocks', () => {
+    const owner = {
+      queueId: 'original-turn',
+      requestId: null,
+      assistantChannelDelivery: 'session-binding' as const,
+      channelSessionId: 'session-1',
+    };
+    pushPendingOutputOwner(owner);
+    expect(stageCurrentOutputOwnerAssistantChannelBlock('[Error]: retryable')).toBe(true);
+
+    clearCurrentOutputOwnerAssistantChannelBlocks();
+    admitPendingOutputOwnerForYield({ ...owner, queueId: 'retry-yield' }, true);
+    expect(stageCurrentOutputOwnerAssistantChannelBlock('final answer')).toBe(true);
+
+    expect(popPendingOutputOwner()).toMatchObject({
+      queueId: 'original-turn',
+      assistantChannelTextBlocks: ['final answer'],
+    });
+    expect(popPendingOutputOwner()).toBeNull();
   });
 
   it('keeps an exact accepted queue id for ownerless maintenance turns', () => {

@@ -5,7 +5,7 @@
 // stamping, external-session routing) is exercised by typecheck + manual runs;
 // the brittle, easy-to-regress part is the thread→card resolution, tested here.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   resolveTopLevelSpawnCard,
@@ -18,14 +18,20 @@ import {
   buildCollabAgentControlStartEvents,
   buildCollabAgentControlCompletedEvents,
   resolveCollabControlCompletionRoute,
+  applyCodexSubAgentActivity,
+  CodexRuntime,
+  computeCodexItemEventRoute,
+  dispatchCodexItemEvent,
+  flushResolvableCodexSubAgentEvents,
 } from '../runtimes/codex';
+import type { UnifiedEvent } from '../runtimes/types';
 
 describe('resolveTopLevelSpawnCard', () => {
   it('returns null for the main thread (no card, no parent) → renders flat', () => {
     expect(resolveTopLevelSpawnCard('main', new Map(), new Map())).toBeNull();
   });
 
-  it('returns null for an unknown thread → renders flat (no lost calls)', () => {
+  it('returns null for an unknown thread (the higher-level route owns defer vs main)', () => {
     const cards = new Map([['child', 'cardA']]);
     expect(resolveTopLevelSpawnCard('stranger', cards, new Map())).toBeNull();
   });
@@ -168,8 +174,25 @@ describe('computeSubAgentScope', () => {
     expect(computeSubAgentScope(undefined, 'main', cards, parents, meta)).toBeNull();
   });
 
-  it('returns null for an unmapped thread (degrade to flat, no lost calls)', () => {
+  it('returns null for an unmapped thread (the item router defers it instead of flattening)', () => {
     expect(computeSubAgentScope('orphan', 'main', cards, parents, meta)).toBeNull();
+  });
+
+  it('does not resolve a descendant through an ancestor whose spawn link has not arrived yet', () => {
+    expect(computeSubAgentScope(
+      'grandchild',
+      'main',
+      new Map([['grandchild', 'nested-spawn']]),
+      new Map([['grandchild', 'child']]),
+      new Map(),
+    )).toBeNull();
+    expect(computeSubAgentScope(
+      'grandchild',
+      'main',
+      new Map([['grandchild', 'nested-spawn']]),
+      new Map([['grandchild', 'child'], ['child', 'main']]),
+      new Map(),
+    )).toBeNull();
   });
 
   it('returns the spawn card + nickname/role for a sub-agent thread item', () => {
@@ -186,6 +209,1227 @@ describe('computeSubAgentScope', () => {
       nickname: undefined,
       role: undefined,
     });
+  });
+});
+
+describe('computeCodexItemEventRoute', () => {
+  const cards = new Map([['child', 'spawn-card']]);
+  const parents = new Map([['child', 'main']]);
+
+  it('keeps main-thread items on the main transcript', () => {
+    expect(computeCodexItemEventRoute('main', 'main', cards, parents, new Map())).toEqual({ kind: 'main' });
+  });
+
+  it('scopes a correlated child item to its parent card', () => {
+    expect(computeCodexItemEventRoute('child', 'main', cards, parents, new Map())).toEqual({
+      kind: 'subagent',
+      scope: { parentToolUseId: 'spawn-card', nickname: undefined, role: undefined },
+    });
+  });
+
+  it('defers an uncorrelated foreign-thread item instead of rendering it flat', () => {
+    expect(computeCodexItemEventRoute('unknown-child', 'main', cards, parents, new Map())).toEqual({ kind: 'defer' });
+  });
+});
+
+describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
+  function state() {
+    return {
+      subThreadToCard: new Map<string, string>(),
+      subThreadToParent: new Map<string, string>(),
+      subThreadMeta: new Map<string, { nickname?: string; role?: string }>(),
+    };
+  }
+
+  function parserState() {
+    return {
+      ...state(),
+      threadId: 'main',
+      currentTurnId: 'root-turn',
+      deferredSubAgentEvents: new Map<string, UnifiedEvent[]>(),
+      collabControlToolParents: new Map<string, string[]>(),
+      activeSubAgentTurns: new Map<string, string | null>(),
+      completedSubAgentTurnsBeforeActivity: new Set<string>(),
+      subAgentThreadsAwaitingActivity: new Set<string>(),
+      codexV2SubAgentActivityObserved: false,
+      codexV2InteractionDeliveryByCallId: new Map<string, 'queue-only' | 'trigger-turn'>(),
+      subAgentActivitySeenBeforeTurnStart: new Set<string>(),
+      subAgentInterruptsInFlight: new Map<string, Promise<void>>(),
+      pendingMainTurnCompletion: null as UnifiedEvent[] | null,
+      interruptPendingSubAgentTurns: false,
+      releaseHeldMainTurnOnExit: false,
+      exited: false,
+      rpc: { call: vi.fn(async () => ({})) },
+    };
+  }
+
+  it('turns a started activity into the parent CollabAgent card and records its child thread', () => {
+    const correlation = state();
+    const events = applyCodexSubAgentActivity(correlation, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'spawn-call',
+      kind: 'started',
+      agentThreadId: 'child',
+      agentPath: '/root/reviewer',
+    });
+
+    expect(correlation.subThreadToCard.get('child')).toBe('spawn-call');
+    expect(correlation.subThreadToParent.get('child')).toBe('main');
+    expect(events).toHaveLength(3);
+    expect(events?.[0]).toMatchObject({
+      kind: 'tool_use_start',
+      toolUseId: 'spawn-call',
+      toolName: 'CollabAgent',
+      input: {
+        tool: 'spawnAgent',
+        activityKind: 'started',
+        agentPath: '/root/reviewer',
+        senderThreadId: 'main',
+        receiverThreadIds: ['child'],
+      },
+    });
+    expect(events?.every((event) => !('subAgent' in event) || event.subAgent === undefined)).toBe(true);
+  });
+
+  it('nests a descendant spawn under the existing top-level card', () => {
+    const correlation = state();
+    correlation.subThreadToCard.set('child', 'top-spawn');
+    correlation.subThreadToParent.set('child', 'main');
+
+    const events = applyCodexSubAgentActivity(correlation, 'child', 'main', {
+      type: 'subAgentActivity',
+      id: 'nested-spawn',
+      kind: 'started',
+      agentThreadId: 'grandchild',
+      agentPath: '/root/reviewer/checker',
+    });
+
+    expect(correlation.subThreadToCard.get('grandchild')).toBe('nested-spawn');
+    expect(correlation.subThreadToParent.get('grandchild')).toBe('child');
+    expect(events?.every((event) => (
+      'subAgent' in event && event.subAgent?.parentToolUseId === 'top-spawn'
+    ))).toBe(true);
+    expect(computeSubAgentScope(
+      'grandchild',
+      'main',
+      correlation.subThreadToCard,
+      correlation.subThreadToParent,
+      correlation.subThreadMeta,
+    )?.parentToolUseId).toBe('top-spawn');
+  });
+
+  it('uses a main-thread interaction as the new turn-local container for a resumed child', () => {
+    const correlation = state();
+    const events = applyCodexSubAgentActivity(correlation, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'followup-call',
+      kind: 'interacted',
+      agentThreadId: 'resumed-child',
+      agentPath: '/root/reviewer',
+    });
+
+    expect(correlation.subThreadToCard.get('resumed-child')).toBe('followup-call');
+    expect(events?.[0]).toMatchObject({
+      kind: 'tool_use_start',
+      toolUseId: 'followup-call',
+      toolName: 'CollabAgent',
+      input: { tool: 'sendInput', activityKind: 'interacted' },
+    });
+    expect(events?.every((event) => !('subAgent' in event) || event.subAgent === undefined)).toBe(true);
+  });
+
+  it('keeps child-to-parent interactions inside the child\'s existing card', () => {
+    const correlation = state();
+    correlation.subThreadToCard.set('child', 'spawn-card');
+    correlation.subThreadToParent.set('child', 'main');
+
+    const events = applyCodexSubAgentActivity(correlation, 'child', 'main', {
+      type: 'subAgentActivity',
+      id: 'message-call',
+      kind: 'interacted',
+      agentThreadId: 'main',
+      agentPath: '/root',
+    });
+
+    expect(events?.[0]).toMatchObject({
+      kind: 'tool_use_start',
+      toolUseId: 'message-call',
+      input: { tool: 'sendInput', activityKind: 'interacted' },
+      subAgent: { parentToolUseId: 'spawn-card' },
+    });
+  });
+
+  it('records a child-to-child interaction even while the sender ancestor is unresolved', () => {
+    const correlation = state();
+    const events = applyCodexSubAgentActivity(correlation, 'child-a', 'main', {
+      type: 'subAgentActivity',
+      id: 'message-to-b',
+      kind: 'interacted',
+      agentThreadId: 'child-b',
+      agentPath: '/root/a/b',
+    });
+
+    expect(correlation.subThreadToCard.get('child-b')).toBe('message-to-b');
+    expect(correlation.subThreadToParent.get('child-b')).toBe('child-a');
+    expect(events?.[0]).not.toHaveProperty('subAgent');
+
+    applyCodexSubAgentActivity(correlation, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'spawn-a',
+      kind: 'started',
+      agentThreadId: 'child-a',
+      agentPath: '/root/a',
+    });
+    expect(computeSubAgentScope(
+      'child-b',
+      'main',
+      correlation.subThreadToCard,
+      correlation.subThreadToParent,
+      correlation.subThreadMeta,
+    )?.parentToolUseId).toBe('spawn-a');
+  });
+
+  it('preserves interrupt semantics instead of presenting it as agent shutdown', () => {
+    const correlation = state();
+    correlation.subThreadToCard.set('child', 'spawn-card');
+    correlation.subThreadToParent.set('child', 'main');
+
+    const events = applyCodexSubAgentActivity(correlation, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'interrupt-call',
+      kind: 'interrupted',
+      agentThreadId: 'child',
+      agentPath: '/root/reviewer',
+    });
+
+    expect(events?.[0]).toMatchObject({
+      kind: 'tool_use_start',
+      input: { tool: 'interruptAgent', activityKind: 'interrupted' },
+      subAgent: { parentToolUseId: 'spawn-card' },
+    });
+  });
+
+  it('rejects malformed activity items without mutating correlation state', () => {
+    const correlation = state();
+    expect(applyCodexSubAgentActivity(correlation, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'broken',
+      kind: 'started',
+    })).toBeNull();
+    expect(correlation.subThreadToCard.size).toBe(0);
+  });
+
+  it('is wired to the real item/completed notification parser', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    const events = parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      turnId: 'turn-1',
+      item: {
+        type: 'subAgentActivity',
+        id: 'spawn-call',
+        kind: 'started',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+
+    expect(Array.isArray(events) ? events.map((event) => event.kind) : []).toEqual([
+      'tool_use_start',
+      'tool_use_stop',
+      'tool_result',
+    ]);
+    expect(correlation.subThreadToCard.get('child')).toBe('spawn-call');
+    expect(correlation.activeSubAgentTurns).toEqual(new Map([['child', null]]));
+  });
+
+  it('holds a successful main terminal until the spawned child turn completes', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.subThreadToCard.set('child', 'spawn-call');
+    correlation.subThreadToParent.set('child', 'main');
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    expect(parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'child-turn' },
+    }, () => {})).toBeNull();
+    expect(correlation.activeSubAgentTurns).toEqual(new Map([['child', 'child-turn']]));
+
+    expect(parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {})).toBeNull();
+    expect(correlation.pendingMainTurnCompletion?.[0]).toMatchObject({ kind: 'turn_complete' });
+    expect(computeCodexItemEventRoute(
+      'child',
+      'main',
+      correlation.subThreadToCard,
+      correlation.subThreadToParent,
+      correlation.subThreadMeta,
+    ).kind).toBe('subagent');
+
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'child',
+      turn: { id: 'child-turn', status: 'completed' },
+    }, () => {});
+    expect(Array.isArray(terminal) ? terminal.map((event) => event.kind) : []).toEqual([
+      'turn_complete',
+      'agent_plan_update',
+    ]);
+    expect(correlation.subThreadToCard.size).toBe(0);
+    expect(correlation.pendingMainTurnCompletion).toBeNull();
+  });
+
+  it('does not resurrect a child that completed before its started activity arrived', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    correlation.codexV2SubAgentActivityObserved = true;
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'child-turn' },
+    }, () => {});
+    parseNotification(correlation, 'turn/completed', {
+      threadId: 'child',
+      turn: { id: 'child-turn', status: 'completed' },
+    }, () => {});
+    expect(correlation.completedSubAgentTurnsBeforeActivity).toEqual(new Set(['child']));
+
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'spawn-call',
+        kind: 'started',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+    expect(correlation.activeSubAgentTurns.size).toBe(0);
+    expect(correlation.completedSubAgentTurnsBeforeActivity.size).toBe(0);
+  });
+
+  it('preserves an exact child turn id when started activity arrives later', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    correlation.codexV2SubAgentActivityObserved = true;
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'child-turn-before-activity' },
+    }, () => {});
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'spawn-call',
+        kind: 'started',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+
+    expect(correlation.activeSubAgentTurns).toEqual(new Map([
+      ['child', 'child-turn-before-activity'],
+    ]));
+  });
+
+  it('interrupts exact active child turns when force-send targets a held root terminal', async () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.pendingMainTurnCompletion = [{ kind: 'turn_complete', status: 'completed' }];
+    correlation.activeSubAgentTurns.set('child', 'child-turn');
+
+    await runtime.interruptTurn(correlation as never);
+
+    expect(correlation.rpc.call).toHaveBeenCalledWith('turn/interrupt', {
+      threadId: 'child',
+      turnId: 'child-turn',
+    }, 3_000);
+    expect(correlation.rpc.call).not.toHaveBeenCalledWith('turn/interrupt', expect.objectContaining({
+      threadId: 'main',
+    }), 3_000);
+    expect(correlation.interruptPendingSubAgentTurns).toBe(true);
+  });
+
+  it('restarts the runtime when a held-root child interrupt cannot be confirmed', async () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.pendingMainTurnCompletion = [{ kind: 'turn_complete', status: 'interrupted' }];
+    correlation.activeSubAgentTurns.set('child', 'child-turn');
+    correlation.rpc.call.mockRejectedValueOnce(new Error('interrupt RPC timed out'));
+    const stopSession = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+
+    await runtime.interruptTurn(correlation as never);
+
+    expect(stopSession).toHaveBeenCalledWith(correlation);
+    expect(correlation.releaseHeldMainTurnOnExit).toBe(true);
+  });
+
+  it('does not restart when child settlement wins an in-flight interrupt race', async () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.pendingMainTurnCompletion = [{ kind: 'turn_complete', status: 'completed' }];
+    correlation.activeSubAgentTurns.set('child', 'child-turn');
+    let rejectInterrupt!: (error: Error) => void;
+    correlation.rpc.call.mockImplementationOnce(() => new Promise((_, reject) => {
+      rejectInterrupt = reject;
+    }));
+    const stopSession = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    const interrupt = runtime.interruptTurn(correlation as never);
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'child',
+      turn: { id: 'child-turn', status: 'completed' },
+    }, () => {});
+    rejectInterrupt(new Error('already completed'));
+    await interrupt;
+
+    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+    expect(stopSession).not.toHaveBeenCalled();
+  });
+
+  it('single-flights concurrent interrupts for the same child turn', async () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.pendingMainTurnCompletion = [{ kind: 'turn_complete', status: 'completed' }];
+    correlation.activeSubAgentTurns.set('child', 'child-turn');
+    let resolveInterrupt!: () => void;
+    correlation.rpc.call.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveInterrupt = () => resolve({});
+    }));
+
+    const first = runtime.interruptTurn(correlation as never);
+    const second = runtime.interruptTurn(correlation as never);
+    expect(correlation.rpc.call).toHaveBeenCalledTimes(1);
+    resolveInterrupt();
+    await Promise.all([first, second]);
+  });
+
+  it('uses the restart fallback when a late child turn id cannot be interrupted', async () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.pendingMainTurnCompletion = [{ kind: 'turn_complete', status: 'interrupted' }];
+    correlation.activeSubAgentTurns.set('child', null);
+    correlation.interruptPendingSubAgentTurns = true;
+    correlation.rpc.call.mockRejectedValueOnce(new Error('late interrupt rejected'));
+    const stopSession = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'late-child-turn' },
+    }, () => {});
+
+    expect(correlation.rpc.call).toHaveBeenCalledWith('turn/interrupt', {
+      threadId: 'child',
+      turnId: 'late-child-turn',
+    }, 3_000);
+    await vi.waitFor(() => expect(stopSession).toHaveBeenCalledWith(correlation));
+    expect(correlation.releaseHeldMainTurnOnExit).toBe(true);
+  });
+
+  it('releases a fallback-held root terminal exactly once at process exit', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.pendingMainTurnCompletion = [{ kind: 'turn_complete', status: 'interrupted' }];
+    correlation.activeSubAgentTurns.set('child', 'child-turn');
+    correlation.releaseHeldMainTurnOnExit = true;
+    const takeHeld = (runtime as unknown as {
+      takeHeldMainTurnForProcessExit: (proc: typeof correlation) => UnifiedEvent[] | null;
+    }).takeHeldMainTurnForProcessExit.bind(runtime);
+
+    expect(takeHeld(correlation)).toEqual([{ kind: 'turn_complete', status: 'interrupted' }]);
+    expect(takeHeld(correlation)).toBeNull();
+    expect(correlation.activeSubAgentTurns.size).toBe(0);
+  });
+
+  it('holds an interrupted root terminal and interrupts its still-running children', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.activeSubAgentTurns.set('child', 'child-turn');
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    expect(parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'interrupted' },
+    }, () => {})).toBeNull();
+    expect(correlation.pendingMainTurnCompletion?.[0]).toMatchObject({
+      kind: 'turn_complete',
+      status: 'interrupted',
+    });
+    expect(correlation.rpc.call).toHaveBeenCalledWith('turn/interrupt', {
+      threadId: 'child',
+      turnId: 'child-turn',
+    }, 3_000);
+  });
+
+  it('releases a held root terminal when the child closes without a turn terminal', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.subThreadToCard.set('child', 'spawn-call');
+    correlation.subThreadToParent.set('child', 'main');
+    correlation.activeSubAgentTurns.set('child', 'child-turn');
+    correlation.pendingMainTurnCompletion = [{ kind: 'turn_complete', status: 'completed' }];
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    const terminal = parseNotification(correlation, 'thread/closed', {
+      threadId: 'child',
+    }, () => {});
+    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+    expect(correlation.activeSubAgentTurns.size).toBe(0);
+  });
+
+  it('fences known-child output until its interacted activity is emitted', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.subThreadToCard.set('child', 'spawn-call');
+    correlation.subThreadToParent.set('child', 'main');
+    const emitted: UnifiedEvent[] = [];
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    correlation.codexV2SubAgentActivityObserved = true;
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'interaction-turn' },
+    }, () => {});
+    dispatchCodexItemEvent(correlation, 'child', {
+      kind: 'text_delta',
+      text: 'response to the new interaction',
+    }, (event) => emitted.push(event));
+    expect(emitted).toEqual([]);
+
+    const activityEvents = parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'interaction-call',
+        kind: 'interacted',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+    for (const event of Array.isArray(activityEvents) ? activityEvents : [activityEvents!]) {
+      dispatchCodexItemEvent(correlation, 'main', event, (next) => emitted.push(next));
+    }
+    flushResolvableCodexSubAgentEvents(correlation, (event) => emitted.push(event));
+
+    expect(emitted.map((event) => event.kind)).toEqual([
+      'tool_use_start',
+      'tool_use_stop',
+      'tool_result',
+      'text_delta',
+    ]);
+    expect(correlation.subAgentThreadsAwaitingActivity.size).toBe(0);
+  });
+
+  it('lets turn/started claim ownership after an earlier interacted activity', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.subThreadToCard.set('child', 'spawn-call');
+    correlation.subThreadToParent.set('child', 'main');
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'interaction-call',
+        kind: 'interacted',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+    expect(correlation.activeSubAgentTurns.size).toBe(0);
+    expect(correlation.subAgentActivitySeenBeforeTurnStart).toEqual(new Set(['child']));
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'late-interaction-turn' },
+    }, () => {});
+    expect(correlation.activeSubAgentTurns).toEqual(new Map([
+      ['child', 'late-interaction-turn'],
+    ]));
+    expect(correlation.subAgentThreadsAwaitingActivity.size).toBe(0);
+    expect(correlation.subAgentActivitySeenBeforeTurnStart.size).toBe(0);
+  });
+
+  it('does not hold the root terminal for a raw-discriminated queue-only interaction', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.subThreadToCard.set('child', 'spawn-call');
+    correlation.subThreadToParent.set('child', 'main');
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'rawResponseItem/completed', {
+      threadId: 'main',
+      turnId: 'root-turn',
+      item: {
+        type: 'function_call',
+        name: 'send_message',
+        call_id: 'queue-only-message',
+        arguments: '{"target":"child","message":"note"}',
+      },
+    }, () => {});
+
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'queue-only-message',
+        kind: 'interacted',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {});
+
+    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+    expect(correlation.pendingMainTurnCompletion).toBeNull();
+  });
+
+  it('reserves a child turn for raw-discriminated followup_task before turn/started', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'rawResponseItem/completed', {
+      threadId: 'main',
+      turnId: 'root-turn',
+      item: {
+        type: 'function_call',
+        name: 'followup_task',
+        call_id: 'followup-call',
+        arguments: '{"target":"child","message":"continue"}',
+      },
+    }, () => {});
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'followup-call',
+        kind: 'interacted',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+
+    expect(correlation.activeSubAgentTurns).toEqual(new Map([['child', null]]));
+    expect(parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {})).toBeNull();
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'followup-turn' },
+    }, () => {});
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'child',
+      turn: { id: 'followup-turn', status: 'completed' },
+    }, () => {});
+
+    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+  });
+
+  it('restarts when an active child reaches the root terminal without its activity', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.codexV2SubAgentActivityObserved = true;
+    const stopSession = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'child-turn' },
+    }, () => {});
+    dispatchCodexItemEvent(correlation, 'child', {
+      kind: 'text_delta',
+      text: 'early child output',
+    }, () => {});
+    expect(parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {})).toBeNull();
+
+    expect(stopSession).toHaveBeenCalledWith(correlation);
+    expect(correlation.releaseHeldMainTurnOnExit).toBe(true);
+    expect(correlation.pendingMainTurnCompletion?.[0]).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+  });
+
+  it('releases a settled missing-activity terminal through the process-exit boundary', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.codexV2SubAgentActivityObserved = true;
+    const stopSession = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'child',
+      turn: { id: 'child-turn' },
+    }, () => {});
+    dispatchCodexItemEvent(correlation, 'child', {
+      kind: 'text_delta',
+      text: 'must remain unowned',
+    }, () => {});
+    parseNotification(correlation, 'turn/completed', {
+      threadId: 'child',
+      turn: { id: 'child-turn', status: 'completed' },
+    }, () => {});
+
+    expect(parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {})).toBeNull();
+
+    expect(stopSession).toHaveBeenCalledWith(correlation);
+    const takeHeld = (runtime as unknown as {
+      takeHeldMainTurnForProcessExit: (proc: typeof correlation) => UnifiedEvent[] | null;
+    }).takeHeldMainTurnForProcessExit.bind(runtime);
+    expect(takeHeld(correlation)?.[0]).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+    expect(correlation.subAgentThreadsAwaitingActivity.size).toBe(0);
+    expect(correlation.deferredSubAgentEvents.size).toBe(0);
+  });
+
+  it.each(['failed', 'interrupted'] as const)(
+    'restarts when a root is %s and child activity correlation is missing',
+    (status) => {
+      const runtime = new CodexRuntime();
+      const correlation = parserState();
+      correlation.codexV2SubAgentActivityObserved = true;
+      const stopSession = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+      const parseNotification = (runtime as unknown as {
+        parseNotification: (
+          proc: typeof correlation,
+          method: string,
+          params: unknown,
+          emit: (event: UnifiedEvent) => void,
+        ) => UnifiedEvent | UnifiedEvent[] | null;
+      }).parseNotification.bind(runtime);
+
+      parseNotification(correlation, 'turn/started', {
+        threadId: 'child',
+        turn: { id: 'child-turn' },
+      }, () => {});
+      expect(parseNotification(correlation, 'turn/completed', {
+        threadId: 'main',
+        turn: { id: 'root-turn', status },
+      }, () => {})).toBeNull();
+
+      expect(stopSession).toHaveBeenCalledWith(correlation);
+      expect(correlation.releaseHeldMainTurnOnExit).toBe(true);
+      expect(correlation.pendingMainTurnCompletion?.[0]).toMatchObject({
+        kind: 'turn_complete',
+        status,
+      });
+    },
+  );
+
+  it('keeps v1 child output live without waiting for a v2-only activity item', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    correlation.subThreadToCard.set('legacy-child', 'legacy-spawn');
+    correlation.subThreadToParent.set('legacy-child', 'main');
+    const emitted: UnifiedEvent[] = [];
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'legacy-child',
+      turn: { id: 'legacy-child-turn' },
+    }, () => {});
+    dispatchCodexItemEvent(correlation, 'legacy-child', {
+      kind: 'text_delta',
+      text: 'legacy child output',
+    }, (event) => emitted.push(event));
+
+    expect(correlation.codexV2SubAgentActivityObserved).toBe(false);
+    expect(correlation.subAgentThreadsAwaitingActivity.size).toBe(0);
+    expect(emitted).toEqual([{
+      kind: 'text_delta',
+      text: 'legacy child output',
+      subAgent: {
+        parentToolUseId: 'legacy-spawn',
+        nickname: undefined,
+        role: undefined,
+      },
+    }]);
+  });
+
+  it('reserves a v1 spawn child before its turn starts so the root terminal waits', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'collabAgentToolCall',
+        id: 'legacy-spawn',
+        tool: 'spawnAgent',
+        status: 'completed',
+        receiverThreadIds: ['legacy-child'],
+      },
+    }, () => {});
+    expect(correlation.activeSubAgentTurns).toEqual(new Map([['legacy-child', null]]));
+    expect(parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {})).toBeNull();
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'legacy-child',
+      turn: { id: 'legacy-child-turn' },
+    }, () => {});
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'legacy-child',
+      turn: { id: 'legacy-child-turn', status: 'completed' },
+    }, () => {});
+    expect(Array.isArray(terminal) ? terminal[0] : terminal).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+  });
+
+  it('also reserves a v1 child when an older server reports receivers at item start', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'item/started', {
+      threadId: 'main',
+      item: {
+        type: 'collabAgentToolCall',
+        id: 'legacy-spawn',
+        tool: 'spawnAgent',
+        receiverThreadIds: ['legacy-child'],
+      },
+    }, () => {});
+
+    expect(correlation.activeSubAgentTurns).toEqual(new Map([['legacy-child', null]]));
+  });
+
+  it('does not resurrect a v1 child that settled before its spawn item completed', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'turn/started', {
+      threadId: 'legacy-child',
+      turn: { id: 'legacy-child-turn' },
+    }, () => {});
+    parseNotification(correlation, 'turn/completed', {
+      threadId: 'legacy-child',
+      turn: { id: 'legacy-child-turn', status: 'completed' },
+    }, () => {});
+    expect(correlation.completedSubAgentTurnsBeforeActivity).toEqual(new Set(['legacy-child']));
+
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'collabAgentToolCall',
+        id: 'legacy-spawn',
+        tool: 'spawnAgent',
+        status: 'completed',
+        receiverThreadIds: ['legacy-child'],
+      },
+    }, () => {});
+    expect(correlation.activeSubAgentTurns.size).toBe(0);
+    expect(correlation.completedSubAgentTurnsBeforeActivity.size).toBe(0);
+  });
+
+  it('restarts at an undiscriminated interaction boundary instead of carrying it into the next turn', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const stopSession = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    parseNotification(correlation, 'item/completed', {
+      threadId: 'main',
+      item: {
+        type: 'subAgentActivity',
+        id: 'undiscriminated-interaction',
+        kind: 'interacted',
+        agentThreadId: 'child',
+        agentPath: '/root/reviewer',
+      },
+    }, () => {});
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {});
+    expect(terminal).toBeNull();
+    expect(correlation.releaseHeldMainTurnOnExit).toBe(true);
+    expect(correlation.pendingMainTurnCompletion?.[0]).toMatchObject({
+      kind: 'turn_complete',
+      status: 'completed',
+    });
+    expect(stopSession).toHaveBeenCalledWith(correlation);
+  });
+});
+
+describe('Codex sub-agent causal routing', () => {
+  function routingState() {
+    return {
+      threadId: 'main',
+      subThreadToCard: new Map<string, string>(),
+      subThreadToParent: new Map<string, string>(),
+      subThreadMeta: new Map<string, { nickname?: string; role?: string }>(),
+      deferredSubAgentEvents: new Map<string, UnifiedEvent[]>(),
+      subAgentThreadsAwaitingActivity: new Set<string>(),
+    };
+  }
+
+  it('holds an early child delta until the v2 started activity creates its parent card', () => {
+    const state = routingState();
+    const emitted: UnifiedEvent[] = [];
+    dispatchCodexItemEvent(state, 'child', {
+      kind: 'text_delta',
+      text: 'early child output',
+      traceId: 'child-message',
+    }, (event) => emitted.push(event));
+
+    expect(emitted).toEqual([]);
+    expect(state.deferredSubAgentEvents.get('child')).toHaveLength(1);
+
+    const parentEvents = applyCodexSubAgentActivity(state, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'spawn-call',
+      kind: 'started',
+      agentThreadId: 'child',
+      agentPath: '/root/reviewer',
+    });
+    for (const event of parentEvents ?? []) {
+      dispatchCodexItemEvent(state, 'main', event, (next) => emitted.push(next));
+    }
+    flushResolvableCodexSubAgentEvents(state, (event) => emitted.push(event));
+
+    expect(emitted.slice(0, 3).map((event) => event.kind)).toEqual([
+      'tool_use_start',
+      'tool_use_stop',
+      'tool_result',
+    ]);
+    expect(emitted[3]).toMatchObject({
+      kind: 'text_delta',
+      text: 'early child output',
+      subAgent: { parentToolUseId: 'spawn-call' },
+    });
+    expect(state.deferredSubAgentEvents.size).toBe(0);
+  });
+
+  it('waits for an unresolved ancestor before releasing descendant activity and output', () => {
+    const state = routingState();
+    const emitted: UnifiedEvent[] = [];
+    const nestedSpawnEvents = applyCodexSubAgentActivity(state, 'child', 'main', {
+      type: 'subAgentActivity',
+      id: 'nested-spawn',
+      kind: 'started',
+      agentThreadId: 'grandchild',
+      agentPath: '/root/reviewer/checker',
+    });
+    for (const event of nestedSpawnEvents ?? []) {
+      dispatchCodexItemEvent(state, 'child', event, (next) => emitted.push(next));
+    }
+    dispatchCodexItemEvent(state, 'grandchild', {
+      kind: 'text_delta',
+      text: 'grandchild output',
+      traceId: 'grandchild-message',
+    }, (event) => emitted.push(event));
+
+    expect(emitted).toEqual([]);
+    expect(state.deferredSubAgentEvents.size).toBe(2);
+
+    const topSpawnEvents = applyCodexSubAgentActivity(state, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'top-spawn',
+      kind: 'started',
+      agentThreadId: 'child',
+      agentPath: '/root/reviewer',
+    });
+    for (const event of topSpawnEvents ?? []) {
+      dispatchCodexItemEvent(state, 'main', event, (next) => emitted.push(next));
+    }
+    flushResolvableCodexSubAgentEvents(state, (event) => emitted.push(event));
+
+    expect(emitted).toHaveLength(7);
+    expect(emitted.slice(3).every((event) => (
+      'subAgent' in event && event.subAgent?.parentToolUseId === 'top-spawn'
+    ))).toBe(true);
+    expect(emitted[6]).toMatchObject({ kind: 'text_delta', text: 'grandchild output' });
+    expect(state.deferredSubAgentEvents.size).toBe(0);
+  });
+
+  it('flushes ancestor activity before descendant output even when the descendant arrived first', () => {
+    const state = routingState();
+    const emitted: UnifiedEvent[] = [];
+
+    dispatchCodexItemEvent(state, 'grandchild', {
+      kind: 'text_delta',
+      text: 'grandchild arrived first',
+      traceId: 'grandchild-message',
+    }, (event) => emitted.push(event));
+    const nestedSpawnEvents = applyCodexSubAgentActivity(state, 'child', 'main', {
+      type: 'subAgentActivity',
+      id: 'nested-spawn',
+      kind: 'started',
+      agentThreadId: 'grandchild',
+      agentPath: '/root/reviewer/checker',
+    });
+    for (const event of nestedSpawnEvents ?? []) {
+      dispatchCodexItemEvent(state, 'child', event, (next) => emitted.push(next));
+    }
+    const topSpawnEvents = applyCodexSubAgentActivity(state, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'top-spawn',
+      kind: 'started',
+      agentThreadId: 'child',
+      agentPath: '/root/reviewer',
+    });
+    for (const event of topSpawnEvents ?? []) {
+      dispatchCodexItemEvent(state, 'main', event, (next) => emitted.push(next));
+    }
+    flushResolvableCodexSubAgentEvents(state, (event) => emitted.push(event));
+
+    expect(emitted.slice(3, 6).map((event) => event.kind)).toEqual([
+      'tool_use_start',
+      'tool_use_stop',
+      'tool_result',
+    ]);
+    expect(emitted[6]).toMatchObject({
+      kind: 'text_delta',
+      text: 'grandchild arrived first',
+    });
+  });
+
+  it('keeps an early attachment update behind its deferred placeholder owner', () => {
+    const state = routingState();
+    const emitted: UnifiedEvent[] = [];
+    const attachmentUpdate: UnifiedEvent = {
+      kind: 'tool_attachment_update',
+      toolUseId: 'child-tool',
+      pendingId: 'pending-image',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/image.png',
+      },
+    };
+
+    dispatchCodexItemEvent(state, 'child', {
+      kind: 'tool_use_start',
+      toolUseId: 'child-tool',
+      toolName: 'ImageTool',
+    }, (event) => emitted.push(event));
+    dispatchCodexItemEvent(state, 'child', {
+      kind: 'tool_result',
+      toolUseId: 'child-tool',
+      content: 'saving image',
+      attachments: [{
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '',
+        pendingId: 'pending-image',
+      }],
+    }, (event) => emitted.push(event));
+    dispatchCodexItemEvent(state, 'child', attachmentUpdate, (event) => emitted.push(event));
+    expect(emitted).toEqual([]);
+
+    applyCodexSubAgentActivity(state, 'main', 'main', {
+      type: 'subAgentActivity',
+      id: 'spawn-call',
+      kind: 'started',
+      agentThreadId: 'child',
+      agentPath: '/root/reviewer',
+    });
+    flushResolvableCodexSubAgentEvents(state, (event) => emitted.push(event));
+    expect(emitted.map((event) => event.kind)).toEqual([
+      'tool_use_start',
+      'tool_result',
+      'tool_attachment_update',
+    ]);
+  });
+
+  it('routes a settled attachment by tool id after turn-local thread maps are cleared', () => {
+    const state = routingState();
+    const emitted: UnifiedEvent[] = [];
+    dispatchCodexItemEvent(state, 'child', {
+      kind: 'tool_attachment_update',
+      toolUseId: 'already-latched-child-tool',
+      pendingId: 'pending-image',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/image.png',
+      },
+    }, (event) => emitted.push(event));
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      kind: 'tool_attachment_update',
+      toolUseId: 'already-latched-child-tool',
+    });
+    expect(state.deferredSubAgentEvents.size).toBe(0);
   });
 });
 

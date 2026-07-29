@@ -86,6 +86,7 @@ coverage/
 specs/prd/
 specs/research/
 specs/playground/
+specs/playgrounds/
 specs/issues/
 specs/marketing/
 specs/dev_exp/
@@ -107,3 +108,5 @@ specs/assets/avatar-candidates/**/manifest.json
 myagents_files/
 .playwright-cli
 output
+/HEARTBEAT.md
+/HEARTBEAT.md

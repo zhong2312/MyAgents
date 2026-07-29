@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeType } from '../../shared/types/runtime';
-import type { DesktopMessageRequest } from '../session-engine/types';
+import type { DesktopMessageRequest, InjectedTurnRequest } from '../session-engine/types';
 import type { MirrorPayload } from '../utils/im-mirror';
 import type {
   AgentRuntime,
@@ -28,6 +28,7 @@ type TurnScript =
     error: string;
     status?: 'failed' | 'interrupted';
     partialText?: string;
+    closeTextBlock?: boolean;
     completeDelayMs?: number;
     usage?: { inputTokens: number; outputTokens: number };
   }
@@ -262,6 +263,7 @@ class FakeRuntime implements AgentRuntime {
         this.defer(() => {
           if (script.partialText) {
             this.emit({ kind: 'text_delta', text: script.partialText });
+            if (script.closeTextBlock) this.emit({ kind: 'text_stop' });
           }
           if (script.usage) {
             this.emit({ kind: 'usage', ...script.usage, semantics: 'delta' });
@@ -537,7 +539,85 @@ function desktopRequest(sessionId: string, workspacePath: string, text: string):
   };
 }
 
+type TestInjectedTurnRequest = Omit<InjectedTurnRequest, 'assistantChannelDelivery'>
+  & Partial<Pick<InjectedTurnRequest, 'assistantChannelDelivery'>>;
+
+function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
+  return harness.engine.runInjectedTurn({
+    assistantChannelDelivery: 'none',
+    ...request,
+  });
+}
+
 describe('external SessionEngine with fake runtime', () => {
+  it('broadcasts attachment updates only when a top-level placeholder owns them', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'ready for attachment routing' },
+    ]);
+    const sessionId = 'session-external-attachment-owner';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'start attachment owner test'),
+    );
+    await expect(desktop.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'owned-image',
+      toolName: 'ImageTool',
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'owned-image' });
+    broadcastEvents.length = 0;
+    harness.runtime.emitForTest({
+      kind: 'tool_attachment_update',
+      toolUseId: 'owned-image',
+      pendingId: 'owned-pending',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/owned.png',
+      },
+    });
+    expect(broadcastEvents.map(({ event }) => event)).not.toContain('chat:tool-attachment-update');
+
+    harness.runtime.emitForTest({
+      kind: 'tool_result',
+      toolUseId: 'owned-image',
+      content: 'saving image',
+      attachments: [{
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '',
+        pendingId: 'owned-pending',
+      }],
+    });
+    await waitFor(
+      () => broadcastEvents.some(({ event }) => event === 'chat:tool-result-complete'),
+      'owned tool result',
+    );
+    const toolResultStart = broadcastEvents.find(({ event }) => event === 'chat:tool-result-start');
+    expect(toolResultStart?.data).toMatchObject({
+      attachments: [{
+        refPath: '/api/attachment/tool/session/turn/owned.png',
+      }],
+    });
+
+    broadcastEvents.length = 0;
+    harness.runtime.emitForTest({
+      kind: 'tool_attachment_update',
+      toolUseId: 'uncorrelated-foreign-child-image',
+      pendingId: 'foreign-pending',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/foreign.png',
+      },
+    });
+    expect(broadcastEvents.map(({ event }) => event)).not.toContain('chat:tool-attachment-update');
+  });
+
   it('mirrors accepted external desktop turns', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'external desktop reply' },
@@ -567,6 +647,44 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
   });
 
+  it('starts a clean runtime after a held turn terminal is followed by process completion', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'answer before runtime exit' },
+      { kind: 'success', text: 'answer after runtime restart' },
+    ]);
+    const sessionId = 'session-held-terminal-runtime-exit';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const first = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'first turn'),
+    );
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+
+    // Codex's isolation fallback emits the held turn_complete first, then the
+    // process lifecycle terminal. The latter must release the runtime owner so
+    // the next message goes through the normal resume/start path.
+    harness.runtime.emitForTest({
+      kind: 'session_complete',
+      subtype: 'error',
+      result: 'Codex process exited with code 143',
+    });
+    await waitFor(
+      () => !harness.externalSession.hasExternalRuntimeProcess(),
+      'runtime owner cleared after process completion',
+    );
+
+    const second = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'second turn'),
+    );
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('answer after runtime restart');
+  });
+
   it('does not mirror external IM-origin turns back through the desktop fan-out', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'external IM reply' },
@@ -588,11 +706,43 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.mirrorCalls).toEqual([]);
   });
 
-  it('does not mirror incomplete external assistant output from a failed desktop turn', async () => {
+  it('delivers a successful Session Inbox reply to the bound channel without mirroring the hidden input', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'answer after send.result' },
+    ]);
+    const sessionId = 'session-external-inbox-channel-delivery';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await expect(harness.engine.enqueueInboxMessage({
+      text: '<system-reminder><SESSION_EVENT type="send.result">delegated result</SESSION_EVENT></system-reminder>',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      inboxMeta: {
+        fromSessionId: 'delegated-session',
+        fromLabel: 'delegated-session',
+        replyBack: false,
+        originalMessageId: 'send-result-message',
+        originalSnippet: 'delegated result',
+      },
+      analyticsOrigin: { kind: 'session-inbox', surface: 'session_reply' },
+    })).resolves.toMatchObject({ queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(() => harness.mirrorCalls.length === 1, 'Session Inbox assistant channel delivery');
+
+    expect(harness.mirrorCalls).toEqual([{
+      sessionId,
+      role: 'assistant',
+      text: 'answer after send.result',
+    }]);
+  });
+
+  it('does not deliver a completed external assistant block from a failed desktop turn', async () => {
     const harness = await createHarness([{
       kind: 'failure',
       error: 'fake external failure',
       partialText: 'unfinished assistant output',
+      closeTextBlock: true,
     }]);
     const sessionId = 'session-external-failed-mirror';
     const workspacePath = join(harness.home, 'workspace');
@@ -608,6 +758,32 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       role: 'user',
       text: 'question before failure',
+      images: undefined,
+    }]);
+  });
+
+  it('does not deliver a completed external assistant block from a stopped turn', async () => {
+    const harness = await createHarness([{
+      kind: 'failure',
+      status: 'interrupted',
+      error: 'stopped after completed block',
+      partialText: 'completed before stop',
+      closeTextBlock: true,
+    }]);
+    const sessionId = 'session-external-stopped-channel-delivery';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'question before stop'),
+    );
+    await expect(desktop.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(() => harness.mirrorCalls.length === 1, 'stopped turn user mirror');
+
+    expect(harness.mirrorCalls).toEqual([{
+      sessionId,
+      role: 'user',
+      text: 'question before stop',
       images: undefined,
     }]);
   });
@@ -868,11 +1044,15 @@ describe('external SessionEngine with fake runtime', () => {
       origin: { kind: 'automation', surface: 'cron' },
     });
 
-    await harness.engine.sendDesktopMessage(desktopRequest(
+    await runInjectedTurn(harness, {
+      prompt: '<system-reminder><MEMORY_UPDATE>maintain</MEMORY_UPDATE></system-reminder>',
+      assistantChannelDelivery: 'none',
       sessionId,
       workspacePath,
-      '<system-reminder><MEMORY_UPDATE>maintain</MEMORY_UPDATE></system-reminder>',
-    ));
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
 
     expect(harness.sessionStore.getSessionMetadata(sessionId)?.lastActiveAt).toBe(originalLastActiveAt);
@@ -920,7 +1100,7 @@ describe('external SessionEngine with fake runtime', () => {
     });
     broadcastEvents.length = 0;
 
-    const result = await harness.engine.runInjectedTurn({
+    const result = await runInjectedTurn(harness, {
       prompt,
       sessionId,
       workspacePath,
@@ -1337,7 +1517,7 @@ describe('external SessionEngine with fake runtime', () => {
     const workspacePath = join(harness.home, 'workspace');
     const prompt = 'stale fresh Goal turn';
 
-    const result = await harness.engine.runInjectedTurn({
+    const result = await runInjectedTurn(harness, {
       prompt,
       sessionId,
       workspacePath,
@@ -1368,7 +1548,7 @@ describe('external SessionEngine with fake runtime', () => {
     });
     const beforeDispatch = vi.fn(() => guardResult);
 
-    const run = harness.engine.runInjectedTurn({
+    const run = runInjectedTurn(harness, {
       prompt: 'must be canceled before dispatch',
       sessionId,
       workspacePath,
@@ -1397,7 +1577,7 @@ describe('external SessionEngine with fake runtime', () => {
     const workspacePath = join(harness.home, 'workspace');
     const beforeDispatch = vi.fn(async () => ({ accepted: true }));
 
-    const run = harness.engine.runInjectedTurn({
+    const run = runInjectedTurn(harness, {
       prompt: 'must not enter opaque startSession transport',
       sessionId,
       workspacePath,
@@ -1436,7 +1616,7 @@ describe('external SessionEngine with fake runtime', () => {
       scenario: { type: 'desktop' },
       permissionMode: 'fullAgency',
     });
-    const run = harness.engine.runInjectedTurn({
+    const run = runInjectedTurn(harness, {
       prompt: 'stop while admission persistence is waiting',
       sessionId,
       workspacePath,
@@ -1594,7 +1774,7 @@ describe('external SessionEngine with fake runtime', () => {
     const queueId = 'task-fresh-start-stop-unconfirmed';
     const owner = { kind: 'task' as const, id: 'task-start-stop-unconfirmed' };
 
-    const run = harness.engine.runInjectedTurn({
+    const run = runInjectedTurn(harness, {
       prompt: 'must remain addressable until termination is confirmed',
       sessionId,
       workspacePath,
@@ -1638,7 +1818,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sessionId = 'session-exact-stop-preserve-queue';
     const workspacePath = join(harness.home, 'workspace');
 
-    const taskRun = harness.engine.runInjectedTurn({
+    const taskRun = runInjectedTurn(harness, {
       prompt: 'task turn canceled during startup',
       sessionId,
       workspacePath,
@@ -1691,7 +1871,7 @@ describe('external SessionEngine with fake runtime', () => {
       scenario: { type: 'desktop' },
     });
     broadcastEvents.length = 0;
-    const result = await harness.engine.runInjectedTurn({
+    const result = await runInjectedTurn(harness, {
       prompt: 'accepted but stopped Goal turn',
       sessionId,
       workspacePath,
@@ -1730,7 +1910,7 @@ describe('external SessionEngine with fake runtime', () => {
       });
     }
 
-    const result = await harness.engine.runInjectedTurn({
+    const result = await runInjectedTurn(harness, {
       prompt: 'possibly consumed task turn',
       sessionId,
       workspacePath,
@@ -1779,6 +1959,16 @@ describe('external SessionEngine with fake runtime', () => {
     const live = harness.engine.getLiveSessionOverlay(sessionId);
     expect(live.isActive).toBe(true);
     expect(live.liveStreamingMessage?.content).toContain('first fake answer');
+    expect(harness.engine.getStreamReplaySnapshot()).toMatchObject({
+      sessionId,
+      replayMessages: [
+        expect.objectContaining({ role: 'user', content: 'hello' }),
+      ],
+      liveStreamingMessage: expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('first fake answer'),
+      }),
+    });
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.engine.getLatestAssistantResult()).toEqual({
@@ -1821,6 +2011,39 @@ describe('external SessionEngine with fake runtime', () => {
     }));
   });
 
+  it('replays the promoted bound session during pending-to-real startup', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'answer during promoted startup', completeDelayMs: 200 },
+    ]);
+    const pendingSessionId = 'pending-replay-startup';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(
+      desktopRequest(pendingSessionId, workspacePath, 'hello before lifecycle commit'),
+    );
+    await waitFor(() => {
+      const boundSessionId = harness.externalSession.getCurrentBoundSessionId();
+      return Boolean(
+        boundSessionId
+        && boundSessionId !== pendingSessionId
+        && harness.engine.getLiveSessionOverlay(boundSessionId).liveStreamingMessage?.content.includes('answer during promoted startup'),
+      );
+    }, 'promoted startup live snapshot');
+
+    const boundSessionId = harness.externalSession.getCurrentBoundSessionId();
+    expect(boundSessionId).not.toBe(pendingSessionId);
+    expect(harness.engine.getStreamReplaySnapshot()).toMatchObject({
+      sessionId: boundSessionId,
+      replayMessages: [
+        expect.objectContaining({ role: 'user', content: 'hello before lifecycle commit' }),
+      ],
+      liveStreamingMessage: expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('answer during promoted startup'),
+      }),
+    });
+  });
+
   it('materializes a birth-pending Agent Channel session through an injected turn', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'cron relay ready' },
@@ -1828,7 +2051,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sessionId = 'session-agent-channel-birth-pending';
     const workspacePath = join(harness.home, 'workspace');
 
-    const result = await harness.engine.runInjectedTurn({
+    const result = await runInjectedTurn(harness, {
       prompt: 'relay cron completion',
       sessionId,
       workspacePath,
@@ -1855,7 +2078,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sessionId = 'session-agent-channel-without-birth';
     const workspacePath = join(harness.home, 'workspace');
 
-    const result = await harness.engine.runInjectedTurn({
+    const result = await runInjectedTurn(harness, {
       prompt: 'must not recreate deleted session',
       sessionId,
       workspacePath,
@@ -1879,7 +2102,7 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     const sessionId = 'session-failure';
 
-    const result = await harness.engine.runInjectedTurn({
+    const result = await runInjectedTurn(harness, {
       prompt: 'run sync job',
       sessionId,
       workspacePath: join(harness.home, 'workspace'),
@@ -1906,7 +2129,7 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     const onTerminal = vi.fn();
 
-    await harness.engine.runInjectedTurn({
+    await runInjectedTurn(harness, {
       prompt: 'failing measured Goal turn',
       sessionId: 'session-measured-failure',
       workspacePath: join(harness.home, 'workspace'),
@@ -1931,7 +2154,7 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     const onTerminal = vi.fn();
 
-    await harness.engine.runInjectedTurn({
+    await runInjectedTurn(harness, {
       prompt: 'interruptible Goal turn',
       sessionId: 'session-interrupted-goal',
       workspacePath: join(harness.home, 'workspace'),
@@ -2036,7 +2259,7 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     const onTerminal = vi.fn();
 
-    await harness.engine.runInjectedTurn({
+    await runInjectedTurn(harness, {
       prompt: 'measured Goal turn',
       sessionId: 'session-measured-goal',
       workspacePath: join(harness.home, 'workspace'),
@@ -2401,8 +2624,8 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.engine.getLatestAssistantResult().latestResult).toBe('single steered answer');
     expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
       { role: 'user', text: 'first' },
-      { role: 'assistant', text: 'single steered answer' },
       { role: 'user', text: 'second' },
+      { role: 'assistant', text: 'single steered answer' },
     ]);
   });
 
@@ -2413,7 +2636,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sessionId = 'session-realtime-steer-automation';
     const workspacePath = join(harness.home, 'workspace');
 
-    const automationRun = harness.engine.runInjectedTurn({
+    const automationRun = runInjectedTurn(harness, {
       prompt: 'automation prompt',
       sessionId,
       workspacePath,
@@ -2459,7 +2682,7 @@ describe('external SessionEngine with fake runtime', () => {
 
     await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
     await waitFor(() => harness.runtime.sentMessages.includes('first'), 'first ordered-mirror dispatch');
-    await waitFor(() => harness.mirrorCalls.length === 2, 'first ordered mirrors');
+    await waitFor(() => harness.mirrorCalls.length === 1, 'first ordered user mirror');
     const second = await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'second with slow persist'),
     );
@@ -2469,10 +2692,9 @@ describe('external SessionEngine with fake runtime', () => {
 
     harness.runtime.emitForTest({ kind: 'text_delta', text: 'answer after slow steer' });
     harness.runtime.emitForTest({ kind: 'text_stop' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 550));
     expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
       { role: 'user', text: 'first' },
-      { role: 'assistant', text: 'answer before steer' },
     ]);
 
     harness.releaseMessagePersist();
@@ -2480,8 +2702,8 @@ describe('external SessionEngine with fake runtime', () => {
     await waitFor(() => harness.mirrorCalls.length === 4, 'ordered post-steer mirrors');
     expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
       { role: 'user', text: 'first' },
-      { role: 'assistant', text: 'answer before steer' },
       { role: 'user', text: 'second with slow persist' },
+      { role: 'assistant', text: 'answer before steer' },
       { role: 'assistant', text: 'answer after slow steer' },
     ]);
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);

@@ -42,6 +42,7 @@ import {
 } from './tool-attachments';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
+import { summarizeSensitiveValueForLog } from '../utils/log-summary';
 
 type CodexDecision = 'deny' | 'allow_once' | 'always_allow';
 type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -71,10 +72,24 @@ export const CODEX_INITIALIZE_CAPABILITIES = Object.freeze({
   ],
 });
 
-export function buildCodexInitializeParams(): Record<string, unknown> {
+export function buildCodexInitializeParams(experimentalApi = false): Record<string, unknown> {
   return {
     clientInfo: { name: 'MyAgents', title: null, version: process.env.MYAGENTS_VERSION || '0.1.60' },
-    capabilities: CODEX_INITIALIZE_CAPABILITIES,
+    capabilities: experimentalApi
+      ? { ...CODEX_INITIALIZE_CAPABILITIES, experimentalApi: true }
+      : CODEX_INITIALIZE_CAPABILITIES,
+  };
+}
+
+export function summarizeCodexThreadParamsForLog(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const { developerInstructions, ...safeParams } = params;
+  return {
+    ...safeParams,
+    developerInstructions: summarizeSensitiveValueForLog(
+      typeof developerInstructions === 'string' ? developerInstructions : null,
+    ),
   };
 }
 
@@ -819,8 +834,9 @@ function buildCodexInput(text: string, images?: ResolvedImagePayload[]): unknown
 export async function initializeCodexRpc(
   rpc: Pick<JsonRpcClient, 'call' | 'notify'>,
   timeoutMs = 10_000,
+  experimentalApi = false,
 ): Promise<void> {
-  await rpc.call('initialize', buildCodexInitializeParams(), timeoutMs);
+  await rpc.call('initialize', buildCodexInitializeParams(experimentalApi), timeoutMs);
   rpc.notify('initialized');
 }
 
@@ -1222,10 +1238,11 @@ function resolvedServerRequestId(params: Record<string, unknown>): string | null
 //
 // Codex sub-agents are SEPARATE threads multiplexed over the one app-server
 // stdio connection; every item/started + item/completed notification carries a
-// top-level `threadId`. A spawnAgent `collabAgentToolCall` links a parent thread
-// to its child thread(s) via `receiverThreadIds`. We use these to nest a
-// sub-agent's tool calls under the spawn card that created it — mirroring how the
-// builtin SDK nests `parent_tool_use_id` tools under the `Task` card.
+// top-level `threadId`. Legacy Codex links spawnAgent via
+// `collabAgentToolCall.receiverThreadIds`; multi-agent v2 uses the terminal
+// `subAgentActivity` item. Both normalize into the same turn-local maps so a
+// child's trace nests under a CollabAgent card — mirroring the builtin SDK's
+// `parent_tool_use_id` → Task card contract.
 
 /**
  * Resolve a Codex thread to the TOP-LEVEL `spawnAgent` card it should nest under.
@@ -1240,7 +1257,8 @@ function resolvedServerRequestId(params: Record<string, unknown>): string | null
  * @param threadToCard    child threadId → spawnAgent collabAgentToolCall id (from receiverThreadIds)
  * @param threadToParent  child threadId → its immediate parent thread id (from thread/started subagent source)
  * @returns the spawn card id to nest under, or null when threadId maps to no
- *          spawn card (main-thread tools, or unknown thread → render flat).
+ *          spawn card. The item router decides whether null means main-thread
+ *          delivery or a foreign-thread event that must wait for correlation.
  */
 export function resolveTopLevelSpawnCard(
   threadId: string,
@@ -1292,8 +1310,8 @@ export function isChildThreadGatedMethod(method: string): boolean {
  * when it is a sub-agent thread-spawn, else null. Best-effort: Codex 0.135.0
  * does NOT emit `thread/started` for spawned children on the app-server
  * connection (verified live), so this currently only fires on future/other
- * Codex versions that do — the primary card↔child link is the spawnAgent
- * `receiverThreadIds` (populated at item/completed). Tolerant of BOTH the v2
+ * Codex versions that do — the authoritative links are the version-specific
+ * spawn activity items handled below. Tolerant of BOTH the v2
  * app-server casing (`subagent`) and the legacy root-schema casing (`subAgent`),
  * plus the snake_case spawn fields (ts-rs emits Rust names verbatim).
  */
@@ -1340,9 +1358,38 @@ export function recordSpawnAgentChildThreads(
 }
 
 /**
- * Decide the sub-agent scope for an item notification's tool events from its
- * `threadId`. Returns null for main-thread items and for threads that map to no
- * spawn card (→ render flat). Pure — the single tagging decision, unit-tested.
+ * A v2 descendant may announce its own spawn before the ancestor's
+ * `subAgentActivity(started)` reaches this multiplexed stream. In that window
+ * the descendant has a local card id, but it cannot yet be resolved to the
+ * renderer's one-level TOP-LEVEL container. Treat that chain as unresolved so
+ * the adapter can defer it instead of attaching to an orphan nested card.
+ *
+ * Legacy Codex direct children do not expose a parent link; a thread with its
+ * own card and no parent entry therefore remains a valid resolved legacy shape.
+ */
+function hasUnresolvedSubAgentAncestor(
+  threadId: string,
+  mainThreadId: string,
+  threadToCard: ReadonlyMap<string, string>,
+  threadToParent: ReadonlyMap<string, string>,
+): boolean {
+  const visited = new Set<string>();
+  let current = threadId;
+  while (!visited.has(current)) {
+    visited.add(current);
+    const parent = threadToParent.get(current);
+    if (!parent) return false;
+    if (parent === mainThreadId) return !threadToCard.has(current);
+    if (!threadToCard.has(parent) && !threadToParent.has(parent)) return true;
+    current = parent;
+  }
+  return true;
+}
+
+/**
+ * Decide the sub-agent scope for an item notification from its `threadId`.
+ * Returns null for main-thread or not-yet-correlated items; callers MUST use
+ * `computeCodexItemEventRoute` to distinguish main delivery from defer.
  */
 export function computeSubAgentScope(
   itemThreadId: string | undefined,
@@ -1352,10 +1399,41 @@ export function computeSubAgentScope(
   threadMeta: ReadonlyMap<string, { nickname?: string; role?: string }>,
 ): SubAgentScope | null {
   if (!itemThreadId || itemThreadId === mainThreadId) return null;
+  if (hasUnresolvedSubAgentAncestor(itemThreadId, mainThreadId, threadToCard, threadToParent)) {
+    return null;
+  }
   const parentToolUseId = resolveTopLevelSpawnCard(itemThreadId, threadToCard, threadToParent);
   if (!parentToolUseId) return null;
   const meta = threadMeta.get(itemThreadId);
   return { parentToolUseId, nickname: meta?.nickname, role: meta?.role };
+}
+
+export type CodexItemEventRoute =
+  | { kind: 'main' }
+  | { kind: 'subagent'; scope: SubAgentScope }
+  | { kind: 'defer' };
+
+/**
+ * Classify an item notification before it crosses the runtime boundary.
+ * Foreign-thread events are never allowed to inherit the main transcript just
+ * because their correlation signal has not arrived yet.
+ */
+export function computeCodexItemEventRoute(
+  itemThreadId: string | undefined,
+  mainThreadId: string,
+  threadToCard: ReadonlyMap<string, string>,
+  threadToParent: ReadonlyMap<string, string>,
+  threadMeta: ReadonlyMap<string, { nickname?: string; role?: string }>,
+): CodexItemEventRoute {
+  if (!itemThreadId || itemThreadId === mainThreadId) return { kind: 'main' };
+  const scope = computeSubAgentScope(
+    itemThreadId,
+    mainThreadId,
+    threadToCard,
+    threadToParent,
+    threadMeta,
+  );
+  return scope ? { kind: 'subagent', scope } : { kind: 'defer' };
 }
 
 /**
@@ -1399,6 +1477,8 @@ type CollabAgentItemLike = {
   model?: string;
   senderThreadId?: string;
   receiverThreadIds?: string[];
+  activityKind?: 'started' | 'interacted' | 'interrupted';
+  agentPath?: string;
 };
 
 function isCollabAgentError(item: CollabAgentItemLike): boolean {
@@ -1413,6 +1493,8 @@ function buildCollabAgentInput(item: CollabAgentItemLike): Record<string, unknow
   if (item.model) input.model = item.model;
   if (item.senderThreadId) input.senderThreadId = item.senderThreadId;
   if (Array.isArray(item.receiverThreadIds)) input.receiverThreadIds = item.receiverThreadIds;
+  if (item.activityKind) input.activityKind = item.activityKind;
+  if (item.agentPath) input.agentPath = item.agentPath;
   return Object.keys(input).length > 0 ? input : undefined;
 }
 
@@ -1426,7 +1508,130 @@ function buildCollabAgentResultContent(item: CollabAgentItemLike): string {
   if (Array.isArray(item.receiverThreadIds) && item.receiverThreadIds.length > 0) {
     parts.push(`To: ${item.receiverThreadIds.join(', ')}`);
   }
+  if (item.activityKind) parts.push(`Activity: ${item.activityKind}`);
+  if (item.agentPath) parts.push(`Agent: ${item.agentPath}`);
   return parts.join('\n') || 'Collab agent invoked';
+}
+
+type CodexSubAgentCorrelationState = {
+  subThreadToCard: Map<string, string>;
+  subThreadToParent: Map<string, string>;
+  subThreadMeta: Map<string, { nickname?: string; role?: string }>;
+};
+
+type CodexSubAgentActivityKind = 'started' | 'interacted' | 'interrupted';
+
+function subAgentActivityTool(kind: CodexSubAgentActivityKind): string {
+  switch (kind) {
+    case 'started': return 'spawnAgent';
+    case 'interacted': return 'sendInput';
+    case 'interrupted': return 'interruptAgent';
+  }
+}
+
+function buildSubAgentActivityEvents(
+  item: CollabAgentItemLike,
+  subAgent?: SubAgentScope,
+): UnifiedEvent[] {
+  const scoped = subAgent ? { subAgent } : {};
+  return [
+    {
+      kind: 'tool_use_start',
+      toolUseId: item.id,
+      toolName: 'CollabAgent',
+      input: buildCollabAgentInput(item),
+      ...scoped,
+    },
+    { kind: 'tool_use_stop', toolUseId: item.id, ...scoped },
+    {
+      kind: 'tool_result',
+      toolUseId: item.id,
+      content: buildCollabAgentResultContent(item),
+      ...scoped,
+    },
+  ];
+}
+
+/**
+ * Normalize Codex multi-agent v2's terminal `subAgentActivity` item into the
+ * existing CollabAgent container contract and update turn-local correlation.
+ *
+ * `started` is the v2 spawn signal and its item id is the originating
+ * `spawn_agent` call id. `interacted` can also be the first signal for a child
+ * resumed in a later user turn; in that case the interaction card becomes the
+ * new turn-local container. Child-originated activities stay within the
+ * sender's already-resolved top-level card.
+ */
+export function applyCodexSubAgentActivity(
+  state: CodexSubAgentCorrelationState,
+  notificationThreadId: string | undefined,
+  mainThreadId: string,
+  rawItem: unknown,
+): UnifiedEvent[] | null {
+  if (!isRecord(rawItem) || rawItem.type !== 'subAgentActivity') return null;
+  const id = stringValue(rawItem.id);
+  const agentThreadId = stringValue(rawItem.agentThreadId);
+  const agentPath = stringValue(rawItem.agentPath);
+  const kind = rawItem.kind;
+  if (
+    !id
+    || !agentThreadId
+    || !agentPath
+    || (kind !== 'started' && kind !== 'interacted' && kind !== 'interrupted')
+  ) {
+    return null;
+  }
+
+  const senderThreadId = notificationThreadId || mainThreadId;
+  const senderRoute = computeCodexItemEventRoute(
+    senderThreadId,
+    mainThreadId,
+    state.subThreadToCard,
+    state.subThreadToParent,
+    state.subThreadMeta,
+  );
+  const targetRoute = computeCodexItemEventRoute(
+    agentThreadId,
+    mainThreadId,
+    state.subThreadToCard,
+    state.subThreadToParent,
+    state.subThreadMeta,
+  );
+
+  let scope = senderRoute.kind === 'subagent' ? senderRoute.scope : undefined;
+  if (kind === 'started') {
+    state.subThreadToCard.set(agentThreadId, id);
+    if (senderThreadId !== agentThreadId) {
+      state.subThreadToParent.set(agentThreadId, senderThreadId);
+    }
+  } else if (senderThreadId === mainThreadId) {
+    // A current-turn target remains under its original spawn card. When a
+    // persistent v2 child is contacted in a later turn, no current content
+    // block exists for that old card, so this activity becomes the new owner.
+    if (targetRoute.kind === 'subagent') {
+      scope = targetRoute.scope;
+    } else if (agentThreadId !== mainThreadId) {
+      state.subThreadToCard.set(agentThreadId, id);
+      state.subThreadToParent.set(agentThreadId, mainThreadId);
+    }
+  } else if (agentThreadId !== mainThreadId && targetRoute.kind === 'defer') {
+    // Record the edge even when the sender's own top-level spawn activity is
+    // still in flight. Once that ancestor arrives, both the interaction and the
+    // receiver's output resolve together under the same one-level UI card.
+    state.subThreadToCard.set(agentThreadId, scope?.parentToolUseId ?? id);
+    state.subThreadToParent.set(agentThreadId, senderThreadId);
+  }
+
+  const item: CollabAgentItemLike = {
+    id,
+    tool: subAgentActivityTool(kind),
+    status: kind === 'interrupted' ? 'interrupted' : 'completed',
+    senderThreadId,
+    receiverThreadIds: [agentThreadId],
+    activityKind: kind,
+    agentPath,
+  };
+  return buildSubAgentActivityEvents(item, scope);
 }
 
 export function buildCollabAgentControlStartEvents(
@@ -1496,6 +1701,165 @@ function isSubAgentScopedEvent(
     || event.kind === 'tool_use_stop'
     || event.kind === 'tool_result_delta'
     || event.kind === 'tool_result';
+}
+
+function emitScopedCodexItemEvent(
+  event: UnifiedEvent,
+  scope: SubAgentScope,
+  emit: UnifiedEventCallback,
+): void {
+  if (isSubAgentScopedEvent(event)) {
+    if (!event.subAgent) event.subAgent = scope;
+    emit(event);
+    return;
+  }
+  // Attachment completion is routed by the external-session's latched child
+  // tool id, so it does not need SubAgentScope on the event itself.
+  if (event.kind === 'tool_attachment_update') {
+    emit(event);
+    return;
+  }
+  console.warn(`[codex] Suppressed unsupported child item event kind=${event.kind}`);
+}
+
+type CodexSubAgentRoutingState = CodexSubAgentCorrelationState & {
+  threadId: string;
+  deferredSubAgentEvents: Map<string, UnifiedEvent[]>;
+  subAgentThreadsAwaitingActivity: Set<string>;
+};
+
+type CodexLegacySpawnLifecycleState = CodexSubAgentCorrelationState & {
+  threadId: string;
+  activeSubAgentTurns: Map<string, string | null>;
+  completedSubAgentTurnsBeforeActivity: Set<string>;
+};
+
+/** Observe the v1 spawn signal and reserve each newly correlated child once. */
+function recordLegacySpawnAgentLifecycle(
+  proc: CodexLegacySpawnLifecycleState,
+  item: CollabAgentItemLike,
+): void {
+  const newlyCorrelatedChildren = item.tool === 'spawnAgent'
+    && Array.isArray(item.receiverThreadIds)
+    ? item.receiverThreadIds.filter((threadId) => !proc.subThreadToCard.has(threadId))
+    : [];
+  recordSpawnAgentChildThreads(proc, item.tool, item.id, item.receiverThreadIds);
+  for (const childThreadId of newlyCorrelatedChildren) {
+    const completedBeforeCorrelation = proc.completedSubAgentTurnsBeforeActivity
+      .delete(childThreadId);
+    if (
+      childThreadId !== proc.threadId
+      && !completedBeforeCorrelation
+      && !proc.activeSubAgentTurns.has(childThreadId)
+    ) {
+      proc.activeSubAgentTurns.set(childThreadId, null);
+    }
+  }
+}
+
+type CodexV2InteractionDelivery = 'queue-only' | 'trigger-turn';
+
+function hasDeferredToolOwner(
+  proc: CodexSubAgentRoutingState,
+  toolUseId: string,
+): boolean {
+  for (const events of proc.deferredSubAgentEvents.values()) {
+    if (events.some((event) => (
+      'toolUseId' in event && event.toolUseId === toolUseId
+    ))) return true;
+  }
+  return false;
+}
+
+export function dispatchCodexItemEvent(
+  proc: CodexSubAgentRoutingState,
+  itemThreadId: string | undefined,
+  event: UnifiedEvent,
+  emit: UnifiedEventCallback,
+): void {
+  // Attachment fulfillment is already owned downstream by the tool-id latch.
+  // Keep it in this causal buffer only while its placeholder/tool events have
+  // not crossed that boundary yet; afterwards it must survive turn-local
+  // thread-map cleanup and route solely by toolUseId.
+  if (
+    event.kind === 'tool_attachment_update'
+    && !hasDeferredToolOwner(proc, event.toolUseId)
+  ) {
+    emit(event);
+    return;
+  }
+
+  const waitingForActivity = !!itemThreadId
+    && proc.subAgentThreadsAwaitingActivity.has(itemThreadId);
+  const route = computeCodexItemEventRoute(
+    itemThreadId,
+    proc.threadId,
+    proc.subThreadToCard,
+    proc.subThreadToParent,
+    proc.subThreadMeta,
+  );
+  if (route.kind === 'main' && !waitingForActivity) {
+    emit(event);
+    return;
+  }
+  if (route.kind === 'subagent' && !waitingForActivity) {
+    emitScopedCodexItemEvent(event, route.scope, emit);
+    return;
+  }
+
+  if (!itemThreadId) return;
+  let deferred = proc.deferredSubAgentEvents.get(itemThreadId);
+  if (!deferred) {
+    deferred = [];
+    proc.deferredSubAgentEvents.set(itemThreadId, deferred);
+    console.warn(`[codex] Deferring foreign-thread items until sub-agent correlation arrives thread=${itemThreadId.slice(0, 12)}`);
+  }
+  deferred.push(event);
+}
+
+/** Release every backlog whose full ancestor chain now reaches a turn-local card. */
+export function flushResolvableCodexSubAgentEvents(
+  proc: CodexSubAgentRoutingState,
+  emit: UnifiedEventCallback,
+): void {
+  const depthFromMain = (threadId: string): number => {
+    const visited = new Set<string>();
+    let current = threadId;
+    let depth = 0;
+    while (!visited.has(current)) {
+      visited.add(current);
+      const parent = proc.subThreadToParent.get(current);
+      if (!parent) return depth + 1;
+      depth += 1;
+      if (parent === proc.threadId) return depth;
+      current = parent;
+    }
+    return Number.MAX_SAFE_INTEGER;
+  };
+
+  const ready = [...proc.deferredSubAgentEvents.entries()]
+    .map(([threadId, events]) => ({
+      threadId,
+      events,
+      route: computeCodexItemEventRoute(
+        threadId,
+        proc.threadId,
+        proc.subThreadToCard,
+        proc.subThreadToParent,
+        proc.subThreadMeta,
+      ),
+      depth: depthFromMain(threadId),
+    }))
+    .filter((entry): entry is typeof entry & { route: { kind: 'subagent'; scope: SubAgentScope } } => (
+      entry.route.kind === 'subagent'
+      && !proc.subAgentThreadsAwaitingActivity.has(entry.threadId)
+    ))
+    .sort((a, b) => a.depth - b.depth);
+
+  for (const { threadId, events, route } of ready) {
+    proc.deferredSubAgentEvents.delete(threadId);
+    for (const event of events) emitScopedCodexItemEvent(event, route.scope, emit);
+  }
 }
 
 // ─── Model cache ───
@@ -1711,6 +2075,50 @@ class CodexProcess implements RuntimeProcess {
   // notifications may have receiverThreadIds while completed notifications may
   // omit them (or vice versa), so latch the route for the item lifetime.
   collabControlToolParents = new Map<string, string[]>();
+  // Foreign-thread item events whose spawn/interact correlation has not reached
+  // this multiplexed stream yet. Codex v2 starts the child before emitting the
+  // parent's subAgentActivity, so this is a real causal window, not a retry
+  // mechanism. Entries are released as soon as an ancestor card resolves and
+  // discarded at the main turn boundary rather than leaking into the transcript.
+  deferredSubAgentEvents = new Map<string, UnifiedEvent[]>();
+  // Child turns are multiplexed independently and may finish after the root
+  // model has produced its own terminal. Hold the root terminal until
+  // every observed/started child turn settles so the existing current-turn
+  // content owner can persist the complete nested trace.
+  activeSubAgentTurns = new Map<string, string | null>();
+  // A child can settle before its parent-side v2 activity or v1 spawn item is
+  // observed. The terminal proves that a later correlation signal must not
+  // reserve the already-finished child again.
+  completedSubAgentTurnsBeforeActivity = new Set<string>();
+  // A foreign turn can start producing items before the parent-side
+  // subAgentActivity that caused it is emitted. Even an already-known child
+  // must hold those items until the new interaction card crosses the stream.
+  subAgentThreadsAwaitingActivity = new Set<string>();
+  // Multi-agent v1 and v2 share child turn lifecycle notifications, but only
+  // v2 emits subAgentActivity. Gate the activity fence on a process-lifetime
+  // observation so legacy collabAgentToolCall children never wait for an item
+  // their protocol cannot produce.
+  codexV2SubAgentActivityObserved = false;
+  // app-server's typed `interacted` item intentionally merges send_message
+  // (queue only) and followup_task (turn trigger). Managed Codex opts into the
+  // official raw item stream so the originating function name can be latched
+  // by call_id before the lossy terminal item arrives.
+  codexV2InteractionDeliveryByCallId = new Map<string, CodexV2InteractionDelivery>();
+  // `interacted` conflates queue-only send_message and turn-triggering
+  // followup_task. Remember an activity that precedes turn/started so the
+  // latter does not install a stale causal fence, but never infer execution
+  // ownership from the ambiguous activity alone.
+  subAgentActivitySeenBeforeTurnStart = new Set<string>();
+  // Deduplicate force-send and root-failure interrupts targeting the same
+  // concrete child turn. The key is threadId + turnId, not just threadId,
+  // because persistent children may execute multiple turns in one session.
+  subAgentInterruptsInFlight = new Map<string, Promise<void>>();
+  pendingMainTurnCompletion: UnifiedEvent[] | null = null;
+  interruptPendingSubAgentTurns = false;
+  // The adapter is tearing down this app-server while the root terminal is
+  // held (failed child interrupt or unresolved lossy interaction). The exit
+  // callback releases the original terminal before closing the runtime owner.
+  releaseHeldMainTurnOnExit = false;
 
   workspacePath = '';
   scenario: InteractionScenario = { type: 'desktop' };
@@ -2649,31 +3057,33 @@ export class CodexRuntime implements AgentRuntime {
           console.log(`[codex] ${method}${detail}`);
         });
       }
-      const result = this.parseNotification(codexProc, method, params, wrappedOnEvent);
-      if (!result) return;
-      // parseNotification may return one event or an array (e.g., tool_use_stop + tool_result)
-      const events = Array.isArray(result) ? result : [result];
-      // PRD 0.2.27 — sub-agent scoping (single tagging point). Codex multiplexes
-      // spawned sub-agent threads over this one stream; every item notification
-      // carries a top-level `threadId`. When an item comes from a spawned
-      // sub-agent thread, stamp its tool events with the spawn card to nest under
-      // — so external-session routes them to chat:subagent-* instead of flat.
-      // The top-level spawnAgent card itself is emitted on the MAIN thread, so
-      // the `!== threadId` guard naturally leaves it untagged (it IS the parent).
       const notifParams = params as Record<string, unknown> | undefined;
-      const scope = computeSubAgentScope(
-        stringValue(notifParams?.threadId),
-        codexProc.threadId,
-        codexProc.subThreadToCard,
-        codexProc.subThreadToParent,
-        codexProc.subThreadMeta,
-      );
-      if (scope) {
-        for (const event of events) {
-          if (isSubAgentScopedEvent(event) && !event.subAgent) event.subAgent = scope;
-        }
+      const itemThreadId = stringValue(notifParams?.threadId);
+      const isItemNotification = method.startsWith('item/');
+      // Async attachment completions must cross the same owner boundary as the
+      // synchronous item that scheduled them. Capture this notification's
+      // thread identity instead of bypassing sub-agent routing.
+      const emitFromNotification: UnifiedEventCallback = isItemNotification
+        ? (event) => dispatchCodexItemEvent(codexProc, itemThreadId, event, wrappedOnEvent)
+        : wrappedOnEvent;
+      const result = this.parseNotification(codexProc, method, params, emitFromNotification);
+      if (result) {
+        // parseNotification may return one event or an array (e.g., tool_use_stop + tool_result)
+        const events = Array.isArray(result) ? result : [result];
+        for (const event of events) emitFromNotification(event);
       }
-      for (const event of events) wrappedOnEvent(event);
+      // A spawn/activity parsed above may have completed an ancestor chain.
+      // Emit the parent card first, then release causally-earlier child events.
+      if (isItemNotification && codexProc.deferredSubAgentEvents.size > 0) {
+        flushResolvableCodexSubAgentEvents(codexProc, wrappedOnEvent);
+      }
+      // If a child settled before its parent activity arrived, the held root
+      // may become releasable only after the activity and its buffered child
+      // events have crossed the stream. Keep the terminal last.
+      const readyMainTerminal = this.takeReadyPendingMainTurn(codexProc);
+      if (readyMainTerminal) {
+        for (const event of readyMainTerminal) wrappedOnEvent(event);
+      }
     });
 
     // Wire up server-request handler for approval requests
@@ -2697,6 +3107,10 @@ export class CodexRuntime implements AgentRuntime {
       }
       mcpStartup.fail(new Error(`Codex process exited during MCP startup with code ${code}`));
       if (codexProc.intentionalKillDuringStartup) return;
+      const heldEvents = this.takeHeldMainTurnForProcessExit(codexProc);
+      if (heldEvents) {
+        for (const event of heldEvents) wrappedOnEvent(event);
+      }
       wrappedOnEvent({
         kind: 'session_complete',
         result: code === 0 ? '' : `Codex process exited with code ${code}`,
@@ -2738,7 +3152,14 @@ export class CodexRuntime implements AgentRuntime {
 
     try {
       // 1. Initialize handshake
-      await initializeCodexRpc(codexProc.rpc, 15_000);
+      // Managed runtime is pinned to a schema that supports the experimental
+      // raw response-item stream on new threads. It restores semantic
+      // information that typed v2 subAgentActivity omits. Resume has no raw-
+      // events request field, and System CLI may be older, so both retain the
+      // stable handshake surface.
+      const enableManagedRawEvents = runtimeSource === 'managed-provider'
+        && !options.resumeSessionId;
+      await initializeCodexRpc(codexProc.rpc, 15_000, enableManagedRawEvents);
       await configureCodexSkillExtraRoots(codexProc.rpc, options.workspacePath);
 
       // 2. Determine permission mode
@@ -2778,7 +3199,7 @@ export class CodexRuntime implements AgentRuntime {
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
         };
-        console.log(`[codex] RPC thread/resume: ${JSON.stringify(resumeParams)}`);
+        console.log(`[codex] RPC thread/resume: ${JSON.stringify(summarizeCodexThreadParamsForLog(resumeParams))}`);
         const result = await codexProc.rpc.call('thread/resume', resumeParams, 30_000) as { thread: { id: string } };
         codexProc.threadId = result.thread.id;
 
@@ -2802,8 +3223,9 @@ export class CodexRuntime implements AgentRuntime {
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
           ephemeral: false,
+          ...(enableManagedRawEvents ? { experimentalRawEvents: true } : {}),
         };
-        console.log(`[codex] RPC thread/start: ${JSON.stringify(startParams)}`);
+        console.log(`[codex] RPC thread/start: ${JSON.stringify(summarizeCodexThreadParamsForLog(startParams))}`);
         const result = await codexProc.rpc.call('thread/start', startParams, 30_000) as { thread: { id: string }; model: string };
         codexProc.threadId = result.thread.id;
 
@@ -2989,15 +3411,125 @@ export class CodexRuntime implements AgentRuntime {
   /**
    * Interrupt the current turn WITHOUT closing stdin (process stays alive). The app-server
    * emits `turn/completed` (non-failed status) → unified `turn_complete` → the session goes
-   * idle, so the queued message can run next. Used by force-send. No-op if no turn is active.
+   * idle, so the queued message can run next. If the root terminal is already held for active
+   * children, interrupt those exact child turns instead. Used by force-send.
    */
   async interruptTurn(process: RuntimeProcess): Promise<void> {
     const codexProc = process as CodexProcess;
-    if (codexProc.exited || !codexProc.currentTurnId) return;
+    if (codexProc.exited) return;
+    if (codexProc.pendingMainTurnCompletion) {
+      await this.interruptActiveSubAgentTurns(codexProc);
+      return;
+    }
+    if (!codexProc.currentTurnId) return;
     await codexProc.rpc.call('turn/interrupt', {
       threadId: codexProc.threadId,
       turnId: codexProc.currentTurnId,
     }, 3_000).catch(() => { /* turn may already be ending; the turn/completed event drives idle */ });
+  }
+
+  private clearTurnLocalSubAgentState(codexProc: CodexProcess): void {
+    if (codexProc.deferredSubAgentEvents.size > 0) {
+      const eventCount = [...codexProc.deferredSubAgentEvents.values()]
+        .reduce((sum, events) => sum + events.length, 0);
+      console.warn(
+        `[codex] Discarding ${eventCount} uncorrelated foreign-thread item events at turn completion`,
+      );
+      codexProc.deferredSubAgentEvents.clear();
+    }
+    codexProc.subThreadToCard.clear();
+    codexProc.subThreadToParent.clear();
+    codexProc.subThreadMeta.clear();
+    codexProc.collabControlToolParents.clear();
+    codexProc.activeSubAgentTurns.clear();
+    codexProc.completedSubAgentTurnsBeforeActivity.clear();
+    codexProc.subAgentThreadsAwaitingActivity.clear();
+    codexProc.subAgentActivitySeenBeforeTurnStart.clear();
+    codexProc.codexV2InteractionDeliveryByCallId.clear();
+    codexProc.subAgentInterruptsInFlight.clear();
+    codexProc.pendingMainTurnCompletion = null;
+    codexProc.interruptPendingSubAgentTurns = false;
+    codexProc.releaseHeldMainTurnOnExit = false;
+  }
+
+  private completeMainTurn(codexProc: CodexProcess, events: UnifiedEvent[]): UnifiedEvent[] {
+    this.clearTurnLocalSubAgentState(codexProc);
+    return events;
+  }
+
+  /**
+   * If a root terminal arrives while child correlation is unresolved, the
+   * process itself is the only exact isolation boundary. This covers both a
+   * missing v2 activity and resumed/older schemas that merge queue-only
+   * send_message with turn-triggering followup_task. Release the real root
+   * terminal on exit, then let the existing resume path create a clean runtime.
+   */
+  private restartAfterUnresolvedSubAgentCorrelation(
+    codexProc: CodexProcess,
+    events: UnifiedEvent[],
+  ): void {
+    codexProc.pendingMainTurnCompletion = events;
+    codexProc.releaseHeldMainTurnOnExit = true;
+    console.warn('[codex] Restarting runtime after unresolved sub-agent correlation at root terminal');
+    void this.stopSession(codexProc);
+  }
+
+  private takeReadyPendingMainTurn(codexProc: CodexProcess): UnifiedEvent[] | null {
+    if (
+      codexProc.releaseHeldMainTurnOnExit
+      || !codexProc.pendingMainTurnCompletion
+      || codexProc.activeSubAgentTurns.size > 0
+    ) return null;
+    return this.completeMainTurn(codexProc, codexProc.pendingMainTurnCompletion);
+  }
+
+  private takeHeldMainTurnForProcessExit(codexProc: CodexProcess): UnifiedEvent[] | null {
+    if (!codexProc.releaseHeldMainTurnOnExit || !codexProc.pendingMainTurnCompletion) {
+      return null;
+    }
+    return this.completeMainTurn(codexProc, codexProc.pendingMainTurnCompletion);
+  }
+
+  private interruptSubAgentTurn(
+    codexProc: CodexProcess,
+    threadId: string,
+    turnId: string,
+  ): Promise<void> {
+    const key = `${threadId}\u0000${turnId}`;
+    const existing = codexProc.subAgentInterruptsInFlight.get(key);
+    if (existing) return existing;
+
+    const interrupt = (async (): Promise<void> => {
+      try {
+        await codexProc.rpc.call('turn/interrupt', { threadId, turnId }, 3_000);
+      } catch (err) {
+        // The child may have settled while the RPC was in flight. Only a still-
+        // owned child under a still-held root warrants the process fallback.
+        if (
+          codexProc.exited
+          || !codexProc.pendingMainTurnCompletion
+          || codexProc.activeSubAgentTurns.get(threadId) !== turnId
+          || codexProc.releaseHeldMainTurnOnExit
+        ) return;
+        console.warn(
+          `[codex] Child turn interrupt failed thread=${threadId.slice(0, 12)}; restarting runtime to preserve the held root boundary: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        codexProc.releaseHeldMainTurnOnExit = true;
+        await this.stopSession(codexProc);
+      } finally {
+        codexProc.subAgentInterruptsInFlight.delete(key);
+      }
+    })();
+    codexProc.subAgentInterruptsInFlight.set(key, interrupt);
+    return interrupt;
+  }
+
+  private async interruptActiveSubAgentTurns(codexProc: CodexProcess): Promise<void> {
+    codexProc.interruptPendingSubAgentTurns = true;
+    await Promise.all([...codexProc.activeSubAgentTurns.entries()].map(([threadId, turnId]) => {
+      if (!turnId) return;
+      return this.interruptSubAgentTurn(codexProc, threadId, turnId);
+    }));
   }
 
   async respondPermission(
@@ -3074,8 +3606,8 @@ export class CodexRuntime implements AgentRuntime {
   ): ToolAttachment {
     const { attachment, pendingId } = makePlaceholderAttachment(ctx);
     // Wrap in a tracked promise so `persistTurnResult` can await all in-flight
-    // saves before snapshotting currentContentBlocks. queueMicrotask ensures
-    // the synchronous tool_result emit lands first, then this fulfills the
+    // saves before snapshotting currentContentBlocks. The first await yields,
+    // so the synchronous tool_result emit lands before this fulfills the
     // placeholder. Codex review SM1.
     const tracked = (async (): Promise<void> => {
       try {
@@ -3124,7 +3656,39 @@ export class CodexRuntime implements AgentRuntime {
     if (isChildThreadGatedMethod(method)) {
       const evtThreadId = stringValue(p.threadId);
       if (evtThreadId && codexProc.threadId && evtThreadId !== codexProc.threadId) {
-        return null; // ignore child-thread event; only the main thread drives the session
+        if (method === 'turn/started') {
+          const childTurnId = stringValue(p.turnId)
+            ?? stringValue(objectValue(p.turn).id);
+          const activityAlreadyArrived = (
+            codexProc.activeSubAgentTurns.has(evtThreadId)
+            && codexProc.activeSubAgentTurns.get(evtThreadId) === null
+          ) || codexProc.subAgentActivitySeenBeforeTurnStart.delete(evtThreadId);
+          codexProc.completedSubAgentTurnsBeforeActivity.delete(evtThreadId);
+          codexProc.activeSubAgentTurns.set(evtThreadId, childTurnId ?? null);
+          if (!activityAlreadyArrived && codexProc.codexV2SubAgentActivityObserved) {
+            codexProc.subAgentThreadsAwaitingActivity.add(evtThreadId);
+          }
+          if (codexProc.interruptPendingSubAgentTurns && childTurnId) {
+            void this.interruptSubAgentTurn(codexProc, evtThreadId, childTurnId);
+          }
+        } else if (
+          method === 'turn/completed'
+          || method === 'thread/closed'
+          || (
+            method === 'thread/status/changed'
+            && objectValue(p.status).type === 'systemError'
+          )
+        ) {
+          codexProc.activeSubAgentTurns.delete(evtThreadId);
+          if (
+            codexProc.subAgentThreadsAwaitingActivity.has(evtThreadId)
+            || !codexProc.subThreadToCard.has(evtThreadId)
+          ) {
+            codexProc.completedSubAgentTurnsBeforeActivity.add(evtThreadId);
+          }
+          return this.takeReadyPendingMainTurn(codexProc);
+        }
+        return null; // child lifecycle informs ownership but never drives it directly
       }
     }
 
@@ -3136,9 +3700,9 @@ export class CodexRuntime implements AgentRuntime {
         // thread/started here, record its parent link + nickname/role for richer
         // labels + depth>1 chains. NOTE: Codex 0.135.0 does NOT emit child
         // thread/started on the app-server connection (verified live) — so this
-        // is currently inert; the PRIMARY card↔child link is the spawnAgent
-        // item's receiverThreadIds (populated at item/completed). Kept for
-        // forward-compat with Codex versions that do surface it.
+        // is not an authoritative link by itself. Legacy spawnAgent receivers
+        // and v2 subAgentActivity items below own card correlation; this source
+        // remains useful for ancestry and optional labels.
         const sub = parseSubAgentThreadSource(p.thread);
         const childId = stringValue(objectValue(p.thread).id);
         if (sub && childId) {
@@ -3165,6 +3729,8 @@ export class CodexRuntime implements AgentRuntime {
 
       // ── Turn lifecycle ──
       case 'turn/started': {
+        codexProc.completedSubAgentTurnsBeforeActivity.clear();
+        codexProc.pendingMainTurnCompletion = null;
         const turnId = stringValue(p.turnId)
           ?? stringValue(objectValue(p.turn).id);
         if (turnId) {
@@ -3179,17 +3745,54 @@ export class CodexRuntime implements AgentRuntime {
 
       case 'turn/completed': {
         const turn = p.turn;
-        // PRD 0.2.27 — sub-agent threads live within a turn; clear correlation
-        // maps at turn end so a stale child threadId can't re-parent next turn's
-        // tools and the maps don't grow unbounded across a long session.
-        codexProc.subThreadToCard.clear();
-        codexProc.subThreadToParent.clear();
-        codexProc.subThreadMeta.clear();
-        codexProc.collabControlToolParents.clear();
-        return [
+        const events: UnifiedEvent[] = [
           mapCodexTurnCompletedNotification(turn),
           { kind: 'agent_plan_update', todos: [] },
         ];
+        const status = stringValue(objectValue(turn).status);
+        if (
+          codexProc.subAgentThreadsAwaitingActivity.size > 0
+          || codexProc.subAgentActivitySeenBeforeTurnStart.size > 0
+        ) {
+          this.restartAfterUnresolvedSubAgentCorrelation(codexProc, events);
+          return null;
+        }
+        if (
+          codexProc.activeSubAgentTurns.size > 0
+        ) {
+          codexProc.pendingMainTurnCompletion = events;
+          if (status !== 'completed') {
+            void this.interruptActiveSubAgentTurns(codexProc);
+          }
+          return null;
+        }
+        return this.completeMainTurn(codexProc, events);
+      }
+
+      // Managed Codex 0.144.1 raw protocol item. The typed terminal activity
+      // intentionally omits whether `interacted` came from send_message or
+      // followup_task; retain only that one semantic bit, keyed by the shared
+      // call id, and keep the rest of the raw model payload out of MyAgents.
+      case 'rawResponseItem/completed': {
+        const item = objectValue(p.item);
+        if (item.type !== 'function_call') return null;
+        const callId = stringValue(item.call_id);
+        const name = stringValue(item.name);
+        if (!callId || !name) return null;
+        if (
+          name === 'spawn_agent'
+          || name === 'send_message'
+          || name === 'followup_task'
+          || name === 'interrupt_agent'
+        ) {
+          codexProc.codexV2SubAgentActivityObserved = true;
+        }
+        if (name === 'send_message') {
+          codexProc.codexV2InteractionDeliveryByCallId.set(callId, 'queue-only');
+        } else if (name === 'followup_task') {
+          codexProc.codexV2InteractionDeliveryByCallId.set(callId, 'trigger-turn');
+        }
+        return null;
       }
 
       // ── Text streaming ──
@@ -3300,7 +3903,7 @@ export class CodexRuntime implements AgentRuntime {
             // tools nest under THIS card. receiverThreadIds is often empty at
             // started; item/completed is authoritative. Only `spawnAgent` creates
             // the relationship (wait/closeAgent/sendInput reference existing ones).
-            recordSpawnAgentChildThreads(codexProc, item.tool, item.id, item.receiverThreadIds);
+            recordLegacySpawnAgentLifecycle(codexProc, item);
             const controlParents = resolveCollabAgentControlParents(
               item.tool,
               item.receiverThreadIds,
@@ -3588,11 +4191,64 @@ export class CodexRuntime implements AgentRuntime {
             // through item/plan/delta as thinking_delta already.
             return { kind: 'thinking_stop', index: 0, traceId: codexTraceId(p, item.id, 'plan') };
           }
+          case 'subAgentActivity': {
+            // Codex multi-agent v2 (0.144.1): spawn/message/interrupt tools are
+            // represented solely by this terminal activity item. Its id is the
+            // originating tool call id and agentThreadId is the correlation key.
+            const events = applyCodexSubAgentActivity(
+              codexProc,
+              stringValue(p.threadId),
+              codexProc.threadId,
+              item,
+            );
+            if (!events) {
+              console.warn('[codex] item/completed: malformed subAgentActivity');
+            } else {
+              codexProc.codexV2SubAgentActivityObserved = true;
+              const activity = item as Record<string, unknown>;
+              const activityThreadId = stringValue(activity.agentThreadId);
+              const interactionDelivery = activity.kind === 'interacted'
+                ? codexProc.codexV2InteractionDeliveryByCallId.get(item.id)
+                : undefined;
+              codexProc.codexV2InteractionDeliveryByCallId.delete(item.id);
+              if (
+                (activity.kind === 'started' || activity.kind === 'interacted')
+                && activityThreadId
+              ) {
+                const completedBeforeActivity = codexProc.completedSubAgentTurnsBeforeActivity
+                  .delete(activityThreadId);
+                codexProc.subAgentThreadsAwaitingActivity.delete(activityThreadId);
+                if (
+                  activityThreadId !== codexProc.threadId
+                  && !completedBeforeActivity
+                  && !codexProc.activeSubAgentTurns.has(activityThreadId)
+                ) {
+                  if (activity.kind === 'started') {
+                    // spawn_agent always starts a child turn.
+                    codexProc.activeSubAgentTurns.set(activityThreadId, null);
+                  } else if (interactionDelivery === 'trigger-turn') {
+                    // The raw function-call item is emitted before tool
+                    // execution, so a known followup_task can reserve its
+                    // child lifecycle even if root turn/completed wins the
+                    // cross-thread notification race.
+                    codexProc.activeSubAgentTurns.set(activityThreadId, null);
+                  } else if (!interactionDelivery) {
+                    // Resumed/older protocols may not provide the raw
+                    // discriminator. Never reserve an ambiguous interaction:
+                    // queue-only send_message must not hang the root. A later
+                    // child turn still becomes the execution owner itself.
+                    codexProc.subAgentActivitySeenBeforeTurnStart.add(activityThreadId);
+                  }
+                }
+              }
+            }
+            return events;
+          }
           case 'collabAgentToolCall': {
             // PRD 0.2.15 — multi-agent collab tool was completely dropped before.
             // PRD 0.2.27 — authoritative spawn card↔child-thread link (receiverThreadIds
             // is populated by completion time).
-            recordSpawnAgentChildThreads(codexProc, item.tool, item.id, item.receiverThreadIds);
+            recordLegacySpawnAgentLifecycle(codexProc, item);
             const resolvedParents = resolveCollabAgentControlParents(
               item.tool,
               item.receiverThreadIds,

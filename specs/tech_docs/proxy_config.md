@@ -2,7 +2,7 @@
 
 ## 概述
 
-MyAgents 支持统一的应用代理配置，并按请求 owner 分成两个独立维度：非 Provider-owned 的“通用网络请求”基线，以及逐个模型 Provider 的专属路径。代理配置存储在 `~/.myagents/config.json` 中，由应用的「设置 - 通用 - 网络代理」管理。
+MyAgents 支持统一的应用代理配置，并按请求 owner 分成两个独立维度：非 Provider-owned 的“通用网络请求”基线，以及逐个模型 Provider 的专属路径。代理配置存储在 `~/.myagents/config.json` 中，由应用的独立「设置 → 网络代理」子页管理；页面只编辑配置，热传播与运行时 owner 不依赖该页面是否挂载。
 
 ---
 

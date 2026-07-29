@@ -39,6 +39,7 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       'POST /api/im/session/new',
       'POST /api/interaction-scenario/set',
       'POST /api/mcp/set',
+      'POST /api/workbench-agent/configure',
       'POST /api/official-tools/session-enable',
       'POST /api/agents/set',
       'POST /api/provider/set',

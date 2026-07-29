@@ -6,7 +6,7 @@
 
 [中文](#chinese) · [English](#english) · [官网](https://myagents.io) · [下载](https://myagents.io) · [架构文档](specs/ARCHITECTURE.md) · [贡献指南](CONTRIBUTING.md)
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13.0+-black.svg)](https://www.apple.com/macos/)
 [![Windows](https://img.shields.io/badge/Windows-10+-blue.svg)](https://www.microsoft.com/windows/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-orange.svg)](https://tauri.app/)
@@ -232,10 +232,10 @@ specs/                        架构、设计、技术文档
 
 - **Session : Sidecar = 1 : 1**：每个会话最多一个 Sidecar，Tab、CronTask、BackgroundCompletion、Agent 通过 Owner 模型共享生命周期。
 - **Tab-Scoped 隔离**：Chat Tab 内使用 tab-scoped API；Settings 和 Launcher 使用 Global Sidecar。
-- **前端 HTTP/SSE 走 Rust 代理**：WebView 不直接访问 Sidecar 端口。
+- **控制面 HTTP/SSE 走 Rust 代理**：普通 API 不由 WebView 直连 Sidecar；仅 `/refs/:id`、`/attachment/*` 大载荷数据面在 CORS/CSP/路径安全约束下原生 fetch。
 - **工作区文件 IO 走 Tauri/Rust**：文件树、读写、搜索、打开、watcher 不走 Sidecar HTTP。
 - **配置写盘 disk-first**：多进程共享配置必须读磁盘最新值再合并写入。
-- **Runtime 分流明确**：外部 Runtime 走 `external-session.ts`，不能让 builtin SDK resume 外部会话。
+- **Runtime 分流明确**：Session 操作统一走 `src/server/session-engine/` facade，由 selector 选择 builtin 或 external adapter；不能让 builtin SDK resume 外部会话。
 
 完整架构请读 [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md)。具体模块请按需阅读：
 
@@ -273,6 +273,20 @@ refactor: simplify ...
 test: cover ...
 chore: bump ...
 ```
+
+## 许可证
+
+MyAgents 采用 [GNU Affero General Public License v3.0](LICENSE)
+（`AGPL-3.0-only`）。个人和企业都可以免费使用，也可以商业使用；分发修改版、通过网络向
+用户提供修改版等场景需要完整履行 AGPL，包括在适用时提供对应源码。
+
+如果你希望在不履行 AGPL 开源义务的情况下闭源修改、嵌入、OEM、分发或托管 MyAgents，
+需要取得单独的商业许可证。请联系
+[myagents.io@gmail.com](mailto:myagents.io@gmail.com)。
+
+完整说明见 [LICENSING.md](LICENSING.md)，商业许可概要见
+[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md)。第三方组件继续适用各自许可证，详见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <a id="english"></a>
 
@@ -492,10 +506,10 @@ specs/                        Architecture, design, and technical docs
 
 - **Session : Sidecar = 1 : 1**: each session has at most one Sidecar. Tabs, CronTasks, BackgroundCompletion, and Agents share lifecycle through the Owner model.
 - **Tab-scoped isolation**: Chat Tabs use tab-scoped APIs. Settings and Launcher use the Global Sidecar.
-- **Frontend HTTP/SSE goes through the Rust proxy**: WebView does not access Sidecar ports directly.
+- **Control-plane HTTP/SSE goes through the Rust proxy**: ordinary APIs never connect from the WebView to a Sidecar; only the `/refs/:id` and `/attachment/*` large-payload data plane uses native fetch under CORS, CSP, and path-safety constraints.
 - **Workspace file IO goes through Tauri/Rust**: file tree, reads/writes, search, open, and watcher do not use Sidecar HTTP.
 - **Config writes are disk-first**: shared multi-process config must load the latest disk state before merging and writing.
-- **Runtime routing must be explicit**: external runtimes go through `external-session.ts`; the builtin SDK must not resume external-runtime sessions.
+- **Runtime routing must be explicit**: session operations go through the `src/server/session-engine/` facade, whose selector chooses the builtin or external adapter; the builtin SDK must not resume external-runtime sessions.
 
 Read [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md) for the full architecture. Module-specific docs:
 
@@ -534,6 +548,18 @@ test: cover ...
 chore: bump ...
 ```
 
-## 许可证
+## License
 
-MyAgents 使用 [Apache License 2.0](LICENSE) 开源。
+MyAgents is available under the
+[GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+Individuals and companies may use it for free, including commercially, when
+they comply with the AGPL. A separate commercial license is required for
+closed-source modification, embedding, OEM distribution, proprietary
+distribution, or hosted offerings that do not comply with the AGPL. Contact
+[myagents.io@gmail.com](mailto:myagents.io@gmail.com).
+
+See [LICENSING.md](LICENSING.md) for details,
+[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md) for a commercial licensing
+overview, and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for independently licensed
+components.

@@ -65,7 +65,10 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { normalizeUiLanguage, type SupportedLocale, type UiLanguage } from '../../shared/i18n';
-import { removeProviderFromProxySettingsScope } from '../../shared/proxyScope';
+import {
+    effectiveGeneralProxyScopeKey,
+    removeProviderFromProxySettingsScope,
+} from '../../shared/proxyScope';
 
 interface ManagedCodexStatusResult {
     runtimeInstall: ManagedCodexRuntimeInstallState;
@@ -346,6 +349,28 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     useEffect(() => {
         configRef.current = config;
     }, [config]);
+
+    // Proxy configuration is app-global, so propagation belongs to the config
+    // authority rather than any Settings Tab. This guarantees exactly one
+    // side-effect owner even when Settings and Capabilities are both kept
+    // mounted to preserve their independent local UI state.
+    const previousProxyRef = useRef<{ serialized: string; generalKey: string } | undefined>(undefined);
+    useEffect(() => {
+        if (isLoading) return;
+        const serialized = JSON.stringify(config.proxySettings ?? null);
+        const generalKey = effectiveGeneralProxyScopeKey(config.proxySettings);
+        if (previousProxyRef.current === undefined) {
+            previousProxyRef.current = { serialized, generalKey };
+            return;
+        }
+        if (previousProxyRef.current.serialized === serialized) return;
+        const restartGeneralOwners = previousProxyRef.current.generalKey !== generalKey;
+        previousProxyRef.current = { serialized, generalKey };
+
+        void import('@tauri-apps/api/core')
+            .then(({ invoke }) => invoke('cmd_propagate_proxy', { restartGeneralOwners }))
+            .catch((error) => console.error('[ConfigProvider] Proxy propagation failed:', error));
+    }, [config.proxySettings, isLoading]);
 
     const commitConfigDiskSnapshot = useCallback(async (): Promise<ConfigDiskSnapshot | null> => {
         const snapshotRevision = ++diskSnapshotRevisionRef.current;

@@ -29,6 +29,8 @@ import {
 } from '../utils/admin-config';
 import { processImage } from '../utils/imageResize';
 import { applyProviderContextWindowSuffix } from '../utils/model-capabilities';
+import { createGuardedSdkQuery } from '../utils/sdk-child-launch-guard';
+import { sdkSubprocessUserMessage } from '../utils/sdk-subprocess-diagnostics';
 import type { ResolvedImagePayload } from '../runtimes/types';
 import type { SessionMetadata } from '../types/session';
 
@@ -470,7 +472,7 @@ async function runVisionQueryInner(args: {
     };
   }
 
-  const visionQuery = query({
+  const visionQuery = await createGuardedSdkQuery(cliPath, () => query({
     prompt: visionPrompt(),
     options: {
       maxTurns: 1,
@@ -490,7 +492,7 @@ async function runVisionQueryInner(args: {
       model: applyProviderContextWindowSuffix(args.model, args.providerId),
       abortController,
     },
-  });
+  }));
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -549,5 +551,7 @@ export function visionErrorResponse(error: unknown): {
   if (error instanceof VisionToolError) {
     return { status: error.status, error: error.message, recoveryHint: error.recoveryHint };
   }
+  const sdkLaunchMessage = sdkSubprocessUserMessage(error);
+  if (sdkLaunchMessage) return { status: 503, error: sdkLaunchMessage };
   return { status: 500, error: error instanceof Error ? error.message : String(error) };
 }

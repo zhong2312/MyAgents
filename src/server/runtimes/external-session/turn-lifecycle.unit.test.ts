@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  admitExternalRealtimeChannelDelivery,
+  admitExternalTurnChannelDelivery,
   beginExternalTurnPromotion,
   bindExternalTurn,
   cancelExternalTurnPromotion,
+  captureExternalAssistantChannelDelivery,
+  commitExternalAssistantChannelDelivery,
   finishExternalTurnPromotion,
   getExternalCurrentTurnIdentity,
   getExternalTurnTerminalGeneration,
@@ -15,13 +19,101 @@ import {
   notifyExternalTurnOutcome,
   notifyExternalTurnStopped,
   resetExternalTurnLifecycleState,
+  stageExternalAssistantChannelDelivery,
   setExternalTurnCompleted,
   waitForExternalTurnTerminalObserver,
 } from './turn-lifecycle';
+import {
+  CALLER_OWNED_CHANNEL_DELIVERY,
+  DESKTOP_CHANNEL_DELIVERY,
+  NO_CHANNEL_DELIVERY,
+} from '../../session-core/channel-delivery';
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => { resolve = res; });
+  return { promise, resolve };
+}
 
 describe('external turn lifecycle owner', () => {
   beforeEach(() => {
     resetExternalTurnLifecycleState();
+  });
+
+  it('keeps assistant Session delivery independent from a failed Desktop user mirror', async () => {
+    const deliverAssistant = vi.fn(async () => undefined);
+    admitExternalTurnChannelDelivery(DESKTOP_CHANNEL_DELIVERY, {
+      kind: 'deliver-session-bound-user',
+      waitForPersistence: Promise.resolve(true),
+      deliverUser: async () => {
+        throw new Error('user mirror failed');
+      },
+    });
+
+    expect(stageExternalAssistantChannelDelivery(deliverAssistant)).toBe(true);
+    commitExternalAssistantChannelDelivery(captureExternalAssistantChannelDelivery());
+    await vi.waitFor(() => expect(deliverAssistant).toHaveBeenCalledOnce());
+  });
+
+  it('does not let a Desktop realtime steer displace a caller-owned response transport', () => {
+    admitExternalTurnChannelDelivery(CALLER_OWNED_CHANNEL_DELIVERY, { kind: 'skip' });
+    admitExternalRealtimeChannelDelivery(DESKTOP_CHANNEL_DELIVERY, { kind: 'skip' });
+
+    expect(stageExternalAssistantChannelDelivery(vi.fn(async () => undefined))).toBe(false);
+
+    admitExternalTurnChannelDelivery(NO_CHANNEL_DELIVERY, { kind: 'skip' });
+    admitExternalRealtimeChannelDelivery(DESKTOP_CHANNEL_DELIVERY, { kind: 'skip' });
+    expect(stageExternalAssistantChannelDelivery(vi.fn(async () => undefined))).toBe(true);
+  });
+
+  it('does not release a completed assistant block until the success owner commits it', async () => {
+    const deliverAssistant = vi.fn(async () => undefined);
+    admitExternalTurnChannelDelivery(DESKTOP_CHANNEL_DELIVERY, { kind: 'skip' });
+
+    expect(stageExternalAssistantChannelDelivery(deliverAssistant)).toBe(true);
+    const batch = captureExternalAssistantChannelDelivery();
+    await Promise.resolve();
+    expect(deliverAssistant).not.toHaveBeenCalled();
+
+    commitExternalAssistantChannelDelivery(batch);
+    await vi.waitFor(() => expect(deliverAssistant).toHaveBeenCalledOnce());
+  });
+
+  it('keeps channel delivery ordered across turn boundaries', async () => {
+    const firstUserTransport = deferred();
+    const delivered: string[] = [];
+    admitExternalTurnChannelDelivery(DESKTOP_CHANNEL_DELIVERY, {
+      kind: 'deliver-session-bound-user',
+      waitForPersistence: Promise.resolve(true),
+      deliverUser: async () => {
+        await firstUserTransport.promise;
+        delivered.push('user-a');
+      },
+    });
+    stageExternalAssistantChannelDelivery(async () => { delivered.push('assistant-a'); });
+    const batchA = captureExternalAssistantChannelDelivery();
+
+    // The next turn can be admitted while A is still persisting. Its user
+    // projection must join after A's already-reserved assistant position.
+    admitExternalTurnChannelDelivery(DESKTOP_CHANNEL_DELIVERY, {
+      kind: 'deliver-session-bound-user',
+      waitForPersistence: Promise.resolve(true),
+      deliverUser: async () => { delivered.push('user-b'); },
+    });
+    stageExternalAssistantChannelDelivery(async () => { delivered.push('assistant-b'); });
+    const batchB = captureExternalAssistantChannelDelivery();
+    commitExternalAssistantChannelDelivery(batchB);
+
+    await Promise.resolve();
+    expect(delivered).toEqual([]);
+    commitExternalAssistantChannelDelivery(batchA);
+    firstUserTransport.resolve();
+    await vi.waitFor(() => expect(delivered).toEqual([
+      'user-a',
+      'assistant-a',
+      'user-b',
+      'assistant-b',
+    ]));
   });
 
   it('ignores a prewarm process exit when no external turn started', () => {

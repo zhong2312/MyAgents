@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExternalRuntimeConfigSnapshot } from '../types';
 import type { ExternalSendContext } from './types';
+import { NO_CHANNEL_DELIVERY } from '../../session-core/channel-delivery';
 
 async function loadFreshQueueOwner() {
   vi.resetModules();
@@ -13,6 +14,7 @@ function context(overrides: Partial<ExternalSendContext> = {}): ExternalSendCont
     sessionId: 'session-1',
     workspacePath: '/workspace',
     scenario: { type: 'desktop' },
+    channelDelivery: NO_CHANNEL_DELIVERY,
     ...overrides,
   };
 }

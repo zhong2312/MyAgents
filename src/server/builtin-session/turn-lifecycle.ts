@@ -1,7 +1,7 @@
 import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { InteractionScenario } from '../system-prompt';
 import { trackServer as defaultTrackServer } from '../analytics';
-import { isAbortedTerminalReason, shouldTitleCompletedTurn } from '../../shared/terminalReason';
+import { shouldTitleCompletedTurn } from '../../shared/terminalReason';
 import type { CancelReason } from '../utils/cancellation';
 import {
   extractTurnUsageFromSdkResult,
@@ -10,6 +10,7 @@ import {
   isSuccessfulCompactControlTurn,
 } from '../utils/sdk-turn-outcome';
 import {
+  classifyBuiltinSdkTerminalResult,
   decideTransientProviderTextRetry,
   type TransientProviderTextError,
   type TransientProviderTextRetryDecision,
@@ -42,6 +43,7 @@ import {
   setCurrentTurnInboxMeta,
   snapshotCurrentTurnTerminalOutcome,
   clearCurrentTurnTextBlocks,
+  type PendingOutputOwner,
 } from './turn';
 import { originAnalyticsFields, originFromTurnAttribution } from '../../shared/session-origin';
 import {
@@ -64,6 +66,7 @@ import {
   buildImCompletePayload,
   buildImErrorPayload,
 } from '../utils/im-terminal-payload';
+import { formatTextPreviewForLog } from '../utils/log-summary';
 
 export type BuiltinTurnTraceSnapshot = {
   turnId: string;
@@ -92,6 +95,7 @@ export type BuiltinTurnLifecycleDeps = {
   getProviderEnv: () => ProviderEnv | undefined;
   getCurrentModel: () => string | undefined;
   getIsInterruptingResponse: () => boolean;
+  didInFlightSurviveInterrupt: (queueId: string) => boolean | null;
   setStreamingMessage: (value: boolean) => void;
   resetInFlightToolCount: () => void;
   resetWatchdogFired: () => void;
@@ -114,7 +118,14 @@ export type BuiltinTurnLifecycleDeps = {
   endTurnAbort: (sessionId: string) => void;
   abortTurnAbort: (sessionId: string, reason: CancelReason) => void;
   clearAmbientTurnId: (sessionId: string) => void;
-  completeCurrentImRequest: (data?: unknown) => void;
+  takeCurrentOutputOwner: () => PendingOutputOwner | null;
+  completeOutputOwnerAfterPersistence: (
+    owner: PendingOutputOwner | null,
+    data: unknown,
+    persistence: Promise<unknown>,
+    deliverSessionBoundAssistant: boolean,
+  ) => void;
+  failOutputOwner: (owner: PendingOutputOwner | null, data?: unknown) => void;
   cancelCurrentImRequest: (data?: unknown) => void;
   failCurrentImRequest: (data?: unknown) => void;
   clearMirrorState: () => void;
@@ -149,6 +160,7 @@ export type BuiltinTurnLifecycleDeps = {
     providerEnv: ProviderEnv | undefined,
   ) => Promise<void> | void;
   appendTextChunk: (chunk: string) => boolean;
+  stageAssistantChannelBlock: (text: string) => void;
   localizeImError: (rawError: string) => string;
   setLastAgentError: (error: string) => void;
   buildTurnProviderAnalytics: (providerEnv: ProviderEnv | undefined) => TurnProviderAnalytics;
@@ -176,7 +188,13 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
   let lastTurnEndPersist: Promise<unknown> = Promise.resolve();
   const track = deps.trackServer ?? defaultTrackServer;
 
-  const commonTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error'): void => {
+  const clearTerminalStreamState = (): void => {
+    deps.clearMirrorState();
+    deps.clearStreamTurnMaps();
+    deps.clearCronTaskContext();
+  };
+
+  const finishTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error'): void => {
     deps.schedulePostTerminalQueueDrain(terminal);
     const sid = deps.getSessionId();
     if (sid) {
@@ -187,12 +205,14 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
       deps.clearAmbientTurnId(sid);
     }
-    deps.clearMirrorState();
-    deps.clearStreamTurnMaps();
-    deps.clearCronTaskContext();
     if (!deps.hasQueuedOrInFlightWork()) {
       deps.setSessionState('idle');
     }
+  };
+
+  const commonTerminalCleanup = (terminal: 'complete' | 'stopped' | 'error'): void => {
+    clearTerminalStreamState();
+    finishTerminalCleanup(terminal);
   };
 
   const terminalActivityAt = (outcome: ReturnType<typeof snapshotCurrentTurnTerminalOutcome>): string | undefined => {
@@ -232,10 +252,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         deps.preserveInFlightAfterTerminalBoundary(`interrupt result targets ${getInterruptingInFlightQueueId() ?? 'none'}`);
       } else {
         const forced = getForceSurfaceInFlightId() === stale;
+        const survivedInterrupt = deps.didInFlightSurviveInterrupt(stale);
         const inFlightAction = decideInFlightActionOnResult({
           isInterrupting: deps.getIsInterruptingResponse(),
           forced,
           hasMeta: !!meta,
+          survivedInterrupt,
         });
         if (inFlightAction === 'drop') {
           deps.dropInFlightQueueItem('graceful interrupt result before SDK consumption confirmation', 'cancelled');
@@ -249,7 +271,13 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           });
           confirmedQueueTurnKeepStreaming = true;
         } else if (inFlightAction === 'await-replay') {
-          deps.preserveInFlightAfterTerminalBoundary('natural result');
+          deps.preserveInFlightAfterTerminalBoundary(
+            deps.getIsInterruptingResponse()
+              ? survivedInterrupt === true
+                ? 'interrupt receipt confirms queued survivor'
+                : 'interrupt receipt unavailable; preserving queued item'
+              : 'natural result',
+          );
         }
       }
     }
@@ -274,12 +302,27 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       },
     );
 
-    // A graceful interrupt result is the sole terminal claimant. Consume the
-    // output owner synchronously so the HTTP cancel route observes that the
-    // runtime already terminalized it and cannot emit/unregister a second time.
+    // Detach the SDK-yield owner at the result boundary, before persistence.
+    // A later realtime yield can already be producing output while this turn's
+    // transcript is still saving, so ownership cannot remain on the FIFO head.
     const outputOwnerClaimedByCancellation = terminalKind === 'cancelled';
+    const outputOwner = outputOwnerClaimedByCancellation
+      ? null
+      : deps.takeCurrentOutputOwner();
     if (outputOwnerClaimedByCancellation) {
       deps.cancelCurrentImRequest(buildImCancelledPayload());
+    } else if (terminalError) {
+      deps.failOutputOwner(outputOwner, buildImErrorPayload(deps.localizeImError(terminalError)));
+    }
+    // Runtime ownership ends at the SDK result, not when disk I/O finishes.
+    // Finishing later can clear the abort/trace/stream state of a realtime
+    // message that the persistent SDK has already started behind this turn.
+    commonTerminalCleanup(
+      terminalKind === 'cancelled' ? 'stopped' : (terminalError ? 'error' : 'complete'),
+    );
+    setCurrentTurnImTerminalEmitted(false);
+    if (confirmedQueueTurnKeepStreaming) {
+      deps.setStreamingMessage(true);
     }
 
     const persistTrace = deps.snapshotTrace();
@@ -310,16 +353,16 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     if (afterPersist) {
       lastTurnEndPersist = lastTurnEndPersist.then(() => afterPersist());
     }
-    lastTurnEndPersist = lastTurnEndPersist.finally(() => {
-      commonTerminalCleanup(terminalKind === 'cancelled' ? 'stopped' : 'complete');
-      if (!outputOwnerClaimedByCancellation && !hasCurrentTurnImTerminalEmitted()) {
-        deps.completeCurrentImRequest(buildImCompletePayload(terminalOutcome.text));
-      }
-      setCurrentTurnImTerminalEmitted(false);
-      if (confirmedQueueTurnKeepStreaming) {
-        deps.setStreamingMessage(true);
-      }
-    });
+    if (!outputOwnerClaimedByCancellation && !terminalError) {
+      // Reserve delivery order now; the owner implementation releases the
+      // captured blocks only if this exact turn's finalization becomes durable.
+      deps.completeOutputOwnerAfterPersistence(
+        outputOwner,
+        buildImCompletePayload(terminalOutcome.text),
+        lastTurnEndPersist,
+        terminalKind === 'complete',
+      );
+    }
     void lastTurnEndPersist.catch(() => undefined);
     notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
     if (terminalKind === 'cancelled') {
@@ -420,13 +463,17 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     deps.resetWatchdogFired();
 
     const resultText = resultMessage.result || '';
-    const isAbortResult =
-      isAbortedTerminalReason(resultMessage.terminal_reason) || deps.getIsInterruptingResponse();
+    const terminalDisposition = classifyBuiltinSdkTerminalResult({
+      isError: resultMessage.is_error,
+      terminalReason: resultMessage.terminal_reason,
+    });
+    const isAbortResult = terminalDisposition === 'stopped' || deps.getIsInterruptingResponse();
+    const isTerminalFailure = terminalDisposition === 'error' && !isAbortResult;
     let terminalRecoveryReason: 'image' | 'stale' | undefined;
 
     const transientRetryDecision = decideTransientProviderTextRetry({
       resultText,
-      isError: resultMessage.is_error,
+      isError: isTerminalFailure,
       isAbortResult,
       apiErrorStatus: 'api_error_status' in resultMessage ? resultMessage.api_error_status ?? null : null,
       toolUseCount: getCurrentTurnToolCount(),
@@ -476,7 +523,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       return;
     }
 
-    if (resultMessage.is_error) {
+    if (isTerminalFailure || isAbortResult) {
       const rawError = resultText || resultMessage.errors?.join('; ') || getLastAssistantMessageError() || '';
       if (isSdkMissingResumeMessageError(rawError) && deps.recoverInvalidResumeAnchorError(rawError)) {
         console.warn('[agent] SDK result rejected resumeSessionAt anchor; cleared stale anchor and restarting without surfacing user error');
@@ -493,11 +540,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       if (rawError.includes('No conversation found')) {
         terminalRecoveryReason = 'stale';
       }
-      if (peekPendingOutputOwner()?.requestId && !isAbortResult) {
-        const errorText = deps.localizeImError(rawError);
-        console.warn('[agent] SDK result is_error, forwarding to IM bus:', errorText);
-        deps.failCurrentImRequest(buildImErrorPayload(errorText));
-      } else if (peekPendingOutputOwner()?.requestId && isAbortResult) {
+      if (peekPendingOutputOwner()?.requestId && isAbortResult) {
         console.log('[agent] Suppressing IM error forward for aborted turn (handleMessageComplete will finalize)');
       }
     }
@@ -525,29 +568,20 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       || resultMessage.errors?.join('; ')
       || getLastAssistantMessageError()
       || '';
-    const noOutputResultText = resultMessage.is_error ? resultErrorText : (hasResultText ? resultText : '');
+    const noOutputResultText = isTerminalFailure ? resultErrorText : (hasResultText ? resultText : '');
     if (noOutputResultText && !hasCurrentTurnOutput() && !getCurrentTurnToolCount() && !isAbortResult) {
-      let shouldCompleteNoOutputImRequest = false;
-      if (resultMessage.is_error) {
+      if (isTerminalFailure) {
         console.warn('[agent] SDK error result with no streamed output, showing as agent-error:', resultErrorText);
         deps.setLastAgentError(resultErrorText);
         deps.broadcast('chat:agent-error', { message: resultErrorText });
-        shouldCompleteNoOutputImRequest = true;
       } else if (resultText) {
         console.warn('[agent] SDK non-error result with no streamed output, showing as message:', resultText);
         deps.emitFirstDeltaTrace(resultText);
         if (deps.appendTextChunk(resultText)) {
           deps.broadcast('chat:message-chunk', resultText);
           markCurrentTurnHasOutput();
-          shouldCompleteNoOutputImRequest = true;
+          deps.stageAssistantChannelBlock(resultText);
         }
-      }
-      if (
-        shouldCompleteNoOutputImRequest
-        && peekPendingOutputOwner()?.requestId
-        && !hasCurrentTurnImTerminalEmitted()
-      ) {
-        deps.completeCurrentImRequest(buildImCompletePayload(noOutputResultText));
       }
     }
 
@@ -555,7 +589,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     const finalTurnToolCount = getCurrentTurnToolCount();
     const finalTurnHasOutput = hasCurrentTurnOutput();
     const emptySuccessfulResult = isEmptySuccessfulSdkResult({
-      isError: resultMessage.is_error,
+      isError: isTerminalFailure,
       result: resultText,
       terminalReason: resultMessage.terminal_reason,
       hasVisibleOutput: finalTurnHasOutput,
@@ -578,11 +612,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     if (recoveredAssistantMessageError && lastAssistantMessageError) {
       console.log('[agent] SDK assistant message error recovered by successful result:', lastAssistantMessageError);
     }
-    const terminalError = resultMessage.is_error && !isAbortResult
-      ? (resultErrorText || resultText || 'turn ended with error')
+    const terminalError = isTerminalFailure
+      ? (resultErrorText || resultText || `turn ended with terminal reason ${resultMessage.terminal_reason ?? 'unknown'}`)
       : undefined;
     deps.emitTrace('final', {
-      status: resultMessage.is_error || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',
+      status: isTerminalFailure || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',
       durationMs,
       count: finalTurnToolCount,
       detail: {
@@ -662,7 +696,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           scenarioType: scenario.type,
           desktopSurface: scenario.type === 'desktop' ? scenario.surface : undefined,
         });
-      if (!isAbortResult) {
+      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()) {
         track('ai_turn_complete', {
           source: turnAnalyticsSource,
           ...originAnalyticsFields(turnOrigin),
@@ -681,6 +715,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         });
       }
 
+      // Snapshot before completeTurn schedules persistence. The caller clears
+      // the turn accumulator immediately afterwards, while the terminal
+      // callback runs only after that async persistence completes.
+      const composedAssistantText = getCurrentTurnText();
       completeTurn(
         durationMs,
         terminalError,
@@ -693,7 +731,14 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
             );
           } else {
             console.log('[agent][sdk] Broadcasting chat:message-complete');
-            const completionTerminal = recordCompletionTerminal(terminalError ? 'error' : 'complete');
+            const completionStatus = terminalError ? 'error' : 'complete';
+            const completionTerminal = recordCompletionTerminal(completionStatus);
+            if (composedAssistantText.trim()) {
+              console.log(
+                `[assistant-output] runtime=builtin status=${completionTerminal?.status ?? completionStatus} `
+                  + formatTextPreviewForLog(composedAssistantText),
+              );
+            }
             deps.broadcast(
               'chat:message-complete',
               withSessionCompletionTerminal(completionEvent, completionTerminal),
@@ -704,7 +749,8 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         isAbortResult ? 'cancelled' : 'complete',
       );
 
-      if (!isAbortResult && shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
+      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()
+        && shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
         const titleSid = deps.getSessionId();
         const titleModel = deps.getCurrentModel();
         const titleProviderEnv = deps.getProviderEnv();
@@ -715,7 +761,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
 
       const sessionEventText = getCurrentTurnText();
-      const sessionEventError = resultMessage.is_error
+      const sessionEventError = isTerminalFailure
         ? {
             code: 'turn_failed',
             message:

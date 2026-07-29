@@ -146,3 +146,5 @@ Goal 是 Session 状态，不是 Task execution mode：
 - Management API：`/api/task/*` 与兼容 `/api/cron/*`
 - CLI：`myagents task ...`、兼容 `myagents cron ...`
 - Renderer：`src/renderer/components/task-center/`、`useCronTask`（兼容展示 hook）
+
+新建/从想法派发共用 `DispatchTaskDialog`。创建面板不提供手工标签输入；空白新建写入空标签，从想法派发则原样继承来源想法的标签作为 provenance。既有 Task 的标签字段、列表过滤、详情展示与编辑兼容能力保持不变，`TaskStore` schema 不因这项表单收敛而改变。

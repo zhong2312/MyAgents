@@ -9,17 +9,13 @@
  * we use decorations: false on Windows for custom title bar styling.
  */
 
-import { Bot, Cloud, Minus, Square, X, RefreshCw, RotateCcw, Settings, Copy, CheckSquare } from 'lucide-react';
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { Minus, Square, X, RefreshCw, RotateCcw, Copy } from 'lucide-react';
+import { type CSSProperties, type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauri } from '@/api/tauriClient';
-import { CUSTOM_EVENTS } from '@/../shared/constants';
-import FeedbackPopover from './FeedbackPopover';
 
 interface CustomTitleBarProps {
     children: ReactNode;  // TabBar component
-    onSettingsClick?: () => void;
-    onOpenBugReport?: () => void;
     /** Whether an update is ready to install */
     updateReady?: boolean;
     /** Version of the update ready to install */
@@ -34,8 +30,6 @@ interface CustomTitleBarProps {
     updatePreparing?: boolean;
     /** Callback when user clicks "Restart to Update" */
     onRestartAndUpdate?: () => void;
-    /** Whether the experimental Team Space surface is exposed in the title bar. */
-    teamSpaceEnabled?: boolean;
     /** Number of restorable conversations from the previous session (Issue
      *  #309). `> 0` shows the "恢复对话" pill; surfaced by App only when the last
      *  exit was NOT a deliberate quit (crash / update-restart). */
@@ -46,8 +40,6 @@ interface CustomTitleBarProps {
     onDismissRestore?: () => void;
 }
 
-// macOS traffic lights (close/minimize/maximize) width + padding
-const MACOS_TRAFFIC_LIGHTS_WIDTH = 78;
 const EDGE_DRAG_REGION_WIDTH = 30;
 
 // Detect platform
@@ -66,31 +58,17 @@ function TitlebarDragSpacer({ className = '', style }: { className?: string; sty
 
 export default function CustomTitleBar({
     children,
-    onSettingsClick,
-    onOpenBugReport,
     updateReady,
     updateVersion,
     updateInstalling,
     updatePreparing,
     onRestartAndUpdate,
-    teamSpaceEnabled = false,
     restoreCount = 0,
     onRestoreSession,
     onDismissRestore,
 }: CustomTitleBarProps) {
     const { t } = useTranslation('app');
-    const [isFullscreen, setIsFullscreen] = useState(false);
     const [isMaximized, setIsMaximized] = useState(false);
-    const [showFeedback, setShowFeedback] = useState(false);
-
-    const feedbackBtnRef = useRef<HTMLDivElement>(null);
-    const taskShortcut = navigator.platform.toLowerCase().includes('mac') ? '⌘Y' : 'Ctrl+Y';
-    const settingsShortcut = navigator.platform.toLowerCase().includes('mac') ? '⌘U' : 'Ctrl+U';
-
-    const handleOpenBugReport = useCallback(() => {
-        setShowFeedback(false);
-        onOpenBugReport?.();
-    }, [onOpenBugReport]);
 
     // Listen for fullscreen changes
     useEffect(() => {
@@ -103,10 +81,8 @@ export default function CustomTitleBar({
             try {
                 const { getCurrentWindow } = await import('@tauri-apps/api/window');
                 const win = getCurrentWindow();
-                const fs = await win.isFullscreen();
                 const max = await win.isMaximized();
                 if (mounted) {
-                    setIsFullscreen(fs);
                     setIsMaximized(max);
                 }
             } catch (e) {
@@ -177,17 +153,8 @@ export default function CustomTitleBar({
 
     return (
         <div
-            className="custom-titlebar flex h-11 flex-shrink-0 items-center border-b border-[var(--line)] bg-gradient-to-b from-[var(--paper)] to-[var(--paper-inset)]/30"
+            className="custom-titlebar flex h-11 flex-shrink-0 items-center bg-[var(--global-sidebar-bg)] pl-2"
         >
-            {/* macOS traffic lights spacer - DRAGGABLE (hidden on Windows) */}
-            {!isWindows && !isFullscreen && (
-                <div
-                    className="h-full flex-shrink-0"
-                    style={{ width: MACOS_TRAFFIC_LIGHTS_WIDTH }}
-                    data-tauri-drag-region
-                />
-            )}
-
             {/* Windows: keep a reliable left-edge drag target even when tabs fill the bar. */}
             {isWindows && (
                 <div
@@ -272,78 +239,6 @@ export default function CustomTitleBar({
                         <TitlebarDragSpacer className="w-1" />
                     </>
                 )}
-                {/* Feedback button + popover */}
-                {/* v0.1.69 polish: `transition-all` widened the transition
-                    to *every* prop, including `transform`. The global
-                    `:active { scale(0.98) }` rule in index.css then animated
-                    *back* to scale(1) on mouseup over 150ms — visually it
-                    reads as the button popping UP rather than sinking in
-                    under the finger. `transition-colors` keeps the hover
-                    bg fade smooth while letting the scale change snap
-                    instantly in both directions, so the press feedback
-                    lands as "down & back" without the return bounce. */}
-                <div ref={feedbackBtnRef} className="relative" data-no-drag>
-                    <button
-                        onClick={() => setShowFeedback(prev => !prev)}
-                        className={`flex h-7 items-center gap-1.5 rounded-md px-2.5 transition-colors ${
-                            showFeedback
-                                ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                                : 'text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]'
-                        }`}
-                        title={t('titlebar.helper')}
-                        data-no-drag
-                    >
-                        <Bot className="h-4 w-4" />
-                        <span className="text-sm font-medium">{t('titlebar.helper')}</span>
-                    </button>
-                    <FeedbackPopover
-                        open={showFeedback}
-                        onClose={() => setShowFeedback(false)}
-                        onOpenBugReport={handleOpenBugReport}
-                        triggerRef={feedbackBtnRef}
-                    />
-                </div>
-                <TitlebarDragSpacer className="w-1" />
-
-                {isTauri() && (
-                    <>
-                        {teamSpaceEnabled && (
-                            <>
-                                <button
-                                    onClick={() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SPACE))}
-                                    className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                                    title={t('titlebar.team')}
-                                    data-no-drag
-                                >
-                                    <Cloud className="h-4 w-4" />
-                                    <span className="text-sm font-medium">{t('titlebar.team')}</span>
-                                </button>
-                                <TitlebarDragSpacer className="w-1" />
-                            </>
-                        )}
-                        <button
-                            onClick={() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_TASK_CENTER))}
-                            className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                            title={t('titlebar.taskCenterTitle', { shortcut: taskShortcut })}
-                            data-no-drag
-                        >
-                            <CheckSquare className="h-4 w-4" />
-                            <span className="text-sm font-medium">{t('titlebar.task')}</span>
-                        </button>
-                        <TitlebarDragSpacer className="w-1" />
-                    </>
-                )}
-
-                <button
-                    onClick={onSettingsClick || (() => console.log('Settings clicked - TODO'))}
-                    className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                    title={t('titlebar.settingsTitle', { shortcut: settingsShortcut })}
-                    data-no-drag
-                >
-                    <Settings className="h-4 w-4" />
-                    <span className="text-sm font-medium">{t('titlebar.settings')}</span>
-                </button>
-                <TitlebarDragSpacer className="w-1" />
             </div>
 
             {/* Windows window controls */}

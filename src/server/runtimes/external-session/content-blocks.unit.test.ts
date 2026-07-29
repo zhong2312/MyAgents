@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   applyExternalSubagentToolResult,
+  applyExternalSubagentAttachmentUpdate,
+  applyExternalToolAttachmentUpdate,
+  applyExternalToolResultToContent,
   appendExternalToolResultDeltaToContent,
   buildCurrentExternalAssistantSnapshotContent,
   finalizeExternalToolUseInput,
   replaceExternalToolUseInput,
   resetExternalContentState,
+  getExternalSubagentAttachmentParent,
   startExternalSubagentToolUse,
   startExternalToolUseInput,
 } from './content-blocks';
@@ -67,6 +71,81 @@ describe('external live assistant content', () => {
       id: 'a1b2c3d4',
       sizeBytes: 300_000,
     });
+  });
+
+  it('holds an early child attachment update until its placeholder result establishes ownership', () => {
+    startExternalToolUseInput({ toolUseId: 'parent', toolName: 'Task' });
+    finalizeExternalToolUseInput('parent');
+    startExternalSubagentToolUse({
+      parentToolUseId: 'parent',
+      toolUseId: 'child-image',
+      toolName: 'ImageTool',
+    });
+    expect(getExternalSubagentAttachmentParent('child-image')).toBe('parent');
+
+    expect(applyExternalSubagentAttachmentUpdate({
+      parentToolUseId: 'parent',
+      toolUseId: 'child-image',
+      pendingId: 'pending-image',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/final.png',
+      },
+    })).toBe('deferred');
+
+    applyExternalSubagentToolResult({
+      parentToolUseId: 'parent',
+      toolUseId: 'child-image',
+      content: 'Image generated',
+      attachments: [{
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '',
+        pendingId: 'pending-image',
+      }],
+    });
+
+    const blocks = JSON.parse(buildCurrentExternalAssistantSnapshotContent() ?? '[]');
+    expect(blocks[0].tool.subagentCalls[0].attachments).toEqual([{
+      kind: 'image',
+      mimeType: 'image/png',
+      refPath: '/api/attachment/tool/session/turn/final.png',
+    }]);
+    expect(getExternalSubagentAttachmentParent('child-image')).toBe('parent');
+  });
+
+  it('holds an early top-level attachment update until its placeholder result establishes ownership', () => {
+    startExternalToolUseInput({ toolUseId: 'top-image', toolName: 'ImageTool' });
+    finalizeExternalToolUseInput('top-image');
+
+    expect(applyExternalToolAttachmentUpdate({
+      toolUseId: 'top-image',
+      pendingId: 'pending-top-image',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/final-top.png',
+      },
+    })).toBe('deferred');
+
+    applyExternalToolResultToContent({
+      toolUseId: 'top-image',
+      content: 'Image generated',
+      attachments: [{
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '',
+        pendingId: 'pending-top-image',
+      }],
+    });
+
+    const blocks = JSON.parse(buildCurrentExternalAssistantSnapshotContent() ?? '[]');
+    expect(blocks[0].tool.attachments).toEqual([{
+      kind: 'image',
+      mimeType: 'image/png',
+      refPath: '/api/attachment/tool/session/turn/final-top.png',
+    }]);
   });
 
   it('replaces a started tool snapshot with completion-owned input before persistence', () => {

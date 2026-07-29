@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { BarChart2, Clock, Download, Eye, EyeOff, Loader2, MoreHorizontal, SquareArrowOutUpRight, Star, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { deleteSession, getSessions, updateSession, type SessionMetadata } from '@/api/sessionClient';
+import { getSessions, updateSession, type SessionMetadata } from '@/api/sessionClient';
+import { useSessionDeletion } from '@/context/SessionDeletionContext';
 import { exportSessionAsMarkdown } from '@/utils/sessionExport';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { getWorkspaceCronTasks, getBackgroundSessions } from '@/api/cronTaskClient';
@@ -39,12 +40,6 @@ interface SessionHistoryDropdownProps {
      * tab context), the per-row "在新 tab 打开" action is hidden.
      */
     onOpenInNewTab?: (sessionId: string, title: string) => void;
-    /**
-     * Move the current Chat tab off its session before storage deletion.
-     * Non-current rows skip this; current-session deletion must reset/switch
-     * first so the storage client sees an ownerless session.
-     */
-    prepareCurrentSessionForDelete: () => Promise<boolean>;
     isOpen: boolean;
     onClose: () => void;
     /** Trigger button ref — anchors the dropdown via the Popover primitive. */
@@ -63,7 +58,6 @@ export default function SessionHistoryDropdown({
     currentSessionId,
     onSelectSession,
     onOpenInNewTab,
-    prepareCurrentSessionForDelete,
     isOpen,
     onClose,
     triggerRef,
@@ -71,6 +65,7 @@ export default function SessionHistoryDropdown({
 }: SessionHistoryDropdownProps) {
     const { t } = useTranslation('chat');
     const toast = useToast();
+    const deleteSession = useSessionDeletion();
     const locale = currentSupportedLocale();
     const [sessions, setSessions] = useState<FetchState>(null);
     const [cronTasks, setCronTasks] = useState<CronTaskFetchState>(null);
@@ -262,7 +257,7 @@ export default function SessionHistoryDropdown({
         if (!isOpen || !isTauriEnvironment()) return;
         const ac = new AbortController();
 
-        // Cron task start/stop → refresh cron tasks (affects delete protection)
+        // Cron task start/stop → refresh row tags.
         const refreshCron = () => {
             getWorkspaceCronTasks(agentDir)
                 .then(tasks => { if (!ac.signal.aborted) setCronTasks(tasks); })
@@ -336,22 +331,19 @@ export default function SessionHistoryDropdown({
     const handleConfirmDelete = async () => {
         if (!pendingDelete) return;
         const sessionId = pendingDelete.id;
-        const isDeletingCurrentSession = sessionId === currentSessionId;
         setPendingDelete(null);
         setDeleteError(null);
 
         try {
-            if (isDeletingCurrentSession) {
-                const prepared = await prepareCurrentSessionForDelete();
-                if (!prepared) {
-                    setDeleteError(t('shell.history.errors.deleteFailed'));
-                    return;
-                }
-            }
-
-            const success = await deleteSession(sessionId);
-            if (success) {
+            const result = await deleteSession(sessionId);
+            if (result.deleted) {
                 setSessions((prev) => prev?.filter((s) => s.id !== sessionId) ?? null);
+            } else if (result.reason === 'in-use') {
+                toast.warning(t('shell.history.deleteBlockedByOwner'));
+            } else if (result.reason === 'transition-in-progress') {
+                toast.warning(t('shell.history.deleteTransitionInProgress'));
+            } else if (result.reason === 'activity-unavailable') {
+                toast.warning(t('shell.history.deleteActivityUnavailable'));
             } else {
                 setDeleteError(t('shell.history.errors.deleteFailed'));
                 console.error(`[SessionHistoryDropdown] Failed to delete session ${sessionId}`);
@@ -420,12 +412,8 @@ export default function SessionHistoryDropdown({
     const isLoading = sessions === null;
 
     // Resolve the session whose "更多" menu is open (find-by-id survives the
-    // list mutating under us, e.g. an optimistic favorite toggle). Re-derive
-    // its cron-protection so the menu's delete row matches the row toolbar.
+    // list mutating under us, e.g. an optimistic favorite toggle).
     const menuSession = menuSessionId ? sessions?.find((s) => s.id === menuSessionId) ?? null : null;
-    const menuCronProtected = menuSession
-        ? (sessionTagsMap.get(menuSession.id) ?? []).some((t) => t.type === 'cron')
-        : false;
 
     // If a refetch drops the session whose menu is open, fully close the menu
     // (clear the id + anchor) — otherwise a later refetch that re-adds the id
@@ -645,23 +633,12 @@ export default function SessionHistoryDropdown({
                             onClick={() => { closeMenu(); handleShowStats(menuSession); }}
                         />
                         <div className="my-1 border-t border-[var(--line-subtle)]" />
-                        {menuCronProtected ? (
-                            <span className="block" title={t('shell.history.cronDeleteTooltip')}>
-                                <MenuItem
-                                    icon={<Trash2 className="h-3.5 w-3.5" />}
-                                    label={t('shell.history.delete')}
-                                    disabled
-                                    tone="danger"
-                                />
-                            </span>
-                        ) : (
-                            <MenuItem
-                                icon={<Trash2 className="h-3.5 w-3.5" />}
-                                label={t('shell.history.delete')}
-                                onClick={() => { closeMenu(); handleDeleteClick(menuSession); }}
-                                tone="danger"
-                            />
-                        )}
+                        <MenuItem
+                            icon={<Trash2 className="h-3.5 w-3.5" />}
+                            label={t('shell.history.delete')}
+                            onClick={() => { closeMenu(); handleDeleteClick(menuSession); }}
+                            tone="danger"
+                        />
                     </>
                 )}
             </Popover>

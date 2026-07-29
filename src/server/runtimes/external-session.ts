@@ -31,6 +31,7 @@ import { StaleRuntimeSessionError } from './types';
 import { awaitInFlightSaves, rebuildAttachmentRegistryFromBlocks, trackInFlightSave } from './tool-attachments';
 import { messageAttachmentsFromImagePayloads, resolveImagePayloads } from './image-payload';
 import { maybeSpill } from '../utils/large-value-store';
+import { formatTextPreviewForLog } from '../utils/log-summary';
 import type { AskUserQuestionInput, AskUserQuestion } from '../../shared/types/askUserQuestion';
 import { withQuestionTextAnswerKeys } from '../../shared/types/askUserQuestion';
 import {
@@ -98,6 +99,10 @@ import {
   shouldApplySnapshotConfigUpdate,
   shouldDeferExternalConfigOperation,
 } from '../session-core/runtime-config-policy';
+import {
+  NO_CHANNEL_DELIVERY,
+  type TurnChannelDelivery,
+} from '../session-core/channel-delivery';
 
 export {
   filterRuntimeConfigPatchForSnapshot,
@@ -214,16 +219,19 @@ import {
 } from '../utils/im-terminal-payload';
 import {
   beginExternalTurnPromotion,
-  admitExternalRealtimeDesktopMirror,
-  admitExternalTurnMirror,
+  admitExternalRealtimeChannelDelivery,
+  admitExternalTurnChannelDelivery,
   cancelExternalTurnPromotion,
   cancelExternalTurnPromotionByOwner,
   cancelExternalTurnPromotionByQueueId,
   clearExternalTurnBinding,
   clearExternalTurnStartTime,
   clearExternalTurnActivityFacts,
+  captureExternalAssistantChannelDelivery,
+  commitExternalAssistantChannelDelivery,
+  discardExternalAssistantChannelDelivery,
   didExternalLastTurnSucceed,
-  enqueueExternalAssistantMirror,
+  stageExternalAssistantChannelDelivery,
   finishExternalTurnPromotion,
   bindExternalTurn,
   getExternalTurnTerminalGeneration,
@@ -257,7 +265,7 @@ import {
   waitForExternalTurnTerminalObserver,
   waitExternalTurnFinalization,
   type ExternalTurnPromotionToken,
-  type ExternalTurnMirrorAdmission,
+  type ExternalUserChannelAdmission,
 } from './external-session/turn-lifecycle';
 export {
   clearExternalTurnBinding,
@@ -537,7 +545,8 @@ interface PendingRealtimeSteeredUserMessage {
   userMsg: SessionMessage;
   text: string;
   activityFacts: SessionActivityTurnFacts;
-  desktopMirror: ExternalDesktopMirrorAdmissionDisposition;
+  channelDelivery: TurnChannelDelivery;
+  userChannelProjection: ExternalUserChannelProjection;
 }
 
 const pendingRealtimeSteeredUserMessages: PendingRealtimeSteeredUserMessage[] = [];
@@ -654,16 +663,18 @@ function surfaceRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMess
     console.error('[external-session] failed to persist accepted realtime steered user message:', err);
     return false;
   });
-  const desktopMirror = entry.desktopMirror;
-  if (desktopMirror.kind === 'deliver-desktop-user') {
-    admitExternalRealtimeDesktopMirror({
-      kind: 'deliver-desktop-user',
-      waitForPersistence: persistence,
-      deliverUser: () => deliverExternalDesktopUserMirror(entry.sessionId, desktopMirror),
-    });
-  } else {
-    void persistence;
-  }
+  const userProjection = entry.userChannelProjection;
+  admitExternalRealtimeChannelDelivery(
+    entry.channelDelivery,
+    userProjection.kind === 'deliver-session-bound-user'
+      ? {
+        kind: 'deliver-session-bound-user',
+        waitForPersistence: persistence,
+        deliverUser: () => deliverExternalSessionBoundUser(entry.sessionId, userProjection),
+      }
+      : { kind: 'skip' },
+  );
+  if (userProjection.kind === 'skip') void persistence;
   broadcast('queue:started', {
     queueId: entry.queueId,
     sessionId: entry.sessionId,
@@ -1002,40 +1013,30 @@ function completeSubagentTrace(
   return true;
 }
 
-type ExternalDesktopMirrorAdmissionDisposition =
+type ExternalUserChannelProjection =
+  | { kind: 'skip' }
   | {
-    kind: 'skip';
-    assistantDisposition: 'reply-router-only' | 'disabled';
-  }
-  | {
-    kind: 'deliver-desktop-user';
+    kind: 'deliver-session-bound-user';
     text: string;
     images?: MirrorImage[];
   };
 
-function projectExternalDesktopMirrorAdmission(
-  turnOrigin: SessionOrigin | undefined,
+function projectExternalUserChannelAdmission(
+  channelDelivery: TurnChannelDelivery,
   content: string,
   resolvedImages: ResolvedImagePayload[] | undefined,
-): ExternalDesktopMirrorAdmissionDisposition {
-  if (turnOrigin?.kind !== 'desktop') {
-    return {
-      kind: 'skip',
-      assistantDisposition: turnOrigin?.kind === 'agent-channel'
-        ? 'reply-router-only'
-        : 'disabled',
-    };
-  }
+): ExternalUserChannelProjection {
+  if (channelDelivery.user !== 'session-binding') return { kind: 'skip' };
   const text = visibleDesktopMirrorText(content);
   const images = resolvedImagesToMirrorImages(resolvedImages);
   return text || images
-    ? { kind: 'deliver-desktop-user', text, images }
-    : { kind: 'skip', assistantDisposition: 'disabled' };
+    ? { kind: 'deliver-session-bound-user', text, images }
+    : { kind: 'skip' };
 }
 
-function deliverExternalDesktopUserMirror(
+function deliverExternalSessionBoundUser(
   sessionId: string,
-  projection: Extract<ExternalDesktopMirrorAdmissionDisposition, { kind: 'deliver-desktop-user' }>,
+  projection: Extract<ExternalUserChannelProjection, { kind: 'deliver-session-bound-user' }>,
 ): Promise<void> {
   return mirrorIfChannelBound({
     sessionId,
@@ -1054,7 +1055,7 @@ function flushPendingText(disposition: ExternalTextMirrorDisposition): void {
   if (!flushExternalPendingTextBlock()) return;
   if (disposition === 'skip-incomplete-block') return;
   const sessionId = getExternalLifecycleSessionId();
-  enqueueExternalAssistantMirror(() => mirrorIfChannelBound({
+  stageExternalAssistantChannelDelivery(() => mirrorIfChannelBound({
     sessionId,
     role: 'assistant',
     text: completedText,
@@ -1105,7 +1106,8 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   userMsg: SessionMessage;
   failureContext: string;
   lastActiveAt?: string;
-  desktopMirror: ExternalDesktopMirrorAdmissionDisposition;
+  channelDelivery: TurnChannelDelivery;
+  userChannelProjection: ExternalUserChannelProjection;
 }): Promise<void> {
   const metadataResult = await ensureExternalSessionMetadataForRealUserTurn({
     sessionId: params.sessionId,
@@ -1141,15 +1143,15 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
       console.warn('[external-session] prepared metadata commit after user message persist failed:', err);
     }
   }
-  const desktopMirror = params.desktopMirror;
-  const mirrorAdmission: ExternalTurnMirrorAdmission = desktopMirror.kind === 'skip'
-    ? desktopMirror
+  const userProjection = params.userChannelProjection;
+  const userAdmission: ExternalUserChannelAdmission = userProjection.kind === 'skip'
+    ? userProjection
     : {
-      kind: 'deliver-desktop-user',
+      kind: 'deliver-session-bound-user',
       waitForPersistence: Promise.resolve(true),
-      deliverUser: () => deliverExternalDesktopUserMirror(params.sessionId, desktopMirror),
+      deliverUser: () => deliverExternalSessionBoundUser(params.sessionId, userProjection),
     };
-  admitExternalTurnMirror(mirrorAdmission);
+  admitExternalTurnChannelDelivery(params.channelDelivery, userAdmission);
 }
 
 /** Register a new session in SessionStore on the first real user message.
@@ -2335,6 +2337,7 @@ export async function startExternalSession(options: {
   dispatchPromotion?: ExternalTurnPromotionToken;
   activityFacts?: SessionActivityTurnFacts;
   turnBinding?: ExternalTurnBindingInput;
+  channelDelivery?: TurnChannelDelivery;
   onDispatchAccepted?: () => void;
   surfaceInitialUserMessage?: boolean;
 }): Promise<void> {
@@ -2379,6 +2382,7 @@ async function _doStartExternalSession(options: {
   dispatchPromotion?: ExternalTurnPromotionToken;
   activityFacts?: SessionActivityTurnFacts;
   turnBinding?: ExternalTurnBindingInput;
+  channelDelivery?: TurnChannelDelivery;
   onDispatchAccepted?: () => void;
   surfaceInitialUserMessage?: boolean;
 }): Promise<void> {
@@ -2537,8 +2541,9 @@ async function _doStartExternalSession(options: {
       scenarioType: options.scenario.type,
       desktopSurface: options.scenario.type === 'desktop' ? options.scenario.surface : undefined,
     });
-    const desktopMirror = projectExternalDesktopMirrorAdmission(
-      turnAnalyticsOrigin,
+    const channelDelivery = options.channelDelivery ?? NO_CHANNEL_DELIVERY;
+    const userChannelProjection = projectExternalUserChannelAdmission(
+      channelDelivery,
       options.initialMessage,
       options.initialImages,
     );
@@ -2597,7 +2602,8 @@ async function _doStartExternalSession(options: {
       userMsg,
       failureContext: '[external-session] Failed to persist initial user message',
       lastActiveAt: admissionActivityAt,
-      desktopMirror,
+      channelDelivery,
+      userChannelProjection,
     });
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
   };
@@ -3205,6 +3211,7 @@ export async function sendExternalMessage(
           owner: context.turnOwner,
           onTerminal: context.onTerminal,
         } : undefined,
+        channelDelivery: context.channelDelivery,
         onDispatchAccepted,
         surfaceInitialUserMessage: surfaceUserMessageAfterGuard,
       });
@@ -3270,6 +3277,7 @@ export async function sendExternalMessage(
           owner: context.turnOwner,
           onTerminal: context.onTerminal,
         } : undefined,
+        channelDelivery: context?.channelDelivery,
         onDispatchAccepted,
         surfaceInitialUserMessage: surfaceUserMessageAfterGuard,
       });
@@ -3345,7 +3353,12 @@ export async function sendExternalMessage(
     setExternalTurnCompleted(false);
     setExternalLastTurnSucceeded(false);  // Reset for this turn (prevents stale text on failure)
     resetTurnAccumulators();
-    const desktopMirror = projectExternalDesktopMirrorAdmission(turnAnalyticsOrigin, text, resolvedImages);
+    const channelDelivery = context?.channelDelivery ?? NO_CHANNEL_DELIVERY;
+    const userChannelProjection = projectExternalUserChannelAdmission(
+      channelDelivery,
+      text,
+      resolvedImages,
+    );
     currentTurnAnalyticsSource = turnAnalyticsSource;
     currentTurnAnalyticsOrigin = turnAnalyticsOrigin;
     setExternalLifecycleAnalyticsSource(turnAnalyticsSource);
@@ -3392,7 +3405,8 @@ export async function sendExternalMessage(
       userMsg,
       failureContext: '[external-session] Failed to persist active-process user message',
       lastActiveAt: admissionActivityAt,
-      desktopMirror,
+      channelDelivery,
+      userChannelProjection,
     });
     if (activeProcess.exited || getExternalActiveProcess() !== activeProcess) {
       return { queued: true };
@@ -3523,7 +3537,12 @@ async function steerExternalMessageForDesktop(input: {
       inputText: input.text,
       systemMaintenanceKind: getSessionMetadata(input.context.sessionId)?.systemMaintenanceKind,
     },
-    desktopMirror: projectExternalDesktopMirrorAdmission(steerOrigin, input.text, resolvedImages),
+    channelDelivery: input.context.channelDelivery,
+    userChannelProjection: projectExternalUserChannelAdmission(
+      input.context.channelDelivery,
+      input.text,
+      resolvedImages,
+    ),
   });
   try {
     await active.runtime.steerMessage(
@@ -4363,6 +4382,14 @@ export function isExternalSessionActive(): boolean {
   return isExternalTurnBusy();
 }
 
+/** External turn admission includes work accepted into the serialized queue. */
+export function isExternalSessionBusy(): boolean {
+  return isExternalTurnBusy()
+    || hasExternalSendInFlight()
+    || hasExternalQueuedOperations()
+    || isExternalOperationDrainInFlight();
+}
+
 /**
  * True when an external runtime process is still alive, even if no turn is
  * currently running. Persistent runtimes such as Codex app-server keep an idle
@@ -4706,6 +4733,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
   let persistFailureReason: string | undefined;
   let settledTurnDurationMs: number | undefined;
   let activityOwnedByTranscriptPersist = false;
+  let assistantChannelDeliveryBatch: ReturnType<typeof captureExternalAssistantChannelDelivery> | null = null;
 
   // PRD 0.2.18 Session Inbox — capture turn text BEFORE resetTurnAccumulators()
   // wipes it (cross-review CC + Architecture: the original impl read
@@ -4719,6 +4747,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     const turnDurationMs = turnStartTime ? Date.now() - turnStartTime : undefined;
     settledTurnDurationMs = turnDurationMs;
     flushAllPending(turnSucceededAtTerminal ? 'mirror-completed-block' : 'skip-incomplete-block');
+    assistantChannelDeliveryBatch = captureExternalAssistantChannelDelivery();
 
     // Cross-review 0.2.33 (Codex W1) — snapshot THIS turn's content blocks and
     // assistant text at the same synchronous discipline as the entry snapshots
@@ -4779,6 +4808,9 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       persistFailureReason = persistResult.failureReason;
       console.error(`[external-session] Failed to save session messages: ${persistFailureReason ?? 'unknown error'}`);
     }
+    if (turnSucceededAtTerminal && persistResult.ok && assistantChannelDeliveryBatch) {
+      commitExternalAssistantChannelDelivery(assistantChannelDeliveryBatch);
+    }
     emitExternalTurnTrace('persist_done', {
       durationMs: elapsedMs(persistTraceStarted),
       status: persistFailed ? 'error' : 'ok',
@@ -4789,9 +4821,8 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       },
     });
 
-    const completionTerminal = recordExternalCompletionTerminal(
-      turnSucceededAtTerminal && !persistFailed ? 'complete' : 'error',
-    );
+    const completionStatus = turnSucceededAtTerminal && !persistFailed ? 'complete' : 'error';
+    const completionTerminal = recordExternalCompletionTerminal(completionStatus);
     if (persistFailed) {
       if (isExternalTurnGenerationCurrent(terminalGeneration)) {
         setExternalLastTurnSucceeded(false);
@@ -4805,6 +4836,12 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
         withSessionCompletionTerminal(message, completionTerminal),
       );
     } else {
+      if (capturedReplyText.trim()) {
+        console.log(
+          `[assistant-output] runtime=${runtimeType} status=${completionTerminal?.status ?? completionStatus} `
+            + formatTextPreviewForLog(capturedReplyText),
+        );
+      }
       broadcast('chat:message-complete', withSessionCompletionTerminal({
         ...(usageData ? {
           model: usageData.model,
@@ -4858,6 +4895,11 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     }
     throw error;
   } finally {
+    if (assistantChannelDeliveryBatch) {
+      // Idempotent after commit; on every failure path this releases the
+      // ordering reservation without exposing incomplete assistant output.
+      discardExternalAssistantChannelDelivery(assistantChannelDeliveryBatch);
+    }
     if (terminalActivityAt && !activityOwnedByTranscriptPersist) {
       try {
         const sessionId = getExternalLifecycleSessionId();
@@ -5321,12 +5363,23 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // persisted parent block and the pending map) + a subagent-scoped broadcast.
       const subAttParent = getExternalSubagentAttachmentParent(event.toolUseId);
       if (subAttParent) {
-        applyExternalSubagentAttachmentUpdate({
+        const outcome = applyExternalSubagentAttachmentUpdate({
           parentToolUseId: subAttParent,
           toolUseId: event.toolUseId,
           pendingId: event.pendingId,
           attachment: event.attachment,
         });
+        if (outcome === 'deferred') {
+          // tool_result normalization has not established its placeholder yet.
+          // The content owner applies this update atomically when that result lands.
+          break;
+        }
+        if (outcome === 'missing') {
+          console.warn(
+            `[external-session] Ignoring unmatched sub-agent attachment update toolUseId=${event.toolUseId}`,
+          );
+          break;
+        }
         broadcast('chat:subagent-tool-attachment-update', {
           parentToolUseId: subAttParent,
           toolUseId: event.toolUseId,
@@ -5338,11 +5391,26 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       // Find the persisted tool block and replace the matching placeholder in-place,
       // then broadcast the same shape so the frontend can patch the rendered gallery.
-      applyExternalToolAttachmentUpdate({
+      const outcome = applyExternalToolAttachmentUpdate({
         toolUseId: event.toolUseId,
         pendingId: event.pendingId,
         attachment: event.attachment,
       });
+      if (outcome === 'deferred') {
+        // A top-level tool result may still be queued behind input spilling.
+        // Its placeholder/result event will carry the atomically patched array.
+        break;
+      }
+      if (outcome === 'missing') {
+        // A late async update without a live top-level placeholder has no
+        // transcript owner. This includes an uncorrelated foreign child whose
+        // causal buffer was discarded at the turn boundary: fail closed rather
+        // than manufacturing a top-level attachment event in the renderer.
+        console.warn(
+          `[external-session] Ignoring unowned tool attachment update toolUseId=${event.toolUseId}`,
+        );
+        break;
+      }
       broadcast('chat:tool-attachment-update', {
         toolUseId: event.toolUseId,
         pendingId: event.pendingId,

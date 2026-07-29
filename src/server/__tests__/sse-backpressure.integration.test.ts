@@ -16,8 +16,9 @@
  * everything once and counting events.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  broadcast,
   broadcastLive,
   createSseClient,
   flushPendingLiveEvents,
@@ -272,5 +273,29 @@ describe('SSE event priority registration', () => {
   it('classifies logs/telemetry as droppable', () => {
     expect(SSE_EVENT_PRIORITIES['chat:log']).toBe('droppable');
     expect(SSE_EVENT_PRIORITIES['chat:runtime-diagnostics']).toBe('droppable');
+  });
+});
+
+describe('SSE unified-log policy', () => {
+  it('keeps every streaming delta silent and logs only the terminal event', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      broadcast('chat:message-chunk', 'hello ');
+      broadcast('chat:message-chunk', 'world');
+      broadcast('chat:thinking-chunk', { index: 0, delta: 'thought' });
+      broadcast('chat:tool-input-delta', { toolId: 'tool-1', delta: '{"path"' });
+      broadcast('chat:tool-result-delta', { toolUseId: 'tool-1', delta: 'partial result' });
+      broadcast('chat:subagent-tool-input-delta', { toolId: 'tool-2', delta: '{}' });
+      broadcast('chat:subagent-tool-result-delta', { toolUseId: 'tool-2', delta: 'partial' });
+      broadcast('chat:message-complete', { output_tokens: 2 });
+
+      const messages = log.mock.calls.map(args => args.join(' '));
+      expect(messages.filter(message => message.includes('[sse] chat:message-complete'))).toHaveLength(1);
+      expect(messages.some(message => /\[sse\].*(chunk|delta)/.test(message))).toBe(false);
+      expect(messages.some(message => message.includes('hello world'))).toBe(false);
+      expect(messages.some(message => message.includes('partial result'))).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

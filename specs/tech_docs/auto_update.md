@@ -191,13 +191,13 @@ myagents-releases/
 | `release-0.2.0` | ✗ |
 
 ```bash
-# 1. 更新版本号（两个文件都要改）
-# package.json: "version": "0.2.0"
-# src-tauri/tauri.conf.json: "version": "0.2.0"
+# 1. 以 package.json 为版本源；npm version hook 同步 lockfile、Tauri 与 Cargo 版本
+npm version 0.2.0 --no-git-tag-version
+cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 >/dev/null
 
-# 2. 提交
-git add -A
-git commit -m "chore: release v0.2.0"
+# 2. 只暂存本次发布涉及的文件并提交（显式列出实际文件）
+git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock CHANGELOG.md
+git commit -m "chore: release v0.2.0" -m "Prepare the tracked version metadata and changelog for the v0.2.0 release."
 
 # 3. 打 tag（必须 v 开头）
 git tag v0.2.0

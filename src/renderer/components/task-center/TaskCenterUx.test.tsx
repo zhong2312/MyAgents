@@ -197,6 +197,8 @@ describe('Task Center UX refinements', () => {
 
     expect(screen.queryByText('基本信息')).not.toBeInTheDocument();
     expect(screen.queryByText('简短描述')).not.toBeInTheDocument();
+    expect(screen.queryByText('标签')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('以逗号分隔，例如 MyAgents, 维护')).not.toBeInTheDocument();
     expect(screen.getByText('任务需求 Task.md')).toBeInTheDocument();
     expect(screen.queryByText('AI 执行时看到的 prompt，默认取自想法原文。你可以补充细节、目标、约束。')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('AI 执行时看到的 prompt，默认取自想法原文。你可以补充细节、目标、约束。')).toBeInTheDocument();
@@ -210,6 +212,37 @@ describe('Task Center UX refinements', () => {
       expect(name.compareDocumentPosition(taskDemand) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(taskDemand.compareDocumentPosition(checklist) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(checklist.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
+
+  it('creates a blank task without exposing or synthesizing tags', async () => {
+    taskApiMocks.taskCreateDirect.mockResolvedValue(task({
+      name: '整理交付清单',
+      executionMode: 'once',
+      status: 'todo',
+    }));
+    taskApiMocks.taskRun.mockResolvedValue(true);
+
+    render(
+      <DispatchTaskDialog
+        defaultWorkspacePath="/Users/me/mino"
+        onClose={vi.fn()}
+        onDispatched={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('例如: 升级 OpenClaw lark 适配器到 v2.4'), {
+      target: { value: '整理交付清单' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('AI 执行时看到的 prompt，默认取自想法原文。你可以补充细节、目标、约束。'), {
+      target: { value: '整理本周交付内容并输出检查清单。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+
+    await waitFor(() => {
+      expect(taskApiMocks.taskCreateDirect).toHaveBeenCalledWith(
+        expect.objectContaining({ tags: [] }),
+      );
     });
   });
 });

@@ -311,6 +311,28 @@ pub fn agent_channel_health_path(agent_id: &str, channel_id: &str) -> PathBuf {
     agent_channel_data_dir(agent_id, channel_id).join("state.json")
 }
 
+/// Read the Session identities retained by a configured channel while its
+/// runtime instance is stopped or temporarily detached for replacement.
+///
+/// The health file is the restart authority for peer bindings. A missing or
+/// unreadable file contributes no binding, matching channel restore behavior.
+pub(crate) fn persisted_active_session_ids(path: &Path) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(state) = serde_json::from_str::<ImHealthState>(strip_bom(&content)) else {
+        return Vec::new();
+    };
+    state
+        .active_sessions
+        .into_iter()
+        .filter_map(|session| {
+            let id = session.session_id.trim();
+            (!id.is_empty()).then(|| id.to_string())
+        })
+        .collect()
+}
+
 pub fn agent_channel_buffer_path(agent_id: &str, channel_id: &str) -> PathBuf {
     agent_channel_data_dir(agent_id, channel_id).join("buffer.json")
 }
@@ -712,5 +734,32 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).expect("state file"))
                 .expect("state json");
         assert_eq!(disk_state.active_sessions.len(), 2);
+    }
+
+    #[test]
+    fn persisted_active_session_ids_preserve_stopped_channel_bindings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut state = ImHealthState::default();
+        state.active_sessions = vec![super::super::types::ImActiveSession {
+            session_key: "agent:a:weixin:private:u1".to_string(),
+            session_id: "persisted-session".to_string(),
+            source_type: ImSourceType::Private,
+            source_id: Some("u1".to_string()),
+            source_display_name: None,
+            last_sender_name: None,
+            workspace_path: "/tmp/workspace".to_string(),
+            message_count: 1,
+            metadata_birth_pending: false,
+            metadata_indexed: true,
+            last_active: chrono::Utc::now().to_rfc3339(),
+        }];
+        std::fs::write(&path, serde_json::to_vec(&state).expect("serialize state"))
+            .expect("write state");
+
+        assert_eq!(
+            persisted_active_session_ids(&path),
+            vec!["persisted-session".to_string()]
+        );
     }
 }

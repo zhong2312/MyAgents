@@ -11,6 +11,7 @@ import type {
   SessionCompletionTerminal,
 } from '../../shared/sessionCompletion';
 import type { TurnIdentity, TurnTerminalOutcome } from '../session-core/turn-queue';
+import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
 
 type ImEmitter = (type: ImEventType, data?: unknown) => void;
 
@@ -46,6 +47,9 @@ const currentTurnTextBlocks: string[] = [];
 export type PendingOutputOwner = {
   queueId: string;
   requestId: string | null;
+  assistantChannelDelivery: AssistantChannelDelivery;
+  channelSessionId: string;
+  assistantChannelTextBlocks: string[];
 };
 
 // One owner per user message yielded to SDK stdin. A null requestId is
@@ -427,8 +431,25 @@ export function clearCurrentTurnTextBlocks(): void {
   currentTurnTextBlocks.length = 0;
 }
 
-export function pushPendingOutputOwner(queueId: string, requestId: string | null | undefined): void {
-  pendingOutputOwners.push({ queueId, requestId: requestId ?? null });
+export function pushPendingOutputOwner(input: {
+  queueId: string;
+  requestId: string | null | undefined;
+  assistantChannelDelivery: AssistantChannelDelivery;
+  channelSessionId: string;
+}): void {
+  pendingOutputOwners.push({
+    ...input,
+    requestId: input.requestId ?? null,
+    assistantChannelTextBlocks: [],
+  });
+}
+
+export function admitPendingOutputOwnerForYield(
+  input: Parameters<typeof pushPendingOutputOwner>[0],
+  isTransientProviderRetry: boolean,
+): void {
+  if (isTransientProviderRetry) return;
+  pushPendingOutputOwner(input);
 }
 
 export function popPendingOutputOwner(): PendingOutputOwner | null {
@@ -437,6 +458,19 @@ export function popPendingOutputOwner(): PendingOutputOwner | null {
 
 export function peekPendingOutputOwner(): PendingOutputOwner | null {
   return pendingOutputOwners[0] ?? null;
+}
+
+export function stageCurrentOutputOwnerAssistantChannelBlock(text: string): boolean {
+  const owner = pendingOutputOwners[0];
+  if (!owner || owner.assistantChannelDelivery !== 'session-binding' || !text) return false;
+  owner.assistantChannelTextBlocks.push(text);
+  return true;
+}
+
+/** A provider-text retry continues the same logical SDK yield owner. */
+export function clearCurrentOutputOwnerAssistantChannelBlocks(): void {
+  const owner = pendingOutputOwners[0];
+  if (owner) owner.assistantChannelTextBlocks.length = 0;
 }
 
 export function removePendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
@@ -606,7 +640,10 @@ export function snapshotTurn() {
     sessionStorageStateSaved,
     currentTurnInboxMeta,
     currentTurnTextBlocks: [...currentTurnTextBlocks],
-    pendingOutputOwners: pendingOutputOwners.map(owner => ({ ...owner })),
+    pendingOutputOwners: pendingOutputOwners.map(owner => ({
+      ...owner,
+      assistantChannelTextBlocks: [...owner.assistantChannelTextBlocks],
+    })),
     currentTurnImTerminalEmitted,
     currentTurnSourceItem,
   };

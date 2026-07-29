@@ -1,5 +1,27 @@
-import { AlertCircle, ChevronRight, ChevronUp, Gauge, Loader, Paperclip, Plus, Send, Square, X, FileText, AtSign, Wrench, Timer, Settings2 } from 'lucide-react';
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
+import {
+  AlertCircle,
+  AtSign,
+  ChevronRight,
+  ChevronUp,
+  Eye,
+  FilePenLine,
+  FileText,
+  Gauge,
+  Loader,
+  LockOpen,
+  Paperclip,
+  Plus,
+  Send,
+  Settings2,
+  ShieldCheck,
+  ShieldQuestion,
+  Square,
+  Timer,
+  Wrench,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Tip from '@/components/Tip';
@@ -70,11 +92,68 @@ function getCurrentModelLabel(
   return provider ? getModelDisplayName(provider, modelId) : modelId;
 }
 
+const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
+  auto: ShieldCheck,
+  plan: Eye,
+  fullAgency: LockOpen,
+  default: ShieldQuestion,
+  acceptEdits: FilePenLine,
+  bypassPermissions: LockOpen,
+  autoEdit: FilePenLine,
+  yolo: LockOpen,
+  suggest: ShieldQuestion,
+  'auto-edit': FilePenLine,
+  'full-auto': ShieldCheck,
+  'no-restrictions': LockOpen,
+};
+
+function PermissionModeIcon({
+  value,
+  fallback,
+  className,
+}: {
+  value: string | undefined;
+  fallback: string | undefined;
+  className: string;
+}) {
+  if (value) {
+    const Icon = PERMISSION_MODE_ICONS[value];
+    if (!Icon) return <span>{fallback}</span>;
+    return <Icon aria-hidden="true" className={className} strokeWidth={1.75} />;
+  }
+
+  return <span>{fallback}</span>;
+}
+
 function runtimeMcpServerId(toolName: string): string | null {
   if (!toolName.startsWith('mcp__')) return null;
   const remainder = toolName.slice('mcp__'.length);
   const separator = remainder.indexOf('__');
   return separator > 0 ? remainder.slice(0, separator) : null;
+}
+
+function ModelSelectionScrollSync({
+  listRef,
+  selectedRowRef,
+  selectionKey,
+  modelSource,
+}: {
+  listRef: RefObject<HTMLDivElement | null>;
+  selectedRowRef: RefObject<HTMLButtonElement | null>;
+  selectionKey: string;
+  modelSource: readonly unknown[] | undefined;
+}) {
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const selectedRow = selectedRowRef.current;
+    if (!list || !selectedRow) return;
+
+    const centeredTop = selectedRow.offsetTop - ((list.clientHeight - selectedRow.offsetHeight) / 2);
+    const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTop = Math.min(maxScrollTop, Math.max(0, centeredTop));
+  }, [listRef, modelSource, selectedRowRef, selectionKey]);
+
+  return null;
 }
 
 // File search result type
@@ -328,6 +407,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showToolMenu, setShowToolMenu] = useState(false);
+  const modelListRef = useRef<HTMLDivElement | null>(null);
+  const selectedModelRowRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (!configControlsLocked || (!showModeMenu && !showModelMenu && !showToolMenu)) return;
     const timer = window.setTimeout(() => {
@@ -1394,12 +1475,19 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             <div className="flex gap-2 px-4 pt-3 pb-1 overflow-x-auto">
               {images.map((img) => (
                 <div key={img.id} className="relative group flex-shrink-0">
-                  <img
-                    src={img.preview}
-                    alt="attachment"
-                    className="h-16 w-16 rounded-lg object-cover border border-[var(--line)] cursor-pointer"
-                    onDoubleClick={() => openPreview(img.preview, imageAttachmentName(img))}
-                  />
+                  <button
+                    type="button"
+                    aria-label={imageAttachmentName(img)}
+                    title={imageAttachmentName(img)}
+                    onClick={() => openPreview(img.preview, imageAttachmentName(img))}
+                    className="block h-16 w-16 cursor-pointer overflow-hidden rounded-lg border border-[var(--line)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
+                  >
+                    <img
+                      src={img.preview}
+                      alt="attachment"
+                      className="h-full w-full object-cover"
+                    />
+                  </button>
                   <button
                     type="button"
                     onClick={() => removeImage(img.id)}
@@ -1465,6 +1553,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               placement="top-start"
               offset={8}
               closeOnEscape={false}
+              style={{ boxShadow: 'var(--shadow-md)' }}
               className="w-[34rem] max-w-[calc(100vw-2rem)] max-h-80 flex flex-col"
             >
               {/* Tabs header */}
@@ -1617,6 +1706,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               placement="top-start"
               offset={8}
               closeOnEscape={false}
+              style={{ boxShadow: 'var(--shadow-md)' }}
             >
               <SlashCommandMenu
                 commands={filteredSlashCommands}
@@ -1663,7 +1753,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 onClose={() => setShowPlusMenu(false)}
                 anchorRef={plusBtnRef}
                 placement="top-start"
-                className="w-48 py-1"
+                className="composer-toolbar-menu-enter w-48 py-1"
               >
                 {/* PRD 0.2.7: previously gated by `!isLauncherMode`; both
                  *  launcher and chat-tab now route file ops through the
@@ -1734,6 +1824,29 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   <Paperclip className="h-4 w-4" />
                   {t('input.uploadFile')}
                 </button>
+                {onCronButtonClick && (
+                  <button
+                    type="button"
+                    aria-disabled={configControlsLocked}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (showConfigLockedReason()) return;
+                      setShowPlusMenu(false);
+                      onCronButtonClick();
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors ${
+                      cronModeEnabled && !configControlsLocked
+                        ? 'bg-[var(--heartbeat-bg)] text-[var(--heartbeat)] hover:bg-[var(--heartbeat)]/20'
+                        : configControlsLocked
+                          ? 'cursor-not-allowed text-[var(--ink-muted)] opacity-50 hover:bg-transparent'
+                          : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                    }`}
+                    title={configControlLockTitle ?? (cronModeEnabled ? t('input.cronEnabled') : t('input.cron'))}
+                  >
+                    <Timer className="h-4 w-4" />
+                    {t('input.cron')}
+                  </button>
+                )}
               </Popover>
 
               {/* Hidden file input */}
@@ -1777,7 +1890,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 }`}
                 title={configControlLockTitle ?? t('input.permissionModeTitle')}
               >
-                <span>{currentModeDisplay?.icon}</span>
+                <PermissionModeIcon
+                  value={currentModeDisplay?.value}
+                  fallback={currentModeDisplay?.icon}
+                  className="h-3.5 w-3.5 shrink-0"
+                />
                 <span className="toolbar-label">{currentModeDisplay?.label}</span>
                 <ChevronUp className="h-3 w-3" />
               </button>
@@ -1786,7 +1903,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 onClose={() => setShowModeMenu(false)}
                 anchorRef={modeBtnRef}
                 placement="top-start"
-                className="w-72 py-1"
+                className="composer-toolbar-menu-enter w-72 py-1"
               >
                 <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--line)]">
                   <span className="text-xs font-medium text-[var(--ink-muted)]">{t('input.permissionModeHeader')}</span>
@@ -1823,7 +1940,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   >
                     <span className={`text-sm font-medium flex items-center gap-1.5 ${permissionMode === mode.value ? 'text-[var(--accent)]' : 'text-[var(--ink)]'
                       }`}>
-                      <span>{mode.icon}</span>
+                      <PermissionModeIcon
+                        value={mode.value}
+                        fallback={mode.icon}
+                        className="h-4 w-4 shrink-0"
+                      />
                       {mode.label}
                     </span>
                     <span className="text-xs text-[var(--ink-muted)] mt-0.5">{mode.description}</span>
@@ -1868,7 +1989,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 // past the viewport top. 50vh shows ~6 full rows AND
                 // half-clips the next one — the partial row is the
                 // affordance that tells the user "scroll for more".
-                className="w-64 max-h-[50vh] overflow-y-auto py-1"
+                className="composer-toolbar-menu-enter w-64 max-h-[50vh] overflow-y-auto py-1"
               >
                     <div className="px-3 py-2 text-xs font-medium text-[var(--ink-muted)] border-b border-[var(--line)]">
                       {t('input.toolsHeader')}
@@ -2102,31 +2223,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               </Popover>
               </>
 
-              {/* Goal/Schedule Button — PRD 0.2.7 D1: launcher exposes this
-               *  too. The handler stages cron config on launcher; actual
-               *  cmd_create_cron_task runs after handoff to chat. */}
-              {onCronButtonClick && (
-                <button
-                  type="button"
-                  aria-disabled={configControlsLocked}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (showConfigLockedReason()) return;
-                    onCronButtonClick();
-                  }}
-                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${
-                    cronModeEnabled && !configControlsLocked
-                      ? 'bg-[var(--heartbeat-bg)] text-[var(--heartbeat)] hover:bg-[var(--heartbeat)]/20'
-                      : configControlsLocked
-                        ? 'cursor-not-allowed text-[var(--ink-muted)] opacity-50 hover:bg-transparent hover:text-[var(--ink-muted)]'
-                      : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                  }`}
-                  title={configControlLockTitle ?? (cronModeEnabled ? t('input.cronEnabled') : t('input.cron'))}
-                >
-                  <Timer className="h-3.5 w-3.5" />
-                  <span className="toolbar-label">{t('input.cron')}</span>
-                </button>
-              )}
             </div>
 
             {/* Right side - model selector + send/stop button */}
@@ -2172,7 +2268,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 unstyled
                 className="w-64 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl"
               >
-                <div className="max-h-[260px] overflow-y-auto py-1">
+                <div
+                  ref={modelListRef}
+                  data-model-list
+                  className="relative max-h-[260px] overflow-y-auto py-1"
+                >
                 {isExternalRuntime && runtimeModels ? (
                   <>
                     <div className="px-3 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
@@ -2184,6 +2284,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       const isSelected = selectedModel === model.value || (!selectedModel && model.isDefault);
                       return (
                         <button
+                          ref={isSelected ? selectedModelRowRef : undefined}
+                          data-selected-model-row={isSelected ? '' : undefined}
                           key={model.value}
                           type="button"
                           onClick={(e) => {
@@ -2238,6 +2340,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         const isSelected = provider?.id === p.id && currentModelId === model.model;
                         return (
                           <button
+                            ref={isSelected ? selectedModelRowRef : undefined}
+                            data-selected-model-row={isSelected ? '' : undefined}
                             key={model.model}
                             type="button"
                             onClick={(e) => {
@@ -2266,6 +2370,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   ));
                 })()}
                 </div>
+                <ModelSelectionScrollSync
+                  listRef={modelListRef}
+                  selectedRowRef={selectedModelRowRef}
+                  selectionKey={isExternalRuntime
+                    ? `${runtime ?? 'external'}:${selectedModel ?? 'default'}`
+                    : `${provider?.id ?? 'none'}:${currentModelId ?? 'none'}`}
+                  modelSource={isExternalRuntime ? runtimeModels : providers}
+                />
 
                 {/* #324 — fixed bottom row: 推理强度. Hidden when the surface has
                     no effort knob (Gemini / unknown runtime). Hover or click
@@ -2343,6 +2455,26 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         </div>
                       </>
                     )}
+                  </div>
+                )}
+
+                {!isExternalRuntime && (
+                  <div className="border-t border-[var(--line)] p-1">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowModelMenu(false);
+                        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SETTINGS, {
+                          detail: { section: 'providers' },
+                        }));
+                      }}
+                      className="flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                    >
+                      <Settings2 className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                      <span className="flex-1">{t('input.customModelService')}</span>
+                      <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
+                    </button>
                   </div>
                 )}
               </Popover>

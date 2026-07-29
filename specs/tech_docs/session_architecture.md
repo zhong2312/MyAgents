@@ -74,7 +74,7 @@ interface SessionStats {
 ### Session identity 迁移与删除线性化
 
 - `pending-* → SDK UUID` 不是“先创建 target、再尽力删除 source”的两次独立写入。`SessionStore.migratePendingSessionIdentity()` 同时持有 source/target JSONL 锁与 sessions index 锁；若 pending transcript 已落盘，先为 target 建立同 inode hard link，再用一次 `sessions.json` 写入替换 identity，最后移除 source 名称。进程在 metadata commit 前退出时，source metadata/data 仍是权威；重试只接纳与 source 同 inode 的 staged target，不明 target data 一律 fail-closed。source 清理失败时先补回已移除的 source link、恢复原始 metadata，再清 target，因此不会把部分迁移发布成两个可分叉副本。
-- 用户删除的唯一 lifecycle authority 是 Rust `cmd_delete_session_if_unowned`。它只接受 `[A-Za-z0-9-]{1,99}` 的 canonical 单路径段 ID，持有 per-Session lifecycle guard，并同时检查 durable Task/Goal 与全部 Sidecar owner；通过后使用仅注入 Global Sidecar 进程的随机 capability 调用 Node `user-delete` 存储 mutation。owner-acquiring Sidecar ensure 统一走 lifecycle async entrypoint：普通调用方由入口 acquire，Task metadata creator 已持 authority 时用 shared held lease 贯穿 readiness，严禁同 key 二次 acquire。health recovery 失败时把携带 owners 的原始 dead sidecar 放回 manager，不能把 owner 只藏在 monitor 私有重试队列。Renderer/browser 不能直接建立删除 authority，browser dev 因而拒绝删除，而不是退化成裸 HTTP DELETE。
+- 用户删除的唯一 lifecycle authority 是 Rust `cmd_delete_session_if_unowned`。它只接受 `[A-Za-z0-9-]{1,99}` 的 canonical 单路径段 ID，持有 per-Session lifecycle guard，并同时检查 durable Task/Goal、闲置、显式停止或 hot-reload replacement 后仍保留的 IM peer binding 与全部 Sidecar owner；App 只可提交自己当前 mounted 的 exact Tab ids，Rust 必须拒绝任何未授权 Tab 或非 Tab owner，在 Node `user-delete` 存储 mutation 成功（或幂等 not-found）后才在同一 fence 内释放这些 Tab owner。这样 storage/owner 任一拒绝都原样保留 Tab，不需要 renderer rollback。IM binding 的 snapshot、owner query 与删除 preflight 共用同一 predicate，同时扫描 live router 与当前配置 Channel 的 health state；删除预检发生在 lifecycle guard 外（IM 既有锁序是 router → lifecycle），锁内只重读 disk binding 与 Task/Goal，预检后新建的 live binding 必须先在同一 lifecycle fence 下附加 `Agent` owner，再由锁内 Sidecar-owner 检查兜底，禁止反向持 lifecycle 再等 router。App 是 mounted Tab 集合的 owner，因此所有用户删除入口、固定 Session 打开/恢复/迁移入口（包括 fork attach、pending→real identity adoption、Task Center / 通知的 `OPEN_SESSION_IN_NEW_TAB` 与 `TabProvider` recovery）和 mounted Tab turn submission 必须使用 App 的同一 per-Session admission map 与 delete 互斥；opening claim携带既有Tab ID，同一Tab在自己的adoption await内提交turn时只获得no-op nested release，不能清除outer claim，其它Tab与deletion仍fail closed。先实时查询非 Tab owner，再由 Rust 把运行中的 turn 接管成 `BackgroundCompletion` 或权威确认 idle，只有明确 idle 才把匹配 Tab ids 交给 Rust authority，并在 lifecycle fence 内以 `SessionEngine.isBusy()` 复核已接纳的 builtin/external 队列，成功后才把对应 Chat Tab 退回 Launcher并停止 SSE proxy。Floating companion 使用独立 `Companion` owner；headless Inbox 的 healthy reuse 与 dead resume 均在 delivery lifecycle fence 内先附加 transient `Agent` owner，成功投递后先接力给 `BackgroundCompletion` 再释放，两者都不是 App 可释放的 Tab，必须进入非 Tab preflight。删除专用 strict handoff 保留 transport / activity-check 错误；失败或不可用必须保留 Tab 并 fail closed，不能拿 renderer `isGenerating` 投影当删除许可。列表、搜索和历史下拉不得直接调用存储删除。Rust 同时输出精确的非 Tab 删除保护快照供 UI 解释阻塞，但它只是投影，最终命令仍在锁内裁决并返回 machine-readable refusal reason。owner-acquiring Sidecar ensure 统一走 lifecycle async entrypoint：普通调用方由入口 acquire，Task metadata creator 或 Inbox delivery 已持 authority 时用 shared held lease 贯穿 readiness，严禁同 key 二次 acquire。health recovery 失败时把携带 owners 的原始 dead sidecar 放回 manager，不能把 owner 只藏在 monitor 私有重试队列。Renderer/browser 不能直接建立删除 authority，browser dev 因而拒绝删除，而不是退化成裸 HTTP DELETE。
 - `SessionStore.deleteSession()` 只接受 typed intent。`prepared-materialization-rollback` 必须在 JSONL/legacy data 尚不存在且 metadata 仍由同一 materialization source 拥有时才可执行；用户删除还在 index 锁内复核 system-maintenance 保护。
 - prepared rollback 与 turn admission 不靠队列/内存布尔快照互猜。Admission 以 `PendingDesktopMaterialization.targetSessionId + priorSessionId` 调用存储层 typed CAS `claimPreparedSessionForTurnAdmission()`；它与 rollback 在同一 sessions index 锁内检查同一 `materializationState:'prepared'` / source marker。该 CAS 是 admission 最后一个 awaited transition：此前仍可取消，赢锁后则同步把 promoted item 转成 active turn。admission 先赢则 marker 已清、rollback 拒绝；rollback 先赢则 metadata 已删、admission 在发布 accepted 前失败。
 
@@ -180,6 +180,13 @@ origin 补齐为 exact binding；`origin` 缺失、`null`、畸形或属于 desk
 - `turnBoundaryQueue` 不直接复用 `messageQueue` 的 mid-turn 投递语义；它只在 clean turn boundary 由 `startNextTurnQueuedItem()` 启动，避免轮次模式污染实时模式。
 - 一旦 `turnBoundaryQueue` 或 turn-mode admission ticket 已存在，后续同 session 的桌面 `/chat/send` 忙时发送必须继续排到 turn boundary；非桌面来源不读取该 UI 设置，保持各自既有队列语义。
 - abort / stop / crash recovery 必须同时清理或恢复 `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue` 和 admission ticket，避免只处理旧队列造成 orphan query。
+
+主 Stop 仍只中止当前 Turn，不私自调用 SDK 未公开的 `cancel_queued`。SDK 0.3.220 的
+公开 `Query.interrupt()` receipt 会返回 `still_queued`：其中 UUID 与
+`messageGenerator()` 写入的 queue id 是同一身份。若 receipt 明确包含当前 in-flight
+项，UI queue pill 必须保留到 replay / assistant-start 确认消费；receipt 缺失时按旧 CLI
+保守兼容，同样保留 queue pill，不能臆造取消。未知 UUID 只记数量并忽略，不创建第二份
+队列 owner。
 
 规则 owner：`src/server/session-core/turn-queue.ts`。副作用 state owner：`src/server/builtin-session/queue.ts`。`agent-session.ts` facade 负责把 enqueue / cancel / force / terminal orchestration 接到 SDK、SSE、IM reply 等副作用，但 queue 数组、in-flight slot、turn admission ticket 不再作为 facade 顶层裸状态维护。admission、cancel location、force-start reordering、abort ticket 清理必须继续调用 `turn-queue` policy。
 
@@ -329,6 +336,8 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 - `abortPersistentSession()` 仍是唯一语义化 abort 入口；abort flag 的内部写入归 `lifecycle.ts`。
 - `agent-session.ts` 需要修改 owner state 时走 `builtin-session/*` 的命名 API；`runtime-boundary.unit.test.ts` 有 direct-write guard，防止重新裸写 lifecycle/queue/turn/config/transcript 状态。
 - `agent-session.ts` 不再解释 SDK terminal result，也不再实现 transcript persistence mapping/chain；这两类行为分别归 `turn-lifecycle.ts` 与 `transcript-persistence.ts`，facade 只组装必要依赖并委托。
+- builtin SDK terminal 的成功判定统一由 `session-core/turn-result-policy.ts::classifyBuiltinSdkTerminalResult()` 提供：`is_error` 不是单独 authority；只有 `completed` 与兼容旧 SDK 的缺失 reason 可以 complete，`aborted_*` 映射 stopped，其它或未来未知 reason 一律 fail closed，避免 Task / Goal 把部分结果误结算为成功。
+- builtin pre-warm 遇到 SDK native child 的确定性 exec denial 时，第一次失败只做短暂 control-plane handoff；随后必须采用 Rust admission 返回的 `retryAfterMs`，不得回落为 process-local 500ms/0ms 重启循环。Rust half-open lease 是唯一重试时钟，详见 `bundled_node.md`。
 
 #### Builtin 公共 MCP soft pre-warm 与 dispatch transaction
 
@@ -432,6 +441,10 @@ if (sdkMessage.uuid) {
 stale 的锚点，但不能证明 `resumeSessionAt` 一定会被 SDK 接受。SDK 报
 `No message found with message.uuid` 才是最终拒绝信号；恢复逻辑要驱逐该 UUID，
 防止 pre-warm / reload 反复派生同一个坏锚点。
+
+`rewindFiles()` 的 `skippedLinks` 表示 SDK 因 symlink / hard link / 非普通文件安全检查
+而没有恢复的文件数。对话截断仍可成功，但该计数必须沿既有 `/chat/rewind` 返回契约
+传到 Chat warning，不能把部分文件回溯展示成完整成功；文件路径不进入通知或日志。
 
 ### reloadAnchor：冷加载后的 Rewind 对齐
 
@@ -615,13 +628,15 @@ MyAgents 自身的存储服务于不同的业务场景：
 
 ### SSE 断连 **不是** 取消权威（load-bearing 不变量）
 
-关 Tab / 网络波动导致 `/chat/stream` 断连，**绝不能**用来取消进行中的 turn。turn 的生命周期归 Rust 的 **Sidecar Owner 模型**（Tab / Task / Goal / BackgroundCompletion / Agent），不归前端 SSE 连接：
+关 Tab / 网络波动导致 `/chat/stream` 断连，**绝不能**用来取消进行中的 turn。turn 的生命周期归 Rust 的 **Sidecar Owner 模型**（Tab / Companion / Task / Goal / BackgroundCompletion / Agent），不归前端 SSE 连接：
 
 - 零 client 时的 `broadcast()` 是 no-op，turn 照常在 sidecar 跑完并持久化；重连后由 `chat:message-replay` 补发。
 - 真正卡死的 turn 由 10 分钟 inactivity watchdog 收口（见 `agent-session.ts` / `external-session.ts`，原语 `utils/inactivity-watchdog.ts`）。
 - 用户主动放弃用 **Stop**（`interruptCurrentResponse`），不是关 Tab。
 
 历史教训：`390d38ee`（4-25）曾给 `/chat/stream` 加 last-consumer grace interrupt，把"关 Tab"误当"杀 turn"，regress 了 BackgroundCompletion 与 cron/session-send（turn 被 interrupt → `[ERROR turn_failed]` 投回飞书）。最终修法是**彻底删除该 interrupt**；`index.ts` 留有 load-bearing 注释禁止复活。改 SSE 断连相关逻辑前 MUST 理解这条。
+
+Tauri 的 `/chat/stream` 由 Rust per-`connectionKey` supervisor 维护：每个 attempt 都通过 `SidecarManager` 的 `sessionIdHint + SidecarOwner` 解析当前 ready 端口，connect error、非 2xx、body error、read timeout、EOF 统一 capped backoff。Renderer 不缓存 SSE URL、不监听一次性 error 来重建 proxy；`start_sse_proxy` ack 只表示 subscription active。subscription replacement generation 防旧 task 清理/发往新订阅，Rust process-global transport generation 随每条 `{ transportGeneration, data }` envelope 转发，供 Renderer 识别物理断线边界。普通 Tab 与 Floating Ball 共用这条 transport；后者只恢复后续实时事件，不拥有普通 Chat 的完整 snapshot hydration 状态机。
 
 ### 问题场景
 
@@ -747,9 +762,10 @@ setSystemStatus(null);
 上面的「新会话」靠 `isNewSessionRef` skip 旧事件；**恢复一个已存在会话的历史**是另一条路径，权威源不同。恢复历史的**唯一权威 = REST `GET /sessions/:id`**（磁盘、分页、有序；active session 已 merge 内存未持久化消息）。SSE `chat:message-replay` 让位——它是**重载**事件：SSE-connect 冷历史 backfill **＋** 新发 user/command 气泡的 live echo。
 
 - `loadSession` 用**同步**标志 `restoredSessionIdRef`（**不是**异步滞后的 `historyMessagesRef.length`）决定是否 skip replay。在 `setHistoryMessages` 前就放开 loading 标志，会让迟到的 `chat:init` 命中 `!isLoading && length===0` → 清掉刚恢复的 REST 页 + `seenIds` → 内存 replay（可能传输截断）回填**旧**集（#0608 实测：后端发 id 111-190，前端却停在 109）。
-- 冷历史 backfill 打 `replayKind:'cold-history'`；新发 user/command 气泡打 `replayKind:'live-user-echo'` 并携带创建事件时的 `sessionId`。REST-restored session 只 skip cold history；新 session birth 只接受通过当前 session scope 校验的 live echo。决策纯核心 `sessionRestoreGuards.ts`（可单测）。
+- 冷历史 backfill 打 `replayKind:'cold-history'`，并使用 builtin/external `SessionEngineStreamReplaySnapshot.sessionId` 携带 snapshot scope；snapshot还携带active assistant。external adapter在pending→real启动窗口优先采用已promoted的bound Session，并从既有immutable live snapshot投影accepted in-memory user message与assistant前缀。`/chat/stream` 必须在注册新client前同步取得snapshot，避免snapshot flush把事件排到初始化之前；scope与assistant snapshot合入既有`chat:init`，Renderer按identity/content原子采用并保留structured blocks，只有之后的真实`chat:message-chunk`才按delta追加。新发user/command气泡打`replayKind:'live-user-echo'`并携带创建事件时的`sessionId`。REST-restored session只skip cold history；new session birth只接受通过当前Session scope校验的live echo或cold reconnect snapshot。Route只能消费SessionEngine public facade，不能读取adapter internal或从message推导identity。决策纯核心`sessionRestoreGuards.ts`（可单测）。
 - `GET /sessions/:id` 的 active overlay 由 `SessionEngine.getLiveSessionOverlay()` 提供：磁盘历史先与 finalized in-memory tail 按 message id 合并，当前 streaming assistant 独立返回，同时带 live session state、pending interactive requests 与 `snapshotRevision`。builtin/external public facade 都返回 immutable snapshot；Route 只做分页、redaction、response shaping，不直接读取 runtime owner internal。
-- 需要与快照对齐的非幂等 streaming/turn-boundary/interactive SSE 事件由 `participatesInLiveRestore()` 统一选择并包成 `{ sessionId, liveRevision, payload }`。Sidecar 在暴露 snapshot 前先 flush coalesced chunk，因此 `snapshotRevision` 覆盖快照已包含的全部事件。Renderer 在 REST pending 时 buffer；快照落地后丢弃 `revision <= snapshotRevision`，只按序 replay 连续后缀。发现 gap、没有已采纳基线，或 SSE connection generation 变化时，重新请求 REST snapshot，不用 `loading/seenIds` 猜顺序。
+- 需要与快照对齐的非幂等 streaming/turn-boundary/interactive SSE 事件由 `participatesInLiveRestore()` 统一选择并包成 `{ sessionId, liveRevision, payload }`。Sidecar 在暴露 snapshot 前先 flush coalesced chunk，因此 `snapshotRevision` 覆盖快照已包含的全部事件。Renderer 在 REST pending 时 buffer；快照落地后丢弃 `revision <= snapshotRevision`，只按序 replay 连续后缀。发现 gap、没有已采纳基线，或 SSE transport generation 变化时，重新请求 REST snapshot，不用 `loading/seenIds` 猜顺序。
+- Tauri 新 transport generation 必须在第一条业务 event 前建立上述 restore fence；REST live-recovery commit 不走 session-switch overlay，不先清空消息，也不重置已有 pagination/scroll anchor。它按 snapshot 首条 message id 与当前 history overlap：有 overlap 时保留 older prefix 并权威替换 recent tail；无 overlap 时才整体采用 snapshot。随后恢复 `liveStreamingMessage`、`liveSessionState` 与 pending interactive requests，再 replay snapshotRevision 后的连续 buffer。若该权威 REST 请求瞬时失败，Renderer 保留同一 fence/token 与已 buffer 的 live events，只重试 snapshot；Session 切换或更新 token 会让迟到 retry 自动失效。
 - `liveRevision` 是当前 Sidecar 绑定 Session 的 generation-local 内存序号，Session identity 切换时归零；它不写 JSONL、不做 checkpoint，也不改变 REST 的历史权威。新 Session 在首次被 REST adopt 前仍可走 SSE-native birth，避免为尚未持久化的会话制造恢复状态机。
 - 诊断"恢复只显示一部分"：读磁盘 `~/.myagents/refs/<id>` 的 spilled body（后端实发的 JSON，可直接 `node` 解析）对比前端显示，先把"后端发了什么 vs 前端显示什么"一刀切开。
 
@@ -759,21 +775,25 @@ builtin/external 的真实 turn owner 在 complete/stopped/error 时生成同一
 
 Rust `notification.rs` 是普通 Session 通用完成通知的唯一业务 owner：Tab-attached 路径由 SSE proxy 提交，headless 路径由 `BackgroundCompletion` 在 active→terminal 后从 `/api/session-state` 提交；两者先经过同一 owner/origin eligibility，再以 `(sessionId, turnId)` 做进程内 exactly-once claim，随后统一执行窗口 focus、通知偏好、系统 toast、badge 与 session/workspace deep-link。Task/Goal owner、Agent Channel、automation/Cron/Task run、Memory 与 Heartbeat 抑制 generic 通知，继续由各自 domain surface 负责；ordinary desktop、registered-agent/Space 与 Session Inbox 可发送 generic 通知。claim 刻意不持久化，不新增 notification ledger。`TabProvider` 只保留 terminal UI 与 unread 状态，不拥有 OS completion toast。
 
+transport 断线窗口内 turn 仍照常完成并持久化；普通 Chat 的新 generation REST snapshot 恢复 finalized history 与 idle/error UI。现有 live terminal → Rust notification claim 路径保持不变，但不为断线补交通知新增 replay/outbox/ack，因此不能承诺断线窗口的 OS completion notification。
+
 ### 会话快照类 SSE 必须按 session scope 过滤
 
 Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 端口”，不能单独保证“事件仍属于这个 Tab 当前展示的 session”。历史切换、新对话 birth、pending session materialization、Sidecar key handover 都可能让旧 sidecar/旧连接的缓存或 live 事件晚到。
+
+反过来也不能把 connection 创建时的 Session label 当作业务 authority：`connectionKey + SidecarOwner` 拥有长期 transport，Session key 可在同一 Sidecar 内通过 pending→real、桌面 reset 或已确认 surface migration 升级。pending→real 可由 generic effect 识别；real→real 只能由发起 reset / migration 的 owner 在 parent prop effect 前按 exact A→B 同步采用 business current 与 attachment，并在拒绝/异常时仅对仍指向 B 的状态做 exact rollback。SSE status callback只报告liveness，attachment identity由connect/reset/migration operation拥有。birth marker不参与transport裁决，离开exact target即清理。带scope事件在live-revision dispatch前按`payload.sessionId === currentSessionId`裁决，旧A payload自然丢弃，B payload即使经A时期建立的physical stream送达也合法。普通历史切换没有同一Sidecar birth证明，仍必须replacement。
 
 凡是会更新 Tab 会话快照或展示阻塞式交互 UI 的 SSE 事件，payload MUST 带 `sessionId`，前端 MUST 先通过 `src/renderer/context/sessionScopedEventGuards.ts::shouldAcceptSessionScopedSseSnapshot()` 或 `decideSystemInitSessionId()` 过滤，再写 React state。当前范围包括：
 
 - `chat:system-init`：既是 runtime/config 快照，也是新 session birth 信号；只有 pending/null/reset → concrete id 的 birth 窗口允许同步 Tab sessionId，普通历史切换中的 mismatch 一律视为 stale。
 - `chat:runtime-tool-catalog`：external runtime 工具目录的可变快照；必须按 sessionId 过滤，重连时由既有 `chat:system-init` replay snapshot 恢复，不能另建第二份 replay 状态。
-- `chat:message-replay` 的 `live-user-echo`：既是用户气泡，也是 server-initiated turn 结束 new-session stale window 的有序边界；必须带创建时的 `sessionId`。
+- `chat:message-replay`：`live-user-echo` 既是用户气泡，也是 server-initiated turn 结束 new-session stale window 的有序边界；`cold-history` 只闭合 stream attach/reconnect snapshot 窗口。两者都必须带各自创建 snapshot/event 时的 `sessionId`；REST-restored Session 仍拒绝 cold history。
 - `queue:started`：排队消息正式 promotion 后的用户气泡与 turn 边界；必须带 promotion 所属的 `sessionId`，guarded Goal 只能在 admission accepted 后发送。
 - `permission:request` / `permission:expired`
 - `ask-user-question:request` / `ask-user-question:expired`
 - `exit-plan-mode:*` / `enter-plan-mode:*`
 
-唯一允许的 session mismatch 是新会话 birth：SSE connection 仍标着 pending id，而 SDK / external runtime snapshot 已经带着新 minted concrete session id。除此之外，payload session 与当前 concrete session 不一致就必须丢弃。新增 request/expired 类 SSE 时，如果它会弹 UI、清 UI、改变 plan-mode 或改变当前 session snapshot，必须先把 `sessionId` 加到后端 broadcast / pending replay payload，再接入这层 guard；不要只依赖 Tab-scoped SSE channel。
+允许 connection label 暂时落后 current Session 的只有已证明复用同一 Sidecar 的 identity upgrade：pending→real、desktop reset 或已完成 surface migration。无论 connection label 如何，payload session 与 current concrete Session 不一致都必须丢弃；没有上述证明的 real→real 变化是普通 history switch，必须 replacement。新增 request/expired 类 SSE 时，如果它会弹 UI、清 UI、改变 plan-mode 或改变 current session snapshot，必须先把 `sessionId` 加到后端 broadcast / pending replay payload，再接入这层 guard；不要只依赖 Tab-scoped SSE channel。
 
 ### Sidecar 配置归置：`sidecarConfigDisposition`（push / adopt / pending，0.2.31）
 
@@ -796,6 +816,8 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 - 启动失败的 catch MUST 把 instant-flip 的 `pending` tab 重置为终态 `push`（否则永远卡 `pending`，既不推也不采纳）。
 
 即时进入还包含 `ChatBootOverlay` 的"AI 启动中"毛玻璃蒙层（翻页瞬时出现、就绪时淡出衔接），它同时是 App 的 lazy-Chat Suspense fallback。`getSessionPort` 之所以只能是提示：见上方「唯一裁决者」。
+
+从全局侧栏等资源入口“在新 Tab 打开已有 Session”时，`spawnTabForExistingSession` 必须用 `flushSync` 先把带真实 `sessionId`、`view:'chat'`、`sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，再 await `ensureSessionSidecar` / activation。这里仍用 functional `setTabs` 与既有 render-mirror `tabsRef`，禁止提前手写 `tabsRef.current` 形成第二 authority；同步 commit 同时保证 warm Sidecar 极快返回时，后续 liveness check 已能看见新 Tab。Chat owner 子树立即挂载，由其自身 `ChatBootOverlay` 覆盖进程启动窗口；不能用 `isLoading` 条件替换整个 `TabProvider/Chat`，否则会破坏 SSE/Session 生命周期。ensure 完成只结算 `pending → push|adopt`，不得再次强制 active（用户可能已主动切走）。ensure/activation 失败则移除临时 Tab；只有它仍是 active 时才恢复仍存在的前一 Tab。该顺序不改变 `planSessionOpen` 前置裁决，也不允许在 planner 之前预塞 session Tab，否则会重新触发上文 `jump-to-tab` / 后台 owner 归属陷阱。侧栏 flyout / 搜索 overlay 的关闭只消费 active Tab projection 与发起时的 resource-surface interaction generation；Sidecar 的晚到完成不是 UI authority，不能关闭用户随后重新打开的资源面。
 
 ### Session 配置写入方向矩阵：setter 边界的 snapshot guard（#327，0.2.32+）
 

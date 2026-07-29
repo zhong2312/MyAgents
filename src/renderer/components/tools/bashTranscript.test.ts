@@ -341,6 +341,26 @@ describe('Bash transcript model', () => {
     expect(model.status).toBe('background');
   });
 
+  it('keeps SDK timeout-to-background metadata structured and does not report a failure', () => {
+    const model = resolveBashTranscriptModel(tool({
+      input: { command: 'serve' },
+      result: JSON.stringify({
+        stdout: 'listening',
+        stderr: '',
+        interrupted: false,
+        timedOutAfterMs: 120_000,
+        backgroundCwdHint: 'Session cwd remains unchanged.',
+      }),
+    }));
+
+    expect(model.status).toBe('background');
+    expect(model.streams[0].text).toBe('listening');
+    expect(model.meta).toMatchObject({
+      timedOutAfterMs: 120_000,
+      backgroundCwdHint: 'Session cwd remains unchanged.',
+    });
+  });
+
   it('keeps oversized wrappers inert until the bounded transcript window projects them', () => {
     const result = JSON.stringify({
       stdout: 'x'.repeat(600_000),

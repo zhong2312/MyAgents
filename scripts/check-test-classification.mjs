@@ -166,8 +166,8 @@ if (childProcessOffenders.length > 0) {
     'Move the test to credentialed, mock the subprocess, or add a narrow allowlist entry with a comment.',
   ].join('\n'));
 }
-if (!scriptIncludes('test', ['test:classification', 'test:unit', 'test:dom', 'test:integration'])) {
-  errors.push('package.json script "test" must run classification + unit + dom + integration.');
+if (!scriptIncludes('test', ['test:classification', 'test:build-scripts', 'test:unit', 'test:dom', 'test:integration'])) {
+  errors.push('package.json script "test" must run classification + build scripts + unit + dom + integration.');
 }
 for (const scriptName of ['test:changed', 'test:watch', 'coverage']) {
   if (!scriptIncludes(scriptName, ['--project unit', '--project dom', '--project integration'])) {
@@ -176,6 +176,7 @@ for (const scriptName of ['test:changed', 'test:watch', 'coverage']) {
 }
 for (const command of [
   'npm run test:classification',
+  'npm run test:build-scripts',
   'npm run test:integration',
   'npm run build:server',
   'npm run build:bridge',

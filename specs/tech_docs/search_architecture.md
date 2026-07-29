@@ -17,7 +17,7 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 ┌─────────────────────────────────────────────────────────────────┐
 │                     React Frontend                              │
 │  ┌────────────────────────┐   ┌──────────────────────────────┐ │
-│  │ TaskCenterOverlay      │   │ DirectoryPanel               │ │
+│  │ HistorySearchOverlay   │   │ DirectoryPanel               │ │
 │  │  (Session 搜索)         │   │  (工作区文件搜索)              │ │
 │  └──────────┬─────────────┘   └────────────┬─────────────────┘ │
 │             │                               │                   │
@@ -246,12 +246,18 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 
 | 入口 | 文件 | 触发路径 |
 |------|------|---------|
-| **Session 搜索 Overlay** | `TaskCenterOverlay.tsx` | Launcher 搜索按钮 → `initialMode='search'` 自动聚焦输入框 |
+| **Session 搜索 Overlay** | `components/global-sidebar/GlobalSidebar.tsx`（稳定 shell）+ `components/HistorySearchOverlayContent.tsx`（lazy content） | 全局侧栏搜索按钮 → `initialMode='search'` 自动聚焦输入框 |
 | **文件搜索模式** | `components/DirectoryPanel.tsx` facade → `components/directory-panel/DirectoryPanel.tsx` + `hooks/useDirectorySearch.ts` | 侧边栏搜索按钮切换 mode → 用户输入 query → `searchWorkspaceFiles` 立即返回 → 后台 `refreshWorkspaceFileIndex` → 有变化时重搜 |
 | **结果项** | `search/SessionSearchItem.tsx`, `search/FileSearchResults.tsx` | 渲染 hit，点击跳转 session / 预览文件 / 在文件目录中展示 |
 | **文件跳转定位行** | `components/directory-panel/DirectoryPanel.tsx` + `FilePreviewModal.tsx` + `MonacoEditor.tsx` | `FileSearchResults` 触发 `FilePreviewFocusTarget` 事件，已打开 editor 也会重新 `revealLineInCenter()`；`initialLineNumber` 仅保留为兼容字段 |
 | **文件树定位** | `components/directory-panel/DirectoryPanel.tsx` + `workspace-tree/WorkspaceTreeViewport.tsx` | 搜索结果 path-based reveal，逐层展开祖先目录，通过 Virtuoso `scrollToIndex` 滚动并消费 `revealRequest` |
 | **高亮渲染** | `search/SearchHighlight.tsx` | 消费 `[start, end][]` UTF-16 offsets |
+
+### Session 搜索 Overlay 的首帧与长列表
+
+全局侧栏搜索只把 `searchOpen` 交给 `useGlobalSidebarTaskCenterData`，由该 app-global store projection 发起一次静默 full revalidate；`HistorySearchOverlayContent` mount 时不得再发第二次全量刷新。Overlay 先消费当前 snapshot，冷模块加载期间由 App Shell 立即绘制同尺寸搜索壳，搜索按钮 hover/focus 时提前请求 lazy chunk，避免点击后出现空白间隔。Backdrop、面板 DOM、`useCloseLayer` 和入口动画的唯一 owner 是 Suspense 外层的 App Shell frame；lazy `HistorySearchOverlayContent` 只渲染面板内容。fallback → real content 的交接必须保留同一个面板节点，禁止真实内容再持有第二套 opacity-from-zero 根动画，否则首次加载会表现为“出现 → 消失 → 再出现”。
+
+空 query 是“浏览全部历史”而不是全文搜索：Session metadata 仍由既有全局 authority 一次加载，以保留工作区/收藏/来源筛选和 SessionID 直达语义；前端用 `react-virtuoso` 只 mount 可视区及小幅 overscan，禁止对 `filteredSessions` 全量 `.map()` 成 DOM。这里不新增后端 offset/page authority，否则会让客户端筛选、全局排序和直接 ID 匹配跨页漂移。非空 query 继续走 Tantivy，并由 `searchSessions()` 的 50 条上限保持结果集有界。
 
 ## 工作区文件搜索结果导航
 

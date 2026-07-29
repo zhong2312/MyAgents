@@ -63,9 +63,9 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 
 跨 Runtime 的 live/read 契约是行为一致，不是共享 mutable state：`getLiveSessionOverlay()` 返回当前绑定 Session 的 immutable finalized-memory/streaming/state/interactive snapshot 与 `snapshotRevision`；`getSessionCompletionTerminal()` 返回 runtime turn owner 已结算的 immutable identity/owner/origin/status。REST restore、BackgroundCompletion 与通知层只消费这两个 facade 事实，不猜 runtime 类型，也不 import owner internal。
 
-同一原则适用于 Desktop → IM 镜像：这是 runtime-neutral 的行为契约，但 admission 与完整 text-block 边界仍由各 Runtime 自己的 turn owner 判定。Builtin `agent-session.ts` 与 external runtime 复用 `utils/im-mirror.ts` 的纯投影及 transport；external 的 admission、assistant disposition 与 user-before-assistant delivery tail 由 `external-session/turn-lifecycle.ts` 持有，`external-session.ts` 只在持久化、block terminal 与 runtime delivery 的编排点调用 owner API。不得在 route / adapter 层根据 Runtime 补发，也不得让 IM-origin requestId 回复再次进入 mirror 造成双发。
+同一原则适用于 Session 绑定渠道投递：这是 runtime-neutral 的行为契约，但 admission、完整 text-block 边界与成功终态 commit 仍由各 Runtime 自己的 turn owner 判定。SessionEngine 的语义入口显式选择 `TurnChannelDelivery`；Builtin 把 assistant owner 与暂存 block 放进既有 per-yield output-owner FIFO，并在 SDK result 边界同步摘下 owner、按原顺序预留 transport，持久化成功后才放行；provider text 自动重试复用原 owner 并清掉被撤回 attempt 的 block。external turn lifecycle 在持久化前 capture 并预留全 Session 顺序、真实成功后 commit、其余路径 discard；两者复用 `utils/im-mirror.ts` transport。Desktop user note 与 assistant response 是两个独立方向；ReplyRouter、Heartbeat/Task caller、Goal outbox 可显式 claim assistant transport，Session Inbox 则只投递 assistant。不得在 route / adapter 层按 Runtime 补发，不得从 `SessionOrigin` / `InteractionScenario` 推断 owner，也不得让 IM-origin requestId 回复再次进入 Session binding 造成双发。
 
-`src/server/session-core/` 承载会话内核的 pure policy：`turn-result-policy.ts` 判定 injected turn 真成功，`session-activity-policy.ts` 判定 admission/terminal 是否推进 meaningful activity，`heartbeat-ack.ts` 只解析 Heartbeat terminal 的 substantive remainder，`runtime-config-policy.ts` 统一 snapshot/source guard，`turn-queue.ts` 统一 desktop queue admission，`mcp-sync-policy.ts` 统一 MCP authority 与 fingerprint/restart 决策，`mcp-prewarm-policy.ts` 统一 10 秒 absolute grace、status 分类与 soft outcome。它不持有 SDK/CLI 进程、SSE、SessionStore 或文件系统副作用。
+`src/server/session-core/` 承载会话内核的 pure policy：`channel-delivery.ts` 定义 user/assistant transport owner 与 realtime owner 合并规则，`turn-result-policy.ts` 判定 builtin SDK terminal 与 injected turn 是否真成功，`session-activity-policy.ts` 判定 admission/terminal 是否推进 meaningful activity，`heartbeat-ack.ts` 只解析 Heartbeat terminal 的 substantive remainder，`runtime-config-policy.ts` 统一 snapshot/source guard，`turn-queue.ts` 统一 desktop queue admission，`mcp-sync-policy.ts` 统一 MCP authority 与 fingerprint/restart 决策，`mcp-prewarm-policy.ts` 统一 10 秒 absolute grace、status 分类与 soft outcome。它不持有 SDK/CLI 进程、SSE、SessionStore 或文件系统副作用。
 
 `agent-session.ts` 是 builtin SDK 的 public facade，`session-engine/builtin-adapter.ts` 只委托该 facade。Phase6 后，builtin 内部 mutable state 的真实 owner 是 `src/server/builtin-session/`；Phase7 后，turn terminal 与 transcript persistence 的行为 owner 也在同一目录：
 
@@ -179,6 +179,8 @@ claude -p \
 
 **stdout (接收事件)**：NDJSON 行流，包含 `stream_event`（文本/工具 delta）、`system`（session_init）、`result`（turn 结果）、`control_request`（权限请求）。
 
+**日志 owner**：raw NDJSON 是 transport，且 `--include-partial-messages` 会让其中包含 text/thinking/tool delta，因此不得记录首 N 行、每 N 行采样或正文 preview。`readEvents()` 必须先 `parseLine()`，只对归一化后的非 delta `UnifiedEvent` 输出无正文 semantic summary；delta 继续原样交给 external-session 组合，成功持久化后由 terminal owner 输出一次有界 `[assistant-output]`。
+
 ### 多轮续接
 
 CC `-p` 模式每轮退出。续接通过 `--resume <sessionId>` 恢复上下文：
@@ -241,6 +243,7 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `baseInstructions` | string? | ❌ 未对接 | 基础系统指令（区别于 developerInstructions） |
 | `config` | object? | ❌ 未对接 | 通用配置对象（additionalProperties） |
 | `serviceName` | string? | ❌ 未对接 | 服务名称标识 |
+| `experimentalRawEvents` | boolean | ✅ 仅 Managed Codex 新 thread | 开启官方 raw response-item 通知，仅用于恢复 v2 `interacted` 丢失的 `send_message` / `followup_task` 语义；raw payload 不进入 UnifiedEvent / SSE / 持久化 |
 
 ### `thread/resume` 参数 Schema
 
@@ -256,6 +259,8 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `serviceTier` | enum? | ❌ 未对接 | |
 | `personality` | enum? | ❌ 未对接 | |
 | `baseInstructions` | string? | ❌ 未对接 | |
+
+**Codex RPC 日志边界**：`developerInstructions` 是完整系统提示词，`thread/start` / `thread/resume` 调试日志不得输出正文或前缀，只记录 `{present, chars, hash}`；短 SHA-256 仅用于判断两次启动是否使用同一版本。脱敏只作用于日志副本，发给 Codex app-server 的 RPC params 必须保留原始值。
 
 **MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
 
@@ -281,6 +286,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `item/plan/delta` | `thinking_delta`（v0.2.15+ 真显示，之前 `plan` item silent drop） |
 | `item/started` (tool types) | `tool_use_start` |
 | `item/completed` (tool types) | `[tool_use_stop, tool_result]` |
+| `item/completed` (`subAgentActivity`) | `CollabAgent` 容器/控制 trace + thread 关联（Codex multi-agent v2） |
 | `turn/started` | `[status_change(running), agent_plan_update([])]` |
 | `turn/plan/updated` | `agent_plan_update` |
 | `turn/completed` | `[turn_complete, agent_plan_update([])]` |
@@ -339,30 +345,36 @@ tool block 会写入 compact `tool.display.kind === "file_patch"` descriptor（�
 
 ### Sub-agent（collab-agent）工具嵌套（PRD 0.2.27）
 
-Codex 主 agent 可派生 sub-agent（`collabAgentToolCall` 的 `spawnAgent`）。**sub-agent 是独立的 Codex thread**，其工具调用、文本、思考通过同一条 app-server stdio 连接多路复用回来——每条 `item/started` / `item/completed` 通知都带顶层 `threadId` + `turnId`。沿用 builtin 的嵌套渲染（`Task` 卡片 → `subagentCalls[]` → `chat:subagent-*` SSE → `TaskTool` 可展开 trace），把 sub-agent trace 折叠进对应 spawn 卡片，而不是平铺进主 transcript。
+Codex 主 agent 可派生 sub-agent。**sub-agent 是独立的 Codex thread**，其工具调用、文本、思考通过同一条 app-server stdio 连接多路复用回来——每条 `item/started` / `item/completed` 通知都带顶层 `threadId` + `turnId`。沿用 builtin 的嵌套渲染（`Task` 卡片 → `subagentCalls[]` → `chat:subagent-*` SSE → `TaskTool` 可展开 trace），把 sub-agent trace 折叠进对应协作卡片，而不是平铺进主 transcript。
 
-**协议事实（用独立探针驱动 `codex app-server` 0.135.0 实测,不是凭 schema 臆测）**:
+**双协议兼容（均以对应版本的 app-server 产物与源码确认）**：
 
-| 实测事实 | 用途 / 注意 |
+| 协议事实 | 用途 / 注意 |
 |---|---|
 | `ItemStartedNotification` / `ItemCompletedNotification` 带顶层 `threadId` | 区分"哪个 agent/线程发出的工具";**子线程的 item 确实带子线程 id 到达本连接**(实测:子 `commandExecution` 带 child threadId) |
-| `collabAgentToolCall(spawnAgent).receiverThreadIds` | **`item/started` 时为空,`item/completed` 时填入子线程 id** —— 这是父 spawn 卡片↔子线程的**主要且唯一可靠**连线。时序上 spawn `completed`(建表)早于子线程任何工具到达,无竞态 |
-| `collabAgentToolCall(wait/sendInput/closeAgent).receiverThreadIds` | 这些是**主线程控制动作**,不是新 spawn。必须用 receiver thread 反查已有 spawn 卡片并嵌入其 trace;严禁把 receiver 重新映射到 wait/send/close 自己的卡片,否则后续子工具会被错误 re-parent |
-| 子线程 `thread/started` + `Thread.source` | **0.135.0 实测:子线程不在本连接发 thread/started** → nickname/role + depth>1 链路当前**拿不到**,优雅降级。代码保留(best-effort,容忍 `subagent`/`subAgent` 两种 casing),供未来 Codex 版本 |
+| v1 / Codex 0.135.0：`collabAgentToolCall(spawnAgent).receiverThreadIds` | `item/started` 时为空、`item/completed` 时填入子线程 id；completed 一旦给出 child id 就预留 child lifecycle，避免 root terminal 抢先完成。保留为旧 Codex/System CLI 的兼容关联路径。`wait/sendInput/closeAgent` 仍只引用既有 child，不能重写 spawn 归属 |
+| v2 / Codex 0.144.1：`subAgentActivity { id, kind, agentThreadId, agentPath }` | `started` 是 spawn 的唯一 UI/关联信号，且 `id` 就是原 `spawn_agent` call id；`interacted` / `interrupted` 分别归一为消息与中断协作 trace（interrupt 不伪装成 shutdown）。主线程在新 user turn 联系持久 child 时，该 activity card 成为本 turn 的新容器 |
+| v2 spawn / interaction 时序 | Codex 先创建 child 或提交 inter-agent communication，随后才在 sender emit `subAgentActivity(started/interacted)`；child item 与 activity 存在真实并发窗口。typed `interacted` 同时覆盖 queue-only `send_message` 与触发 turn 的 `followup_task`；Managed Codex 新 thread opt-in 官方 `rawResponseItem/completed`，以同一 `call_id` 锁存原 function name，随后只保留 `queue-only` / `trigger-turn` 这一位语义。raw item 在工具执行前已持久化并 emit，故 trigger reservation 不依赖通知时序猜测 |
+| 子线程 `thread/started` + `Thread.source` | best-effort 的 parent/nickname/role 辅助来源；0.135.0 不发 child `thread/started`，因此不能作为唯一关联信号 |
 | 子线程发**自己的** `turn/started` / `turn/plan/updated` / `turn/completed`(isMain=false) | **必须按 `threadId` 闸掉** —— 否则子线程 turn 完成会提前终结用户 turn + `resetTurnAccumulators()` 清空 `currentContentBlocks`(spawn 卡片 + 嵌套调用),既破坏 turn 完整性又毁掉嵌套；子线程 plan 也不能覆盖主 AgentStatusPanel 的 todo 快照 |
 
-**关联与打标（`codex.ts`）**:`CodexProcess` 持四张 map:`subThreadToCard`(子线程→spawn 卡片 id,来自 spawnAgent `item/completed` 的 `receiverThreadIds` —— 主信号)、`subThreadToParent` / `subThreadMeta`(来自 `thread/started`,当前 inert,forward-compat)、`collabControlToolParents`(wait/sendInput/closeAgent item id → 已解析的父 spawn 卡片 ids,锁存 started/completed 两侧不一致的字段)。
+**关联与打标（`codex.ts`）**：`CodexProcess` 持 `subThreadToCard`（child → 本 turn 容器）、`subThreadToParent` / `subThreadMeta`（祖先链与装饰信息）、`collabControlToolParents`（v1 控制动作锁存）、`subAgentThreadsAwaitingActivity`（已开始 child turn 的 activity 因果栅栏）、`subAgentActivitySeenBeforeTurnStart`（activity 早于 turn 的瞬时标记）以及 `deferredSubAgentEvents`（activity 晚到窗口内的 child item）。activity 栅栏只有在进程已确认观察到 v2 协议后才启用；v1 child 因此不会等待一个永远不存在的 `subAgentActivity`。v1 与 v2 只负责把各自 wire shape 投影进这套既有 turn-local 关联，不向 session/renderer 暴露协议版本。child→child 的 activity 即使先于 sender 的祖先关联到达，也要先记录 edge，待祖先出现后整体解析。
 
-- **子线程事件闸门**:`isChildThreadGatedMethod(method)`(`turn/started`/`turn/completed`/`thread/status/changed`/`thread/closed`/`thread/tokenUsage/updated`)+ `threadId !== mainThreadId` → `parseNotification` 直接 `return null`,子线程事件绝不驱动主 session:前四个是生命周期(放行会提前终结用户 turn + `resetTurnAccumulators()`);`thread/tokenUsage/updated`(PRD 0.2.32)放行会让子 agent 的占用污染主 context 指示器 + 持久化 `lastContextUsage`。item 通知**不**闸(要的就是子工具)。
-- `computeSubAgentScope(threadId, mainThreadId, …)` → `resolveTopLevelSpawnCard()` 沿父链上溯,深层 sub-sub-agent 事件归并到第一层 spawn 卡片(UI 只一层);主线程 item / 未关联 threadId → null。
+- **子线程事件闸门**:`isChildThreadGatedMethod(method)`(`turn/started`/`turn/completed`/`thread/status/changed`/`thread/closed`/`thread/tokenUsage/updated`)+ `threadId !== mainThreadId` → 子生命周期绝不作为主 session lifecycle 上抛；其中 child `turn/started` / `turn/completed` 更新内部 ownership，`thread/closed` 与 `systemError` 也会 settle child ownership，并可能在最后一个 child settle 时释放已暂存的 root terminal；其它 child status/token usage 事件忽略。`thread/tokenUsage/updated`(PRD 0.2.32)放行会让子 agent 的占用污染主 context 指示器 + 持久化 `lastContextUsage`。item 通知**不**闸(要的就是子工具)。
+- `computeCodexItemEventRoute()` 把 item 明确分成 `main` / `subagent` / `defer`；`computeSubAgentScope()` → `resolveTopLevelSpawnCard()` 沿父链上溯，深层 sub-sub-agent 归并到第一层容器（UI 只一层）。**foreign thread 未关联时只能 defer，禁止退化为 main**。
+- `deferredSubAgentEvents` 只属于当前 main turn：任何 ancestor 关联建立且对应 activity 栅栏解除后，按 ancestor depth（父先于后代）释放；最终仍无法关联则丢弃并告警。它解决的是 Codex 源码中“先启动/唤醒 child、后 emit activity”的因果窗口，不是 retry/cache。
+- `experimentalApi` handshake 与 `experimentalRawEvents` request 只在 Managed Codex **新 thread** 同时开启；`thread/resume` 的 0.144.1 schema 没有 raw-events 参数，System CLI 也必须兼容旧版本。缺少 raw discriminator 时，adapter 不把模糊 `interacted` 猜成 active turn（否则 queue-only 会让 root 永久不完成）。若 root terminal 到达时仍没有 child `turn/started` 给出确定 ownership，adapter 释放该 root terminal 后结束当前 app-server，由既有 session resume 路径重建干净 runtime；不维护跨 turn quarantine，也不允许旧进程的迟到 child 串入下一 turn。
+- root terminal 到达时若 child 仍处于 `subAgentThreadsAwaitingActivity`，说明本 turn 的 parent correlation 不完整；与上述模糊 `interacted` 共用同一个进程边界降级：暂存 root terminal、结束 app-server、在 exit 依次发出 root terminal 与 `session_complete`。没有 quarantine、timer、retry 或跨 turn 猜测。
+- Codex child turn 是独立执行单元，可能晚于 root model 的 terminal。adapter 观察 foreign `turn/started` / `turn/completed`（不把它们上抛为主生命周期），保留 active child 的精确 `(threadId, turnId)`；仍有 child 时暂存 root terminal，最后一个 child settle 后才把既有 `turn_complete` 交给 external-session。成功 terminal 自然等待；中断/失败 terminal 会请求 interrupt 所有 active child 后等待其 terminal。若 force-send 命中已完成 root、尚未完成 child 的窗口，`interruptTurn()` 同样改为中断 child turn；尚未拿到 turnId 的 child 在 `turn/started` 到达时立即执行 pending interrupt。相同 `(threadId, turnId)` 的并发中断 single-flight；RPC 失败后先重验 root/child ownership，只有仍悬挂时才终止 app-server，并在 exit boundary 恰好一次释放原 root terminal。这样完整 nested trace 在同一 assistant turn 持久化，且不破坏 Stop/force-send。
+- 异步 `tool_attachment_update` 的最终 owner 是 external-session 的内容状态：若 placeholder/tool 仍在 Codex 因果缓冲中，attachment update 与它一起等待；一旦 tool 已跨过 runtime boundary，后续事件不再依赖 thread map。sub-agent 同时识别 live child-tool latch 与 settled attachment latch；sub-agent 或 top-level update 若早于异步 tool-result normalization，均由 content owner 暂存并在 placeholder 建立时原子应用。完全无 owner 的迟到 update fail-closed，禁止制造 top-level SSE。
 - 主线程 `wait/sendInput/closeAgent` 走 `resolveCollabAgentControlParents(tool, receiverThreadIds, …)`。解析成功时生成合成子 trace id(`originalId::subagent-control::parentToolUseId`)并直接挂 `subAgent`;started 已解析的 parent 集合在 completed 侧优先使用,避免 start/result 分裂。解析不到时 started 不渲染,completed 再解析,仍解析不到才输出一个完整顶层 fallback 卡片(不丢调用)。`status: failed` 透传为 `tool_result.isError=true`。
-- 打标在 `UnifiedEvent` 的工具、文本、思考事件挂 `subAgent: SubAgentScope { parentToolUseId, nickname?, role? }`(见 `types.ts`)。已由控制事件预置的 `subAgent` 不会被 thread-level tagging 覆盖。map 仅在**主线程** `turn/completed` + session reset 清空。
+- 打标在 `UnifiedEvent` 的工具、文本、思考事件挂 `subAgent: SubAgentScope { parentToolUseId, nickname?, role? }`(见 `types.ts`)。已由控制事件预置的 `subAgent` 不会被 thread-level tagging 覆盖。map 在 root terminal 与所有已观察 child turn settle 后清空；中断/失败 terminal 先请求中断 active children，待 child settlement 后再释放 root terminal。若 child interrupt RPC 无法确认，adapter 终止当前 Codex 进程，并在 exit boundary 依次释放原 root terminal 与 `session_complete`；external-session 据此清理 runtime owner，下一条消息沿既有 resume 路径启动新进程。
 
 **路由（`external-session.ts` facade + `external-session/content-blocks.ts` state owner）**:`tool_use_start` 命中 `event.subAgent` 时归并进父卡片 `subagentCalls[]`;若父卡片仍在 streaming、尚未进入 content blocks,先写 `pendingSubagentCallsByParent`,等父 `tool_use_stop` 持久化时合并,不会退化成顶层平铺。归并后写 `childToolToParent`;后续 `tool_input_delta`/`tool_use_stop`/`tool_result(_delta)` **只按 `childToolToParent` 锁存路由**(不再每条重判 `event.subAgent`),杜绝"先平铺后嵌套"闪烁。子线程 `text_delta` / `thinking_delta` 通过合成 `AgentMessage` / `Thinking` trace 行复用 `chat:subagent-tool-*`(无新增 SSE)。live snapshot (`getExternalLiveAssistantMessage`) 同样跳过 child pending tool 并把 `pendingSubagentCallsByParent` 合并进父卡,所以 Tab 重连/重开不会重新平铺。`PersistContentBlock.tool.subagentCalls` 随父卡片落库,history replay 自动重建嵌套。
 
 **前端**：`isSubagentContainerTool(name)`（`toolBadgeConfig.tsx`，单一真源）把 `CollabAgent` 与 builtin `Task`/`Agent` 一视同仁——`ToolUse` 路由到 `TaskTool`、`ProcessRow` 锚点、`TabProvider` 初始化 `taskStartTime`/`taskStats`。`TaskTool` 对无 JSON 结果的 collab 卡片合成一个 status-aware 统计栏，保证 trace 展开钮可达。
 
-**仅 Codex 设 `subAgent`**；builtin 走自有 `parent_tool_use_id` 路径，Gemini / Claude Code 不设 → 行为不变。**非目标**：sub-agent 工具的多级 UI 嵌套（归并到顶层卡片）、sub-agent 富媒体 attachments（走文本摘要）、历史已平铺会话回填。
+**仅 Codex 设 `subAgent`**；builtin 走自有 `parent_tool_use_id` 路径，Gemini / Claude Code 不设 → 行为不变。旧的正确 `CollabAgent.subagentCalls` 历史无需迁移。已经平铺落库的历史块不含 thread/card provenance，不能从 MyAgents JSONL 安全反推，故不做启发式回填。**非目标**：sub-agent 工具的多级 UI 嵌套（归并到顶层卡片）、已平铺历史的自动回填。
 
 ### 富媒体产物（ToolAttachment）
 
@@ -370,6 +382,10 @@ Codex 的 `imageGeneration` / `mcpToolCall` 含 image content / `dynamicToolCall
 路径都走统一 `saveToolAttachment(...)` → `tool_result.attachments[]`。前端用单一
 `ToolAttachmentGallery` 渲染。完整管道（异步落盘 placeholder、5 层路径校验、SSRF 防护、session
 resume 重 register）详见 [Tool Attachment 管道](./tool_attachment_pipeline.md)。
+
+Managed Codex 的 `CODEX_HOME` 是运行时状态目录，不整体视作 credential root。共享 Node/Rust 路径
+黑名单仅精确保护其中的 `auth.json`；`generated_images` 等非凭据产物仍走既有 externalPath 注册与
+attachment URL 服务，并继续接受 canonical path、符号链接、文件类型与大小校验。
 
 ### 权限模式映射
 
@@ -501,18 +517,18 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `lifecycle.ts` | active process/runtime、`startingPromise` guard、session binding、runtimeSessionId、prewarm/system-init、user-stop flag |
 | `runtime-config.ts` | desired/live model、permission mode、reasoning effort；config coercion 与 snapshot/source guard integration |
 | `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
-| `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；Desktop → IM admission、assistant disposition 与 user-before-assistant delivery tail |
+| `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、success-gated batch commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
-Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification，以及本 turn 的 IM mirror admission/order；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
+Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification，以及本 turn 的 channel-delivery admission/order；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
 
 ### 测试护栏
 
 External runtime 的维护入口是 `SessionEngine`，测试也必须沿这条边界验证。`src/server/runtimes/external-session-mock.integration.test.ts` 通过 Vitest mock `runtimes/factory.ts` 注入 test-only fake runtime，fake runtime 的 `type` 使用真实 `RuntimeType`（当前为 `codex`），不在生产 `RuntimeType`、config 或 UI 中新增 `mock` 分支。
 
-这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、同时 idle 的 IM 原子 admission、busy IM 连续 admission + FIFO drain + running/queued requestId 精确取消、permission response 成功后清 pending、permission delivery 失败时保留 pending；Desktop → IM 镜像还覆盖 fresh/queued/realtime admission、隐藏 reminder 投影、失败 turn 不发送残缺 assistant block、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序，以及 IM-origin turn 继续由 ReplyRouter 单路回复。
+这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、同时 idle 的 IM 原子 admission、busy IM 连续 admission + FIFO drain + running/queued requestId 精确取消、permission response 成功后清 pending、permission delivery 失败时保留 pending；渠道投递还覆盖 fresh/queued/realtime Desktop、Session Inbox 隐藏输入只投 assistant、已关闭 text block 后失败/停止仍不投递、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序、user mirror 失败不抑制 assistant、Builtin result-only 回退与 per-yield owner 隔离，以及 IM-origin / caller-owned turn 保持单路回复。
 
 ### 三路消息发送
 
@@ -820,7 +836,7 @@ config.multiAgentRuntime (磁盘/React state)
 | `src/server/runtimes/external-session.ts` | 外部 Runtime public facade + high-level orchestration |
 | `src/server/runtimes/external-session/*` | 外部 Runtime lifecycle / config / queue / turn / content / transcript / interactive owners |
 | `src/server/session-core/runtime-config-policy.ts` | builtin/external runtime config snapshot/source guard + external runtime config patch policy |
-| `src/server/session-core/turn-result-policy.ts` | injected turn 成败判定：builtin/external 均只以真 turn 成功为 success |
+| `src/server/session-core/turn-result-policy.ts` | terminal / injected turn 成败判定：builtin SDK 仅 `completed`（及旧 payload 缺失 reason）成功，abort 映射 stopped，其余未知 reason fail closed；external 同样只以真 turn 成功为 success |
 | `src/server/session-core/session-activity-policy.ts` | admission/terminal meaningful activity 判定；human/visible classifier 不拥有 recency |
 | `src/server/session-core/heartbeat-ack.ts` | Heartbeat terminal ack remainder 解析纯函数 |
 | `src/server/session-core/turn-queue.ts` | desktop realtime / turn-boundary queue admission、取消、force-start 纯规则 |

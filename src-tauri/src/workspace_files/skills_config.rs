@@ -53,6 +53,8 @@ pub fn read_disabled_list(myagents_root: &Path) -> Vec<String> {
 /// Product-owned runtime contracts that must remain enabled across every
 /// MyAgents surface. Keep in sync with `src/shared/systemSkills.ts`.
 pub const REQUIRED_SYSTEM_SKILLS: &[&str] = &[
+    "task-alignment",
+    "task-implement",
     "myagents-memory-update",
     "myagents-memory-gardener",
     "myagents-memory-molt",
@@ -89,7 +91,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         fs::write(
             root.path().join("skills-config.json"),
-            r#"{"disabled":["myagents-memory-update","myagents-memory-gardener","myagents-memory-molt","myagents-cli","myagents-docs","ordinary-skill"]}"#,
+            r#"{"disabled":["task-alignment","task-implement","myagents-memory-update","myagents-memory-gardener","myagents-memory-molt","myagents-cli","myagents-docs","ordinary-skill"]}"#,
         )
         .expect("write skills config");
 

@@ -4,6 +4,7 @@ import {
   cancelQueuedTurnsByOwner,
   cancelImRequest as cancelBuiltinImRequest,
   applyMcpOverrideAndAwaitReady,
+  configureWorkbenchToolset as configureBuiltinWorkbenchToolset,
   enqueueUserMessage,
   forkSession,
   forceExecuteQueueItem,
@@ -74,8 +75,15 @@ import {
   getPersistedSessionOrigin,
   getSessionData,
 } from '../SessionStore';
+import type { SessionMessage } from '../types/session';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
+import {
+  DESKTOP_CHANNEL_DELIVERY,
+  IM_CHANNEL_DELIVERY,
+  SESSION_BOUND_CHANNEL_DELIVERY,
+  injectedTurnChannelDelivery,
+} from '../session-core/channel-delivery';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -162,7 +170,7 @@ function getBuiltinWorkspacePath(): string | null {
     : null;
 }
 
-function messageWireToReplayMessage(message: MessageWire): SessionEngineReplayMessage {
+function messageWireToReplayMessage(message: MessageWire | SessionMessage): SessionEngineReplayMessage {
   const strippedContent = typeof message.content !== 'string'
     ? stripPlaywrightResults(message.content)
     : message.content;
@@ -212,14 +220,20 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     getStreamReplaySnapshot() {
+      const sessionId = getSessionId();
+      const liveSnapshot = getBuiltinLiveSessionSnapshot(sessionId);
       const streamingId = getStreamingAssistantId();
       const replayMessages = getMessages()
         .filter(message => !(streamingId && message.id === streamingId))
         .map(messageWireToReplayMessage);
       const systemInitInfo = getSystemInitInfo();
       return {
+        sessionId,
         initState: getAgentState(),
         replayMessages,
+        liveStreamingMessage: liveSnapshot?.liveStreamingMessage
+          ? messageWireToReplayMessage(liveSnapshot.liveStreamingMessage)
+          : null,
         systemInitPayload: systemInitInfo ? { info: systemInitInfo } : undefined,
         pendingInteractiveRequests: getPendingInteractiveRequests(),
       };
@@ -334,6 +348,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           onTerminal: request.onTerminal,
           ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: DESKTOP_CHANNEL_DELIVERY,
         },
       );
       if (result.error) {
@@ -374,6 +389,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           onTerminal: request.onTerminal,
           ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: IM_CHANNEL_DELIVERY,
         },
       );
       if (result.error) {
@@ -410,6 +426,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
       if (result.error) {
@@ -428,7 +445,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         undefined,
-        { source: 'desktop' },
+        undefined,
         undefined,
         request.inboxMeta,
         undefined,
@@ -436,6 +453,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         {
           allowLazySessionMaterialization: request.allowLazySessionMaterialization === true,
           sessionBirthOrigin: request.birthOrigin,
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
     },
@@ -497,6 +515,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           },
           queueResponseModeOverride: 'turn',
           beforeDispatch,
+          channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
         },
       );
       const enqueueResult = await waitForDeadline(
@@ -688,6 +707,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
     async updateMcpServers(servers) {
       setMcpServers(servers);
       return { success: true, servers: servers.map(s => s.id) };
+    },
+
+    configureWorkbenchToolset(toolset) {
+      return configureBuiltinWorkbenchToolset(toolset);
     },
 
     async updateAgents(agents) {

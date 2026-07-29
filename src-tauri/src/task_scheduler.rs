@@ -7,8 +7,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 
 use crate::cron_task::CronRunRecord;
+use crate::task::task_protects_session_identity;
 use crate::task::{
-    task_protects_session_identity, Task, TaskExecutionMode, TaskExecutionTrigger, TaskListFilter,
+    task_protected_session_ids, Task, TaskExecutionMode, TaskExecutionTrigger, TaskListFilter,
     TaskStatus, TaskUpdateStatusInput, TransitionActor, TransitionSource,
 };
 use crate::{ulog_error, ulog_info, ulog_warn};
@@ -1369,6 +1370,36 @@ pub fn get_task_scheduler() -> &'static TaskSchedulerController {
     TASK_SCHEDULER.get_or_init(TaskSchedulerController::new)
 }
 
+/// Exact Task-side projection of the identities rejected by Session deletion.
+/// Includes transient executions plus every durable Task shape recognized by
+/// `task_protected_session_ids`, including managed and legacy Tasks.
+pub async fn persistent_task_session_ids() -> Vec<String> {
+    let mut session_ids = get_task_scheduler()
+        .executions
+        .read()
+        .await
+        .values()
+        .filter_map(|execution| execution.session_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let Some(store) = crate::task::get_task_store() else {
+        let mut session_ids = session_ids.into_iter().collect::<Vec<_>>();
+        session_ids.sort();
+        return session_ids;
+    };
+    for task in store
+        .list(TaskListFilter {
+            include_managed: Some(true),
+            ..Default::default()
+        })
+        .await
+    {
+        session_ids.extend(task_protected_session_ids(&task));
+    }
+    let mut session_ids = session_ids.into_iter().collect::<Vec<_>>();
+    session_ids.sort();
+    session_ids
+}
+
 pub async fn has_persistent_task_for_session(session_id: &str) -> bool {
     if active_execution_protects_session(&get_task_scheduler().executions, session_id).await {
         return true;
@@ -1382,8 +1413,8 @@ pub async fn has_persistent_task_for_session(session_id: &str) -> bool {
             ..Default::default()
         })
         .await
-        .into_iter()
-        .any(|task| task_protects_session_identity(&task, session_id))
+        .iter()
+        .any(|task| task_protects_session_identity(task, session_id))
 }
 
 async fn active_execution_protects_session(

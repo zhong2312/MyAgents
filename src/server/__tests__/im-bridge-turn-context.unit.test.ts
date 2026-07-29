@@ -6,8 +6,23 @@ import {
   pushPendingOutputOwner,
   removePendingOutputOwnerByQueueId,
   resetTurnForTest,
+  stageCurrentOutputOwnerAssistantChannelBlock,
 } from '../builtin-session/turn';
 import { imRequestRegistry } from '../utils/im-request-registry';
+import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
+
+function pushOutputOwner(
+  queueId: string,
+  requestId: string | null,
+  assistantChannelDelivery: AssistantChannelDelivery = 'none',
+): void {
+  pushPendingOutputOwner({
+    queueId,
+    requestId,
+    assistantChannelDelivery,
+    channelSessionId: 'session-1',
+  });
+}
 
 describe('IM Bridge active request identity', () => {
   beforeEach(() => {
@@ -31,8 +46,8 @@ describe('IM Bridge active request identity', () => {
       isOwner: false,
     });
 
-    pushPendingOutputOwner('queue-a', 'request-a');
-    pushPendingOutputOwner('queue-b', 'request-b');
+    pushOutputOwner('queue-a', 'request-a', 'reply-router');
+    pushOutputOwner('queue-b', 'request-b', 'reply-router');
     expect(getCurrentImBridgeTurnContext()).toMatchObject({
       senderId: 'sender-a',
       accountId: 'account-a',
@@ -59,18 +74,22 @@ describe('IM Bridge active request identity', () => {
       isOwner: false,
     });
 
-    pushPendingOutputOwner('queue-desktop', null);
-    pushPendingOutputOwner('queue-b', 'request-b');
+    pushOutputOwner('queue-desktop', null, 'session-binding');
+    pushOutputOwner('queue-b', 'request-b', 'reply-router');
+
+    expect(stageCurrentOutputOwnerAssistantChannelBlock('desktop answer')).toBe(true);
 
     expect(getCurrentImBridgeTurnContext()).toBeNull();
     expect(popPendingOutputOwner()).toMatchObject({
       queueId: 'queue-desktop',
       requestId: null,
+      assistantChannelTextBlocks: ['desktop answer'],
     });
     expect(getCurrentImBridgeTurnContext()).toMatchObject({
       senderId: 'sender-b',
       accountId: 'account-b',
     });
+    expect(stageCurrentOutputOwnerAssistantChannelBlock('IM answer')).toBe(false);
   });
 
   it('removes a cancelled non-IM yield by queue identity without shifting another owner', () => {
@@ -81,9 +100,9 @@ describe('IM Bridge active request identity', () => {
       isOwner: false,
     });
 
-    pushPendingOutputOwner('queue-desktop-a', null);
-    pushPendingOutputOwner('queue-desktop-b', null);
-    pushPendingOutputOwner('queue-c', 'request-c');
+    pushOutputOwner('queue-desktop-a', null, 'session-binding');
+    pushOutputOwner('queue-desktop-b', null, 'session-binding');
+    pushOutputOwner('queue-c', 'request-c', 'reply-router');
 
     expect(removePendingOutputOwnerByQueueId('queue-desktop-b')).toBe(true);
     expect(popPendingOutputOwner()).toMatchObject({ queueId: 'queue-desktop-a' });

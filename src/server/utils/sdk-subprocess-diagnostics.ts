@@ -1,4 +1,6 @@
 export type SdkSubprocessFailureKind =
+  | 'sdk-child-spawn-denied'
+  | 'sdk-child-launch-circuit-open'
   | 'windows-git-bash-missing'
   | 'windows-subprocess-exit-1'
   | 'windows-native-bun-crash';
@@ -9,6 +11,8 @@ export interface SdkSubprocessFailureDiagnostic {
   imMessage: string;
   exitCode?: number;
   exitCodeHex?: string;
+  errorCode?: 'EPERM' | 'EACCES' | 'ENOEXEC';
+  automaticRetryDelayMs?: number;
 }
 
 const UINT32_MAX_PLUS_ONE = 0x1_0000_0000;
@@ -18,6 +22,47 @@ const WINDOWS_NATIVE_CRASH_CODES = new Set([
   0xc0000005, // STATUS_ACCESS_VIOLATION
   0xc0000409, // STATUS_STACK_BUFFER_OVERRUN
 ]);
+const SDK_CHILD_CIRCUIT_HANDOFF_DELAY_MS = 1_000;
+type DeterministicLaunchCode = NonNullable<SdkSubprocessFailureDiagnostic['errorCode']>;
+
+export class SdkChildLaunchCircuitOpenError extends Error {
+  readonly code = 'SDK_CHILD_LAUNCH_CIRCUIT_OPEN';
+  readonly errorCode: DeterministicLaunchCode;
+  readonly retryAfterMs: number;
+  readonly imMessage: string;
+
+  constructor(
+    errorCode: DeterministicLaunchCode,
+    retryAfterMs: number,
+    platform: NodeJS.Platform | string = process.platform,
+  ) {
+    const messages = launchDeniedMessages(errorCode, platform, '');
+    super(messages.userMessage);
+    this.name = 'SdkChildLaunchCircuitOpenError';
+    this.errorCode = errorCode;
+    this.retryAfterMs = retryAfterMs;
+    this.imMessage = messages.imMessage;
+  }
+}
+
+function parseDeterministicLaunchCode(raw: string): DeterministicLaunchCode | undefined {
+  return raw.match(/\b(EPERM|EACCES|ENOEXEC)\b/i)?.[1]?.toUpperCase() as
+    | DeterministicLaunchCode
+    | undefined;
+}
+
+function launchDeniedMessages(
+  code: DeterministicLaunchCode,
+  platform: NodeJS.Platform | string,
+  originalMessage: string,
+): Pick<SdkSubprocessFailureDiagnostic, 'userMessage' | 'imMessage'> {
+  const system = platform === 'darwin' ? 'macOS' : platform === 'win32' ? 'Windows' : '操作系统';
+  const suffix = originalErrorSuffix(originalMessage);
+  return {
+    userMessage: `Claude 运行组件被 ${system} 拒绝执行（${code}）。MyAgents 已暂停密集自动重试；请更新或重新安装应用后重试。${suffix}`,
+    imMessage: `AI 引擎被 ${system} 拒绝执行（${code}）。MyAgents 已暂停密集自动重试；请在桌面端更新或重新安装应用后重试。`,
+  };
+}
 
 function normalizeWindowsExitCode(code: number): number {
   return code < 0 ? code + UINT32_MAX_PLUS_ONE : code;
@@ -60,14 +105,50 @@ function originalErrorSuffix(errorMessage: string): string {
 }
 
 export function diagnoseSdkSubprocessFailure(input: {
-  errorMessage: string;
+  error?: unknown;
+  errorMessage?: string;
   stderr?: readonly string[];
   platform?: NodeJS.Platform | string;
 }): SdkSubprocessFailureDiagnostic | null {
   const platform = input.platform ?? process.platform;
+  const errorMessage = input.errorMessage
+    ?? (input.error instanceof Error ? input.error.message : String(input.error ?? ''));
+  const raw = [errorMessage, ...(input.stderr ?? [])].join('\n');
+
+  // Circuit denial is an in-process structured error. Do not encode internal
+  // control-plane state in a string that leaks through sibling UI surfaces.
+  const circuitError = input.error as Partial<SdkChildLaunchCircuitOpenError> | undefined;
+  if (
+    circuitError?.code === 'SDK_CHILD_LAUNCH_CIRCUIT_OPEN'
+    && isDeterministicLaunchCode(circuitError.errorCode)
+  ) {
+    const retryAfterMs = typeof circuitError.retryAfterMs === 'number'
+      && Number.isFinite(circuitError.retryAfterMs)
+      ? Math.max(1_000, Math.round(circuitError.retryAfterMs))
+      : 1_000;
+    return {
+      kind: 'sdk-child-launch-circuit-open',
+      errorCode: circuitError.errorCode,
+      automaticRetryDelayMs: retryAfterMs,
+      ...launchDeniedMessages(circuitError.errorCode, platform, ''),
+    };
+  }
+
+  const launchCode = parseDeterministicLaunchCode(raw);
+  const hasSdkSpawnEvidence = /Failed to spawn Claude Code process|\bspawn(?:ing)?\b[^\n]*(?:claude|Claude Code)/i.test(raw);
+  if (launchCode && hasSdkSpawnEvidence) {
+    return {
+      kind: 'sdk-child-spawn-denied',
+      errorCode: launchCode,
+      // The first observed denial opens the Rust circuit. Let the normal short
+      // recovery path consult Rust once; its response is the only retry clock.
+      automaticRetryDelayMs: SDK_CHILD_CIRCUIT_HANDOFF_DELAY_MS,
+      ...launchDeniedMessages(launchCode, platform, errorMessage),
+    };
+  }
+
   if (platform !== 'win32') return null;
 
-  const raw = [input.errorMessage, ...(input.stderr ?? [])].join('\n');
   const exitCode = parseProcessExitCode(raw);
 
   // Native-crash evidence is checked FIRST (cross-review 0.2.32): a Bun
@@ -89,7 +170,7 @@ export function diagnoseSdkSubprocessFailure(input: {
   }
 
   if (exitCode === 1) {
-    const suffix = originalErrorSuffix(input.errorMessage);
+    const suffix = originalErrorSuffix(errorMessage);
     if (hasBashMissingEvidence(raw)) {
       // Confident: stderr names the missing bash.
       return {
@@ -114,4 +195,15 @@ export function diagnoseSdkSubprocessFailure(input: {
   }
 
   return null;
+}
+
+function isDeterministicLaunchCode(value: unknown): value is DeterministicLaunchCode {
+  return value === 'EPERM' || value === 'EACCES' || value === 'ENOEXEC';
+}
+
+export function sdkSubprocessUserMessage(
+  error: unknown,
+  stderr?: readonly string[],
+): string | null {
+  return diagnoseSdkSubprocessFailure({ error, stderr })?.userMessage ?? null;
 }

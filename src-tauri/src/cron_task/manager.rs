@@ -213,9 +213,13 @@ impl CronTaskManager {
             .get(id)
             .await
             .ok_or_else(|| format!("Task not found: {id}"))?;
+        // Validate the compatibility patch before changing a running task's
+        // status. Invalid/empty input must be a zero-side-effect rejection,
+        // not a failed update that leaves the scheduler stopped.
+        let input = task_update_from_cron_patch(&task, patch)?;
         let was_running = task.status == crate::task::TaskStatus::Running;
         if was_running {
-            task = store
+            store
                 .update_status_with_task_control_held(
                     crate::task::TaskUpdateStatusInput {
                         id: id.to_string(),
@@ -226,10 +230,8 @@ impl CronTaskManager {
                     },
                     &task_control,
                 )
-                .await?
-                .0;
+                .await?;
         }
-        let input = task_update_from_cron_patch(&task, patch)?;
         task = store
             .update_with_task_control_held(input, &task_control)
             .await?;
@@ -440,6 +442,26 @@ fn task_update_from_cron_patch(
     let source = patch
         .as_object()
         .ok_or_else(|| "patch must be an object".to_string())?;
+    for key in [
+        "name",
+        "model",
+        "providerId",
+        "permissionMode",
+        "runtime",
+        "runtimeConfig",
+        "mcpEnabledServers",
+        "intervalMinutes",
+        "prompt",
+        "endConditions",
+        "schedule",
+        "notifyEnabled",
+        "delivery",
+        "clearDelivery",
+    ] {
+        if source.get(key).is_some_and(serde_json::Value::is_null) {
+            return Err(format!("{key} must not be null"));
+        }
+    }
     let mut target = serde_json::Map::new();
     target.insert("id".to_string(), serde_json::Value::String(task.id.clone()));
 
@@ -462,6 +484,12 @@ fn task_update_from_cron_patch(
         }
     }
     if let Some(value) = source.get("prompt") {
+        let prompt = value
+            .as_str()
+            .ok_or_else(|| "prompt must be a string".to_string())?;
+        if prompt.trim().is_empty() {
+            return Err("prompt is empty".to_string());
+        }
         target.insert("prompt".to_string(), value.clone());
     }
     if let Some(value) = source.get("endConditions") {
@@ -513,22 +541,27 @@ fn task_update_from_cron_patch(
             CronSchedule::Loop => return Err("Loop scheduling is retired".to_string()),
         }
     }
-    if source.contains_key("notifyEnabled")
-        || source.contains_key("delivery")
-        || source
-            .get("clearDelivery")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-    {
-        let desktop = source
-            .get("notifyEnabled")
-            .and_then(serde_json::Value::as_bool)
+    let notify_enabled = source
+        .get("notifyEnabled")
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| "notifyEnabled must be a boolean".to_string())
+        })
+        .transpose()?;
+    let clear_delivery = source
+        .get("clearDelivery")
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| "clearDelivery must be a boolean".to_string())
+        })
+        .transpose()?
+        .unwrap_or(false);
+    if notify_enabled.is_some() || source.contains_key("delivery") || clear_delivery {
+        let desktop = notify_enabled
             .or_else(|| task.notification.as_ref().map(|value| value.desktop))
             .unwrap_or(true);
-        let clear_delivery = source
-            .get("clearDelivery")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true);
         let (bot_channel_id, bot_thread) = if clear_delivery {
             (None, None)
         } else if let Some(value) = source.get("delivery") {
@@ -556,6 +589,10 @@ fn task_update_from_cron_patch(
             })
             .map_err(|error| error.to_string())?,
         );
+    }
+
+    if target.len() == 1 {
+        return Err("patch must contain at least one supported update field".to_string());
     }
 
     serde_json::from_value(serde_json::Value::Object(target))
@@ -796,6 +833,51 @@ mod tests {
         assert!(notification.desktop);
         assert_eq!(notification.bot_channel_id, None);
         assert_eq!(notification.bot_thread, None);
+    }
+
+    #[test]
+    fn compatibility_patch_maps_prompt() {
+        let update = task_update_from_cron_patch(
+            &task(),
+            serde_json::json!({ "prompt": "updated from file" }),
+        )
+        .unwrap();
+
+        assert_eq!(update.prompt.as_deref(), Some("updated from file"));
+    }
+
+    #[test]
+    fn compatibility_patch_rejects_updates_without_an_effective_value() {
+        for patch in [
+            serde_json::json!({}),
+            serde_json::json!({ "unsupportedField": "ignored" }),
+            serde_json::json!({ "clearDelivery": false }),
+        ] {
+            assert_eq!(
+                task_update_from_cron_patch(&task(), patch).unwrap_err(),
+                "patch must contain at least one supported update field"
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_patch_rejects_invalid_prompt_before_task_state_changes() {
+        for (patch, expected) in [
+            (
+                serde_json::json!({ "prompt": null }),
+                "prompt must not be null",
+            ),
+            (
+                serde_json::json!({ "prompt": 42 }),
+                "prompt must be a string",
+            ),
+            (serde_json::json!({ "prompt": " \n\t" }), "prompt is empty"),
+        ] {
+            assert_eq!(
+                task_update_from_cron_patch(&task(), patch).unwrap_err(),
+                expected
+            );
+        }
     }
 
     #[test]

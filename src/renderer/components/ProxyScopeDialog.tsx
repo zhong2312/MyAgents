@@ -15,9 +15,9 @@ interface ProxyScopeDialogProps {
 }
 
 function providerKindKey(provider: Provider): string {
-  if (isRuntimeBackedProvider(provider)) return 'general.proxyScopeDialogManaged';
-  if (provider.type === 'subscription') return 'general.proxyScopeDialogSubscription';
-  return 'general.proxyScopeDialogApi';
+  if (isRuntimeBackedProvider(provider)) return 'proxy.scopeDialogManaged';
+  if (provider.type === 'subscription') return 'proxy.scopeDialogSubscription';
+  return 'proxy.scopeDialogApi';
 }
 
 export default function ProxyScopeDialog({
@@ -59,14 +59,14 @@ export default function ProxyScopeDialog({
       >
         <div className="flex items-start justify-between gap-4 border-b border-[var(--line-subtle)] px-5 py-4">
           <div>
-            <h3 className="text-lg font-semibold text-[var(--ink)]">{t('general.proxyScopeDialogTitle')}</h3>
-            <p className="mt-1 text-sm text-[var(--ink-muted)]">{t('general.proxyScopeDialogDescription')}</p>
+            <h3 className="text-lg font-semibold text-[var(--ink)]">{t('proxy.scopeDialogTitle')}</h3>
+            <p className="mt-1 text-sm text-[var(--ink-muted)]">{t('proxy.scopeDialogDescription')}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-            aria-label={t('general.proxyScopeDialogCancel')}
+            aria-label={t('proxy.scopeDialogCancel')}
           >
             <X size={18} />
           </button>
@@ -74,7 +74,7 @@ export default function ProxyScopeDialog({
 
         <div className="flex items-center justify-between gap-3 border-b border-[var(--line-subtle)] px-5 py-3">
           <span className="text-sm text-[var(--ink-muted)]">
-            {t('general.proxyScopeDialogSelected', { count: selectedCount })}
+            {t('proxy.scopeDialogSelected', { count: selectedCount })}
           </span>
           <div className="flex items-center gap-2">
             <button
@@ -85,7 +85,7 @@ export default function ProxyScopeDialog({
               }}
               className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)] active:scale-[0.98]"
             >
-              {t(allSelected ? 'general.proxyScopeDialogDeselectAll' : 'general.proxyScopeDialogSelectAll')}
+              {t(allSelected ? 'proxy.scopeDialogDeselectAll' : 'proxy.scopeDialogSelectAll')}
             </button>
           </div>
         </div>
@@ -106,23 +106,23 @@ export default function ProxyScopeDialog({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-medium text-[var(--ink)]">
-                {t('general.proxyScopeDialogGeneralRequests')}
+                {t('proxy.scopeDialogGeneralRequests')}
               </span>
               <span className="block text-xs text-[var(--ink-muted)]">
-                {t('general.proxyScopeDialogGeneralRequestsDescription')}
+                {t('proxy.scopeDialogGeneralRequestsDescription')}
               </span>
             </span>
             <span className="shrink-0 rounded-md bg-[var(--paper-elevated)] px-2 py-1 text-xs text-[var(--ink-muted)]">
-              {t('general.proxyScopeDialogGeneral')}
+              {t('proxy.scopeDialogGeneral')}
             </span>
           </button>
 
           <div className="border-b border-[var(--line-subtle)] px-5 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
-            {t('general.proxyScopeDialogProviders')}
+            {t('proxy.scopeDialogProviders')}
           </div>
           {providers.length === 0 && (
             <p className="border-b border-[var(--line-subtle)] px-5 py-4 text-sm text-[var(--ink-muted)]">
-              {t('general.proxyScopeDialogNoProviders')}
+              {t('proxy.scopeDialogNoProviders')}
             </p>
           )}
           {providers.map((provider) => {
@@ -160,7 +160,7 @@ export default function ProxyScopeDialog({
             onClick={onClose}
             className="rounded-md border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)] active:scale-[0.98]"
           >
-            {t('general.proxyScopeDialogCancel')}
+            {t('proxy.scopeDialogCancel')}
           </button>
           <button
             type="button"
@@ -168,7 +168,7 @@ export default function ProxyScopeDialog({
             className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] transition-transform active:scale-[0.98]"
           >
             <Check size={16} />
-            {t('general.proxyScopeDialogSave')}
+            {t('proxy.scopeDialogSave')}
           </button>
         </div>
       </div>

@@ -63,11 +63,16 @@
     "automationHistoryHidden": "定时任务对话已隐藏",
     "unreadNotifications": "{{count}} 条未读通知",
     "more": "更多",
+    "copySessionId": "复制对话 ID",
+    "copySessionIdSuccess": "已复制对话 ID",
+    "copyFailed": "复制失败",
     "favorite": "收藏对话",
     "unfavorite": "取消收藏",
     "viewStats": "查看统计",
     "delete": "删除",
-    "stopCronBeforeDelete": "请先停止或取消当前目标/定时任务后再删除"
+    "deleteBlockedByOwner": "该对话仍在使用中。请先完成、归档或删除关联任务/目标，等待后台回复结束，或解绑聊天机器人后再删除",
+    "deleteTransitionInProgress": "该对话正在打开或切换，请稍后再删除",
+    "deleteActivityUnavailable": "暂时无法确认该对话是否仍在运行，已保留对话，请稍后重试"
   },
   "workspaceCard": {
     "more": "更多",

@@ -138,6 +138,24 @@ describe('BashTool terminal transcript', () => {
     expect(container).not.toHaveTextContent('等待输出');
   });
 
+  it('explains SDK timeout-to-background and the unchanged session cwd', () => {
+    const { container } = render(<BashTool tool={bashTool({
+      input: { command: 'cd /tmp && serve' },
+      result: JSON.stringify({
+        stdout: '',
+        stderr: '',
+        interrupted: false,
+        timedOutAfterMs: 120_000,
+        backgroundCwdHint: 'Session cwd remains unchanged.',
+      }),
+      resultMeta: undefined,
+    })} />);
+
+    expect(container.querySelector('[data-bash-status="background"]')).toHaveTextContent('后台运行');
+    expect(container.querySelector('[data-bash-meta]')).toHaveTextContent('等待 2m 0s 后转入后台');
+    expect(container.querySelector('[data-bash-meta]')).toHaveTextContent('会话工作目录未改变');
+  });
+
   it('offers one 展示全部 action and announces the hard output cap', () => {
     const output = Array.from({ length: 5_001 }, (_, index) => `line-${index}`).join('\n');
     const { container } = render(<BashTool tool={bashTool({ result: output })} />);

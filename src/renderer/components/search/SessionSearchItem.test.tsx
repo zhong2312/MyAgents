@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionSearchHit } from '@/api/searchClient';
@@ -58,8 +58,9 @@ describe('SessionSearchItem', () => {
                 hit={hit()}
                 session={session()}
                 project={project}
-                isCronProtected={false}
+                deleteProtected={false}
                 onClick={vi.fn()}
+                onContextMenu={vi.fn()}
                 onShowStats={vi.fn()}
                 onDelete={vi.fn()}
             />,
@@ -67,5 +68,33 @@ describe('SessionSearchItem', () => {
 
         expect(screen.getByText('昨天')).toBeInTheDocument();
         expect(screen.queryByText('08:00')).not.toBeInTheDocument();
+    });
+
+    it('suppresses right-click selection and forwards the context-menu request', () => {
+        const onContextMenu = vi.fn((event: React.MouseEvent) => event.preventDefault());
+        render(
+            <SessionSearchItem
+                hit={hit()}
+                session={session()}
+                project={project}
+                deleteProtected={false}
+                onClick={vi.fn()}
+                onContextMenu={onContextMenu}
+                onShowStats={vi.fn()}
+                onDelete={vi.fn()}
+            />,
+        );
+
+        const row = screen.getByText('Search Hit').closest<HTMLElement>('[data-history-search-session-row]')!;
+        expect(row).toHaveClass('select-none');
+
+        const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 2 });
+        fireEvent(row, mouseDown);
+        expect(mouseDown.defaultPrevented).toBe(true);
+
+        const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+        fireEvent(row, contextMenu);
+        expect(contextMenu.defaultPrevented).toBe(true);
+        expect(onContextMenu).toHaveBeenCalledOnce();
     });
 });

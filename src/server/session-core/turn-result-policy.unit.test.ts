@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  classifyBuiltinSdkTerminalResult,
   classifyTransientProviderTextError,
   decideBuiltinInjectedTurnResult,
   decideExternalInjectedTurnResult,
@@ -8,6 +9,35 @@ import {
 } from './turn-result-policy';
 
 describe('turn-result-policy', () => {
+  it('accepts only completed or legacy missing terminal reasons as success', () => {
+    expect(classifyBuiltinSdkTerminalResult({ isError: false, terminalReason: 'completed' })).toBe('complete');
+    expect(classifyBuiltinSdkTerminalResult({ isError: false })).toBe('complete');
+    expect(classifyBuiltinSdkTerminalResult({ isError: false, terminalReason: '' })).toBe('complete');
+  });
+
+  it('classifies abort reasons as stopped even when the SDK uses an error-shaped result', () => {
+    expect(classifyBuiltinSdkTerminalResult({
+      isError: true,
+      terminalReason: 'aborted_streaming',
+    })).toBe('stopped');
+    expect(classifyBuiltinSdkTerminalResult({
+      isError: false,
+      terminalReason: 'aborted_tools',
+    })).toBe('stopped');
+  });
+
+  it.each([
+    'budget_exhausted',
+    'structured_output_retry_exhausted',
+    'tool_deferred_unavailable',
+    'turn_setup_failed',
+    'malformed_tool_use_exhausted',
+    'api_error',
+    'some_future_reason',
+  ])('fails closed for non-completed terminal reason %s', (terminalReason) => {
+    expect(classifyBuiltinSdkTerminalResult({ isError: false, terminalReason })).toBe('error');
+  });
+
   it('does not treat idle without a builtin turn-local outcome as success', () => {
     expect(decideBuiltinInjectedTurnResult({ idleCompleted: true })).toEqual({
       success: false,

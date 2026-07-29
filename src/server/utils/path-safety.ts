@@ -37,14 +37,14 @@ const SYSTEM_BLACKLIST: readonly string[] =
       ? [...POSIX_SYSTEM_DIRS, ...MACOS_PRIVATE_DIRS]
       : POSIX_SYSTEM_DIRS;
 
-const CREDENTIAL_SUBDIRS: readonly string[] = [
+const CREDENTIAL_PATHS: readonly string[] = [
   '.ssh',
   '.gnupg',
   '.aws',
   '.kube',
   '.docker',
   '.config/op',
-  '.myagents/codex',
+  '.myagents/codex/auth.json',
   '.myagents/credentials',
 ];
 
@@ -68,7 +68,7 @@ export const __blacklistForCrossCheck = {
   systemDirsPosix: POSIX_SYSTEM_DIRS,
   systemDirsMacosExtra: MACOS_PRIVATE_DIRS,
   systemDirsWindows: WIN_SYSTEM_DIRS,
-  credentialSubdirs: CREDENTIAL_SUBDIRS,
+  credentialPaths: CREDENTIAL_PATHS,
   macSensitiveSubdirs: MAC_SENSITIVE_SUBDIRS,
   winSensitiveSubdirs: WIN_SENSITIVE_SUBDIRS,
 } as const;
@@ -95,7 +95,7 @@ export type PathSafetyResult = PathSafetyOk | PathSafetyErr;
  * Mirrors Rust `commands::validate_file_path` semantics:
  * - rejects non-absolute paths
  * - folds .. / . components
- * - rejects system blacklist + credential dirs + OS-specific sensitive subdirs
+ * - rejects system blacklist + credential paths + OS-specific sensitive subdirs
  *
  * Read-side hardening (CLAUDE.md red line "evil_link → /etc/passwd"):
  *   `canonicalizeSymlinks=true` (default) resolves symlinks via fs.realpath
@@ -159,9 +159,9 @@ function checkBlacklist(canonical: string): PathSafetyResult {
   }
 
   if (HOME) {
-    for (const name of CREDENTIAL_SUBDIRS) {
+    for (const name of CREDENTIAL_PATHS) {
       if (startsWithPath(canonical, path.join(HOME, ...name.split('/')))) {
-        return { ok: false, reason: 'Access denied: protected credential directory' };
+        return { ok: false, reason: 'Access denied: protected credential path' };
       }
     }
     if (platform() === 'darwin') {

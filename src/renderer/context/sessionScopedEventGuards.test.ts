@@ -99,6 +99,18 @@ describe('shouldAcceptSessionScopedSseSnapshot', () => {
         ).toBe(true);
     });
 
+    it('accepts the current reset target payload through the still-attached sidecar stream', () => {
+        expect(
+            shouldAcceptSessionScopedSseSnapshot({
+                connectedSessionId: SID_A,
+                currentSessionId: SID_B,
+                payloadSessionId: SID_B,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: false,
+            }),
+        ).toBe(true);
+    });
+
     it('accepts a matching payload during SSE bootstrap before the connection id is promoted', () => {
         expect(
             shouldAcceptSessionScopedSseSnapshot({
