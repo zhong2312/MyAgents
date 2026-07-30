@@ -22,6 +22,7 @@ export type NovelWorkbenchMode =
   | "template"
   | "assist"
   | "narrative"
+  | "manuscript"
   | "timeline"
   | "inspiration"
   | "items"
@@ -49,6 +50,7 @@ const NOVEL_WORKBENCH_TOOL_PREFIXES: Readonly<
   template: ["novel_world_"],
   assist: ["novel_world_"],
   narrative: ["novel_narrative_"],
+  manuscript: ["novel_manuscript_"],
   timeline: [],
   inspiration: [],
   items: ["novel_items_"],
@@ -64,6 +66,9 @@ const NOVEL_WORKBENCH_CROSS_DOMAIN_READ_TOOLS = new Set([
   "novel_items_get_context",
   "novel_characters_get_context",
   "novel_cultivation_get_context",
+  "novel_factions_get_context",
+  "novel_manuscript_get_context",
+  "novel_continuity_get_context",
 ]);
 
 function normalizeNovelWorkbenchToolName(toolName: string): string {
@@ -104,6 +109,7 @@ export function configureNovelWorkbenchRequest(
     mode !== "template" &&
     mode !== "assist" &&
     mode !== "narrative" &&
+    mode !== "manuscript" &&
     mode !== "timeline" &&
     mode !== "inspiration" &&
     mode !== "items" &&
@@ -112,7 +118,7 @@ export function configureNovelWorkbenchRequest(
     mode !== "cultivation"
   ) {
     throw new Error(
-      "toolset.context.mode must be world, template, assist, narrative, timeline, inspiration, items, characters, factions or cultivation",
+      "toolset.context.mode must be world, template, assist, narrative, manuscript, timeline, inspiration, items, characters, factions or cultivation",
     );
   }
   if (typeof promptId !== "string" || !promptId.trim()) {

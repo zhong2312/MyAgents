@@ -1070,6 +1070,18 @@
       },
       "starting": "Starting AI... first launch may take a while.",
       "loadingHistory": "Loading chat history...",
+      "execution": {
+        "submitted": "Task submitted",
+        "starting": "Starting model session",
+        "sessionReady": "Model session ready",
+        "waitingFirstResponse": "Waiting for the model's first response",
+        "waitingNextResponse": "Waiting for the model's next response",
+        "thinking": "Analyzing the task",
+        "generating": "Generating manuscript",
+        "toolRunning": "Calling tool: {{name}}",
+        "toolCompleted": "Called tool: {{name}}",
+        "toolFailed": "Tool call failed: {{name}}"
+      },
       "streaming": {
         "0": "Thinking hard...",
         "1": "Thinking it through...",

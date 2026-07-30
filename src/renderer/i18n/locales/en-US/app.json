@@ -58,6 +58,8 @@
     "restartAndUpdate": "Restart and update",
     "installing": "Installing...",
     "restartUpdate": "Restart update",
+    "showGlobalSidebar": "Show global sidebar",
+    "hideGlobalSidebar": "Hide global sidebar",
     "minimize": "Minimize",
     "maximize": "Maximize",
     "restoreWindow": "Restore",

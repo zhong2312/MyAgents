@@ -38,6 +38,10 @@ interface CustomTitleBarProps {
     onRestoreSession?: () => void;
     /** Click the pill's ✕ → dismiss without restoring. */
     onDismissRestore?: () => void;
+    /** Whether the global navigation sidebar is mounted. */
+    globalSidebarVisible?: boolean;
+    /** Changes the global navigation sidebar visibility. */
+    onGlobalSidebarVisibilityChange?: (isVisible: boolean) => void;
 }
 
 const EDGE_DRAG_REGION_WIDTH = 30;
@@ -66,6 +70,8 @@ export default function CustomTitleBar({
     restoreCount = 0,
     onRestoreSession,
     onDismissRestore,
+    globalSidebarVisible = false,
+    onGlobalSidebarVisibilityChange,
 }: CustomTitleBarProps) {
     const { t } = useTranslation('app');
     const [isMaximized, setIsMaximized] = useState(false);
@@ -240,6 +246,32 @@ export default function CustomTitleBar({
                     </>
                 )}
             </div>
+
+            {onGlobalSidebarVisibilityChange && (
+                <button
+                    type="button"
+                    role="switch"
+                    aria-checked={globalSidebarVisible}
+                    aria-label={t(globalSidebarVisible ? 'titlebar.hideGlobalSidebar' : 'titlebar.showGlobalSidebar')}
+                    title={t(globalSidebarVisible ? 'titlebar.hideGlobalSidebar' : 'titlebar.showGlobalSidebar')}
+                    onClick={() => onGlobalSidebarVisibilityChange(!globalSidebarVisible)}
+                    className="flex h-full w-16 flex-shrink-0 items-center justify-center transition-colors hover:bg-[var(--paper-inset)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-border)]"
+                    data-no-drag
+                >
+                    <span
+                        className={`relative h-6 w-11 rounded-full transition-colors duration-150 motion-reduce:transition-none ${
+                            globalSidebarVisible ? 'bg-[var(--accent-cool)]' : 'bg-[var(--toggle-off-bg)]'
+                        }`}
+                        aria-hidden="true"
+                    >
+                        <span
+                            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform duration-150 motion-reduce:transition-none ${
+                                globalSidebarVisible ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                        />
+                    </span>
+                </button>
+            )}
 
             {/* Windows window controls */}
             {isWindows && (

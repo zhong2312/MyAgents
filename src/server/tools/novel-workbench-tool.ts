@@ -10,6 +10,12 @@ import {
 } from "../../shared/workbenches/novel/characterLibrarySchema";
 import { cultivationEcologySchema } from "../../shared/workbenches/novel/cultivationEcologySchema";
 import {
+  manuscriptProposalSchema,
+  serializeManuscriptProposal,
+  type ManuscriptProposal,
+  type ManuscriptWritingMode,
+} from "../../shared/workbenches/novel/manuscriptProposalSchema";
+import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
   NOVEL_WORKBENCH_SDK_ADAPTER_ID,
@@ -23,6 +29,7 @@ import {
   markNovelWorkbenchDraftSubmitted,
   saveNovelWorkbenchDraftValidation,
   summarizeNovelWorkbenchDraft,
+  type NovelWorkbenchDraft,
   updateNovelWorkbenchDraft,
 } from "../novel-workbench-draft";
 
@@ -90,6 +97,12 @@ const NARRATIVE_ENGINEERING_PATH = "narrative/index.json";
 const NARRATIVE_ENGINEERING_SCHEMA_VERSION = 4;
 const NARRATIVE_PROPOSAL_SCHEMA_VERSION = 4;
 const TIMELINE_LIBRARY_PATH = "timeline/index.json";
+const MANUSCRIPT_INDEX_PATH = "manuscript/index.json";
+const MANUSCRIPT_PROPOSAL_ROOT = "manuscript/proposals";
+const MANUSCRIPT_TRACKING_PATH = "manuscript/state-ledger.json";
+const MANUSCRIPT_CONTINUITY_PATH = "manuscript/continuity-state.json";
+const FACTION_LIBRARY_PATH = "world/factions/index.json";
+const MAX_MANUSCRIPT_CONTENT_BYTES = 4 * 1024 * 1024;
 const NARRATIVE_LINE_COLORS = {
   main: "#b64a3a",
   emotion: "#c3812f",
@@ -220,6 +233,21 @@ type CultivationDraftPayload = {
   description: string;
   baseSourceHash: string;
   content: string;
+};
+
+type ManuscriptDraftPayload = {
+  title: string;
+  description: string;
+  runId: string;
+  chapterId: string;
+  chapterTitle: string;
+  chapterPath: string;
+  baseSourceHash: string;
+  sourceContent: string;
+  mode: ManuscriptWritingMode;
+  rangeStart: number;
+  rangeEnd: number;
+  candidate: { id: string; content: string } | null;
 };
 
 function result(value: unknown, isError = false): CallToolResult {
@@ -2461,7 +2489,8 @@ function validateNarrativeDraftPayload(
         const chapterId = narrativeString(locationRecord, "chapterId", "");
         const sectionId = narrativeNullableId(locationRecord, "sectionId");
         if (!chapterId || !sectionId) continue;
-        const referenced = referencedSectionsByChapter.get(chapterId) ?? new Set();
+        const referenced =
+          referencedSectionsByChapter.get(chapterId) ?? new Set();
         referenced.add(sectionId);
         referencedSectionsByChapter.set(chapterId, referenced);
       }
@@ -2534,7 +2563,9 @@ function validateNarrativeDraftPayload(
       }
       candidateIds.add(section.candidateId);
       if (!section.title.trim()) {
-        errors.push(`章节候选 ${chapterIndex + 1} 的第 ${sectionIndex + 1} 节缺少标题`);
+        errors.push(
+          `章节候选 ${chapterIndex + 1} 的第 ${sectionIndex + 1} 节缺少标题`,
+        );
       }
       const existingSection = section.targetId
         ? existingSections.get(section.targetId)
@@ -2872,9 +2903,9 @@ function materializeNarrativeDraft(
             : section.povCharacterId,
         lineIds: [
           ...new Set(
-            (section.lineIds ?? narrativeIdList(existingSection, "lineIds")).map(
-              (lineId) => lineIds.get(lineId) ?? lineId,
-            ),
+            (
+              section.lineIds ?? narrativeIdList(existingSection, "lineIds")
+            ).map((lineId) => lineIds.get(lineId) ?? lineId),
           ),
         ],
         arcIds: [
@@ -3609,7 +3640,13 @@ function createCharacterDraftValue(
 }
 
 function requireDraftMode(
-  expected: "world" | "characters" | "items" | "narrative" | "cultivation",
+  expected:
+    | "world"
+    | "characters"
+    | "items"
+    | "narrative"
+    | "manuscript"
+    | "cultivation",
 ): ReturnType<typeof requireWorkspace> {
   const allowed =
     expected === "world"
@@ -4124,6 +4161,468 @@ async function getItemProposalStatusHandler(args: {
   }
 }
 
+function manuscriptSourceHash(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function readManuscriptIndex(workspace: string): Promise<{
+  content: string;
+  index: Record<string, unknown>;
+  chapters: Record<string, unknown>[];
+}> {
+  const content = await fs.readFile(
+    workspaceFile(workspace, MANUSCRIPT_INDEX_PATH),
+    "utf8",
+  );
+  const index = objectValue(JSON.parse(content), "正文索引");
+  const chapters = arrayField(index, "chapters");
+  if (!chapters) throw new Error("正文索引缺少 chapters 数组");
+  return {
+    content,
+    index,
+    chapters: chapters.map((chapter) => objectValue(chapter, "正文章节")),
+  };
+}
+
+function manuscriptChapter(
+  chapters: readonly Record<string, unknown>[],
+  chapterId: string,
+): Record<string, unknown> {
+  const chapter = chapters.find((candidate) => candidate.id === chapterId);
+  if (!chapter) throw new Error(`正文章节不存在：${chapterId}`);
+  if (
+    typeof chapter.title !== "string" ||
+    typeof chapter.path !== "string" ||
+    !/^manuscript\/chapters\/\d{6}\.md$/u.test(chapter.path)
+  ) {
+    throw new Error(`正文章节记录无效：${chapterId}`);
+  }
+  return chapter;
+}
+
+async function getManuscriptContextHandler(args: {
+  chapterId?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const loaded = await readManuscriptIndex(workspace);
+    const chapterId = args.chapterId;
+    const selected = args.chapterId
+      ? manuscriptChapter(loaded.chapters, args.chapterId)
+      : null;
+    const selectedContent = selected
+      ? await fs.readFile(
+          workspaceFile(workspace, String(selected.path)),
+          "utf8",
+        )
+      : null;
+    let narrativePlan: Record<string, unknown> | null = null;
+    if (selected && typeof selected.narrativeChapterId === "string") {
+      const narrativeContent = await readOptional(
+        workspaceFile(workspace, NARRATIVE_ENGINEERING_PATH),
+      );
+      if (narrativeContent) {
+        const narrative = objectValue(
+          JSON.parse(narrativeContent),
+          "剧情工程事实源",
+        );
+        narrativePlan =
+          (arrayField(narrative, "chapters") ?? [])
+            .map((value) => objectValue(value, "剧情章节"))
+            .find((value) => value.id === selected.narrativeChapterId) ?? null;
+      }
+    }
+    return result({
+      sourcePath: MANUSCRIPT_INDEX_PATH,
+      sourceHash:
+        selectedContent === null ? null : manuscriptSourceHash(selectedContent),
+      chapterIndexHash: manuscriptSourceHash(loaded.content),
+      structureMode: loaded.index.structureMode,
+      directories: arrayField(loaded.index, "directories") ?? [],
+      chapters: loaded.chapters.map((chapter) => ({
+        id: chapter.id,
+        title: chapter.title,
+        path: chapter.path,
+        displayNumber: chapter.displayNumber,
+        directoryId: chapter.directoryId,
+        narrativeChapterId: chapter.narrativeChapterId,
+        status: chapter.status,
+      })),
+      selectedChapter: selected
+        ? { ...selected, content: selectedContent, narrativePlan }
+        : null,
+      note: chapterId
+        ? "sourceHash 绑定当前章节完整正文；创建草稿时必须原样传回。"
+        : "传 chapterId 可读取章节全文、sourceHash 和关联剧情计划。",
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getFactionContextHandler(args: {
+  factionId?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const content = await fs.readFile(
+      workspaceFile(workspace, FACTION_LIBRARY_PATH),
+      "utf8",
+    );
+    const library = objectValue(JSON.parse(content), "势力组织事实源");
+    const factions = (arrayField(library, "factions") ?? []).map((value) =>
+      objectValue(value, "势力组织"),
+    );
+    return result({
+      sourcePath: FACTION_LIBRARY_PATH,
+      sourceHash: manuscriptSourceHash(content),
+      factions: args.factionId
+        ? factions.filter((faction) => faction.id === args.factionId)
+        : factions,
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getContinuityContextHandler(): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireWorkspace();
+    const [tracking, continuity] = await Promise.all([
+      readOptional(workspaceFile(workspace, MANUSCRIPT_TRACKING_PATH)),
+      readOptional(workspaceFile(workspace, MANUSCRIPT_CONTINUITY_PATH)),
+    ]);
+    return result({
+      trackingPath: MANUSCRIPT_TRACKING_PATH,
+      continuityPath: MANUSCRIPT_CONTINUITY_PATH,
+      tracking: tracking ? JSON.parse(tracking) : null,
+      continuity: continuity ? JSON.parse(continuity) : null,
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function createManuscriptDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+  runId: string;
+  chapterId: string;
+  baseSourceHash: string;
+  mode: ManuscriptWritingMode;
+  rangeStart: number;
+  rangeEnd: number;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("manuscript");
+    const loaded = await readManuscriptIndex(workspace);
+    const chapter = manuscriptChapter(loaded.chapters, args.chapterId);
+    const sourceContent = await fs.readFile(
+      workspaceFile(workspace, String(chapter.path)),
+      "utf8",
+    );
+    if (manuscriptSourceHash(sourceContent) !== args.baseSourceHash) {
+      throw new Error("正文事实源已变化，请重新读取章节上下文");
+    }
+    if (
+      args.rangeStart < 0 ||
+      args.rangeEnd < args.rangeStart ||
+      args.rangeEnd > sourceContent.length
+    ) {
+      throw new Error("正文处理范围越界");
+    }
+    const draft = await createNovelWorkbenchDraft<ManuscriptDraftPayload>(
+      workspace,
+      "manuscript",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        runId: args.runId,
+        chapterId: args.chapterId,
+        chapterTitle: String(chapter.title),
+        chapterPath: String(chapter.path),
+        baseSourceHash: args.baseSourceHash,
+        sourceContent,
+        mode: args.mode,
+        rangeStart: args.rangeStart,
+        rangeEnd: args.rangeEnd,
+        candidate: null,
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ created: false, error: message(error) }, true);
+  }
+}
+
+async function getManuscriptDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("manuscript");
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<ManuscriptDraftPayload>(
+          workspace,
+          "manuscript",
+          args.draftId,
+        ),
+      ),
+    );
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertManuscriptCandidateHandler(args: {
+  draftId: string;
+  candidateId: string;
+  content: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("manuscript");
+    if (
+      Buffer.byteLength(args.content, "utf8") > MAX_MANUSCRIPT_CONTENT_BYTES
+    ) {
+      throw new Error("正文候选超过 4 MiB 限制");
+    }
+    const draft = await updateNovelWorkbenchDraft<ManuscriptDraftPayload>(
+      workspace,
+      "manuscript",
+      args.draftId,
+      (payload) => ({
+        ...payload,
+        candidate: { id: args.candidateId, content: args.content },
+      }),
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ updated: false, error: message(error) }, true);
+  }
+}
+
+async function validateManuscriptDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("manuscript");
+    const draft = await loadNovelWorkbenchDraft<ManuscriptDraftPayload>(
+      workspace,
+      "manuscript",
+      args.draftId,
+    );
+    const errors: string[] = [];
+    if (!draft.payload.candidate?.content.trim())
+      errors.push("正文候选不能为空");
+    if (draft.payload.rangeEnd > draft.payload.sourceContent.length) {
+      errors.push("正文处理范围越界");
+    }
+    const current = await fs.readFile(
+      workspaceFile(workspace, draft.payload.chapterPath),
+      "utf8",
+    );
+    if (manuscriptSourceHash(current) !== draft.payload.baseSourceHash) {
+      errors.push("正文事实源已变化，请重新生成");
+    }
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const contentHash = hashNovelWorkbenchDraftPayload(draft.payload);
+    const validated = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      contentHash,
+    );
+    return result({
+      valid: true,
+      draftId: validated.draftId,
+      revision: validated.revision,
+      validationToken: validated.validation?.token,
+    });
+  } catch (error) {
+    return result({ valid: false, error: message(error) }, true);
+  }
+}
+
+function manuscriptProposalId(draftId: string): string {
+  return `proposal-${draftId}`;
+}
+
+function assertManuscriptProposalMatchesDraft(
+  proposal: ManuscriptProposal,
+  draft: NovelWorkbenchDraft<ManuscriptDraftPayload>,
+): void {
+  const payload = draft.payload;
+  if (
+    proposal.proposalId !== manuscriptProposalId(draft.draftId) ||
+    proposal.draftId !== draft.draftId ||
+    proposal.runId !== payload.runId ||
+    proposal.source.chapterId !== payload.chapterId ||
+    proposal.source.chapterTitle !== payload.chapterTitle ||
+    proposal.source.chapterPath !== payload.chapterPath ||
+    proposal.source.sourceHash !== payload.baseSourceHash ||
+    proposal.source.sourceContent !== payload.sourceContent ||
+    proposal.source.rangeStart !== payload.rangeStart ||
+    proposal.source.rangeEnd !== payload.rangeEnd ||
+    proposal.source.mode !== payload.mode ||
+    proposal.candidate.id !== payload.candidate?.id ||
+    proposal.candidate.content !== payload.candidate?.content
+  ) {
+    throw new Error("已存在的正文候选与当前草稿不一致");
+  }
+}
+
+async function recoverExistingManuscriptProposal(
+  workspace: string,
+  draft: NovelWorkbenchDraft<ManuscriptDraftPayload>,
+  proposalId: string,
+): Promise<boolean> {
+  const proposalPath = workspaceFile(
+    workspace,
+    `${MANUSCRIPT_PROPOSAL_ROOT}/${proposalId}/proposal.json`,
+  );
+  const content = await readOptional(proposalPath);
+  if (!content) return false;
+  const proposal = manuscriptProposalSchema.parse(JSON.parse(content));
+  assertManuscriptProposalMatchesDraft(proposal, draft);
+  await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+  return true;
+}
+
+async function getManuscriptProposalStatusValue(
+  proposalId: string,
+): Promise<Record<string, unknown>> {
+  const { workspace } = requireDraftMode("manuscript");
+  const content = await readOptional(
+    workspaceFile(
+      workspace,
+      `${MANUSCRIPT_PROPOSAL_ROOT}/${proposalId}/proposal.json`,
+    ),
+  );
+  if (!content) return { exists: false, proposalId };
+  const proposal = manuscriptProposalSchema.parse(JSON.parse(content));
+  return {
+    exists: true,
+    proposalId,
+    runId: proposal.runId,
+    chapterId: proposal.source.chapterId,
+    status: proposal.candidate.status,
+    updatedAt: proposal.updatedAt,
+  };
+}
+
+async function submitManuscriptDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("manuscript");
+    const draft = await loadNovelWorkbenchDraft<ManuscriptDraftPayload>(
+      workspace,
+      "manuscript",
+      args.draftId,
+    );
+    const proposalId = manuscriptProposalId(draft.draftId);
+    if (draft.submittedProposalId) {
+      return result(await getManuscriptProposalStatusValue(proposalId));
+    }
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !==
+        hashNovelWorkbenchDraftPayload(draft.payload)
+    ) {
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    }
+    if (!draft.payload.candidate) throw new Error("正文草稿尚无候选内容");
+    const current = await fs.readFile(
+      workspaceFile(workspace, draft.payload.chapterPath),
+      "utf8",
+    );
+    if (manuscriptSourceHash(current) !== draft.payload.baseSourceHash) {
+      throw new Error("正文事实源已变化，请重新读取并生成");
+    }
+    const now = new Date().toISOString();
+    const proposal: ManuscriptProposal = {
+      schemaVersion: 1,
+      proposalId,
+      draftId: draft.draftId,
+      runId: draft.payload.runId,
+      title: draft.payload.title,
+      description: draft.payload.description,
+      createdAt: now,
+      updatedAt: now,
+      source: {
+        chapterId: draft.payload.chapterId,
+        chapterTitle: draft.payload.chapterTitle,
+        chapterPath: draft.payload.chapterPath,
+        sourceHash: draft.payload.baseSourceHash,
+        sourceContent: draft.payload.sourceContent,
+        rangeStart: draft.payload.rangeStart,
+        rangeEnd: draft.payload.rangeEnd,
+        mode: draft.payload.mode,
+      },
+      candidate: {
+        id: draft.payload.candidate.id,
+        status: "pending",
+        content: draft.payload.candidate.content,
+        appliedContent: null,
+      },
+    };
+    const directory = workspaceFile(
+      workspace,
+      `${MANUSCRIPT_PROPOSAL_ROOT}/${proposalId}`,
+    );
+    await fs.mkdir(directory, { recursive: true });
+    const recovered = await recoverExistingManuscriptProposal(
+      workspace,
+      draft,
+      proposalId,
+    );
+    if (!recovered) {
+      try {
+        await fs.writeFile(
+          join(directory, "proposal.json"),
+          serializeManuscriptProposal(proposal),
+          { encoding: "utf8", flag: "wx" },
+        );
+        await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+          !(await recoverExistingManuscriptProposal(
+            workspace,
+            draft,
+            proposalId,
+          ))
+        ) {
+          throw error;
+        }
+      }
+    }
+    return result({
+      submitted: true,
+      ...(await getManuscriptProposalStatusValue(proposalId)),
+      reviewAction: "正文候选已提交到右侧差异审阅区，等待作者确认。",
+    });
+  } catch (error) {
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getManuscriptProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
+  try {
+    return result(await getManuscriptProposalStatusValue(args.proposalId));
+  } catch (error) {
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
+  }
+}
+
 export async function createNovelWorkbenchServer() {
   const { createSdkMcpServer, tool } = await import(
     "@anthropic-ai/claude-agent-sdk"
@@ -4212,10 +4711,7 @@ export async function createNovelWorkbenchServer() {
     order: z.number().int().nonnegative().max(100_000),
   });
   const narrativeParagraphInputSchema = z.object({
-    candidateId: z
-      .string()
-      .regex(ID_PATTERN)
-      .describe("本草稿内的段候选 ID"),
+    candidateId: z.string().regex(ID_PATTERN).describe("本草稿内的段候选 ID"),
     targetId: z
       .string()
       .regex(ID_PATTERN)
@@ -4225,10 +4721,7 @@ export async function createNovelWorkbenchServer() {
     content: z.string().trim().min(1).max(160_000),
   });
   const narrativeSectionInputSchema = z.object({
-    candidateId: z
-      .string()
-      .regex(ID_PATTERN)
-      .describe("本草稿内的节候选 ID"),
+    candidateId: z.string().regex(ID_PATTERN).describe("本草稿内的节候选 ID"),
     targetId: z
       .string()
       .regex(ID_PATTERN)
@@ -4243,10 +4736,7 @@ export async function createNovelWorkbenchServer() {
     paragraphs: z.array(narrativeParagraphInputSchema).max(100).default([]),
   });
   const narrativeChapterInputSchema = z.object({
-    candidateId: z
-      .string()
-      .regex(ID_PATTERN)
-      .describe("本草稿内的章节候选 ID"),
+    candidateId: z.string().regex(ID_PATTERN).describe("本草稿内的章节候选 ID"),
     targetId: z
       .string()
       .regex(ID_PATTERN)
@@ -4434,6 +4924,77 @@ export async function createNovelWorkbenchServer() {
         "从磁盘确认物品批量提案是否真实存在及其待审、已创建、已拒绝数量。",
         { proposalId: z.string().regex(ID_PATTERN) },
         getItemProposalStatusHandler,
+      ),
+      tool(
+        "novel_manuscript_get_context",
+        "读取正文目录、指定章节全文、章节 sourceHash 和关联剧情计划。正文 AI 创建草稿前必须先读取当前章节。",
+        { chapterId: z.string().regex(ID_PATTERN).optional() },
+        getManuscriptContextHandler,
+      ),
+      tool(
+        "novel_manuscript_create_draft",
+        "创建绑定章节正文 sourceHash 和处理范围的可恢复正文草稿。草稿不会修改正式正文。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().trim().min(1).max(160),
+          description: z.string().max(20_000).optional(),
+          runId: z.string().regex(ID_PATTERN),
+          chapterId: z.string().regex(ID_PATTERN),
+          baseSourceHash: z.string().regex(/^[a-f0-9]{64}$/u),
+          mode: z.enum(["generate", "continue", "revise", "expand"]),
+          rangeStart: z.number().int().nonnegative(),
+          rangeEnd: z.number().int().nonnegative(),
+        },
+        createManuscriptDraftHandler,
+      ),
+      tool(
+        "novel_manuscript_get_draft",
+        "读取正文 AI 草稿、revision、候选内容、校验令牌和提交状态。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getManuscriptDraftHandler,
+      ),
+      tool(
+        "novel_manuscript_upsert_candidate",
+        "向正文草稿写入或替换一个候选正文。只提交处理范围对应的替换或插入文本，不要包含解释或 Markdown 围栏。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          candidateId: z.string().regex(ID_PATTERN),
+          content: z.string().min(1).max(MAX_MANUSCRIPT_CONTENT_BYTES),
+        },
+        upsertManuscriptCandidateHandler,
+      ),
+      tool(
+        "novel_manuscript_validate_draft",
+        "校验正文草稿的事实源版本、处理范围和候选内容；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateManuscriptDraftHandler,
+      ),
+      tool(
+        "novel_manuscript_submit_draft",
+        "使用 validationToken 提交正文候选到右侧差异审阅区。不会直接修改正式正文。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitManuscriptDraftHandler,
+      ),
+      tool(
+        "novel_manuscript_get_proposal_status",
+        "确认正文候选是否已提交，以及当前待审、已应用或已拒绝状态。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getManuscriptProposalStatusHandler,
+      ),
+      tool(
+        "novel_factions_get_context",
+        "读取已保存的势力组织事实；可按 factionId 限定单个势力。该工具只读。",
+        { factionId: z.string().regex(ID_PATTERN).optional() },
+        getFactionContextHandler,
+      ),
+      tool(
+        "novel_continuity_get_context",
+        "读取正文已应用状态批次和连续性事实，供正文生成判断人物状态、关系、物品、地点和未结事项。该工具只读。",
+        {},
+        getContinuityContextHandler,
       ),
       tool(
         "novel_timeline_get_context",

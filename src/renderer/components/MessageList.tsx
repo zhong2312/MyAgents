@@ -9,6 +9,7 @@ import Message from '@/components/Message';
 import { PermissionPrompt, type PermissionRequest } from '@/components/PermissionPrompt';
 import { AskUserQuestionPrompt, type AskUserQuestionRequest } from '@/components/AskUserQuestionPrompt';
 import { ExitPlanModePrompt } from '@/components/ExitPlanModePrompt';
+import { getToolLabel } from '@/components/tools/toolBadgeConfig';
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
 import type { Message as MessageType } from '@/types/chat';
 import type { SessionState, SystemNotice } from '@/context/TabContext';
@@ -68,6 +69,8 @@ interface MessageListProps {
   systemNotice?: SystemNotice | null;
   onDismissSystemNotice?: () => void;
   isStreaming?: boolean;
+  /** Use the real streaming event trace instead of the generic waiting copy. */
+  executionMode?: boolean;
   /**
    * (issue #174) Pulled in so the loading footer can swap the random
    * "苦思冥想中…" thinking line for an explicit "AI 启动中…" hint while the
@@ -84,6 +87,15 @@ interface MessageListProps {
 const STREAMING_MESSAGE_COUNT = 20;
 const noopRowLayoutChanged = (_messageId: string, _reason: RowLayoutChangeReason) => {};
 const STATUS_ROW_HEIGHT_PX = 30;
+const MAX_EXECUTION_TRACE_STEPS = 5;
+
+type ExecutionStepStatus = 'active' | 'complete' | 'error';
+
+interface ExecutionTraceStep {
+  key: string;
+  label: string;
+  status: ExecutionStepStatus;
+}
 
 /** Resolve dynamic system status keys (e.g., api_retry:2:5 → human-readable) */
 function resolveSystemStatus(status: string, t: TFunction<'chat'>): string {
@@ -125,6 +137,137 @@ const StatusTimer = memo(function StatusTimer({ message }: { message: string }) 
       <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
       <span className="min-w-0 truncate">{displayText}</span>
     </div>
+  );
+});
+
+function buildExecutionTrace({
+  isLoading,
+  sessionState,
+  systemStatus,
+  streamingMessage,
+  t,
+}: {
+  isLoading: boolean;
+  sessionState?: SessionState;
+  systemStatus?: string | null;
+  streamingMessage: MessageType | null;
+  t: TFunction<'chat'>;
+}): ExecutionTraceStep[] {
+  if (!isLoading && !systemStatus) return [];
+
+  const steps: ExecutionTraceStep[] = [{
+    key: 'submitted',
+    label: t('shell.messageList.execution.submitted'),
+    status: 'complete',
+  }];
+
+  if (systemStatus) {
+    steps.push({ key: 'system-status', label: resolveSystemStatus(systemStatus, t), status: 'active' });
+    return steps;
+  }
+
+  if (sessionState === 'starting') {
+    steps.push({ key: 'starting', label: t('shell.messageList.execution.starting'), status: 'active' });
+    return steps;
+  }
+
+  steps.push({ key: 'session-ready', label: t('shell.messageList.execution.sessionReady'), status: 'complete' });
+
+  if (!streamingMessage || streamingMessage.role !== 'assistant') {
+    steps.push({ key: 'waiting-first-response', label: t('shell.messageList.execution.waitingFirstResponse'), status: 'active' });
+    return steps;
+  }
+
+  if (typeof streamingMessage.content === 'string') {
+    steps.push({ key: 'generating', label: t('shell.messageList.execution.generating'), status: 'active' });
+    return steps;
+  }
+
+  for (const [index, block] of streamingMessage.content.entries()) {
+    if (block.type === 'thinking') {
+      steps.push({
+        key: `thinking-${index}`,
+        label: t('shell.messageList.execution.thinking'),
+        status: block.isFailed ? 'error' : block.isComplete ? 'complete' : 'active',
+      });
+      continue;
+    }
+
+    if ((block.type === 'tool_use' || block.type === 'server_tool_use') && block.tool) {
+      const toolLabel = getToolLabel(block.tool, t);
+      const status: ExecutionStepStatus = block.tool.isError || block.tool.isFailed
+        ? 'error'
+        : block.tool.isLoading ? 'active' : 'complete';
+      steps.push({
+        key: `tool-${block.tool.id || index}`,
+        label: status === 'error'
+          ? t('shell.messageList.execution.toolFailed', { name: toolLabel })
+          : status === 'active'
+            ? t('shell.messageList.execution.toolRunning', { name: toolLabel })
+            : t('shell.messageList.execution.toolCompleted', { name: toolLabel }),
+        status,
+      });
+      continue;
+    }
+
+    if (block.type === 'text' && (block.text || streamingMessage.streamingTextActive)) {
+      steps.push({
+        key: `generating-${index}`,
+        label: t('shell.messageList.execution.generating'),
+        status: streamingMessage.streamingTextActive ? 'active' : 'complete',
+      });
+    }
+  }
+
+  if (!steps.some(step => step.status === 'active')) {
+    steps.push({ key: 'waiting-next-response', label: t('shell.messageList.execution.waitingNextResponse'), status: 'active' });
+  }
+
+  return steps;
+}
+
+const ExecutionTrace = memo(function ExecutionTrace({ steps }: { steps: readonly ExecutionTraceStep[] }) {
+  const { t } = useTranslation('chat');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const startTimeRef = useRef(0);
+  useEffect(() => {
+    startTimeRef.current = Date.now();
+    const id = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const visibleSteps = steps.length > MAX_EXECUTION_TRACE_STEPS
+    ? [steps[0], ...steps.slice(-(MAX_EXECUTION_TRACE_STEPS - 1))]
+    : steps;
+  const currentStep = [...visibleSteps].reverse().find(step => step.status === 'active') ?? visibleSteps[visibleSteps.length - 1];
+  const elapsedText = elapsedSeconds > 0 ? formatElapsedTime(elapsedSeconds, t) : null;
+
+  return (
+    <section
+      data-agent-execution-trace=""
+      aria-live="polite"
+      className="mx-3 my-2 border-l-2 border-[var(--accent-cool)] bg-[var(--accent-cool-subtle)] px-3 py-2"
+    >
+      <div className="flex items-center gap-2 text-xs font-medium text-[var(--ink-secondary)]">
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--accent-cool)]" />
+        <span className="min-w-0 flex-1 truncate">{currentStep?.label}</span>
+        {elapsedText && <span className="shrink-0 text-[var(--ink-muted)]">{elapsedText}</span>}
+      </div>
+      <ol className="mt-2 space-y-1">
+        {visibleSteps.map(step => {
+          const Icon = step.status === 'active' ? Loader2 : step.status === 'error' ? AlertCircle : CheckCircle;
+          const colorClass = step.status === 'active'
+            ? 'text-[var(--accent-cool)]'
+            : step.status === 'error' ? 'text-[var(--error)]' : 'text-[var(--success)]';
+          return (
+            <li key={step.key} className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
+              <Icon className={`h-3 w-3 shrink-0 ${colorClass} ${step.status === 'active' ? 'animate-spin' : ''}`} />
+              <span className="min-w-0 truncate">{step.label}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 });
 
@@ -170,6 +313,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
   pendingPermission, onPermissionDecision,
   pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel,
   showStatus, statusMessage,
+  executionMode, executionSteps,
   systemNotice, onDismissSystemNotice,
   bottomSpacerPx,
 }: {
@@ -180,6 +324,8 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
   onAskUserQuestionCancel?: (requestId: string) => void;
   showStatus: boolean;
   statusMessage: string;
+  executionMode?: boolean;
+  executionSteps?: readonly ExecutionTraceStep[];
   systemNotice?: SystemNotice | null;
   onDismissSystemNotice?: () => void;
   bottomSpacerPx?: number;
@@ -201,7 +347,9 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
           <AskUserQuestionPrompt request={pendingAskUserQuestion} onSubmit={onAskUserQuestionSubmit} onCancel={onAskUserQuestionCancel} />
         </div>
       )}
-      {showStatus && <StatusTimer message={statusMessage} />}
+      {showStatus && (executionMode && executionSteps?.length
+        ? <ExecutionTrace steps={executionSteps} />
+        : <StatusTimer message={statusMessage} />)}
       {!showStatus && systemNotice && (
         <SystemNoticeRow notice={systemNotice} onDismiss={onDismissSystemNotice} />
       )}
@@ -249,6 +397,7 @@ const MessageList = memo(function MessageList({
   onDismissSystemNotice,
   isStreaming,
   sessionState,
+  executionMode = false,
   onRewind,
   onRetry,
   onFork,
@@ -293,6 +442,13 @@ const MessageList = memo(function MessageList({
     : sessionState === 'starting'
       ? t('shell.messageList.starting')
       : streamingStatusMessage;
+  const executionSteps = useMemo(() => buildExecutionTrace({
+    isLoading,
+    sessionState,
+    systemStatus,
+    streamingMessage,
+    t,
+  }), [isLoading, sessionState, systemStatus, streamingMessage, t]);
 
   // Fade-in
   const wasSessionLoadingRef = useRef(false);
@@ -538,13 +694,15 @@ const MessageList = memo(function MessageList({
           onAskUserQuestionCancel={onAskUserQuestionCancel}
           showStatus={showStatus}
           statusMessage={statusMessage}
+          executionMode={executionMode}
+          executionSteps={executionSteps}
           systemNotice={systemNotice}
           onDismissSystemNotice={onDismissSystemNotice}
           bottomSpacerPx={bottomSpacerPx}
         />
       );
     };
-  }, [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
+  }, [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, executionMode, executionSteps, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
 
   // ── Stable components object ──
   const components = useMemo(() => ({ Footer: FooterComponent }), [FooterComponent]);

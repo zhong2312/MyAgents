@@ -8,6 +8,7 @@ import {
 } from '../../shared/workbench-sdk';
 import type {
   WorkbenchDefinition,
+  WorkbenchAgentCompanionProps,
   WorkbenchProjectCreatorProps,
   WorkbenchRendererProps,
 } from './types';
@@ -17,6 +18,7 @@ export interface RegisteredWorkbench {
   readonly compatibility: WorkbenchCompatibility;
   readonly Renderer: LazyExoticComponent<ComponentType<WorkbenchRendererProps>>;
   readonly ProjectCreator?: LazyExoticComponent<ComponentType<WorkbenchProjectCreatorProps>>;
+  readonly AgentCompanion?: LazyExoticComponent<ComponentType<WorkbenchAgentCompanionProps>>;
 }
 
 export interface WorkbenchRegistry {
@@ -45,6 +47,9 @@ export function createWorkbenchRegistry(
       Renderer: lazy(definition.load),
       ...(definition.launcher
         ? { ProjectCreator: lazy(definition.launcher.loadProjectCreator) }
+        : {}),
+      ...(definition.loadAgentCompanion
+        ? { AgentCompanion: lazy(definition.loadAgentCompanion) }
         : {}),
     });
     byId.set(id, registration);

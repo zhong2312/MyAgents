@@ -34,6 +34,7 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
   toastRef.current = toast;
   const isMountedRef = useRef(true);
   const [toggling, setToggling] = useState(false);
+  const [togglingWorkspacePanel, setTogglingWorkspacePanel] = useState(false);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -116,6 +117,21 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
     }
   }, [project, agent, agentDir, config.defaultPermissionMode, toggling, patchProject, refreshConfig, refreshStatuses, t]);
 
+  const handleToggleWorkspacePanel = useCallback(async () => {
+    if (!project || togglingWorkspacePanel) return;
+    setTogglingWorkspacePanel(true);
+    try {
+      await patchProject(project.id, {
+        workspacePanelVisible: project.workspacePanelVisible === false,
+      });
+    } catch (error) {
+      console.error('[WorkspaceGeneralTab] Toggle workspace panel failed:', error);
+      toastRef.current.error(t('agentSettings.general.operationFailed'));
+    } finally {
+      if (isMountedRef.current) setTogglingWorkspacePanel(false);
+    }
+  }, [patchProject, project, t, togglingWorkspacePanel]);
+
   const status = agent ? statuses[agent.id] : undefined;
 
   if (!project) {
@@ -137,6 +153,38 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
           </h3>
           <div className="mt-4">
             <WorkspaceBasicsSection project={project} agent={agent} agentDir={agentDir} />
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-medium text-[var(--ink)]">
+                {t('agentSettings.general.workspacePanelTitle')}
+              </h3>
+              <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
+                {t('agentSettings.general.workspacePanelDescription')}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={project.workspacePanelVisible !== false}
+              aria-label={t('agentSettings.general.workspacePanelTitle')}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                togglingWorkspacePanel ? 'cursor-wait opacity-50' : 'cursor-pointer'
+              } ${
+                project.workspacePanelVisible !== false ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+              }`}
+              onClick={handleToggleWorkspacePanel}
+              disabled={togglingWorkspacePanel}
+            >
+              <span
+                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
+                  project.workspacePanelVisible !== false ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
           </div>
         </div>
 

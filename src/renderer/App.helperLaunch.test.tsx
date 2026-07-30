@@ -1,10 +1,14 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useContext, useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { CUSTOM_EVENTS } from '../shared/constants';
 import { SessionDeletionContext } from '@/context/SessionDeletionContext';
+import {
+  DEFAULT_GLOBAL_SIDEBAR_PREFERENCE,
+  GLOBAL_SIDEBAR_PREFERENCE_KEY,
+} from '@/utils/globalSidebarPreference';
 
 const mocks = vi.hoisted(() => {
   const project = {
@@ -160,14 +164,25 @@ vi.mock('@/components/CustomTitleBar', () => ({
     children,
     restoreCount = 0,
     onRestoreSession,
+    globalSidebarVisible = false,
+    onGlobalSidebarVisibilityChange,
   }: {
     children: React.ReactNode;
     restoreCount?: number;
     onRestoreSession?: () => void;
+    globalSidebarVisible?: boolean;
+    onGlobalSidebarVisibilityChange?: (isVisible: boolean) => void;
   }) => (
     <div data-testid="titlebar">
       {restoreCount > 0 && (
         <button data-testid="restore-session" onClick={onRestoreSession} />
+      )}
+      {onGlobalSidebarVisibilityChange && (
+        <button
+          data-testid="global-sidebar-visibility-switch"
+          aria-checked={globalSidebarVisible}
+          onClick={() => onGlobalSidebarVisibilityChange(!globalSidebarVisible)}
+        />
       )}
       {children}
     </div>
@@ -367,6 +382,14 @@ vi.mock('@/config/services/agentConfigService', () => ({
 import App from './App';
 
 describe('App helper launch', () => {
+  beforeEach(() => {
+    // Existing sidebar-navigation tests exercise the enabled state explicitly.
+    localStorage.setItem(
+      GLOBAL_SIDEBAR_PREFERENCE_KEY,
+      JSON.stringify({ ...DEFAULT_GLOBAL_SIDEBAR_PREFERENCE, isVisible: true }),
+    );
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -395,6 +418,26 @@ describe('App helper launch', () => {
     mocks.querySessionHasPersistentOwners.mockResolvedValue(false);
     mocks.canRestoreSession.mockResolvedValue(true);
     mocks.resolveBuiltinSelection.mockReturnValue({ provider: mocks.provider, model: 'mimo-v2.5-pro' });
+  });
+
+  it('defaults to a hidden global sidebar and persists titlebar visibility changes', () => {
+    localStorage.clear();
+    render(<App />);
+
+    expect(screen.queryByTestId('global-sidebar')).not.toBeInTheDocument();
+
+    const toggle = screen.getByTestId('global-sidebar-visibility-switch');
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('global-sidebar')).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(GLOBAL_SIDEBAR_PREFERENCE_KEY) ?? '{}')).toMatchObject({
+      isVisible: true,
+    });
+
+    fireEvent.click(screen.getByTestId('global-sidebar-visibility-switch'));
+    expect(screen.queryByTestId('global-sidebar')).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(GLOBAL_SIDEBAR_PREFERENCE_KEY) ?? '{}')).toMatchObject({
+      isVisible: false,
+    });
   });
 
   function managedCodexProvider() {

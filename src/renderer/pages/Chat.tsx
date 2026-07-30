@@ -415,6 +415,8 @@ const SessionTitleEditor = forwardRef<
 });
 
 interface ChatProps {
+  /** Host surface mode: keep the real session while hiding duplicate chrome. */
+  compactAgentSurface?: boolean;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Called when user selects a different session from history - uses Session singleton logic */
@@ -448,7 +450,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ compactAgentSurface = false, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -640,10 +642,14 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
   const titleEditorRef = useRef<SessionTitleEditorHandle>(null);
   const [workspaceLayoutMetrics, setWorkspaceLayoutMetrics] = useState(readWorkspaceLayoutMetrics);
   const isNarrowLayout = workspaceLayoutMetrics.viewportWidthPx < workspaceLayoutMetrics.contentMinWidthPx;
-  // If workspace would render as an overlay at startup, keep it hidden so it
-  // does not block the chat before the user explicitly opens it.
-  const [showWorkspace, setShowWorkspace] = useState(shouldShowWorkspaceByDefault);
-  const [workspacePanelMounted, setWorkspacePanelMounted] = useState(shouldShowWorkspaceByDefault);
+  // Keep an overlay hidden by default. An explicit workspace preference may
+  // override that responsive default, except in the compact Agent surface.
+  const [showWorkspace, setShowWorkspace] = useState(
+    () => !compactAgentSurface && (currentProject?.workspacePanelVisible ?? shouldShowWorkspaceByDefault()),
+  );
+  const [workspacePanelMounted, setWorkspacePanelMounted] = useState(
+    () => !compactAgentSurface && (currentProject?.workspacePanelVisible ?? shouldShowWorkspaceByDefault()),
+  );
   const [workspacePanelMotion, setWorkspacePanelMotion] = useState<'expand' | 'collapse' | null>(null);
   const workspacePanelUnmountTimerRef = useRef<number | null>(null);
   const clearWorkspacePanelUnmountTimer = useCallback(() => {
@@ -667,6 +673,15 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     }, WORKSPACE_PANEL_TRANSITION_MS);
   }, [clearWorkspacePanelUnmountTimer]);
   useEffect(() => clearWorkspacePanelUnmountTimer, [clearWorkspacePanelUnmountTimer]);
+  useEffect(() => {
+    if (compactAgentSurface || currentProject?.workspacePanelVisible === false) {
+      handleCollapseWorkspace();
+      return;
+    }
+    if (currentProject?.workspacePanelVisible === true) {
+      handleExpandWorkspace();
+    }
+  }, [compactAgentSurface, currentProject?.workspacePanelVisible, handleCollapseWorkspace, handleExpandWorkspace]);
   const [showWorkspaceConfig, setShowWorkspaceConfig] = useState(false); // Workspace config panel
   // State to trigger workspace refresh
   const [workspaceRefreshTrigger, setWorkspaceRefreshTrigger] = useState(0);
@@ -4884,7 +4899,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       >
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-chat-conversation>
         {/* Compact header - single row */}
-        <div className="relative z-10 flex h-12 flex-shrink-0 items-center justify-between bg-[var(--paper-elevated)] px-4 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
+        {!compactAgentSurface && <div className="relative z-10 flex h-12 flex-shrink-0 items-center justify-between bg-[var(--paper-elevated)] px-4 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
           <div className="flex min-w-0 items-center gap-2">
             {/* Project name */}
             {agentDir && (
@@ -5003,7 +5018,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               </Tip>
             )}
           </div>
-        </div>
+        </div>}
 
         {/* Content area with relative positioning for floating input */}
         <div
@@ -5188,6 +5203,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               onDismissSystemNotice={handleDismissSystemNotice}
               isStreaming={isLoading || sessionState === 'running' || sessionState === 'starting'}
               sessionState={sessionState}
+              executionMode={compactAgentSurface}
               onRewind={isExternalRuntime ? undefined : handleRewind}
               onRetry={handleRetry}
               onFork={isExternalRuntime ? undefined : handleFork}

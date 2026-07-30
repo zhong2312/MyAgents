@@ -10,6 +10,7 @@ export type NovelWorkbenchDraftDomain =
   | "items"
   | "factions"
   | "narrative"
+  | "manuscript"
   | "cultivation";
 
 export interface NovelWorkbenchDraftSource {
@@ -44,6 +45,7 @@ const DRAFT_ROOTS: Readonly<Record<NovelWorkbenchDraftDomain, string>> = {
   items: "world/items/drafts",
   factions: "world/factions/drafts",
   narrative: "narrative/drafts",
+  manuscript: "manuscript/drafts",
   cultivation: "world/cultivation-drafts",
 };
 

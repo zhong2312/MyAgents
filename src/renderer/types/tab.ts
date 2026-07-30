@@ -7,6 +7,7 @@ import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecuti
 import type { OfficialToolId } from '../../shared/official-tools';
 import type {
     WorkbenchAgentToolsetRequest,
+    WorkbenchAgentCompanionRequest,
     WorkbenchModelSelection,
     WorkbenchTabTarget,
 } from '../../shared/workbench-sdk';
@@ -17,16 +18,18 @@ export interface WorkbenchAgentSurfaceBootstrap {
     readonly promptId?: string;
     readonly historyGroupPath?: readonly string[];
     readonly modelSelection?: WorkbenchModelSelection;
+    readonly companion?: WorkbenchAgentCompanionRequest;
 }
 
 export interface WorkbenchAgentSurfaceState {
-    readonly presentation: 'dialog' | 'dock' | 'hidden';
+    readonly presentation: 'dialog' | 'compact-review' | 'dock' | 'hidden';
     readonly sourceTabId: string;
     readonly workbenchId: string;
     readonly workspacePath: string;
     readonly conversationKey: string;
     readonly historyGroupPath?: readonly string[];
     readonly toolset?: WorkbenchAgentToolsetRequest;
+    readonly companion?: WorkbenchAgentCompanionRequest;
     readonly bootstrap?: WorkbenchAgentSurfaceBootstrap;
 }
 

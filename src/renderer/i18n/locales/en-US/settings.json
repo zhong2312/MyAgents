@@ -697,6 +697,8 @@
     "general": {
       "missingWorkspace": "Workspace configuration not found",
       "basicsTitle": "Basic Settings",
+      "workspacePanelTitle": "Agent workspace panel",
+      "workspacePanelDescription": "Shows workspace files, session history, and Agent capabilities. You can still open it temporarily from the chat header when it is off.",
       "proactiveTitle": "Proactive Agent Mode",
       "proactiveDescription": "Give AI 24/7 awareness and action, and add Channels such as Feishu or DingTalk to interact with you proactively.",
       "enabled": "Proactive Agent Mode enabled",

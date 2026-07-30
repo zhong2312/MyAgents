@@ -12,7 +12,18 @@ export interface OpenWorkbenchRequest {
 
 export const WORKBENCH_AGENT_SESSION_REQUEST_VERSION = 1 as const;
 
-export type WorkbenchAgentSessionPresentation = "tab" | "dialog" | "dock";
+export type WorkbenchAgentSessionPresentation =
+  | "tab"
+  | "dialog"
+  | "dock"
+  | "compact-review";
+
+export interface WorkbenchAgentCompanionRequest {
+  /** Workbench-owned companion renderer id. Unknown ids render a safe fallback. */
+  readonly id: string;
+  /** Small declarative context only; credentials and file contents are forbidden. */
+  readonly context?: Readonly<Record<string, string>>;
+}
 
 export interface WorkbenchAgentToolsetRequest {
   /** Host-recognized toolset id. Unknown ids are rejected before the turn starts. */
@@ -49,6 +60,8 @@ export interface WorkbenchAgentSessionRequest {
    * current workbench while reusing the same Chat/Session implementation.
    */
   readonly presentation?: WorkbenchAgentSessionPresentation;
+  /** Optional workbench-owned surface rendered beside the real Agent conversation. */
+  readonly companion?: WorkbenchAgentCompanionRequest;
   /** Stable task identity used to restore an existing workbench conversation. */
   readonly conversationKey?: string;
   /**

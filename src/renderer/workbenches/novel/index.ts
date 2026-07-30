@@ -64,6 +64,7 @@ const novelWorkbenchDefinition = defineWorkbench(
     shell: {
       defaultNavigationCollapsed: true,
     },
+    loadAgentCompanion: () => import("./ManuscriptAgentCompanion"),
     launcher: {
       createLabel: "新建小说",
       projectTypeLabel: "小说",

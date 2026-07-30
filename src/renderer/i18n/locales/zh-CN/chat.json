@@ -1070,6 +1070,18 @@
       },
       "starting": "AI 启动中…（首次启动可能较慢）",
       "loadingHistory": "加载对话记录…",
+      "execution": {
+        "submitted": "任务已提交",
+        "starting": "正在启动模型会话",
+        "sessionReady": "模型会话已就绪",
+        "waitingFirstResponse": "正在等待模型首个响应",
+        "waitingNextResponse": "正在等待模型下一步响应",
+        "thinking": "正在分析任务",
+        "generating": "正在生成正文",
+        "toolRunning": "正在调用工具：{{name}}",
+        "toolCompleted": "已调用工具：{{name}}",
+        "toolFailed": "工具调用失败：{{name}}"
+      },
       "streaming": {
         "0": "苦思冥想中…",
         "1": "深思熟虑中…",

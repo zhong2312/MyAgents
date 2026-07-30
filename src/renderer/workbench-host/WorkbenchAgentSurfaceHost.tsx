@@ -5,6 +5,7 @@ import {
   ChevronUp,
   ExternalLink,
   GitCompareArrows,
+  GripVertical,
   Loader2,
   Maximize2,
   Minus,
@@ -12,12 +13,14 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { getFolderName, type Tab } from "@/types/tab";
 import DraggableDialogFrame from "@/workbench-sdk/DraggableDialogFrame";
+import { workbenchRegistry } from "@/workbench-registry";
 
 interface WorkbenchAgentSurfaceHostProps {
   readonly surfaces: readonly Tab[];
@@ -37,6 +40,7 @@ const PROPOSAL_REVIEW_MODES = new Set([
   "assist",
   "items",
   "characters",
+  "manuscript",
 ]);
 
 function supportsProposalReview(tab: Tab): boolean {
@@ -81,6 +85,17 @@ export default function WorkbenchAgentSurfaceHost({
     null,
   );
   const [isDockCollapsed, setIsDockCollapsed] = useState(false);
+  const [compactVertical, setCompactVertical] = useState(() =>
+    typeof window === "undefined" ? false : window.innerWidth < 900,
+  );
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 899px)");
+    const update = () => setCompactVertical(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
 
   const visibleSurfaces = useMemo(
     () =>
@@ -94,7 +109,10 @@ export default function WorkbenchAgentSurfaceHost({
     () =>
       [...visibleSurfaces]
         .reverse()
-        .find((tab) => tab.workbenchAgentSurface?.presentation === "dialog"),
+        .find((tab) => {
+          const presentation = tab.workbenchAgentSurface?.presentation;
+          return presentation === "dialog" || presentation === "compact-review";
+        }),
     [visibleSurfaces],
   );
   const taskSurfaces = useMemo(
@@ -124,6 +142,13 @@ export default function WorkbenchAgentSurfaceHost({
         : `${taskSurfaces.length} 个任务`;
 
   const visiblePendingRestart = pendingRestart;
+  const isCompactReview =
+    dialog?.workbenchAgentSurface?.presentation === "compact-review";
+  const companionRequest = dialog?.workbenchAgentSurface?.companion;
+  const AgentCompanion = dialog
+    ? workbenchRegistry.get(dialog.workbenchAgentSurface?.workbenchId ?? "")
+        ?.AgentCompanion
+    : undefined;
 
   useCloseLayer(() => {
     if (visiblePendingRestart) {
@@ -145,7 +170,11 @@ export default function WorkbenchAgentSurfaceHost({
           maximized={maximizedDialogId === dialog.id}
           positioning="container"
           overlayClassName="z-[210]"
-          className="h-[min(720px,calc(100vh-4rem))] max-h-[calc(100%-1.5rem)] w-[min(1040px,calc(100vw-4rem))] max-w-[calc(100%-1.5rem)] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+          className={
+            isCompactReview
+              ? "h-[min(820px,calc(100vh-3rem))] max-h-[calc(100%-1rem)] w-[min(1480px,calc(100vw-3rem))] max-w-[calc(100%-1rem)] max-sm:h-[calc(100vh-1rem)] max-sm:w-[calc(100vw-1rem)]"
+              : "h-[min(720px,calc(100vh-4rem))] max-h-[calc(100%-1.5rem)] w-[min(1040px,calc(100vw-4rem))] max-w-[calc(100%-1.5rem)] max-sm:h-[calc(100vh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]"
+          }
           headerClassName="flex h-11 items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-3"
           header={
             <>
@@ -158,6 +187,17 @@ export default function WorkbenchAgentSurfaceHost({
                 </strong>
               </div>
               <SurfaceStatus tab={dialog} />
+              {supportsProposalReview(dialog) && (
+                <button
+                  type="button"
+                  aria-label="打开候选审阅"
+                  title="审阅候选"
+                  onClick={() => onReview(dialog.id)}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                >
+                  <GitCompareArrows className="h-4 w-4" />
+                </button>
+              )}
               {dialog.workbenchAgentSurface?.bootstrap && (
                 <button
                   type="button"
@@ -229,8 +269,70 @@ export default function WorkbenchAgentSurfaceHost({
             </>
           }
         >
-          <div className="relative min-h-0 flex-1">
-            {dialog.view === "chat" ? (
+          <div className="relative min-h-0 flex-1 bg-[var(--paper)]">
+            {isCompactReview ? (
+              <Group
+                id={`workbench-agent-review-${dialog.id}`}
+                orientation={compactVertical ? "vertical" : "horizontal"}
+                className="h-full min-h-0"
+              >
+                <Panel
+                  id="agent-conversation"
+                  defaultSize={compactVertical ? "42%" : "38%"}
+                  minSize={compactVertical ? "180px" : "320px"}
+                  maxSize={compactVertical ? "70%" : "58%"}
+                >
+                  <section
+                    aria-label="AI 执行过程"
+                    className="relative h-full min-h-0 overflow-hidden border-[var(--line)] max-[899px]:border-b min-[900px]:border-r"
+                  >
+                    {dialog.view === "chat" ? (
+                      renderSurface(dialog, true)
+                    ) : (
+                      <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        正在启动 Agent 会话
+                      </div>
+                    )}
+                  </section>
+                </Panel>
+                <Separator
+                  id="agent-review-separator"
+                  aria-label="调整执行过程与正文审阅的宽度"
+                  className="group relative z-10 flex w-2 items-center justify-center bg-[var(--paper-inset)] outline-none transition-colors hover:bg-[var(--accent-cool-subtle)] focus-visible:bg-[var(--accent-cool-subtle)] max-[899px]:h-2 max-[899px]:w-full"
+                >
+                  <span className="flex h-7 w-4 items-center justify-center rounded-sm border border-[var(--line)] bg-[var(--paper-elevated)] text-[var(--ink-subtle)] shadow-sm max-[899px]:h-4 max-[899px]:w-7">
+                    <GripVertical className="h-3 w-3 max-[899px]:rotate-90" />
+                  </span>
+                </Separator>
+                <Panel id="workbench-review" minSize={compactVertical ? "220px" : "420px"}>
+                  <section aria-label="正文差异审阅" className="h-full min-h-0 overflow-hidden">
+                    {AgentCompanion && companionRequest ? (
+                      <Suspense
+                        fallback={
+                          <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            正在载入审阅区
+                          </div>
+                        }
+                      >
+                        <AgentCompanion
+                          workspacePath={dialog.workbenchAgentSurface?.workspacePath ?? ""}
+                          conversationKey={dialog.workbenchAgentSurface?.conversationKey ?? ""}
+                          companionId={companionRequest.id}
+                          context={companionRequest.context ?? {}}
+                          isAgentRunning={dialog.isGenerating === true}
+                        />
+                      </Suspense>
+                    ) : (
+                      <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[var(--ink-muted)]">
+                        当前工作台没有提供此审阅面板
+                      </div>
+                    )}
+                  </section>
+                </Panel>
+              </Group>
+            ) : dialog.view === "chat" ? (
               renderSurface(dialog, true)
             ) : (
               <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">

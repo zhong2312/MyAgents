@@ -84,6 +84,20 @@ describe('CustomTitleBar — 恢复对话 pill (Issue #309)', () => {
         expect(onRestoreSession).toHaveBeenCalledTimes(1);
     });
 
+    it('reports global sidebar visibility changes through an accessible switch', () => {
+        const onGlobalSidebarVisibilityChange = vi.fn();
+        renderBar({
+            globalSidebarVisible: false,
+            onGlobalSidebarVisibilityChange,
+        });
+
+        const toggle = screen.getByRole('switch', { name: '显示全局侧边栏' });
+        expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+        fireEvent.click(toggle);
+        expect(onGlobalSidebarVisibilityChange).toHaveBeenCalledWith(true);
+    });
+
     it('keeps explicit draggable regions around and between titlebar actions', () => {
         const { container } = renderBar({ restoreCount: 0 });
         const tauriDragRegions = Array.from(container.querySelectorAll('[data-tauri-drag-region]'));

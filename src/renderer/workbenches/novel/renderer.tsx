@@ -65,7 +65,10 @@ import type { NarrativeAiAgentRequest } from "./narrativeAi";
 import InspirationStudio from "./InspirationStudio";
 import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
-import ManuscriptStudio from "./ManuscriptStudio";
+import ManuscriptStudio, {
+  type ManuscriptAiAgentRequest,
+} from "./ManuscriptStudio";
+import { createManuscriptAiSettingsRepository } from "./manuscriptAiSettingsRepository";
 import {
   createNovelSettingLibraryRepository,
   type LoadedSettingLibrary,
@@ -1656,6 +1659,53 @@ ${JSON.stringify(injectedContext, null, 2)}
                       ...(modelSelection ? { modelSelection } : {}),
                     })
                   ).output;
+                }
+              : undefined
+          }
+          onOpenAiAgent={
+            context.agentSessions.isAvailable
+              ? async (request: ManuscriptAiAgentRequest) => {
+                  const [modelSelection, manuscriptAiSettings] =
+                    await Promise.all([
+                      resolveSceneModelSelection(request.sceneId),
+                      createManuscriptAiSettingsRepository(
+                        context.storage,
+                      ).load(),
+                    ]);
+                  await context.agentSessions.open({
+                    version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+                    title: request.title,
+                    promptId: `novel.${request.sceneId}`,
+                    initialMessage: request.initialMessage,
+                    presentation:
+                      manuscriptAiSettings.settings.presentation ===
+                      "compact-review"
+                        ? "compact-review"
+                        : "dialog",
+                    conversationKey: request.conversationKey,
+                    historyGroupPath: ["正文", request.chapterTitle],
+                    forceNew: true,
+                    toolset: {
+                      id: "novel-world",
+                      context: {
+                        mode: "manuscript",
+                        promptId: `novel.${request.sceneId}`,
+                        promptVersion: "1.0.0",
+                        runId: request.runId,
+                        chapterId: request.chapterId,
+                        sceneId: request.sceneId,
+                      },
+                    },
+                    companion: {
+                      id: "manuscript-review",
+                      context: {
+                        runId: request.runId,
+                        chapterId: request.chapterId,
+                        sceneId: request.sceneId,
+                      },
+                    },
+                    ...(modelSelection ? { modelSelection } : {}),
+                  });
                 }
               : undefined
           }

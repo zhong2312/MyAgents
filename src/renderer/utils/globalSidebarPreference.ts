@@ -7,6 +7,7 @@ export type GlobalSidebarPreferredMode = 'expanded' | 'rail';
 
 export interface GlobalSidebarPreferenceV1 {
   version: 1;
+  isVisible: boolean;
   preferredMode: GlobalSidebarPreferredMode;
   expandedWorkspaceKeys: string[];
   hasSeededDefaultExpansion: boolean;
@@ -16,6 +17,7 @@ export interface GlobalSidebarPreferenceV1 {
 
 export const DEFAULT_GLOBAL_SIDEBAR_PREFERENCE: GlobalSidebarPreferenceV1 = {
   version: 1,
+  isVisible: false,
   preferredMode: 'expanded',
   expandedWorkspaceKeys: [],
   hasSeededDefaultExpansion: false,
@@ -44,6 +46,9 @@ export function parseGlobalSidebarPreference(value: unknown): GlobalSidebarPrefe
 
   return {
     version: 1,
+    // V1 preferences written before the visibility control are upgraded to the
+    // new default: keep the global sidebar closed until the user opts in.
+    isVisible: value.isVisible === true,
     preferredMode: value.preferredMode,
     expandedWorkspaceKeys: normalizeWorkspaceKeys(value.expandedWorkspaceKeys),
     hasSeededDefaultExpansion: value.hasSeededDefaultExpansion,

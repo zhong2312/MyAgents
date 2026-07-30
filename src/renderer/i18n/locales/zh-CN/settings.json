@@ -697,6 +697,8 @@
     "general": {
       "missingWorkspace": "未找到工作区配置",
       "basicsTitle": "基础设置",
+      "workspacePanelTitle": "Agent 工作区侧栏",
+      "workspacePanelDescription": "显示工作区文件、会话历史与 Agent 能力。关闭后仍可在聊天顶部临时打开。",
       "proactiveTitle": "主动 Agent 模式",
       "proactiveDescription": "启用后让 AI 具备 24 小时感知与行动能力，可添加聊天机器人（如飞书、钉钉）主动与你互动。",
       "enabled": "主动 Agent 模式已开启",

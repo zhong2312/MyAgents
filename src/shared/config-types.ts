@@ -512,6 +512,11 @@ export interface Project {
   icon?: string;
   /** Custom display name, defaults to folder name extracted from path */
   displayName?: string;
+  /**
+   * Whether the Agent workspace panel (files, history, and capabilities) is
+   * visible when a chat opens. Undefined preserves the responsive default.
+   */
+  workspacePanelVisible?: boolean;
   /** Whether this workspace has been upgraded to an Agent (v0.1.41) */
   isAgent?: boolean;
   /** Associated Agent ID when isAgent=true (v0.1.41) */

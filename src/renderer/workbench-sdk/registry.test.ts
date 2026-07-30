@@ -74,6 +74,20 @@ describe("WorkbenchRegistry", () => {
     expect(Object.isFrozen(definition.shell)).toBe(true);
   });
 
+  it("registers a lazy Agent companion without importing workbench UI into the host", () => {
+    const definition = defineWorkbench(manifest, load, {
+      loadAgentCompanion: async () => ({ default: () => null }),
+    });
+
+    const registration = createWorkbenchRegistry([definition], {
+      major: 1,
+      minor: 0,
+    }).get(manifest.id);
+
+    expect(registration?.AgentCompanion).toBeDefined();
+    expect(registration?.definition.loadAgentCompanion).toBeDefined();
+  });
+
   it("rejects duplicate ids before the app starts", () => {
     const definition = defineWorkbench(manifest, load);
     expect(() => createWorkbenchRegistry([definition, definition])).toThrow(

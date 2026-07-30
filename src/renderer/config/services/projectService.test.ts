@@ -104,6 +104,19 @@ describe('applyProjectPatch', () => {
 
     expect(patched).not.toHaveProperty('pinnedAt');
   });
+
+  it('persists the workspace panel visibility preference independently of other project fields', () => {
+    const hidden = applyProjectPatch(project({ displayName: 'A workspace' }), {
+      workspacePanelVisible: false,
+    });
+    const visible = applyProjectPatch(hidden, { workspacePanelVisible: true });
+
+    expect(hidden).toMatchObject({
+      displayName: 'A workspace',
+      workspacePanelVisible: false,
+    });
+    expect(visible.workspacePanelVisible).toBe(true);
+  });
 });
 
 describe('project archive intents', () => {

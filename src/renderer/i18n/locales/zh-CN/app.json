@@ -58,6 +58,8 @@
     "restartAndUpdate": "重启并更新",
     "installing": "安装中…",
     "restartUpdate": "重启更新",
+    "showGlobalSidebar": "显示全局侧边栏",
+    "hideGlobalSidebar": "隐藏全局侧边栏",
     "minimize": "最小化",
     "maximize": "最大化",
     "restoreWindow": "还原",

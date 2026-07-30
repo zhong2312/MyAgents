@@ -19,5 +19,8 @@ export function defineWorkbench(
     load,
     ...(launcher ? { launcher } : {}),
     ...(shell ? { shell } : {}),
+    ...(options.loadAgentCompanion
+      ? { loadAgentCompanion: options.loadAgentCompanion }
+      : {}),
   });
 }

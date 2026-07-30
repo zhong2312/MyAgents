@@ -39,6 +39,20 @@ describe('globalSidebarPreference', () => {
     });
   });
 
+  it('defaults a persisted pre-visibility preference to a hidden sidebar', () => {
+    const legacyPreference = {
+      version: 1,
+      preferredMode: 'expanded',
+      expandedWorkspaceKeys: [],
+      hasSeededDefaultExpansion: false,
+      showAutomationSessions: false,
+      sessionView: 'all',
+    };
+
+    expect(DEFAULT_GLOBAL_SIDEBAR_PREFERENCE.isVisible).toBe(false);
+    expect(parseGlobalSidebarPreference(legacyPreference)?.isVisible).toBe(false);
+  });
+
   it('seeds only a valid default workspace and never reseeds after user ownership', () => {
     const untouched = seedDefaultWorkspaceExpansion(
       DEFAULT_GLOBAL_SIDEBAR_PREFERENCE,

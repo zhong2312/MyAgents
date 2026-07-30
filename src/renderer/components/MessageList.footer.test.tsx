@@ -75,6 +75,49 @@ describe('MessageList footer status positioning', () => {
     if (!spacer) throw new Error('expected footer spacer');
     expect(spacer).toHaveStyle({ height: '193px' });
     expect(row.compareDocumentPosition(spacer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelector('[data-agent-execution-trace]')).not.toBeInTheDocument();
+  });
+
+  it('shows the real first-response wait in execution mode instead of random streaming copy', () => {
+    renderList({
+      isLoading: true,
+      executionMode: true,
+      sessionState: 'running',
+    });
+
+    const trace = document.querySelector('[data-agent-execution-trace]');
+    expect(trace).toBeInTheDocument();
+    expect(trace).toHaveTextContent('正在等待模型首个响应');
+    expect(trace).not.toHaveTextContent('灵光一闪中');
+    expect(document.querySelector('[data-chat-status-row]')).not.toBeInTheDocument();
+  });
+
+  it('reflects an active tool from the streaming message in execution mode', () => {
+    const streamingMessage: MessageType = {
+      id: 'streaming-tool',
+      role: 'assistant',
+      content: [{
+        type: 'tool_use',
+        tool: {
+          id: 'read-setting',
+          name: 'Read',
+          input: {},
+          streamIndex: 0,
+          isLoading: true,
+        },
+      }],
+      timestamp: new Date(),
+    };
+    renderList({
+      messages: [msg('h1', 'hello', 'user'), streamingMessage],
+      streamingMessage,
+      isLoading: true,
+      executionMode: true,
+      sessionState: 'running',
+    });
+
+    const trace = document.querySelector('[data-agent-execution-trace]');
+    expect(trace).toHaveTextContent('正在调用工具：Read');
   });
 
   it('uses the same footer slot for idle system notices', () => {

@@ -131,6 +131,10 @@ import {
 } from '../shared/session-origin';
 import { buildRuntimeBackedInitialSessionBirth } from '@/utils/providerSwitchSessionBirth';
 import { resolveGlobalSidebarWorkspace } from '@/utils/globalSidebarProjection';
+import {
+  loadGlobalSidebarPreference,
+  saveGlobalSidebarPreference,
+} from '@/utils/globalSidebarPreference';
 
 // ============================================================
 // User Support Prompt Builder
@@ -491,6 +495,7 @@ export const MemoizedTabContent = memo(function TabContent({
         >
           <Suspense fallback={<ChatBootOverlay />}>
             <Chat
+              compactAgentSurface={tab.workbenchAgentSurface?.presentation === 'compact-review'}
               onSwitchSession={(sessionId, historyEntrySource) => onSwitchSession(tab.id, sessionId, historyEntrySource)}
               onOpenSessionInNewTab={(sessionId, title) => onOpenSessionInNewTab(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
               onNewSession={() => onNewSession(tab.id)}
@@ -546,6 +551,19 @@ export const MemoizedTabContent = memo(function TabContent({
 
 export default function App() {
   const { t } = useTranslation('app');
+  const [isGlobalSidebarVisible, setIsGlobalSidebarVisible] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return loadGlobalSidebarPreference(window.localStorage).isVisible;
+  });
+
+  const handleGlobalSidebarVisibilityChange = useCallback((isVisible: boolean) => {
+    if (typeof window !== 'undefined') {
+      const preference = loadGlobalSidebarPreference(window.localStorage);
+      saveGlobalSidebarPreference(window.localStorage, { ...preference, isVisible });
+    }
+    setIsGlobalSidebarVisible(isVisible);
+  }, []);
+
   // Auto-update state (silent background updates)
   const { updateReady, updateVersion, restartAndUpdate, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, preparing: updatePreparing, checkForUpdate, pendingUpdateOnStartup, dismissPendingUpdate } = useUpdater();
 
@@ -3757,8 +3775,12 @@ export default function App() {
     request: WorkbenchAgentSessionRequest,
   ) => {
     const presentation = request.presentation ?? 'tab';
-    const isSurfacePresentation = presentation === 'dialog' || presentation === 'dock';
-    const surfacePresentation = presentation === 'dock' ? 'dock' as const : 'dialog' as const;
+    const isSurfacePresentation = presentation !== 'tab';
+    const surfacePresentation = presentation === 'dock'
+      ? 'dock' as const
+      : presentation === 'compact-review'
+        ? 'compact-review' as const
+        : 'dialog' as const;
     const sourceTabId = activeTabIdRef.current;
     const sourceTab = tabsRef.current.find((tab) => tab.id === sourceTabId);
     const workbenchId = sourceTab?.workbench?.workbenchId;
@@ -3778,6 +3800,7 @@ export default function App() {
       ...(request.promptId ? { promptId: request.promptId } : {}),
       ...(historyGroupPath ? { historyGroupPath } : {}),
       ...(request.modelSelection ? { modelSelection: request.modelSelection } : {}),
+      ...(request.companion ? { companion: request.companion } : {}),
     };
     const matchesConversation = (tab: Tab): boolean =>
       tab.workbenchAgentSurface?.workbenchId === workbenchId &&
@@ -3823,7 +3846,7 @@ export default function App() {
                   ...tab.workbenchAgentSurface,
                   presentation: tab.id === existing.id
                     ? surfacePresentation
-                    : presentation === 'dialog' && tab.workbenchAgentSurface.sourceTabId === sourceTabId
+                    : presentation !== 'dock' && tab.workbenchAgentSurface.sourceTabId === sourceTabId
                       ? 'dock'
                       : tab.workbenchAgentSurface.presentation,
                 },
@@ -3850,6 +3873,7 @@ export default function App() {
                   presentation: surfacePresentation,
                   sourceTabId,
                   toolset: request.toolset,
+                  companion: request.companion,
                   bootstrap: surfaceBootstrap,
                   ...(historyGroupPath ? { historyGroupPath } : {}),
                 },
@@ -3949,6 +3973,7 @@ export default function App() {
         conversationKey,
         ...(historyGroupPath ? { historyGroupPath } : {}),
         toolset: request.toolset,
+        companion: request.companion,
         bootstrap: surfaceBootstrap,
       },
     } : {};
@@ -3980,11 +4005,12 @@ export default function App() {
                 conversationKey,
                 ...(historyGroupPath ? { historyGroupPath } : {}),
                 toolset: request.toolset,
+                companion: request.companion,
                 bootstrap: surfaceBootstrap,
               },
             } : {}),
           }
-          : presentation === 'dialog' && tab.workbenchAgentSurface?.sourceTabId === sourceTabId
+          : presentation !== 'dock' && tab.workbenchAgentSurface?.sourceTabId === sourceTabId
             ? { ...tab, workbenchAgentSurface: { ...tab.workbenchAgentSurface, presentation: 'dock' } }
             : tab,
         );
@@ -4679,12 +4705,13 @@ export default function App() {
       version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
       title: surface.bootstrap.title,
       initialMessage: surface.bootstrap.initialMessage,
-      presentation: 'dialog',
+      presentation: surface.companion ? 'compact-review' : 'dialog',
       conversationKey: surface.conversationKey,
       forceNew: true,
       ...(surface.bootstrap.promptId ? { promptId: surface.bootstrap.promptId } : {}),
       ...(surface.bootstrap.historyGroupPath ? { historyGroupPath: surface.bootstrap.historyGroupPath } : {}),
       ...(surface.bootstrap.modelSelection ? { modelSelection: surface.bootstrap.modelSelection } : {}),
+      ...(surface.bootstrap.companion ? { companion: surface.bootstrap.companion } : {}),
       ...(surface.toolset ? { toolset: surface.toolset } : {}),
     };
     clearWorkbenchAgentConversation(surface.workbenchId, surface.workspacePath, surface.conversationKey);
@@ -4704,6 +4731,21 @@ export default function App() {
     if (!surface) return;
     if (tabsRef.current.some((tab) => tab.id === surface.sourceTabId)) {
       setActiveTabId(surface.sourceTabId);
+    }
+    if (surface.companion) {
+      setTabs((current) => current.map((tab) =>
+        tab.id === tabId && tab.workbenchAgentSurface
+          ? {
+            ...tab,
+            hasUnread: false,
+            workbenchAgentSurface: {
+              ...tab.workbenchAgentSurface,
+              presentation: 'compact-review',
+            },
+          }
+          : tab,
+      ));
+      return;
     }
     const mode = surface.toolset?.context?.mode;
     const action = mode === 'items'
@@ -4733,21 +4775,23 @@ export default function App() {
     <SessionDeletionContext.Provider value={handleDeleteSession}>
     <LinkContextMenuProvider>
     <div className="flex h-screen bg-[var(--paper)]">
-      <GlobalSidebar
-        tabs={chromeTabs}
-        activeTab={activeTab}
-        activeWorkspacePath={activeWorkspacePath}
-        sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
-        teamSpaceAvailable={teamSpaceAvailable}
-        onNewTab={handleNewTab}
-        onOpenTaskCenter={handleOpenTaskCenter}
-        onOpenSpace={handleOpenSpace}
-        onOpenCapabilities={handleOpenCapabilities}
-        onOpenSettings={handleOpenGeneralSettings}
-        onOpenBugReport={handleOpenBugReport}
-        onOpenWorkspace={handleOpenWorkspaceFromSidebar}
-        onOpenSession={handleOpenSidebarSession}
-      />
+      {isGlobalSidebarVisible && (
+        <GlobalSidebar
+          tabs={chromeTabs}
+          activeTab={activeTab}
+          activeWorkspacePath={activeWorkspacePath}
+          sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
+          teamSpaceAvailable={teamSpaceAvailable}
+          onNewTab={handleNewTab}
+          onOpenTaskCenter={handleOpenTaskCenter}
+          onOpenSpace={handleOpenSpace}
+          onOpenCapabilities={handleOpenCapabilities}
+          onOpenSettings={handleOpenGeneralSettings}
+          onOpenBugReport={handleOpenBugReport}
+          onOpenWorkspace={handleOpenWorkspaceFromSidebar}
+          onOpenSession={handleOpenSidebarSession}
+        />
+      )}
       <div className="flex min-w-0 flex-1 flex-col" data-tab-workspace>
       {/* Chrome-style titlebar with tabs */}
       <CustomTitleBar
@@ -4759,6 +4803,8 @@ export default function App() {
         restoreCount={restorePillCount}
         onRestoreSession={handleRestoreLastSession}
         onDismissRestore={handleDismissRestore}
+        globalSidebarVisible={isGlobalSidebarVisible}
+        onGlobalSidebarVisibilityChange={handleGlobalSidebarVisibilityChange}
       >
         <TabBar
           tabs={chromeTabs}
@@ -4881,7 +4927,12 @@ export default function App() {
               ? {
                 ...tab,
                 hasUnread: false,
-                workbenchAgentSurface: { ...tab.workbenchAgentSurface, presentation: 'dialog' },
+                workbenchAgentSurface: {
+                  ...tab.workbenchAgentSurface,
+                  presentation: tab.workbenchAgentSurface.companion
+                    ? 'compact-review'
+                    : 'dialog',
+                },
               }
               : tab,
             ));

@@ -117,6 +117,16 @@ export interface ManuscriptAiRunRequest {
   readonly systemPrompt?: string;
 }
 
+export interface ManuscriptAiAgentRequest {
+  readonly sceneId: NovelModelSceneId;
+  readonly title: string;
+  readonly initialMessage: string;
+  readonly conversationKey: string;
+  readonly runId: string;
+  readonly chapterId: string;
+  readonly chapterTitle: string;
+}
+
 interface ManuscriptStudioProps {
   readonly storage: WorkbenchStorage;
   readonly project: LoadedNovelProject;
@@ -167,6 +177,9 @@ interface ManuscriptStudioProps {
     expectedContent: string,
   ) => Promise<void>;
   readonly onAiRun?: (request: ManuscriptAiRunRequest) => Promise<string>;
+  readonly onOpenAiAgent?: (
+    request: ManuscriptAiAgentRequest,
+  ) => Promise<void>;
   readonly onAdoptSimulation: (input: {
     readonly title: string;
     readonly description: string;
@@ -2380,6 +2393,7 @@ export default function ManuscriptStudio({
   onRestoreChapter,
   onSaveChapter,
   onAiRun,
+  onOpenAiAgent,
   onAdoptSimulation,
   onOpenNarrative,
   onOpenModelSettings,
@@ -2867,7 +2881,8 @@ export default function ManuscriptStudio({
   };
 
   const runWritingAi = async (mode: WritingAiMode, instruction = "") => {
-    if (!selectedChapter || !onAiRun || aiMode) return;
+    if (!selectedChapter || (!onOpenAiAgent && !onAiRun) || aiMode) return;
+    if (dirty && !(await saveCurrent())) return;
     const requestChapterId = selectedChapter.id;
     const sourceContent = draft;
     const hasSelection = selection.end > selection.start;
@@ -2895,6 +2910,51 @@ export default function ManuscriptStudio({
     setAiMode(mode);
     setError(null);
     try {
+      const runId = `manuscript-${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+      if (onOpenAiAgent) {
+        await onOpenAiAgent({
+          sceneId,
+          title: `${selectedChapter.title} · ${actionLabel}`,
+          conversationKey: `${selectedChapter.id}.${mode}.${runId}`,
+          runId,
+          chapterId: selectedChapter.id,
+          chapterTitle: selectedChapter.title,
+          initialMessage: [
+            "你是 MyAgents 小说工作台的正文写作 Agent。",
+            `本次任务：${actionLabel}`,
+            `runId：${runId}`,
+            `章节 ID：${selectedChapter.id}`,
+            `章节标题：${selectedChapter.title}`,
+            `处理模式：${mode}`,
+            `处理范围：${range.start}..${range.end}`,
+            selectedPlan
+              ? `关联章节计划：${selectedPlan.title}\n${selectedPlan.description}`
+              : "关联章节计划：无",
+            creativeBrief ? `作者选定的创作指令：${creativeBrief}` : "",
+            instruction ? `本次专项要求：${instruction}` : "",
+            target ? `作者当前选中的文本：\n${target}` : "",
+            `执行规则：
+1. 必须先调用 novel_manuscript_get_context，传 chapterId=${selectedChapter.id}，取得当前章节全文与 sourceHash；不得猜测正文。
+2. 根据实际需要调用人物、时间线、物品、势力、世界架构、剧情工程、修炼体系和连续性只读工具；只读取完成本次写作所需的上下文，不要机械遍历。
+3. 使用 novel_manuscript_create_draft 创建草稿，runId 必须为 ${runId}，chapterId 必须为 ${selectedChapter.id}，mode 必须为 ${mode}，rangeStart/rangeEnd 必须为 ${range.start}/${range.end}，baseSourceHash 使用第一步返回值。
+4. 完成正文后调用 novel_manuscript_upsert_candidate。候选只包含处理范围的替换或插入文本，不要解释，不要 Markdown 代码围栏。
+5. 依次调用 novel_manuscript_validate_draft、novel_manuscript_submit_draft 和 novel_manuscript_get_proposal_status。工具只会提交候选，不能直接改正文。
+6. 严格服从已有设定、章节计划和正文事实；保留人物声口，避免模板腔和机械工整感。sourceHash 冲突时停止并说明正文已变化，不得改用原始文件工具。`,
+            mode === "expand"
+              ? "扩写重点：补足动作、感官、对话和因果，但不得推进到章节计划之外。"
+              : "",
+            mode === "revise"
+              ? "润色重点：保留事实、情节与人物声口，提升节奏和自然度。"
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        });
+        return;
+      }
+      if (!onAiRun) return;
       const output = await onAiRun({
         sceneId,
         label: `${selectedChapter.title} · ${actionLabel}`,
@@ -4084,7 +4144,7 @@ export default function ManuscriptStudio({
                     <button
                       type="button"
                       onClick={() => void runWritingAi("generate")}
-                      disabled={!onAiRun || Boolean(aiMode)}
+                      disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
                       title="生成完整正文"
                     >
                       <Sparkles className="h-3.5 w-3.5" /> 完整生成
@@ -4092,7 +4152,7 @@ export default function ManuscriptStudio({
                     <button
                       type="button"
                       onClick={() => void runWritingAi("continue")}
-                      disabled={!onAiRun || Boolean(aiMode)}
+                      disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
                       title="从光标处续写"
                     >
                       <PenLine className="h-3.5 w-3.5" /> 续写
@@ -4100,7 +4160,7 @@ export default function ManuscriptStudio({
                     <button
                       type="button"
                       onClick={() => void runWritingAi("revise")}
-                      disabled={!onAiRun || Boolean(aiMode)}
+                      disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
                       title="润色选区；无选区时处理全文"
                     >
                       <WandSparkles className="h-3.5 w-3.5" /> 润色
@@ -4108,7 +4168,7 @@ export default function ManuscriptStudio({
                     <button
                       type="button"
                       onClick={() => void runWritingAi("expand")}
-                      disabled={!onAiRun || Boolean(aiMode)}
+                      disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
                       title="扩写选区；无选区时处理全文"
                     >
                       <Maximize2 className="h-3.5 w-3.5" /> 扩写
@@ -4395,14 +4455,14 @@ export default function ManuscriptStudio({
                       <button
                         type="button"
                         onClick={() => void runWritingAi("revise")}
-                        disabled={!onAiRun || Boolean(aiMode)}
+                        disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
                       >
                         润色
                       </button>
                       <button
                         type="button"
                         onClick={() => void runWritingAi("expand")}
-                        disabled={!onAiRun || Boolean(aiMode)}
+                        disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
                       >
                         扩写
                       </button>
@@ -4414,7 +4474,7 @@ export default function ManuscriptStudio({
                             "完全重写选区的表达与动作组织，但保持所有事实、人物意图和结果不变。",
                           )
                         }
-                        disabled={!onAiRun || Boolean(aiMode)}
+                        disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
                       >
                         重写
                       </button>

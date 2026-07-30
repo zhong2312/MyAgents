@@ -11,6 +11,18 @@ import type {
   WorkbenchStorage,
 } from "../../shared/workbench-sdk";
 
+export interface WorkbenchAgentCompanionProps {
+  readonly workspacePath: string;
+  readonly conversationKey: string;
+  readonly companionId: string;
+  readonly context: Readonly<Record<string, string>>;
+  readonly isAgentRunning: boolean;
+}
+
+export interface WorkbenchAgentCompanionModule {
+  readonly default: ComponentType<WorkbenchAgentCompanionProps>;
+}
+
 export interface WorkbenchAgentSessions {
   readonly isAvailable: boolean;
   open(request: WorkbenchAgentSessionRequest): Promise<void>;
@@ -91,9 +103,11 @@ export interface WorkbenchDefinition {
   readonly load: () => Promise<WorkbenchRendererModule>;
   readonly launcher?: WorkbenchLauncherContribution;
   readonly shell?: WorkbenchShellContribution;
+  readonly loadAgentCompanion?: () => Promise<WorkbenchAgentCompanionModule>;
 }
 
 export interface WorkbenchDefinitionOptions {
   readonly launcher?: WorkbenchLauncherContribution;
   readonly shell?: WorkbenchShellContribution;
+  readonly loadAgentCompanion?: () => Promise<WorkbenchAgentCompanionModule>;
 }
