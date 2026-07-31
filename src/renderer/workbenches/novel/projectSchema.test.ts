@@ -299,10 +299,13 @@ describe("novel project schema", () => {
       }),
     );
 
-    expect(index.schemaVersion).toBe(3);
+    expect(index.schemaVersion).toBe(4);
     expect(index.chapters.map((chapter) => chapter.displayNumber)).toEqual([
       1, 1, 2, 2,
     ]);
+    expect(
+      index.chapters.every((chapter) => chapter.planningMode === "reference"),
+    ).toBe(true);
   });
 
   it("allows matching display numbers across scopes but not within one scope", () => {

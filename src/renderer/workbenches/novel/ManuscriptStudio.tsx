@@ -48,10 +48,14 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
+  lazy,
   useMemo,
   useRef,
   useState,
+  Suspense,
   type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 
@@ -109,6 +113,12 @@ import {
   type ManuscriptTypography,
   type NovelChapterStatus,
 } from "./projectSchema";
+import type {
+  ManuscriptVersionRecord,
+  ManuscriptVersionSettings,
+} from "./manuscriptVersionSchema";
+
+const DiffViewer = lazy(() => import("@/workbench-sdk/DiffViewer"));
 
 export interface ManuscriptAiRunRequest {
   readonly sceneId: NovelModelSceneId;
@@ -176,10 +186,29 @@ interface ManuscriptStudioProps {
     content: string,
     expectedContent: string,
   ) => Promise<void>;
-  readonly onAiRun?: (request: ManuscriptAiRunRequest) => Promise<string>;
-  readonly onOpenAiAgent?: (
-    request: ManuscriptAiAgentRequest,
+  readonly onLoadManuscriptVersions: (
+    chapterId: string,
+  ) => Promise<readonly ManuscriptVersionRecord[]>;
+  readonly onLoadManuscriptVersionSettings: () => Promise<ManuscriptVersionSettings>;
+  readonly onSaveManuscriptVersionLimit: (maxVersions: number) => Promise<void>;
+  readonly onRestoreManuscriptVersion: (
+    chapterId: string,
+    versionId: string,
   ) => Promise<void>;
+  readonly onExtractChaptersToNarrative: (input: {
+    readonly extractions: readonly {
+      readonly chapterId: string;
+      readonly targetNarrativeChapterId: string | null;
+      readonly title: string;
+      readonly description: string;
+      readonly sections: readonly {
+        readonly title: string;
+        readonly description: string;
+      }[];
+    }[];
+  }) => Promise<void>;
+  readonly onAiRun?: (request: ManuscriptAiRunRequest) => Promise<string>;
+  readonly onOpenAiAgent?: (request: ManuscriptAiAgentRequest) => Promise<void>;
   readonly onAdoptSimulation: (input: {
     readonly title: string;
     readonly description: string;
@@ -220,12 +249,24 @@ interface TextSelection {
   readonly end: number;
 }
 
+interface SelectionToolbarPosition {
+  readonly left: number;
+  readonly top: number;
+}
+
 interface AiCandidate {
   readonly mode: WritingAiMode;
   readonly start: number;
   readonly end: number;
   readonly content: string;
   readonly sourceContent: string;
+  readonly quickSelection: boolean;
+  readonly anchor: SelectionToolbarPosition | null;
+}
+
+interface SelectionAiLoading {
+  readonly mode: WritingAiMode;
+  readonly anchor: SelectionToolbarPosition;
 }
 
 interface RoomScheme {
@@ -266,6 +307,13 @@ interface RoomAgentResult {
   readonly error?: string;
 }
 
+interface BrainstormSchemeOption {
+  readonly key: string;
+  readonly agent: number;
+  readonly role: string;
+  readonly scheme: RoomScheme;
+}
+
 interface RoomAgentConfig {
   readonly agent: number;
   readonly enabled: boolean;
@@ -281,6 +329,7 @@ interface RoomWorkspaceProps {
   readonly chapterPlan:
     | LoadedNovelProject["narrative"]["library"]["chapters"][number]
     | undefined;
+  readonly planningMode: LoadedNovelChapter["planningMode"] | undefined;
   readonly manuscriptContent: string;
   readonly enabled: boolean;
   readonly onRun: (request: ManuscriptAiRunRequest) => Promise<string>;
@@ -322,6 +371,16 @@ interface QualityReview {
   readonly passed: readonly string[];
 }
 
+interface NarrativeExtractionDraft {
+  readonly chapterId: string;
+  readonly title: string;
+  readonly description: string;
+  readonly sections: readonly {
+    readonly title: string;
+    readonly description: string;
+  }[];
+}
+
 interface ContextManifestSource {
   readonly id: string;
   readonly title: string;
@@ -345,6 +404,12 @@ const TRACKING_LABELS: Record<LoadedNovelChapter["trackingStatus"], string> = {
   stale: "正文已变化",
   failed: "同步失败",
 };
+
+const PLANNING_MODE_LABELS: Record<LoadedNovelChapter["planningMode"], string> =
+  {
+    reference: "参考大纲",
+    detached: "脱纲创作",
+  };
 
 const DIRECTORY_KIND_LABELS: Record<ManuscriptDirectoryKind, string> = {
   volume: "卷",
@@ -775,6 +840,60 @@ function parseTrackingProposal(output: string): {
   };
 }
 
+function parseNarrativeExtraction(
+  output: string,
+  chapters: readonly LoadedNovelChapter[],
+): readonly NarrativeExtractionDraft[] {
+  const source = extractJson(output);
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new Error("正文提炼必须返回 JSON 对象");
+  }
+  const values = (source as { chapters?: unknown }).chapters;
+  if (!Array.isArray(values)) {
+    throw new Error("正文提炼缺少 chapters 数组");
+  }
+  const requested = new Map(chapters.map((chapter) => [chapter.id, chapter]));
+  const drafts = values.flatMap((value, index): NarrativeExtractionDraft[] => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const record = value as Record<string, unknown>;
+    const chapterId = String(record.sourceChapterId ?? "").trim();
+    const chapter = requested.get(chapterId);
+    if (!chapter) return [];
+    const title = String(record.title ?? chapter.title).trim() || chapter.title;
+    const description = String(record.description ?? "").trim();
+    const sections = Array.isArray(record.sections)
+      ? record.sections.slice(0, 12).flatMap((section, sectionIndex) => {
+          if (!section || typeof section !== "object" || Array.isArray(section))
+            return [];
+          const item = section as Record<string, unknown>;
+          const sectionTitle = String(item.title ?? "").trim();
+          const sectionDescription = String(item.description ?? "").trim();
+          if (!sectionTitle && !sectionDescription) return [];
+          return [
+            {
+              title: sectionTitle || `场景 ${sectionIndex + 1}`,
+              description: sectionDescription,
+            },
+          ];
+        })
+      : [];
+    return [
+      {
+        chapterId,
+        title,
+        description:
+          description ||
+          `正文实录：${excerpt(chapter.content, 180) || `第 ${index + 1} 个已选章节`}`,
+        sections,
+      },
+    ];
+  });
+  if (!drafts.length) {
+    throw new Error("AI 未返回任何可关联的正文章节提炼结果");
+  }
+  return drafts;
+}
+
 function parseQualityReview(output: string): QualityReview {
   const source = extractJson(output);
   if (!source || typeof source !== "object" || Array.isArray(source)) {
@@ -818,11 +937,280 @@ function countCharacters(value: string): number {
   return Array.from(value).filter((character) => !/\s/u.test(character)).length;
 }
 
+function buildWritingWordBudget(
+  targetWordCount: number | null,
+  mode: WritingAiMode,
+  currentCount: number,
+  targetCount: number,
+): string {
+  if (!targetWordCount) return "项目总览未设置每章字数，不做固定字数约束。";
+  const minimum = Math.ceil(targetWordCount * 0.9);
+  const maximum = Math.floor(targetWordCount * 1.1);
+  const remaining = Math.max(0, targetWordCount - currentCount);
+  const modeRule =
+    mode === "generate"
+      ? `完整生成结果必须控制在 ${minimum}～${maximum} 字。`
+      : mode === "continue"
+        ? `续写完成后的整章正文必须控制在 ${minimum}～${maximum} 字；当前已有 ${currentCount} 字，本次新增内容通常控制在不超过 ${remaining + Math.ceil(targetWordCount * 0.1)} 字。`
+        : mode === "revise"
+          ? `润色不得明显改变篇幅；处理结果应使整章正文尽量保持在 ${minimum}～${maximum} 字，除非原文已经超出范围。`
+          : `扩写完成后的整章正文必须控制在 ${minimum}～${maximum} 字；不要为了凑字数重复表达或添加计划外剧情。`;
+  return [
+    `字数约束（项目总览设定：每章 ${targetWordCount} 字，允许上下浮动 10%，即 ${minimum}～${maximum} 字）。`,
+    `当前整章非空字符数：${currentCount}；本次处理文本非空字符数：${targetCount}。`,
+    modeRule,
+    "字数按中文、英文、数字和标点等非空字符计数；不要输出说明、标题或 Markdown 代码围栏。",
+  ].join("\n");
+}
+
+function getTextareaSelectionAnchor(
+  textarea: HTMLTextAreaElement,
+  selectionEnd: number,
+): SelectionToolbarPosition {
+  const rect = textarea.getBoundingClientRect();
+  const fallback = {
+    left: rect.left + rect.width / 2,
+    top: rect.top + Math.min(rect.height - 20, 48),
+  };
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return fallback;
+  }
+  const computed = window.getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  const copiedProperties = [
+    "box-sizing",
+    "border-left-width",
+    "border-right-width",
+    "border-top-width",
+    "border-bottom-width",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "font-variant",
+    "line-height",
+    "letter-spacing",
+    "text-transform",
+    "text-indent",
+    "text-align",
+    "tab-size",
+  ];
+  copiedProperties.forEach((property) =>
+    mirror.style.setProperty(property, computed.getPropertyValue(property)),
+  );
+  mirror.style.position = "fixed";
+  mirror.style.left = `${rect.left}px`;
+  mirror.style.top = `${rect.top}px`;
+  mirror.style.width = `${rect.width}px`;
+  mirror.style.visibility = "hidden";
+  mirror.style.pointerEvents = "none";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = "break-word";
+  mirror.style.wordWrap = "break-word";
+  mirror.style.overflow = "hidden";
+  mirror.textContent = textarea.value.slice(0, selectionEnd);
+  const marker = document.createElement("span");
+  marker.textContent = textarea.value.slice(selectionEnd) || "\u200b";
+  mirror.append(marker);
+  document.body.append(mirror);
+  const markerRect = marker.getBoundingClientRect();
+  mirror.remove();
+  return {
+    left: Math.min(
+      rect.right - 16,
+      Math.max(rect.left + 16, markerRect.left - textarea.scrollLeft),
+    ),
+    top: Math.min(
+      rect.bottom - 12,
+      Math.max(rect.top + 16, markerRect.top - textarea.scrollTop),
+    ),
+  };
+}
+
+interface SelectionPopoverDragState {
+  readonly pointerId: number;
+  readonly startClientX: number;
+  readonly startClientY: number;
+  readonly startLeft: number;
+  readonly startTop: number;
+}
+
+function clampSelectionPopoverPosition(
+  element: HTMLElement,
+  left: number,
+  top: number,
+) {
+  const viewportPadding = 12;
+  const bounds = element.getBoundingClientRect();
+  return {
+    left: Math.min(
+      Math.max(viewportPadding, left),
+      Math.max(
+        viewportPadding,
+        window.innerWidth - bounds.width - viewportPadding,
+      ),
+    ),
+    top: Math.min(
+      Math.max(viewportPadding, top),
+      Math.max(
+        viewportPadding,
+        window.innerHeight - bounds.height - viewportPadding,
+      ),
+    ),
+  };
+}
+
+function useSelectionPopoverLayout(anchor: SelectionToolbarPosition | null) {
+  const elementRef = useRef<HTMLElement | null>(null);
+  const dragRef = useRef<SelectionPopoverDragState | null>(null);
+  const manualPositionRef = useRef(false);
+  const updateLayout = useCallback(() => {
+    const element = elementRef.current;
+    if (!anchor || !element || typeof window === "undefined") return;
+
+    if (manualPositionRef.current) {
+      const next = clampSelectionPopoverPosition(
+        element,
+        element.getBoundingClientRect().left,
+        element.getBoundingClientRect().top,
+      );
+      element.style.left = `${next.left}px`;
+      element.style.top = `${next.top}px`;
+      return;
+    }
+
+    const bounds = element.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const viewportPadding = 12;
+    const gap = 12;
+    const spaceBelow = viewportHeight - anchor.top - gap - viewportPadding;
+    const spaceAbove = anchor.top - gap - viewportPadding;
+    const placement =
+      spaceBelow >= bounds.height || spaceBelow >= spaceAbove
+        ? "below"
+        : "above";
+    const minimumLeft = bounds.width / 2 + viewportPadding;
+    const maximumLeft = viewportWidth - bounds.width / 2 - viewportPadding;
+    const left =
+      minimumLeft > maximumLeft
+        ? viewportWidth / 2
+        : Math.min(maximumLeft, Math.max(minimumLeft, anchor.left));
+
+    element.style.left = `${left}px`;
+    element.style.top = `${placement === "below" ? anchor.top + gap : anchor.top - gap}px`;
+    element.classList.toggle("is-above", placement === "above");
+  }, [anchor]);
+
+  const handlePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      if (
+        event.button !== 0 ||
+        (event.target as HTMLElement).closest("button, input, a")
+      ) {
+        return;
+      }
+      const element = elementRef.current;
+      if (!element) return;
+      const bounds = element.getBoundingClientRect();
+      manualPositionRef.current = true;
+      element.classList.remove("is-above");
+      element.classList.add("is-manual");
+      element.style.left = `${bounds.left}px`;
+      element.style.top = `${bounds.top}px`;
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startLeft: bounds.left,
+        startTop: bounds.top,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    },
+    [],
+  );
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const drag = dragRef.current;
+      const element = elementRef.current;
+      if (!drag || drag.pointerId !== event.pointerId || !element) return;
+      const next = clampSelectionPopoverPosition(
+        element,
+        drag.startLeft + event.clientX - drag.startClientX,
+        drag.startTop + event.clientY - drag.startClientY,
+      );
+      element.style.left = `${next.left}px`;
+      element.style.top = `${next.top}px`;
+      event.preventDefault();
+    },
+    [],
+  );
+
+  const finishDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!anchor || !elementRef.current || typeof window === "undefined") return;
+    updateLayout();
+    window.addEventListener("resize", updateLayout);
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateLayout);
+    resizeObserver?.observe(elementRef.current);
+    return () => {
+      window.removeEventListener("resize", updateLayout);
+      resizeObserver?.disconnect();
+    };
+  }, [anchor, updateLayout]);
+
+  return {
+    elementRef,
+    dragHandlers: {
+      onPointerDown: handlePointerDown,
+      onPointerMove: handlePointerMove,
+      onPointerUp: finishDrag,
+      onPointerCancel: finishDrag,
+    },
+  };
+}
+
 function splitParagraphs(value: string): readonly string[] {
   return value
     .split(/\n\s*\n/u)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function buildBrainstormCompositeBrief(
+  items: readonly BrainstormSchemeOption[],
+): string {
+  return [
+    "本章综合创作指令",
+    "以下素材均来自作者已选定的脑暴方案。整合时应消除互相矛盾的设定，保留人物动机、因果和章节边界。",
+    ...items.map((item, index) =>
+      [
+        `素材 ${index + 1} · ${item.role}：${item.scheme.title}`,
+        item.scheme.premise,
+        item.scheme.content,
+        item.scheme.opening ? `建议正文开场：${item.scheme.opening}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    ),
+  ].join("\n\n");
 }
 
 function excerpt(value: string, limit = 180): string {
@@ -964,6 +1352,386 @@ function DeleteChapterDialog({
   );
 }
 
+function ManuscriptVersionDialog({
+  open,
+  chapterTitle,
+  currentContent,
+  versions,
+  selectedVersion,
+  maxVersions,
+  versionLimitDraft,
+  dirty,
+  busy,
+  onClose,
+  onSelectVersion,
+  onVersionLimitChange,
+  onVersionLimitBlur,
+  onRestore,
+}: {
+  readonly open: boolean;
+  readonly chapterTitle: string;
+  readonly currentContent: string;
+  readonly versions: readonly ManuscriptVersionRecord[];
+  readonly selectedVersion: ManuscriptVersionRecord | null;
+  readonly maxVersions: number;
+  readonly versionLimitDraft: string;
+  readonly dirty: boolean;
+  readonly busy: boolean;
+  readonly onClose: () => void;
+  readonly onSelectVersion: (version: ManuscriptVersionRecord) => void;
+  readonly onVersionLimitChange: (value: string) => void;
+  readonly onVersionLimitBlur: () => void;
+  readonly onRestore: (version: ManuscriptVersionRecord) => void;
+}) {
+  useCloseLayer(() => {
+    if (!open) return false;
+    if (!busy) onClose();
+    return true;
+  }, 220);
+  if (!open) return null;
+  return (
+    <DraggableDialogFrame
+      ariaLabel="正文历史版本"
+      className="ms-version-dialog"
+      overlayClassName="bg-black/35"
+      headerClassName="border-b border-[var(--line)] bg-[var(--paper-elevated)]"
+      header={
+        <div className="flex h-12 items-center gap-2 px-4">
+          <History className="h-4 w-4 text-[var(--accent-warm)]" />
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-semibold">正文历史版本</h2>
+            <span className="block truncate text-xs text-[var(--ink-muted)]">
+              {chapterTitle}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="ns-icon-button border-0"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="关闭历史版本"
+            title="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      }
+    >
+      <div className="ms-version-dialog-body">
+        <aside className="ms-version-dialog-list">
+          <div className="ms-version-dialog-list-header">
+            <strong>历史版本</strong>
+            <span>
+              {versions.length} / {maxVersions}
+            </span>
+          </div>
+          <label className="ms-version-limit-field">
+            <span>最大保留版本数</span>
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={versionLimitDraft}
+              onChange={(event) => onVersionLimitChange(event.target.value)}
+              onBlur={onVersionLimitBlur}
+              aria-label="最大保留版本数"
+            />
+          </label>
+          <div className="ms-version-dialog-items">
+            {versions.map((version) => (
+              <button
+                type="button"
+                key={version.versionId}
+                className={`ms-version-dialog-item ${selectedVersion?.versionId === version.versionId ? "is-selected" : ""}`}
+                onClick={() => onSelectVersion(version)}
+              >
+                <strong>
+                  {new Date(version.createdAt).toLocaleString("zh-CN")}
+                </strong>
+                <span>
+                  {version.wordCount.toLocaleString()} 字 ·{" "}
+                  {version.source === "restore"
+                    ? "恢复前快照"
+                    : version.source === "ai-apply"
+                      ? "AI 应用"
+                      : "手动保存"}
+                </span>
+              </button>
+            ))}
+            {!versions.length && (
+              <p className="ms-inspector-empty">暂无历史版本</p>
+            )}
+          </div>
+        </aside>
+        <section className="ms-version-dialog-compare">
+          <header>
+            <div>
+              <strong>版本对比</strong>
+              <span>
+                {selectedVersion
+                  ? new Date(selectedVersion.createdAt).toLocaleString("zh-CN")
+                  : "请选择历史版本"}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="ns-button is-primary"
+              disabled={!selectedVersion || dirty || busy}
+              onClick={() => selectedVersion && onRestore(selectedVersion)}
+              title={dirty ? "请先保存当前正文" : "恢复选中版本"}
+            >
+              {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ArchiveRestore className="h-3.5 w-3.5" />
+              )}
+              恢复到当前版本
+            </button>
+          </header>
+          <div className="min-h-0 flex-1">
+            {selectedVersion ? (
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    正在载入差异
+                  </div>
+                }
+              >
+                <DiffViewer
+                  key={selectedVersion.versionId}
+                  original={selectedVersion.content}
+                  modified={currentContent}
+                  language="markdown"
+                  renderSideBySide
+                  className="h-full"
+                />
+              </Suspense>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
+                从左侧选择一个历史版本
+              </div>
+            )}
+          </div>
+          {dirty && (
+            <p className="ms-version-dialog-warning">
+              当前正文有未保存修改，请先保存后再恢复历史版本。
+            </p>
+          )}
+        </section>
+      </div>
+    </DraggableDialogFrame>
+  );
+}
+
+function NarrativeExtractionDialog({
+  open,
+  chapters,
+  selectedChapterIds,
+  narrativePlans,
+  targetNarrativeChapterId,
+  drafts,
+  busy,
+  aiAvailable,
+  onClose,
+  onToggleChapter,
+  onTargetChange,
+  onChangeDraft,
+  onRun,
+  onApply,
+}: {
+  readonly open: boolean;
+  readonly chapters: readonly LoadedNovelChapter[];
+  readonly selectedChapterIds: ReadonlySet<string>;
+  readonly narrativePlans: LoadedNovelProject["narrative"]["library"]["chapters"];
+  readonly targetNarrativeChapterId: string;
+  readonly drafts: readonly NarrativeExtractionDraft[];
+  readonly busy: boolean;
+  readonly aiAvailable: boolean;
+  readonly onClose: () => void;
+  readonly onToggleChapter: (chapterId: string, checked: boolean) => void;
+  readonly onTargetChange: (value: string) => void;
+  readonly onChangeDraft: (
+    chapterId: string,
+    patch: Partial<Omit<NarrativeExtractionDraft, "chapterId">>,
+  ) => void;
+  readonly onRun: () => void;
+  readonly onApply: () => void;
+}) {
+  useCloseLayer(() => {
+    if (!open) return false;
+    if (!busy) onClose();
+    return true;
+  }, 220);
+  if (!open) return null;
+  const selectedCount = selectedChapterIds.size;
+  const canApply = Boolean(drafts.length) && !busy;
+  return (
+    <DraggableDialogFrame
+      ariaLabel="从正文提炼到剧情工程"
+      className="ms-extraction-dialog"
+      overlayClassName="bg-black/35"
+      headerClassName="border-b border-[var(--line)] bg-[var(--paper-elevated)]"
+      header={
+        <div className="flex h-12 items-center gap-2 px-4">
+          <BookMarked className="h-4 w-4 text-[var(--accent-warm)]" />
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-semibold">
+              从正文提炼到剧情工程
+            </h2>
+            <span className="block truncate text-xs text-[var(--ink-muted)]">
+              正文事实优先，确认后写入当前剧情工程
+            </span>
+          </div>
+          <button
+            type="button"
+            className="ns-icon-button border-0"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="关闭正文提炼"
+            title="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      }
+    >
+      <div className="ms-extraction-dialog-body">
+        <aside className="ms-extraction-sources">
+          <header>
+            <strong>正文范围</strong>
+            <span>{selectedCount} 章</span>
+          </header>
+          <p>可一次选择多章；每章会提炼为独立的剧情章节。</p>
+          <div className="ms-extraction-source-list">
+            {chapters.map((chapter) => (
+              <label key={chapter.id}>
+                <input
+                  type="checkbox"
+                  checked={selectedChapterIds.has(chapter.id)}
+                  disabled={busy}
+                  onChange={(event) =>
+                    onToggleChapter(chapter.id, event.target.checked)
+                  }
+                />
+                <span>
+                  <strong>
+                    第 {chapter.displayNumber} 章 · {chapter.title}
+                  </strong>
+                  <small>{chapter.words.toLocaleString()} 字</small>
+                </span>
+              </label>
+            ))}
+          </div>
+          <label className="ms-extraction-target">
+            <span>写入位置</span>
+            <CustomSelect
+              value={targetNarrativeChapterId}
+              options={[
+                { value: "", label: "新建剧情章节" },
+                ...narrativePlans.map((plan) => ({
+                  value: plan.id,
+                  label: plan.title,
+                })),
+              ]}
+              onChange={onTargetChange}
+              ariaLabel="剧情工程写入位置"
+              size="toolbar"
+              disabled={busy || selectedCount !== 1}
+            />
+          </label>
+          {selectedCount !== 1 && (
+            <p className="ms-extraction-hint">
+              批量抽取会为每章新建剧情章节，避免覆盖已有规划。
+            </p>
+          )}
+          <button
+            type="button"
+            className="ns-button is-primary w-full"
+            onClick={onRun}
+            disabled={busy || !selectedCount || !aiAvailable}
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            {busy ? "正在提炼" : "AI 提炼正文事实"}
+          </button>
+          {!aiAvailable && (
+            <p className="ms-extraction-hint">
+              当前没有可用模型，无法自动提炼。
+            </p>
+          )}
+        </aside>
+        <section className="ms-extraction-preview">
+          <header>
+            <div>
+              <strong>剧情工程预览</strong>
+              <span>确认后才写入，不会改动正文原文</span>
+            </div>
+            <button
+              type="button"
+              className="ns-button is-primary"
+              onClick={onApply}
+              disabled={!canApply}
+            >
+              <Check className="h-3.5 w-3.5" /> 写入剧情工程
+            </button>
+          </header>
+          <div className="ms-extraction-preview-list">
+            {drafts.map((draft) => (
+              <article key={draft.chapterId}>
+                <span>
+                  {chapters.find((chapter) => chapter.id === draft.chapterId)
+                    ?.title ?? "正文"}
+                </span>
+                <input
+                  value={draft.title}
+                  onChange={(event) =>
+                    onChangeDraft(draft.chapterId, {
+                      title: event.target.value,
+                    })
+                  }
+                  disabled={busy}
+                  aria-label="提炼后的剧情章节标题"
+                />
+                <textarea
+                  value={draft.description}
+                  onChange={(event) =>
+                    onChangeDraft(draft.chapterId, {
+                      description: event.target.value,
+                    })
+                  }
+                  disabled={busy}
+                  aria-label="提炼后的剧情章节概要"
+                />
+                <ol>
+                  {draft.sections.map((section, index) => (
+                    <li key={`${draft.chapterId}-${index}`}>
+                      <strong>{section.title}</strong>
+                      <span>{section.description || "未提取场景说明"}</span>
+                    </li>
+                  ))}
+                  {!draft.sections.length && (
+                    <li className="is-empty">未拆分场景，将只写入章节概要。</li>
+                  )}
+                </ol>
+              </article>
+            ))}
+            {!drafts.length && (
+              <div className="ms-room-empty">
+                <BookMarked className="h-7 w-7" />
+                <p>选择正文后运行提炼，结果会在这里供你确认。</p>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    </DraggableDialogFrame>
+  );
+}
+
 function EmptyWritingState({
   creating,
   onCreate,
@@ -1086,6 +1854,136 @@ function AiCandidatePanel({
               : candidate.content}
           </div>
         </section>
+      </div>
+    </section>
+  );
+}
+
+function SelectionAiCandidatePopover({
+  candidate,
+  onApply,
+  onDiscard,
+}: {
+  readonly candidate: AiCandidate;
+  readonly onApply: () => void;
+  readonly onDiscard: () => void;
+}) {
+  const label = {
+    revise: "快速润色",
+    expand: "快速扩写",
+    generate: "快速生成",
+    continue: "快速续写",
+  }[candidate.mode];
+  const before = candidate.sourceContent.slice(candidate.start, candidate.end);
+  const { elementRef, dragHandlers } = useSelectionPopoverLayout(
+    candidate.anchor,
+  );
+  return (
+    <section
+      ref={elementRef}
+      className="ms-selection-ai-popover"
+      role="dialog"
+      aria-label={`AI ${label}结果`}
+      style={
+        candidate.anchor
+          ? {
+              left: candidate.anchor.left,
+              top: candidate.anchor.top + 12,
+            }
+          : undefined
+      }
+    >
+      <header {...dragHandlers} title="拖动标题栏移动窗口">
+        <span>
+          <Sparkles className="h-3.5 w-3.5" /> AI {label}
+        </span>
+        <button type="button" onClick={onDiscard} aria-label="关闭快速 AI 结果">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </header>
+      <section className="ms-selection-ai-diff" aria-label="原文与 AI 候选对比">
+        <header>
+          <span>原选区 / AI 候选</span>
+          <small>红色删除，绿色新增</small>
+        </header>
+        <div className="min-h-0 flex-1">
+          <Suspense
+            fallback={
+              <div className="ms-selection-ai-diff-loading">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在载入对比
+              </div>
+            }
+          >
+            <DiffViewer
+              key={`${candidate.start}:${candidate.end}:${candidate.content}`}
+              original={before}
+              modified={candidate.content}
+              language="plaintext"
+              renderSideBySide={false}
+              className="h-full"
+            />
+          </Suspense>
+        </div>
+      </section>
+      <footer>
+        <small>
+          原 {countCharacters(before)} 字 → 候选{" "}
+          {countCharacters(candidate.content)} 字
+        </small>
+        <div>
+          <button
+            type="button"
+            className="ns-button is-primary"
+            onClick={onApply}
+          >
+            <Check className="h-3.5 w-3.5" /> 替换
+          </button>
+          <button type="button" className="ns-button" onClick={onDiscard}>
+            取消
+          </button>
+        </div>
+      </footer>
+    </section>
+  );
+}
+
+function SelectionAiLoadingPopover({
+  loading,
+}: {
+  readonly loading: SelectionAiLoading;
+}) {
+  const label = {
+    revise: "快速润色",
+    expand: "快速扩写",
+    generate: "快速生成",
+    continue: "快速续写",
+  }[loading.mode];
+  const { elementRef, dragHandlers } = useSelectionPopoverLayout(
+    loading.anchor,
+  );
+  return (
+    <section
+      ref={elementRef}
+      className="ms-selection-ai-popover ms-selection-ai-popover--loading"
+      role="status"
+      aria-live="polite"
+      aria-label={`AI ${label}处理中`}
+      style={{
+        left: loading.anchor.left,
+        top: loading.anchor.top + 12,
+      }}
+    >
+      <header {...dragHandlers} title="拖动标题栏移动窗口">
+        <span>
+          <Sparkles className="h-3.5 w-3.5" /> AI {label}
+        </span>
+      </header>
+      <div className="ms-selection-ai-loading-content">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <div>
+          <strong>正在处理选中文字</strong>
+          <small>正在整理上下文并生成候选内容</small>
+        </div>
       </div>
     </section>
   );
@@ -1219,6 +2117,7 @@ function RoomWorkspace({
   storage,
   chapter,
   chapterPlan,
+  planningMode,
   manuscriptContent,
   enabled,
   onRun,
@@ -1268,6 +2167,10 @@ function RoomWorkspace({
   const [brainstormFilter, setBrainstormFilter] = useState<
     "all" | RoomScheme["category"]
   >("all");
+  const [selectedBrainstormSchemeKeys, setSelectedBrainstormSchemeKeys] =
+    useState<ReadonlySet<string>>(new Set());
+  const [compositeBrief, setCompositeBrief] = useState("");
+  const [synthesizingBrief, setSynthesizingBrief] = useState(false);
   const [expandedSchemes, setExpandedSchemes] = useState<ReadonlySet<string>>(
     new Set(),
   );
@@ -1493,6 +2396,8 @@ function RoomWorkspace({
     setResults([]);
     setAdopted(new Set());
     setExpandedSchemes(new Set());
+    setSelectedBrainstormSchemeKeys(new Set());
+    setCompositeBrief("");
     setRunning(new Set(activeConfigs.map((config) => config.agent)));
     let moduleContext: Partial<Record<RoomContextModule, unknown>>;
     try {
@@ -1512,11 +2417,15 @@ function RoomWorkspace({
           label: `${isBrainstorm ? "正文脑暴" : "剧情推演"} · Agent ${agent}`,
           systemPrompt: isBrainstorm
             ? `你是${role}。独立提出有明显差异的正文创作方案，不复述题面，不代替作者做最终决定。只输出 JSON 数组，每项包含 title、premise、outline、opening、category(plot|character|commercial|style|twist)、score(0-100)、tags。`
-            : `你是${role}。依据现有正文和章节计划推演后续因果，不强行制造反转。只输出 JSON 数组，每项包含 title、premise、outline、riskLevel(low|medium|high)、coherence(0-100)、novelty(0-100)、riskScore(0-100)、tags、nodes；nodes 每项包含 offset(距起点章数)、title、summary、checkpoint。`,
+            : planningMode === "detached"
+              ? `你是${role}。以现有正文事实和作者当前创作方向推演后续因果；章节计划仅作对照，可以提出偏离计划的可行路径。只输出 JSON 数组，每项包含 title、premise、outline、riskLevel(low|medium|high)、coherence(0-100)、novelty(0-100)、riskScore(0-100)、tags、nodes；nodes 每项包含 offset(距起点章数)、title、summary、checkpoint。`
+              : `你是${role}。依据现有正文和章节计划推演后续因果，不强行制造反转。只输出 JSON 数组，每项包含 title、premise、outline、riskLevel(low|medium|high)、coherence(0-100)、novelty(0-100)、riskScore(0-100)、tags、nodes；nodes 每项包含 offset(距起点章数)、title、summary、checkpoint。`,
           prompt: [
             `作品章节：${chapter.title}`,
             chapterPlan
-              ? `章节计划：${chapterPlan.description}`
+              ? planningMode === "detached"
+                ? `章节计划（仅作对照，本章已脱纲）：${chapterPlan.description}`
+                : `章节计划：${chapterPlan.description}`
               : "章节计划：未关联",
             `当前正文：\n${manuscriptContent || "（空）"}`,
             config.modules.length
@@ -1606,6 +2515,73 @@ function RoomWorkspace({
           : ("stable" as const),
     })),
   );
+  const brainstormSchemes: readonly BrainstormSchemeOption[] = results.flatMap(
+    (result) =>
+      result.schemes.map((scheme, index) => ({
+        agent: result.agent,
+        role: result.role,
+        scheme,
+        key: `brainstorm-${result.agent}-${index}`,
+      })),
+  );
+  const selectedBrainstormSchemes = brainstormSchemes.filter((item) =>
+    selectedBrainstormSchemeKeys.has(item.key),
+  );
+  const toggleBrainstormScheme = (key: string) => {
+    setSelectedBrainstormSchemeKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        if (next.size >= 6) {
+          setError("综合方案最多选择 6 条素材");
+          return current;
+        }
+        next.add(key);
+      }
+      setCompositeBrief("");
+      setError(null);
+      return next;
+    });
+  };
+  const synthesizeBrainstormBrief = async () => {
+    if (!chapter || !selectedBrainstormSchemes.length || synthesizingBrief) {
+      return;
+    }
+    setSynthesizingBrief(true);
+    setError(null);
+    try {
+      const output = await onRun({
+        sceneId: "manuscript.brainstorm.synthesis",
+        label: `${chapter.title} · 脑暴方案综合`,
+        systemPrompt:
+          planningMode === "detached"
+            ? "你是中文长篇小说的脑暴综合编辑。根据作者已选定的多 Agent 素材，消解冲突并形成一份可直接交给正文写作 AI 的统一创作指令。必须保留有效的剧情目标、人物动机、情绪节奏、爽点和设定边界；正文事实和作者指令优先，章节计划仅作对照。只输出创作指令本身，不使用 Markdown 代码围栏，不解释取舍过程。"
+            : "你是中文长篇小说的脑暴综合编辑。根据作者已选定的多 Agent 素材，消解冲突并形成一份可直接交给正文写作 AI 的统一创作指令。必须保留有效的剧情目标、人物动机、情绪节奏、爽点和设定边界；不采纳相互冲突或明显违背计划边界的内容。只输出创作指令本身，不使用 Markdown 代码围栏，不解释取舍过程。",
+        prompt: [
+          `章节：${chapter.title}`,
+          chapterPlan
+            ? planningMode === "detached"
+              ? `章节计划（仅作对照，本章已脱纲）：${chapterPlan.description}`
+              : `章节计划：${chapterPlan.description}`
+            : "章节计划：未关联",
+          `当前正文：\n${manuscriptContent.slice(0, 12000) || "（空）"}`,
+          `作者选定的 ${selectedBrainstormSchemes.length} 条素材：\n${selectedBrainstormSchemes
+            .map(
+              (item, index) =>
+                `【素材 ${index + 1} · ${item.role}】\n标题：${item.scheme.title}\n${item.scheme.premise}\n${item.scheme.content}\n${item.scheme.opening ? `建议正文稿：${item.scheme.opening}` : ""}`,
+            )
+            .join("\n\n")}`,
+          "输出需按“章节目标、关键推进、人物表现、情绪与节奏、禁止越界、开场建议”组织；没有可靠内容的项不要编造。",
+        ].join("\n\n"),
+      });
+      setCompositeBrief(stripCodeFence(output));
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setSynthesizingBrief(false);
+    }
+  };
   const visibleSimulationSchemes = simulationSchemes.filter(
     (item) => simulationFilter === "all" || item.kind === simulationFilter,
   );
@@ -1918,7 +2894,94 @@ function RoomWorkspace({
                   ))}
                 </div>
               </div>
+              <p className="ms-brainstorm-guide">
+                使用流程：勾选不同 Agent 的素材 → 直接组合或 AI 综合 → 编辑指令
+                → 采用并进入正文
+              </p>
             </div>
+          )}
+          {isBrainstorm && selectedBrainstormSchemes.length > 0 && (
+            <section
+              className="ms-brainstorm-decision"
+              aria-label="脑暴方案综合"
+            >
+              <header>
+                <div>
+                  <strong>综合决策台</strong>
+                  <span>
+                    已选 {selectedBrainstormSchemes.length} 条素材，来自{" "}
+                    {
+                      new Set(
+                        selectedBrainstormSchemes.map((item) => item.agent),
+                      ).size
+                    }{" "}
+                    个 Agent
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="ns-button"
+                  onClick={() => setSelectedBrainstormSchemeKeys(new Set())}
+                >
+                  清空选择
+                </button>
+              </header>
+              <div className="ms-brainstorm-decision-items">
+                {selectedBrainstormSchemes.map((item) => (
+                  <span key={item.key}>
+                    {item.role} · {item.scheme.title}
+                  </span>
+                ))}
+              </div>
+              <textarea
+                value={compositeBrief}
+                onChange={(event) => setCompositeBrief(event.target.value)}
+                placeholder="先选择素材，再点击“直接组合”或“AI 综合”。生成后可在这里编辑，确认后用于正文。"
+                aria-label="综合创作指令"
+              />
+              <footer>
+                <button
+                  type="button"
+                  className="ns-button"
+                  onClick={() =>
+                    setCompositeBrief(
+                      buildBrainstormCompositeBrief(selectedBrainstormSchemes),
+                    )
+                  }
+                >
+                  直接组合
+                </button>
+                <button
+                  type="button"
+                  className="ns-button"
+                  onClick={() => void synthesizeBrainstormBrief()}
+                  disabled={synthesizingBrief}
+                >
+                  {synthesizingBrief && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  )}
+                  {synthesizingBrief ? "综合中" : "AI 综合"}
+                </button>
+                <button
+                  type="button"
+                  className="ns-button is-primary"
+                  onClick={() =>
+                    onUseBrief(
+                      compositeBrief.trim() ||
+                        buildBrainstormCompositeBrief(
+                          selectedBrainstormSchemes,
+                        ),
+                    )
+                  }
+                  disabled={
+                    !compositeBrief.trim() && !selectedBrainstormSchemes.length
+                  }
+                >
+                  <WandSparkles className="h-3.5 w-3.5" />{" "}
+                  采用综合方案并进入正文
+                </button>
+              </footer>
+            </section>
           )}
           {!isBrainstorm && (
             <>
@@ -2062,6 +3125,19 @@ function RoomWorkspace({
                                 )}
                               </>
                             )}
+                            <label className="ms-scheme-select">
+                              <input
+                                type="checkbox"
+                                checked={selectedBrainstormSchemeKeys.has(
+                                  schemeKey,
+                                )}
+                                onChange={() =>
+                                  toggleBrainstormScheme(schemeKey)
+                                }
+                                aria-label={`加入综合：${scheme.title}`}
+                              />
+                              <span>加入综合</span>
+                            </label>
                             <button
                               type="button"
                               onClick={() =>
@@ -2071,7 +3147,7 @@ function RoomWorkspace({
                               }
                             >
                               <WandSparkles className="h-3.5 w-3.5" />
-                              作为正文创作指令
+                              仅采用此方案
                             </button>
                           </article>
                         );
@@ -2228,6 +3304,7 @@ function BrainstormRoomDialog({
   storage,
   chapter,
   chapterPlan,
+  planningMode,
   manuscriptContent,
   enabled,
   onRun,
@@ -2286,6 +3363,7 @@ function BrainstormRoomDialog({
         storage={storage}
         chapter={chapter}
         chapterPlan={chapterPlan}
+        planningMode={planningMode}
         manuscriptContent={manuscriptContent}
         enabled={enabled}
         onRun={onRun}
@@ -2301,6 +3379,7 @@ function SimulationRoomDialog({
   storage,
   chapter,
   chapterPlan,
+  planningMode,
   manuscriptContent,
   enabled,
   onRun,
@@ -2362,6 +3441,7 @@ function SimulationRoomDialog({
         storage={storage}
         chapter={chapter}
         chapterPlan={chapterPlan}
+        planningMode={planningMode}
         manuscriptContent={manuscriptContent}
         enabled={enabled}
         onRun={onRun}
@@ -2392,6 +3472,11 @@ export default function ManuscriptStudio({
   onDeleteChapter,
   onRestoreChapter,
   onSaveChapter,
+  onLoadManuscriptVersions,
+  onLoadManuscriptVersionSettings,
+  onSaveManuscriptVersionLimit,
+  onRestoreManuscriptVersion,
+  onExtractChaptersToNarrative,
   onAiRun,
   onOpenAiAgent,
   onAdoptSimulation,
@@ -2434,7 +3519,11 @@ export default function ManuscriptStudio({
     start: 0,
     end: 0,
   });
+  const [selectionToolbarPosition, setSelectionToolbarPosition] =
+    useState<SelectionToolbarPosition | null>(null);
   const [candidate, setCandidate] = useState<AiCandidate | null>(null);
+  const [selectionAiLoading, setSelectionAiLoading] =
+    useState<SelectionAiLoading | null>(null);
   const [creativeBrief, setCreativeBrief] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [aiMode, setAiMode] = useState<WritingAiMode | null>(null);
@@ -2462,7 +3551,25 @@ export default function ManuscriptStudio({
   const [typographyDraft, setTypographyDraft] = useState<ManuscriptTypography>(
     project.chapterIndex.typography,
   );
+  const [versionSettings, setVersionSettings] =
+    useState<ManuscriptVersionSettings | null>(null);
+  const [versionLimitDraft, setVersionLimitDraft] = useState("20");
+  const [versions, setVersions] = useState<readonly ManuscriptVersionRecord[]>(
+    [],
+  );
+  const [selectedVersion, setSelectedVersion] =
+    useState<ManuscriptVersionRecord | null>(null);
+  const [versionDialogOpen, setVersionDialogOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [narrativeExtractionOpen, setNarrativeExtractionOpen] = useState(false);
+  const [narrativeExtractionChapterIds, setNarrativeExtractionChapterIds] =
+    useState<ReadonlySet<string>>(new Set());
+  const [narrativeExtractionTargetId, setNarrativeExtractionTargetId] =
+    useState("");
+  const [narrativeExtractionDrafts, setNarrativeExtractionDrafts] = useState<
+    readonly NarrativeExtractionDraft[]
+  >([]);
+  const [narrativeExtractionBusy, setNarrativeExtractionBusy] = useState(false);
   const [trackingLoaded, setTrackingLoaded] = useState<Awaited<
     ReturnType<ReturnType<typeof createManuscriptTrackingRepository>["load"]>
   > | null>(null);
@@ -2500,6 +3607,39 @@ export default function ManuscriptStudio({
 
   useEffect(() => {
     let cancelled = false;
+    void Promise.all([
+      onLoadManuscriptVersionSettings(),
+      selectedChapter
+        ? onLoadManuscriptVersions(selectedChapter.id)
+        : Promise.resolve([] as readonly ManuscriptVersionRecord[]),
+    ])
+      .then(([settings, loadedVersions]) => {
+        if (cancelled) return;
+        setVersionSettings(settings);
+        setVersionLimitDraft(String(settings.maxVersions));
+        setVersions(loadedVersions);
+        setSelectedVersion((current) =>
+          current &&
+          loadedVersions.some((item) => item.versionId === current.versionId)
+            ? current
+            : (loadedVersions[0] ?? null),
+        );
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(errorText(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    onLoadManuscriptVersionSettings,
+    onLoadManuscriptVersions,
+    project.chapterIndexContent,
+    selectedChapter,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
     void trackingRepository
       .load()
       .then((loaded) => {
@@ -2529,7 +3669,9 @@ export default function ManuscriptStudio({
     setTitleDraft(selectedChapter.title);
     setDisplayNumberDraft(String(selectedChapter.displayNumber));
     setSelection({ start: 0, end: 0 });
+    setSelectionToolbarPosition(null);
     setCandidate(null);
+    setSelectionAiLoading(null);
     setQualityReview(null);
     setExternalChanged(false);
     setActiveDirectoryId(selectedChapter.directoryId);
@@ -2555,6 +3697,9 @@ export default function ManuscriptStudio({
       await onSaveChapter(selectedChapter.id, draft, savedDraft);
       setSavedDraft(draft);
       setExternalChanged(false);
+      const savedVersions = await onLoadManuscriptVersions(selectedChapter.id);
+      setVersions(savedVersions);
+      setSelectedVersion(savedVersions[0] ?? null);
       return true;
     } catch (cause) {
       setError(errorText(cause));
@@ -2562,7 +3707,14 @@ export default function ManuscriptStudio({
     } finally {
       setIsSaving(false);
     }
-  }, [draft, isSaving, onSaveChapter, savedDraft, selectedChapter]);
+  }, [
+    draft,
+    isSaving,
+    onLoadManuscriptVersions,
+    onSaveChapter,
+    savedDraft,
+    selectedChapter,
+  ]);
 
   const saveAll = useCallback(async () => {
     const saved = await saveCurrent();
@@ -2770,6 +3922,83 @@ export default function ManuscriptStudio({
       )
     : undefined;
 
+  const openNarrativeExtraction = () => {
+    if (!selectedChapter) return;
+    setNarrativeExtractionChapterIds(new Set([selectedChapter.id]));
+    setNarrativeExtractionTargetId(selectedPlan?.id ?? "");
+    setNarrativeExtractionDrafts([]);
+    setNarrativeExtractionOpen(true);
+  };
+
+  const runNarrativeExtraction = async () => {
+    if (!onAiRun || narrativeExtractionBusy) return;
+    const sourceChapters = canonicalChapters.filter((chapter) =>
+      narrativeExtractionChapterIds.has(chapter.id),
+    );
+    if (!sourceChapters.length) {
+      setError("请至少选择一章正文");
+      return;
+    }
+    if (!(await saveCurrent())) return;
+    setNarrativeExtractionBusy(true);
+    setError(null);
+    try {
+      const output = await onAiRun({
+        sceneId: "manuscript.outlineExtract",
+        label: `正文提炼剧情工程 · ${sourceChapters.length} 章`,
+        systemPrompt:
+          '你是长篇小说剧情工程编辑。正文是唯一事实来源，不得用既有大纲覆盖正文事实。只输出 JSON：{"chapters":[{"sourceChapterId":"正文稳定ID","title":"剧情章节标题","description":"本章实际发生的剧情概要、主线支线、情绪目标、爽点和未解悬念","sections":[{"title":"场景标题","description":"该场景实际推进、人物动作和结果"}]}]}。每个输入章节必须恰好输出一项；不得编造正文中不存在的剧情、人物状态、物品或伏笔。',
+        prompt: [
+          "任务：将以下已写正文提炼为剧情工程章节。",
+          "已有大纲仅作对照，不是事实来源；正文与大纲冲突时，以正文为准。",
+          selectedPlan
+            ? `当前关联计划（仅供对照）：${selectedPlan.title}\n${selectedPlan.description}`
+            : "当前正文未关联章节计划。",
+          ...sourceChapters.map(
+            (chapter) =>
+              `正文稳定ID：${chapter.id}\n章节：第 ${chapter.displayNumber} 章 · ${chapter.title}\n正文：\n${chapter.id === selectedChapter?.id ? draft : chapter.content}`,
+          ),
+        ].join("\n\n"),
+      });
+      setNarrativeExtractionDrafts(
+        parseNarrativeExtraction(output, sourceChapters),
+      );
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setNarrativeExtractionBusy(false);
+    }
+  };
+
+  const applyNarrativeExtraction = async () => {
+    if (narrativeExtractionBusy || !narrativeExtractionDrafts.length) return;
+    const isSingleChapter = narrativeExtractionDrafts.length === 1;
+    const targetNarrativeChapterId = isSingleChapter
+      ? narrativeExtractionTargetId || null
+      : null;
+    setNarrativeExtractionBusy(true);
+    setError(null);
+    try {
+      await onExtractChaptersToNarrative({
+        extractions: narrativeExtractionDrafts.map((draft) => ({
+          chapterId: draft.chapterId,
+          targetNarrativeChapterId,
+          title: draft.title,
+          description: draft.description,
+          sections: draft.sections,
+        })),
+      });
+      setNarrativeExtractionOpen(false);
+      setNarrativeExtractionDrafts([]);
+      setInspectorView("plan");
+      setMobileInspectorOpen(true);
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setNarrativeExtractionBusy(false);
+    }
+  };
+
   const contextManifest = useMemo<readonly ContextManifestSource[]>(() => {
     if (!selectedChapter) return [];
     const currentPosition = canonicalChapters.findIndex(
@@ -2796,7 +4025,7 @@ export default function ManuscriptStudio({
         id: "plan",
         title: "当前章节计划与场景节拍",
         detail: selectedPlan
-          ? `${selectedPlan.title} · ${selectedPlan.sections.length} 个场景`
+          ? `${selectedPlan.title} · ${selectedPlan.sections.length} 个场景 · ${PLANNING_MODE_LABELS[selectedChapter.planningMode]}`
           : "当前正文未关联剧情章节计划",
         characters:
           (selectedPlan?.description.length ?? 0) +
@@ -2880,40 +4109,92 @@ export default function ManuscriptStudio({
     return chunks.join("\n\n");
   };
 
-  const runWritingAi = async (mode: WritingAiMode, instruction = "") => {
-    if (!selectedChapter || (!onOpenAiAgent && !onAiRun) || aiMode) return;
-    if (dirty && !(await saveCurrent())) return;
-    const requestChapterId = selectedChapter.id;
-    const sourceContent = draft;
-    const hasSelection = selection.end > selection.start;
-    const target = hasSelection
-      ? sourceContent.slice(selection.start, selection.end)
-      : sourceContent;
-    const range =
-      mode === "continue"
-        ? {
-            start: selection.end || sourceContent.length,
-            end: selection.end || sourceContent.length,
-          }
-        : mode === "generate"
-          ? { start: 0, end: sourceContent.length }
-          : hasSelection
-            ? selection
-            : { start: 0, end: draft.length };
-    const sceneId = `manuscript.${mode}` as NovelModelSceneId;
-    const actionLabel = {
-      generate: "完整生成",
-      continue: "续写",
-      revise: "润色",
-      expand: "扩写",
-    }[mode];
+  const updateTextSelection = (textarea: HTMLTextAreaElement) => {
+    const nextSelection = {
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    };
+    setSelection(nextSelection);
+    setSelectionToolbarPosition(
+      nextSelection.end > nextSelection.start
+        ? getTextareaSelectionAnchor(textarea, nextSelection.end)
+        : null,
+    );
+  };
+
+  const runWritingAi = async (
+    mode: WritingAiMode,
+    instruction = "",
+    options: { readonly quickSelection?: boolean } = {},
+  ) => {
+    const quickSelection =
+      options.quickSelection === true ||
+      (selection.end > selection.start &&
+        (mode === "revise" || mode === "expand"));
+    if (
+      !selectedChapter ||
+      (quickSelection ? !onAiRun : !onOpenAiAgent && !onAiRun) ||
+      aiMode
+    ) {
+      return;
+    }
+    const quickSelectionAnchor = quickSelection
+      ? (selectionToolbarPosition ??
+        (textareaRef.current
+          ? getTextareaSelectionAnchor(textareaRef.current, selection.end)
+          : null))
+      : null;
+    if (quickSelectionAnchor) {
+      setSelectionAiLoading({ mode, anchor: quickSelectionAnchor });
+      setSelectionToolbarPosition(null);
+    }
     setAiMode(mode);
     setError(null);
     try {
+      if (dirty && !(await saveCurrent())) return;
+      const requestChapterId = selectedChapter.id;
+      const sourceContent = draft;
+      const hasSelection = selection.end > selection.start;
+      const target = hasSelection
+        ? sourceContent.slice(selection.start, selection.end)
+        : sourceContent;
+      const range =
+        mode === "continue"
+          ? {
+              start: selection.end || sourceContent.length,
+              end: selection.end || sourceContent.length,
+            }
+          : mode === "generate"
+            ? { start: 0, end: sourceContent.length }
+            : hasSelection
+              ? selection
+              : { start: 0, end: draft.length };
+      const sceneId = `manuscript.${mode}` as NovelModelSceneId;
+      const actionLabel = {
+        generate: "完整生成",
+        continue: "续写",
+        revise: "润色",
+        expand: "扩写",
+      }[mode];
+      const planGuidance = selectedPlan
+        ? selectedChapter.planningMode === "detached"
+          ? `关联章节计划（仅作对照，本章已脱纲）：${selectedPlan.title}\n${selectedPlan.description}`
+          : `关联章节计划（参考）：${selectedPlan.title}\n${selectedPlan.description}`
+        : "关联章节计划：无，当前为自由正文";
+      const planningRule =
+        selectedChapter.planningMode === "detached"
+          ? "正文事实和作者指令优先；章节计划仅用于对照，不得以计划否定已写正文。"
+          : "参考章节计划与正文事实；正文事实和作者指令优先于计划。";
+      const writingWordBudget = buildWritingWordBudget(
+        project.metadata.chapterWordCount,
+        mode,
+        countCharacters(sourceContent),
+        countCharacters(target),
+      );
       const runId = `manuscript-${Date.now().toString(36)}-${Math.random()
         .toString(36)
         .slice(2, 8)}`;
-      if (onOpenAiAgent) {
+      if (onOpenAiAgent && !quickSelection) {
         await onOpenAiAgent({
           sceneId,
           title: `${selectedChapter.title} · ${actionLabel}`,
@@ -2929,9 +4210,8 @@ export default function ManuscriptStudio({
             `章节标题：${selectedChapter.title}`,
             `处理模式：${mode}`,
             `处理范围：${range.start}..${range.end}`,
-            selectedPlan
-              ? `关联章节计划：${selectedPlan.title}\n${selectedPlan.description}`
-              : "关联章节计划：无",
+            planGuidance,
+            writingWordBudget,
             creativeBrief ? `作者选定的创作指令：${creativeBrief}` : "",
             instruction ? `本次专项要求：${instruction}` : "",
             target ? `作者当前选中的文本：\n${target}` : "",
@@ -2941,9 +4221,11 @@ export default function ManuscriptStudio({
 3. 使用 novel_manuscript_create_draft 创建草稿，runId 必须为 ${runId}，chapterId 必须为 ${selectedChapter.id}，mode 必须为 ${mode}，rangeStart/rangeEnd 必须为 ${range.start}/${range.end}，baseSourceHash 使用第一步返回值。
 4. 完成正文后调用 novel_manuscript_upsert_candidate。候选只包含处理范围的替换或插入文本，不要解释，不要 Markdown 代码围栏。
 5. 依次调用 novel_manuscript_validate_draft、novel_manuscript_submit_draft 和 novel_manuscript_get_proposal_status。工具只会提交候选，不能直接改正文。
-6. 严格服从已有设定、章节计划和正文事实；保留人物声口，避免模板腔和机械工整感。sourceHash 冲突时停止并说明正文已变化，不得改用原始文件工具。`,
+6. ${planningRule} 严格遵守世界设定和连续性状态；保留人物声口，避免模板腔和机械工整感。sourceHash 冲突时停止并说明正文已变化，不得改用原始文件工具。`,
             mode === "expand"
-              ? "扩写重点：补足动作、感官、对话和因果，但不得推进到章节计划之外。"
+              ? selectedChapter.planningMode === "detached"
+                ? "扩写重点：补足动作、感官、对话和因果；只要不违背正文事实和作者指令，可以突破原计划。"
+                : "扩写重点：补足动作、感官、对话和因果，优先保持计划边界。"
               : "",
             mode === "revise"
               ? "润色重点：保留事实、情节与人物声口，提升节奏和自然度。"
@@ -2958,14 +4240,15 @@ export default function ManuscriptStudio({
       const output = await onAiRun({
         sceneId,
         label: `${selectedChapter.title} · ${actionLabel}`,
-        systemPrompt:
-          "你是中文长篇小说正文编辑。严格服从已有设定、章节计划和正文事实；只输出可直接写入正文的文本，不解释过程，不使用 Markdown 代码围栏。",
+        systemPrompt: `你是中文长篇小说正文编辑。${planningRule} 严格遵守已有设定、正文事实和用户指定的字数范围；只输出可直接写入正文的文本，不解释过程，不使用 Markdown 代码围栏。`,
         prompt: [
           `动作：${actionLabel}`,
           `章节：${selectedChapter.title}`,
-          selectedPlan
-            ? `章节计划：${selectedPlan.description}`
-            : "章节计划：未关联",
+          quickSelection
+            ? "执行方式：选区快速处理。只返回选中文本的替换内容，不要打开对话或解释。"
+            : "",
+          planGuidance,
+          writingWordBudget,
           creativeBrief ? `作者选定的创作指令：${creativeBrief}` : "",
           instruction ? `本次专项要求：${instruction}` : "",
           buildOptionalContext(),
@@ -2973,7 +4256,9 @@ export default function ManuscriptStudio({
             ? `已有正文：\n${sourceContent}`
             : `待处理文本：\n${target || "（空）"}`,
           mode === "expand"
-            ? "扩展细节、动作、感官和对话，但不得推进到计划之外。"
+            ? selectedChapter.planningMode === "detached"
+              ? "扩展细节、动作、感官和对话；正文事实优先，可按作者指令突破原计划。"
+              : "扩展细节、动作、感官和对话，优先保持计划边界。"
             : "",
           mode === "revise"
             ? "保留事实、情节和人物声口，消除模板腔与机械工整感。"
@@ -2988,11 +4273,14 @@ export default function ManuscriptStudio({
         ...range,
         content: stripCodeFence(output),
         sourceContent,
+        quickSelection,
+        anchor: quickSelection ? quickSelectionAnchor : null,
       });
     } catch (cause) {
       setError(errorText(cause));
     } finally {
       setAiMode(null);
+      if (quickSelection) setSelectionAiLoading(null);
     }
   };
 
@@ -3094,7 +4382,14 @@ export default function ManuscriptStudio({
           '你是中文长篇小说质量编辑。只输出 JSON：{"score":0,"summary":"","issues":[{"category":"计划|连续性|人物|节奏|文风|钩子","severity":"error|warning|suggestion","title":"","detail":"","evidence":"正文逐字引文","suggestion":""}],"passed":[""]}。必须以正文证据为准，不虚构设定。',
         prompt: [
           `章节：${selectedChapter.title}`,
-          `章节计划：${selectedPlan?.description ?? "未关联"}`,
+          selectedPlan
+            ? selectedChapter.planningMode === "detached"
+              ? `章节计划（仅作对照，本章已脱纲）：${selectedPlan.description}`
+              : `章节计划：${selectedPlan.description}`
+            : "章节计划：未关联",
+          selectedChapter.planningMode === "detached"
+            ? "审查规则：正文事实优先。计划偏离仅作为建议，除非造成设定或连续性冲突，不得判为错误。"
+            : "",
           selectedPlan?.sections.length
             ? `场景节拍：${selectedPlan.sections.map((section) => `${section.title}：${section.description}`).join("；")}`
             : "",
@@ -3714,12 +5009,44 @@ export default function ManuscriptStudio({
         }
         onClose={() => setManifestOpen(false)}
       />
+      <NarrativeExtractionDialog
+        open={narrativeExtractionOpen}
+        chapters={canonicalChapters}
+        selectedChapterIds={narrativeExtractionChapterIds}
+        narrativePlans={project.narrative.library.chapters}
+        targetNarrativeChapterId={narrativeExtractionTargetId}
+        drafts={narrativeExtractionDrafts}
+        busy={narrativeExtractionBusy}
+        aiAvailable={Boolean(onAiRun)}
+        onClose={() => setNarrativeExtractionOpen(false)}
+        onToggleChapter={(chapterId, checked) => {
+          setNarrativeExtractionChapterIds((current) => {
+            const next = new Set(current);
+            if (checked) next.add(chapterId);
+            else next.delete(chapterId);
+            return next;
+          });
+          setNarrativeExtractionDrafts([]);
+          setNarrativeExtractionTargetId("");
+        }}
+        onTargetChange={setNarrativeExtractionTargetId}
+        onChangeDraft={(chapterId, patch) =>
+          setNarrativeExtractionDrafts((current) =>
+            current.map((draft) =>
+              draft.chapterId === chapterId ? { ...draft, ...patch } : draft,
+            ),
+          )
+        }
+        onRun={() => void runNarrativeExtraction()}
+        onApply={() => void applyNarrativeExtraction()}
+      />
       {brainstormOpen && (
         <BrainstormRoomDialog
           key={`brainstorm-${selectedChapter?.id ?? "empty"}`}
           storage={storage}
           chapter={selectedChapter}
           chapterPlan={selectedPlan}
+          planningMode={selectedChapter?.planningMode}
           manuscriptContent={draft}
           enabled={Boolean(onAiRun)}
           onRun={onAiRun ?? (() => Promise.reject(new Error("AI 当前不可用")))}
@@ -3739,6 +5066,7 @@ export default function ManuscriptStudio({
           storage={storage}
           chapter={selectedChapter}
           chapterPlan={selectedPlan}
+          planningMode={selectedChapter?.planningMode}
           manuscriptContent={draft}
           enabled={Boolean(onAiRun)}
           onRun={onAiRun ?? (() => Promise.reject(new Error("AI 当前不可用")))}
@@ -3768,8 +5096,11 @@ export default function ManuscriptStudio({
           {selectedChapter?.trackingStatus === "review" && (
             <span className="ms-status-chip is-warning">同步待更新</span>
           )}
+          {selectedChapter?.planningMode === "detached" && (
+            <span className="ms-status-chip is-warning">正文优先</span>
+          )}
           {project.chapterIndexNeedsMigration && (
-            <span className="ms-migration-note">保存任一结构设置后升级 v2</span>
+            <span className="ms-migration-note">保存任一结构设置后升级 v4</span>
           )}
         </div>
         <div className="ms-workbench-actions" aria-label="正文辅助工具">
@@ -3849,8 +5180,8 @@ export default function ManuscriptStudio({
             type="button"
             className="ms-mobile-inspector-toggle"
             onClick={() => setMobileInspectorOpen((open) => !open)}
-            title="打开章节与排版面板"
-            aria-label="打开章节与排版面板"
+            title="打开基本与排版面板"
+            aria-label="打开基本与排版面板"
           >
             <PanelRight className="h-4 w-4" />
           </button>
@@ -4225,6 +5556,17 @@ export default function ManuscriptStudio({
                   </button>
                   <button
                     type="button"
+                    className="ns-icon-button"
+                    onClick={() => {
+                      setVersionDialogOpen(true);
+                    }}
+                    title="历史版本"
+                    aria-label="历史版本"
+                  >
+                    <History className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
                     className="ns-button"
                     onClick={() => void saveCurrent()}
                     disabled={!dirty || isSaving}
@@ -4242,7 +5584,26 @@ export default function ManuscriptStudio({
                 {creativeBrief && (
                   <div className="ms-creative-brief">
                     <WandSparkles className="h-3.5 w-3.5" />
-                    <span>{creativeBrief}</span>
+                    <div className="ms-creative-brief-copy">
+                      <strong>已采用脑暴方案</strong>
+                      <span>{creativeBrief}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="ns-button is-primary"
+                      onClick={() => void runWritingAi("generate")}
+                      disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" /> 基于方案完整生成
+                    </button>
+                    <button
+                      type="button"
+                      className="ns-button"
+                      onClick={() => void runWritingAi("continue")}
+                      disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
+                    >
+                      <PenLine className="h-3.5 w-3.5" /> 续写
+                    </button>
                     <button
                       type="button"
                       onClick={() => setCreativeBrief("")}
@@ -4415,10 +5776,7 @@ export default function ManuscriptStudio({
                           value={draft}
                           onChange={(event) => setDraft(event.target.value)}
                           onSelect={(event) =>
-                            setSelection({
-                              start: event.currentTarget.selectionStart,
-                              end: event.currentTarget.selectionEnd,
-                            })
+                            updateTextSelection(event.currentTarget)
                           }
                           spellCheck={false}
                           aria-label="章节正文"
@@ -4442,27 +5800,52 @@ export default function ManuscriptStudio({
                           {selectedPlan?.sections.length ?? 0} 个计划场景
                         </span>
                         <i />
-                        <span>目标 3,000 字</span>
+                        <span>
+                          {project.metadata.chapterWordCount
+                            ? `目标 ${project.metadata.chapterWordCount.toLocaleString()} 字（±10%）`
+                            : "未设置章节目标字数"}
+                        </span>
                       </footer>
                     </article>
                   )}
                 </div>
                 {writingSurface === "chapter" &&
                   editorMode === "edit" &&
+                  selectionToolbarPosition &&
                   selection.end > selection.start && (
-                    <div className="ms-selection-toolbar" role="toolbar">
+                    <div
+                      className="ms-selection-toolbar"
+                      role="toolbar"
+                      style={
+                        selectionToolbarPosition
+                          ? {
+                              left: selectionToolbarPosition.left,
+                              top: selectionToolbarPosition.top,
+                            }
+                          : undefined
+                      }
+                      onMouseDown={(event) => event.preventDefault()}
+                    >
                       <span>AI</span>
                       <button
                         type="button"
-                        onClick={() => void runWritingAi("revise")}
-                        disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
+                        onClick={() =>
+                          void runWritingAi("revise", "", {
+                            quickSelection: true,
+                          })
+                        }
+                        disabled={!onAiRun || Boolean(aiMode)}
                       >
                         润色
                       </button>
                       <button
                         type="button"
-                        onClick={() => void runWritingAi("expand")}
-                        disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
+                        onClick={() =>
+                          void runWritingAi("expand", "", {
+                            quickSelection: true,
+                          })
+                        }
+                        disabled={!onAiRun || Boolean(aiMode)}
                       >
                         扩写
                       </button>
@@ -4472,9 +5855,10 @@ export default function ManuscriptStudio({
                           void runWritingAi(
                             "revise",
                             "完全重写选区的表达与动作组织，但保持所有事实、人物意图和结果不变。",
+                            { quickSelection: true },
                           )
                         }
-                        disabled={(!onOpenAiAgent && !onAiRun) || Boolean(aiMode)}
+                        disabled={!onAiRun || Boolean(aiMode)}
                       >
                         重写
                       </button>
@@ -4488,13 +5872,23 @@ export default function ManuscriptStudio({
                       </button>
                     </div>
                   )}
-                {candidate && (
-                  <AiCandidatePanel
-                    candidate={candidate}
-                    onApply={applyCandidate}
-                    onDiscard={() => setCandidate(null)}
-                  />
+                {selectionAiLoading && !candidate && (
+                  <SelectionAiLoadingPopover loading={selectionAiLoading} />
                 )}
+                {candidate &&
+                  (candidate.quickSelection && candidate.anchor ? (
+                    <SelectionAiCandidatePopover
+                      candidate={candidate}
+                      onApply={() => applyCandidate()}
+                      onDiscard={() => setCandidate(null)}
+                    />
+                  ) : (
+                    <AiCandidatePanel
+                      candidate={candidate}
+                      onApply={applyCandidate}
+                      onDiscard={() => setCandidate(null)}
+                    />
+                  ))}
                 <footer className="ms-writing-footer">
                   <span>
                     <i className="ms-presence-dot" />
@@ -4642,15 +6036,6 @@ export default function ManuscriptStudio({
             <div>
               <button
                 type="button"
-                onClick={() => setInspectorView("chapter")}
-                className={inspectorView === "chapter" ? "is-active" : ""}
-                title="章节设置"
-                aria-label="章节设置"
-              >
-                <Settings2 className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
                 onClick={() => setMobileInspectorOpen(false)}
                 title="收起上下文"
                 aria-label="收起上下文"
@@ -4663,6 +6048,7 @@ export default function ManuscriptStudio({
             {(
               [
                 ["plan", "计划"],
+                ["chapter", "基本"],
                 ["reference", "资料"],
                 ["ai", "AI"],
                 ["quality", "质量"],
@@ -4692,7 +6078,9 @@ export default function ManuscriptStudio({
                 <GitBranch className="h-3.5 w-3.5" />
                 <span>
                   {selectedPlan
-                    ? `来源：剧情工程 / ${selectedPlan.title}`
+                    ? selectedChapter?.planningMode === "detached"
+                      ? `正文优先 / 对照：${selectedPlan.title}`
+                      : `来源：剧情工程 / ${selectedPlan.title}`
                     : "当前正文未关联剧情章节计划"}
                 </span>
                 <button
@@ -4708,9 +6096,15 @@ export default function ManuscriptStudio({
               </div>
               {!selectedPlan && selectedChapter && (
                 <p className="ms-inspector-hint">
-                  这是自由正文；可在“章节”面板选择剧情章节计划进行关联。
+                  这是自由正文；可直接创作，阶段完成后在“章节”面板提炼到剧情工程。
                 </p>
               )}
+              {selectedPlan?.id &&
+                selectedChapter?.planningMode === "detached" && (
+                  <p className="ms-inspector-hint">
+                    本章已明确脱离原规划。计划用于对照，正文与计划冲突时以正文事实为准。
+                  </p>
+                )}
               <section className="ms-inspector-section">
                 <header>
                   <strong>章节目标</strong>
@@ -5229,11 +6623,49 @@ export default function ManuscriptStudio({
                     size="toolbar"
                     disabled={structureLocked}
                   />
+                  {selectedPlan ? (
+                    <>
+                      <label>正文创作方式</label>
+                      <CustomSelect
+                        value={selectedChapter.planningMode}
+                        options={Object.entries(PLANNING_MODE_LABELS).map(
+                          ([value, label]) => ({ value, label }),
+                        )}
+                        onChange={(value) =>
+                          void runOperation("chapter-planning-mode", () =>
+                            onUpdateChapter(selectedChapter.id, {
+                              planningMode:
+                                value as LoadedNovelChapter["planningMode"],
+                            }),
+                          )
+                        }
+                        ariaLabel="正文创作方式"
+                        size="toolbar"
+                      />
+                      <p className="ms-plan-summary">
+                        {selectedChapter.planningMode === "detached"
+                          ? "正文优先：大纲仅作对照，允许本章明确突破原规划。"
+                          : "参考大纲：AI 会参考本章计划，但正文事实始终优先。"}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="ms-plan-summary">
+                      当前是自由正文，可直接开始创作，完成后再提炼到剧情工程。
+                    </p>
+                  )}
                   {selectedPlan && (
                     <p className="ms-plan-summary">
                       {selectedPlan.description || "该章节计划尚未填写说明。"}
                     </p>
                   )}
+                  <button
+                    type="button"
+                    className="ns-button is-primary w-full"
+                    onClick={openNarrativeExtraction}
+                    disabled={!draft.trim()}
+                  >
+                    <BookMarked className="h-3.5 w-3.5" /> 提炼到剧情工程
+                  </button>
                 </section>
                 {activeDirectoryId &&
                   project.chapterIndex.directories.some(
@@ -5664,6 +7096,57 @@ export default function ManuscriptStudio({
           )}
         </aside>
       </div>
+      <ManuscriptVersionDialog
+        open={versionDialogOpen && Boolean(selectedChapter)}
+        chapterTitle={selectedChapter?.title ?? ""}
+        currentContent={selectedChapter?.content ?? draft}
+        versions={versions}
+        selectedVersion={selectedVersion}
+        maxVersions={versionSettings?.maxVersions ?? 20}
+        versionLimitDraft={versionLimitDraft}
+        dirty={dirty}
+        busy={operation === "restore-version" || operation === "version-limit"}
+        onClose={() => setVersionDialogOpen(false)}
+        onSelectVersion={setSelectedVersion}
+        onVersionLimitChange={setVersionLimitDraft}
+        onVersionLimitBlur={() => {
+          const value = Number(versionLimitDraft);
+          if (!Number.isInteger(value) || value < 1 || value > 200) {
+            setVersionLimitDraft(String(versionSettings?.maxVersions ?? 20));
+            return;
+          }
+          void runOperation("version-limit", async () => {
+            await onSaveManuscriptVersionLimit(value);
+            const settings = await onLoadManuscriptVersionSettings();
+            setVersionSettings(settings);
+            setVersionLimitDraft(String(settings.maxVersions));
+            if (selectedChapter) {
+              setVersions(await onLoadManuscriptVersions(selectedChapter.id));
+            }
+          });
+        }}
+        onRestore={(version) => {
+          if (!selectedChapter) return;
+          void runOperation("restore-version", async () => {
+            if (
+              !window.confirm(
+                `恢复到 ${new Date(version.createdAt).toLocaleString("zh-CN")}？当前正文会先保存为一个版本。`,
+              )
+            ) {
+              return;
+            }
+            await onRestoreManuscriptVersion(
+              selectedChapter.id,
+              version.versionId,
+            );
+            const loadedVersions = await onLoadManuscriptVersions(
+              selectedChapter.id,
+            );
+            setVersions(loadedVersions);
+            setSelectedVersion(loadedVersions[0] ?? null);
+          });
+        }}
+      />
     </div>
   );
 }

@@ -119,6 +119,7 @@
     "sharp": "0.34.5",
     "socks": "^2.8.7",
     "undici": "^8.1.0",
+    "@vue/runtime-dom": "^3.5.40",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.1.12"
   },

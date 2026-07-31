@@ -919,13 +919,18 @@ export default function App() {
   // Helper-overlay launches must hand `handleLaunchProject` a real, committed
   // active launcher tab. Mutating activeTabIdRef before React has committed the
   // tab produces `view=undefined` and can let the new Chat auto-send while hidden.
-  const openLaunchTabNow = useCallback((newTab: Tab) => {
-    const nextTabs = [...tabsRef.current, newTab];
-    flushSync(() => {
-      setTabs((prev) => [...prev, newTab]);
-      setActiveTabId(newTab.id, nextTabs);
-    });
-  }, [setActiveTabId]);
+  // Surface launches may opt out of activation and pass their Tab explicitly.
+  const openLaunchTabNow = useCallback(
+    (newTab: Tab, options: { readonly activate?: boolean } = {}) => {
+      const activate = options.activate !== false;
+      const nextTabs = [...tabsRef.current, newTab];
+      flushSync(() => {
+        setTabs((prev) => [...prev, newTab]);
+        if (activate) setActiveTabId(newTab.id, nextTabs);
+      });
+    },
+    [setActiveTabId],
+  );
 
   const removeUnusedPrecreatedLaunchTab = useCallback((tabId: string) => {
     setTabs((prev) => {
@@ -1870,8 +1875,15 @@ export default function App() {
     initialMessage?: InitialMessage,
     analyticsContext?: LaunchProjectAnalyticsContext,
     sessionBirthHint?: LaunchSessionBirthHint,
+    launchOptions?: {
+      readonly launchTabId?: string;
+    },
   ) => {
-    const activeTabId = activeTabIdRef.current;
+    // Agent surfaces are launched from an existing workbench tab. Bind the
+    // session startup to the pre-created surface tab while keeping the source
+    // workbench active, so a cold sidecar never replaces the workbench with a
+    // blank launcher/chat view during startup.
+    const activeTabId = launchOptions?.launchTabId ?? activeTabIdRef.current;
     if (!activeTabId) return;
 
     // Per-tab launch guard: prevent concurrent launches on the same tab
@@ -3978,13 +3990,17 @@ export default function App() {
       },
     } : {};
     const newTab: Tab = { ...createNewTab(), ...agentSurface };
-    openLaunchTabNow(newTab);
+    // Keep the source workbench visible while a dialog/dock Agent surface
+    // boots. Ordinary tab launches retain their existing foreground behavior.
+    openLaunchTabNow(newTab, { activate: !isSurfacePresentation });
     try {
       await handleLaunchProject(
         project,
         resumeSession?.id,
         initialMessage,
         resumeSession ? { historyEntrySource: 'launcher_overlay' } : { surface: 'agent_card', entryIntent: 'send_message' },
+        undefined,
+        isSurfacePresentation ? { launchTabId: newTab.id } : undefined,
       );
       if (isSurfacePresentation) setActiveTabId(sourceTabId);
       setTabs((current) => {

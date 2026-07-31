@@ -3,7 +3,7 @@ import { z } from "zod";
 import { normalizeWorkbenchStoragePath } from "@/workbench-sdk";
 
 export const NOVEL_SCHEMA_VERSION = 1 as const;
-export const MANUSCRIPT_SCHEMA_VERSION = 3 as const;
+export const MANUSCRIPT_SCHEMA_VERSION = 4 as const;
 
 export const novelKnowledgeGraphSettingsSchema = z
   .object({
@@ -123,6 +123,11 @@ export type ManuscriptTrackingStatus = z.infer<
   typeof manuscriptTrackingStatusSchema
 >;
 
+export const manuscriptPlanningModeSchema = z.enum(["reference", "detached"]);
+export type ManuscriptPlanningMode = z.infer<
+  typeof manuscriptPlanningModeSchema
+>;
+
 export const manuscriptDirectoryKindSchema = z.enum([
   "volume",
   "part",
@@ -202,9 +207,27 @@ const novelChapterRecordV2Schema = z
   })
   .strict();
 
+const novelChapterRecordV3Schema = novelChapterRecordV2Schema
+  .extend({
+    displayNumber: z.number().int().positive(),
+  })
+  .strict();
+
+const deletedNovelChapterV3Schema = novelChapterRecordV3Schema
+  .omit({ path: true })
+  .extend({
+    deletionId: stableIdSchema,
+    deletedAt: z.string().datetime(),
+    originalPath: chapterPathSchema,
+    trashPath: trashPathSchema,
+    rollbackBatchIds: z.array(stableIdSchema),
+  })
+  .strict();
+
 export const novelChapterRecordSchema = novelChapterRecordV2Schema.extend({
   // User-facing sequence number. `number` remains the immutable file serial.
   displayNumber: z.number().int().positive(),
+  planningMode: manuscriptPlanningModeSchema.default("reference"),
 });
 
 export type NovelChapterRecord = z.infer<typeof novelChapterRecordSchema>;
@@ -379,6 +402,18 @@ const novelChapterIndexV2Schema = z
     chapters: z.array(novelChapterRecordV2Schema),
     typography: manuscriptTypographySchema,
     trash: z.array(deletedNovelChapterV2Schema),
+  })
+  .strict();
+
+const novelChapterIndexV3Schema = z
+  .object({
+    schemaVersion: z.literal(3),
+    nextChapterNumber: z.number().int().positive(),
+    structureMode: manuscriptStructureModeSchema,
+    directories: z.array(manuscriptDirectorySchema),
+    chapters: z.array(novelChapterRecordV3Schema),
+    typography: manuscriptTypographySchema,
+    trash: z.array(deletedNovelChapterV3Schema),
   })
   .strict();
 
@@ -605,6 +640,7 @@ export function parseNovelChapterIndex(content: string): NovelChapterIndex {
         narrativeChapterId: null,
         trackingStatus: "idle",
         lastTrackedAt: null,
+        planningMode: "reference" as const,
       })),
     });
   }
@@ -629,10 +665,28 @@ export function parseNovelChapterIndex(content: string): NovelChapterIndex {
       chapters: v2Result.data.chapters.map((chapter) => ({
         ...chapter,
         displayNumber: displayNumberById.get(chapter.id) ?? chapter.order + 1,
+        planningMode: "reference" as const,
       })),
       trash: v2Result.data.trash.map((chapter) => ({
         ...chapter,
         displayNumber: chapter.number,
+        planningMode: "reference" as const,
+      })),
+    });
+  }
+
+  const v3SchemaResult = novelChapterIndexV3Schema.safeParse(source);
+  if (v3SchemaResult.success) {
+    return novelChapterIndexSchema.parse({
+      ...v3SchemaResult.data,
+      schemaVersion: MANUSCRIPT_SCHEMA_VERSION,
+      chapters: v3SchemaResult.data.chapters.map((chapter) => ({
+        ...chapter,
+        planningMode: "reference" as const,
+      })),
+      trash: v3SchemaResult.data.trash.map((chapter) => ({
+        ...chapter,
+        planningMode: "reference" as const,
       })),
     });
   }

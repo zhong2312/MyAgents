@@ -62,10 +62,10 @@ def create_companion_app() -> Flask:
     def workspace_path() -> str:
         return str(request.environ.get("novel.workspace_path", ""))
 
-    def validate_workspace(workspace_path: object, expected_project_id: str) -> str:
-        if not isinstance(workspace_path, str) or not workspace_path.strip():
+    def validate_workspace(raw_workspace_path: object, expected_project_id: str) -> str:
+        if not isinstance(raw_workspace_path, str) or not raw_workspace_path.strip():
             raise ValueError("workspacePath is required")
-        path = Path(workspace_path).expanduser()
+        path = Path(raw_workspace_path).expanduser()
         if not path.is_absolute() or not path.is_dir():
             raise ValueError("workspacePath must be an absolute project directory")
         metadata_path = path.resolve() / "novel.json"

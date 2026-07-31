@@ -1,0 +1,529 @@
+.mirofish-lab-root {
+  --mf-ink: var(--ink, #202124);
+  --mf-muted: var(--ink-muted, #69707d);
+  --mf-subtle: var(--ink-subtle, #9aa1ab);
+  --mf-line: var(--line, #d9dde3);
+  --mf-line-subtle: var(--line-subtle, #eaedf0);
+  --mf-paper: var(--paper, #ffffff);
+  --mf-paper-elevated: var(--paper-elevated, #ffffff);
+  --mf-hover: var(--hover-bg, #f5f6f8);
+  --mf-warm: var(--accent-warm, #bd5a32);
+  --mf-warm-subtle: var(--accent-warm-subtle, #f7e9e2);
+  --mf-cool: var(--accent-cool, #3c6e9e);
+  --mf-cool-subtle: var(--accent-cool-subtle, #e7f0f8);
+  --mf-success: var(--success, #34855c);
+  --mf-error: var(--error, #b34545);
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  font-family: inherit;
+}
+
+.mirofish-lab-header {
+  display: flex;
+  min-height: 4rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--mf-line);
+  background: var(--mf-paper-elevated);
+  padding: 0.75rem 1.25rem;
+}
+
+.mirofish-lab-brand,
+.mirofish-lab-header-actions,
+.mirofish-lab-council-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.mirofish-lab-brand-mark {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--mf-warm);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+}
+
+.mirofish-lab-brand strong,
+.mirofish-lab-brand small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-brand strong {
+  font-size: 0.95rem;
+  font-weight: 680;
+}
+
+.mirofish-lab-brand small {
+  margin-top: 0.15rem;
+  color: var(--mf-muted);
+  font-size: 0.72rem;
+}
+
+.mirofish-lab-connection,
+.mirofish-lab-coming,
+.mirofish-lab-run-status {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--mf-line);
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.mirofish-lab-connection.is-connected {
+  border-color: color-mix(in srgb, var(--mf-success) 35%, var(--mf-line));
+  background: color-mix(in srgb, var(--mf-success) 8%, var(--mf-paper));
+  color: var(--mf-success);
+}
+
+.mirofish-lab-connection.is-local-only {
+  color: var(--mf-muted);
+}
+
+.mirofish-lab-refresh,
+.mirofish-lab-state button {
+  min-height: 1.9rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 5px;
+  background: var(--mf-paper-elevated);
+  padding: 0 0.65rem;
+  color: var(--mf-ink);
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-refresh:hover:not(:disabled),
+.mirofish-lab-state button:hover {
+  background: var(--mf-hover);
+}
+
+.mirofish-lab-refresh:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.mirofish-lab-tabs {
+  display: flex;
+  min-height: 2.75rem;
+  gap: 0.15rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--mf-line-subtle);
+  padding: 0 1.25rem;
+}
+
+.mirofish-lab-tabs button {
+  position: relative;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  padding: 0 0.7rem;
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.mirofish-lab-tabs button:hover {
+  color: var(--mf-ink);
+}
+
+.mirofish-lab-tabs button.is-active {
+  color: var(--mf-warm);
+  font-weight: 650;
+}
+
+.mirofish-lab-tabs button.is-active::after {
+  position: absolute;
+  right: 0.65rem;
+  bottom: -1px;
+  left: 0.65rem;
+  height: 2px;
+  background: var(--mf-warm);
+  content: "";
+}
+
+.mirofish-lab-content {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+
+.mirofish-lab-section-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.mirofish-lab-section-title h2 {
+  font-size: 1rem;
+  font-weight: 680;
+}
+
+.mirofish-lab-section-title p {
+  margin-top: 0.25rem;
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.mirofish-lab-stat-grid,
+.mirofish-lab-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.mirofish-lab-stat,
+.mirofish-lab-panel,
+.mirofish-lab-analysis-card {
+  border: 1px solid var(--mf-line);
+  border-radius: 6px;
+  background: var(--mf-paper-elevated);
+}
+
+.mirofish-lab-stat {
+  display: grid;
+  min-height: 6.3rem;
+  align-content: center;
+  gap: 0.28rem;
+  padding: 0.85rem;
+}
+
+.mirofish-lab-stat-label,
+.mirofish-lab-stat-detail {
+  color: var(--mf-muted);
+  font-size: 0.7rem;
+}
+
+.mirofish-lab-stat-value {
+  color: var(--mf-ink);
+  font-size: 1.45rem;
+  font-weight: 700;
+}
+
+.mirofish-lab-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 0.7rem;
+  margin-top: 0.7rem;
+}
+
+.mirofish-lab-panel {
+  min-width: 0;
+  padding: 1rem;
+}
+
+.mirofish-lab-panel-wide {
+  min-height: 18rem;
+}
+
+.mirofish-lab-anchor {
+  display: grid;
+  gap: 0.35rem;
+  border-left: 3px solid var(--mf-warm);
+  background: var(--mf-warm-subtle);
+  padding: 0.75rem;
+}
+
+.mirofish-lab-anchor strong {
+  font-size: 0.85rem;
+}
+
+.mirofish-lab-anchor span,
+.mirofish-lab-muted {
+  color: var(--mf-muted);
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+.mirofish-lab-muted {
+  margin-top: 0.7rem;
+}
+
+.mirofish-lab-entity-list {
+  display: grid;
+  max-height: 16rem;
+  gap: 0.35rem;
+  overflow-y: auto;
+}
+
+.mirofish-lab-entity,
+.mirofish-lab-run {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid var(--mf-line-subtle);
+  border-radius: 4px;
+  background: transparent;
+  padding: 0.5rem 0.55rem;
+  text-align: left;
+}
+
+.mirofish-lab-entity:hover,
+.mirofish-lab-run:hover {
+  background: var(--mf-hover);
+}
+
+.mirofish-lab-entity-kind {
+  color: var(--mf-cool);
+  font-size: 0.64rem;
+}
+
+.mirofish-lab-entity strong {
+  min-width: 4rem;
+  overflow: hidden;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-entity small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mf-muted);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-graph-placeholder {
+  display: flex;
+  min-height: 14rem;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  border: 1px dashed var(--mf-line);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-graph-ring {
+  width: 9rem;
+  height: 9rem;
+  border: 1px solid color-mix(in srgb, var(--mf-cool) 45%, var(--mf-line));
+  border-radius: 50%;
+}
+
+.mirofish-lab-graph-copy {
+  display: grid;
+  max-width: 22rem;
+  gap: 0.35rem;
+}
+
+.mirofish-lab-graph-copy strong {
+  font-size: 0.95rem;
+}
+
+.mirofish-lab-graph-copy span,
+.mirofish-lab-graph-copy small {
+  color: var(--mf-muted);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.mirofish-lab-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.8rem;
+  color: var(--mf-muted);
+  font-size: 0.7rem;
+}
+
+.mirofish-lab-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.mirofish-lab-legend i {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--mf-cool);
+}
+
+.mirofish-lab-legend i.is-planned {
+  background: var(--mf-warm);
+}
+
+.mirofish-lab-legend i.is-hypothesis {
+  background: #8b62a6;
+}
+
+.mirofish-lab-analysis-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mirofish-lab-analysis-card {
+  display: grid;
+  align-content: start;
+  gap: 0.5rem;
+  min-height: 11rem;
+  padding: 0.9rem;
+}
+
+.mirofish-lab-analysis-index {
+  color: var(--mf-warm);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.mirofish-lab-analysis-card h3 {
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.mirofish-lab-analysis-card p {
+  color: var(--mf-muted);
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+.mirofish-lab-coming {
+  justify-self: start;
+  color: var(--mf-muted);
+}
+
+.mirofish-lab-council {
+  min-height: 15rem;
+}
+
+.mirofish-lab-council-head {
+  justify-content: space-between;
+}
+
+.mirofish-lab-council-head strong {
+  font-size: 0.9rem;
+}
+
+.mirofish-lab-council-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 1.1rem;
+}
+
+.mirofish-lab-tag {
+  border: 1px solid color-mix(in srgb, var(--mf-cool) 30%, var(--mf-line));
+  border-radius: 999px;
+  background: var(--mf-cool-subtle);
+  padding: 0.3rem 0.55rem;
+  color: var(--mf-cool);
+  font-size: 0.7rem;
+}
+
+.mirofish-lab-run-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.mirofish-lab-run {
+  width: 100%;
+  justify-content: space-between;
+  padding: 0.65rem 0.7rem;
+}
+
+.mirofish-lab-run-main {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.mirofish-lab-run-main strong {
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-run-main span {
+  color: var(--mf-muted);
+  font-size: 0.68rem;
+}
+
+.mirofish-lab-run-status.is-completed {
+  border-color: color-mix(in srgb, var(--mf-success) 35%, var(--mf-line));
+  color: var(--mf-success);
+}
+
+.mirofish-lab-run-status.is-failed {
+  border-color: color-mix(in srgb, var(--mf-error) 35%, var(--mf-line));
+  color: var(--mf-error);
+}
+
+.mirofish-lab-state {
+  display: grid;
+  min-height: 20rem;
+  place-content: center;
+  justify-items: center;
+  gap: 0.55rem;
+  padding: 1.5rem;
+  color: var(--mf-muted);
+  text-align: center;
+}
+
+.mirofish-lab-state strong {
+  color: var(--mf-ink);
+  font-size: 0.9rem;
+}
+
+.mirofish-lab-state p {
+  max-width: 32rem;
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.mirofish-lab-state.is-error strong {
+  color: var(--mf-error);
+}
+
+@media (max-width: 900px) {
+  .mirofish-lab-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mirofish-lab-columns,
+  .mirofish-lab-analysis-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mirofish-lab-graph-placeholder {
+    flex-direction: column;
+    gap: 1.25rem;
+    padding: 1.5rem;
+    text-align: center;
+  }
+}
+
+@media (max-width: 560px) {
+  .mirofish-lab-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mirofish-lab-header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .mirofish-lab-content {
+    padding: 0.8rem;
+  }
+}

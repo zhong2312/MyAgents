@@ -17,6 +17,7 @@ import {
   type DeletedNovelChapter,
   type ManuscriptDirectory,
   type ManuscriptDirectoryKind,
+  type ManuscriptPlanningMode,
   type ManuscriptStructureMode,
   type ManuscriptTypography,
   type NovelChapterIndex,
@@ -62,6 +63,7 @@ export interface UpdateNovelChapterInput {
   readonly order?: number;
   readonly trackingStatus?: NovelChapterRecord["trackingStatus"];
   readonly lastTrackedAt?: string | null;
+  readonly planningMode?: ManuscriptPlanningMode;
 }
 
 export interface UpdateNovelProjectSettingsInput {
@@ -573,6 +575,7 @@ export function createNovelRepository(
           (chapter) => chapter.directoryId === directoryId,
         ).length,
         narrativeChapterId: options.narrativeChapterId ?? null,
+        planningMode: "reference",
         trackingStatus: "idle",
         lastTrackedAt: null,
       };
@@ -709,6 +712,7 @@ export function createNovelRepository(
         ...(input.lastTrackedAt !== undefined
           ? { lastTrackedAt: input.lastTrackedAt }
           : {}),
+        ...(input.planningMode ? { planningMode: input.planningMode } : {}),
       };
       const remaining = project.chapterIndex.chapters.filter(
         (chapter) => chapter.id !== chapterId,
@@ -1120,6 +1124,7 @@ export function createNovelRepository(
                 : null,
             order: plan.order,
             narrativeChapterId: plan.id,
+            planningMode: existing.planningMode,
           };
         } else {
           const number = nextChapterNumber++;
@@ -1138,6 +1143,7 @@ export function createNovelRepository(
                 : null,
             order: plan.order,
             narrativeChapterId: plan.id,
+            planningMode: "reference",
             trackingStatus: "idle",
             lastTrackedAt: null,
           };
@@ -1185,6 +1191,7 @@ export function createNovelRepository(
               directoryId: chapter.directoryId,
               order: chapter.order,
               narrativeChapterId: chapter.narrativeChapterId,
+              planningMode: chapter.planningMode,
               trackingStatus: chapter.trackingStatus,
               lastTrackedAt: chapter.lastTrackedAt,
               originalPath: chapter.path,
@@ -1420,6 +1427,7 @@ export function createNovelRepository(
         directoryId: chapter.directoryId,
         order: chapter.order,
         narrativeChapterId: chapter.narrativeChapterId,
+        planningMode: chapter.planningMode,
         trackingStatus: chapter.trackingStatus,
         lastTrackedAt: chapter.lastTrackedAt,
         originalPath: chapter.path,
@@ -1573,6 +1581,7 @@ export function createNovelRepository(
           : null,
         order: deleted.order,
         narrativeChapterId: restoredNarrativeChapterId,
+        planningMode: deleted.planningMode,
         trackingStatus: deleted.trackingStatus,
         lastTrackedAt: deleted.lastTrackedAt,
       };

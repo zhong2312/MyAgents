@@ -75,6 +75,7 @@ import {
 } from "./settingLibraryRepository";
 import WorldMapPrototype from "./WorldMapPrototype";
 import WorldSimulationWorkbench from "./WorldSimulationWorkbench";
+import MiroFishNovelWorkbench from "./MiroFishNovelWorkbench";
 import WorldProposalReview from "./WorldProposalReview";
 import { buildWorldProposalAgentInstructions } from "./worldProposalSchema";
 import { useNovelProject } from "./useNovelProject";
@@ -1643,6 +1644,13 @@ ${JSON.stringify(injectedContext, null, 2)}
           onSaveTypography={controller.saveTypography}
           onDeleteChapter={controller.deleteChapter}
           onRestoreChapter={controller.restoreChapter}
+          onLoadManuscriptVersions={controller.loadManuscriptVersions}
+          onLoadManuscriptVersionSettings={
+            controller.loadManuscriptVersionSettings
+          }
+          onSaveManuscriptVersionLimit={controller.saveManuscriptVersionLimit}
+          onRestoreManuscriptVersion={controller.restoreManuscriptVersion}
+          onExtractChaptersToNarrative={controller.extractChaptersToNarrative}
           onAdoptSimulation={controller.adoptSimulationPath}
           onAiRun={
             context.aiRuns.isAvailable
@@ -1975,6 +1983,16 @@ ${JSON.stringify(injectedContext, null, 2)}
         />
       );
       break;
+    case "simulation-lab":
+      content = (
+        <MiroFishNovelWorkbench
+          storage={context.storage}
+          simulationRuns={context.simulationRuns}
+          isActive={context.isActive}
+          onOpenConsole={() => context.navigate("simulation")}
+        />
+      );
+      break;
     case "timeline":
       content = (
         <TimelineLibrary
@@ -2060,6 +2078,7 @@ ${JSON.stringify(injectedContext, null, 2)}
     "knowledge",
     "map",
     "simulation",
+    "simulation-lab",
     "timeline",
     "narrative",
     "inspiration",

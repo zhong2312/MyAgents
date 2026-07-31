@@ -10,7 +10,7 @@
     { "path": "backend/app/services/novel_simulation_manager.py", "sha256": "2c53bf727c35bd4415e6f72e60653bf1d9170a179d2444df0f16e6f0ef145b3d" },
     { "path": "backend/app/services/novel_simulation_models.py", "sha256": "42692d370e1b6fa11712004dce42ae9a62e725a708ff9a316e17982c44206934" },
     { "path": "backend/companion-requirements.txt", "sha256": "027b18602b327eaebb89f162422cc9afb2b424438bb36038e6a2681b1e594dff" },
-    { "path": "backend/novel_companion.py", "sha256": "d5073227839f7d817f5a572c683ed793f0c8c99c1bc7a7e7371b3c114b6b0553" },
+    { "path": "backend/novel_companion.py", "sha256": "93604c72264296e1abe6d82b18e95c67d0fc586807de189c93cfbb32e85258d3" },
     { "path": "LICENSE", "sha256": "8d56b405468aad11f87ab5763f901e276e08d9646ff5c8481b1762b6b789e9ed" }
   ]
 }
