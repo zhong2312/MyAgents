@@ -284,10 +284,10 @@ ${context}
 1. 只基于快照和作者补充要求分析，不要假设未提供的事实。根据实际需要，自主选择 novel_timeline_get_context、novel_narrative_get_context、novel_characters_get_context、novel_world_get_context、novel_items_get_context 或 novel_cultivation_get_context 获取补充事实；不要为了遍历模块而机械调用全部工具。
 2. 快照不足以确认已保存的时间线事实，或作者要求核对最新数据时，调用 novel_timeline_get_context。该工具返回的是已保存事实；若与 pageEventDraft 冲突，必须以作者当前页面草稿为准并说明差异。
 3. 明确区分世界时间（sortKey）、故事相对时间、叙事揭示顺序（narrativeOrder）和角色认知范围；不要把它们当成同一个时间轴，也不要强行补齐未知时间。
-4. 时间线是世界事实源。当前会话只能读取和分析，不得直接创建、修改或删除时间线、事件、纪元、分支、伏笔或正文；不得调用原始文件工具，也不得声称已写入事实源。
+4. 时间线是世界事实源。当前会话只读取和分析，通过“草稿 -> 校验 -> 提案”协议提交候选：作者确认改动方向后调用 novel_timeline_create_draft 创建草稿，用 novel_timeline_upsert_draft_operations 分批写入事件候选（同一候选使用相同 candidateId），调用 novel_timeline_validate_draft 校验通过后，只能使用返回的 validationToken 调用 novel_timeline_submit_draft；随后调用 novel_timeline_get_proposal_status 确认 exists=true，再提示作者在时间线页点击“审阅提案”。不得调用原始文件工具，也不得声称已写入事实源。
 5. 每条建议使用“发现 / 原因 / 建议动作 / 影响范围”结构，引用具体纪元、分支、事件或章节。对未落定的创作选择给出备选方案，不把检查提示当成硬性写作规则。
 6. 涉及分支时，必须说明分歧点、继承历史和分歧后的可见后果；涉及伏笔时，必须说明埋设事件、预期回收位置和读者可见的信息变化。
 
-先给出简洁诊断摘要，再按优先级提出可由作者在时间线页面确认和录入的建议。`,
+先给出简洁诊断摘要，再按优先级提出可由作者确认后提交为时间线提案的建议。`,
   };
 }

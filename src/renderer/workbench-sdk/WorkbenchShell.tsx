@@ -49,9 +49,10 @@ import {
   type WorkbenchAgentSessionRequest,
   type WorkbenchAiRunRequest,
   type WorkbenchAiRunResult,
-  type WorkbenchTabTarget,
+  type WorkbenchSearch,
   type WorkbenchSimulationDataFor,
   type WorkbenchSimulationRequest,
+  type WorkbenchTabTarget,
 } from "../../shared/workbench-sdk";
 import { getFolderName } from "@/types/tab";
 import { workbenchRegistry } from "@/workbench-registry";
@@ -76,6 +77,8 @@ interface WorkbenchShellProps {
     workspacePath: string,
     request: WorkbenchSimulationRequest,
   ) => Promise<unknown>;
+  /** 宿主提供工作区全文搜索；返回 null 表示当前环境不可用（如浏览器开发模式）。 */
+  readonly onProvideSearch?: (workspacePath: string) => WorkbenchSearch | null;
   readonly onNavigationGuardChange?: (
     guard: WorkbenchNavigationGuard | null,
   ) => void;
@@ -90,6 +93,29 @@ interface BoundaryProps {
 
 interface BoundaryState {
   readonly error: Error | null;
+}
+
+/** 当前环境不可用时的搜索降级实现（isAvailable=false，调用即抛错）。 */
+const UNAVAILABLE_SEARCH: WorkbenchSearch = Object.freeze({
+  isAvailable: false,
+  async searchFiles() {
+    throw new Error("工作区全文搜索仅桌面模式可用");
+  },
+  async refreshIndex() {
+    throw new Error("工作区全文搜索仅桌面模式可用");
+  },
+  async invalidateIndex() {
+    throw new Error("工作区全文搜索仅桌面模式可用");
+  },
+});
+
+/** 把宿主的可选搜索提供者包装为稳定能力；未提供或返回 null 时降级为不可用。 */
+function createSearchCapability(
+  onProvideSearch: WorkbenchShellProps["onProvideSearch"],
+  workspacePath: string,
+): WorkbenchSearch {
+  const search = onProvideSearch?.(workspacePath);
+  return search ?? UNAVAILABLE_SEARCH;
 }
 
 class WorkbenchModuleBoundary extends Component<BoundaryProps, BoundaryState> {
@@ -180,6 +206,7 @@ export default function WorkbenchShell({
   onOpenAgentSession,
   onRunAi,
   onRequestSimulation,
+  onProvideSearch,
   onNavigationGuardChange,
   registry = workbenchRegistry,
 }: WorkbenchShellProps) {
@@ -396,6 +423,7 @@ export default function WorkbenchShell({
       isAvailable: Boolean(onRequestSimulation),
       request: requestSimulation,
     }),
+    search: createSearchCapability(onProvideSearch, workspacePath),
     navigate,
     registerNavigationGuard,
   });

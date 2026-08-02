@@ -6,6 +6,7 @@ import type {
   WorkbenchAgentSessionRequest,
   WorkbenchManifest,
   WorkbenchProjectInitialization,
+  WorkbenchSearch,
   WorkbenchSimulationDataFor,
   WorkbenchSimulationRequest,
   WorkbenchStorage,
@@ -55,6 +56,8 @@ export interface WorkbenchRendererContext {
   readonly agentSessions: WorkbenchAgentSessions;
   readonly aiRuns: WorkbenchAiRuns;
   readonly simulationRuns: WorkbenchSimulationRuns;
+  /** 工作区全文搜索；浏览器开发模式不可用（isAvailable=false）。 */
+  readonly search: WorkbenchSearch;
   navigate(route: string): void;
   registerNavigationGuard(guard: WorkbenchNavigationGuard): () => void;
 }

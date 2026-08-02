@@ -1,5 +1,6 @@
 import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 
+import { validateTimelineCrossReferences } from "./crossLibraryReferences";
 import {
   createEmptyTimelineLibrary,
   parseTimelineLibrary,
@@ -68,6 +69,7 @@ export function createNovelTimelineLibraryRepository(
     },
 
     async save(current: LoadedTimelineLibrary, library: TimelineLibrary) {
+      await validateTimelineCrossReferences(storage, library);
       const content = serializeTimelineLibrary(library);
       const parsed = parseTimelineLibrary(content);
       const file = await storage.writeText(TIMELINE_LIBRARY_PATH, content, {

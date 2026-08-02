@@ -487,14 +487,18 @@ function ChapterDetail({
   const manuscriptOptions = useMemo<NarrativeEntityOption[]>(
     () => [
       { id: "", label: "暂不关联正文" },
-      ...manuscriptChapters.map((manuscript) => ({
-        id: manuscript.id,
-        label: `第 ${manuscript.displayNumber} 章 · ${manuscript.title}`,
-        description: linkedByManuscript.has(manuscript.id)
-          ? `已被“${linkedByManuscript.get(manuscript.id)}”关联`
-          : `${manuscript.words.toLocaleString("zh-CN")} 字`,
-        keywords: [String(manuscript.displayNumber), manuscript.title],
-      })),
+      ...manuscriptChapters.map((manuscript) => {
+        const occupiedBy = linkedByManuscript.get(manuscript.id);
+        return {
+          id: manuscript.id,
+          label: `第 ${manuscript.displayNumber} 章 · ${manuscript.title}`,
+          description: occupiedBy
+            ? `已被“${occupiedBy}”关联`
+            : `${manuscript.words.toLocaleString("zh-CN")} 字`,
+          keywords: [String(manuscript.displayNumber), manuscript.title],
+          disabled: occupiedBy !== undefined,
+        };
+      }),
     ],
     [linkedByManuscript, manuscriptChapters],
   );

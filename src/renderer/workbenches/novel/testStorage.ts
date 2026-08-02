@@ -3,6 +3,8 @@ import type {
   WorkbenchStorageChange,
   WorkbenchStorageEntry,
   WorkbenchStoragePathInfo,
+  WorkbenchStorageTransfer,
+  WorkbenchStorageTransferResult,
 } from "@/workbench-sdk";
 
 function textSize(content: string): number {
@@ -156,8 +158,30 @@ export class NovelMemoryStorage implements WorkbenchStorage {
     return { transfers: [], errors: [] };
   }
 
-  async move() {
-    return { transfers: [], errors: [] };
+  async move(
+    paths: readonly string[],
+    targetDirectory: string,
+  ): Promise<WorkbenchStorageTransferResult> {
+    const transfers: WorkbenchStorageTransfer[] = [];
+    const errors: string[] = [];
+    for (const source of paths) {
+      const content = this.files.get(source);
+      if (content === undefined) {
+        errors.push(`File not found: ${source}`);
+        continue;
+      }
+      const fileName = source.split("/").at(-1) ?? "";
+      const target = targetDirectory ? `${targetDirectory}/${fileName}` : fileName;
+      this.files.delete(source);
+      this.files.set(target, content);
+      const segments = target.split("/");
+      segments.pop();
+      for (let length = 1; length <= segments.length; length += 1) {
+        this.directories.add(segments.slice(0, length).join("/"));
+      }
+      transfers.push({ sourcePath: source, targetPath: target });
+    }
+    return { transfers, errors };
   }
 
   async rename(path: string, newName: string): Promise<WorkbenchStorageEntry> {
@@ -171,7 +195,23 @@ export class NovelMemoryStorage implements WorkbenchStorage {
   }
 
   async remove(path: string): Promise<boolean> {
-    return this.files.delete(path) || this.directories.delete(path);
+    const removedFile = this.files.delete(path);
+    let removedDirectory = false;
+    if (this.directories.has(path)) {
+      removedDirectory = true;
+      // 级联删除目录内的文件与子目录，与磁盘语义一致
+      const prefix = path ? `${path}/` : "";
+      for (const filePath of [...this.files.keys()]) {
+        if (filePath.startsWith(prefix)) this.files.delete(filePath);
+      }
+      for (const directoryPath of [...this.directories]) {
+        if (directoryPath !== path && directoryPath.startsWith(prefix)) {
+          this.directories.delete(directoryPath);
+        }
+      }
+      this.directories.delete(path);
+    }
+    return removedFile || removedDirectory;
   }
 
   async watch(listener: (change: WorkbenchStorageChange) => void) {

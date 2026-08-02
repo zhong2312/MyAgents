@@ -24,6 +24,8 @@ import {
   type KnowledgeSearchResult,
   type KnowledgeSourceRef,
 } from "./knowledgeGraph";
+import KnowledgeGraphView from "./KnowledgeGraphView";
+import WikiView from "./WikiView";
 
 type KnowledgeFilter = "all" | KnowledgeNodeKind;
 type BuildStatus = "idle" | "building" | "ready" | "error";
@@ -113,6 +115,7 @@ export default function KnowledgeBase({
   const [isToggling, setIsToggling] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<KnowledgeFilter>("all");
+  const [view, setView] = useState<"list" | "graph" | "wiki">("list");
   const [selectedId, setSelectedId] = useState("");
 
   const rebuild = useCallback(async () => {
@@ -207,6 +210,33 @@ export default function KnowledgeBase({
             <Toggle enabled={enabled} disabled={isToggling} onChange={(next) => void changeEnabled(next)} />
           </div>
           {enabled && (
+            <div className="flex h-8 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] p-1">
+              <button
+                type="button"
+                onClick={() => setView("list")}
+                className={`h-6 rounded px-2 text-xs ${view === "list" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+              >
+                列表
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("graph")}
+                className={`h-6 rounded px-2 text-xs ${view === "graph" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                title="图谱视图（只读，双击节点设为中心）"
+              >
+                图谱
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("wiki")}
+                className={`h-6 rounded px-2 text-xs ${view === "wiki" ? "bg-[var(--accent-cool)] text-white" : "text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"}`}
+                title="百科阅读模式"
+              >
+                百科
+              </button>
+            </div>
+          )}
+          {enabled && (
             <button
               type="button"
               onClick={() => void rebuild()}
@@ -274,6 +304,22 @@ export default function KnowledgeBase({
           ) : !snapshot || snapshot.nodes.length === 0 ? (
             <EmptyState enabled />
           ) : (
+            view === "graph" ? (
+              <KnowledgeGraphView
+                nodes={snapshot.nodes}
+                edges={snapshot.edges}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onOpenSource={onOpenSource}
+              />
+            ) : view === "wiki" ? (
+              <WikiView
+                storage={storage}
+                projectTitle={projectTitle}
+                snapshot={snapshot}
+                onOpenSource={onOpenSource}
+              />
+            ) : (
             <div className="grid min-h-0 flex-1 grid-cols-[minmax(220px,0.85fr)_minmax(280px,1.4fr)_minmax(300px,1fr)] divide-x divide-[var(--line-subtle)] max-xl:grid-cols-[minmax(190px,0.8fr)_minmax(260px,1.2fr)_minmax(280px,1fr)] max-lg:grid-cols-[minmax(180px,0.8fr)_minmax(260px,1.2fr)]">
               <section className="min-h-0 overflow-y-auto p-4">
                 <div className="flex items-center justify-between text-xs text-[var(--ink-muted)]">
@@ -363,8 +409,8 @@ export default function KnowledgeBase({
                   </>
                 ) : <p className="text-sm text-[var(--ink-muted)]">暂无来源</p>}
               </section>
-            </div>
-          )}
+              </div>
+            ))}
         </>
       )}
     </div>

@@ -1,8 +1,12 @@
 import { BookOpen, FolderOpen, Loader2, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
-import type { WorkbenchProjectCreatorProps } from "@/workbench-sdk";
+import {
+  CustomSelect,
+  type WorkbenchProjectCreatorProps,
+} from "@/workbench-sdk";
 import NovelGenrePicker from "./NovelGenrePicker";
+import { novelLanguageOptions } from "./novelGenres";
 import NovelPlanningFields from "./NovelPlanningFields";
 import { createNovelProjectInitialization } from "./projectInitialization";
 import {
@@ -47,6 +51,7 @@ export default function NovelProjectCreator({
   const [chapterWordCount, setChapterWordCount] = useState(
     DEFAULT_CHAPTER_WORD_COUNT,
   );
+  const [language, setLanguage] = useState("zh-CN");
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -112,6 +117,7 @@ export default function NovelProjectCreator({
           title: title.trim(),
           genres,
           ...planning,
+          language,
           createdAt,
         }),
       });
@@ -256,6 +262,20 @@ export default function NovelProjectCreator({
             onChange={setGenres}
             onOpenChange={setGenreMenuOpen}
           />
+
+          <div>
+            <span className="mb-2 block text-sm font-medium text-[var(--ink)]">
+              创作语言
+            </span>
+            <CustomSelect
+              value={language}
+              options={novelLanguageOptions()}
+              onChange={setLanguage}
+              ariaLabel="创作语言"
+              size="toolbar"
+              disabled={isCreating}
+            />
+          </div>
 
           <div className="border-t border-[var(--line-subtle)] pt-5">
             <NovelPlanningFields

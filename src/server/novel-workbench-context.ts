@@ -28,7 +28,8 @@ export type NovelWorkbenchMode =
   | "items"
   | "characters"
   | "factions"
-  | "cultivation";
+  | "cultivation"
+  | "maps";
 
 export interface NovelWorkbenchContext {
   readonly mode: NovelWorkbenchMode;
@@ -51,12 +52,13 @@ const NOVEL_WORKBENCH_TOOL_PREFIXES: Readonly<
   assist: ["novel_world_"],
   narrative: ["novel_narrative_"],
   manuscript: ["novel_manuscript_"],
-  timeline: [],
+  timeline: ["novel_timeline_"],
   inspiration: [],
   items: ["novel_items_"],
   characters: ["novel_characters_"],
-  factions: [],
+  factions: ["novel_factions_"],
   cultivation: ["novel_cultivation_"],
+  maps: ["novel_maps_"],
 };
 
 const NOVEL_WORKBENCH_CROSS_DOMAIN_READ_TOOLS = new Set([
@@ -115,10 +117,11 @@ export function configureNovelWorkbenchRequest(
     mode !== "items" &&
     mode !== "characters" &&
     mode !== "factions" &&
-    mode !== "cultivation"
+    mode !== "cultivation" &&
+    mode !== "maps"
   ) {
     throw new Error(
-      "toolset.context.mode must be world, template, assist, narrative, manuscript, timeline, inspiration, items, characters, factions or cultivation",
+      "toolset.context.mode must be world, template, assist, narrative, manuscript, timeline, inspiration, items, characters, factions, cultivation or maps",
     );
   }
   if (typeof promptId !== "string" || !promptId.trim()) {

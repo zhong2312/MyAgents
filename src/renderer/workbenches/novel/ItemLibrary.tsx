@@ -33,6 +33,7 @@ import {
   Sword,
   Swords,
   Tag,
+  Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -46,6 +47,7 @@ import {
 } from "react";
 
 import {
+  ConfirmDialog,
   CustomSelect,
   DraggableDialogFrame,
   type SelectOption,
@@ -53,8 +55,13 @@ import {
 } from "@/workbench-sdk";
 
 import MarkdownVisualEditor from "./MarkdownVisualEditor";
+import type { DomainEntityRef } from "./domainIndex";
 import ItemLibraryAiDialog from "./ItemLibraryAiDialog";
 import ItemBatchProposalReview from "./ItemBatchProposalReview";
+import {
+  findInboundReferences,
+  formatInboundReferenceHits,
+} from "./crossLibraryReferences";
 import ItemLibraryManagement, {
   createEmptyItemFieldDefinition,
   ItemFieldEditorDialog,
@@ -97,6 +104,8 @@ interface ItemLibraryProps {
   readonly proposalReviewOpen?: boolean;
   readonly onOpenProposalReview?: () => void;
   readonly onCloseProposalReview?: () => void;
+  /** 外部实体定位请求（T3 消费：自动选中对应物品）。 */
+  readonly focus?: DomainEntityRef | null;
 }
 
 const STATUS_OPTIONS: SelectOption[] = [
@@ -214,6 +223,7 @@ export default function ItemLibrary({
   onOpenBatchAgent,
   isBatchAgentLaunching = false,
   proposalReviewOpen = false,
+  focus,
   onOpenProposalReview,
   onCloseProposalReview,
 }: ItemLibraryProps) {
@@ -258,6 +268,7 @@ export default function ItemLibrary({
   );
   const [categoryDrawer, setCategoryDrawer] = useState(false);
   const [listDrawer, setListDrawer] = useState(false);
+  const [deleteItemOpen, setDeleteItemOpen] = useState(false);
 
   const libraryRef = useRef(library);
   const itemRef = useRef(item);
@@ -338,6 +349,17 @@ export default function ItemLibrary({
     },
     [repository],
   );
+
+  // 外部实体定位：焦点物品存在时自动选中（T3）
+  useEffect(() => {
+    if (!focus || focus.kind !== "item") return;
+    const entry = libraryRef.current?.index.items.find(
+      (item) => item.id === focus.id,
+    );
+    if (entry) {
+      void readItem(libraryRef.current!, entry.id);
+    }
+  }, [focus, readItem]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -450,6 +472,49 @@ export default function ItemLibrary({
     }
     return true;
   }, [saveCurrent]);
+
+  const deleteItem = useCallback(async () => {
+    const itemId = selectedItemIdRef.current;
+    const activeLibrary = libraryRef.current;
+    const entry = activeLibrary?.index.items.find(
+      (candidate) => candidate.id === itemId,
+    );
+    if (!activeLibrary || !itemId || !entry) {
+      setDeleteItemOpen(false);
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      // 先检查反向引用：被其他库引用的物品禁止删除
+      const inbound = await findInboundReferences(
+        storage,
+        "item",
+        itemId,
+      ).catch(() => []);
+      if (inbound.length > 0) {
+        setError(
+          `该物品仍被其他库引用，删除前请先移除引用：${formatInboundReferenceHits(inbound)}`,
+        );
+        return;
+      }
+      if (!(await flushCurrentDraft())) return;
+      const next = await repository.deleteItem(activeLibrary, itemId);
+      libraryRef.current = next;
+      setLibrary(next);
+      setItem(null);
+      setRecordDraft(null);
+      setPageDraft("");
+      setSelectedItemId("");
+      selectedItemIdRef.current = "";
+      await load();
+    } catch (cause) {
+      setError(toError(cause));
+    } finally {
+      setIsSaving(false);
+      setDeleteItemOpen(false);
+    }
+  }, [flushCurrentDraft, load, repository, storage]);
 
   const reloadSafely = useCallback(async () => {
     if (await flushCurrentDraft()) await load();
@@ -1146,6 +1211,16 @@ export default function ItemLibrary({
                     >
                       <Save className="h-4 w-4" />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteItemOpen(true)}
+                      disabled={isSaving}
+                      aria-label="删除物品"
+                      title="删除物品"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--line)] text-[var(--error)] hover:bg-[var(--error-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
                 </div>
                 <div className="mt-4 flex h-9 items-end gap-1" role="tablist">
@@ -1603,6 +1678,17 @@ export default function ItemLibrary({
           beforeMutate={flushCurrentDraft}
           onApplied={load}
           onClose={onCloseProposalReview}
+        />
+      )}
+      {deleteItemOpen && recordDraft && (
+        <ConfirmDialog
+          title="删除物品"
+          message={`确定要删除物品“${recordDraft.name}”吗？此操作不可撤销，其资料页与描述会一并删除。若该物品仍被人物物品栏、势力资源、修炼体系或时间线引用，删除会被阻止。`}
+          confirmText="删除"
+          confirmVariant="danger"
+          loading={isSaving}
+          onConfirm={() => void deleteItem()}
+          onCancel={() => setDeleteItemOpen(false)}
         />
       )}
     </div>

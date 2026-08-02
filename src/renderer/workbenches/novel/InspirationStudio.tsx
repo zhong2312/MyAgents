@@ -9,14 +9,18 @@ import type {
   InspirationAiAgentRequest,
   InspirationAiRunRequest,
 } from "./inspirationAi";
+import type { InspirationItem } from "./inspirationSchema";
 import InspirationWorkbench from "./InspirationWorkbench";
 import "./InspirationStudio.css";
+import { createNarrativeEngineeringRepository } from "./narrativeEngineeringRepository";
+import type { DomainEntityRef } from "./domainIndex";
 import { useInspirationProject } from "./useInspirationProject";
 
 interface InspirationStudioProps {
   readonly storage: WorkbenchStorage;
   readonly isActive: boolean;
   readonly projectTitle: string;
+  readonly focus?: DomainEntityRef | null;
   readonly onAiRun?: (request: InspirationAiRunRequest) => Promise<string>;
   readonly onOpenAiAgent?: (
     request: InspirationAiAgentRequest,
@@ -32,9 +36,32 @@ export default function InspirationStudio({
   projectTitle,
   onAiRun,
   onOpenAiAgent,
+  focus,
   registerNavigationGuard,
 }: InspirationStudioProps) {
   const controller = useInspirationProject(storage, isActive);
+
+  const convertToNarrative = async (item: InspirationItem) => {
+    const narrativeRepository = createNarrativeEngineeringRepository(storage);
+    const current = await narrativeRepository.load();
+    const plan = {
+      id: `narrative-chapter-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`,
+      directoryId: null,
+      manuscriptChapterId: null,
+      title: item.title.trim() || "来自灵感的规划",
+      description: `【来自灵感“${item.title.trim()}”】\n${item.body.slice(0, 4000)}`,
+      status: "idea" as const,
+      order: current.library.chapters.length,
+      updatedAt: new Date().toISOString(),
+      lineIds: [],
+      arcIds: [],
+      sections: [],
+    };
+    await narrativeRepository.save(current, {
+      ...current.library,
+      chapters: [...current.library.chapters, plan],
+    });
+  };
 
   if (controller.isLoading && !controller.project) {
     return (
@@ -66,6 +93,8 @@ export default function InspirationStudio({
 
   return (
     <InspirationWorkbench
+      storage={storage}
+      isActive={isActive}
       projectTitle={projectTitle}
       library={controller.project.library}
       content={controller.project.content}
@@ -73,6 +102,8 @@ export default function InspirationStudio({
       onSave={controller.save}
       onAiRun={onAiRun}
       onOpenAiAgent={onOpenAiAgent}
+      onConvertToNarrative={convertToNarrative}
+      focus={focus}
       registerNavigationGuard={registerNavigationGuard}
     />
   );

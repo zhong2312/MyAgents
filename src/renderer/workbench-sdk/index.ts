@@ -80,6 +80,7 @@ export type {
   WorkbenchSimulationSourceRef,
   WorkbenchSimulationTimelineEventSnapshot,
   WorkbenchSimulationWorldSnapshot,
+  WorkbenchSearch,
   WorkbenchCreateTextOptions,
   WorkbenchRemoveOptions,
   WorkbenchStorage,

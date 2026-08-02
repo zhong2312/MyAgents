@@ -1,4 +1,4 @@
-import type { WorkbenchStorage } from "@/workbench-sdk";
+import type { WorkbenchStorage, WorkbenchStorageEntry } from "@/workbench-sdk";
 
 import {
   createNarrativeEngineeringRepository,
@@ -31,6 +31,11 @@ const NOVEL_METADATA_PATH = "novel.json";
 const CHAPTER_INDEX_PATH = "manuscript/index.json";
 const CHAPTER_TRASH_ROOT = "manuscript/trash";
 const FREE_CONTENT_DIRECTORY_ID = "directory-free-content";
+
+// 原子性契约：novel.json（元数据）与 manuscript/index.json（章节索引）互不依赖，
+// 每次写操作以各自文件为 CAS 单元（expectedContent）。涉及多文件的复合操作
+// （章节文件 + 索引 + 追踪批次 + 剧情关联）遵循“先写主文件，失败时逐级反向
+// 补偿”的编排：补偿无法完成时抛错并提示重新加载检查，而不是静默半提交。
 
 export interface LoadedNovelChapter extends NovelChapterRecord {
   readonly content: string;
@@ -72,6 +77,7 @@ export interface UpdateNovelProjectSettingsInput {
   readonly targetWordCountMin: number;
   readonly targetWordCountMax: number;
   readonly chapterWordCount: number;
+  readonly language?: string;
 }
 
 interface UpdatedChapterIndex {
@@ -155,6 +161,10 @@ export interface NovelRepository {
     content: string,
     expectedContent: string,
   ): Promise<LoadedNovelChapter>;
+  deleteChapterPermanently(
+    project: LoadedNovelProject,
+    deletionId: string,
+  ): Promise<UpdatedChapterIndex>;
 }
 
 export function countNovelWords(content: string): number {
@@ -477,6 +487,7 @@ export function createNovelRepository(
         raw.targetWordCountMin = input.targetWordCountMin;
         raw.targetWordCountMax = input.targetWordCountMax;
         raw.chapterWordCount = input.chapterWordCount;
+        if (input.language?.trim()) raw.language = input.language.trim();
         delete raw.targetWordCount;
       });
     },
@@ -1009,6 +1020,7 @@ export function createNovelRepository(
 
     async setStructureMode(project, mode) {
       // Keep legacy values readable, but expose one unlocked state in the UI.
+      // 显式切换是唯一的迁移时机：非 locked 一律落盘为 merged。
       await repository.synchronizeNarrative(
         project,
         mode === "locked" ? "locked" : "merged",
@@ -1020,6 +1032,8 @@ export function createNovelRepository(
       mode = project.chapterIndex.structureMode,
     ) {
       // `free` is a legacy persisted value. It now behaves as unlocked sync.
+      // effectiveMode 只决定行为分支；写盘保留 mode 原值，
+      // 避免旧项目在自动同步（每次加载都会执行）时被隐式改写磁盘。
       const effectiveMode = mode === "locked" ? "locked" : "merged";
       const narrative = await narrativeRepository.load();
       if (effectiveMode === "locked") {
@@ -1111,7 +1125,18 @@ export function createNovelRepository(
         const linkedByPlan = plan.manuscriptChapterId
           ? existingById.get(plan.manuscriptChapterId)
           : undefined;
-        const existing = linkedByPlan ?? existingByNarrativeId.get(plan.id);
+        // 剧情工程侧的声明优先：plan 显式选择“暂不关联正文”（null）时，
+        // 不采用正文侧旧关联兜底，使取消关联在同步后真正解除双向链接。
+        // locked 模式由剧情工程完全驱动，正文侧不可改关联，保留兜底。
+        const existing =
+          linkedByPlan ??
+          (effectiveMode !== "locked" && plan.manuscriptChapterId === null
+            ? undefined
+            : existingByNarrativeId.get(plan.id));
+        // 显式取消关联的规划不参与正文同步：既不保留旧关联，也不创建新章节。
+        if (!existing && effectiveMode !== "locked" && plan.manuscriptChapterId === null) {
+          return;
+        }
         let record: NovelChapterRecord;
         if (existing && !usedChapterIds.has(existing.id)) {
           record = {
@@ -1221,9 +1246,16 @@ export function createNovelRepository(
                   finalDirectoryIds.has(chapter.directoryId)
                     ? chapter.directoryId
                     : null,
+                // 仅当对应章节规划仍然指向该正文时才保留双向关联，否则清空，
+                // 避免剧情工程侧换绑后正文侧残留旧关联造成双向不一致。
                 narrativeChapterId:
                   chapter.narrativeChapterId &&
-                  narrativeChapterIds.has(chapter.narrativeChapterId)
+                  narrativeChapterIds.has(chapter.narrativeChapterId) &&
+                  narrative.library.chapters.some(
+                    (plan) =>
+                      plan.id === chapter.narrativeChapterId &&
+                      plan.manuscriptChapterId === chapter.id,
+                  )
                     ? chapter.narrativeChapterId
                     : null,
               }));
@@ -1267,7 +1299,8 @@ export function createNovelRepository(
       const nextIndex: NovelChapterIndex = {
         ...project.chapterIndex,
         nextChapterNumber,
-        structureMode: effectiveMode,
+        // 保留调用方声明的结构模式（自动同步传磁盘原值时，legacy free 不被改写）。
+        structureMode: mode,
         directories: normalizeDirectoryOrders(directoriesForNext),
         chapters: normalizeChapterOrders(chaptersForNext),
         trash: [
@@ -1720,6 +1753,51 @@ export function createNovelRepository(
         ...chapter,
         content,
         words: countNovelWords(content),
+      });
+    },
+
+    async deleteChapterPermanently(project, deletionId) {
+      const deleted = project.chapterIndex.trash.find(
+        (item) => item.deletionId === deletionId,
+      );
+      if (!deleted) throw new Error("回收站记录不存在");
+      // 先移除回收站记录（CAS 保护），成功后再删文件；
+      // 索引失败时文件未动，删除不产生不一致状态。
+      const nextIndex: NovelChapterIndex = {
+        ...project.chapterIndex,
+        trash: project.chapterIndex.trash.filter(
+          (item) => item.deletionId !== deletionId,
+        ),
+      };
+      const nextIndexContent = serializeNovelChapterIndex(nextIndex);
+      await storage.writeText(CHAPTER_INDEX_PATH, nextIndexContent, {
+        expectedContent: project.chapterIndexContent,
+      });
+      // 删除正文文件与回收站目录
+      await storage
+        .remove(deleted.trashPath, { permanent: true })
+        .catch(() => false);
+      await storage
+        .remove(`manuscript/trash/${deletionId}`, { permanent: true })
+        .catch(() => false);
+      // 顺带清理该章的历史版本（否则成为孤儿数据）
+      const versionDirectory = `manuscript/versions/${deleted.id}`;
+      const entries = await storage
+        .list(versionDirectory)
+        .catch(() => [] as readonly WorkbenchStorageEntry[]);
+      await Promise.all(
+        entries
+          .filter((entry) => entry.kind === "file")
+          .map((entry) =>
+            storage.remove(entry.path, { permanent: true }).catch(() => false),
+          ),
+      );
+      await storage
+        .remove(versionDirectory, { permanent: true })
+        .catch(() => false);
+      return Object.freeze({
+        chapterIndex: nextIndex,
+        chapterIndexContent: nextIndexContent,
       });
     },
   };

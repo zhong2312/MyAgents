@@ -204,6 +204,13 @@
   background: var(--hover-bg);
   color: var(--ink);
 }
+.ms-trash-list button.ms-trash-purge {
+  color: var(--ink-subtle);
+}
+.ms-trash-list button.ms-trash-purge:hover:not(:disabled) {
+  background: var(--error-bg);
+  color: var(--error);
+}
 .ms-outline-heading button:disabled {
   opacity: 0.4;
 }

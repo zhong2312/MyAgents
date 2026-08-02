@@ -113,6 +113,8 @@ export type ManuscriptStructureMode = z.infer<
 
 export const manuscriptTrackingStatusSchema = z.enum([
   "idle",
+  // legacy：历史版本可能包含该值，但当前没有任何代码路径产生它；
+  // 保留枚举仅为兼容旧数据解析，新状态流转只使用 idle/review/synced/stale/failed。
   "pending",
   "review",
   "synced",

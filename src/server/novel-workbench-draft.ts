@@ -11,7 +11,9 @@ export type NovelWorkbenchDraftDomain =
   | "factions"
   | "narrative"
   | "manuscript"
-  | "cultivation";
+  | "cultivation"
+  | "timeline"
+  | "maps";
 
 export interface NovelWorkbenchDraftSource {
   readonly promptId: string;
@@ -47,6 +49,8 @@ const DRAFT_ROOTS: Readonly<Record<NovelWorkbenchDraftDomain, string>> = {
   narrative: "narrative/drafts",
   manuscript: "manuscript/drafts",
   cultivation: "world/cultivation-drafts",
+  timeline: "timeline/drafts",
+  maps: "world/maps/drafts",
 };
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;

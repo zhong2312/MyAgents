@@ -238,9 +238,15 @@ export async function buildWorldSimulationSnapshot(
     factsThroughIndex >= 0
       ? mainTimelineEvents[factsThroughIndex]?.event
       : undefined;
-  const timelineEvents = mainTimelineEvents
-    .slice(0, factsThroughIndex + 1)
-    .map(({ event }) => ({
+  const factualTimelineEvents = mainTimelineEvents.slice(0, factsThroughIndex + 1);
+  const factualEventIds = new Set(
+    factualTimelineEvents.map(({ event }) => event.id),
+  );
+  const factualEventIndex = new Map(
+    factualTimelineEvents.map(({ event }, index) => [event.id, index] as const),
+  );
+  const timelineEvents = factualTimelineEvents
+    .map(({ event }, eventIndex) => ({
       id: event.id,
       title: event.title,
       summary: event.summary || event.description,
@@ -250,6 +256,13 @@ export async function buildWorldSimulationSnapshot(
         ...event.factionIds.map((id) => `faction-${id}`),
       ].filter((id) => actorIds.has(id)),
       locationIds: event.locationIds.filter((id) => locationIds.has(id)),
+      causeEventIds: event.causeEventIds.filter(
+        (causeEventId) =>
+          causeEventId !== event.id &&
+          factualEventIds.has(causeEventId) &&
+          (factualEventIndex.get(causeEventId) ?? Number.POSITIVE_INFINITY) <
+            eventIndex,
+      ),
       sourceRefs: [sourceRef("timeline/index.json", timelineHash, "actual")],
     }));
   const anchor =

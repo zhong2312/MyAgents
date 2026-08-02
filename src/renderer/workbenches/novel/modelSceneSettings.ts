@@ -53,6 +53,7 @@ export const MODEL_SCENE_IDS = [
   "simulation.world",
   "simulation.resolve",
   "simulation.report",
+  "simulation.council",
 ] as const;
 
 export type NovelModelSceneId = (typeof MODEL_SCENE_IDS)[number];
@@ -324,6 +325,13 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     group: "世界推演",
     label: "推演报告",
     description: "事件流与状态变化摘要",
+    execution: "run",
+  },
+  {
+    id: "simulation.council",
+    group: "世界推演",
+    label: "圆桌会商",
+    description: "多角色代表逐轮发言与投票",
     execution: "run",
   },
 ] as const;

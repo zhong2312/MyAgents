@@ -4,6 +4,7 @@ import {
   serializeManuscriptProposal,
   type ManuscriptProposal,
 } from "../../../shared/workbenches/novel/manuscriptProposalSchema";
+import { createManuscriptVersionRepository } from "./manuscriptVersionRepository";
 
 const PROPOSAL_ROOT = "manuscript/proposals";
 
@@ -104,6 +105,32 @@ export function createManuscriptProposalRepository(storage: WorkbenchStorage) {
       await storage.writeText(loaded.proposal.source.chapterPath, nextContent, {
         expectedContent: current.content,
       });
+      // AI 采纳也落版本快照（source=ai-apply），保证用户无需手动保存即可回滚。
+      try {
+        await createManuscriptVersionRepository(storage).create(
+          {
+            id: loaded.proposal.source.chapterId,
+            title: loaded.proposal.source.chapterTitle,
+          },
+          nextContent,
+          "ai-apply",
+        );
+      } catch (versionError) {
+        try {
+          await storage.writeText(
+            loaded.proposal.source.chapterPath,
+            current.content,
+            { expectedContent: nextContent },
+          );
+        } catch (rollbackError) {
+          throw new Error(
+            `正文已写入，但历史版本创建和正文回滚均失败：${errorMessage(versionError)}；${errorMessage(rollbackError)}`,
+          );
+        }
+        throw new Error(
+          `正文已采纳，但历史版本创建失败，已回滚：${errorMessage(versionError)}`,
+        );
+      }
       const proposal: ManuscriptProposal = {
         ...loaded.proposal,
         updatedAt: new Date().toISOString(),

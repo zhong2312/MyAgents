@@ -83,6 +83,10 @@ export interface NovelItemLibraryRepository {
     record: ItemRecord,
     pageContent: string,
   ): Promise<SaveItemResult>;
+  deleteItem(
+    library: LoadedItemLibrary,
+    itemId: string,
+  ): Promise<LoadedItemLibrary>;
 }
 
 function serializeMeta(meta: ItemLibraryMeta) {
@@ -449,6 +453,33 @@ export function createNovelItemLibraryRepository(
         await rollbackCreatedFiles();
         throw error;
       }
+    },
+
+    async deleteItem(library, itemId) {
+      if (!library.index.items.some((entry) => entry.id === itemId)) {
+        throw new Error(`物品不存在：${itemId}`);
+      }
+      // 先移除索引（CAS 保护），成功后再删文件；索引失败时文件未动，安全无残留。
+      const nextIndex: ItemLibraryIndex = {
+        ...library.index,
+        items: library.index.items.filter((entry) => entry.id !== itemId),
+      };
+      const indexFile = await storage.writeText(
+        ITEM_LIBRARY_PATHS.index,
+        serializeIndex(nextIndex),
+        { expectedContent: library.indexContent },
+      );
+      const paths = itemPaths(itemId);
+      await storage
+        .remove(paths.recordPath, { permanent: true })
+        .catch(() => false);
+      await storage
+        .remove(paths.pagePath, { permanent: true })
+        .catch(() => false);
+      return replaceLibrary(library, {
+        index: parseItemLibraryIndex(indexFile.content),
+        indexContent: indexFile.content,
+      });
     },
 
     async saveItem(library, item, record, pageContent) {

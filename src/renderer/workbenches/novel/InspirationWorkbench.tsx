@@ -1,5 +1,7 @@
 import {
   Check,
+  GitBranch,
+  GitBranchPlus,
   Inbox,
   LayoutGrid,
   Lightbulb,
@@ -16,11 +18,14 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import type { DomainEntityRef } from "./domainIndex";
+import InspirationCanvas from "./InspirationCanvas";
 
 import {
   OverlayBackdrop,
   useCloseLayer,
+  type WorkbenchStorage,
   type WorkbenchNavigationGuard,
 } from "@/workbench-sdk";
 
@@ -47,6 +52,8 @@ type InspirationFilter =
   | "archived";
 
 interface InspirationWorkbenchProps {
+  readonly storage: WorkbenchStorage;
+  readonly isActive: boolean;
   readonly projectTitle: string;
   readonly library: InspirationLibrary;
   readonly content: string;
@@ -56,6 +63,9 @@ interface InspirationWorkbenchProps {
   readonly onOpenAiAgent?: (
     request: InspirationAiAgentRequest,
   ) => Promise<void>;
+  readonly onConvertToNarrative?: (item: InspirationItem) => Promise<void>;
+  /** 外部实体定位请求（T3 消费：自动选中对应灵感）。 */
+  readonly focus?: DomainEntityRef | null;
   readonly registerNavigationGuard: (
     guard: WorkbenchNavigationGuard,
   ) => () => void;
@@ -236,6 +246,8 @@ function CreateInspirationDialog({
 }
 
 export default function InspirationWorkbench({
+  storage,
+  isActive,
   projectTitle,
   library,
   content,
@@ -243,6 +255,8 @@ export default function InspirationWorkbench({
   onSave,
   onAiRun,
   onOpenAiAgent,
+  onConvertToNarrative,
+  focus,
   registerNavigationGuard,
 }: InspirationWorkbenchProps) {
   const [draft, setDraft] = useState(library);
@@ -251,7 +265,7 @@ export default function InspirationWorkbench({
   const [externalChanged, setExternalChanged] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [filter, setFilter] = useState<InspirationFilter>("all");
-  const [view, setView] = useState<"list" | "board">("list");
+  const [view, setView] = useState<"list" | "board" | "canvas">("list");
   const [sort, setSort] = useState<"updated" | "source">("updated");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState(library.items[0]?.id ?? "");
@@ -333,12 +347,20 @@ export default function InspirationWorkbench({
     });
   };
 
-  const selectItem = (id: string) => {
+  const selectItem = useCallback((id: string) => {
     setSelectedId(id);
     if (window.matchMedia("(max-width: 1100px)").matches) {
       setMobilePane("detail");
     }
-  };
+  }, []);
+
+  // 外部实体定位：焦点灵感存在时自动选中（T3）
+  useEffect(() => {
+    if (!focus || focus.kind !== "inspiration") return;
+    if (draft.items.some((item) => item.id === focus.id)) {
+      selectItem(focus.id);
+    }
+  }, [focus, draft.items, selectItem]);
 
   const removeSelected = () => {
     if (!selected || !window.confirm(`确认删除灵感“${selected.title}”？`)) return;
@@ -349,6 +371,24 @@ export default function InspirationWorkbench({
     setSelectedId(
       draft.items.find((item) => item.id !== selected.id)?.id ?? "",
     );
+  };
+
+  const [converting, setConverting] = useState(false);
+  const [convertNotice, setConvertNotice] = useState<string | null>(null);
+  const convertToNarrative = async () => {
+    if (!selected || !onConvertToNarrative || converting) return;
+    setConverting(true);
+    setConvertNotice(null);
+    try {
+      await onConvertToNarrative(selected);
+      setConvertNotice(`“${selected.title}”已转为剧情规划，可在剧情工程查看。`);
+    } catch (cause) {
+      setConvertNotice(
+        `转为剧情规划失败：${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    } finally {
+      setConverting(false);
+    }
   };
 
   const boardColumns = FILTERS.filter(
@@ -421,6 +461,15 @@ export default function InspirationWorkbench({
             onClick={() => setView("board")}
           >
             <LayoutGrid className="h-4 w-4" />
+          </button>
+          <button
+            className={`ns-icon-button border-0 ${view === "canvas" ? "bg-[var(--hover-bg)] text-[var(--ink)]" : ""}`}
+            type="button"
+            title="画布视图"
+            aria-label="画布视图"
+            onClick={() => setView("canvas")}
+          >
+            <GitBranch className="h-4 w-4" />
           </button>
         </div>
         <button
@@ -540,6 +589,12 @@ export default function InspirationWorkbench({
                 <p>记录片段、意象、问题、场景、人设火花或研究触发点。</p>
               </div>
             </div>
+          ) : view === "canvas" ? (
+            <InspirationCanvas
+              storage={storage}
+              projectTitle={projectTitle}
+              isActive={isActive}
+            />
           ) : view === "list" ? (
             <div className="ns-list">
               {visibleItems.map((item) => (
@@ -680,6 +735,25 @@ export default function InspirationWorkbench({
                 </div>
               </section>
               <section className="ns-section">
+                {convertNotice && (
+                  <div className="mb-2 rounded-md bg-[var(--accent-cool-subtle)] px-3 py-2 text-xs leading-5 text-[var(--accent-cool)]">
+                    {convertNotice}
+                  </div>
+                )}
+                <button
+                  className="ns-button"
+                  type="button"
+                  onClick={() => void convertToNarrative()}
+                  disabled={!onConvertToNarrative || converting}
+                  title="把这条灵感转为剧情工程的章节规划"
+                >
+                  {converting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <GitBranchPlus className="h-3.5 w-3.5" />
+                  )}
+                  转为剧情规划
+                </button>
                 <button
                   className="ns-button is-danger"
                   type="button"

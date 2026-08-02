@@ -67,7 +67,7 @@ import {
   type ProviderVerifyStatus,
 } from '@/config/types';
 import { type Tab, type InitialMessage, type LaunchSessionBirthHint, type SidecarConfigDisposition, type FilePreviewIntent, createNewTab, getFolderName, buildChatFlipPatch, generateTabId, isWorkbenchAgentSurfaceTab, MAX_TABS } from '@/types/tab';
-import type { OpenWorkbenchRequest, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchSimulationRequest } from '../shared/workbench-sdk';
+import type { OpenWorkbenchRequest, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchSearch, WorkbenchSimulationRequest } from '../shared/workbench-sdk';
 import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION, WORKBENCH_SIMULATION_MODEL_SCENE_IDS } from '../shared/workbench-sdk';
 import { dispatchWorkbenchHostAction, type WorkbenchNavigationGuard } from '@/workbench-sdk';
 import { createWorkbenchTab, isSameWorkbenchTab } from '@/workbench-sdk/tab';
@@ -83,6 +83,11 @@ import type { ImageAttachment } from '@/components/SimpleChatInput';
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { apiGetJson } from '@/api/apiFetch';
+import {
+  invalidateWorkspaceFileIndex,
+  refreshWorkspaceFileIndex,
+  searchWorkspaceFiles,
+} from '@/api/searchClient';
 import { createSession, getSessions, updateSession } from '@/api/sessionClient';
 import { dismissTopmost } from '@/utils/closeLayer';
 import { dispatchAppShortcut } from '@/utils/appShortcuts';
@@ -360,6 +365,7 @@ interface TabContentProps {
   onOpenWorkbenchAgentSession?: (workspacePath: string, request: WorkbenchAgentSessionRequest) => Promise<void>;
   onRunWorkbenchAi?: (workspacePath: string, request: WorkbenchAiRunRequest) => Promise<WorkbenchAiRunResult>;
   onRequestWorkbenchSimulation?: (workspacePath: string, request: WorkbenchSimulationRequest) => Promise<unknown>;
+  onProvideWorkbenchSearch?: (workspacePath: string) => WorkbenchSearch | null;
   onSettingsSectionChange: () => void;
   updateReady: boolean;
   updateVersion: string | null;
@@ -384,7 +390,7 @@ export const MemoizedTabContent = memo(function TabContent({
   claimSessionOpeningTransition,
   onSidecarConfigAdopted, onFilePreviewIntentConsumed,
   onUpdateWorkbenchRoute, onRegisterWorkbenchNavigationGuard,
-  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onRequestWorkbenchSimulation,
+  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onRequestWorkbenchSimulation, onProvideWorkbenchSearch,
   onLauncherWorkspaceSelectionChange,
   settingsInitialSection,
   capabilityInitialSection,
@@ -472,6 +478,7 @@ export const MemoizedTabContent = memo(function TabContent({
             onOpenAgentSession={onOpenWorkbenchAgentSession}
             onRunAi={onRunWorkbenchAi}
             onRequestSimulation={onRequestWorkbenchSimulation}
+            onProvideSearch={onProvideWorkbenchSearch}
           />
         </Suspense>
       ) : kind === 'cold' ? (
@@ -1823,7 +1830,7 @@ export default function App() {
       if (dispatchAppShortcut(e, isMac, {
         tabs: tabsRef.current,
         activeTabId: activeTabIdRef.current,
-        setActiveTabId,
+        setActiveTabId: handleSelectTab,
         newTab: handleNewTab,
         closeCurrentTab,
         dismissTopmost,
@@ -3328,7 +3335,25 @@ export default function App() {
   );
 
   const handleSelectTab = useCallback((tabId: string) => {
-    setActiveTabId(tabId);
+    const current = activeTabIdRef.current;
+    if (!current || current === tabId) {
+      setActiveTabId(tabId);
+      return;
+    }
+    // 从带导航守卫的工作台 Tab 切走时先确认（未保存草稿不会被静默丢弃）。
+    const guard = workbenchNavigationGuardsRef.current.get(current);
+    if (!guard) {
+      setActiveTabId(tabId);
+      return;
+    }
+    void guard
+      .confirmLeave()
+      .then((allowed) => {
+        if (allowed) setActiveTabId(tabId);
+      })
+      .catch(() => {
+        // 守卫异常时保守处理：留在当前 Tab，避免草稿丢失。
+      });
   }, [setActiveTabId]);
 
   // Activate a restored cold tab whenever it becomes active — via ANY path
@@ -3740,6 +3765,35 @@ export default function App() {
     }
     return { output: payload.output };
   }, []);
+
+  /** 宿主工作台搜索提供者：Tauri 桌面端复用 Tantivy 工作区索引，浏览器模式不可用。 */
+  const provideWorkbenchSearch = useCallback(
+    (workspacePath: string): WorkbenchSearch | null => {
+      if (!isTauriEnvironment()) return null;
+      return Object.freeze({
+        isAvailable: true,
+        async searchFiles(
+          query: string,
+          limit = 50,
+          maxMatchesPerFile = 10,
+        ) {
+          return searchWorkspaceFiles(
+            query,
+            workspacePath,
+            limit,
+            maxMatchesPerFile,
+          );
+        },
+        async refreshIndex() {
+          return refreshWorkspaceFileIndex(workspacePath);
+        },
+        async invalidateIndex() {
+          return invalidateWorkspaceFileIndex(workspacePath);
+        },
+      });
+    },
+    [],
+  );
 
   const handleRequestWorkbenchSimulation = useCallback(async (
     workspacePath: string,
@@ -4927,6 +4981,7 @@ export default function App() {
               onOpenWorkbenchAgentSession={handleOpenWorkbenchAgentSession}
               onRunWorkbenchAi={handleRunWorkbenchAi}
               onRequestWorkbenchSimulation={handleRequestWorkbenchSimulation}
+              onProvideWorkbenchSearch={provideWorkbenchSearch}
               sessionNotificationBadgeCounts={undefined}
               taskCenterPendingIntent={taskCenterPendingIntent}
             />

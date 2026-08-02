@@ -13,6 +13,7 @@
   --mf-cool-subtle: var(--accent-cool-subtle, #e7f0f8);
   --mf-success: var(--success, #34855c);
   --mf-error: var(--error, #b34545);
+  --mf-danger: var(--error, #b34545);
   display: flex;
   min-height: 100%;
   flex-direction: column;
@@ -50,7 +51,7 @@
   border-radius: 5px;
   background: var(--mf-warm);
   color: #fff;
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 750;
   letter-spacing: 0.05em;
 }
@@ -71,7 +72,7 @@
 .mirofish-lab-brand small {
   margin-top: 0.15rem;
   color: var(--mf-muted);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .mirofish-lab-connection,
@@ -82,7 +83,7 @@
   border: 1px solid var(--mf-line);
   border-radius: 999px;
   padding: 0.2rem 0.5rem;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   white-space: nowrap;
 }
 
@@ -104,7 +105,7 @@
   background: var(--mf-paper-elevated);
   padding: 0 0.65rem;
   color: var(--mf-ink);
-  font-size: 0.75rem;
+  font-size: 0.875rem;
 }
 
 .mirofish-lab-refresh:hover:not(:disabled),
@@ -133,7 +134,7 @@
   background: transparent;
   padding: 0 0.7rem;
   color: var(--mf-muted);
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   white-space: nowrap;
 }
 
@@ -525,5 +526,1200 @@
 
   .mirofish-lab-content {
     padding: 0.8rem;
+  }
+}
+
+/* 世界图谱：承载上游 GraphPanel.vue 的宿主容器。
+   把 MyAgents 主题变量映射到上游组件使用的 CSS 变量（--bg-primary 等），
+   让复用组件在明暗主题下都跟随工作台外观，而不是走上游硬编码 fallback。 */
+.mirofish-lab-graph-panel {
+  --bg-primary: var(--paper-elevated, #ffffff);
+  --bg-secondary: var(--paper, #f5f7fa);
+  --text-primary: var(--ink, #303133);
+  --text-secondary: var(--ink-muted, #606266);
+  --border-primary: var(--line, #e4e7ed);
+  --primary-color: var(--accent-cool, #5470c6);
+  --color-info: var(--accent-cool, #3498db);
+  position: relative;
+  height: 34rem;
+  min-height: 22rem;
+  overflow: hidden;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.5rem;
+  background: var(--mf-paper);
+}
+
+.mirofish-lab-graph-panel .mirofish-lab-state {
+  height: 100%;
+}
+
+.mirofish-lab-graph-panel.is-maximized {
+  position: fixed;
+  inset: 1rem;
+  z-index: 50;
+  height: auto;
+  min-height: 0;
+  background: var(--mf-paper);
+  box-shadow: 0 12px 36px color-mix(in srgb, var(--mf-ink) 22%, transparent);
+}
+
+/* 推演报告与回放 */
+.mirofish-lab-reports {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: 0.9rem;
+  min-height: 24rem;
+}
+
+.mirofish-lab-report-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 32rem;
+  overflow-y: auto;
+}
+
+.mirofish-lab-report-list .mirofish-lab-run.is-active {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-report-body {
+  min-width: 0;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.5rem;
+  padding: 0.9rem;
+  background: var(--mf-paper);
+}
+
+.mirofish-lab-report-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  border-bottom: 1px solid var(--mf-line);
+  padding-bottom: 0.7rem;
+  margin-bottom: 0.7rem;
+}
+
+.mirofish-lab-report-heading h3 {
+  font-size: 0.92rem;
+}
+
+.mirofish-lab-report-heading span {
+  color: var(--mf-muted);
+  font-size: 0.68rem;
+}
+
+.mirofish-lab-playback {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.mirofish-lab-playback button {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.mirofish-lab-playback button:hover:not(:disabled) {
+  border-color: var(--mf-cool);
+  color: var(--mf-cool);
+}
+
+.mirofish-lab-playback button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mirofish-lab-report-events {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 26rem;
+  overflow-y: auto;
+}
+
+.mirofish-lab-report-event {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.4rem;
+  background: var(--mf-paper);
+  transition: border-color 0.2s;
+}
+
+.mirofish-lab-report-event.is-current {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-report-round {
+  color: var(--mf-muted);
+  font-size: 0.66rem;
+  white-space: nowrap;
+  padding-top: 0.15rem;
+}
+
+.mirofish-lab-report-event-copy h4 {
+  font-size: 0.8rem;
+  margin-bottom: 0.2rem;
+}
+
+.mirofish-lab-report-event-copy p {
+  color: var(--mf-muted);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.mirofish-lab-report-event-copy dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.15rem 0.5rem;
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+}
+
+.mirofish-lab-report-event-copy dt {
+  color: var(--mf-muted);
+  font-weight: 600;
+}
+
+.mirofish-lab-report-event-copy dd {
+  color: var(--mf-ink);
+  line-height: 1.5;
+}
+
+.mirofish-lab-report-actors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+.mirofish-lab-report-section {
+  margin-top: 0.8rem;
+  border-top: 1px solid var(--mf-line);
+  padding-top: 0.7rem;
+}
+
+.mirofish-lab-report-section h3 {
+  font-size: 0.78rem;
+  margin-bottom: 0.45rem;
+}
+
+.mirofish-lab-report-section.is-warning {
+  border-color: color-mix(in srgb, var(--mf-warm) 45%, var(--mf-line));
+  padding-left: 0.6rem;
+  padding-right: 0.6rem;
+  padding-bottom: 0.6rem;
+  border-radius: 0.4rem;
+}
+
+.mirofish-lab-change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.mirofish-lab-change-list > div {
+  display: grid;
+  grid-template-columns: 8rem 6rem minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  font-size: 0.7rem;
+}
+
+.mirofish-lab-change-list strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-change-list span {
+  color: var(--mf-muted);
+}
+
+.mirofish-lab-change-list p {
+  color: var(--mf-ink);
+  line-height: 1.5;
+}
+
+.mirofish-lab-report-section ul {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  list-style: disc;
+  padding-left: 1.1rem;
+  color: var(--mf-muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .mirofish-lab-reports {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mirofish-lab-report-list {
+    flex-direction: row;
+    overflow-x: auto;
+    max-height: none;
+  }
+
+  .mirofish-lab-report-list .mirofish-lab-run {
+    flex: 0 0 13rem;
+  }
+
+  .mirofish-lab-change-list > div {
+    grid-template-columns: 6rem 4.5rem minmax(0, 1fr);
+  }
+}
+
+/* 传播态势 */
+.mirofish-lab-analysis-block {
+  border: 1px solid var(--mf-line);
+  border-radius: 0.5rem;
+  padding: 0.8rem;
+  margin-bottom: 0.8rem;
+  background: var(--mf-paper);
+}
+
+.mirofish-lab-analysis-block h3 {
+  font-size: 0.8rem;
+  margin-bottom: 0.55rem;
+}
+
+.mirofish-lab-influence-list,
+.mirofish-lab-cooccurrence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.mirofish-lab-influence-row {
+  display: grid;
+  grid-template-columns: 1.8rem minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-influence-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--mf-cool-subtle);
+  color: var(--mf-cool);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.mirofish-lab-influence-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.15rem;
+}
+
+.mirofish-lab-influence-copy small {
+  color: var(--mf-muted);
+  font-size: 0.68rem;
+}
+
+.mirofish-lab-cooccurrence-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  font-size: 0.72rem;
+}
+
+.mirofish-lab-cooccurrence-row span {
+  color: var(--mf-muted);
+}
+
+.mirofish-lab-cooccurrence-row b {
+  color: var(--mf-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 因果实验 */
+.mirofish-lab-causal-chain {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.3rem;
+}
+
+.mirofish-lab-causal-event {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.4rem;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mirofish-lab-causal-event:hover {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-causal-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--mf-warm-subtle);
+  color: var(--mf-warm);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.mirofish-lab-causal-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.mirofish-lab-causal-copy strong {
+  font-size: 0.78rem;
+}
+
+.mirofish-lab-causal-copy p {
+  color: var(--mf-muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.mirofish-lab-causal-copy small {
+  color: var(--mf-muted);
+  font-size: 0.66rem;
+}
+
+.mirofish-lab-causal-causes {
+  color: var(--mf-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.mirofish-lab-rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.mirofish-lab-rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem 0.7rem;
+  align-items: baseline;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  font-size: 0.74rem;
+}
+
+.mirofish-lab-rule-row p {
+  grid-column: 1 / -1;
+  color: var(--mf-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.mirofish-lab-rule-row > span {
+  color: var(--mf-muted);
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+
+.mirofish-lab-rule-row.is-hard {
+  border-left: 3px solid var(--mf-warm);
+}
+
+/* 圆桌会商（LLM 多轮） */
+.mirofish-lab-council-history {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.4rem;
+}
+
+.mirofish-lab-council-history-item {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mirofish-lab-council-history-item:hover,
+.mirofish-lab-council-history-item.is-active {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-council-history-item strong {
+  overflow: hidden;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-council-history-item span {
+  color: var(--mf-muted);
+  font-size: 0.64rem;
+}
+
+.mirofish-lab-council-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.mirofish-lab-council-actor {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.4rem;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.mirofish-lab-council-actor:hover {
+  border-color: var(--mf-cool);
+}
+
+.mirofish-lab-council-actor.is-selected {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-council-actor strong {
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-council-actor small {
+  color: var(--mf-muted);
+  font-size: 0.64rem;
+}
+
+.mirofish-lab-council-topic {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-council-topic:focus {
+  outline: none;
+  border-color: var(--mf-cool);
+}
+
+.mirofish-lab-council-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 0.6rem;
+}
+
+.mirofish-lab-council-card {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.4rem;
+  background: var(--mf-paper);
+}
+
+.mirofish-lab-council-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  border-bottom: 1px solid var(--mf-line-subtle);
+  padding-bottom: 0.35rem;
+}
+
+.mirofish-lab-council-card header strong {
+  font-size: 0.8rem;
+}
+
+.mirofish-lab-council-card header span {
+  color: var(--mf-muted);
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+
+.mirofish-lab-council-card dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+}
+
+.mirofish-lab-council-card dt {
+  color: var(--mf-muted);
+  font-weight: 600;
+}
+
+.mirofish-lab-council-card dd {
+  color: var(--mf-ink);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 圆桌会商（LLM 多轮） */
+.mirofish-lab-council-start {
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--mf-cool);
+  border-radius: 0.35rem;
+  background: var(--mf-cool);
+  color: #fff;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.mirofish-lab-council-start:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.mirofish-lab-council-start:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mirofish-lab-council-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--mf-muted);
+}
+
+.mirofish-lab-council-progress button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.mirofish-lab-council-progress button:hover:not(:disabled) {
+  border-color: var(--mf-cool);
+  color: var(--mf-cool);
+}
+
+.mirofish-lab-council-progress button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mirofish-lab-council-progress .is-done {
+  color: var(--mf-success);
+}
+
+.mirofish-lab-council-error {
+  margin-top: 0.45rem;
+  color: var(--mf-danger);
+  font-size: 0.7rem;
+}
+
+.mirofish-lab-council-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.mirofish-lab-council-statement {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  gap: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  font-size: 0.74rem;
+}
+
+.mirofish-lab-council-statement strong {
+  color: var(--mf-cool);
+  font-weight: 600;
+}
+
+.mirofish-lab-council-statement p {
+  color: var(--mf-ink);
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.mirofish-lab-council-votes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.mirofish-lab-council-vote {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  font-size: 0.74rem;
+}
+
+.mirofish-lab-council-vote.is-支持 {
+  border-color: color-mix(in srgb, #16a34a 45%, var(--mf-line));
+}
+
+.mirofish-lab-council-vote.is-反对 {
+  border-color: color-mix(in srgb, #dc2626 45%, var(--mf-line));
+}
+
+.mirofish-lab-council-vote span {
+  color: var(--mf-muted);
+}
+
+/* 事实 -> 关系 -> 因果 -> 行动 -> 结论 */
+.mirofish-lab-workflow {
+  display: flex;
+  align-items: stretch;
+  gap: 0.8rem;
+  border-top: 1px solid var(--mf-line);
+  border-bottom: 1px solid var(--mf-line);
+  background: var(--mf-paper-elevated);
+  padding: 0.65rem 1.2rem;
+}
+
+.mirofish-lab-workflow-caption {
+  display: grid;
+  flex: 0 0 8.5rem;
+  align-content: center;
+  gap: 0.15rem;
+  border-right: 1px solid var(--mf-line);
+  padding-right: 0.8rem;
+}
+
+.mirofish-lab-workflow-caption span,
+.mirofish-lab-eyebrow {
+  color: var(--mf-cool);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mirofish-lab-workflow-caption small {
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.mirofish-lab-workflow-steps {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: stretch;
+  gap: 0.35rem;
+  overflow-x: auto;
+}
+
+.mirofish-lab-workflow-step {
+  display: flex;
+  min-width: 8rem;
+  flex: 1 0 8rem;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 0.35rem;
+  background: transparent;
+  padding: 0.35rem 0.45rem;
+  color: var(--mf-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mirofish-lab-workflow-step:hover,
+.mirofish-lab-workflow-step.is-active {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+  color: var(--mf-ink);
+}
+
+.mirofish-lab-workflow-step.is-past .mirofish-lab-workflow-index {
+  background: var(--mf-success);
+  color: var(--mf-paper-elevated);
+}
+
+.mirofish-lab-workflow-index {
+  display: inline-flex;
+  flex: 0 0 1.5rem;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--mf-line);
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.mirofish-lab-workflow-step.is-active .mirofish-lab-workflow-index {
+  background: var(--mf-cool);
+  color: var(--mf-paper-elevated);
+}
+
+.mirofish-lab-workflow-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.mirofish-lab-workflow-copy strong {
+  overflow: hidden;
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-workflow-copy small {
+  overflow: hidden;
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-workflow-arrow {
+  display: inline-flex;
+  align-items: center;
+  color: var(--mf-line-strong, var(--mf-muted));
+  font-size: 0.9rem;
+}
+
+.mirofish-lab-focus-context {
+  display: flex;
+  min-height: 3.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--mf-line-subtle);
+  background: var(--mf-paper);
+  padding: 0.55rem 1.25rem;
+}
+
+.mirofish-lab-focus-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.mirofish-lab-focus-copy strong {
+  overflow: hidden;
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-focus-copy small {
+  overflow: hidden;
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-focus-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.mirofish-lab-focus-status {
+  color: var(--mf-success);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.mirofish-lab-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.65rem 0 0.75rem;
+}
+
+.mirofish-lab-signal-card {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+  border-left: 2px solid var(--mf-cool);
+  background: var(--mf-paper-elevated);
+  padding: 0.55rem 0.65rem;
+}
+
+.mirofish-lab-signal-label,
+.mirofish-lab-signal-detail {
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-signal-value {
+  overflow: hidden;
+  color: var(--mf-ink);
+  font-size: 1.05rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-signal-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-analysis-lane {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+}
+
+.mirofish-lab-lane-item {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: start;
+  border-top: 2px solid var(--mf-line);
+  padding-top: 0.55rem;
+}
+
+.mirofish-lab-lane-index {
+  color: var(--mf-warm);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.mirofish-lab-lane-item strong {
+  font-size: 0.875rem;
+}
+
+.mirofish-lab-lane-item p,
+.mirofish-lab-next-step span,
+.mirofish-lab-report-intro p,
+.mirofish-lab-report-conclusion span {
+  margin: 0.2rem 0 0;
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.mirofish-lab-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.8rem;
+}
+
+.mirofish-lab-action-button {
+  border: 1px solid var(--mf-line);
+  border-radius: 0.3rem;
+  background: var(--mf-paper);
+  color: var(--mf-ink);
+  padding: 0.35rem 0.65rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.mirofish-lab-action-button:hover {
+  border-color: var(--mf-cool);
+  color: var(--mf-cool);
+}
+
+.mirofish-lab-graph-reading {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  overflow-x: auto;
+  padding-bottom: 0.2rem;
+}
+
+.mirofish-lab-graph-reading-step {
+  display: grid;
+  min-width: 8rem;
+  gap: 0.12rem;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  padding: 0.5rem 0.6rem;
+}
+
+.mirofish-lab-graph-reading-step b {
+  color: var(--mf-warm);
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-graph-reading-step span {
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.mirofish-lab-graph-reading-step small {
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-event-thread {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mirofish-lab-event-thread-row {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr) 1.5rem;
+  gap: 0.55rem;
+  align-items: center;
+  width: 100%;
+  border: 1px solid var(--mf-line);
+  border-radius: 0.35rem;
+  background: var(--mf-paper);
+  padding: 0.45rem 0.55rem;
+  color: var(--mf-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mirofish-lab-event-thread-row:hover {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-event-thread-row.is-focused,
+.mirofish-lab-causal-event.is-focused {
+  border-color: var(--mf-cool);
+  background: var(--mf-cool-subtle);
+}
+
+.mirofish-lab-event-thread-time,
+.mirofish-lab-event-thread-copy small,
+.mirofish-lab-event-thread-count {
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-event-thread-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.mirofish-lab-event-thread-copy strong {
+  overflow: hidden;
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirofish-lab-event-thread-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  background: var(--mf-cool-subtle);
+  color: var(--mf-cool);
+}
+
+.mirofish-lab-next-step,
+.mirofish-lab-report-conclusion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  border-left: 3px solid var(--mf-warm);
+  background: var(--mf-warm-subtle);
+  padding: 0.65rem 0.75rem;
+}
+
+.mirofish-lab-next-step strong,
+.mirofish-lab-report-conclusion strong {
+  font-size: 0.875rem;
+}
+
+.mirofish-lab-next-step span,
+.mirofish-lab-report-conclusion span {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+
+.mirofish-lab-council-context,
+.mirofish-lab-report-intro {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border: 1px solid var(--mf-line);
+  background: var(--mf-paper-elevated);
+  padding: 0.8rem;
+}
+
+.mirofish-lab-council-context-main,
+.mirofish-lab-report-intro > div:first-child {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  gap: 0.2rem;
+}
+
+.mirofish-lab-council-context-main strong,
+.mirofish-lab-report-intro strong {
+  font-size: 0.88rem;
+}
+
+.mirofish-lab-council-context-main p {
+  margin: 0;
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.mirofish-lab-council-context-status {
+  display: grid;
+  flex: 0 0 6rem;
+  align-content: center;
+  justify-items: end;
+  gap: 0.2rem;
+  color: var(--mf-cool);
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+.mirofish-lab-council-context-status small {
+  color: var(--mf-muted);
+  font-size: 0.75rem;
+}
+
+.mirofish-lab-report-intro-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(4rem, 1fr));
+  flex: 0 0 min(55%, 30rem);
+  gap: 0.4rem;
+}
+
+.mirofish-lab-report-intro-metrics .mirofish-lab-signal-card {
+  background: var(--mf-paper);
+}
+
+.mirofish-lab-report-conclusion {
+  margin-top: 0.8rem;
+}
+
+@media (max-width: 900px) {
+  .mirofish-lab-workflow {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 0.6rem 0.8rem;
+  }
+
+  .mirofish-lab-workflow-caption {
+    flex-basis: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--mf-line);
+    padding: 0 0 0.45rem;
+  }
+
+  .mirofish-lab-focus-context {
+    padding: 0.55rem 0.8rem;
+  }
+
+  .mirofish-lab-signal-grid,
+  .mirofish-lab-analysis-lane {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mirofish-lab-council-context,
+  .mirofish-lab-report-intro {
+    flex-direction: column;
+  }
+
+  .mirofish-lab-report-intro-metrics {
+    flex-basis: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .mirofish-lab-focus-context {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .mirofish-lab-signal-grid,
+  .mirofish-lab-analysis-lane {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mirofish-lab-graph-reading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mirofish-lab-graph-reading-step {
+    min-width: 0;
+  }
+
+  .mirofish-lab-graph-reading .mirofish-lab-workflow-arrow {
+    justify-content: center;
+    transform: rotate(90deg);
+  }
+
+  .mirofish-lab-report-intro-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

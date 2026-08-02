@@ -148,6 +148,9 @@ export interface WorkbenchSimulationTimelineEventSnapshot {
   readonly timeLabel: string;
   readonly actorIds: readonly string[];
   readonly locationIds: readonly string[];
+  /** Explicit causal predecessors from the timeline library. */
+  /** Optional for snapshots written before explicit causal links were added. */
+  readonly causeEventIds?: readonly string[];
   readonly sourceRefs: readonly WorkbenchSimulationSourceRef[];
 }
 

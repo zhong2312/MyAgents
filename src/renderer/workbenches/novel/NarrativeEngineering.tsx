@@ -60,6 +60,7 @@ import WorldProposalReview from "./WorldProposalReview";
 import { createNarrativeFileProposalRepository } from "./narrativeProposalRepository";
 import NarrativeTracks from "./NarrativeTracks";
 import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
+import type { DomainEntityRef } from "./domainIndex";
 import type { LoadedNovelChapter } from "./repository";
 
 interface NarrativeEngineeringProps {
@@ -71,6 +72,8 @@ interface NarrativeEngineeringProps {
   readonly registerNavigationGuard: (
     guard: WorkbenchNavigationGuard,
   ) => () => void;
+  /** 外部实体定位请求（T3 消费：自动选中对应剧情规划章节）。 */
+  readonly focus?: DomainEntityRef | null;
 }
 
 const VIEW_META: readonly [NarrativeWorkspaceView, string, LucideIcon][] = [
@@ -123,6 +126,7 @@ export default function NarrativeEngineering({
   chapters,
   isActive,
   onOpenAiAgent,
+  focus,
   registerNavigationGuard,
 }: NarrativeEngineeringProps) {
   const repository = useMemo(
@@ -139,6 +143,16 @@ export default function NarrativeEngineering({
   const [chapterDirectory, setChapterDirectory] =
     useState<NarrativeDirectorySelection>("all");
   const [selectedChapterId, setSelectedChapterId] = useState("");
+
+  // 外部实体定位：焦点剧情规划章节存在时自动选中（T3）
+  useEffect(() => {
+    if (!focus || focus.kind !== "narrativeChapter") return;
+    const target = draft?.chapters.find((plan) => plan.id === focus.id);
+    if (target) {
+      setView("chapters");
+      setSelectedChapterId(target.id);
+    }
+  }, [focus, draft]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [aiDialogOpen, setAiDialogOpen] = useState(false);

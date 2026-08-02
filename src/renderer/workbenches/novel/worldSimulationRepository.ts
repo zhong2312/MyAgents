@@ -63,6 +63,10 @@ export function createWorldSimulationInitializationFiles(): readonly {
         createEmptyWorldSimulationProjectFile(),
       ),
     },
+    {
+      path: "simulation/adoptions.json",
+      content: `${JSON.stringify({ schemaVersion: 1, entries: [] }, null, 2)}\n`,
+    },
   ];
 }
 

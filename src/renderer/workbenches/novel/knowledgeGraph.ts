@@ -7,6 +7,16 @@ export type KnowledgeNodeKind =
   | "heading"
   | "fact";
 
+/** 节点类型中文标签（列表/图谱/百科共用）。 */
+export const KIND_LABELS: Readonly<Record<KnowledgeNodeKind, string>> =
+  Object.freeze({
+    entity: "实体",
+    setting: "设定",
+    entry: "词条",
+    heading: "正文标题",
+    fact: "事实",
+  });
+
 export type KnowledgeEdgeKind =
   | "contains"
   | "uses-template"

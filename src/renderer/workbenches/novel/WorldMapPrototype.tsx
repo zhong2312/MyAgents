@@ -1,536 +1,341 @@
 import {
-  Check,
-  CircleDot,
-  GitBranch,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
   Globe2,
   Layers3,
-  LocateFixed,
+  Loader2,
   Map as MapIcon,
-  Minus,
-  Mountain,
   Network,
-  Plus,
-  Route,
-  Sparkles,
-  Waves,
-  type LucideIcon,
+  RefreshCw,
+  Search,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-type WorldMode = "continent" | "planet" | "multiverse" | "parallel";
+import {
+  CustomSelect,
+  type WorkbenchStorage,
+} from "@/workbench-sdk";
 
-const WORLD_MODES: readonly {
-  readonly id: WorldMode;
-  readonly label: string;
-  readonly icon: LucideIcon;
-}[] = [
-  { id: "continent", label: "大陆", icon: MapIcon },
-  { id: "planet", label: "星球", icon: Globe2 },
-  { id: "multiverse", label: "多元宇宙", icon: Network },
-  { id: "parallel", label: "平行宇宙", icon: GitBranch },
-] as const;
+import {
+  parseSettingLibraryMeta,
+  parseSettingLibrarySpatialTree,
+  type SettingLibrarySpatialTree,
+  type SpatialNode,
+} from "./settingLibrarySchema";
 
-const LAYER_OPTIONS = [
-  { id: "terrain", label: "地形", detail: "山脉、高原与盆地" },
-  { id: "water", label: "水系", detail: "河流、湖泊与海域" },
-  { id: "settlements", label: "聚落", detail: "城市、关隘与港口" },
-  { id: "routes", label: "交通", detail: "驿道、航线与传送网络" },
-] as const;
+interface WorldMapPrototypeProps {
+  readonly storage: WorkbenchStorage;
+  readonly projectTitle: string;
+  readonly isActive: boolean;
+}
 
-const MAP_TITLES: Readonly<Record<WorldMode, string>> = {
-  continent: "九州大陆地理图",
-  planet: "苍衡星球投影",
-  multiverse: "多元宇宙拓扑",
-  parallel: "景曜分歧时间线",
-};
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-function ContinentMap({
-  layers,
-}: {
-  layers: Readonly<Record<string, boolean>>;
-}) {
-  return (
-    <svg
-      viewBox="0 0 900 600"
-      className="h-full w-full"
-      role="img"
-      aria-label="九州大陆地理图"
-    >
-      <rect width="900" height="600" fill="var(--paper-inset)" />
-      <path
-        d="M90 160C152 65 270 54 352 100C425 51 561 72 626 135C729 130 807 219 769 293C814 378 739 470 636 458C567 528 425 511 367 467C269 514 150 458 153 375C61 328 34 229 90 160Z"
-        fill="var(--paper-elevated)"
-        stroke="var(--line-strong)"
-        strokeWidth="2"
-      />
-      <path
-        d="M652 492C692 466 742 480 756 520C730 552 677 555 644 529Z"
-        fill="var(--paper-elevated)"
-        stroke="var(--line-strong)"
-        strokeWidth="2"
-      />
-      {layers.terrain && (
-        <g fill="none" stroke="var(--ink-subtle)" strokeWidth="4">
-          <path d="M146 190L181 145L212 184L248 132L284 181L319 148L356 195" />
-          <path d="M544 175L580 132L615 174L650 141L692 188" />
-          <path d="M468 403L502 360L538 407L575 371L620 421" />
-        </g>
-      )}
-      {layers.water && (
-        <g fill="none" stroke="var(--accent-cool)" strokeLinecap="round">
-          <path
-            d="M283 174C327 226 366 239 417 272C482 315 537 307 590 349C636 385 687 393 754 376"
-            strokeWidth="6"
-          />
-          <path d="M417 272C402 334 367 364 333 411" strokeWidth="3" />
-          <path d="M538 307C556 266 590 241 636 223" strokeWidth="3" />
-        </g>
-      )}
-      {layers.routes && (
-        <g
-          fill="none"
-          stroke="var(--accent-warm)"
-          strokeDasharray="9 8"
-          strokeWidth="3"
+function nodeChain(
+  nodes: ReadonlyMap<string, SpatialNode>,
+  node: SpatialNode,
+): SpatialNode[] {
+  const chain: SpatialNode[] = [node];
+  let current = node.parentId ? nodes.get(node.parentId) : undefined;
+  while (current) {
+    chain.unshift(current);
+    current = current.parentId ? nodes.get(current.parentId) : undefined;
+  }
+  return chain;
+}
+
+export default function WorldMapPrototype({
+  storage,
+  projectTitle,
+  isActive,
+}: WorldMapPrototypeProps) {
+  const [tree, setTree] = useState<SettingLibrarySpatialTree | null>(null);
+  const [typeNames, setTypeNames] = useState<ReadonlyMap<string, string>>(
+    new Map(),
+  );
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const [treeContent, metaContent] = await Promise.all([
+        storage.readText("world/setting-library/spatial-tree.json").catch(() => null),
+        storage.readText("world/setting-library/meta.json").catch(() => null),
+      ]);
+      const nextTree = treeContent
+        ? parseSettingLibrarySpatialTree(treeContent.content)
+        : { schemaVersion: 1 as const, nodes: [] as SpatialNode[] };
+      setTree(nextTree);
+      if (metaContent) {
+        const meta = parseSettingLibraryMeta(metaContent.content);
+        setTypeNames(
+          new Map(meta.levelTypes.map((type) => [type.id, type.name])),
+        );
+      }
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [storage]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    void load();
+  }, [isActive, load]);
+
+  const nodesById = useMemo(
+    () => new Map((tree?.nodes ?? []).map((node) => [node.id, node])),
+    [tree],
+  );
+
+  const filteredNodes = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("zh-CN");
+    if (!needle) return null;
+    const matched = new Set<string>();
+    for (const node of tree?.nodes ?? []) {
+      const chain = nodeChain(nodesById, node);
+      if (
+        chain.some(
+          (entry) =>
+            entry.name.toLocaleLowerCase("zh-CN").includes(needle) ||
+            (typeNames.get(entry.typeId) ?? "")
+              .toLocaleLowerCase("zh-CN")
+              .includes(needle),
+        )
+      ) {
+        chain.forEach((entry) => matched.add(entry.id));
+      }
+    }
+    return matched;
+  }, [nodesById, query, tree, typeNames]);
+
+  const roots = useMemo(
+    () =>
+      (tree?.nodes ?? [])
+        .filter((node) => !node.parentId)
+        .sort((left, right) => left.order - right.order),
+    [tree],
+  );
+
+  const childrenOf = useCallback(
+    (parentId: string | null) =>
+      (tree?.nodes ?? [])
+        .filter((node) => node.parentId === parentId)
+        .sort((left, right) => left.order - right.order),
+    [tree],
+  );
+
+  const selected = selectedId ? nodesById.get(selectedId) : undefined;
+
+  const toggle = (nodeId: string) => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  };
+
+  const depthStats = useMemo(() => {
+    let maxDepth = 0;
+    let deepest: SpatialNode | null = null;
+    for (const node of tree?.nodes ?? []) {
+      const depth = nodeChain(nodesById, node).length;
+      if (depth > maxDepth) {
+        maxDepth = depth;
+        deepest = node;
+      }
+    }
+    return { count: tree?.nodes.length ?? 0, maxDepth, deepest };
+  }, [nodesById, tree]);
+
+  const renderNode = (node: SpatialNode, depth: number) => {
+    const children = childrenOf(node.id);
+    const hasChildren = children.length > 0;
+    const isExpanded = expanded.has(node.id);
+    const visible =
+      !filteredNodes || filteredNodes.has(node.id);
+    if (!visible) return null;
+    const typeName = typeNames.get(node.typeId) ?? node.typeId;
+    return (
+      <div key={node.id}>
+        <div
+          className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm transition-colors ${
+            selectedId === node.id
+              ? "bg-[var(--accent-warm-subtle)] text-[var(--ink)]"
+              : "hover:bg-[var(--hover-bg)]"
+          }`}
+          style={{ paddingLeft: `${12 + depth * 20}px` }}
         >
-          <path d="M260 249C370 197 482 219 608 278" />
-          <path d="M403 319C482 360 568 384 676 431" />
-        </g>
-      )}
-      {layers.settlements && (
-        <g
-          fill="var(--accent-warm)"
-          stroke="var(--paper-elevated)"
-          strokeWidth="4"
-        >
-          <circle cx="423" cy="280" r="10" />
-          <circle cx="260" cy="249" r="8" />
-          <circle cx="608" cy="278" r="8" />
-          <circle cx="676" cy="431" r="7" />
-        </g>
-      )}
-      <g fill="var(--ink)" fontSize="16" fontWeight="600">
-        <text x="387" y="258">
-          承天
-        </text>
-        <text x="211" y="233">
-          霜港
-        </text>
-        <text x="625" y="265">
-          云州
-        </text>
-        <text x="694" y="434">
-          临潮
-        </text>
-      </g>
-      <g fill="var(--ink-muted)" fontSize="14">
-        <text x="170" y="112">
-          北境雪岭
-        </text>
-        <text x="468" y="337">
-          澜江
-        </text>
-        <text x="436" y="457">
-          南岭
-        </text>
-      </g>
-    </svg>
-  );
-}
-
-function PlanetMap() {
-  return (
-    <svg
-      viewBox="0 0 900 600"
-      className="h-full w-full"
-      role="img"
-      aria-label="星球投影图"
-    >
-      <rect width="900" height="600" fill="var(--paper-inset)" />
-      <circle
-        cx="450"
-        cy="300"
-        r="230"
-        fill="var(--paper-elevated)"
-        stroke="var(--line-strong)"
-        strokeWidth="2"
-      />
-      <g fill="none" stroke="var(--line)" strokeWidth="1.5">
-        <ellipse cx="450" cy="300" rx="230" ry="78" />
-        <ellipse cx="450" cy="300" rx="230" ry="155" />
-        <ellipse cx="450" cy="300" rx="92" ry="230" />
-        <ellipse cx="450" cy="300" rx="172" ry="230" />
-      </g>
-      <path
-        d="M293 175C352 124 421 146 440 198C477 220 476 259 448 282C382 302 341 275 317 242C277 229 264 204 293 175Z"
-        fill="var(--accent-cool)"
-        opacity="0.72"
-      />
-      <path
-        d="M513 289C568 241 642 260 658 316C633 343 619 381 588 419C540 443 496 400 499 351Z"
-        fill="var(--accent-warm)"
-        opacity="0.66"
-      />
-      <circle cx="408" cy="248" r="7" fill="var(--ink)" />
-      <text x="428" y="242" fill="var(--ink)" fontSize="16" fontWeight="600">
-        九州大陆
-      </text>
-      <text x="355" y="568" fill="var(--ink-muted)" fontSize="14">
-        球面 · 自定义等距投影
-      </text>
-    </svg>
-  );
-}
-
-function MultiverseMap() {
-  return (
-    <svg
-      viewBox="0 0 900 600"
-      className="h-full w-full"
-      role="img"
-      aria-label="多元宇宙拓扑图"
-    >
-      <rect width="900" height="600" fill="var(--paper-inset)" />
-      <g fill="none" stroke="var(--line-strong)" strokeWidth="3">
-        <path d="M450 300L230 150" />
-        <path d="M450 300L690 140" />
-        <path d="M450 300L210 445" />
-        <path d="M450 300L680 455" />
-        <path d="M230 150C366 78 547 76 690 140" strokeDasharray="10 8" />
-      </g>
-      <g stroke="var(--paper-elevated)" strokeWidth="7">
-        <circle cx="450" cy="300" r="52" fill="var(--accent-warm)" />
-        <circle cx="230" cy="150" r="37" fill="var(--accent-cool)" />
-        <circle cx="690" cy="140" r="37" fill="var(--warning)" />
-        <circle cx="210" cy="445" r="37" fill="var(--ink-subtle)" />
-        <circle cx="680" cy="455" r="37" fill="var(--success)" />
-      </g>
-      <g fill="var(--ink)" fontSize="16" fontWeight="600" textAnchor="middle">
-        <text x="450" y="380">
-          主宇宙
-        </text>
-        <text x="230" y="92">
-          镜海界
-        </text>
-        <text x="690" y="82">
-          无昼界
-        </text>
-        <text x="210" y="520">
-          旧纪元残界
-        </text>
-        <text x="680" y="530">
-          灵域
-        </text>
-      </g>
-      <text x="28" y="42" fill="var(--ink-muted)" fontSize="14">
-        拓扑距离 · 非物理比例
-      </text>
-    </svg>
-  );
-}
-
-function ParallelUniverseMap() {
-  return (
-    <svg
-      viewBox="0 0 900 600"
-      className="h-full w-full"
-      role="img"
-      aria-label="平行宇宙分支图"
-    >
-      <rect width="900" height="600" fill="var(--paper-inset)" />
-      <g fill="none" strokeWidth="6" strokeLinecap="round">
-        <path d="M85 300H340" stroke="var(--ink-muted)" />
-        <path
-          d="M340 300C430 300 420 145 525 145H815"
-          stroke="var(--accent-cool)"
-        />
-        <path d="M340 300H815" stroke="var(--accent-warm)" />
-        <path
-          d="M340 300C430 300 420 455 525 455H815"
-          stroke="var(--warning)"
-        />
-      </g>
-      <g fill="var(--paper-elevated)" strokeWidth="5">
-        <circle cx="340" cy="300" r="17" stroke="var(--ink)" />
-        <circle cx="610" cy="145" r="13" stroke="var(--accent-cool)" />
-        <circle cx="610" cy="300" r="13" stroke="var(--accent-warm)" />
-        <circle cx="610" cy="455" r="13" stroke="var(--warning)" />
-      </g>
-      <g fill="var(--ink)" fontSize="16" fontWeight="600">
-        <text x="247" y="270">
-          景曜三十七年
-        </text>
-        <text x="636" y="132">
-          灵脉未逆流
-        </text>
-        <text x="636" y="287">
-          主时间线
-        </text>
-        <text x="636" y="442">
-          北境独立
-        </text>
-      </g>
-      <text x="85" y="342" fill="var(--ink-muted)" fontSize="14">
-        共同历史
-      </text>
-    </svg>
-  );
-}
-
-function MapVisual({
-  mode,
-  layers,
-}: {
-  mode: WorldMode;
-  layers: Readonly<Record<string, boolean>>;
-}) {
-  if (mode === "planet") return <PlanetMap />;
-  if (mode === "multiverse") return <MultiverseMap />;
-  if (mode === "parallel") return <ParallelUniverseMap />;
-  return <ContinentMap layers={layers} />;
-}
-
-export default function WorldMapPrototype() {
-  const [worldMode, setWorldMode] = useState<WorldMode>("continent");
-  const [isGenerated, setIsGenerated] = useState(false);
-  const [zoom, setZoom] = useState(100);
-  const [layers, setLayers] = useState<Record<string, boolean>>({
-    terrain: true,
-    water: true,
-    settlements: true,
-    routes: true,
-  });
+          <button
+            type="button"
+            onClick={() => toggle(node.id)}
+            disabled={!hasChildren}
+            aria-label={isExpanded ? "收起" : "展开"}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--ink-subtle)] hover:bg-[var(--paper-inset)] disabled:invisible"
+          >
+            {isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedId(node.id)}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            {depth === 0 ? (
+              <Globe2 className="h-4 w-4 shrink-0 text-[var(--accent-warm)]" />
+            ) : (
+              <Network className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+            )}
+            <span className="truncate font-medium">{node.name}</span>
+            <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)]">
+              {typeName}
+            </span>
+          </button>
+        </div>
+        {hasChildren && isExpanded && (
+          <div className="border-l border-[var(--line-subtle)]">
+            {children.map((child) => renderNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
-      <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line-subtle)] px-5 py-2 max-md:flex-wrap">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <MapIcon className="h-4 w-4 text-[var(--accent-warm)]" />
-            <h1 className="text-base font-semibold text-[var(--ink)]">
-              世界地图
-            </h1>
-          </div>
-          <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-            独立空间模型 · 草案 04
-          </p>
+      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--line)] px-5">
+        <MapIcon className="h-4 w-4 text-[var(--accent-warm)]" />
+        <h1 className="text-sm font-semibold">世界地图</h1>
+        <span className="text-xs text-[var(--ink-muted)]">{projectTitle}</span>
+        <label className="ml-auto flex h-8 items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 focus-within:border-[var(--accent-warm)]">
+          <Search className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索空间节点"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ink-subtle)]"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="清空搜索"
+              className="text-[var(--ink-subtle)] hover:text-[var(--ink)]"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </label>
+        <CustomSelect
+          value={query ? "filtered" : "all"}
+          options={[
+            { value: "all", label: `全部节点（${depthStats.count}）` },
+            { value: "filtered", label: "仅显示搜索结果" },
+          ]}
+          onChange={() => {}}
+          ariaLabel="地图范围"
+          size="toolbar"
+          disabled
+        />
+        <button
+          type="button"
+          onClick={() => void load()}
+          title="刷新地图"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {error && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-[var(--line-subtle)] bg-[var(--error-bg)] px-5 py-2 text-sm text-[var(--error)]">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {error}
         </div>
-
-        <div className="flex min-w-0 items-center gap-3">
-          <div
-            className="flex shrink-0 rounded-md bg-[var(--paper-inset)] p-0.5"
-            aria-label="世界结构"
-          >
-            {WORLD_MODES.map((mode) => {
-              const Icon = mode.icon;
-              const active = worldMode === mode.id;
-              return (
-                <button
-                  key={mode.id}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => {
-                    setWorldMode(mode.id);
-                    setIsGenerated(false);
-                  }}
-                  className={`flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors ${
-                    active
-                      ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-xs"
-                      : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
-                  }`}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  <span className="max-lg:hidden">{mode.label}</span>
-                </button>
-              );
-            })}
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsGenerated(true)}
-            className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-[var(--button-primary-bg)] px-3 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)]"
-          >
-            {isGenerated ? (
-              <Check className="h-3.5 w-3.5" />
-            ) : (
-              <Sparkles className="h-3.5 w-3.5" />
-            )}
-            {isGenerated ? "地图已更新" : "Agent 生成地图"}
-          </button>
-        </div>
-      </header>
-
-      <div className="grid min-h-0 flex-1 grid-cols-[15rem_minmax(0,1fr)_18rem] max-xl:grid-cols-[13rem_minmax(0,1fr)_16rem] max-lg:grid-cols-[13rem_minmax(0,1fr)] max-md:block max-md:overflow-y-auto">
-        <aside className="min-h-0 overflow-y-auto border-r border-[var(--line-subtle)] bg-[var(--paper-elevated)]/45 max-md:border-r-0 max-md:border-b">
-          <div className="flex h-11 items-center gap-2 border-b border-[var(--line-subtle)] px-4">
-            <Layers3 className="h-4 w-4 text-[var(--accent-cool)]" />
-            <h2 className="text-sm font-semibold text-[var(--ink)]">
-              地图图层
-            </h2>
-          </div>
-          <div className="divide-y divide-[var(--line-subtle)] px-3">
-            {LAYER_OPTIONS.map((layer) => (
-              <label
-                key={layer.id}
-                className="flex cursor-pointer items-start gap-3 px-1 py-3"
-              >
-                <input
-                  type="checkbox"
-                  checked={layers[layer.id]}
-                  onChange={(event) =>
-                    setLayers((current) => ({
-                      ...current,
-                      [layer.id]: event.target.checked,
-                    }))
-                  }
-                  className="mt-0.5 h-3.5 w-3.5 accent-[var(--accent-warm)]"
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-[var(--ink)]">
-                    {layer.label}
-                  </span>
-                  <span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">
-                    {layer.detail}
-                  </span>
-                </span>
-              </label>
-            ))}
-          </div>
-          <div className="border-t border-[var(--line-subtle)] px-4 py-4">
-            <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
-              地图参数
-            </h3>
-            <dl className="mt-3 space-y-3 text-xs">
-              <div className="flex justify-between gap-3">
-                <dt className="text-[var(--ink-muted)]">时间切片</dt>
-                <dd className="font-medium text-[var(--ink)]">景曜 347 年</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-[var(--ink-muted)]">比例</dt>
-                <dd className="font-medium text-[var(--ink)]">1 : 8,000,000</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-[var(--ink-muted)]">坐标</dt>
-                <dd className="font-medium text-[var(--ink)]">相对坐标</dd>
-              </div>
-            </dl>
-          </div>
-        </aside>
-
-        <main className="relative min-h-0 overflow-hidden bg-[var(--paper-inset)] max-md:h-[34rem]">
-          <div className="pointer-events-none absolute left-5 top-4 z-10">
-            <div className="flex items-center gap-2">
-              <CircleDot className="h-4 w-4 text-[var(--accent-warm)]" />
-              <h2 className="text-sm font-semibold text-[var(--ink)]">
-                {MAP_TITLES[worldMode]}
-              </h2>
+      )}
+      <div className="flex min-h-0 flex-1">
+        <main className="min-w-0 flex-1 overflow-y-auto p-4">
+          {isLoading ? (
+            <div className="flex h-40 items-center justify-center text-[var(--ink-muted)]">
+              <Loader2 className="h-5 w-5 animate-spin" />
             </div>
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              空间实体 48 个 · 关系边 76 条
-            </p>
-          </div>
-          <div
-            className="h-full w-full transition-transform duration-200"
-            style={{ transform: `scale(${zoom / 100})` }}
-          >
-            <MapVisual mode={worldMode} layers={layers} />
-          </div>
-          <div className="absolute bottom-4 right-4 z-10 flex items-center rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] shadow-sm">
-            <button
-              type="button"
-              onClick={() => setZoom((value) => Math.max(80, value - 10))}
-              className="flex h-8 w-8 items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              aria-label="缩小地图"
-              title="缩小地图"
-            >
-              <Minus className="h-3.5 w-3.5" />
-            </button>
-            <span className="w-12 text-center text-xs text-[var(--ink-muted)]">
-              {zoom}%
-            </span>
-            <button
-              type="button"
-              onClick={() => setZoom((value) => Math.min(130, value + 10))}
-              className="flex h-8 w-8 items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              aria-label="放大地图"
-              title="放大地图"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setZoom(100)}
-              className="flex h-8 w-8 items-center justify-center border-l border-[var(--line)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              aria-label="复位地图"
-              title="复位地图"
-            >
-              <LocateFixed className="h-3.5 w-3.5" />
-            </button>
-          </div>
+          ) : !tree || tree.nodes.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
+              <Layers3 className="h-8 w-8 text-[var(--ink-subtle)]" />
+              <p>尚无空间节点。请先在世界架构中创建层级类型与空间节点。</p>
+            </div>
+          ) : (
+            <div className="mx-auto max-w-3xl">
+              {roots.map((root) => renderNode(root, 0))}
+              {filteredNodes && filteredNodes.size > 0 && (
+                <p className="mt-3 text-xs text-[var(--ink-muted)]">
+                  搜索结果已高亮显示其父链，共 {filteredNodes.size} 个关联节点
+                </p>
+              )}
+            </div>
+          )}
         </main>
-
-        <aside className="min-h-0 overflow-y-auto border-l border-[var(--line-subtle)] bg-[var(--paper-elevated)]/45 max-lg:hidden">
-          <div className="flex h-11 items-center justify-between border-b border-[var(--line-subtle)] px-4">
-            <h2 className="text-sm font-semibold text-[var(--ink)]">
-              生成约束
-            </h2>
-            <span className="text-xs font-medium text-[var(--success)]">
-              就绪度 78%
-            </span>
+        <aside className="flex w-72 shrink-0 flex-col border-l border-[var(--line-subtle)] max-md:hidden">
+          <div className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--line-subtle)] px-3 text-xs text-[var(--ink-muted)]">
+            <Globe2 className="h-3.5 w-3.5" />
+            节点详情
           </div>
-          <div className="px-4 py-4">
-            <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
-              空间基线
-            </h3>
-            <div className="mt-3 space-y-3 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-[var(--ink-muted)]">世界根空间</span>
-                <span className="font-medium text-[var(--ink)]">九州大陆</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-[var(--ink-muted)]">结构模型</span>
-                <span className="font-medium text-[var(--ink)]">
-                  {WORLD_MODES.find((mode) => mode.id === worldMode)?.label}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-[var(--ink-muted)]">实体关系</span>
-                <span className="font-medium text-[var(--ink)]">
-                  48 / 76 边
-                </span>
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-[var(--line-subtle)] px-4 py-4">
-            <div className="flex items-center justify-between text-xs">
-              <h3 className="font-semibold text-[var(--ink-muted)]">
-                约束检查
-              </h3>
-              <span className="font-medium text-[var(--warning)]">
-                2 项待确认
-              </span>
-            </div>
-            <div className="mt-3 space-y-3 text-xs">
-              <div className="flex items-center gap-2 text-[var(--ink)]">
-                <Route className="h-3.5 w-3.5 text-[var(--warning)]" />
-                北境疆界与南溟航线相交
-              </div>
-              <div className="flex items-center gap-2 text-[var(--ink)]">
-                <Waves className="h-3.5 w-3.5 text-[var(--success)]" />
-                水系连通检查通过
-              </div>
-              <div className="flex items-center gap-2 text-[var(--ink)]">
-                <Mountain className="h-3.5 w-3.5 text-[var(--success)]" />
-                地形闭合检查通过
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-[var(--line-subtle)] px-4 py-4">
-            <p className="text-xs leading-5 text-[var(--ink-muted)]">
-              地图只读取空间 Entity、Relation、ScopeSet 和时间有效性。Markdown
-              仅作为引用来源，不直接充当地图事实。
+          {!selected ? (
+            <p className="p-4 text-xs leading-5 text-[var(--ink-muted)]">
+              点击左侧节点查看详情。地图数据来自世界架构的空间节点树（
+              world/setting-library/spatial-tree.json）。
             </p>
-          </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <h2 className="text-base font-semibold">{selected.name}</h2>
+              <div className="mt-3 space-y-3 text-xs leading-5">
+                <div>
+                  <span className="text-[var(--ink-subtle)]">类型</span>
+                  <p className="mt-0.5 font-medium">
+                    {typeNames.get(selected.typeId) ?? selected.typeId}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-[var(--ink-subtle)]">层级路径</span>
+                  <p className="mt-0.5">
+                    {nodeChain(nodesById, selected)
+                      .map((entry) => entry.name)
+                      .join(" / ")}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-[var(--ink-subtle)]">稳定 ID</span>
+                  <p className="mt-0.5 font-mono">{selected.id}</p>
+                </div>
+                <div>
+                  <span className="text-[var(--ink-subtle)]">直接子节点</span>
+                  <p className="mt-0.5">
+                    {childrenOf(selected.id).length} 个
+                  </p>
+                </div>
+                {depthStats.deepest && (
+                  <p className="border-t border-[var(--line-subtle)] pt-3 text-[var(--ink-muted)]">
+                    当前地图共 {depthStats.count} 个节点，最深层级{" "}
+                    {depthStats.maxDepth} 层（
+                    {depthStats.deepest.name}）
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
         </aside>
       </div>
     </div>

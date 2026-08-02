@@ -17,6 +17,7 @@ import {
   ChevronRight,
   CircleDot,
   ClipboardCheck,
+  Download,
   Eye,
   Filter,
   FilePlus2,
@@ -60,6 +61,7 @@ import {
 } from "react";
 
 import {
+  ConfirmDialog,
   CustomSelect,
   DraggableDialogFrame,
   type SelectOption,
@@ -98,12 +100,18 @@ import {
   type LoadedModelSceneSettings,
 } from "./modelSceneSettingsRepository";
 import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
+import {
+  buildManuscriptExportMarkdown,
+  downloadTextFile,
+  sanitizeExportFileName,
+} from "./manuscriptExport";
 import type {
   CreateNovelChapterOptions,
   LoadedNovelChapter,
   LoadedNovelProject,
   UpdateNovelChapterInput,
 } from "./repository";
+import { createNovelRepository } from "./repository";
 import {
   DEFAULT_MANUSCRIPT_TYPOGRAPHY,
   orderManuscriptChapters,
@@ -181,6 +189,7 @@ interface ManuscriptStudioProps {
     expectedContent: string,
   ) => Promise<void>;
   readonly onRestoreChapter: (deletionId: string) => Promise<void>;
+  readonly onDeleteChapterPermanently: (deletionId: string) => Promise<void>;
   readonly onSaveChapter: (
     chapterId: string,
     content: string,
@@ -3471,6 +3480,7 @@ export default function ManuscriptStudio({
   onSaveTypography,
   onDeleteChapter,
   onRestoreChapter,
+  onDeleteChapterPermanently,
   onSaveChapter,
   onLoadManuscriptVersions,
   onLoadManuscriptVersionSettings,
@@ -3561,6 +3571,10 @@ export default function ManuscriptStudio({
     useState<ManuscriptVersionRecord | null>(null);
   const [versionDialogOpen, setVersionDialogOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<{
+    readonly deletionId: string;
+    readonly title: string;
+  } | null>(null);
   const [narrativeExtractionOpen, setNarrativeExtractionOpen] = useState(false);
   const [narrativeExtractionChapterIds, setNarrativeExtractionChapterIds] =
     useState<ReadonlySet<string>>(new Set());
@@ -3729,6 +3743,22 @@ export default function ManuscriptStudio({
     }
     return true;
   }, [onSaveTypography, saveCurrent, typographyDirty, typographyDraft]);
+
+  const exportManuscript = useCallback(async () => {
+    if (!(await saveAll())) return;
+    setError(null);
+    try {
+      // 从磁盘重新加载，确保导出内容包含刚保存的草稿
+      const latest = await createNovelRepository(storage).load();
+      const markdown = buildManuscriptExportMarkdown(latest);
+      downloadTextFile(
+        `${sanitizeExportFileName(latest.metadata.title)}-整稿.md`,
+        markdown,
+      );
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }, [saveAll, storage]);
 
   const requestChapter = async (chapterId: string) => {
     if (chapterId === selectedChapter?.id) return;
@@ -4995,6 +5025,24 @@ export default function ManuscriptStudio({
         onCancel={() => setDeleteOpen(false)}
         onConfirm={() => void deleteChapter()}
       />
+      {permanentDeleteTarget && (
+        <ConfirmDialog
+          title="彻底删除章节"
+          message={`确定要彻底删除“${permanentDeleteTarget.title}”吗？此操作不可恢复：正文文件、历史版本与回收站记录将一并清除。`}
+          confirmText="彻底删除"
+          confirmVariant="danger"
+          loading={Boolean(operation)}
+          onConfirm={() =>
+            void runOperation("permanent-delete", async () => {
+              await onDeleteChapterPermanently(
+                permanentDeleteTarget.deletionId,
+              );
+              setPermanentDeleteTarget(null);
+            })
+          }
+          onCancel={() => setPermanentDeleteTarget(null)}
+        />
+      )}
       <ContextManifestDialog
         open={manifestOpen}
         sources={contextManifest}
@@ -5128,6 +5176,16 @@ export default function ManuscriptStudio({
               </button>
             );
           })}
+          <button
+            type="button"
+            className="ns-button ms-workbench-action"
+            onClick={() => void exportManuscript()}
+            title="导出整稿 Markdown（自动保存后按目录顺序导出）"
+            aria-label="导出整稿 Markdown"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span>导出</span>
+          </button>
         </div>
         <div className="ms-structure-controls">
           <button
@@ -7073,6 +7131,21 @@ export default function ManuscriptStudio({
                       </span>
                       <small>{item.rollbackBatchIds.length} 个状态批次</small>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPermanentDeleteTarget({
+                          deletionId: item.deletionId,
+                          title: item.title,
+                        })
+                      }
+                      disabled={Boolean(operation)}
+                      title="彻底删除（不可恢复）"
+                      aria-label={`彻底删除 ${item.title}`}
+                      className="ms-trash-purge"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                     <button
                       type="button"
                       onClick={() =>

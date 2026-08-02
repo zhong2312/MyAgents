@@ -9,6 +9,8 @@ export interface NarrativeEntityOption {
   readonly label: string;
   readonly description?: string;
   readonly keywords?: readonly string[];
+  /** 已被其它对象占用、不可选用的选项（仍显示，用于说明原因）。 */
+  readonly disabled?: boolean;
 }
 
 interface SharedPickerProps {
@@ -117,10 +119,15 @@ function PickerOptionRow({
       id={optionId}
       role="option"
       aria-selected={selected}
+      aria-disabled={option.disabled === true}
+      disabled={option.disabled === true}
+      title={option.disabled ? option.description : undefined}
       className={`flex h-11 w-full items-center gap-2.5 px-3 text-left transition-colors ${
-        active
-          ? "bg-[var(--hover-bg)]"
-          : "bg-[var(--paper-elevated)] hover:bg-[var(--hover-bg)]"
+        option.disabled
+          ? "cursor-not-allowed bg-[var(--paper-elevated)] opacity-50"
+          : active
+            ? "bg-[var(--hover-bg)]"
+            : "bg-[var(--paper-elevated)] hover:bg-[var(--hover-bg)]"
       }`}
       onMouseEnter={onActivate}
       onClick={onSelect}
@@ -225,6 +232,7 @@ export function NarrativeEntitySelect({
 
   const choose = useCallback(
     (option: NarrativeEntityOption) => {
+      if (option.disabled) return;
       onChange(option.id);
       setOpen(false);
       triggerRef.current?.focus();
@@ -371,6 +379,7 @@ export function NarrativeEntityMultiSelect({
 
   const toggle = useCallback(
     (option: NarrativeEntityOption) => {
+      if (option.disabled) return;
       onChange(
         selectedIds.has(option.id)
           ? values.filter((id) => id !== option.id)

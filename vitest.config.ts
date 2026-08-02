@@ -1,4 +1,5 @@
 import { resolve } from 'path';
+import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vitest/config';
 
 // MUST mirror vite.config.ts `resolve.alias` for raw-imported widget libraries;
@@ -36,6 +37,7 @@ const alias = [
 // need canvas / real WebView (pdf.js render, etc.) are out of scope for jsdom —
 // extract their pure logic and test that in `unit` instead.
 export default defineConfig({
+  plugins: [vue()],
   resolve: { alias },
   test: {
     // Coverage is aggregated across projects. No hard % threshold on purpose —
@@ -50,6 +52,7 @@ export default defineConfig({
     projects: [
       {
         resolve: { alias },
+        plugins: [vue()],
         test: {
           name: 'unit',
           environment: 'node',
@@ -73,6 +76,7 @@ export default defineConfig({
       },
       {
         resolve: { alias },
+        plugins: [vue()],
         test: {
           name: 'integration',
           environment: 'node',
@@ -87,6 +91,7 @@ export default defineConfig({
       },
       {
         resolve: { alias },
+        plugins: [vue()],
         test: {
           name: 'credentialed',
           environment: 'node',
@@ -100,6 +105,7 @@ export default defineConfig({
       },
       {
         resolve: { alias },
+        plugins: [vue()],
         test: {
           name: 'dom',
           environment: 'jsdom',

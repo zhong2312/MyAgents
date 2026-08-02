@@ -1,7 +1,9 @@
 import { BookOpen, Loader2, LockKeyhole, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
+import { CustomSelect } from "@/workbench-sdk";
 import NovelGenrePicker from "./NovelGenrePicker";
+import { novelLanguageOptions } from "./novelGenres";
 import NovelPlanningFields from "./NovelPlanningFields";
 import {
   DEFAULT_CHAPTER_WORD_COUNT,
@@ -42,6 +44,7 @@ export default function NovelProjectSettingsDialog({
       ? DEFAULT_CHAPTER_WORD_COUNT
       : String(metadata.chapterWordCount),
   );
+  const [language, setLanguage] = useState(metadata.language ?? "zh-CN");
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +82,12 @@ export default function NovelProjectSettingsDialog({
     setError(null);
     setIsSaving(true);
     try {
-      await onSave({ title: title.trim(), genres, ...planning });
+      await onSave({
+        title: title.trim(),
+        genres,
+        ...planning,
+        language: language.trim() || "zh-CN",
+      });
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -191,6 +199,18 @@ export default function NovelProjectSettingsDialog({
               onTargetWordCountMinWanChange={setTargetWordCountMinWan}
               onTargetWordCountMaxWanChange={setTargetWordCountMaxWan}
               onChapterWordCountChange={setChapterWordCount}
+            />
+            <span className="mt-4 block text-sm font-medium text-[var(--ink)]">
+              创作语言
+            </span>
+            <CustomSelect
+              value={language}
+              options={novelLanguageOptions()}
+              onChange={setLanguage}
+              ariaLabel="创作语言"
+              size="toolbar"
+              disabled={isSaving}
+              className="mt-2"
             />
           </div>
 

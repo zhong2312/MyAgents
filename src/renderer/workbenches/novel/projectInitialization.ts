@@ -40,6 +40,8 @@ export interface NovelProjectInitializationInput {
   readonly targetWordCountMax: number;
   readonly chapterWordCount: number;
   readonly createdAt: string;
+  /** 创作语言，如 zh-CN / en-US；默认 zh-CN。 */
+  readonly language?: string;
 }
 
 const DIRECTORIES = [
@@ -61,6 +63,10 @@ const DIRECTORIES = [
   "world/setting-library/pages",
   "world/setting-library/entries",
   "world/setting-library/proposals",
+  "world/maps",
+  "world/maps/records",
+  "world/maps/proposals",
+  "world/maps/trash",
   "world/cultivation-proposals",
   "timeline",
   "simulation",
@@ -108,7 +114,7 @@ function createFiles(
         targetWordCountMax: input.targetWordCountMax,
         chapterWordCount: input.chapterWordCount,
         status: "planning",
-        language: "zh-CN",
+        language: input.language?.trim() || "zh-CN",
         createdAt: input.createdAt,
         updatedAt: input.createdAt,
       }),
@@ -173,6 +179,10 @@ Thumbs.db
     ...createPromptLibraryInitializationFiles(),
     ...createTimelineLibraryInitializationFiles(input.createdAt),
     ...createWorldSimulationInitializationFiles(),
+    {
+      path: "simulation/councils.json",
+      content: `${JSON.stringify({ schemaVersion: 1, sessions: [] }, null, 2)}\n`,
+    },
     createInspirationInitializationFile(input.createdAt),
     { path: "research/index.json", content: createIndex("sources") },
     { path: "knowledge/entities.json", content: createIndex("entities") },

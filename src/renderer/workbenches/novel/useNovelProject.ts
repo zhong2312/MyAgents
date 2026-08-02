@@ -64,6 +64,7 @@ export interface NovelProjectController {
   saveTypography(typography: ManuscriptTypography): Promise<void>;
   deleteChapter(chapterId: string, expectedContent: string): Promise<void>;
   restoreChapter(deletionId: string): Promise<void>;
+  deleteChapterPermanently(deletionId: string): Promise<void>;
   saveChapter(
     chapterId: string,
     content: string,
@@ -274,10 +275,37 @@ export function useNovelProject(
     async (chapterId: string, input: UpdateNovelChapterInput) => {
       if (!project) throw new Error("小说项目尚未加载");
       const updated = await repository.updateChapter(project, chapterId, input);
-      if (await load(true)) return;
+      // 正文状态变更回流剧情工程：保持章计划状态与正文一致，
+      // 消除"正文已写完但剧情工程仍显示规划中"的断点。
       const record = updated.chapterIndex.chapters.find(
         (chapter) => chapter.id === chapterId,
       );
+      if (input.status && record?.narrativeChapterId) {
+        const planStatus =
+          input.status === "complete"
+            ? ("complete" as const)
+            : input.status === "planned"
+              ? ("planned" as const)
+              : ("drafting" as const);
+        const narrativeRepository = createNarrativeEngineeringRepository(
+          storage,
+        );
+        const currentNarrative = await narrativeRepository.load();
+        const targetPlan = currentNarrative.library.chapters.find(
+          (plan) => plan.id === record.narrativeChapterId,
+        );
+        if (targetPlan && targetPlan.status !== planStatus) {
+          await narrativeRepository.save(currentNarrative, {
+            ...currentNarrative.library,
+            chapters: currentNarrative.library.chapters.map((plan) =>
+              plan.id === record.narrativeChapterId
+                ? { ...plan, status: planStatus, updatedAt: new Date().toISOString() }
+                : plan,
+            ),
+          });
+        }
+      }
+      if (await load(true)) return;
       setProject((current) => {
         if (
           !current ||
@@ -298,7 +326,7 @@ export function useNovelProject(
         });
       });
     },
-    [load, project, repository],
+    [load, project, repository, storage],
   );
 
   const renameChapter = useCallback(
@@ -409,6 +437,15 @@ export function useNovelProject(
       if (!project) throw new Error("小说项目尚未加载");
       await repository.restoreChapter(project, deletionId);
       if (!(await load(true))) throw new Error("章节恢复后重新加载失败");
+    },
+    [load, project, repository],
+  );
+
+  const deleteChapterPermanently = useCallback(
+    async (deletionId: string) => {
+      if (!project) throw new Error("小说项目尚未加载");
+      await repository.deleteChapterPermanently(project, deletionId);
+      if (!(await load(true))) throw new Error("章节彻底删除后重新加载失败");
     },
     [load, project, repository],
   );
@@ -809,6 +846,7 @@ export function useNovelProject(
     saveTypography,
     deleteChapter,
     restoreChapter,
+    deleteChapterPermanently,
     saveChapter,
     loadManuscriptVersions,
     loadManuscriptVersionSettings,

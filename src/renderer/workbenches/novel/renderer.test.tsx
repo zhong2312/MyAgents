@@ -105,12 +105,37 @@ function context(
         throw new Error("Simulation runs unavailable in renderer fixture");
       },
     },
+    search: {
+      isAvailable: false,
+      async searchFiles() {
+        throw new Error("Search unavailable in renderer fixture");
+      },
+      async refreshIndex() {
+        throw new Error("Search unavailable in renderer fixture");
+      },
+      async invalidateIndex() {
+        throw new Error("Search unavailable in renderer fixture");
+      },
+    },
     navigate,
     registerNavigationGuard: () => () => undefined,
   };
 }
 
 describe("NovelWorkbenchRenderer storage loop", () => {
+  it("在新的世界推演菜单下保留控制台、实验室和立场会商入口", () => {
+    const navigation = novelWorkbenchDefinition.manifest.navigation;
+    expect(navigation).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "simulation", label: "世界推演" }),
+        expect.objectContaining({ id: "simulation-console", label: "运行控制台", parentId: "simulation" }),
+        expect.objectContaining({ id: "simulation-lab", label: "世界实验室", parentId: "simulation" }),
+        expect.objectContaining({ id: "simulation-council", label: "立场会商", parentId: "simulation" }),
+      ]),
+    );
+    expect(navigation.find((item) => item.id === "simulation")?.parentId).toBeUndefined();
+  });
+
   it("shows and updates project planning details from the overview", async () => {
     const storage = createEmptyNovelStorage();
     render(
@@ -363,7 +388,7 @@ describe("NovelWorkbenchRenderer storage loop", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders world maps in an independent workbench route", async () => {
+  it("renders the map editor with an empty map library", async () => {
     const storage = createEmptyNovelStorage();
     render(
       <NovelWorkbenchRenderer context={context(storage, "map", vi.fn())} />,
@@ -372,21 +397,14 @@ describe("NovelWorkbenchRenderer storage loop", () => {
     expect(
       await screen.findByRole("heading", { name: "世界地图" }),
     ).toBeInTheDocument();
+    // 空项目引导：地图库为空，提示新建地图
     expect(
-      screen.getByRole("img", { name: "九州大陆地理图" }),
+      await screen.findByText(/暂无地图/),
     ).toBeInTheDocument();
+    // 空间节点树视图保留
+    fireEvent.click(screen.getByRole("button", { name: "空间节点树" }));
     expect(
-      screen.getByText("空间实体 48 个 · 关系边 76 条"),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "多元宇宙" }));
-    expect(
-      screen.getByRole("img", { name: "多元宇宙拓扑图" }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Agent 生成地图" }));
-    expect(
-      screen.getByRole("button", { name: "地图已更新" }),
+      await screen.findByText(/尚无空间节点/),
     ).toBeInTheDocument();
   });
 

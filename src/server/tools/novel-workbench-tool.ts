@@ -1927,6 +1927,922 @@ async function submitCharacterProposalHandler(args: {
   }
 }
 
+type FactionProposalOperation = {
+  candidateId: string;
+  kind: "faction";
+  action: "create" | "update";
+  targetId?: string;
+  summary: string;
+  value: Record<string, unknown>;
+};
+
+type TimelineProposalOperation = {
+  candidateId: string;
+  kind: "event";
+  action: "create" | "update";
+  targetId?: string;
+  summary: string;
+  value: Record<string, unknown>;
+};
+
+type MapProposalOperation = {
+  candidateId: string;
+  kind: "map";
+  action: "create" | "update";
+  targetId?: string;
+  summary: string;
+  value: Record<string, unknown>;
+};
+
+const FACTION_PROPOSAL_ROOT = "world/factions/proposals";
+const TIMELINE_PROPOSAL_ROOT = "timeline/proposals";
+const MAX_FACTION_OPERATIONS = 40;
+const MAX_TIMELINE_OPERATIONS = 40;
+const MAP_PROPOSAL_ROOT = "world/maps/proposals";
+const MAX_MAP_OPERATIONS = 40;
+
+/** 读取工作区 JSON 文件并返回其 id 集合；文件缺失时返回空集。 */
+async function readIdSet(workspace: string, path: string, field: string): Promise<Set<string>> {
+  const content = await readOptional(workspaceFile(workspace, path));
+  if (!content) return new Set();
+  const document = JSON.parse(content) as unknown;
+  const list = arrayField(
+    document && typeof document === "object" ? (document as Record<string, unknown>) : {},
+    field,
+  );
+  const ids = new Set<string>();
+  for (const item of list ?? []) {
+    const record = objectValue(item, path);
+    if (typeof record.id === "string") ids.add(record.id);
+  }
+  return ids;
+}
+
+/** 校验势力候选：结构、正式库存在性、跨库引用（角色/物品/空间节点）。 */
+async function validateFactionDraftPayload(
+  operations: readonly FactionProposalOperation[],
+): Promise<string[]> {
+  const { workspace, context } = requireWorkspace();
+  if (context.mode !== "factions") {
+    return ["当前受控会话不是势力组织设计会话"];
+  }
+  if (operations.length === 0) return ["至少需要一个势力候选"];
+  if (operations.length > MAX_FACTION_OPERATIONS) {
+    return [`单份势力提案最多包含 ${MAX_FACTION_OPERATIONS} 项候选`];
+  }
+  const errors: string[] = [];
+  let existing: Record<string, unknown>[] = [];
+  try {
+    const content = await fs.readFile(
+      workspaceFile(workspace, FACTION_LIBRARY_PATH),
+      "utf8",
+    );
+    existing = (arrayField(JSON.parse(content) as Record<string, unknown>, "factions") ?? [])
+      .map((item) => objectValue(item, "势力"));
+  } catch (error) {
+    return [`势力库读取失败：${message(error)}`];
+  }
+  const existingIds = new Set(
+    existing.map((item) => objectValue(item, "势力").id).filter((id) => typeof id === "string"),
+  );
+  const characterIds = await readIdSet(workspace, "characters/index.json", "characters");
+  const itemIds = await readIdSet(workspace, "world/items/index.json", "items");
+  let spatialNodeIds = new Set<string>();
+  try {
+    const content = await readOptional(
+      workspaceFile(workspace, "world/setting-library/spatial-tree.json"),
+    );
+    if (content) {
+      const document = JSON.parse(content) as unknown;
+      const nodes = arrayField(
+        document && typeof document === "object" ? (document as Record<string, unknown>) : {},
+        "nodes",
+      );
+      const ids = new Set<string>();
+      for (const node of nodes ?? []) {
+        const record = objectValue(node, "空间节点");
+        if (typeof record.id === "string") ids.add(record.id);
+      }
+      spatialNodeIds = ids;
+    }
+  } catch {
+    // 空间树缺失时不做节点校验，采纳阶段仍由前端严格校验
+  }
+  const candidateIds = new Set<string>();
+  for (const operation of operations) {
+    if (!ID_PATTERN.test(operation.candidateId) || candidateIds.has(operation.candidateId)) {
+      errors.push(`候选 id 非法或重复：${operation.candidateId}`);
+    }
+    candidateIds.add(operation.candidateId);
+    if (!operation.summary.trim()) errors.push(`${operation.candidateId}缺少摘要`);
+    if (operation.action === "update" && !operation.targetId) {
+      errors.push(`${operation.candidateId}更新候选缺少 targetId`);
+      continue;
+    }
+    const faction = operation.value;
+    const id = faction.id;
+    if (typeof id !== "string" || !ID_PATTERN.test(id)) {
+      errors.push(`${operation.candidateId}的势力 id 非法`);
+      continue;
+    }
+    if (typeof faction.name !== "string" || !faction.name.trim()) {
+      errors.push(`势力“${id}”缺少名称`);
+    }
+    if (operation.action === "create" && existingIds.has(id)) {
+      errors.push(`势力 id 已存在：${id}`);
+      continue;
+    }
+    if (operation.action === "update" && !existingIds.has(id)) {
+      errors.push(`势力 id 不存在：${id}`);
+      continue;
+    }
+    for (const member of arrayField(faction, "members") ?? []) {
+      const record = objectValue(member, "成员");
+      if (
+        typeof record.characterId === "string" &&
+        record.characterId &&
+        !characterIds.has(record.characterId)
+      ) {
+        errors.push(`势力“${id}”的成员“${record.name ?? "未命名"}”关联了不存在的角色：${record.characterId}`);
+      }
+    }
+    for (const resource of arrayField(faction, "resources") ?? []) {
+      const record = objectValue(resource, "资源");
+      if (
+        typeof record.itemId === "string" &&
+        record.itemId &&
+        !itemIds.has(record.itemId)
+      ) {
+        errors.push(`势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的物品：${record.itemId}`);
+      }
+      if (
+        typeof record.worldNodeId === "string" &&
+        record.worldNodeId &&
+        !spatialNodeIds.has(record.worldNodeId)
+      ) {
+        errors.push(`势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`);
+      }
+    }
+    for (const territory of arrayField(faction, "territories") ?? []) {
+      const record = objectValue(territory, "领地");
+      if (
+        typeof record.worldNodeId === "string" &&
+        record.worldNodeId &&
+        !spatialNodeIds.has(record.worldNodeId)
+      ) {
+        errors.push(`势力“${id}”的领地“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`);
+      }
+    }
+  }
+  return errors;
+}
+
+/** 校验时间线候选：结构、正式库存在性、跨库引用（角色/地点/章节/势力/物品）。 */
+async function validateTimelineDraftPayload(
+  operations: readonly TimelineProposalOperation[],
+): Promise<string[]> {
+  const { workspace, context } = requireWorkspace();
+  if (context.mode !== "timeline") {
+    return ["当前受控会话不是时间线设计会话"];
+  }
+  if (operations.length === 0) return ["至少需要一个时间线候选"];
+  if (operations.length > MAX_TIMELINE_OPERATIONS) {
+    return [`单份时间线提案最多包含 ${MAX_TIMELINE_OPERATIONS} 项候选`];
+  }
+  const errors: string[] = [];
+  let existingEvents: Record<string, unknown>[] = [];
+  let branchIds = new Set<string>();
+  try {
+    const content = await fs.readFile(
+      workspaceFile(workspace, TIMELINE_LIBRARY_PATH),
+      "utf8",
+    );
+    const document = JSON.parse(content) as Record<string, unknown>;
+    existingEvents = (arrayField(document, "events") ?? []).map((item) =>
+      objectValue(item, "事件"),
+    );
+    branchIds = new Set(
+      (arrayField(document, "branches") ?? []).map((item) =>
+        objectValue(item, "分支").id,
+      ).filter((id): id is string => typeof id === "string"),
+    );
+  } catch (error) {
+    return [`时间线读取失败：${message(error)}`];
+  }
+  const existingIds = new Set(
+    existingEvents.map((item) => objectValue(item, "事件").id).filter((id) => typeof id === "string"),
+  );
+  const characterIds = await readIdSet(workspace, "characters/index.json", "characters");
+  const factionIds = await readIdSet(workspace, FACTION_LIBRARY_PATH, "factions");
+  const itemIds = await readIdSet(workspace, "world/items/index.json", "items");
+  const locationIds = await readIdSet(workspace, "world/locations/index.json", "locations");
+  const chapterIds = await readIdSet(workspace, MANUSCRIPT_INDEX_PATH, "chapters");
+  const candidateIds = new Set<string>();
+  for (const operation of operations) {
+    if (!ID_PATTERN.test(operation.candidateId) || candidateIds.has(operation.candidateId)) {
+      errors.push(`候选 id 非法或重复：${operation.candidateId}`);
+    }
+    candidateIds.add(operation.candidateId);
+    if (!operation.summary.trim()) errors.push(`${operation.candidateId}缺少摘要`);
+    if (operation.action === "update" && !operation.targetId) {
+      errors.push(`${operation.candidateId}更新候选缺少 targetId`);
+      continue;
+    }
+    const event = operation.value;
+    const id = event.id;
+    if (typeof id !== "string" || !ID_PATTERN.test(id)) {
+      errors.push(`${operation.candidateId}的事件 id 非法`);
+      continue;
+    }
+    if (typeof event.title !== "string" || !event.title.trim()) {
+      errors.push(`事件“${id}”缺少标题`);
+    }
+    if (typeof event.branchId === "string" && !branchIds.has(event.branchId)) {
+      errors.push(`事件“${id}”所属分支不存在：${event.branchId}`);
+    }
+    if (operation.action === "create" && existingIds.has(id)) {
+      errors.push(`事件 id 已存在：${id}`);
+      continue;
+    }
+    if (operation.action === "update" && !existingIds.has(id)) {
+      errors.push(`事件 id 不存在：${id}`);
+      continue;
+    }
+    const checkReference = (field: string, available: Set<string>, label: string) => {
+      for (const ref of arrayField(event, field) ?? []) {
+        if (typeof ref === "string" && ref && !available.has(ref)) {
+          errors.push(`事件“${id}”关联了不存在的${label}：${ref}`);
+        }
+      }
+    };
+    checkReference("characterIds", characterIds, "角色");
+    checkReference("factionIds", factionIds, "势力");
+    checkReference("itemIds", itemIds, "物品");
+    checkReference("locationIds", locationIds, "地点");
+    checkReference("chapterIds", chapterIds, "正文章节");
+  }
+  return errors;
+}
+
+async function submitFactionProposalHandler(args: {
+  proposalId?: string;
+  title: string;
+  description?: string;
+  operations: FactionProposalOperation[];
+}): Promise<CallToolResult> {
+  let proposalDirectory = "";
+  let createdProposalDirectory = false;
+  try {
+    const { workspace, context } = requireWorkspace();
+    const errors = await validateFactionDraftPayload(args.operations);
+    if (errors.length > 0) return result({ submitted: false, errors }, true);
+    const proposalId =
+      args.proposalId?.trim() || `faction-proposal-${randomUUID().slice(0, 8)}`;
+    if (!ID_PATTERN.test(proposalId)) {
+      throw new Error("proposalId 只能使用小写字母、数字和连字符");
+    }
+    proposalDirectory = workspaceFile(
+      workspace,
+      `${FACTION_PROPOSAL_ROOT}/${proposalId}`,
+    );
+    if (await readOptional(join(proposalDirectory, "proposal.json"))) {
+      return result({
+        submitted: true,
+        proposalId,
+        recovered: true,
+        reviewAction: "请作者在小说工作台的势力组织中审阅并采纳候选。",
+      });
+    }
+    await fs.mkdir(proposalDirectory, { recursive: true });
+    createdProposalDirectory = true;
+    const manifest = {
+      schemaVersion: 1,
+      proposalId,
+      title: args.title.trim(),
+      description: args.description?.trim() ?? "",
+      createdAt: new Date().toISOString(),
+      source: {
+        kind: "agent",
+        promptId: context.promptId,
+        promptVersion: context.promptVersion,
+      },
+      operations: args.operations.map((operation) => ({
+        ...operation,
+        summary: operation.summary.trim(),
+        status: "pending",
+      })),
+    };
+    await fs.writeFile(
+      join(proposalDirectory, "proposal.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    return result({
+      submitted: true,
+      proposalId,
+      operationCount: manifest.operations.length,
+      reviewAction: "请作者在小说工作台的势力组织中审阅并采纳候选。",
+    });
+  } catch (error) {
+    if (createdProposalDirectory) {
+      await fs
+        .rm(proposalDirectory, { recursive: true, force: true })
+        .catch(() => {});
+    }
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function submitTimelineProposalHandler(args: {
+  proposalId?: string;
+  title: string;
+  description?: string;
+  operations: TimelineProposalOperation[];
+}): Promise<CallToolResult> {
+  let proposalDirectory = "";
+  let createdProposalDirectory = false;
+  try {
+    const { workspace, context } = requireWorkspace();
+    const errors = await validateTimelineDraftPayload(args.operations);
+    if (errors.length > 0) return result({ submitted: false, errors }, true);
+    const proposalId =
+      args.proposalId?.trim() || `timeline-proposal-${randomUUID().slice(0, 8)}`;
+    if (!ID_PATTERN.test(proposalId)) {
+      throw new Error("proposalId 只能使用小写字母、数字和连字符");
+    }
+    proposalDirectory = workspaceFile(
+      workspace,
+      `${TIMELINE_PROPOSAL_ROOT}/${proposalId}`,
+    );
+    if (await readOptional(join(proposalDirectory, "proposal.json"))) {
+      return result({
+        submitted: true,
+        proposalId,
+        recovered: true,
+        reviewAction: "请作者在小说工作台的时间线中审阅并采纳候选。",
+      });
+    }
+    await fs.mkdir(proposalDirectory, { recursive: true });
+    createdProposalDirectory = true;
+    const manifest = {
+      schemaVersion: 1,
+      proposalId,
+      title: args.title.trim(),
+      description: args.description?.trim() ?? "",
+      createdAt: new Date().toISOString(),
+      source: {
+        kind: "agent",
+        promptId: context.promptId,
+        promptVersion: context.promptVersion,
+      },
+      operations: args.operations.map((operation) => ({
+        ...operation,
+        summary: operation.summary.trim(),
+        status: "pending",
+      })),
+    };
+    await fs.writeFile(
+      join(proposalDirectory, "proposal.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    return result({
+      submitted: true,
+      proposalId,
+      operationCount: manifest.operations.length,
+      reviewAction: "请作者在小说工作台的时间线中审阅并采纳候选。",
+    });
+  } catch (error) {
+    if (createdProposalDirectory) {
+      await fs
+        .rm(proposalDirectory, { recursive: true, force: true })
+        .catch(() => {});
+    }
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+type FactionDraftPayload = {
+  title: string;
+  description: string;
+  operations: FactionProposalOperation[];
+};
+
+type TimelineDraftPayload = {
+  title: string;
+  description: string;
+  operations: TimelineProposalOperation[];
+};
+
+async function createFactionDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("factions");
+    const draft = await createNovelWorkbenchDraft<FactionDraftPayload>(
+      workspace,
+      "factions",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        operations: [],
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getFactionDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("factions");
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<FactionDraftPayload>(
+          workspace,
+          "factions",
+          args.draftId,
+        ),
+      ),
+    );
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertFactionDraftOperationsHandler(args: {
+  draftId: string;
+  operations: FactionProposalOperation[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("factions");
+    const draft = await updateNovelWorkbenchDraft<FactionDraftPayload>(
+      workspace,
+      "factions",
+      args.draftId,
+      (payload) => {
+        const operations = new Map(
+          payload.operations.map((operation) => [
+            operation.candidateId,
+            operation,
+          ]),
+        );
+        for (const operation of args.operations) {
+          operations.set(operation.candidateId, operation);
+        }
+        return { ...payload, operations: [...operations.values()] };
+      },
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validateFactionDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("factions");
+    const draft = await loadNovelWorkbenchDraft<FactionDraftPayload>(
+      workspace,
+      "factions",
+      args.draftId,
+    );
+    const errors = await validateFactionDraftPayload(draft.payload.operations);
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const saved = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      hashNovelWorkbenchDraftPayload(draft.payload),
+    );
+    return result({
+      valid: true,
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
+    });
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitFactionDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("factions");
+    const draft = await loadNovelWorkbenchDraft<FactionDraftPayload>(
+      workspace,
+      "factions",
+      args.draftId,
+    );
+    const hash = hashNovelWorkbenchDraftPayload(draft.payload);
+    if (draft.submittedProposalId) {
+      return result(
+        await getProposalStatus(
+          FACTION_PROPOSAL_ROOT,
+          draft.submittedProposalId,
+          "operations",
+        ),
+      );
+    }
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !== hash
+    ) {
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    }
+    const proposalId = `factions-${draft.draftId}`;
+    const submitted = await submitFactionProposalHandler({
+      proposalId,
+      ...draft.payload,
+    });
+    if (submitted.isError) return submitted;
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    return result({ ...decodeToolResult(submitted), draftId: draft.draftId });
+  } catch (error) {
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getFactionProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
+  try {
+    requireDraftMode("factions");
+    return result(
+      await getProposalStatus(
+        FACTION_PROPOSAL_ROOT,
+        args.proposalId,
+        "operations",
+      ),
+    );
+  } catch (error) {
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
+  }
+}
+
+async function createTimelineDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("timeline");
+    const draft = await createNovelWorkbenchDraft<TimelineDraftPayload>(
+      workspace,
+      "timeline",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        operations: [],
+      },
+      args.draftId,
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getTimelineDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("timeline");
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<TimelineDraftPayload>(
+          workspace,
+          "timeline",
+          args.draftId,
+        ),
+      ),
+    );
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertTimelineDraftOperationsHandler(args: {
+  draftId: string;
+  operations: TimelineProposalOperation[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("timeline");
+    const draft = await updateNovelWorkbenchDraft<TimelineDraftPayload>(
+      workspace,
+      "timeline",
+      args.draftId,
+      (payload) => {
+        const operations = new Map(
+          payload.operations.map((operation) => [
+            operation.candidateId,
+            operation,
+          ]),
+        );
+        for (const operation of args.operations) {
+          operations.set(operation.candidateId, operation);
+        }
+        return { ...payload, operations: [...operations.values()] };
+      },
+    );
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validateTimelineDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("timeline");
+    const draft = await loadNovelWorkbenchDraft<TimelineDraftPayload>(
+      workspace,
+      "timeline",
+      args.draftId,
+    );
+    const errors = await validateTimelineDraftPayload(draft.payload.operations);
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const saved = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      hashNovelWorkbenchDraftPayload(draft.payload),
+    );
+    return result({
+      valid: true,
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
+    });
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitTimelineDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("timeline");
+    const draft = await loadNovelWorkbenchDraft<TimelineDraftPayload>(
+      workspace,
+      "timeline",
+      args.draftId,
+    );
+    const hash = hashNovelWorkbenchDraftPayload(draft.payload);
+    if (draft.submittedProposalId) {
+      return result(
+        await getProposalStatus(
+          TIMELINE_PROPOSAL_ROOT,
+          draft.submittedProposalId,
+          "operations",
+        ),
+      );
+    }
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !== hash
+    ) {
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    }
+    const proposalId = `timeline-${draft.draftId}`;
+    const submitted = await submitTimelineProposalHandler({
+      proposalId,
+      ...draft.payload,
+    });
+    if (submitted.isError) return submitted;
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    return result({ ...decodeToolResult(submitted), draftId: draft.draftId });
+  } catch (error) {
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getTimelineProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
+  try {
+    requireDraftMode("timeline");
+    return result(
+      await getProposalStatus(
+        TIMELINE_PROPOSAL_ROOT,
+        args.proposalId,
+        "operations",
+      ),
+    );
+  } catch (error) {
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
+  }
+}
+
+
+/** 校验地图候选：结构（id/name/projectionType/layers/features）与正式库存在性。 */
+async function validateMapDraftPayload(
+  operations: readonly MapProposalOperation[],
+): Promise<string[]> {
+  const { workspace, context } = requireWorkspace();
+  if (context.mode !== "maps") {
+    return ["当前受控会话不是地图设计会话"];
+  }
+  if (operations.length === 0) return ["至少需要一个地图候选"];
+  if (operations.length > MAX_MAP_OPERATIONS) {
+    return ["单份地图提案最多包含 " + MAX_MAP_OPERATIONS + " 项候选"];
+  }
+  const errors: string[] = [];
+  let existingIds = new Set<string>();
+  try {
+    const content = await readOptional(workspaceFile(workspace, "world/maps/index.json"));
+    if (content) {
+      const index = JSON.parse(content) as { maps?: unknown[] };
+      existingIds = new Set(
+        (index.maps ?? []).map((entry) => objectValue(entry, "地图").id).filter((id): id is string => typeof id === "string"),
+      );
+    }
+  } catch {
+    // 索引缺失时按空库处理
+  }
+  const candidateIds = new Set<string>();
+  for (const operation of operations) {
+    if (!ID_PATTERN.test(operation.candidateId) || candidateIds.has(operation.candidateId)) {
+      errors.push("候选 id 非法或重复：" + operation.candidateId);
+    }
+    candidateIds.add(operation.candidateId);
+    if (!operation.summary.trim()) errors.push(operation.candidateId + "缺少摘要");
+    if (operation.action === "update" && !operation.targetId) {
+      errors.push(operation.candidateId + "更新候选缺少 targetId");
+      continue;
+    }
+    const map = operation.value;
+    const id = map.id;
+    if (typeof id !== "string" || !ID_PATTERN.test(id)) {
+      errors.push(operation.candidateId + "的地图 id 非法");
+      continue;
+    }
+    if (typeof map.name !== "string" || !map.name.trim()) {
+      errors.push("地图“" + id + "”缺少名称");
+    }
+    if (!["continent", "planet", "multiverse", "parallel"].includes(String(map.projectionType))) {
+      errors.push("地图“" + id + "”投影类型非法");
+    }
+    if (!Array.isArray(map.layers) || map.layers.length === 0) {
+      errors.push("地图“" + id + "”至少需要一个图层");
+    }
+    if (!Array.isArray(map.features)) {
+      errors.push("地图“" + id + "”缺少要素数组");
+    }
+    if (operation.action === "create" && existingIds.has(id)) {
+      errors.push("地图 id 已存在：" + id);
+    }
+    if (operation.action === "update" && !existingIds.has(id)) {
+      errors.push("地图 id 不存在：" + id);
+    }
+  }
+  return errors;
+}
+
+async function submitMapProposalHandler(args: {
+  proposalId?: string;
+  title: string;
+  description?: string;
+  operations: MapProposalOperation[];
+}): Promise<CallToolResult> {
+  let proposalDirectory = "";
+  let createdProposalDirectory = false;
+  try {
+    const { workspace, context } = requireWorkspace();
+    const errors = await validateMapDraftPayload(args.operations);
+    if (errors.length > 0) return result({ submitted: false, errors }, true);
+    const proposalId = args.proposalId?.trim() || "map-proposal-" + randomUUID().slice(0, 8);
+    if (!ID_PATTERN.test(proposalId)) {
+      throw new Error("proposalId 只能使用小写字母、数字和连字符");
+    }
+    proposalDirectory = workspaceFile(workspace, MAP_PROPOSAL_ROOT + "/" + proposalId);
+    if (await readOptional(join(proposalDirectory, "proposal.json"))) {
+      return result({ submitted: true, proposalId, recovered: true, reviewAction: "请作者在小说工作台的世界地图中审阅并采纳候选。" });
+    }
+    await fs.mkdir(proposalDirectory, { recursive: true });
+    createdProposalDirectory = true;
+    const manifest = {
+      schemaVersion: 1,
+      proposalId,
+      title: args.title.trim(),
+      description: args.description?.trim() ?? "",
+      createdAt: new Date().toISOString(),
+      source: { kind: "agent", promptId: context.promptId, promptVersion: context.promptVersion },
+      operations: args.operations.map((operation) => ({ ...operation, summary: operation.summary.trim(), status: "pending" })),
+    };
+    await fs.writeFile(join(proposalDirectory, "proposal.json"), JSON.stringify(manifest, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+    return result({ submitted: true, proposalId, operationCount: manifest.operations.length, reviewAction: "请作者在小说工作台的世界地图中审阅并采纳候选。" });
+  } catch (error) {
+    if (createdProposalDirectory) {
+      await fs.rm(proposalDirectory, { recursive: true, force: true }).catch(() => {});
+    }
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+type MapDraftPayload = {
+  title: string;
+  description: string;
+  operations: MapProposalOperation[];
+};
+
+async function createMapDraftHandler(args: { draftId?: string; title: string; description?: string }): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("maps");
+    const draft = await createNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", draftSource(context), { title: args.title.trim(), description: args.description?.trim() ?? "", operations: [] }, args.draftId);
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getMapDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("maps");
+    return result(summarizeNovelWorkbenchDraft(await loadNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId)));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function upsertMapDraftOperationsHandler(args: { draftId: string; operations: MapProposalOperation[] }): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("maps");
+    const draft = await updateNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId, (payload) => {
+      const operations = new Map(payload.operations.map((operation) => [operation.candidateId, operation]));
+      for (const operation of args.operations) {
+        operations.set(operation.candidateId, operation);
+      }
+      return { ...payload, operations: [...operations.values()] };
+    });
+    return result(summarizeNovelWorkbenchDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function validateMapDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("maps");
+    const draft = await loadNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId);
+    const errors = await validateMapDraftPayload(draft.payload.operations);
+    if (errors.length > 0) return result({ valid: false, errors }, true);
+    const saved = await saveNovelWorkbenchDraftValidation(workspace, draft, hashNovelWorkbenchDraftPayload(draft.payload));
+    return result({ valid: true, ...summarizeNovelWorkbenchDraft(saved), validationToken: saved.validation?.token });
+  } catch (error) {
+    return result({ valid: false, errors: [message(error)] }, true);
+  }
+}
+
+async function submitMapDraftHandler(args: { draftId: string; validationToken: string }): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("maps");
+    const draft = await loadNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId);
+    const hash = hashNovelWorkbenchDraftPayload(draft.payload);
+    if (draft.submittedProposalId) {
+      return result(await getProposalStatus(MAP_PROPOSAL_ROOT, draft.submittedProposalId, "operations"));
+    }
+    if (draft.validation?.token !== args.validationToken || draft.validation.contentHash !== hash) {
+      throw new Error("校验令牌无效或草稿已经变化，请重新校验");
+    }
+    const proposalId = "maps-" + draft.draftId;
+    const submitted = await submitMapProposalHandler({ proposalId, ...draft.payload });
+    if (submitted.isError) return submitted;
+    await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
+    return result({ ...decodeToolResult(submitted), draftId: draft.draftId });
+  } catch (error) {
+    return result({ submitted: false, error: message(error) }, true);
+  }
+}
+
+async function getMapProposalStatusHandler(args: { proposalId: string }): Promise<CallToolResult> {
+  try {
+    requireDraftMode("maps");
+    return result(await getProposalStatus(MAP_PROPOSAL_ROOT, args.proposalId, "operations"));
+  } catch (error) {
+    return result({ exists: false, proposalId: args.proposalId, error: message(error) }, true);
+  }
+}
+
+
 type NarrativeContextScope =
   | "overview"
   | "lines"
@@ -3644,9 +4560,12 @@ function requireDraftMode(
     | "world"
     | "characters"
     | "items"
+    | "factions"
     | "narrative"
     | "manuscript"
-    | "cultivation",
+    | "cultivation"
+    | "timeline"
+    | "maps",
 ): ReturnType<typeof requireWorkspace> {
   const allowed =
     expected === "world"
@@ -4991,6 +5910,64 @@ export async function createNovelWorkbenchServer() {
         getFactionContextHandler,
       ),
       tool(
+        "novel_factions_create_draft",
+        "创建可恢复的势力组织草稿，用于生成待作者审阅的势力提案。草稿不写入正式势力库。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1),
+          description: z.string().optional(),
+        },
+        createFactionDraftHandler,
+      ),
+      tool(
+        "novel_factions_get_draft",
+        "读取势力组织草稿及其 revision、校验令牌和提交状态。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getFactionDraftHandler,
+      ),
+      tool(
+        "novel_factions_upsert_draft_operations",
+        "按候选 id 增量新增或替换势力候选；可分批生成，不需要一次提供整批势力。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          operations: z
+            .array(
+              z.object({
+                candidateId: z.string().regex(ID_PATTERN),
+                kind: z.literal("faction"),
+                action: z.enum(["create", "update"]),
+                targetId: z.string().regex(ID_PATTERN).optional(),
+                summary: z.string().min(1).max(500),
+                value: z.record(z.string(), z.unknown()),
+              }),
+            )
+            .min(1)
+            .max(MAX_FACTION_OPERATIONS),
+        },
+        upsertFactionDraftOperationsHandler,
+      ),
+      tool(
+        "novel_factions_validate_draft",
+        "校验势力草稿的势力名称、id 与角色/物品/空间节点引用；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateFactionDraftHandler,
+      ),
+      tool(
+        "novel_factions_submit_draft",
+        "使用 validationToken 创建待作者审批的势力提案。不会修改正式势力库。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitFactionDraftHandler,
+      ),
+      tool(
+        "novel_factions_get_proposal_status",
+        "从磁盘确认势力提案是否真实存在及其待审、已采纳、已拒绝数量。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getFactionProposalStatusHandler,
+      ),
+      tool(
         "novel_continuity_get_context",
         "读取正文已应用状态批次和连续性事实，供正文生成判断人物状态、关系、物品、地点和未结事项。该工具只读。",
         {},
@@ -5006,6 +5983,122 @@ export async function createNovelWorkbenchServer() {
           ids: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
         },
         getTimelineContextHandler,
+      ),
+      tool(
+        "novel_timeline_create_draft",
+        "创建可恢复的时间线草稿，用于生成待作者审阅的事件提案。草稿不写入正式时间线。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1),
+          description: z.string().optional(),
+        },
+        createTimelineDraftHandler,
+      ),
+      tool(
+        "novel_timeline_get_draft",
+        "读取时间线草稿及其 revision、校验令牌和提交状态。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getTimelineDraftHandler,
+      ),
+      tool(
+        "novel_timeline_upsert_draft_operations",
+        "按候选 id 增量新增或替换时间线事件候选；可分批生成，不需要一次提供整批事件。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          operations: z
+            .array(
+              z.object({
+                candidateId: z.string().regex(ID_PATTERN),
+                kind: z.literal("event"),
+                action: z.enum(["create", "update"]),
+                targetId: z.string().regex(ID_PATTERN).optional(),
+                summary: z.string().min(1).max(500),
+                value: z.record(z.string(), z.unknown()),
+              }),
+            )
+            .min(1)
+            .max(MAX_TIMELINE_OPERATIONS),
+        },
+        upsertTimelineDraftOperationsHandler,
+      ),
+      tool(
+        "novel_timeline_validate_draft",
+        "校验时间线草稿的事件标题、分支与角色/地点/章节/势力/物品引用；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateTimelineDraftHandler,
+      ),
+      tool(
+        "novel_timeline_submit_draft",
+        "使用 validationToken 创建待作者审批的时间线提案。不会修改正式时间线。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitTimelineDraftHandler,
+      ),
+      tool(
+        "novel_timeline_get_proposal_status",
+        "从磁盘确认时间线提案是否真实存在及其待审、已采纳、已拒绝数量。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getTimelineProposalStatusHandler,
+      ),
+      tool(
+        "novel_maps_create_draft",
+        "创建可恢复的世界地图草稿，用于生成待作者审阅的地图提案。草稿不写入正式地图库。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1),
+          description: z.string().optional(),
+        },
+        createMapDraftHandler,
+      ),
+      tool(
+        "novel_maps_get_draft",
+        "读取世界地图草稿及其 revision、校验令牌和提交状态。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        getMapDraftHandler,
+      ),
+      tool(
+        "novel_maps_upsert_draft_operations",
+        "按候选 id 增量新增或替换地图候选；可分批生成，不需要一次提供整份地图。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          operations: z
+            .array(
+              z.object({
+                candidateId: z.string().regex(ID_PATTERN),
+                kind: z.literal("map"),
+                action: z.enum(["create", "update"]),
+                targetId: z.string().regex(ID_PATTERN).optional(),
+                summary: z.string().min(1).max(500),
+                value: z.record(z.string(), z.unknown()),
+              }),
+            )
+            .min(1)
+            .max(MAX_MAP_OPERATIONS),
+        },
+        upsertMapDraftOperationsHandler,
+      ),
+      tool(
+        "novel_maps_validate_draft",
+        "校验世界地图草稿的名称、投影类型、图层与要素结构；成功后返回 validationToken。",
+        { draftId: z.string().regex(ID_PATTERN) },
+        validateMapDraftHandler,
+      ),
+      tool(
+        "novel_maps_submit_draft",
+        "使用 validationToken 创建待作者审批的世界地图提案。不会修改正式地图库。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          validationToken: z.string().min(1),
+        },
+        submitMapDraftHandler,
+      ),
+      tool(
+        "novel_maps_get_proposal_status",
+        "从磁盘确认世界地图提案是否真实存在及其待审、已采纳、已拒绝数量。",
+        { proposalId: z.string().regex(ID_PATTERN) },
+        getMapProposalStatusHandler,
       ),
       tool(
         "novel_narrative_get_context",

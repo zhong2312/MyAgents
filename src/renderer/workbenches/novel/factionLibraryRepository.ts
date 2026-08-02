@@ -1,6 +1,9 @@
 import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 
 import {
+  validateFactionCrossReferences,
+} from "./crossLibraryReferences";
+import {
   createEmptyFactionLibrary,
   FACTION_LIBRARY_PATH,
   parseFactionLibrary,
@@ -51,6 +54,7 @@ export function createNovelFactionLibraryRepository(
       return Object.freeze({ library: parseFactionLibrary(file.content), content: file.content });
     },
     async save(current: LoadedFactionLibrary, library: FactionLibrary) {
+      await validateFactionCrossReferences(storage, library);
       const content = serializeFactionLibrary(library);
       const parsed = parseFactionLibrary(content);
       const file = await storage.writeText(FACTION_LIBRARY_PATH, content, {

@@ -123,3 +123,23 @@ export const NOVEL_GENRE_GROUPS: readonly NovelGenreGroup[] = [
 export const NOVEL_GENRES = Object.freeze(
   NOVEL_GENRE_GROUPS.flatMap((group) => group.options),
 );
+
+/** 小说创作语言选项（novel.json 的 language 字段）。 */
+export const NOVEL_LANGUAGE_OPTIONS: readonly {
+  readonly value: string;
+  readonly label: string;
+}[] = Object.freeze([
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "en-US", label: "English" },
+  { value: "ja-JP", label: "日本語" },
+  { value: "ko-KR", label: "한국어" },
+]);
+
+/** CustomSelect 用可变选项数组（组件接口要求 SelectOption[]）。 */
+export function novelLanguageOptions(): {
+  readonly value: string;
+  readonly label: string;
+}[] {
+  return [...NOVEL_LANGUAGE_OPTIONS];
+}

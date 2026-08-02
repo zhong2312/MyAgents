@@ -46,6 +46,8 @@ describe("MiroFish novel Host Bridge", () => {
         return { runs: [] };
       }),
       loadSnapshot: async () => snapshot,
+      loadWorldGraph: async () => ({ nodes: [], edges: [] }),
+      runCouncilRound: async () => ({ statements: [], votes: [] }),
     });
 
     const context = await bridge.loadContext();
@@ -64,6 +66,8 @@ describe("MiroFish novel Host Bridge", () => {
         throw new Error("companion unavailable");
       }),
       loadSnapshot: async () => snapshot,
+      loadWorldGraph: async () => ({ nodes: [], edges: [] }),
+      runCouncilRound: async () => ({ statements: [], votes: [] }),
     });
 
     await expect(bridge.loadContext()).resolves.toMatchObject({
@@ -79,6 +83,8 @@ describe("MiroFish novel Host Bridge", () => {
     const bridge = createMiroFishNovelBridge({
       simulationRuns: createRunsClient(async () => ({ runs: [] })),
       loadSnapshot: async () => snapshot,
+      loadWorldGraph: async () => ({ nodes: [], edges: [] }),
+      runCouncilRound: async () => ({ statements: [], votes: [] }),
       onNavigate,
     });
 
@@ -92,6 +98,8 @@ describe("MiroFish novel Host Bridge", () => {
     const bridge = createMiroFishNovelBridge({
       simulationRuns: createRunsClient(request),
       loadSnapshot: async () => snapshot,
+      loadWorldGraph: async () => ({ nodes: [], edges: [] }),
+      runCouncilRound: async () => ({ statements: [], votes: [] }),
     });
     await bridge.loadContext();
 
@@ -102,5 +110,72 @@ describe("MiroFish novel Host Bridge", () => {
       bridge.request({ version: 1, operation: "get", runId: "novel-run-other" }),
     ).rejects.toThrow("不属于当前小说项目");
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("世界图谱数据由 Host 在隔离侧构建并原样转发", async () => {
+    const graphData = {
+      nodes: [{ uuid: "n1", name: "灵墟", labels: ["实体"], attributes: {}, summary: "" }],
+      edges: [],
+    };
+    const bridge = createMiroFishNovelBridge({
+      simulationRuns: createRunsClient(async () => ({ runs: [] })),
+      loadSnapshot: async () => snapshot,
+      loadWorldGraph: async () => graphData,
+      runCouncilRound: async () => ({ statements: [], votes: [] }),
+    });
+
+    await expect(bridge.loadWorldGraph()).resolves.toBe(graphData);
+  });
+
+  it("圆桌会商由 Host 驱动并原样转发", async () => {
+    const council = {
+      statements: [{ actorId: "a1", message: "开山门" }],
+      votes: [{ actorId: "a1", choice: "支持" }],
+    };
+    const bridge = createMiroFishNovelBridge({
+      simulationRuns: createRunsClient(async () => ({ runs: [] })),
+      loadSnapshot: async () => snapshot,
+      loadWorldGraph: async () => ({ nodes: [], edges: [] }),
+      runCouncilRound: async () => council,
+    });
+
+    await expect(
+      bridge.runCouncilRound({
+        topic: "封山",
+        actors: [{ id: "a1", name: "陆沉渊", kind: "character", goals: [], resources: [], constraints: [] }],
+        round: 1,
+        maxRounds: 3,
+        history: [],
+        isFinal: false,
+      }),
+    ).resolves.toBe(council);
+  });
+
+  it("会商历史由 Host 从项目文件读取后传递给微应用", async () => {
+    const sessions = [
+      {
+        schemaVersion: 1 as const,
+        topic: "封山后如何应对",
+        actorIds: ["a1"],
+        maxRounds: 3,
+        round: 3,
+        history: [{ actorId: "a1", message: "先稳住城中人心。" }],
+        votes: [{ actorId: "a1", choice: "支持" }],
+        status: "completed" as const,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        error: null,
+      },
+    ];
+    const bridge = createMiroFishNovelBridge({
+      simulationRuns: createRunsClient(async () => ({ runs: [] })),
+      loadSnapshot: async () => snapshot,
+      loadWorldGraph: async () => ({ nodes: [], edges: [] }),
+      runCouncilRound: async () => ({ statements: [], votes: [] }),
+      loadCouncilSessions: async () => sessions,
+    });
+
+    await expect(bridge.loadContext()).resolves.toMatchObject({
+      councilSessions: sessions,
+    });
   });
 });

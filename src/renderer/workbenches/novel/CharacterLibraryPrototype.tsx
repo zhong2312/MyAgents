@@ -1,5 +1,4 @@
 import {
-  Archive,
   ArrowRight,
   Brain,
   BookOpen,
@@ -59,6 +58,7 @@ import {
 } from "react";
 
 import {
+  ConfirmDialog,
   CustomSelect,
   OverlayBackdrop,
   Popover,
@@ -76,6 +76,11 @@ import {
 } from "./characterLibraryRepository";
 import type { CharacterLibraryMeta } from "./characterLibrarySchema";
 import CharacterProposalReview from "./CharacterProposalReview";
+import {
+  findInboundReferences,
+  formatInboundReferenceHits,
+} from "./crossLibraryReferences";
+import type { DomainEntityRef } from "./domainIndex";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import type { ItemIndexEntry } from "./itemLibrarySchema";
 
@@ -302,6 +307,8 @@ interface CharacterLibraryPrototypeProps {
   readonly proposalReviewOpen?: boolean;
   readonly onOpenProposalReview?: () => void;
   readonly onCloseProposalReview?: () => void;
+  /** 外部实体定位请求（T3 消费：mount 后自动选中对应角色）。 */
+  readonly focus?: DomainEntityRef | null;
 }
 
 export type CharacterAiScope =
@@ -4396,6 +4403,7 @@ export default function CharacterLibraryPrototype({
   proposalReviewOpen = false,
   onOpenProposalReview,
   onCloseProposalReview,
+  focus,
 }: CharacterLibraryPrototypeProps) {
   const repository = useMemo(
     () => createNovelCharacterLibraryRepository(storage),
@@ -4438,6 +4446,7 @@ export default function CharacterLibraryPrototype({
   const [isSaving, setIsSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deleteCharacterOpen, setDeleteCharacterOpen] = useState(false);
 
   const libraryRef = useRef<LoadedCharacterLibrary | null>(library);
   const charactersRef = useRef(characters);
@@ -4469,6 +4478,13 @@ export default function CharacterLibraryPrototype({
         : (next.index.characters[0]?.id ?? ""),
     );
   }, []);
+
+  // 外部实体定位：焦点角色存在时自动选中（T3）
+  useEffect(() => {
+    if (!focus || focus.kind !== "character") return;
+    const target = charactersRef.current.find((item) => item.id === focus.id);
+    if (target) setSelectedId(target.id);
+  }, [focus]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -4770,6 +4786,58 @@ export default function CharacterLibraryPrototype({
     });
     if (await saveCurrentCharacter()) setEditing(false);
   }, [saveCurrentCharacter, selectedCharacterId, updateCharacters]);
+
+  const deleteCharacter = useCallback(async () => {
+    const characterId = selectedCharacterId;
+    const character = charactersRef.current.find(
+      (item) => item.id === characterId,
+    );
+    if (!characterId || !character) {
+      setDeleteCharacterOpen(false);
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      // 先检查反向引用：被其他库引用的角色禁止删除（与人物库删除种族/灵魂的引用计数保护一致）
+      const inbound = await findInboundReferences(
+        storage,
+        "character",
+        characterId,
+      ).catch(() => []);
+      if (inbound.length > 0) {
+        setError(
+          `该角色仍被其他库引用，删除前请先移除引用：${formatInboundReferenceHits(inbound)}`,
+        );
+        return;
+      }
+      // 先落盘未保存的编辑，再执行删除，保证删除结果基于最新数据
+      if (!(await flushCharacters())) return;
+      updateCharacters((current) =>
+        current.filter((item) => item.id !== characterId),
+      );
+      if (!(await saveCharacters())) return;
+      setSelectedId((current) => {
+        const remaining = charactersRef.current;
+        return remaining.some((item) => item.id === current)
+          ? current
+          : (remaining[0]?.id ?? "");
+      });
+      setEditing(false);
+      setDetailTab("profile");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsSaving(false);
+      setDeleteCharacterOpen(false);
+    }
+  }, [
+    flushCharacters,
+    saveCharacters,
+    selectedCharacterId,
+    storage,
+    updateCharacters,
+  ]);
 
   useEffect(() => {
     if (!editing) return;
@@ -5323,15 +5391,6 @@ export default function CharacterLibraryPrototype({
                 </div>
               </dl>
             </div>
-
-            <button
-              type="button"
-              className="mt-5 flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-            >
-              <Archive className="h-4 w-4" />
-              已归档
-              <span className="ml-auto text-xs">2</span>
-            </button>
           </aside>
 
           <section className="flex min-h-0 flex-col border-r border-[var(--line-subtle)] bg-[var(--paper-elevated)]/20 max-md:max-h-80 max-md:border-b max-md:border-r-0">
@@ -5550,6 +5609,21 @@ export default function CharacterLibraryPrototype({
                   )}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                  {editing && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteCharacterOpen(true)}
+                        disabled={isSaving}
+                        aria-label="删除角色"
+                        title="删除角色"
+                        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--error)] hover:bg-[var(--error-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="mx-1 h-4 w-px bg-[var(--line-subtle)]" />
+                    </>
+                  )}
                   {editing && (
                     <button
                       type="button"
@@ -5776,6 +5850,17 @@ export default function CharacterLibraryPrototype({
           beforeMutate={flushCharacters}
           onApplied={load}
           onClose={onCloseProposalReview}
+        />
+      )}
+      {deleteCharacterOpen && selectedCharacter && (
+        <ConfirmDialog
+          title="删除角色"
+          message={`确定要删除角色“${selectedCharacter.name}”吗？此操作不可撤销。若该角色仍被剧情工程、时间线等库引用，删除会被阻止。`}
+          confirmText="删除"
+          confirmVariant="danger"
+          loading={isSaving}
+          onConfirm={() => void deleteCharacter()}
+          onCancel={() => setDeleteCharacterOpen(false)}
         />
       )}
     </div>

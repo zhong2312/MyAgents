@@ -5,6 +5,7 @@ import {
   type ManuscriptProposal,
 } from "../../../shared/workbenches/novel/manuscriptProposalSchema";
 import { createManuscriptProposalRepository } from "./manuscriptProposalRepository";
+import { createManuscriptVersionRepository } from "./manuscriptVersionRepository";
 import { NovelMemoryStorage } from "./testStorage";
 
 function proposal(sourceContent = "旧段一\n\n旧段二"): ManuscriptProposal {
@@ -92,5 +93,25 @@ describe("createManuscriptProposalRepository", () => {
         )!,
       ).candidate.status,
     ).toBe("pending");
+  });
+
+  it("creates an ai-apply version snapshot when a proposal is applied", async () => {
+    const value = proposal();
+    const storage = storageFor(value);
+    const repository = createManuscriptProposalRepository(storage);
+    const [loaded] = await repository.list();
+
+    await repository.apply(loaded!);
+
+    const versions = await createManuscriptVersionRepository(
+      storage,
+    ).list("chapter-000001");
+    expect(versions).toHaveLength(1);
+    expect(versions[0]).toMatchObject({
+      chapterId: "chapter-000001",
+      chapterTitle: "第一章",
+      source: "ai-apply",
+      content: "新段一\n\n新段二",
+    });
   });
 });

@@ -141,6 +141,340 @@
   font-size: 0.75rem;
 }
 
+.world-simulation-local-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.75rem;
+  border: 1px solid var(--accent-warm-muted);
+  border-radius: 4px;
+  padding: 0 0.55rem;
+  color: var(--accent-warm);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.world-simulation-local-toolbar {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.5rem 1.25rem;
+  background: var(--paper-elevated);
+}
+
+.world-simulation-local-toolbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.world-simulation-local-toolbar-group button,
+.world-simulation-local-form-actions button {
+  display: inline-flex;
+  height: 1.9rem;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 0.55rem;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.world-simulation-local-toolbar-group button:hover:not(:disabled),
+.world-simulation-local-form-actions button:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.world-simulation-local-toolbar-group button:disabled,
+.world-simulation-local-form-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.world-simulation-local-toolbar-group button.is-primary,
+.world-simulation-local-form-actions button.is-primary {
+  border-color: var(--button-primary-bg);
+  background: var(--button-primary-bg);
+  color: var(--button-primary-text);
+}
+
+.world-simulation-local-toolbar-group input {
+  width: 5.5rem;
+  height: 1.9rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  padding: 0 0.45rem;
+  color: var(--ink);
+  font-size: 0.72rem;
+}
+
+.world-simulation-local-toolbar-note {
+  flex-shrink: 0;
+  color: var(--ink-subtle);
+  font-size: 0.7rem;
+}
+
+.world-simulation-local-grid {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: 16rem minmax(25rem, 1fr) 20rem;
+  overflow: hidden;
+}
+
+.world-simulation-local-sidebar,
+.world-simulation-local-rail {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--paper-elevated);
+}
+
+.world-simulation-local-sidebar {
+  border-right: 1px solid var(--line);
+}
+
+.world-simulation-local-rail {
+  border-left: 1px solid var(--line);
+}
+
+.world-simulation-local-sidebar > section,
+.world-simulation-local-rail > section {
+  padding: 1rem;
+}
+
+.world-simulation-local-sidebar > section + section,
+.world-simulation-local-rail > section + section {
+  border-top: 1px solid var(--line-subtle);
+}
+
+.world-simulation-local-scenario {
+  display: flex;
+  width: 100%;
+  min-height: 2.25rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 0.4rem 0.25rem;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  text-align: left;
+}
+
+.world-simulation-local-scenario small {
+  color: var(--ink-subtle);
+  font-size: 0.65rem;
+}
+
+.world-simulation-local-scenario.is-active {
+  color: var(--accent-warm);
+  font-weight: 650;
+}
+
+.world-simulation-local-form {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.world-simulation-local-form label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.world-simulation-local-form input,
+.world-simulation-local-form textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  padding: 0.4rem 0.5rem;
+  color: var(--ink);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  outline: none;
+}
+
+.world-simulation-local-form input {
+  height: 2rem;
+}
+
+.world-simulation-local-form textarea {
+  min-height: 3.5rem;
+  resize: vertical;
+}
+
+.world-simulation-local-form input:focus,
+.world-simulation-local-form textarea:focus {
+  border-color: var(--accent-warm);
+}
+
+.world-simulation-local-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  padding-top: 0.25rem;
+}
+
+.world-simulation-local-selection {
+  display: grid;
+  gap: 0.25rem;
+  max-height: 8.5rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--line-subtle);
+  padding-top: 0.55rem;
+}
+
+.world-simulation-local-selection > span {
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.world-simulation-local-selection label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  font-weight: 400;
+}
+
+.world-simulation-local-selection input {
+  width: auto;
+  height: auto;
+  accent-color: var(--accent-warm);
+}
+
+.world-simulation-local-main {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.world-simulation-local-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+
+.world-simulation-local-overview > div {
+  display: grid;
+  gap: 0.2rem;
+  min-height: 5.5rem;
+  align-content: center;
+  border-right: 1px solid var(--line-subtle);
+  padding: 0 0.85rem;
+}
+
+.world-simulation-local-overview > div:first-child { padding-left: 0; }
+.world-simulation-local-overview > div:last-child { border-right: 0; }
+.world-simulation-local-overview span,
+.world-simulation-local-overview small { color: var(--ink-muted); font-size: 0.7rem; }
+.world-simulation-local-overview strong { color: var(--ink); font-size: 1.15rem; font-weight: 700; }
+
+.world-simulation-local-panel {
+  border-bottom: 1px solid var(--line-subtle);
+  padding: 1rem 0;
+}
+
+.world-simulation-local-panel .world-simulation-section-heading { margin-bottom: 0.75rem; }
+.world-simulation-local-panel .world-simulation-section-heading > div { min-width: 0; }
+.world-simulation-local-panel h2,
+.world-simulation-local-rail h2,
+.world-simulation-local-sidebar h2 { color: var(--ink); font-size: 0.8rem; font-weight: 700; }
+.world-simulation-local-panel p { color: var(--ink-muted); font-size: 0.7rem; }
+
+.world-simulation-local-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--ink-muted);
+}
+
+.world-simulation-local-filter select {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  padding: 0.25rem 0.35rem;
+  color: var(--ink);
+  font-size: 0.7rem;
+}
+
+.world-simulation-local-regions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.55rem;
+}
+
+.world-simulation-local-regions article {
+  border: 1px solid var(--line-subtle);
+  border-radius: 4px;
+  padding: 0.65rem;
+}
+
+.world-simulation-local-region-title { display: flex; align-items: center; gap: 0.35rem; }
+.world-simulation-local-region-title strong { min-width: 0; flex: 1; overflow: hidden; color: var(--ink); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }
+.world-simulation-local-region-title span { font-size: 0.65rem; }
+.world-simulation-local-region-title span.is-quiet { color: var(--ink-subtle); }
+.world-simulation-local-region-title span.is-stable { color: var(--success); }
+.world-simulation-local-region-title span.is-tense,
+.world-simulation-local-region-title span.is-war { color: var(--warning); }
+.world-simulation-local-region-title span.is-catastrophe { color: var(--error); }
+.world-simulation-local-meter { height: 0.25rem; margin: 0.6rem 0 0.35rem; overflow: hidden; background: var(--line-subtle); }
+.world-simulation-local-meter i { display: block; height: 100%; background: var(--accent-warm); }
+.world-simulation-local-regions article > small { color: var(--ink-subtle); font-size: 0.65rem; }
+
+.world-simulation-local-actors { display: grid; gap: 0.45rem; }
+.world-simulation-local-actors > div { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; border-bottom: 1px solid var(--line-subtle); padding-bottom: 0.4rem; }
+.world-simulation-local-actors span { color: var(--ink); font-size: 0.75rem; font-weight: 600; }
+.world-simulation-local-actors small { color: var(--ink-muted); font-size: 0.68rem; text-align: right; }
+
+.world-simulation-local-upcoming { display: grid; width: 100%; gap: 0.2rem; border-bottom: 1px solid var(--line-subtle); padding: 0.55rem 0; text-align: left; }
+.world-simulation-local-upcoming:hover strong { color: var(--accent-warm); }
+.world-simulation-local-upcoming time,
+.world-simulation-local-upcoming small { color: var(--ink-subtle); font-size: 0.65rem; }
+.world-simulation-local-upcoming strong { color: var(--ink); font-size: 0.75rem; font-weight: 650; }
+
+.world-simulation-local-event { display: grid; grid-template-columns: 0.75rem minmax(0, 1fr); gap: 0.5rem; padding: 0.65rem 0; }
+.world-simulation-local-event-dot { width: 0.45rem; height: 0.45rem; margin-top: 0.25rem; border-radius: 50%; background: var(--accent-warm); }
+.world-simulation-local-event-meta { display: flex; gap: 0.35rem; color: var(--ink-subtle); font-size: 0.62rem; }
+.world-simulation-local-event h3 { margin-top: 0.2rem; color: var(--ink); font-size: 0.75rem; font-weight: 650; }
+.world-simulation-local-event p { margin-top: 0.2rem; color: var(--ink-muted); font-size: 0.68rem; line-height: 1.5; }
+.world-simulation-local-event ul { display: grid; gap: 0.25rem; margin-top: 0.35rem; }
+.world-simulation-local-event li { color: var(--ink-muted); font-size: 0.65rem; }
+.world-simulation-local-event li strong { color: var(--ink); }
+.world-simulation-local-event li small { display: block; color: var(--ink-subtle); }
+
+.world-simulation-local-silence { display: grid; justify-items: center; gap: 0.35rem; padding: 1.5rem 0.5rem; color: var(--ink-subtle); text-align: center; }
+.world-simulation-local-silence p { color: var(--ink-muted); font-size: 0.75rem; }
+.world-simulation-local-silence small { font-size: 0.68rem; line-height: 1.5; }
+
+@media (max-width: 1100px) {
+  .world-simulation-local-grid { grid-template-columns: 14rem minmax(22rem, 1fr) 17rem; }
+}
+
+@media (max-width: 850px) {
+  .world-simulation-local-toolbar { align-items: flex-start; flex-direction: column; }
+  .world-simulation-local-grid { display: flex; flex-direction: column; overflow-y: auto; }
+  .world-simulation-local-sidebar,
+  .world-simulation-local-rail { border: 0; border-bottom: 1px solid var(--line); overflow: visible; }
+  .world-simulation-local-main { order: -1; overflow: visible; }
+}
+
 .world-simulation-facts {
   min-height: 2.25rem;
   flex-shrink: 0;
@@ -226,6 +560,48 @@
   border-radius: 4px;
   padding: 0.5rem 0.55rem;
   text-align: left;
+}
+
+.world-simulation-scenario-row {
+  padding: 0.2rem;
+}
+
+.world-simulation-scenario-select {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem;
+  text-align: left;
+}
+
+.world-simulation-scenario-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 0.15rem;
+}
+
+.world-simulation-mini-button {
+  display: inline-flex;
+  width: 1.6rem;
+  height: 1.6rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--ink-muted);
+}
+
+.world-simulation-mini-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
+.world-simulation-mini-button.is-danger:hover:not(:disabled) {
+  color: var(--error);
 }
 
 .world-simulation-scenario-row:hover,
@@ -329,6 +705,16 @@
   justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 1rem;
+}
+
+.world-simulation-model-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  color: var(--warning);
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .world-simulation-secondary-button,
@@ -639,11 +1025,69 @@
 
 .world-simulation-change-list > div {
   display: grid;
-  grid-template-columns: minmax(5rem, 0.7fr) minmax(4rem, 0.5fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(5rem, 0.7fr) minmax(4rem, 0.5fr) minmax(0, 1.4fr) auto;
   gap: 0.5rem;
   border-bottom: 1px solid var(--line-subtle);
   padding: 0.55rem 0;
   font-size: 0.75rem;
+}
+
+.world-simulation-adopt-hint {
+  margin-bottom: 0.45rem;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.world-simulation-adopt-error {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.45rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid color-mix(in srgb, #dc2626 30%, var(--line));
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, #dc2626 8%, transparent);
+  color: #b91c1c;
+  font-size: 0.72rem;
+}
+
+.world-simulation-adopt-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.28rem 0.6rem;
+  border: 1px solid var(--line, #e4e7ed);
+  border-radius: 0.35rem;
+  background: var(--paper-elevated, #ffffff);
+  color: var(--ink-muted, #606266);
+  font-size: 0.7rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.world-simulation-adopt-button:hover:not(:disabled) {
+  border-color: var(--accent-cool, #5470c6);
+  color: var(--accent-cool, #5470c6);
+}
+
+.world-simulation-adopt-button.is-adopted {
+  border-color: var(--accent-warm, #d97706);
+  color: var(--accent-warm, #d97706);
+}
+
+.world-simulation-adopt-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.world-simulation-streaming {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.45rem;
+  color: var(--accent-cool, #5470c6);
+  font-size: 0.72rem;
 }
 
 .world-simulation-change-list strong {

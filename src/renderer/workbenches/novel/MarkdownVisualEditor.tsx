@@ -48,6 +48,7 @@ interface MarkdownVisualEditorProps {
   readonly toolbarVariant?: "full" | "narrative";
   readonly onExpand?: () => void;
   readonly className?: string;
+  readonly footer?: React.ReactNode;
 }
 
 type MarkdownLineSpacing = "compact" | "standard" | "relaxed";
@@ -133,6 +134,7 @@ export default function MarkdownVisualEditor({
   toolbarVariant = "full",
   onExpand,
   className = "",
+  footer,
 }: MarkdownVisualEditorProps) {
   const editorRef = useRef<MDXEditorMethods>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -398,6 +400,11 @@ export default function MarkdownVisualEditor({
         }}
         onError={({ error }) => setEditorError(error)}
       />
+      {footer && (
+        <div className="flex shrink-0 items-center justify-end border-t border-[var(--line-subtle)] px-4 py-2">
+          {footer}
+        </div>
+      )}
     </div>
   );
 

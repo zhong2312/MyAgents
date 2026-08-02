@@ -6,6 +6,7 @@ import {
   Eye,
   ExternalLink,
   FileClock,
+  GitCompareArrows,
   GitFork,
   Landmark,
   Link2,
@@ -31,6 +32,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CustomSelect, Popover, type WorkbenchStorage } from "@/workbench-sdk";
 
 import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import type { DomainEntityRef } from "./domainIndex";
+import {
+  findInboundReferences,
+  formatInboundReferenceHits,
+} from "./crossLibraryReferences";
+import FactionProposalReview from "./FactionProposalReview";
 import {
   createNovelFactionLibraryRepository,
   type LoadedFactionLibrary,
@@ -59,6 +66,8 @@ interface FactionLibraryProps {
   readonly isAiAgentLaunching?: boolean;
   readonly onOpenBatchAgent?: () => Promise<void>;
   readonly isBatchAgentLaunching?: boolean;
+  /** 外部实体定位请求（T3 消费：自动选中对应势力）。 */
+  readonly focus?: DomainEntityRef | null;
 }
 
 interface WorldNode {
@@ -431,6 +440,7 @@ export default function FactionLibrary({
   onOpenAiAgent,
   isAiAgentLaunching = false,
   onOpenBatchAgent,
+  focus,
   isBatchAgentLaunching = false,
 }: FactionLibraryProps) {
   const repository = useMemo(
@@ -464,6 +474,7 @@ export default function FactionLibrary({
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [factionProposalReviewOpen, setFactionProposalReviewOpen] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<
     Readonly<Record<string, string>>
   >({});
@@ -548,6 +559,15 @@ export default function FactionLibrary({
     applyFactionSelection(faction);
   };
 
+  // 外部实体定位：焦点势力存在时自动选中（T3）
+  useEffect(() => {
+    if (!focus || focus.kind !== "faction") return;
+    const target = loaded?.library.factions.find(
+      (item) => item.id === focus.id,
+    );
+    if (target) applyFactionSelection(target);
+  }, [focus, loaded, applyFactionSelection]);
+
   const startNewFaction = () => {
     selectedIdRef.current = "";
     setSelectedId("");
@@ -625,6 +645,17 @@ export default function FactionLibrary({
       !loaded.library.factions.some((item) => item.id === draft.id)
     )
       return;
+    const inbound = await findInboundReferences(
+      storage,
+      "faction",
+      draft.id,
+    ).catch(() => []);
+    if (inbound.length > 0) {
+      setError(
+        `该势力仍被其他库引用，删除前请先移除引用：${formatInboundReferenceHits(inbound)}`,
+      );
+      return;
+    }
     setIsSaving(true);
     try {
       const next = await repository.save(loaded, {
@@ -1074,6 +1105,16 @@ export default function FactionLibrary({
                   </button>
                   <button
                     type="button"
+                    onClick={() => setFactionProposalReviewOpen(true)}
+                    disabled={isSaving}
+                    title="审阅 AI 提交的势力提案"
+                    className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <GitCompareArrows className="h-4 w-4" />
+                    <span className="max-lg:hidden">审阅提案</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => void save()}
                     disabled={isSaving}
                     className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-3 text-sm font-medium text-[var(--paper)] disabled:opacity-45"
@@ -1422,6 +1463,14 @@ export default function FactionLibrary({
           onSaveAndSwitch={() => void saveAndSwitchFaction()}
           onDiscardAndSwitch={discardAndSwitchFaction}
           onCancel={() => setPendingFaction(null)}
+        />
+      )}
+      {factionProposalReviewOpen && (
+        <FactionProposalReview
+          storage={storage}
+          projectTitle={projectTitle}
+          onApplied={load}
+          onClose={() => setFactionProposalReviewOpen(false)}
         />
       )}
     </div>

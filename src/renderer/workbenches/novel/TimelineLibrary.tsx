@@ -7,8 +7,9 @@ import {
   CircleAlert,
   CircleHelp,
   Clock3,
-  GitFork,
   GitBranchPlus,
+  GitCompareArrows,
+  GitFork,
   ListTree,
   Loader2,
   MapPin,
@@ -47,6 +48,8 @@ import {
   createNovelTimelineLibraryRepository,
   type LoadedTimelineLibrary,
 } from "./timelineLibraryRepository";
+import TimelineProposalReview from "./TimelineProposalReview";
+import type { DomainEntityRef } from "./domainIndex";
 import {
   getTimelineBranchEvents,
   getTimelinePeriodDescendantIds,
@@ -81,6 +84,8 @@ interface TimelineLibraryProps {
   readonly projectTitle: string;
   readonly isActive: boolean;
   readonly onOpenAiAgent?: (request: TimelineAiAgentRequest) => Promise<void>;
+  /** 外部实体定位请求（T3 消费：优先定位到事件所属分支）。 */
+  readonly focus?: DomainEntityRef | null;
 }
 
 interface ReferenceOption {
@@ -432,6 +437,7 @@ export default function TimelineLibrary({
   projectTitle,
   isActive,
   onOpenAiAgent,
+  focus,
 }: TimelineLibraryProps) {
   const repository = useMemo(
     () => createNovelTimelineLibraryRepository(storage),
@@ -448,6 +454,13 @@ export default function TimelineLibrary({
   const [selectedBranchId, setSelectedBranchId] = useState(
     MAIN_TIMELINE_BRANCH_ID,
   );
+
+  // 外部实体定位：焦点事件存在时切到其分支（T3）
+  useEffect(() => {
+    if (!focus || focus.kind !== "event") return;
+    const target = loaded?.library.events.find((event) => event.id === focus.id);
+    if (target) setSelectedBranchId(target.branchId);
+  }, [focus, loaded?.library.events]);
   const [selectedViewId, setSelectedViewId] = useState("universe-history");
   const [selectedPeriodId, setSelectedPeriodId] = useState("");
   const [sidebarMode, setSidebarMode] =
@@ -462,6 +475,7 @@ export default function TimelineLibrary({
   );
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isAiDialogOpen, setIsAiDialogOpen] = useState(false);
+  const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1275,6 +1289,16 @@ export default function TimelineLibrary({
               </button>
               <button
                 type="button"
+                onClick={() => setProposalReviewOpen(true)}
+                disabled={!loaded}
+                title="审阅 AI 提交的时间线提案"
+                className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm font-medium text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-40"
+              >
+                <GitCompareArrows className="h-3.5 w-3.5" />
+                <span className="max-lg:hidden">审阅提案</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => void createEvent()}
                 disabled={!selectedBranch || isSaving}
                 className="flex h-8 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-3 text-sm font-medium text-white hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
@@ -1407,6 +1431,14 @@ export default function TimelineLibrary({
           }}
           onClose={() => setIsAiDialogOpen(false)}
           onSubmit={submitAiTask}
+        />
+      )}
+      {proposalReviewOpen && loaded && (
+        <TimelineProposalReview
+          storage={storage}
+          projectTitle={projectTitle}
+          onApplied={load}
+          onClose={() => setProposalReviewOpen(false)}
         />
       )}
     </div>
