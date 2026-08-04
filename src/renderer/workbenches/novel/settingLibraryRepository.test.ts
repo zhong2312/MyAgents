@@ -133,4 +133,232 @@ describe("createNovelSettingLibraryRepository", () => {
     expect(library.settingsIndex.settings).toHaveLength(1);
     expect(JSON.parse(page.entriesContent ?? "").entries).toHaveLength(1);
   });
+
+  it("records the template version when materializing a page", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelSettingLibraryRepository(storage);
+    const library = await repository.load("长夜行");
+    const [reference] = getNodeSettingReferences(library, "world-root");
+    const page = await repository.loadPage(reference);
+    const saved = await repository.savePage(library, page, "# 已填写正文\n");
+
+    expect(saved.library.settingsIndex.settings[0]?.templateVersion).toBe(
+      "1.3.0",
+    );
+  });
+
+  it("deletes a materialized page and lets the virtual page reappear", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelSettingLibraryRepository(storage);
+    let library = await repository.load("长夜行");
+    const [reference] = getNodeSettingReferences(library, "world-root");
+    const page = await repository.loadPage(reference);
+    ({ library } = await repository.savePage(library, page, "# 已填写正文\n"));
+    const instance = library.settingsIndex.settings[0];
+    expect(instance).toBeDefined();
+
+    library = await repository.deleteSettingPage(library, instance!);
+
+    expect(library.settingsIndex.settings).toHaveLength(0);
+    expect(storage.getText(instance!.pagePath)).toBeUndefined();
+    expect(storage.getText(instance!.entriesPath)).toBeUndefined();
+    const [reappeared] = getNodeSettingReferences(library, "world-root");
+    expect(reappeared?.kind).toBe("virtual");
+  });
+
+  it("toggles setting page status between draft and completed", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelSettingLibraryRepository(storage);
+    let library = await repository.load("长夜行");
+    const [reference] = getNodeSettingReferences(library, "world-root");
+    const page = await repository.loadPage(reference);
+    ({ library } = await repository.savePage(library, page, "# 正文\n"));
+    const instance = library.settingsIndex.settings[0];
+    expect(instance?.status).toBe("draft");
+
+    library = await repository.updateSettingStatus(
+      library,
+      instance!.id,
+      "completed",
+    );
+    expect(
+      library.settingsIndex.settings.find(
+        (setting) => setting.id === instance!.id,
+      )?.status,
+    ).toBe("completed");
+
+    library = await repository.updateSettingStatus(
+      library,
+      instance!.id,
+      "draft",
+    );
+    expect(
+      library.settingsIndex.settings.find(
+        (setting) => setting.id === instance!.id,
+      )?.status,
+    ).toBe("draft");
+  });
+
+  it("blocks deleting a spatial node that still has children or materialized settings", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelSettingLibraryRepository(storage);
+    let library = await repository.load("长夜行");
+    const [reference] = getNodeSettingReferences(library, "world-root");
+    const page = await repository.loadPage(reference);
+    ({ library } = await repository.savePage(library, page, "# 正文\n"));
+
+    await expect(
+      repository.deleteSpatialNode(library, "world-root"),
+    ).rejects.toThrow("已落盘设定页面");
+
+    library = await repository.deleteSettingPage(
+      library,
+      library.settingsIndex.settings[0]!,
+    );
+    library = await repository.saveSpatialTree(library, {
+      ...library.spatialTree,
+      nodes: [
+        ...library.spatialTree.nodes,
+        {
+          id: "planet-1",
+          parentId: "world-root",
+          name: "青云星",
+          typeId: "planet",
+          order: 0,
+        },
+      ],
+    });
+
+    await expect(
+      repository.deleteSpatialNode(library, "world-root"),
+    ).rejects.toThrow("下级空间节点");
+  });
+
+  it("blocks deleting a spatial node referenced by locations or factions", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelSettingLibraryRepository(storage);
+    let library = await repository.load("长夜行");
+    library = await repository.saveSpatialTree(library, {
+      ...library.spatialTree,
+      nodes: [
+        ...library.spatialTree.nodes,
+        {
+          id: "continent-1",
+          parentId: "world-root",
+          name: "东玄大陆",
+          typeId: "continent",
+          order: 0,
+        },
+      ],
+    });
+    storage.setExternalText(
+      "world/locations/index.json",
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          locations: [
+            {
+              id: "loc-1",
+              nodeId: "continent-1",
+              parentLocationId: null,
+              name: "山门",
+              aliases: [],
+              type: "建筑",
+              status: "planned",
+              summary: "",
+              appearanceNote: "",
+              description: "",
+              order: 0,
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    await expect(
+      repository.deleteSpatialNode(library, "continent-1"),
+    ).rejects.toThrow("地点库");
+
+    storage.setExternalText(
+      "world/locations/index.json",
+      `${JSON.stringify({ schemaVersion: 1, locations: [] }, null, 2)}\n`,
+    );
+    storage.setExternalText(
+      "world/factions/index.json",
+      `${JSON.stringify(
+        {
+          schemaVersion: 2,
+          factions: [
+            {
+              id: "faction-sect",
+              name: "青云宗",
+              type: "宗门",
+              status: "active",
+              summary: "",
+              state: {
+                governance: "",
+                military: "",
+                economy: "",
+                publicSupport: "",
+                territorialIntegrity: "",
+              },
+              territories: [
+                {
+                  id: "territory-1",
+                  name: "山门",
+                  worldNodeId: "continent-1",
+                  description: "",
+                },
+              ],
+              members: [],
+              assets: [],
+              resources: [],
+              organizationUnits: [],
+              relations: [],
+              rights: [],
+              links: [],
+              createdAt: "2026-07-14T12:00:00.000Z",
+              updatedAt: "2026-07-14T12:00:00.000Z",
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    await expect(
+      repository.deleteSpatialNode(library, "continent-1"),
+    ).rejects.toThrow("势力库");
+  });
+
+  it("deletes a clean spatial node", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelSettingLibraryRepository(storage);
+    let library = await repository.load("长夜行");
+    library = await repository.saveSpatialTree(library, {
+      ...library.spatialTree,
+      nodes: [
+        ...library.spatialTree.nodes,
+        {
+          id: "planet-1",
+          parentId: "world-root",
+          name: "青云星",
+          typeId: "planet",
+          order: 0,
+        },
+      ],
+    });
+
+    library = await repository.deleteSpatialNode(library, "planet-1");
+
+    expect(
+      library.spatialTree.nodes.some((node) => node.id === "planet-1"),
+    ).toBe(false);
+    expect(
+      library.spatialTree.nodes.some((node) => node.id === "world-root"),
+    ).toBe(true);
+  });
 });

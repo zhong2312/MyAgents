@@ -61,6 +61,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ce-reload-button {
+  cursor: pointer;
+  border: 1px solid var(--danger-border, var(--border));
+  border-radius: 0.375rem;
+  background: var(--danger-bg, transparent);
+  color: var(--error);
+  font-size: var(--text-xs);
+  padding: 0.2rem 0.5rem;
+}
+.ce-reload-button:hover {
+  filter: brightness(1.1);
+}
 .ce-save-message {
   color: var(--ink-muted);
   font-size: var(--text-xs);
@@ -3872,12 +3884,20 @@
   min-height: 3.25rem;
   flex: 0 0 auto;
   align-items: stretch;
-  gap: 0.25rem;
-  overflow-x: auto;
+  gap: 0.75rem;
+  overflow: hidden;
   border-bottom: 1px solid var(--line);
   padding: 0 1.5rem;
 }
-.ce-module-nav button {
+.ce-module-tabs {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: stretch;
+  gap: 0.25rem;
+  overflow-x: auto;
+}
+.ce-module-tabs > button {
   display: flex;
   align-items: center;
   gap: 0.375rem;
@@ -3888,11 +3908,31 @@
   font-weight: 550;
   white-space: nowrap;
 }
-.ce-module-nav button:hover {
+.ce-module-tabs > button:hover {
   color: var(--ink);
 }
-.ce-module-nav button.is-active {
+.ce-module-tabs > button.is-active {
   border-bottom-color: var(--accent-warm);
+  color: var(--accent-warm);
+}
+.ce-module-nav-action {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border-left: 1px solid var(--line-subtle);
+  padding-left: 0.75rem;
+}
+.ce-module-nav-action .ce-button {
+  min-height: 2rem;
+  border-color: var(--line-subtle);
+  background: var(--paper-elevated);
+  color: var(--ink-secondary);
+  padding: 0.35rem 0.6rem;
+  white-space: nowrap;
+}
+.ce-module-nav-action .ce-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--hover-bg);
   color: var(--accent-warm);
 }
 .ce-main-scroll {
@@ -4912,6 +4952,24 @@
   padding: 1.5rem 1.75rem 2rem;
 }
 
+.ce-main-scroll.ce-main-scroll-overview {
+  gap: 0.85rem;
+  padding-top: 0.85rem;
+}
+
+.ce-page-header.ce-page-header-compact {
+  min-height: 0;
+  padding: 0.1rem 0 0.65rem;
+}
+
+.ce-page-header-compact h1 {
+  margin-top: 0.1rem;
+}
+
+.ce-page-header-compact p {
+  margin-top: 0.2rem;
+}
+
 .ce-page-action {
   min-height: 2.25rem;
   align-items: center;
@@ -5074,7 +5132,7 @@
 
 .ce-global-entry,
 .ce-system-item strong,
-.ce-module-nav button,
+.ce-module-tabs > button,
 .ce-field input,
 .ce-field textarea,
 .ce-reference-grid strong,

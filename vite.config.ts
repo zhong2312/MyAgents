@@ -2,7 +2,6 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vite';
 
 // Read version info from package.json and Cargo.toml at build time
@@ -37,7 +36,7 @@ const buildVersions = getBuildVersions();
 
 export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
-  plugins: [react(), vue(), tailwindcss()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: [
       { find: '@', replacement: resolve(__dirname, 'src/renderer') },

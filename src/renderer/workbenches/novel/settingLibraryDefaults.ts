@@ -203,6 +203,64 @@ const templates: readonly SettingTemplate[] = [
     skeleton: "# 日常生活\n\n## 衣食住行\n\n## 工作与休息\n\n## 普通人的一天\n",
     agentGuide: "用角色可接触的细节检验世界设定。",
   },
+  {
+    id: "space-overview",
+    name: "空间总览",
+    group: "世界",
+    description: "概括该空间在故事中的定位、尺度与叙事作用。",
+    source: "builtin",
+    version: "1.0.0",
+    skeleton:
+      "# 空间总览\n\n> 用一句话说明这个空间在故事中的位置。\n\n## 核心特征\n\n## 边界与通道\n\n## 叙事用途\n",
+    agentGuide:
+      "区分设定事实与叙事功能；提醒作者把可独立编辑的重要地点加入空间树。",
+  },
+  {
+    id: "cultivation-system",
+    name: "修炼体系",
+    group: "世界",
+    description: "记录该世界的修炼体系、境界与力量来源。",
+    source: "builtin",
+    version: "1.0.0",
+    skeleton:
+      "# 修炼体系\n\n## 力量来源\n\n## 境界划分\n\n## 突破条件与代价\n\n## 与本页空间的关系\n",
+    agentGuide:
+      "结构化数据请在修行体系模块（world/cultivation-ecology.json）维护，本页只写叙事层面的说明、例外与作者确认的设定。",
+  },
+  {
+    id: "sect",
+    name: "宗门",
+    group: "政治",
+    description: "记录宗门、家族、学府等组织的定位与内部结构。",
+    source: "builtin",
+    version: "1.0.0",
+    skeleton:
+      "# 宗门\n\n## 一句话定位\n\n## 组织架构\n\n## 传承与功法\n\n## 对外关系\n",
+    agentGuide:
+      "结构化势力资料请在势力模块维护，本页只保存本空间内的叙事事实与组织概述。",
+  },
+  {
+    id: "spiritual-veins",
+    name: "灵脉秘境",
+    group: "地理",
+    description: "记录灵脉、秘境与特殊地利的分布和规则。",
+    source: "builtin",
+    version: "1.0.0",
+    skeleton:
+      "# 灵脉秘境\n\n## 灵脉分布\n\n## 秘境规则\n\n## 资源与风险\n",
+    agentGuide: "与时空规则页保持一致，避免规则自相矛盾。",
+  },
+  {
+    id: "treasures-and-pills",
+    name: "异宝丹药",
+    group: "经济",
+    description: "记录丹药、法宝与天材地宝的类别和流通规则。",
+    source: "builtin",
+    version: "1.0.0",
+    skeleton:
+      "# 异宝丹药\n\n## 类别概览\n\n## 珍稀度与产出\n\n## 流通与代价\n",
+    agentGuide: "具体物品资料请在物品库维护，本页写分类与流通规则。",
+  },
 ] as const;
 
 export function createDefaultSettingLibraryMeta(): SettingLibraryMeta {
@@ -368,19 +426,23 @@ export function createDefaultSettingLibraryMeta(): SettingLibraryMeta {
       {
         levelTypeId: "planet",
         templateIds: [
-          "universe-overview",
+          "space-overview",
           "territory",
           "civilization-distribution",
           "basic-laws",
+          "cultivation-system",
+          "spiritual-veins",
         ],
       },
       {
         levelTypeId: "continent",
         templateIds: [
-          "universe-overview",
+          "space-overview",
           "territory",
           "civilization-distribution",
           "macro-factions",
+          "sect",
+          "treasures-and-pills",
         ],
       },
       {
@@ -435,7 +497,7 @@ export function createDefaultSettingLibraryMeta(): SettingLibraryMeta {
           "daily-life",
         ],
       },
-      { levelTypeId: "custom-region", templateIds: ["universe-overview"] },
+      { levelTypeId: "custom-region", templateIds: ["space-overview"] },
     ],
   };
 }

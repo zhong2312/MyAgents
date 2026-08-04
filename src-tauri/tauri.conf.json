@@ -49,7 +49,6 @@
       "../src-tauri/resources/sharp-runtime": "sharp-runtime",
       "../src-tauri/resources/tsx-runtime": "tsx-runtime",
       "../src-tauri/resources/nodejs": "nodejs",
-      "../src-tauri/resources/mirofish-companion": "mirofish-companion",
       "../src/shared": "shared",
       "../bundled-skills": "bundled-skills",
       "../bundled-agents": "bundled-agents",

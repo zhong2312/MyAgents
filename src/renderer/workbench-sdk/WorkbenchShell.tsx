@@ -44,14 +44,11 @@ import {
   WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
   WORKBENCH_AI_RUN_REQUEST_VERSION,
   WORKBENCH_HOST_API_VERSION,
-  WORKBENCH_SIMULATION_REQUEST_VERSION,
   formatWorkbenchApiVersion,
   type WorkbenchAgentSessionRequest,
   type WorkbenchAiRunRequest,
   type WorkbenchAiRunResult,
   type WorkbenchSearch,
-  type WorkbenchSimulationDataFor,
-  type WorkbenchSimulationRequest,
   type WorkbenchTabTarget,
 } from "../../shared/workbench-sdk";
 import { getFolderName } from "@/types/tab";
@@ -73,10 +70,6 @@ interface WorkbenchShellProps {
     workspacePath: string,
     request: WorkbenchAiRunRequest,
   ) => Promise<WorkbenchAiRunResult>;
-  readonly onRequestSimulation?: (
-    workspacePath: string,
-    request: WorkbenchSimulationRequest,
-  ) => Promise<unknown>;
   /** 宿主提供工作区全文搜索；返回 null 表示当前环境不可用（如浏览器开发模式）。 */
   readonly onProvideSearch?: (workspacePath: string) => WorkbenchSearch | null;
   readonly onNavigationGuardChange?: (
@@ -205,7 +198,6 @@ export default function WorkbenchShell({
   onNavigate,
   onOpenAgentSession,
   onRunAi,
-  onRequestSimulation,
   onProvideSearch,
   onNavigationGuardChange,
   registry = workbenchRegistry,
@@ -321,25 +313,6 @@ export default function WorkbenchShell({
     },
     [onRunAi, workspacePath],
   );
-  const requestSimulation = useCallback(
-    async <TRequest extends WorkbenchSimulationRequest>(
-      request: TRequest,
-    ): Promise<WorkbenchSimulationDataFor<TRequest>> => {
-      if (request.version !== WORKBENCH_SIMULATION_REQUEST_VERSION) {
-        throw new Error(
-          `Unsupported workbench simulation request version: ${request.version}`,
-        );
-      }
-      if (!onRequestSimulation) {
-        throw new Error("MyAgents 世界推演服务当前不可用");
-      }
-      return (await onRequestSimulation(
-        workspacePath,
-        request,
-      )) as WorkbenchSimulationDataFor<TRequest>;
-    },
-    [onRequestSimulation, workspacePath],
-  );
   const openProjectAssistant = useCallback(async () => {
     if (isOpeningProjectAssistant || !onOpenAgentSession) return;
     const workbenchName = manifest?.name ?? "工作台";
@@ -418,10 +391,6 @@ export default function WorkbenchShell({
     aiRuns: Object.freeze({
       isAvailable: Boolean(onRunAi),
       run: runAi,
-    }),
-    simulationRuns: Object.freeze({
-      isAvailable: Boolean(onRequestSimulation),
-      request: requestSimulation,
     }),
     search: createSearchCapability(onProvideSearch, workspacePath),
     navigate,

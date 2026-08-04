@@ -1,5 +1,7 @@
 import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 
+import { parseFactionLibrary } from "./factionLibrarySchema";
+import { parseLocationLibraryIndex } from "./locationLibrarySchema";
 import {
   createDefaultSettingLibraryMeta,
   createDefaultSettingLibraryTree,
@@ -95,6 +97,28 @@ export interface NovelSettingLibraryRepository {
       readonly templateId?: string | null;
     },
   ): Promise<SaveSettingPageResult>;
+  /** 删除已落盘设定页面：先移除 settings.json 登记，再删除正文与词条文件。 */
+  deleteSettingPage(
+    library: LoadedSettingLibrary,
+    instance: SettingInstance,
+  ): Promise<LoadedSettingLibrary>;
+  /**
+   * 更新设定页面状态（draft / completed）。
+   * completed 目前由作者显式标记，表示“该页已可作为事实引用”。
+   */
+  updateSettingStatus(
+    library: LoadedSettingLibrary,
+    instanceId: string,
+    status: SettingInstance["status"],
+  ): Promise<LoadedSettingLibrary>;
+  /**
+   * 删除空间节点（硬删除）。
+   * 被下级节点、已落盘设定、地点库或势力地盘引用时抛错阻止。
+   */
+  deleteSpatialNode(
+    library: LoadedSettingLibrary,
+    nodeId: string,
+  ): Promise<LoadedSettingLibrary>;
 }
 
 function serializeMeta(meta: SettingLibraryMeta): string {
@@ -219,6 +243,69 @@ function withSettingInstance(
     ...library.settingsIndex,
     settings: [...library.settingsIndex.settings, instance],
   };
+}
+
+/**
+ * 返回阻止删除空间节点的原因列表；空数组表示可以删除。
+ * 检查：下级节点、已落盘设定、地点库归属、势力地盘引用。
+ */
+export function findSpatialNodeDeleteBlockers(
+  library: LoadedSettingLibrary,
+  nodeId: string,
+  locationContent: string | null,
+  factionContent: string | null,
+): readonly string[] {
+  const blockers: string[] = [];
+  const hasChildren = library.spatialTree.nodes.some(
+    (node) => node.parentId === nodeId,
+  );
+  if (hasChildren) {
+    blockers.push("该节点仍包含下级空间节点，请先移动或删除下级节点");
+  }
+  const materialized = library.settingsIndex.settings.filter(
+    (setting) => setting.nodeId === nodeId,
+  );
+  if (materialized.length > 0) {
+    blockers.push(
+      `该节点仍有 ${materialized.length} 个已落盘设定页面，请先删除这些页面`,
+    );
+  }
+  if (locationContent !== null) {
+    try {
+      const locationIndex = parseLocationLibraryIndex(locationContent);
+      const referenced = locationIndex.locations.filter(
+        (location) => location.nodeId === nodeId,
+      );
+      if (referenced.length > 0) {
+        blockers.push(
+          `地点库仍有 ${referenced.length} 个地点归属该节点（如“${referenced[0].name}”），请先转移或删除`,
+        );
+      }
+    } catch {
+      // 地点文件损坏时不额外阻止删除，避免设定库被其它库拖死
+    }
+  }
+  if (factionContent !== null) {
+    try {
+      const factionLibrary = parseFactionLibrary(factionContent);
+      const referenced = factionLibrary.factions.filter((faction) =>
+        faction.territories.some(
+          (territory) => territory.worldNodeId === nodeId,
+        ),
+      );
+      if (referenced.length > 0) {
+        blockers.push(
+          `势力库仍有 ${referenced.length} 个势力把该节点作为地盘（如“${referenced[0].name}”），请先在势力模块解除关联`,
+        );
+      }
+    } catch {
+      // 同上：势力文件损坏不阻止删除
+    }
+  }
+  if (library.spatialTree.nodes.length <= 1) {
+    blockers.push("空间树必须至少保留一个节点（世界根）");
+  }
+  return blockers;
 }
 
 export function getSpatialChildren(
@@ -392,6 +479,7 @@ export function createNovelSettingLibraryRepository(
         id,
         nodeId,
         templateId: template.id,
+        templateVersion: template.version,
         name: template.name,
         group: template.group,
         status: "draft",
@@ -464,11 +552,17 @@ export function createNovelSettingLibraryRepository(
       ) {
         throw new Error(`设定 id 已存在：${input.id}`);
       }
+      const templateVersion = input.templateId
+        ? library.meta.settingTemplates.find(
+            (template) => template.id === input.templateId,
+          )?.version
+        : undefined;
       const paths = pagePaths(input.nodeId, input.id);
       const instance: SettingInstance = {
         id: input.id,
         nodeId: input.nodeId,
         templateId: input.templateId ?? null,
+        templateVersion,
         name: normalizedName,
         group: normalizedGroup,
         status: "draft",
@@ -505,6 +599,66 @@ export function createNovelSettingLibraryRepository(
         ]);
         throw error;
       }
+    },
+
+    async deleteSettingPage(library, instance) {
+      const nextIndex: SettingLibrarySettingsIndex = {
+        ...library.settingsIndex,
+        settings: library.settingsIndex.settings.filter(
+          (setting) => setting.id !== instance.id,
+        ),
+      };
+      const nextLibrary = await repository.saveSettingsIndex(library, nextIndex);
+      // 先写索引、后删文件：索引成功而文件残留只是孤儿文件（无害）；
+      // 反过来会导致索引仍引用已删除文件，加载页面时失败。
+      await Promise.all([
+        storage.remove(instance.pagePath, { permanent: true }).catch(() => false),
+        storage
+          .remove(instance.entriesPath, { permanent: true })
+          .catch(() => false),
+      ]);
+      return nextLibrary;
+    },
+
+    async updateSettingStatus(library, instanceId, status) {
+      const exists = library.settingsIndex.settings.some(
+        (setting) => setting.id === instanceId,
+      );
+      if (!exists) {
+        throw new Error(`设定页面不存在：${instanceId}`);
+      }
+      const nextIndex: SettingLibrarySettingsIndex = {
+        ...library.settingsIndex,
+        settings: library.settingsIndex.settings.map((setting) =>
+          setting.id === instanceId ? { ...setting, status } : setting,
+        ),
+      };
+      return repository.saveSettingsIndex(library, nextIndex);
+    },
+
+    async deleteSpatialNode(library, nodeId) {
+      const node = library.spatialTree.nodes.find((item) => item.id === nodeId);
+      if (!node) {
+        throw new Error(`空间节点不存在：${nodeId}`);
+      }
+      const [locationFile, factionFile] = await Promise.all([
+        storage.readText("world/locations/index.json").catch(() => null),
+        storage.readText("world/factions/index.json").catch(() => null),
+      ]);
+      const blockers = findSpatialNodeDeleteBlockers(
+        library,
+        nodeId,
+        locationFile?.content ?? null,
+        factionFile?.content ?? null,
+      );
+      if (blockers.length > 0) {
+        throw new Error(`无法删除空间节点“${node.name}”：${blockers.join("；")}`);
+      }
+      const nextTree: SettingLibrarySpatialTree = {
+        ...library.spatialTree,
+        nodes: library.spatialTree.nodes.filter((item) => item.id !== nodeId),
+      };
+      return repository.saveSpatialTree(library, nextTree);
     },
   };
   return Object.freeze(repository);

@@ -22,6 +22,7 @@ export class NovelMemoryStorage implements WorkbenchStorage {
   failNextIndexWrite = false;
   failWritePathOnce: string | null = null;
   afterWriteOnce: ((path: string) => void) | null = null;
+  requireExplicitParents = false;
 
   constructor(initialFiles: Record<string, string>) {
     for (const [path, content] of Object.entries(initialFiles)) {
@@ -105,7 +106,7 @@ export class NovelMemoryStorage implements WorkbenchStorage {
       throw new Error(`Already exists: ${path}`);
     const parent = path.split("/").slice(0, -1).join("/");
     if (parent && !this.directories.has(parent)) {
-      if (!options.createParents)
+      if (this.requireExplicitParents || !options.createParents)
         throw new Error(`Parent not found: ${parent}`);
       const segments = parent.split("/");
       for (let length = 1; length <= segments.length; length += 1) {

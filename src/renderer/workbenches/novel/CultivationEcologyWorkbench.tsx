@@ -77,6 +77,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { z } from "zod";
 
 import {
   ConfirmDialog,
@@ -85,31 +86,47 @@ import {
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import type {
-  Ability,
-  Constraint,
-  CultivationEcology,
-  CultivationOrbStyle,
-  CultivationLevel,
-  CultivationLevelSubStage,
-  CultivationMethod,
-  CultivationResource,
-  CultivationSystem,
-  Formation,
-  Foundation,
-  OperationTopology,
-  ProgressionTrack,
-  ResourceRequirement,
-  MethodCourse,
-  TrackInteraction,
-  TheoryNode,
-  Transition,
-  WorldOrigin,
-  WorldOriginManifestation,
-  WorldOriginRelation,
+import {
+  abilitySchema,
+  constraintSchema,
+  crossSystemRelationSchema,
+  cultivationMethodSchema,
+  cultivationProjectionSchema,
+  cultivationSystemSchema,
+  formationSchema,
+  foundationSchema,
+  levelSchema,
+  levelSubStageSchema,
+  progressionTrackSchema,
+  resourceSchema,
+  theoryModelSchema,
+  transitionSchema,
+  worldOriginSchema,
+  type Ability,
+  type Constraint,
+  type CultivationEcology,
+  type CultivationOrbStyle,
+  type CultivationLevel,
+  type CultivationLevelSubStage,
+  type CultivationMethod,
+  type CultivationResource,
+  type CultivationSystem,
+  type Formation,
+  type Foundation,
+  type OperationTopology,
+  type ProgressionTrack,
+  type ResourceRequirement,
+  type MethodCourse,
+  type TrackInteraction,
+  type TheoryNode,
+  type Transition,
+  type WorldOrigin,
+  type WorldOriginManifestation,
+  type WorldOriginRelation,
 } from "../../../shared/workbenches/novel/cultivationEcologySchema";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import type { ItemIndexEntry } from "./itemLibrarySchema";
+import { parseCharacterLibraryIndex } from "./characterLibrarySchema";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
 import FormationBackdropArt from "./FormationBackdropArt";
 import {
@@ -135,6 +152,7 @@ function newEcologyId(prefix: string): string {
 }
 import {
   calculateCultivationCompleteness,
+  collectCultivationSystemAssetIds as collectSystemAssetIds,
   rebuildCultivationAudits,
 } from "./cultivationEcologyAudit";
 
@@ -175,6 +193,7 @@ type CultivationAiTarget = {
   readonly label: string;
   readonly value: Record<string, unknown>;
   readonly apply: (value: Record<string, unknown>) => void;
+  readonly schema: z.ZodType;
 };
 
 const modules: readonly { id: ModuleId; label: string; icon: LucideIcon }[] = [
@@ -818,50 +837,6 @@ function removeAssetFromCrossSystemRelations(
         : { ...relation, affectedAssetIds: undefined };
     }),
   };
-}
-
-function collectSystemAssetIds(
-  system: CultivationSystem | undefined,
-): Set<string> {
-  if (!system) return new Set();
-  return new Set([
-    system.id,
-    ...system.theoryModel.nodeCatalog.map((node) => node.id),
-    ...system.progressionTracks.flatMap((track) => [
-      track.id,
-      ...track.metrics.map((metric) => metric.id),
-      ...track.levels.flatMap((level) => [
-        level.id,
-        ...level.subStages.map((stage) => stage.id),
-      ]),
-      ...track.transitions.map((transition) => transition.id),
-    ]),
-    ...(system.trackInteractions ?? []).map((interaction) => interaction.id),
-    ...system.resources.flatMap((resource) => [
-      resource.id,
-      ...resource.grades.map((grade) => grade.id),
-    ]),
-    ...system.methods.flatMap((method) => [
-      method.id,
-      ...method.operationTopologies.flatMap((topology) => [
-        topology.id,
-        ...topology.nodes.map((node) => node.id),
-        ...topology.edges.map((edge) => edge.id),
-      ]),
-      ...method.courses.map((course) => course.id),
-    ]),
-    ...system.abilities.map((ability) => ability.id),
-    ...system.formations.flatMap((formation) => [
-      formation.id,
-      ...formation.nodes.map((node) => node.id),
-      ...formation.edges.map((edge) => edge.id),
-      ...formation.design.rings.map((ring) => ring.id),
-      ...formation.design.backdropLayers.map((layer) => layer.id),
-    ]),
-    ...system.foundations.map((foundation) => foundation.id),
-    ...system.transitions.map((transition) => transition.id),
-    ...system.constraints.map((constraint) => constraint.id),
-  ]);
 }
 
 function removeMethodReferences(
@@ -1555,6 +1530,7 @@ export default function CultivationEcologyWorkbench({
   proposalReviewOpen = false,
   onCloseProposalReview,
   registerNavigationGuard,
+  isActive = true,
 }: {
   readonly storage: WorkbenchStorage;
   readonly projectTitle: string;
@@ -1565,6 +1541,8 @@ export default function CultivationEcologyWorkbench({
   readonly registerNavigationGuard: (
     guard: WorkbenchNavigationGuard,
   ) => () => void;
+  /** 是否为当前激活标签页；从其它标签页切回时刷新外部变更。 */
+  readonly isActive?: boolean;
 }) {
   const repository = useMemo(
     () => createCultivationEcologyRepository(storage),
@@ -1587,6 +1565,7 @@ export default function CultivationEcologyWorkbench({
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
   const [error, setError] = useState("");
   const [itemEntries, setItemEntries] = useState<readonly ItemIndexEntry[]>([]);
   const [itemLibraryLoading, setItemLibraryLoading] = useState(false);
@@ -1595,14 +1574,31 @@ export default function CultivationEcologyWorkbench({
   const [systemDeleteTarget, setSystemDeleteTarget] = useState<{
     id: string;
     name: string;
+    boundCharacterCount?: number;
+    boundCharacterPreview?: string;
   } | null>(null);
+  const dirtyRef = useRef(dirty);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
 
   useEffect(() => {
     if (!inspectorOpen && !formationEditorId) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (inspectorOpen) setInspectorOpen(false);
-      else setFormationEditorId(null);
+      // 输入控件内按 Escape 由控件自身处理，不关闭面板/编辑器。
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      )
+        return;
+      // formation 编辑器是全屏 dialog，优先关闭；inspector 是侧栏面板。
+      if (formationEditorId) setFormationEditorId(null);
+      else if (inspectorOpen) setInspectorOpen(false);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -1611,6 +1607,7 @@ export default function CultivationEcologyWorkbench({
   const reloadEcology = useCallback(async () => {
     setLoading(true);
     setError("");
+    setSaveFailed(false);
     try {
       const loaded = await repository.load();
       const result = loaded ?? (await repository.initialize());
@@ -1637,10 +1634,16 @@ export default function CultivationEcologyWorkbench({
     }
   }, [repository]);
 
+  const ecologyRef = useRef<CultivationEcology | null>(null);
   useEffect(() => {
+    ecologyRef.current = ecology;
+  }, [ecology]);
+
+  // 首次挂载或 storage 引用变化时加载；若已有未保存编辑则保留本地修改，避免静默覆盖。
+  useEffect(() => {
+    if (ecologyRef.current && dirtyRef.current) return;
     void reloadEcology();
   }, [reloadEcology]);
-
   useEffect(() => {
     let disposed = false;
     if (!storage.isAvailable) {
@@ -1686,22 +1689,26 @@ export default function CultivationEcologyWorkbench({
     [itemEntries, itemLibraryReady],
   );
   const commit = (next: CultivationEcology) => {
-    setEcology(rebuildCultivationAudits(next, { itemIds: availableItemIds }));
+    // 审计重建由下方防抖 effect 异步完成，避免每次击键都全量 rebuild。
+    setEcology(next);
     setDirty(true);
   };
   const updateSystem = (next: CultivationSystem) => {
     if (!ecology) return;
-    const previousIds = collectSystemAssetIds(
-      ecology.systems.find((candidate) => candidate.id === next.id),
+    const previousSystem = ecology.systems.find(
+      (candidate) => candidate.id === next.id,
     );
+    const previousIds = previousSystem
+      ? collectSystemAssetIds(previousSystem)
+      : new Set<string>();
     const nextIds = collectSystemAssetIds(next);
     const removedIds = new Set(
       [...previousIds].filter((assetId) => !nextIds.has(assetId)),
     );
-    const nextEcology = removeAssetFromCrossSystemRelations(
-      ecology,
-      removedIds,
-    );
+    const nextEcology =
+      removedIds.size === 0
+        ? ecology
+        : removeAssetFromCrossSystemRelations(ecology, removedIds);
     commit({
       ...nextEcology,
       systems: updateById(nextEcology.systems, next.id, () => next),
@@ -1718,7 +1725,8 @@ export default function CultivationEcologyWorkbench({
       label: string,
       value: Record<string, unknown>,
       apply: (next: Record<string, unknown>) => void,
-    ): CultivationAiTarget => ({ label, value, apply });
+      schema: z.ZodType,
+    ): CultivationAiTarget => ({ label, value, apply, schema });
 
     if (scope === "origins") {
       const origin = selected(currentEcology.worldOrigins);
@@ -1735,6 +1743,7 @@ export default function CultivationEcologyWorkbench({
               () => next as unknown as WorldOrigin,
             ),
           }),
+        worldOriginSchema,
       );
     }
     if (scope === "relations") {
@@ -1752,6 +1761,7 @@ export default function CultivationEcologyWorkbench({
               () => next as unknown as typeof relation,
             ),
           }),
+        crossSystemRelationSchema,
       );
     }
     if (!activeSystem) return null;
@@ -1764,6 +1774,7 @@ export default function CultivationEcologyWorkbench({
             ...activeSystem,
             projection: next as typeof activeSystem.projection,
           }),
+        cultivationProjectionSchema,
       );
     if (module === "theory")
       return systemTarget(
@@ -1774,6 +1785,7 @@ export default function CultivationEcologyWorkbench({
             ...activeSystem,
             theoryModel: next as typeof activeSystem.theoryModel,
           }),
+        theoryModelSchema,
       );
 
     const target =
@@ -1807,6 +1819,39 @@ export default function CultivationEcologyWorkbench({
                         ])
                       : undefined;
     if (target) {
+      const targetSchema = (() => {
+        if (module !== "progression") {
+          if (module === "resources") return resourceSchema;
+          if (module === "methods") return cultivationMethodSchema;
+          if (module === "abilities") return abilitySchema;
+          if (module === "formations") return formationSchema;
+          if (module === "foundations") return foundationSchema;
+          if (module === "constraints") return constraintSchema;
+          return transitionSchema;
+        }
+        // progression 模块的 target 可能是轨道 / 境界 / 境内阶段 / 跃迁，按 id 归属判断。
+        if (
+          activeSystem.progressionTracks.some(
+            (track) => track.id === target.id,
+          )
+        )
+          return progressionTrackSchema;
+        if (
+          activeSystem.progressionTracks.some((track) =>
+            track.levels.some((level) => level.id === target.id),
+          )
+        )
+          return levelSchema;
+        if (
+          activeSystem.progressionTracks.some((track) =>
+            track.levels.some((level) =>
+              level.subStages.some((stage) => stage.id === target.id),
+            ),
+          )
+        )
+          return levelSubStageSchema;
+        return transitionSchema;
+      })();
       return systemTarget(
         moduleMeta[module].title,
         target as unknown as Record<string, unknown>,
@@ -1881,12 +1926,14 @@ export default function CultivationEcologyWorkbench({
             updateSystem({ ...activeSystem, progressionTracks: tracks });
           }
         },
+        targetSchema,
       );
     }
     return systemTarget(
       moduleMeta[module].title,
       activeSystem as unknown as Record<string, unknown>,
       (next) => updateSystem(next as unknown as CultivationSystem),
+      cultivationSystemSchema,
     );
   };
   const runCultivationAi = async () => {
@@ -1964,32 +2011,47 @@ export default function CultivationEcologyWorkbench({
       const merged = merge(target.value, patchValue);
       if (JSON.stringify(merged) === JSON.stringify(target.value))
         throw new Error("AI 没有返回可应用的字段补全");
-      target.apply(merged);
+      // 过 zod 校验：拒绝 AI 引入的非法枚举、越界数值或结构错误，
+      // 避免污染内存导致保存时严格 parse 直接失败。
+      const validated = target.schema.safeParse(merged);
+      if (!validated.success) {
+        const detail = validated.error.issues
+          .slice(0, 3)
+          .map(
+            (issue) =>
+              `${issue.path.join(".") || "root"}: ${issue.message}`,
+          )
+          .join("；");
+        throw new Error(`AI 完善结果未通过数据校验：${detail}`);
+      }
+      target.apply(validated.data as Record<string, unknown>);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setIsAiRunning(false);
     }
   };
+  // 审计重建：防抖 250ms，连续编辑只重建一次；audit 签名不变时不更新状态，
+  // 避免 setEcology → effect 再执行 的循环。保存时 repository 会再次重建保证落盘准确。
   useEffect(() => {
-    if (!itemLibraryReady) return;
-    setEcology((current) => {
-      if (!current) return current;
-      const next = rebuildCultivationAudits(current, {
-        itemIds: availableItemIds,
+    if (!ecology) return;
+    const timer = window.setTimeout(() => {
+      setEcology((current) => {
+        if (!current) return current;
+        const next = rebuildCultivationAudits(current, {
+          itemIds: availableItemIds,
+        });
+        const currentAuditSignature = JSON.stringify(
+          current.systems.map((system) => system.audit),
+        );
+        const nextAuditSignature = JSON.stringify(
+          next.systems.map((system) => system.audit),
+        );
+        return currentAuditSignature === nextAuditSignature ? current : next;
       });
-      const currentAuditSignature = JSON.stringify(
-        current.systems.map((system) => system.audit),
-      );
-      const nextAuditSignature = JSON.stringify(
-        next.systems.map((system) => system.audit),
-      );
-      return currentAuditSignature === nextAuditSignature ? current : next;
-    });
-    // ecology は setEcology の functional updater 内で読むため依存配列から除外する。
-    // 含めると commit() → setEcology → effect 再実行 のループが発生し毎編集で余分な
-    // audit rebuild が走る。
-  }, [availableItemIds, itemLibraryReady]);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [ecology, availableItemIds]);
   const save = async (): Promise<boolean> => {
     if (!ecology || !dirty) return true;
     setSaving(true);
@@ -2001,14 +2063,39 @@ export default function CultivationEcologyWorkbench({
       );
       setContent(result.content);
       setDirty(false);
+      setSaveFailed(false);
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+      setSaveFailed(true);
       return false;
     } finally {
       setSaving(false);
     }
   };
+  const saveRef = useRef(save);
+  useEffect(() => {
+    saveRef.current = save;
+  });
+  // 打开提案审阅前先落盘未保存编辑，避免应用提案后 reload 静默覆盖本地修改。
+  useEffect(() => {
+    if (!proposalReviewOpen) return;
+    if (dirtyRef.current) void saveRef.current();
+  }, [proposalReviewOpen]);
+  // 组件卸载时兜底保存未保存编辑（防御导航守卫之外的异常卸载路径）。
+  useEffect(
+    () => () => {
+      if (dirtyRef.current) void saveRef.current();
+    },
+    [],
+  );
+  // 从其它标签页切回时刷新外部变更，但不覆盖未保存编辑。
+  const wasActiveRef = useRef(isActive);
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current && !dirtyRef.current)
+      void reloadEcology();
+    wasActiveRef.current = isActive;
+  }, [isActive, reloadEcology]);
   const addSystem = () => {
     if (!ecology) return;
     const system = createSystem();
@@ -2029,13 +2116,52 @@ export default function CultivationEcologyWorkbench({
       name: targetSystem.name,
     });
   };
-  const confirmDeleteSystem = () => {
+  const confirmDeleteSystem = async (confirmedBoundReferences = false) => {
     if (!ecology || !systemDeleteTarget) return;
     const deletedSystemId = systemDeleteTarget.id;
     const deletedSystem = ecology.systems.find(
       (item) => item.id === deletedSystemId,
     );
-    const deletedAssetIds = collectSystemAssetIds(deletedSystem);
+    // 删除前检查人物库反向引用：删除体系会让人物的 systemId/levelId 悬空，
+    // 而人物保存严格要求引用闭合（characterLibraryRepository），会导致后续保存失败。
+    if (!confirmedBoundReferences) {
+      try {
+        const [characterIndexEntry] = await storage.stat([
+          "characters/index.json",
+        ]);
+        if (characterIndexEntry?.exists) {
+          const characterFile = await storage.readText("characters/index.json");
+          const characterIndex = parseCharacterLibraryIndex(
+            characterFile.content,
+          );
+          const boundCharacters = characterIndex.characters.filter(
+            (character) =>
+              character.cultivationProfile.systemId === deletedSystemId,
+          );
+          if (boundCharacters.length > 0) {
+            setError("");
+            setSystemDeleteTarget({
+              ...systemDeleteTarget,
+              boundCharacterCount: boundCharacters.length,
+              boundCharacterPreview: boundCharacters
+                .slice(0, 3)
+                .map((character) => character.name)
+                .join("、"),
+            });
+            return;
+          }
+        }
+      } catch (cause) {
+        setError(
+          `检查人物库引用失败，已取消删除：${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+        setSystemDeleteTarget(null);
+        return;
+      }
+    }
+    const deletedAssetIds = deletedSystem
+      ? collectSystemAssetIds(deletedSystem)
+      : new Set<string>();
     const nextSystems = ecology.systems.filter(
       (item) => item.id !== deletedSystemId,
     );
@@ -2070,6 +2196,8 @@ export default function CultivationEcologyWorkbench({
   const selectAndOpenInspector = (nextSelection: Selection) => {
     setSelection(nextSelection);
     setInspectorOpen(Boolean(nextSelection));
+    // inspector 与 formation 编辑器互斥，打开 inspector 时关闭全屏编辑器。
+    setFormationEditorId(null);
   };
   const closeInspector = () => setInspectorOpen(false);
   const openModule = (nextModule: ModuleId, nextSelection?: Selection) => {
@@ -2105,6 +2233,22 @@ export default function CultivationEcologyWorkbench({
   const formationEditor = formationEditorId
     ? activeSystem?.formations.find((item) => item.id === formationEditorId)
     : undefined;
+  const aiActionButton = (
+    <Button
+      variant="ghost"
+      disabled={!onAiRun || isAiRunning}
+      onClick={() => void runCultivationAi()}
+      title={onAiRun ? "使用轻量 AI 完善当前模块" : "轻量 AI 当前不可用"}
+      ariaLabel="AI 完善当前模块"
+    >
+      {isAiRunning ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Sparkles className="h-3.5 w-3.5" />
+      )}
+      {isAiRunning ? "AI 完善中" : "AI 完善当前模块"}
+    </Button>
+  );
   return (
     <div className="ce-shell">
       <NarrativeUnsavedChangesGuard
@@ -2125,6 +2269,16 @@ export default function CultivationEcologyWorkbench({
         </div>
         <div className="ce-top-actions">
           {error && <span className="ce-error-text">{error}</span>}
+          {saveFailed && (
+            <button
+              type="button"
+              className="ce-reload-button"
+              title="放弃本地未保存的修改，从磁盘重新加载修行生态数据"
+              onClick={() => void reloadEcology()}
+            >
+              放弃修改并重新加载
+            </button>
+          )}
           {headerActions}
           <Button
             variant="primary"
@@ -2264,58 +2418,44 @@ export default function CultivationEcologyWorkbench({
           )}
           {scope === "system" && (
             <nav className="ce-module-nav" aria-label="修行体系模块">
-              {modules.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    type="button"
-                    key={item.id}
-                    className={module === item.id ? "is-active" : ""}
-                    onClick={() => {
-                      setModule(item.id);
-                      setSelection(getModuleSelection(activeSystem, item.id));
-                      setInspectorOpen(false);
-                      setFormationEditorId(null);
-                    }}
-                    aria-pressed={module === item.id}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                    {item.label}
-                  </button>
-                );
-              })}
+              <div className="ce-module-tabs">
+                {modules.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={module === item.id ? "is-active" : ""}
+                      onClick={() => {
+                        setModule(item.id);
+                        setSelection(getModuleSelection(activeSystem, item.id));
+                        setInspectorOpen(false);
+                        setFormationEditorId(null);
+                      }}
+                      aria-pressed={module === item.id}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="ce-module-nav-action">{aiActionButton}</div>
             </nav>
           )}
           <div className="ce-page-stage">
-            {(scope === "system" ||
-              scope === "origins" ||
-              scope === "relations") && (
+            {(scope === "origins" || scope === "relations") && (
               <div className="flex shrink-0 items-center justify-end gap-2 border-b border-[var(--line-subtle)] px-5 py-2">
                 {error && (
                   <span className="mr-auto truncate text-xs text-[var(--danger)]">
                     {error}
                   </span>
                 )}
-                <Button
-                  variant="ghost"
-                  disabled={!onAiRun || isAiRunning}
-                  onClick={() => void runCultivationAi()}
-                  title={
-                    onAiRun ? "使用轻量 AI 完善当前模块" : "轻量 AI 当前不可用"
-                  }
-                  ariaLabel="AI 完善当前模块"
-                >
-                  {isAiRunning ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-3.5 w-3.5" />
-                  )}
-                  {isAiRunning ? "AI 完善中" : "AI 完善当前模块"}
-                </Button>
+                {aiActionButton}
               </div>
             )}
             <div
-              className={`ce-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""}`}
+              className={`ce-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""} ${scope === "system" && module === "overview" ? "ce-main-scroll-overview" : ""}`}
             >
               {scope === "origins" ? (
                 <WorldOriginWorkspace
@@ -2437,10 +2577,20 @@ export default function CultivationEcologyWorkbench({
       {systemDeleteTarget && (
         <ConfirmDialog
           title={`删除修行体系「${systemDeleteTarget.name}」`}
-          message="关联的跨体系关系也将一并删除，且此操作不可撤销。"
-          confirmText="删除体系"
+          message={
+            systemDeleteTarget.boundCharacterCount
+              ? `仍有 ${systemDeleteTarget.boundCharacterCount} 位角色（${systemDeleteTarget.boundCharacterPreview}${systemDeleteTarget.boundCharacterCount > 3 ? " 等" : ""}）绑定该体系。删除后这些角色的修行体系引用将失效，后续保存人物时可能需要先解除引用。仍要继续删除吗？`
+              : "关联的跨体系关系也将一并删除，且此操作不可撤销。"
+          }
+          confirmText={
+            systemDeleteTarget.boundCharacterCount ? "仍要删除体系" : "删除体系"
+          }
           confirmVariant="danger"
-          onConfirm={confirmDeleteSystem}
+          onConfirm={() =>
+            void confirmDeleteSystem(
+              Boolean(systemDeleteTarget.boundCharacterCount),
+            )
+          }
           onCancel={() => setSystemDeleteTarget(null)}
         />
       )}
@@ -2452,7 +2602,15 @@ export default function CultivationEcologyWorkbench({
           repositoryFactory={createNovelCultivationProposalRepository}
           reviewTitle="修行体系提案"
           proposalSubject="修行体系"
-          onApplied={() => void reloadEcology()}
+          onApplied={() => {
+            if (dirtyRef.current) {
+              setError(
+                "修行体系提案已应用，但存在未保存的本地修改，已保留当前编辑；如要采用提案内容，请先保存或放弃修改后重新加载。",
+              );
+              return;
+            }
+            void reloadEcology();
+          }}
         />
       )}
     </div>
@@ -2464,14 +2622,16 @@ function PageHeader({
   title,
   description,
   action,
+  compact = false,
 }: {
   eyebrow: string;
   title: string;
   description: string;
   action?: ReactNode;
+  compact?: boolean;
 }) {
   return (
-    <div className="ce-page-header">
+    <div className={`ce-page-header${compact ? " ce-page-header-compact" : ""}`}>
       <div>
         {eyebrow && <div className="ce-eyebrow">{eyebrow}</div>}
         <h1>{title}</h1>
@@ -2627,6 +2787,7 @@ function Overview({
   return (
     <>
       <PageHeader
+        compact
         eyebrow={`修行体系 / ${system.kind}`}
         title={system.name}
         description={
@@ -4031,10 +4192,19 @@ function TopologyCard({
     TopologyCanvasEdge
   > | null>(null);
 
+  // 画布只随 nodes/edges/theoryNames 内容变化而重建，避免编辑无关字段触发全量重绘。
+  const topologyCanvasSignature = JSON.stringify([
+    topology.nodes,
+    topology.edges,
+    theoryNames,
+  ]);
+
   useEffect(() => {
     setNodes(buildTopologyCanvasNodes(topology, theoryNames, mode));
     setEdges(buildTopologyCanvasEdges(topology, theoryNames, mode));
-  }, [mode, setEdges, setNodes, theoryNames, topology]);
+    // 依赖使用内容签名而非对象引用，见 topologyCanvasSignature。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, setEdges, setNodes, topologyCanvasSignature]);
 
   const updateTopology = (
     update: (current: OperationTopology) => OperationTopology,
@@ -4892,6 +5062,11 @@ function FormationDesignCanvas({
     buildFormationCanvasEdges(formation.edges, formation.nodes),
   );
 
+  // 画布只随 formation 相关字段内容变化而重建，避免编辑无关字段触发全量重绘。
+  const formationDesignSignature = JSON.stringify(formation.design);
+  const formationNodesSignature = JSON.stringify(formation.nodes);
+  const formationEdgesSignature = JSON.stringify(formation.edges);
+
   useEffect(() => {
     const backdrop = buildFormationBackdropNode(
       formation.id,
@@ -4903,7 +5078,9 @@ function FormationDesignCanvas({
       backdrop,
       ...current.filter((node) => node.type === "formationNode"),
     ]);
-  }, [editable, formation.design, formation.id, formation.nodes, setNodes]);
+    // 依赖使用内容签名，见 formationDesignSignature。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editable, formation.id, formationDesignSignature, setNodes]);
 
   useEffect(() => {
     const flowNodes = buildFormationFlowNodes(
@@ -4917,11 +5094,13 @@ function FormationDesignCanvas({
       );
       return backdrop ? [backdrop, ...flowNodes] : current;
     });
-  }, [formation.nodes, formationCanvasSize, setNodes]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formationCanvasSize, formationNodesSignature, setNodes]);
 
   useEffect(() => {
     setEdges(buildFormationCanvasEdges(formation.edges, formation.nodes));
-  }, [formation.edges, formation.nodes, setEdges]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formationEdgesSignature, formationNodesSignature, setEdges]);
 
   useEffect(() => {
     const surface = flowSurfaceRef.current;
@@ -6935,10 +7114,33 @@ function WorldOriginCanvasEditor({
   > | null>(null);
   const reconnectingEdgeRef = useRef<OriginCanvasEdge | null>(null);
 
+  // 画布只随本源结构与体系投影相关内容变化而重建，避免编辑无关字段触发全量重绘。
+  const originCanvasSignature = JSON.stringify({
+    origin: {
+      id: origin.id,
+      kind: origin.kind,
+      name: origin.name,
+      summary: origin.summary,
+      ontologyStatement: origin.ontologyStatement,
+      orbStyle: origin.orbStyle,
+      status: origin.status,
+      canvasPositions: origin.canvasPositions,
+      manifestations: origin.manifestations,
+      relations: origin.relations,
+    },
+    systems: ecology.systems.map((system) => ({
+      id: system.id,
+      name: system.name,
+      projection: system.projection,
+    })),
+  });
+
   useEffect(() => {
     setNodes(buildOriginCanvasNodes(origin, ecology.systems));
     setEdges(buildOriginCanvasEdges(origin, ecology.systems));
-  }, [ecology.systems, origin, setEdges, setNodes]);
+    // 依赖使用内容签名，见 originCanvasSignature。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [originCanvasSignature, setEdges, setNodes]);
 
   const localNodeIds = new Set([
     origin.id,

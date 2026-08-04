@@ -7,8 +7,6 @@ import type {
   WorkbenchManifest,
   WorkbenchProjectInitialization,
   WorkbenchSearch,
-  WorkbenchSimulationDataFor,
-  WorkbenchSimulationRequest,
   WorkbenchStorage,
 } from "../../shared/workbench-sdk";
 
@@ -34,13 +32,6 @@ export interface WorkbenchAiRuns {
   run(request: WorkbenchAiRunRequest): Promise<WorkbenchAiRunResult>;
 }
 
-export interface WorkbenchSimulationRuns {
-  readonly isAvailable: boolean;
-  request<TRequest extends WorkbenchSimulationRequest>(
-    request: TRequest,
-  ): Promise<WorkbenchSimulationDataFor<TRequest>>;
-}
-
 export interface WorkbenchNavigationGuard {
   /** Return true when the pending route change may continue. */
   confirmLeave(): Promise<boolean>;
@@ -55,7 +46,6 @@ export interface WorkbenchRendererContext {
   readonly storage: WorkbenchStorage;
   readonly agentSessions: WorkbenchAgentSessions;
   readonly aiRuns: WorkbenchAiRuns;
-  readonly simulationRuns: WorkbenchSimulationRuns;
   /** 工作区全文搜索；浏览器开发模式不可用（isAvailable=false）。 */
   readonly search: WorkbenchSearch;
   navigate(route: string): void;

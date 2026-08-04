@@ -229,6 +229,11 @@ export const settingInstanceSchema = z
     id: idSchema,
     nodeId: idSchema,
     templateId: idSchema.nullable(),
+    /** 落盘时模板的 version；用于提示“页面基于旧版模板”。旧数据可能缺失。 */
+    templateVersion: z
+      .string()
+      .regex(/^\d+\.\d+\.\d+$/)
+      .optional(),
     name: z.string().trim().min(1),
     group: z.string().trim().min(1),
     status: z.enum(["draft", "completed"]),

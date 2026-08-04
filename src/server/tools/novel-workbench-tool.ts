@@ -8,7 +8,7 @@ import {
   characterSoulDefinitionSchema,
   raceDefinitionSchema,
 } from "../../shared/workbenches/novel/characterLibrarySchema";
-import { cultivationEcologySchema } from "../../shared/workbenches/novel/cultivationEcologySchema";
+import { cultivationEcologySchema, type CultivationSystem } from "../../shared/workbenches/novel/cultivationEcologySchema";
 import {
   manuscriptProposalSchema,
   serializeManuscriptProposal,
@@ -1505,55 +1505,108 @@ async function getCultivationContextHandler(args: {
       : undefined;
     if (args.systemId && !selected)
       return result({ error: `不存在修行体系：${args.systemId}` }, true);
-    const systems = (selected ? [selected] : ecology.data.systems).map(
-      (system) => ({
-        id: system.id,
-        name: system.name,
-        kind: system.kind,
-        summary: system.summary,
-        terminology: system.terminology,
-        projection: system.projection,
-        theoryModel: {
-          statement: system.theoryModel.statement,
-          invariants: system.theoryModel.invariants,
-          nodeCatalog: system.theoryModel.nodeCatalog,
-        },
-        progressionTracks: system.progressionTracks.map((track) => ({
-          id: track.id,
-          name: track.name,
-          mode: track.mode,
-          structure: track.structure,
-          metrics: track.metrics,
-          levels: track.levels.map((level) => ({
-            id: level.id,
-            name: level.name,
-            order: level.order,
-            quality: level.quality,
-            entryConditions: level.entryConditions,
-            maintenanceConditions: level.maintenanceConditions,
-            breakthroughConditions: level.breakthroughConditions,
-            resourceRequirements: level.resourceRequirements,
-            naturalAbilityIds: level.naturalAbilityIds,
-            methodIds: level.methodIds,
-            subStages: level.subStages,
-          })),
-          transitions: track.transitions,
+    // 本源摘要：AI 只需要稳定 ID、名称与显化结构，不需要画布坐标等编辑态数据。
+    const summarizeOrigin = (origin: (typeof ecology.data.worldOrigins)[number]) => ({
+      id: origin.id,
+      name: origin.name,
+      kind: origin.kind,
+      status: origin.status,
+      summary: origin.summary,
+      manifestations: origin.manifestations.map((manifestation) => ({
+        id: manifestation.id,
+        name: manifestation.name,
+        type: manifestation.type,
+        summary: manifestation.summary,
+      })),
+      relations: origin.relations.map((relation) => ({
+        id: relation.id,
+        name: relation.name,
+        sourceId: relation.sourceId,
+        targetId: relation.targetId,
+        relation: relation.relation,
+      })),
+    });
+    // 体系摘要：列表模式下只给结构骨架与资产计数，避免全量大载荷。
+    const summarizeSystem = (system: CultivationSystem) => ({
+      id: system.id,
+      name: system.name,
+      kind: system.kind,
+      summary: system.summary,
+      progressionTracks: system.progressionTracks.map((track) => ({
+        id: track.id,
+        name: track.name,
+        structure: track.structure,
+        levels: track.levels.map((level) => ({
+          id: level.id,
+          name: level.name,
+          order: level.order,
         })),
-        trackInteractions: system.trackInteractions,
-        resources: system.resources,
-        methods: system.methods,
-        abilities: system.abilities,
-        formations: system.formations,
-        foundations: system.foundations,
-        transitions: system.transitions,
-        constraints: system.constraints,
-      }),
-    );
+        transitions: track.transitions.map((transition) => ({
+          id: transition.id,
+          name: transition.name,
+          transitionType: transition.transitionType,
+        })),
+      })),
+      counts: {
+        methods: system.methods.length,
+        abilities: system.abilities.length,
+        formations: system.formations.length,
+        resources: system.resources.length,
+        foundations: system.foundations.length,
+        constraints: system.constraints.length,
+        transitions: system.transitions.length,
+      },
+    });
+    const fullSystem = (system: CultivationSystem) => ({
+      id: system.id,
+      name: system.name,
+      kind: system.kind,
+      summary: system.summary,
+      terminology: system.terminology,
+      projection: system.projection,
+      theoryModel: {
+        statement: system.theoryModel.statement,
+        invariants: system.theoryModel.invariants,
+        nodeCatalog: system.theoryModel.nodeCatalog,
+      },
+      progressionTracks: system.progressionTracks.map((track) => ({
+        id: track.id,
+        name: track.name,
+        mode: track.mode,
+        structure: track.structure,
+        metrics: track.metrics,
+        levels: track.levels.map((level) => ({
+          id: level.id,
+          name: level.name,
+          order: level.order,
+          quality: level.quality,
+          entryConditions: level.entryConditions,
+          maintenanceConditions: level.maintenanceConditions,
+          breakthroughConditions: level.breakthroughConditions,
+          resourceRequirements: level.resourceRequirements,
+          naturalAbilityIds: level.naturalAbilityIds,
+          methodIds: level.methodIds,
+          subStages: level.subStages,
+        })),
+        transitions: track.transitions,
+      })),
+      trackInteractions: system.trackInteractions,
+      resources: system.resources,
+      methods: system.methods,
+      abilities: system.abilities,
+      formations: system.formations,
+      foundations: system.foundations,
+      transitions: system.transitions,
+      constraints: system.constraints,
+    });
+    const systems = selected
+      ? [fullSystem(selected)]
+      : ecology.data.systems.map(summarizeSystem);
     return result({
       schemaVersion: ecology.data.schemaVersion,
       sourcePath: CULTIVATION_ECOLOGY_PATH,
       sourceHash: hashNovelWorkbenchDraftPayload(content),
-      worldOrigins: ecology.data.worldOrigins,
+      worldOrigins: ecology.data.worldOrigins.map(summarizeOrigin),
       systems,
       crossSystemRelations: ecology.data.crossSystemRelations,
     });
@@ -6257,7 +6310,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_cultivation_get_context",
-        "读取修行体系事实源。默认返回所有体系的完整结构；传 systemId 可限定单个体系，并返回绑定当前事实源的 sourceHash。该工具只读，不会修改正式设定。",
+        "读取修行体系事实源。默认返回各体系摘要与本源摘要；传 systemId 限定单个体系时返回该体系完整结构。返回绑定当前事实源的 sourceHash。该工具只读，不会修改正式设定。",
         { systemId: z.string().regex(ID_PATTERN).optional() },
         getCultivationContextHandler,
       ),

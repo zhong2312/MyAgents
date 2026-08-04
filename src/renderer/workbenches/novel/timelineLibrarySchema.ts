@@ -202,6 +202,7 @@ export const timelineEventSchema = z
     branchId: idSchema,
     timeLabel: z.string().trim().min(1),
     sortKey: z.number().finite(),
+    worldSortKey: z.string().regex(/^-?\d+$/u).nullable().optional(),
     sortOrder: z.number().int().nonnegative(),
     endSortKey: z.number().finite().nullable().default(null),
     timePrecision: timelineTimePrecisionSchema.default("exact"),

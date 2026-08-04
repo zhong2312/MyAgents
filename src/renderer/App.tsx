@@ -67,8 +67,8 @@ import {
   type ProviderVerifyStatus,
 } from '@/config/types';
 import { type Tab, type InitialMessage, type LaunchSessionBirthHint, type SidecarConfigDisposition, type FilePreviewIntent, createNewTab, getFolderName, buildChatFlipPatch, generateTabId, isWorkbenchAgentSurfaceTab, MAX_TABS } from '@/types/tab';
-import type { OpenWorkbenchRequest, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchSearch, WorkbenchSimulationRequest } from '../shared/workbench-sdk';
-import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION, WORKBENCH_SIMULATION_MODEL_SCENE_IDS } from '../shared/workbench-sdk';
+import type { OpenWorkbenchRequest, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchSearch } from '../shared/workbench-sdk';
+import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION } from '../shared/workbench-sdk';
 import { dispatchWorkbenchHostAction, type WorkbenchNavigationGuard } from '@/workbench-sdk';
 import { createWorkbenchTab, isSameWorkbenchTab } from '@/workbench-sdk/tab';
 import { workbenchRegistry } from '@/workbench-registry';
@@ -364,7 +364,6 @@ interface TabContentProps {
   onRegisterWorkbenchNavigationGuard?: (tabId: string, guard: WorkbenchNavigationGuard | null) => void;
   onOpenWorkbenchAgentSession?: (workspacePath: string, request: WorkbenchAgentSessionRequest) => Promise<void>;
   onRunWorkbenchAi?: (workspacePath: string, request: WorkbenchAiRunRequest) => Promise<WorkbenchAiRunResult>;
-  onRequestWorkbenchSimulation?: (workspacePath: string, request: WorkbenchSimulationRequest) => Promise<unknown>;
   onProvideWorkbenchSearch?: (workspacePath: string) => WorkbenchSearch | null;
   onSettingsSectionChange: () => void;
   updateReady: boolean;
@@ -390,7 +389,7 @@ export const MemoizedTabContent = memo(function TabContent({
   claimSessionOpeningTransition,
   onSidecarConfigAdopted, onFilePreviewIntentConsumed,
   onUpdateWorkbenchRoute, onRegisterWorkbenchNavigationGuard,
-  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onRequestWorkbenchSimulation, onProvideWorkbenchSearch,
+  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onProvideWorkbenchSearch,
   onLauncherWorkspaceSelectionChange,
   settingsInitialSection,
   capabilityInitialSection,
@@ -477,7 +476,6 @@ export const MemoizedTabContent = memo(function TabContent({
             onNavigationGuardChange={(guard) => onRegisterWorkbenchNavigationGuard?.(tab.id, guard)}
             onOpenAgentSession={onOpenWorkbenchAgentSession}
             onRunAi={onRunWorkbenchAi}
-            onRequestSimulation={onRequestWorkbenchSimulation}
             onProvideSearch={onProvideWorkbenchSearch}
           />
         </Suspense>
@@ -3795,47 +3793,6 @@ export default function App() {
     [],
   );
 
-  const handleRequestWorkbenchSimulation = useCallback(async (
-    workspacePath: string,
-    request: WorkbenchSimulationRequest,
-  ): Promise<unknown> => {
-    const project = configProjectsRef.current.find((candidate) =>
-      workspacePathsEqual(candidate.path, workspacePath),
-    );
-    if (!project) throw new Error(`工作台项目尚未注册到 MyAgents：${workspacePath}`);
-
-    let validatedRequest = request;
-    if (request.operation === 'create' && request.modelSelections) {
-      const modelSelections = Object.fromEntries(Object.entries(request.modelSelections).map(([sceneId, selection]) => {
-        if (!WORKBENCH_SIMULATION_MODEL_SCENE_IDS.includes(sceneId as (typeof WORKBENCH_SIMULATION_MODEL_SCENE_IDS)[number])) {
-          throw new Error(`未知的世界推演模型场景：${sceneId}`);
-        }
-        const resolved = resolveWorkbenchModelSelection(
-          selection,
-          appProvidersRef.current,
-          appApiKeysRef.current,
-          appProviderVerifyStatusRef.current,
-        );
-        if (!resolved || isRuntimeBackedProvider(resolved.provider)) {
-          throw new Error(`模型场景 ${sceneId} 当前不支持运行时托管的供应商，请重新选择。`);
-        }
-        return [sceneId, { providerId: resolved.provider.id, model: resolved.model }];
-      }));
-      validatedRequest = { ...request, modelSelections };
-    }
-    const serverUrl = await getGlobalServerUrl();
-    const response = await proxyFetch(`${serverUrl}/api/workbench-simulation/request`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspacePath, request: validatedRequest }),
-    });
-    const payload = await response.json().catch(() => ({})) as { success?: boolean; data?: unknown; error?: string };
-    if (!response.ok || !payload.success) {
-      throw new Error(payload.error ?? '世界推演服务请求失败');
-    }
-    return payload.data;
-  }, []);
-
   const handleOpenWorkbenchAgentSession = useCallback(async (
     workspacePath: string,
     request: WorkbenchAgentSessionRequest,
@@ -4930,7 +4887,6 @@ export default function App() {
             onRegisterWorkbenchNavigationGuard={registerWorkbenchNavigationGuard}
             onOpenWorkbenchAgentSession={handleOpenWorkbenchAgentSession}
             onRunWorkbenchAi={handleRunWorkbenchAi}
-            onRequestWorkbenchSimulation={handleRequestWorkbenchSimulation}
             sessionNotificationBadgeCounts={tab.id === activeTabId ? sessionNotificationBadgeCounts : undefined}
             taskCenterPendingIntent={taskCenterPendingIntent}
           />
@@ -4980,7 +4936,6 @@ export default function App() {
               onRegisterWorkbenchNavigationGuard={registerWorkbenchNavigationGuard}
               onOpenWorkbenchAgentSession={handleOpenWorkbenchAgentSession}
               onRunWorkbenchAi={handleRunWorkbenchAi}
-              onRequestWorkbenchSimulation={handleRequestWorkbenchSimulation}
               onProvideWorkbenchSearch={provideWorkbenchSearch}
               sessionNotificationBadgeCounts={undefined}
               taskCenterPendingIntent={taskCenterPendingIntent}

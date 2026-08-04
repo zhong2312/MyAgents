@@ -1,5 +1,6 @@
 import {
   Archive,
+  ArchiveRestore,
   ArrowDown,
   ArrowUp,
   Copy,
@@ -14,7 +15,14 @@ import {
   Tags,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -70,6 +78,43 @@ function uniqueId(prefix: string): string {
   const token =
     globalThis.crypto?.randomUUID?.().slice(0, 8) ?? Date.now().toString(36);
   return `${prefix}-${token}`;
+}
+
+/** 编辑模板内容时自动递增版本号（x.y.z -> x.y.(z+1)），用于提示已落盘页面的旧模板状态。 */
+function bumpTemplateVersion(version: string): string {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version);
+  if (!match) return version;
+  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+/**
+ * 对比草稿与落盘基线，对内容字段（名称/分组/说明/骨架/引导）发生变化
+ * 且版本号尚未变化的模板统一递增一次版本。归档/恢复不递增。
+ */
+function bumpChangedTemplateVersions(
+  next: SettingLibraryMeta,
+  baseline: SettingLibraryMeta,
+): SettingLibraryMeta {
+  const baselineTemplates = new Map(
+    baseline.settingTemplates.map((template) => [template.id, template]),
+  );
+  let changed = false;
+  const settingTemplates = next.settingTemplates.map((template) => {
+    const base = baselineTemplates.get(template.id);
+    if (!base) return template;
+    const contentChanged =
+      template.name !== base.name ||
+      template.group !== base.group ||
+      template.description !== base.description ||
+      template.skeleton !== base.skeleton ||
+      template.agentGuide !== base.agentGuide;
+    if (contentChanged && template.version === base.version) {
+      changed = true;
+      return { ...template, version: bumpTemplateVersion(template.version) };
+    }
+    return template;
+  });
+  return changed ? { ...next, settingTemplates } : next;
 }
 
 function replaceType(
@@ -192,24 +237,35 @@ export default function SettingLibraryMeta({
   const draftRef = useRef(draft);
   const dirtyRef = useRef(dirty);
   const onSaveRef = useRef(onSave);
+  const libraryRef = useRef(library);
 
   useEffect(() => {
     draftRef.current = draft;
     dirtyRef.current = dirty;
     onSaveRef.current = onSave;
-  }, [dirty, draft, onSave]);
+    libraryRef.current = library;
+  }, [dirty, draft, library, onSave]);
+
+  // 保存时对内容发生变化的模板统一递增一次版本（而非每次按键），
+  // 并把 bump 后的版本同步回 draft，避免 dirty 无法收敛。
+  const saveDraft = useCallback(async (next: SettingLibraryMeta) => {
+    const baseline = libraryRef.current;
+    const bumped = bumpChangedTemplateVersions(next, baseline.meta);
+    if (bumped !== next) setDraft(bumped);
+    await onSaveRef.current(bumped);
+  }, []);
 
   useEffect(() => {
     if (!dirty || isSaving) return;
-    const timer = window.setTimeout(() => void onSave(draft), 900);
+    const timer = window.setTimeout(() => void saveDraft(draft), 900);
     return () => window.clearTimeout(timer);
-  }, [dirty, draft, isSaving, onSave]);
+  }, [dirty, draft, isSaving, saveDraft]);
 
   useEffect(
     () => () => {
-      if (dirtyRef.current) void onSaveRef.current(draftRef.current);
+      if (dirtyRef.current) void saveDraft(draftRef.current);
     },
-    [],
+    [saveDraft],
   );
   const selectedType =
     draft.levelTypes.find((type) => type.id === selectedTypeId) ??
@@ -647,6 +703,11 @@ export default function SettingLibraryMeta({
                   >
                     <div className="truncate text-sm font-medium">
                       {template.name}
+                      {template.archived && (
+                        <span className="ml-1.5 rounded bg-[var(--paper-inset)] px-1 py-0.5 text-xs text-[var(--ink-muted)]">
+                          已归档
+                        </span>
+                      )}
                     </div>
                     <div className="mt-0.5 text-xs text-[var(--ink-muted)]">
                       {template.group} · v{template.version}
@@ -663,6 +724,11 @@ export default function SettingLibraryMeta({
                     ? "内置初始模板"
                     : "项目自定义"}{" "}
                   · v{selectedTemplate.version}
+                  {selectedTemplate.archived && (
+                    <span className="ml-1.5 rounded bg-[var(--paper-inset)] px-1 py-0.5">
+                      已归档
+                    </span>
+                  )}
                 </span>
                 <h2 className="mt-1 text-xl font-semibold">
                   {selectedTemplate.name}
@@ -693,6 +759,38 @@ export default function SettingLibraryMeta({
                   className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm"
                 >
                   <Eye className="h-3.5 w-3.5" /> 预览
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDraft((current) =>
+                      replaceTemplate(
+                        current,
+                        selectedTemplate.id,
+                        (template) => ({
+                          ...template,
+                          archived: !template.archived,
+                        }),
+                      ),
+                    )
+                  }
+                  title={
+                    selectedTemplate.archived
+                      ? "恢复后，该模板会重新作为默认虚拟页面出现"
+                      : "归档后，该模板不再为未落盘节点生成虚拟页面；已落盘页面保留"
+                  }
+                  className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-sm ${
+                    selectedTemplate.archived
+                      ? "border-[var(--line)]"
+                      : "border-[var(--line)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]"
+                  }`}
+                >
+                  {selectedTemplate.archived ? (
+                    <ArchiveRestore className="h-3.5 w-3.5" />
+                  ) : (
+                    <Archive className="h-3.5 w-3.5" />
+                  )}
+                  {selectedTemplate.archived ? "恢复" : "归档"}
                 </button>
                 <button
                   type="button"
@@ -834,7 +932,7 @@ export default function SettingLibraryMeta({
             </div>
             <div className="flex items-center gap-2 border-t border-[var(--line-subtle)] pt-4 text-xs text-[var(--ink-muted)]">
               <History className="h-4 w-4" />{" "}
-              新版本只影响未填写的虚拟页面，不覆盖已有正文。
+              编辑模板会自动递增版本号；新版本只影响未填写的虚拟页面，不覆盖已有正文。
             </div>
           </section>
         </div>

@@ -116,8 +116,8 @@ pub use shutdown::{
 pub use spawn::find_node_executable_pub;
 pub(crate) use spawn::normalize_external_path;
 use spawn::{
-    diagnose_immediate_exit, diagnose_node_not_found, find_mirofish_companion_executable,
-    find_node_executable, find_server_script, is_port_available, kill_process,
+    diagnose_immediate_exit, diagnose_node_not_found, find_node_executable, find_server_script,
+    is_port_available, kill_process,
 };
 pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
 #[allow(unused_imports)]

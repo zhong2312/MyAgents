@@ -355,6 +355,15 @@ const ALIGNMENT_OPTIONS = [
   "混乱邪恶",
 ] as const;
 
+const CHARACTER_STATUS_OPTIONS = [
+  "草稿",
+  "正式",
+  "活跃",
+  "失踪",
+  "退场",
+  "已故",
+] as const;
+
 const _INITIAL_RACES: RaceDefinition[] = [
   {
     id: "human",
@@ -2034,7 +2043,12 @@ function CultivationTab({
           value={profile.levelId}
           options={levelOptions}
           editing={editing}
-          onChange={(levelId) => updateProfile({ levelId })}
+          onChange={(levelId) => {
+            updateProfile({ levelId });
+            // 同步“当前境界”自由文本，避免 currentRealm 与 levelId 双轨漂移。
+            const level = levels.find((item) => item.id === levelId);
+            if (level) onChange({ currentRealm: level.name });
+          }}
         />
         <CultivationIdListField
           label="已掌握法门"
@@ -5552,6 +5566,30 @@ export default function CharacterLibraryPrototype({
                           size="toolbar"
                           className="w-28"
                         />
+                        <CustomSelect
+                          value={selectedCharacter.status}
+                          options={[
+                            ...(selectedCharacter.status &&
+                            !CHARACTER_STATUS_OPTIONS.includes(
+                              selectedCharacter.status as (typeof CHARACTER_STATUS_OPTIONS)[number],
+                            )
+                              ? [
+                                  {
+                                    value: selectedCharacter.status,
+                                    label: selectedCharacter.status,
+                                  },
+                                ]
+                              : []),
+                            ...CHARACTER_STATUS_OPTIONS.map((status) => ({
+                              value: status,
+                              label: status,
+                            })),
+                          ]}
+                          onChange={(status) => updateCharacter({ status })}
+                          ariaLabel="资料状态"
+                          size="toolbar"
+                          className="w-24"
+                        />
                       </>
                     ) : (
                       <>
@@ -5570,10 +5608,12 @@ export default function CharacterLibraryPrototype({
                         )}
                       </>
                     )}
-                    <span className="flex items-center gap-1 text-xs text-[var(--success)]">
-                      <CircleDot className="h-3 w-3" />
-                      {selectedCharacter.status}
-                    </span>
+                    {!editing && (
+                      <span className="flex items-center gap-1 text-xs text-[var(--success)]">
+                        <CircleDot className="h-3 w-3" />
+                        {selectedCharacter.status}
+                      </span>
+                    )}
                   </div>
                   {editing ? (
                     <input

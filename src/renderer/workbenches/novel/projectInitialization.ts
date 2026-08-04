@@ -13,7 +13,7 @@ import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepos
 import { createCultivationEcologyInitializationFiles } from "./cultivationEcologyRepository";
 import { createInspirationInitializationFile } from "./inspirationRepository";
 import { createNarrativeEngineeringInitializationFiles } from "./narrativeEngineeringRepository";
-import { createWorldSimulationInitializationFiles } from "./worldSimulationRepository";
+import { createWorldSimulationV2InitializationFiles } from "./worldSimulationRepositoryV2";
 import {
   createEmptyFactionLibrary,
   serializeFactionLibrary,
@@ -59,7 +59,6 @@ const DIRECTORIES = [
   "world/items/pages",
   "world/items/proposals",
   "world/cultivation-ecology",
-  "world/codex",
   "world/setting-library/pages",
   "world/setting-library/entries",
   "world/setting-library/proposals",
@@ -70,6 +69,7 @@ const DIRECTORIES = [
   "world/cultivation-proposals",
   "timeline",
   "simulation",
+  "simulation/runs",
   "research/notes",
   "assets/images",
   "assets/references",
@@ -153,36 +153,17 @@ Thumbs.db
     },
     ...createNarrativeEngineeringInitializationFiles(input.createdAt),
     ...createCharacterLibraryInitializationFiles(),
-    {
-      path: "world/worldview.md",
-      content: `# 世界观
-
-## 时空背景
-
-## 社会结构
-
-## 地理与环境
-
-## 历史与事件
-`,
-    },
     ...createCultivationEcologyInitializationFiles(),
-    { path: "world/rules.json", content: createIndex("rules") },
     ...createLocationLibraryInitializationFiles(),
     {
       path: "world/factions/index.json",
       content: serializeFactionLibrary(createEmptyFactionLibrary()),
     },
     ...createItemLibraryInitializationFiles(),
-    { path: "world/codex/index.json", content: createIndex("entries") },
     ...createSettingLibraryInitializationFiles(input.title),
     ...createPromptLibraryInitializationFiles(),
     ...createTimelineLibraryInitializationFiles(input.createdAt),
-    ...createWorldSimulationInitializationFiles(),
-    {
-      path: "simulation/councils.json",
-      content: `${JSON.stringify({ schemaVersion: 1, sessions: [] }, null, 2)}\n`,
-    },
+    ...createWorldSimulationV2InitializationFiles(),
     createInspirationInitializationFile(input.createdAt),
     { path: "research/index.json", content: createIndex("sources") },
     { path: "knowledge/entities.json", content: createIndex("entities") },

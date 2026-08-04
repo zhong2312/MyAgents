@@ -83,7 +83,9 @@ import {
   type LoadedSettingLibrary,
 } from "./settingLibraryRepository";
 import MapEditor from "./MapEditor";
-import WorldSimulationWorkbench from "./WorldSimulationWorkbench";
+import WorldSimulationWorkbench, {
+  type WorldSimulationView,
+} from "./WorldSimulationWorkbench";
 import WorldProposalReview from "./WorldProposalReview";
 import { buildWorldProposalAgentInstructions } from "./worldProposalSchema";
 import { useNovelProject } from "./useNovelProject";
@@ -2074,6 +2076,7 @@ ${JSON.stringify(injectedContext, null, 2)}
             onCloseProposalReview={() =>
               setIsCultivationProposalReviewOpen(false)
             }
+            isActive={context.isActive}
             registerNavigationGuard={context.registerNavigationGuard}
           />
         </div>
@@ -2128,22 +2131,48 @@ ${JSON.stringify(injectedContext, null, 2)}
       break;
     case "simulation":
     case "simulation-console":
-      content = (
-        <WorldSimulationWorkbench
-          storage={context.storage}
-          isActive={context.isActive}
-        />
-      );
-      break;
     case "simulation-lab":
-    case "simulation-council":
+    case "simulation-council": {
+      const simulationView: WorldSimulationView =
+        context.route === "simulation-lab"
+          ? "lab"
+          : context.route === "simulation-council"
+            ? "council"
+            : "console";
       content = (
         <WorldSimulationWorkbench
           storage={context.storage}
           isActive={context.isActive}
+          view={simulationView}
+          onNavigate={(view) =>
+            context.navigate(
+              view === "lab"
+                ? "simulation-lab"
+                : view === "council"
+                  ? "simulation-council"
+                  : "simulation-console",
+            )
+          }
+          onOpenSetup={(route) => context.navigate(route)}
+          onRunModelScene={
+            context.aiRuns.isAvailable
+              ? async (scene, prompt) => {
+                  const modelSelection =
+                    await resolveSceneModelSelection(scene);
+                  const result = await context.aiRuns.run({
+                    version: WORKBENCH_AI_RUN_REQUEST_VERSION,
+                    label: "世界推演智能候选",
+                    prompt,
+                    ...(modelSelection ? { modelSelection } : {}),
+                  });
+                  return result.output;
+                }
+              : undefined
+          }
         />
       );
       break;
+    }
     case "timeline":
       content = (
         <TimelineLibrary

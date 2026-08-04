@@ -88,6 +88,7 @@ import { createNovelCharacterLibraryRepository } from "./characterLibraryReposit
 import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";
+import { parseSettingLibrarySettingsIndex } from "./settingLibrarySchema";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
 import {
   getEffectiveModelSceneSelection,
@@ -2377,23 +2378,63 @@ function RoomWorkspace({
             })
         : Promise.resolve(),
       requested.has("world-rules")
-        ? Promise.all([
-            storage.stat(["world/rules.json", "world/worldview.md"]),
-          ]).then(async ([files]) => {
-            const values = await Promise.all(
-              ["world/rules.json", "world/worldview.md"].map((path, index) =>
-                files[index]?.exists
-                  ? storage
-                      .readText(path)
-                      .then((file) => file.content.slice(0, 8000))
-                  : Promise.resolve(""),
-              ),
-            );
-            context["world-rules"] = {
-              rules: values[0],
-              worldview: values[1],
-            };
-          })
+        ? storage
+            .stat(["world/setting-library/settings.json"])
+            .then(async ([settingsFile]) => {
+              if (!settingsFile?.exists) {
+                // 旧项目兼容：仍以 worldview.md / rules.json 提供世界观上下文
+                const [files] = await Promise.all([
+                  storage.stat(["world/rules.json", "world/worldview.md"]),
+                ]);
+                const values = await Promise.all(
+                  ["world/rules.json", "world/worldview.md"].map(
+                    (path, index) =>
+                      files[index]?.exists
+                        ? storage
+                            .readText(path)
+                            .then((file) => file.content.slice(0, 8000))
+                        : Promise.resolve(""),
+                  ),
+                );
+                context["world-rules"] = {
+                  rules: values[0],
+                  worldview: values[1],
+                  source: "legacy",
+                };
+                return;
+              }
+              // 现行事实源：设定库已落盘页面正文
+              const settingsFileContent = await storage.readText(
+                "world/setting-library/settings.json",
+              );
+              const settingsIndex = parseSettingLibrarySettingsIndex(
+                settingsFileContent.content,
+              );
+              const rules: string[] = [];
+              const worldview: string[] = [];
+              for (const setting of settingsIndex.settings) {
+                try {
+                  const page = await storage.readText(setting.pagePath);
+                  const entry = `## ${setting.name}（${setting.group}）\n${page.content.slice(0, 4000)}`;
+                  if (/法则|规则|时空/u.test(`${setting.name}${setting.group}`)) {
+                    rules.push(entry);
+                  } else {
+                    worldview.push(entry);
+                  }
+                } catch {
+                  // 页面文件缺失时跳过
+                }
+              }
+              const combine = (items: string[]) =>
+                items.join("\n\n").slice(0, 20000);
+              context["world-rules"] = {
+                rules: combine(rules),
+                worldview:
+                  combine(worldview) ||
+                  "（设定库尚未落盘设定页面；请在“世界架构”中编辑设定）",
+                source: "setting-library",
+              };
+            })
         : Promise.resolve(),
     ]);
     return context;

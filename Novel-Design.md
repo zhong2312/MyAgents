@@ -16,7 +16,7 @@ MyAgents 是平台底座，小说工作台是建立在 Workbench Platform 上的
 
 ## 2. 与 MyAgents 平台的关系
 
-小说工作台的标识为 `io.myagents.novel`，当前使用 Workbench API `1.5`。
+小说工作台的标识为 `io.myagents.novel`，当前使用 Workbench API `1.7`。
 
 依赖关系必须保持为：
 
@@ -130,24 +130,37 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 |-- .gitignore
 |-- manuscript/
 |   |-- index.json
-|   `-- chapters/
-|       `-- .gitkeep
+|   |-- state-ledger.json
+|   |-- continuity-state.json
+|   |-- chapters/
+|   |   `-- .gitkeep
+|   `-- trash/
 |-- narrative/
 |   `-- index.json
 |-- inspiration/
 |   `-- index.json
+|-- settings/
+|   `-- ai-model-scenes.json
 |-- characters/
-|   `-- index.json
+|   |-- index.json
+|   `-- proposals/
 |-- world/
-|   |-- worldview.md
 |   |-- cultivation-ecology.json
-|   |-- rules.json
 |   |-- locations/
 |   |   `-- index.json
 |   |-- factions/
 |   |   `-- index.json
 |   |-- items/
-|   |   `-- index.json
+|   |   |-- meta.json
+|   |   |-- index.json
+|   |   |-- records/
+|   |   |-- pages/
+|   |   `-- proposals/
+|   |-- maps/
+|   |   |-- index.json
+|   |   |-- records/
+|   |   |-- proposals/
+|   |   `-- trash/
 |   |-- setting-library/
 |   |   |-- meta.json
 |   |   |-- spatial-tree.json
@@ -159,10 +172,12 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 |   |           |-- proposal.json
 |   |           |-- before/
 |   |           `-- after/
-|   `-- codex/
-|       `-- index.json
+|   `-- cultivation-proposals/
 |-- timeline/
 |   `-- index.json
+|-- simulation/
+|   |-- scenarios.json
+|   `-- councils.json
 |-- research/
 |   |-- index.json
 |   `-- notes/
@@ -188,6 +203,12 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
     `-- references/
         `-- .gitkeep
 ```
+
+说明：
+
+- 新项目不再初始化旧版 `world/worldview.md`、`world/rules.json` 与 `world/codex/`；旧项目打开时保留这些文件供兼容读取，世界观与规则事实统一由 `world/setting-library/` 承载（见第 13 节）。
+- `world/locations/index.json` 是故事地点库的唯一事实源，与空间树并存，职责边界见第 13.1 节。
+- 顶层 `settings/` 保存 `ai-model-scenes.json`（模型场景配置）等 MyAgents 平台级项目配置，该文件由“设置 / 模型场景”首次保存时创建，不属于初始化文件。
 
 `.gitignore` 仍然初始化，用于排除操作系统和编辑器临时文件；但创建项目时不自动执行 `git init`，Git 仓库是否建立由用户决定。
 
@@ -315,7 +336,7 @@ Markdown / JSON 事实源
 
 - Workbench manifest 使用 `manifestVersion: 1`。
 - 小说工作台当前版本为 `0.3.0`。
-- 宿主 API 兼容范围当前固定为 `1.3`。
+- 宿主 API 兼容范围当前固定为 `1.7`（`src/shared/workbench-sdk/protocol.ts` 的 `WORKBENCH_HOST_API_VERSION` 为唯一权威）。
 - 项目文件使用各自的 `schemaVersion`，当前为 `1`。
 - 读取旧格式时可以做内存归一化，但未经明确迁移操作不得静默重写用户文件。
 - 旧版 `targetWordCount` 在内存中归一化为上下限相同的字数区间；旧项目缺少 `projectName` 时以内存中的原书名作为固定项目名。只有作者在总览明确保存项目资料时，才写入新字段并移除旧单值字段。
@@ -373,11 +394,26 @@ Markdown / JSON 事实源
 - 类型默认页面采用惰性落盘：未编辑时只根据模板形成虚拟页面，首次编辑或新增词条时才创建 Markdown 正文和词条 JSON。
 - 修改节点类型、修改模板、移除类型模板关联或归档类型时，不得删除、覆盖或重置已经落盘的正文与词条；不再匹配当前默认方案的页面保留为节点设定。
 - 选中任一设定页面后，“内容”页签以占满内容区的可视化 Markdown 编辑器呈现；“词条”页签保存名称、分类、别名和定义。Markdown 始终是连续说明的事实源，富文本 HTML 不得落盘。
-- 不再使用“取自真实”“架空改造”“冲突优先级”“作用域继承”“结构”“关系”等旧版编辑字段或页签。知识图谱由 Markdown、词条、空间树和其他项目事实派生，不反向替代正文。
+- 不再使用“取自真实”“架空改造”“冲突优先级”“作用域继承”“结构”“关系”等旧版编辑字段或页签。知识图谱由设定页 Markdown 标题与正文、词条、空间树、设定索引和其他项目事实派生，不反向替代正文；新项目不再初始化旧版 `world/worldview.md`、`world/rules.json` 与 `world/codex/`，旧项目打开时仅作兼容读取。
 - 正式存储位于 `world/setting-library/`：`meta.json` 保存元配置，`spatial-tree.json` 保存空间树，`settings.json` 保存已落盘页面索引，`pages/<node-id>/*.md` 保存正文，`entries/<node-id>/*.json` 保存词条。
 - 地图是小说工作台的独立一级模块，拥有单独导航入口；不得作为设定库侧栏、设定页签或编辑器内嵌面板出现。
 - 地图模块独立负责世界结构、大陆与星球投影、多元或平行宇宙拓扑、地图图层、时间切片和空间约束检查。
 - Agent 生成地图时可以读取设定库 Markdown 和知识图谱作为输入，但地图产物独立保存，不能把派生结果自动回写到设定文档正文。
+
+### 13.1 地点库（`world/locations/index.json`）
+
+- 地点库与空间树并存，职责边界固定为：**空间树 = 世界结构层**（星球、大陆、国家、城市等层级与层级类型），**地点库 = 叙事引用层**（故事中实际登场、被正文与时间线引用的地点）。两棵树都允许存在同名条目，稳定 ID 是引用身份，不要求互相同步。
+- 地点库是正文连续性追踪、时间线事件 `locationIds`、地图要素 `entityRef`（kind 为 `location`）与跨库引用检查的唯一事实源；空间树节点不能直接作为叙事引用目标。
+- 每条地点保存稳定 ID、所属空间节点 `nodeId`、同节点内上级地点 `parentLocationId`（不得跨节点、不得成环）、名称、别名、类型、状态、摘要、出场说明、描述与排序。地点必须归属现有空间节点；节点被删除时，归属它的地点会阻止删除。
+- 设定库的“地点”页签只是地点库的编辑入口之一，数据文件独立；新建地点时选择归属的空间节点。
+- 世界架构 Agent 提案允许修改 `world/locations/index.json`（见第 16 节允许目标）。
+
+### 13.2 设定库维护语义
+
+- 空间节点支持硬删除：存在下级节点、已落盘设定页面、地点库归属或势力地盘引用时删除被阻止，错误信息列出全部原因；删除后空间树至少保留一个节点。
+- 已落盘设定页面支持硬删除（正文与词条文件一并删除）。删除来自默认模板的页面后，该页会重新以虚拟页面出现；需要隐藏默认页时在模板管理中将模板归档（`archived: true`），归档模板不再生成虚拟页面，已落盘页面保留。模板归档/恢复在模板管理界面提供入口。
+- 设定页面状态 `draft | completed` 由作者在页面列表显式切换；“已完成”表示作者确认该页可作为事实引用，系统不自动判定。
+- 编辑模板的任意内容字段（名称、分组、说明、骨架、引导）都会自动递增模板 `version`（patch 版本）；落盘时 `settings.json` 记录 `templateVersion`。当页面记录的模板版本与模板当前版本不一致时，页面列表显示“旧模板”标记；新版本只影响未填写的虚拟页面，不覆盖已落盘正文。
 
 ## 14. 小说工作台 AI 与提示词模块
 
@@ -438,7 +474,7 @@ Markdown / JSON 事实源
 - “设定库相对路径”明确以 `world/setting-library/` 为根：`targetPath` 仍写项目根相对路径，但快照中不得再次嵌套 `world/setting-library/`。例如 `targetPath=world/setting-library/spatial-tree.json` 对应 `before/spatial-tree.json` 与 `after/spatial-tree.json`。
 - `proposal.json` 的 changes 与 after 文件必须一一对应；`settings.json` 新增的每个设置必须同时具备并登记其 Markdown 页面与词条 JSON。Agent 完成前必须检查 JSON 可解析、modify 的 before 齐全、after 全部登记及 settings 引用闭合。
 - 审阅器兼容早期提案中重复嵌套 `world/setting-library/` 的快照路径，并把合法但漏登记的 after 文件作为“自动补录”变更展示。单个快照缺失只阻断该变更，不再使整份提案不可审阅；引用闭合校验仍会阻止不完整提案写入正式设定。
-- 允许的目标严格限制为设定库 `meta.json`、`spatial-tree.json`、`settings.json`、`pages/<node-id>/<setting-id>.md` 和 `entries/<node-id>/<setting-id>.json`；禁止提案修改小说目录中的其它文件或递归修改 proposals。
+- 允许的目标严格限制为设定库 `meta.json`、`spatial-tree.json`、`settings.json`、`pages/<node-id>/<setting-id>.md`、`entries/<node-id>/<setting-id>.json` 和地点库 `world/locations/index.json`；禁止提案修改小说目录中的其它文件或递归修改 proposals。
 - “审阅提案”是世界架构页内的全屏工具工作面。左侧按提案和文件组织队列，右侧使用项目已依赖的开源 Monaco `DiffEditor` 展示只读差异，并支持并排和行内两种模式。
 - 用户可以逐文件选择接受或拒绝。已应用、已拒绝和冲突文件保留在提案清单中作为可审阅记录，不因操作完成而删除快照。
 - 应用前必须重新读取正式目标并与 before 快照比较。正式文件不存在、意外已存在或内容变化时将该文件标记为阻断冲突，不允许用过期提案覆盖人工编辑。

@@ -51,7 +51,6 @@ const novelWorkbenchDefinition = defineWorkbench(
       "storage",
       "agent-session",
       "agent-dialog",
-      "world-simulation",
     ],
   },
   () => import("./renderer"),

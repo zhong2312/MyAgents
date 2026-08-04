@@ -181,6 +181,7 @@ export function buildKnowledgeGraph(
       if (path === "world/setting-library/spatial-tree.json") return 1;
       if (path === "world/setting-library/settings.json") return 2;
       if (path.startsWith("world/setting-library/entries/")) return 3;
+      if (path.startsWith("world/setting-library/pages/")) return 6;
       if (path === "knowledge/facts.json") return 4;
       if (path === "knowledge/relations.json") return 5;
       return 10;
@@ -250,16 +251,70 @@ export function buildKnowledgeGraph(
   };
 
   for (const document of orderedDocuments) {
-    const headingPattern = /^#{1,6}\s+(.+)$/gmu;
-    let heading: RegExpExecArray | null;
-    while ((heading = headingPattern.exec(document.content))) {
+    const headingPattern = /^(#{1,6})\s+(.+)$/gmu;
+    const headingMatches: readonly {
+      readonly level: number;
+      readonly index: number;
+      readonly line: number;
+      readonly label: string;
+    }[] = (() => {
+      const collected: { level: number; index: number; line: number; label: string }[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = headingPattern.exec(document.content))) {
+        collected.push({
+          level: match[1].length,
+          index: match.index,
+          line: lineAt(document.content, match.index),
+          label: match[2].trim(),
+        });
+      }
+      return collected;
+    })();
+
+    // 标题节点 + 标题层级树 + 小节正文摘要（设定页 Markdown 正文由此进入图谱）
+    const headingStack: { level: number; id: string }[] = [];
+    for (let index = 0; index < headingMatches.length; index += 1) {
+      const heading = headingMatches[index];
       const id = addHeading(
         document.path,
         document.content,
-        heading[1].trim(),
+        heading.label,
         heading.index,
       );
-      idByLabel.set(normalize(heading[1]), id);
+      idByLabel.set(normalize(heading.label), id);
+      while (
+        headingStack.length &&
+        headingStack[headingStack.length - 1].level >= heading.level
+      ) {
+        headingStack.pop();
+      }
+      if (headingStack.length) {
+        addEdge({
+          id: `parent:${headingStack[headingStack.length - 1].id}:${id}`,
+          from: headingStack[headingStack.length - 1].id,
+          to: id,
+          label: "包含",
+          kind: "parent",
+          sourceRefs: [{ path: document.path }],
+        });
+      }
+      headingStack.push({ level: heading.level, id });
+      const lineEnd = document.content.indexOf("\n", heading.index);
+      const sectionStart = lineEnd === -1 ? document.content.length : lineEnd + 1;
+      const nextIndex =
+        index + 1 < headingMatches.length
+          ? headingMatches[index + 1].index
+          : document.content.length;
+      const section = document.content.slice(sectionStart, nextIndex).trim();
+      if (section) {
+        const existing = nodes.get(id);
+        if (existing) {
+          nodes.set(
+            id,
+            Object.freeze({ ...existing, description: section.slice(0, 200) }),
+          );
+        }
+      }
     }
 
     const parsed = document.path.endsWith(".json") ? safeJson(document.content) : undefined;
@@ -413,32 +468,144 @@ export function buildKnowledgeGraph(
     }
   }
 
+  // 设定页 Markdown 与设定索引打通：settings.json 的 pagePath -> 页面首个标题节点
   for (const document of orderedDocuments) {
-    const headingNodes = [...nodes.values()].filter((node) => node.sourceRefs.some((source) => source.path === document.path && node.kind === "heading"));
-    for (const heading of headingNodes) {
-      const source = heading.sourceRefs.find((item) => item.path === document.path);
-      if (!source) continue;
-      const line = source.line ?? 1;
-      const headingContent = document.content.split("\n").slice(line - 1, line + 8).join("\n");
-      const linkPattern = /\[\[([^\]]+)\]\]/gu;
-      let link: RegExpExecArray | null;
-      while ((link = linkPattern.exec(headingContent))) {
-        const label = link[1].trim();
-        const target = resolveId(label) ?? addNode({
-          id: `entity:term:${normalize(label)}`,
-          label,
-          kind: "entity",
-          description: "Markdown 显式引用",
-          aliases: [],
-          sourceRefs: [{ path: document.path, line: line + lineAt(headingContent, link.index) - 1 }],
-        });
+    if (document.path !== "world/setting-library/settings.json") continue;
+    const root = asRecord(safeJson(document.content));
+    for (const item of asRecords(root?.settings)) {
+      const idValue = recordValue(item, ["id"]);
+      const pagePath = recordValue(item, ["pagePath"]);
+      if (!idValue || !pagePath) continue;
+      const settingId = resolveId(`setting:${idValue}`);
+      if (!settingId) continue;
+      const firstHeading = [...nodes.values()]
+        .filter(
+          (node) =>
+            node.kind === "heading" &&
+            node.sourceRefs.some((source) => source.path === pagePath),
+        )
+        .sort(
+          (left, right) =>
+            (left.sourceRefs[0]?.line ?? 1) - (right.sourceRefs[0]?.line ?? 1),
+        )[0];
+      if (firstHeading) {
         addEdge({
-          id: `mentions:${heading.id}:${target}`,
-          from: heading.id,
+          id: `contains:${settingId}:${firstHeading.id}`,
+          from: settingId,
+          to: firstHeading.id,
+          label: "包含章节",
+          kind: "contains",
+          sourceRefs: [{ path: document.path }],
+        });
+      }
+    }
+  }
+
+  // 全文档 Markdown 链接提取：稳定链接 [[kind:id|名称]] 与旧式 [[名称]]
+  const stableLinkPattern = /\[\[([a-zA-Z]+):([a-zA-Z0-9-]+)(?:\|([^\]]+))?\]\]/gu;
+  const legacyLinkPattern = /\[\[([^[\]|:]+)\]\]/gu;
+  const stableKindPaths: Readonly<Record<string, string>> = Object.freeze({
+    character: "characters/index.json",
+    location: "world/locations/index.json",
+    faction: "world/factions/index.json",
+    item: "world/items/index.json",
+    event: "timeline/index.json",
+  });
+  const resolveStableTarget = (
+    kind: string,
+    id: string,
+    label: string,
+  ): string | undefined => {
+    const kindPath = stableKindPaths[kind];
+    if (kindPath) {
+      const viaPath = resolveId(`entity:${kindPath}:${id}`);
+      if (viaPath) return viaPath;
+    }
+    if (kind === "setting") {
+      const viaSetting = resolveId(`setting:${id}`);
+      if (viaSetting) return viaSetting;
+    }
+    if (kind === "space") {
+      const viaSpace = resolveId(`space:${id}`);
+      if (viaSpace) return viaSpace;
+    }
+    return resolveId(label);
+  };
+  for (const document of orderedDocuments) {
+    if (!document.path.endsWith(".md")) continue;
+    const headingLines = [...nodes.values()]
+      .filter(
+        (node) =>
+          node.kind === "heading" &&
+          node.sourceRefs.some((source) => source.path === document.path),
+      )
+      .map((node) => ({
+        node,
+        line: node.sourceRefs.find((source) => source.path === document.path)
+          ?.line ?? 1,
+      }))
+      .sort((left, right) => left.line - right.line);
+    if (headingLines.length === 0) continue;
+    const lines = document.content.split("\n");
+    let ownerIndex = -1;
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex];
+      if (!line.includes("[[")) continue;
+      const lineNumber = lineIndex + 1;
+      while (
+        ownerIndex + 1 < headingLines.length &&
+        headingLines[ownerIndex + 1].line <= lineNumber
+      ) {
+        ownerIndex += 1;
+      }
+      const owner =
+        ownerIndex >= 0 ? headingLines[ownerIndex].node : undefined;
+      if (!owner) continue;
+      stableLinkPattern.lastIndex = 0;
+      let stable: RegExpExecArray | null;
+      while ((stable = stableLinkPattern.exec(line))) {
+        const label = stable[3]?.trim() || stable[2];
+        const target =
+          resolveStableTarget(stable[1], stable[2], label) ??
+          addNode({
+            id: `entity:term:${normalize(label)}`,
+            label,
+            kind: "entity",
+            description: "Markdown 显式引用",
+            aliases: [],
+            sourceRefs: [{ path: document.path, line: lineNumber }],
+          });
+        addEdge({
+          id: `mentions:${owner.id}:${target}`,
+          from: owner.id,
           to: target,
           label: "提及",
           kind: "mentions",
-          sourceRefs: [{ path: document.path, line }],
+          sourceRefs: [{ path: document.path, line: lineNumber }],
+        });
+      }
+      legacyLinkPattern.lastIndex = 0;
+      let legacy: RegExpExecArray | null;
+      while ((legacy = legacyLinkPattern.exec(line))) {
+        const label = legacy[1].trim();
+        if (!label) continue;
+        const target =
+          resolveId(label) ??
+          addNode({
+            id: `entity:term:${normalize(label)}`,
+            label,
+            kind: "entity",
+            description: "Markdown 显式引用",
+            aliases: [],
+            sourceRefs: [{ path: document.path, line: lineNumber }],
+          });
+        addEdge({
+          id: `mentions:${owner.id}:${target}`,
+          from: owner.id,
+          to: target,
+          label: "提及",
+          kind: "mentions",
+          sourceRefs: [{ path: document.path, line: lineNumber }],
         });
       }
     }

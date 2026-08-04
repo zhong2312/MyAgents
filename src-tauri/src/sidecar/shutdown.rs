@@ -355,7 +355,7 @@ fn update_lock_probe_paths<R: Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<
         )
     })?;
     let resource_dir = normalize_external_path(resource_dir);
-    let entries: [(&str, PathBuf, bool); 6] = [
+    let entries: [(&str, PathBuf, bool); 5] = [
         (
             "bundled node",
             resource_dir.join("nodejs").join("node.exe"),
@@ -382,14 +382,6 @@ fn update_lock_probe_paths<R: Runtime>(app_handle: &AppHandle<R>) -> Result<Vec<
                 .join("esm")
                 .join("index.mjs"),
             true,
-        ),
-        (
-            "MiroFish companion",
-            resource_dir
-                .join("mirofish-companion")
-                .join("runtime")
-                .join("mirofish-companion.exe"),
-            false,
         ),
     ];
 

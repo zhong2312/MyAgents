@@ -105,7 +105,6 @@ import {
   PluginStoreError,
 } from './plugins/store';
 import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
-import { handleWorkbenchSimulationRoute } from './routes/workbench-simulation';
 import { handleWorkbenchDevStorageRoute } from './routes/workbench-dev-storage';
 import { shouldLogHttpRequest } from './http-log-policy';
 
@@ -4460,12 +4459,6 @@ async function main() {
 
       const qrCodeAssetResponse = await handleQrCodeAssetRoute(pathname, request);
       if (qrCodeAssetResponse) return qrCodeAssetResponse;
-
-      const workbenchSimulationResponse = await handleWorkbenchSimulationRoute(
-        pathname,
-        request,
-      );
-      if (workbenchSimulationResponse) return workbenchSimulationResponse;
 
       const workbenchDevStorageResponse = await handleWorkbenchDevStorageRoute(
         pathname,

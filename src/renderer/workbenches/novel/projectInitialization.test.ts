@@ -23,12 +23,13 @@ describe("createNovelProjectInitialization", () => {
       expect.arrayContaining([
         "manuscript/chapters",
         "characters",
-        "world/codex",
         "world/setting-library/pages",
         "world/setting-library/entries",
         "world/setting-library/proposals",
+        "world/maps",
         "timeline",
         "simulation",
+        "simulation/runs",
         "research/notes",
         "knowledge",
         "prompts/installations",
@@ -41,12 +42,13 @@ describe("createNovelProjectInitialization", () => {
         "manuscript/index.json",
         "inspiration/index.json",
         "characters/index.json",
-        "world/worldview.md",
         "world/setting-library/meta.json",
         "world/setting-library/spatial-tree.json",
         "world/setting-library/settings.json",
+        "world/locations/index.json",
         "timeline/index.json",
         "simulation/scenarios.json",
+        "simulation/runs/index.json",
         "knowledge/entities.json",
         "knowledge/relations.json",
         "knowledge/facts.json",
@@ -85,6 +87,8 @@ describe("createNovelProjectInitialization", () => {
     )) {
       expect(() => JSON.parse(file.content), file.path).not.toThrow();
     }
+    expect(JSON.parse(initialization.files.find((file) => file.path === "simulation/scenarios.json")?.content ?? "{}").schemaVersion).toBe(3);
+    expect(JSON.parse(initialization.files.find((file) => file.path === "simulation/runs/index.json")?.content ?? "{}").schemaVersion).toBe(3);
 
     const metadata = initialization.files.find(
       (file) => file.path === "novel.json",
@@ -127,5 +131,23 @@ describe("createNovelProjectInitialization", () => {
     ).toBe(false);
     expect(initialization.directories).not.toContain("story");
     expect(initialization.initializeGit).toBe(false);
+  });
+
+  it("does not initialize retired worldview files (worldview.md / rules.json / codex)", () => {
+    const initialization = createNovelProjectInitialization({
+      projectId: "project-3",
+      projectName: "legacy-check",
+      title: "旧轨",
+      genres: ["玄幻"],
+      targetWordCountMin: 100_000,
+      targetWordCountMax: 200_000,
+      chapterWordCount: 3_000,
+      createdAt: "2026-07-14T12:00:00.000Z",
+    });
+    const paths = initialization.files.map((file) => file.path);
+    expect(paths).not.toContain("world/worldview.md");
+    expect(paths).not.toContain("world/rules.json");
+    expect(paths).not.toContain("world/codex/index.json");
+    expect(initialization.directories).not.toContain("world/codex");
   });
 });

@@ -99,12 +99,6 @@ function context(
         throw new Error("AI runs unavailable in renderer fixture");
       },
     },
-    simulationRuns: {
-      isAvailable: false,
-      request: async () => {
-        throw new Error("Simulation runs unavailable in renderer fixture");
-      },
-    },
     search: {
       isAvailable: false,
       async searchFiles() {
@@ -134,6 +128,27 @@ describe("NovelWorkbenchRenderer storage loop", () => {
       ]),
     );
     expect(navigation.find((item) => item.id === "simulation")?.parentId).toBeUndefined();
+  });
+
+  it("为世界推演启动检查提供可执行的设置入口", async () => {
+    const storage = createEmptyNovelStorage();
+    const navigate = vi.fn();
+    render(
+      <NovelWorkbenchRenderer
+        context={context(storage, "simulation-console", navigate)}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "改用自定义起点" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("0")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "改用自定义起点" })).not.toBeInTheDocument();
+      expect(screen.getByText("时间线事件不会自动成为事实。当前使用自定义起点，推演不会把任何时间线事件当作既成事实。")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "锁定已发生事实" }));
+    expect(navigate).toHaveBeenCalledWith("timeline");
   });
 
   it("shows and updates project planning details from the overview", async () => {
@@ -245,7 +260,7 @@ describe("NovelWorkbenchRenderer storage loop", () => {
     storage.setExternalText(record.path, "外部编辑后的版本");
 
     expect(
-      await screen.findByText("章节文件已在外部修改，本地草稿未被覆盖"),
+      await screen.findByText(/磁盘正文已变化，本地草稿未被覆盖/),
     ).toBeInTheDocument();
     expect(screen.getByDisplayValue("尚未保存的本地草稿")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "载入磁盘版本" }));
@@ -365,7 +380,7 @@ describe("NovelWorkbenchRenderer storage loop", () => {
       "受控写回协议",
     );
     expect(openAgentSession.mock.calls[0]?.[0].initialMessage).toContain(
-      "novel_world_submit_proposal",
+      "novel_world_submit_draft",
     );
   });
 
@@ -377,7 +392,7 @@ describe("NovelWorkbenchRenderer storage loop", () => {
       />,
     );
 
-    await screen.findByRole("button", { name: /层级类型/ });
+    await screen.findByRole("button", { name: /层级类型/, current: "page" });
     expect(screen.getByRole("button", { current: "page" })).toHaveTextContent(
       "层级类型",
     );

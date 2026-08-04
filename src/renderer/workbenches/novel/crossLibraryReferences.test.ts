@@ -11,7 +11,6 @@ import {
   type NovelChapterRecord,
 } from "./projectSchema";
 import {
-  createEmptyFactionLibrary,
   serializeFactionLibrary,
   type FactionLibrary,
   type FactionMember,
@@ -451,6 +450,68 @@ describe("findInboundReferences", () => {
     const hits = await findInboundReferences(storage, "item", "item-1");
     expect(hits).toHaveLength(1);
     expect(hits[0].library).toBe("人物库");
+  });
+
+  it("物品被修炼体系深层 itemIds 引用时命中", async () => {
+    const storage = storageWith({
+      "world/cultivation-ecology.json": JSON.stringify({
+        schemaVersion: 6,
+        updatedAt: NOW,
+        worldOrigins: [],
+        crossSystemRelations: [],
+        systems: [
+          {
+            id: "sys-1",
+            name: "玄门正宗",
+            summary: "",
+            kind: "修仙",
+            terminology: { energy: "", stage: "", method: "", ability: "" },
+            projection: { originIds: [], manifestationIds: [] },
+            theoryModel: { statement: "", summary: "", nodeTypes: [], invariants: [], validationRules: [], nodeCatalog: [] },
+            progressionTracks: [],
+            resources: [],
+            methods: [
+              {
+                id: "method-1",
+                name: "太虚吐纳",
+                summary: "",
+                kind: "",
+                theoryReference: "",
+                script: [],
+                formula: "",
+                coverage: { startLevelId: null, stableLimitId: null, theoryLimitId: null, absoluteLimitId: null },
+                effects: { speed: "", conversion: "", quality: "", breakthrough: "", loss: "" },
+                compatibility: [],
+                risks: [],
+                itemIds: ["item-1"],
+                operationTopologies: [],
+                courses: [],
+              },
+            ],
+            abilities: [],
+            formations: [],
+            foundations: [],
+            transitions: [],
+            constraints: [],
+            audit: [],
+          },
+        ],
+      }),
+    });
+    const hits = await findInboundReferences(storage, "item", "item-1");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].library).toBe("修炼体系");
+    expect(hits[0].location).toContain("太虚吐纳");
+  });
+
+  it("修炼体系事实源损坏时按 fail-closed 阻止删除", async () => {
+    const storage = storageWith({
+      "world/cultivation-ecology.json": "{ not valid json",
+    });
+    const hits = await findInboundReferences(storage, "item", "item-1");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].library).toBe("修炼体系");
+    expect(hits[0].location).toContain("无法解析");
   });
 
   it("无引用时返回空数组", async () => {

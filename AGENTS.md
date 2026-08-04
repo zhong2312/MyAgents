@@ -15,6 +15,7 @@ Novel-Design.md
 ## Windows 开发模式（复用测试包数据）
 
 - 日常改 UI / 小说工作台时，优先用根目录入口：`Start-MyAgents-Dev.cmd`。它会启动开发服务，但读写 `F:\workspace\MyAgents-test\profile` 与 `小说`，与长期测试包共用同一套数据。
+- 不得关闭、重启或替换用户已经启动的开发版或测试版 MyAgents App；只有用户明确要求时才能操作现有进程。需要验证时优先使用静态检查、单元测试或另行说明限制。
 - 默认是浏览器开发模式（Vite + TS server，热更新）。完整桌面壳用：`.\Start-MyAgents-Dev.cmd -Mode Tauri`。
 - 数据隔离环境变量与测试包启动器一致：`MYAGENTS_DATA_DIR`、`HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`MYAGENTS_TEST_ROOT`。
 - 自定义测试目录或初始小说项目：`.\Start-MyAgents-Dev.cmd -TestRoot 'D:\MyAgents-test' -AgentDir 'D:\MyAgents-test\小说\枪出如龙'`。

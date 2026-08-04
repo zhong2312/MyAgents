@@ -356,7 +356,9 @@ export type CrossLibraryTargetKind =
 
 /**
  * 查找目标实体被哪些库引用（删除保护用）。
- * 读取失败的文件按"无引用"处理——删除保护只是预防性检查，不应被损坏文件阻塞。
+ * 除修炼体系外，读取失败的文件按"无引用"处理——删除保护只是预防性检查，
+ * 不应被损坏文件阻塞；修炼体系解析失败按"存在潜在引用"阻止删除（fail-closed），
+ * 避免物品在被引用时因检查失效而被误删。
  */
 export async function findInboundReferences(
   storage: WorkbenchStorage,
@@ -411,7 +413,14 @@ export async function findInboundReferences(
       const parsed = JSON.parse(cultivationContent) as unknown;
       collectCultivationItemHits(parsed, id, hits);
     } catch {
-      // 同上。
+      // 修炼体系事实源损坏时按“存在潜在引用”处理（fail-closed），
+      // 避免物品在被引用时因检查失效而被误删。
+      hits.push(
+        hit(
+          "修炼体系",
+          "事实源文件无法解析，无法确认物品引用，已阻止删除",
+        ),
+      );
     }
   }
   if (kind === "character" && narrativeContent !== null) {

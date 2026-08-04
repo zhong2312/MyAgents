@@ -86,9 +86,19 @@ export function calculateCultivationCompleteness(
   );
 }
 
+function stableIssueId(systemId: string, fingerprint: string): string {
+  // 用 fingerprint 的稳定哈希生成 id，避免问题增减导致索引漂移。
+  let hash = 2166136261;
+  for (let index = 0; index < fingerprint.length; index += 1) {
+    hash ^= fingerprint.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${systemId}-audit-${(hash >>> 0).toString(36)}`;
+}
+
 function buildIssue(
   systemId: string,
-  index: number,
+  _index: number,
   severity: AuditIssue["severity"],
   targetType: IssueTarget,
   targetId: string | null,
@@ -97,10 +107,11 @@ function buildIssue(
   suggestion: string,
   fingerprint?: string,
 ): AuditIssue {
+  const stableFingerprint =
+    fingerprint ?? `${targetType}:${targetId ?? ""}:${title}`;
   return {
-    id: `${systemId}-audit-${index}`,
-    fingerprint:
-      fingerprint ?? `${targetType}:${targetId ?? ""}:${title}:${message}`,
+    id: stableIssueId(systemId, stableFingerprint),
+    fingerprint: stableFingerprint,
     severity,
     targetType,
     targetId,
@@ -111,7 +122,7 @@ function buildIssue(
   };
 }
 
-function collectCultivationSystemAssetIds(
+export function collectCultivationSystemAssetIds(
   system: CultivationSystem,
 ): ReadonlySet<string> {
   return new Set([
@@ -124,10 +135,7 @@ function collectCultivationSystemAssetIds(
         level.id,
         ...level.subStages.map((stage) => stage.id),
       ]),
-      ...track.transitions.flatMap((transition) => [
-        transition.id,
-        ...transition.methodIds,
-      ]),
+      ...track.transitions.map((transition) => transition.id),
     ]),
     ...(system.trackInteractions ?? []).map((interaction) => interaction.id),
     ...system.resources.flatMap((resource) => [
@@ -237,6 +245,7 @@ export function auditSystem(
           `${label}引用不存在`,
           `${label}引用了不存在的对象 ${id}。`,
           "改为当前体系中已存在的稳定 ID。",
+          `ref:${targetType}:${targetId}:${label}:${id}`,
         );
     });
   };
@@ -322,7 +331,19 @@ export function auditSystem(
         );
     });
   });
+  const seenProjectionOriginIds = new Set<string>();
   system.projection.originIds.forEach((id) => {
+    if (seenProjectionOriginIds.has(id))
+      add(
+        "error",
+        "system",
+        system.id,
+        "本源投影重复引用",
+        `本源 ${id} 被重复投影到当前体系。`,
+        "移除重复投影。",
+        `projection-origin-duplicate:${id}`,
+      );
+    seenProjectionOriginIds.add(id);
     if (!origins.has(id))
       add(
         "error",
@@ -331,9 +352,22 @@ export function auditSystem(
         "世界本源投影引用不存在",
         `本源投影引用了不存在的世界本源 ${id}。`,
         "从世界本源工作台选择有效对象。",
+        `projection-origin:${id}`,
       );
   });
+  const seenProjectionManifestationIds = new Set<string>();
   system.projection.manifestationIds.forEach((id) => {
+    if (seenProjectionManifestationIds.has(id))
+      add(
+        "error",
+        "system",
+        system.id,
+        "本源显化重复引用",
+        `显化节点 ${id} 被重复投影到当前体系。`,
+        "移除重复投影。",
+        `projection-manifestation-duplicate:${id}`,
+      );
+    seenProjectionManifestationIds.add(id);
     if (!manifestationIds.has(id))
       add(
         "error",
@@ -342,6 +376,7 @@ export function auditSystem(
         "本源显化引用不存在",
         `本源投影引用了不存在的显化节点 ${id}。`,
         "从世界本源的显化节点中选择。",
+        `projection-manifestation:${id}`,
       );
     else if (
       !system.projection.originIds.includes(manifestationOwners.get(id) ?? "")
@@ -353,6 +388,7 @@ export function auditSystem(
         "本源显化不属于已选本源",
         `显化节点 ${id} 所属本源未包含在当前体系的本源投影中。`,
         "同时选择显化节点所属的世界本源，或移除该显化节点。",
+        `projection-manifestation-owner:${id}`,
       );
   });
   system.projection.originBindings?.forEach((binding) => {
@@ -372,6 +408,7 @@ export function auditSystem(
         "本源绑定所属本源未投影",
         `绑定 ${binding.sourceId} 所属本源 ${ownerId} 未在当前体系本源列表中。`,
         "补充所属本源投影，或改绑到当前体系已选择的节点。",
+        `binding-owner:${binding.sourceId}`,
       );
     if (
       binding.role === "manifestation" &&
@@ -384,6 +421,20 @@ export function auditSystem(
         "显化绑定来源类型错误",
         `绑定 ${binding.sourceId} 标记为显化节点，但来源不是显化节点。`,
         "选择显化节点，或将绑定角色改为本源。",
+        `binding-type:${binding.sourceId}`,
+      );
+    if (
+      (binding.role === "primary" || binding.role === "secondary") &&
+      manifestationOwners.has(binding.sourceId)
+    )
+      add(
+        "error",
+        "system",
+        system.id,
+        "本源绑定来源类型错误",
+        `绑定 ${binding.sourceId} 标记为${binding.role === "primary" ? "主要" : "次要"}本源，但来源是显化节点。`,
+        "选择本源节点，或将绑定角色改为显化。",
+        `binding-source-type:${binding.sourceId}`,
       );
   });
   if (system.theoryModel.nodeCatalog.length === 0)
@@ -421,6 +472,7 @@ export function auditSystem(
             "境界指标引用不存在",
             `境界 ${level.name} 引用了不存在的指标 ${item.metricId}。`,
             "从当前成长轨道的指标中选择。",
+            `level-metric:${level.id}:${item.metricId}`,
           );
       });
       checkResourceRequirements(
@@ -447,6 +499,7 @@ export function auditSystem(
               "境内阶段指标引用不存在",
               `${level.name} · ${stage.name} 引用了不存在的指标 ${item.metricId}。`,
               "从当前成长轨道的指标中选择。",
+              `stage-metric:${stage.id}:${item.metricId}`,
             );
         });
         checkResourceRequirements(
@@ -471,6 +524,7 @@ export function auditSystem(
         );
       });
     });
+    const trackLevelIds = new Set(track.levels.map((level) => level.id));
     track.transitions.forEach((transition) => {
       if (transition.transitionType === "conversion")
         add(
@@ -482,15 +536,21 @@ export function auditSystem(
           "将体系级转换移动到“突破与转换”目录，或改为轨道内突破。",
           `transition:${transition.id}:track-scope`,
         );
-      checkRefs(
-        [transition.fromLevelId, transition.toLevelId].filter(
-          (id): id is string => Boolean(id),
-        ),
-        levelIds,
-        "transition",
-        transition.id,
-        "轨道转换境界",
-      );
+      // 轨道内跃迁的边界境界必须属于本轨道，跨轨道转换应走体系级跃迁。
+      [transition.fromLevelId, transition.toLevelId]
+        .filter((id): id is string => Boolean(id))
+        .forEach((id) => {
+          if (!trackLevelIds.has(id))
+            add(
+              "error",
+              "transition",
+              transition.id,
+              "轨道转换境界不属于当前轨道",
+              `转换 ${transition.name} 的边界境界 ${id} 不在成长轨道 ${track.name} 内。`,
+              "选择当前轨道内的境界，或改用体系级转换。",
+              `transition:${transition.id}:track-level:${id}`,
+            );
+        });
       checkRefs(
         transition.methodIds,
         methodIds,
@@ -594,6 +654,7 @@ export function auditSystem(
             "法门物品引用不存在",
             `法门 ${method.name} 关联了物品库中不存在的物品 ${itemId}。`,
             "从物品库重新选择有效物品，或移除失效 ID。",
+            `method-item:${method.id}:${itemId}`,
           );
       });
     checkRefs(
@@ -716,6 +777,22 @@ export function auditSystem(
         method.id,
         "法门课程阶段",
       );
+      // 课程阶段应与 coverage 区间一致（与 level.methodIds 的阶段侧检查同口径）。
+      if (
+        course.levelId &&
+        coverageBoundaries.length >= 2 &&
+        coverageLevelIds.size > 0 &&
+        !coverageLevelIds.has(course.levelId)
+      )
+        add(
+          "warning",
+          "method",
+          method.id,
+          "法门课程阶段超出覆盖范围",
+          `课程 ${course.title} 的阶段 ${course.levelId} 不在法门 ${method.name} 的 coverage 区间内。`,
+          "让课程阶段落在 coverage 区间内，或调整 coverage 边界。",
+          `method:${method.id}:course-coverage:${course.id}:${course.levelId}`,
+        );
       checkRefs(
         course.resourceRequirements.map((item) => item.resourceId),
         resourceIds,
@@ -744,6 +821,7 @@ export function auditSystem(
             "拓扑节点引用不存在",
             `拓扑节点 ${node.id} 没有对应的理论共有节点。`,
             "从当前体系理论节点库选择节点。",
+            `topology-node:${topology.id}:${node.id}`,
           );
       });
       topology.edges.forEach((edge) => {
@@ -758,6 +836,7 @@ export function auditSystem(
             "拓扑边连接不存在",
             `拓扑边 ${edge.id} 的起点或终点不存在。`,
             "删除悬空边，或重新选择拓扑节点。",
+            `topology-edge:${topology.id}:${edge.id}`,
           );
       });
       if (topology.nodes.length > 0 && topology.edges.length === 0)
@@ -784,6 +863,7 @@ export function auditSystem(
             "秘籍物品引用不存在",
             `能力 ${ability.name} 的秘籍来源关联了物品库中不存在的物品 ${itemId}。`,
             "从物品库重新选择有效典籍物品，或移除失效 ID。",
+            `ability-item:${ability.id}:${itemId}`,
           );
       });
     checkRefs(
@@ -942,6 +1022,7 @@ export function auditSystem(
             "阵法物品引用不存在",
             `阵法 ${formation.name} 关联了物品库中不存在的物品 ${itemId}。`,
             "从物品库重新选择有效阵图或阵材物品，或移除失效 ID。",
+            `formation-item:${formation.id}:${itemId}`,
           );
       });
     checkRefs(
@@ -1056,6 +1137,7 @@ export function auditSystem(
           "阵法节点引用不存在",
           `阵法节点 ${node.name} 引用了不存在的理论节点。`,
           "从当前体系理论节点库选择。",
+          `formation-node:${formation.id}:${node.id}`,
         );
       if (node.ringId && !ringIds.has(node.ringId))
         add(
@@ -1080,6 +1162,7 @@ export function auditSystem(
           "阵法流向断路",
           `阵法边 ${edge.id} 的起点或终点不存在。`,
           "补齐阵元，或删除悬空流向。",
+          `formation-edge:${formation.id}:${edge.id}`,
         );
     });
     if (formation.nodes.length > 0 && formation.edges.length === 0)
@@ -1159,6 +1242,20 @@ export function auditSystem(
       resource.id,
       "资源可用阶段",
     );
+    if (
+      resource.bestLevelId &&
+      resource.usableLevelIds.length > 0 &&
+      !resource.usableLevelIds.includes(resource.bestLevelId)
+    )
+      add(
+        "warning",
+        "resource",
+        resource.id,
+        "资源最佳阶段不在可用阶段内",
+        `资源 ${resource.name} 的最佳阶段 ${resource.bestLevelId} 不在 usableLevelIds 中。`,
+        "将最佳阶段纳入可用阶段，或调整最佳阶段。",
+        `resource:${resource.id}:best-level`,
+      );
     if (resource.usableLevelIds.length > 0)
       resourceConsumers.forEach(({ levelId, requirements }) => {
         if (
@@ -1304,6 +1401,7 @@ export function auditSystem(
         "跨体系关系引用不存在",
         "关系的源体系或目标体系不存在。",
         "选择当前项目中已存在的修行体系。",
+        `relation-exists:${relation.id}`,
       );
     if (relation.sourceSystemId === relation.targetSystemId)
       add(
@@ -1313,6 +1411,7 @@ export function auditSystem(
         "跨体系关系自引用",
         "源体系与目标体系不能是同一个体系。",
         "选择两个不同的修行体系。",
+        `relation-self:${relation.id}`,
       );
     if (
       !relation.conversionRule.trim() &&
@@ -1348,6 +1447,7 @@ export function auditSystem(
             "跨体系关系资产引用不存在",
             `关系 ${relation.name} 关联了源体系或目标体系之外的资产 ${assetId}。`,
             "选择源体系或目标体系中的有效资产，或移除该引用。",
+            `relation-asset:${relation.id}:${assetId}`,
           );
       });
     }
@@ -1359,11 +1459,10 @@ export function rebuildCultivationAudits(
   ecology: CultivationEcology,
   options: CultivationAuditOptions = {},
 ): CultivationEcology {
-  const issueKey = (issue: AuditIssue) =>
-    issue.fingerprint ??
-    `${issue.targetType}:${issue.targetId ?? ""}:${issue.title}:${issue.message}`;
-  const legacyIssueKey = (issue: AuditIssue) =>
+  const legacyKeyOf = (issue: AuditIssue) =>
     `${issue.targetType}:${issue.targetId ?? ""}:${issue.title}`;
+  const withMessageKeyOf = (issue: AuditIssue) =>
+    `${legacyKeyOf(issue)}:${issue.message}`;
   const globalOwners = new Map<string, string[]>();
   ecology.systems.forEach((system) => {
     collectCultivationSystemAssetIds(system).forEach((id) => {
@@ -1378,10 +1477,20 @@ export function rebuildCultivationAudits(
   return {
     ...ecology,
     systems: ecology.systems.map((system) => {
+      // legacy 键（不含 message）只在旧数据唯一时参与匹配，
+      // 避免同一 target 的多条同标题问题共享 resolved 状态。
+      const legacyCounts = new Map<string, number>();
+      system.audit.forEach((issue) => {
+        const key = legacyKeyOf(issue);
+        legacyCounts.set(key, (legacyCounts.get(key) ?? 0) + 1);
+      });
       const previous = new Map<string, boolean>();
       system.audit.forEach((issue) => {
-        previous.set(issueKey(issue), issue.resolved);
-        previous.set(legacyIssueKey(issue), issue.resolved);
+        if (issue.fingerprint) previous.set(issue.fingerprint, issue.resolved);
+        previous.set(withMessageKeyOf(issue), issue.resolved);
+        const legacyKey = legacyKeyOf(issue);
+        if ((legacyCounts.get(legacyKey) ?? 0) === 1)
+          previous.set(legacyKey, issue.resolved);
       });
       const audited = auditSystem(system, ecology, options);
       const duplicateIssues = [...globalDuplicates.entries()]
@@ -1399,14 +1508,20 @@ export function rebuildCultivationAudits(
             `global-duplicate-id:${id}`,
           ),
         );
+      const resolvedFor = (issue: AuditIssue): boolean => {
+        if (issue.fingerprint !== undefined) {
+          const byFingerprint = previous.get(issue.fingerprint);
+          if (byFingerprint !== undefined) return byFingerprint;
+        }
+        const withMessage = previous.get(withMessageKeyOf(issue));
+        if (withMessage !== undefined) return withMessage;
+        return previous.get(legacyKeyOf(issue)) ?? issue.resolved;
+      };
       return {
         ...system,
         audit: [...audited, ...duplicateIssues].map((issue) => ({
           ...issue,
-          resolved:
-            previous.get(issueKey(issue)) ??
-            previous.get(legacyIssueKey(issue)) ??
-            issue.resolved,
+          resolved: resolvedFor(issue),
         })),
       };
     }),

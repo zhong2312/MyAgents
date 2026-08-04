@@ -464,6 +464,12 @@ export default function SettingLibrary({
   const [locationPendingDeleteId, setLocationPendingDeleteId] = useState<
     string | null
   >(null);
+  const [settingPendingDelete, setSettingPendingDelete] = useState<
+    SettingPageReference | null
+  >(null);
+  const [nodePendingDelete, setNodePendingDelete] = useState<string | null>(
+    null,
+  );
   const [isTreeListOpen, setIsTreeListOpen] = useState(false);
   const [settingsDrawer, setSettingsDrawer] = useState(false);
   const dirtyRef = useRef(isDirty);
@@ -955,6 +961,84 @@ export default function SettingLibrary({
       setEntryDrafts([]);
       setSelectedReferenceId(id);
       setDialog(null);
+    } catch (cause) {
+      setError(toError(cause));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const deleteSettingPage = async () => {
+    const activeLibrary = libraryRef.current;
+    const target = settingPendingDelete;
+    if (!activeLibrary || !target || target.kind !== "instance") return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const wasSelected = selectedReferenceId === settingReferenceId(target);
+      const next = await repository.deleteSettingPage(
+        activeLibrary,
+        target.instance,
+      );
+      setLibrary(next);
+      setSettingPendingDelete(null);
+      if (wasSelected) {
+        setSelectedReferenceId("");
+        setPage(null);
+        setDraft("");
+        setEntryDrafts([]);
+        setSelectedEntryId("");
+      }
+    } catch (cause) {
+      setError(toError(cause));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const toggleSettingStatus = async (reference: SettingPageReference) => {
+    const activeLibrary = libraryRef.current;
+    if (!activeLibrary || reference.kind !== "instance") return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const nextStatus =
+        reference.instance.status === "completed" ? "draft" : "completed";
+      const next = await repository.updateSettingStatus(
+        activeLibrary,
+        reference.instance.id,
+        nextStatus,
+      );
+      setLibrary(next);
+    } catch (cause) {
+      setError(toError(cause));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const deleteNode = async () => {
+    const activeLibrary = libraryRef.current;
+    const targetId = nodePendingDelete;
+    if (!activeLibrary || !targetId) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const next = await repository.deleteSpatialNode(activeLibrary, targetId);
+      setLibrary(next);
+      setNodePendingDelete(null);
+      setDialog(null);
+      if (selectedNodeId === targetId) {
+        const fallback =
+          next.spatialTree.nodes.find(
+            (node) => node.id !== targetId && node.parentId === null,
+          ) ?? next.spatialTree.nodes[0];
+        setSelectedNodeId(fallback?.id ?? "");
+        setSelectedReferenceId("");
+        setPage(null);
+        setDraft("");
+        setEntryDrafts([]);
+      }
     } catch (cause) {
       setError(toError(cause));
     } finally {
@@ -1550,12 +1634,32 @@ export default function SettingLibrary({
                 const id = settingReferenceId(reference);
                 const selected = id === selectedReferenceId;
                 const isVirtual = reference.kind === "virtual";
+                const template =
+                  reference.kind === "instance" &&
+                  reference.instance.templateId
+                    ? library.meta.settingTemplates.find(
+                        (item) => item.id === reference.instance.templateId,
+                      )
+                    : undefined;
+                const outdatedTemplate =
+                  reference.kind === "instance" &&
+                  reference.instance.templateId &&
+                  template &&
+                  (reference.instance.templateVersion !== template.version ||
+                    template.archived);
                 return (
-                  <button
+                  <div
                     key={id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => void selectSetting(reference)}
-                    className={`flex w-full items-center gap-3 border-b border-[var(--line-subtle)] px-4 py-3 text-left ${
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        void selectSetting(reference);
+                      }
+                    }}
+                    className={`flex w-full cursor-pointer items-center gap-3 border-b border-[var(--line-subtle)] px-4 py-3 text-left ${
                       selected
                         ? "bg-[var(--accent-warm-subtle)] shadow-[inset_3px_0_0_var(--accent-warm)]"
                         : "hover:bg-[var(--hover-bg)]"
@@ -1577,14 +1681,59 @@ export default function SettingLibrary({
                         {isVirtual ? "虚拟页面" : "Markdown"}
                       </span>
                     </span>
-                    <span className="shrink-0 text-xs text-[var(--ink-muted)]">
-                      {isVirtual
-                        ? "未填写"
-                        : reference.instance.status === "completed"
-                          ? "已完成"
-                          : "草稿"}
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {outdatedTemplate && (
+                        <span
+                          className="rounded border border-[var(--line)] bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)]"
+                          title={
+                            template.archived
+                              ? `模板已归档${
+                                  reference.instance.templateVersion
+                                    ? `（页面基于 v${reference.instance.templateVersion}）`
+                                    : ""
+                                }`
+                              : `页面基于模板 v${reference.instance.templateVersion}，当前模板 v${template.version}`
+                          }
+                        >
+                          {template.archived ? "已归档" : "旧模板"}
+                        </span>
+                      )}
+                      {!isVirtual && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void toggleSettingStatus(reference);
+                            }}
+                            disabled={isSaving}
+                            title={
+                              reference.instance.status === "completed"
+                                ? "标记为草稿"
+                                : "标记为已完成"
+                            }
+                            className="rounded-md border border-[var(--line)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] disabled:opacity-45"
+                          >
+                            {reference.instance.status === "completed"
+                              ? "已完成"
+                              : "草稿"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSettingPendingDelete(reference);
+                            }}
+                            aria-label="删除设定页面"
+                            title="删除设定页面"
+                            className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-subtle)] hover:bg-[var(--danger-subtle)] hover:text-[var(--danger)]"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </>
+                      )}
                     </span>
-                  </button>
+                  </div>
                 );
               })}
               {!settingReferences.length && (
@@ -1688,6 +1837,11 @@ export default function SettingLibrary({
               </div>
             </header>
             {editorView === "locations" ? (
+              <>
+                <div className="flex shrink-0 items-center gap-2 border-b border-[var(--line-subtle)] bg-[var(--paper-inset)] px-5 py-2 text-xs leading-5 text-[var(--ink-muted)]">
+                  <MapPin className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
+                  地点库记录故事中实际登场的地点并归属当前空间节点；世界结构层级请在空间树中维护。
+                </div>
               <div className="grid min-h-0 flex-1 grid-cols-[17rem_minmax(0,1fr)] max-md:grid-cols-1">
                 <aside className="min-h-0 overflow-y-auto border-r border-[var(--line)] max-md:hidden">
                   <header className="flex h-13 items-center gap-2 border-b border-[var(--line)] px-3 py-2">
@@ -1944,6 +2098,7 @@ export default function SettingLibrary({
                   </div>
                 )}
               </div>
+              </>
             ) : isPageLoading ? (
               <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-[var(--ink-muted)]">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />{" "}
@@ -2242,6 +2397,14 @@ export default function SettingLibrary({
               <>
                 <button
                   type="button"
+                  onClick={() => setNodePendingDelete(currentNode.id)}
+                  disabled={isSaving}
+                  className="mr-auto h-9 rounded-md border border-[var(--danger)] px-3 text-sm text-[var(--danger)] disabled:opacity-45"
+                >
+                  删除节点
+                </button>
+                <button
+                  type="button"
                   onClick={() => setDialog(null)}
                   className="h-9 rounded-md border border-[var(--line)] px-3 text-sm"
                 >
@@ -2378,6 +2541,34 @@ export default function SettingLibrary({
             loading={isSaving}
             onConfirm={() => void deleteLocation()}
             onCancel={() => setLocationPendingDeleteId(null)}
+          />
+        )}
+        {settingPendingDelete && (
+          <ConfirmDialog
+            title="删除设定页面"
+            message={(() => {
+              const target = settingPendingDelete;
+              if (target.kind !== "instance") return "";
+              return target.instance.templateId
+                ? `将删除“${target.instance.name}”的正文与词条文件。该页来自默认模板，删除后会重新以虚拟页面出现；可在模板管理中归档模板以隐藏。`
+                : `将删除“${target.instance.name}”的正文与词条文件，无法恢复。`;
+            })()}
+            confirmText="删除页面"
+            confirmVariant="danger"
+            loading={isSaving}
+            onConfirm={() => void deleteSettingPage()}
+            onCancel={() => setSettingPendingDelete(null)}
+          />
+        )}
+        {nodePendingDelete && (
+          <ConfirmDialog
+            title="删除空间节点"
+            message="将删除该空间节点。若它仍有下级节点、设定页面、地点或势力地盘引用，删除会被阻止。"
+            confirmText="删除节点"
+            confirmVariant="danger"
+            loading={isSaving}
+            onConfirm={() => void deleteNode()}
+            onCancel={() => setNodePendingDelete(null)}
           />
         )}
       </div>
