@@ -6,6 +6,7 @@ import type {
   WorkbenchAgentSessionRequest,
   WorkbenchManifest,
   WorkbenchProjectInitialization,
+  WorkbenchProjection,
   WorkbenchSearch,
   WorkbenchStorage,
 } from "../../shared/workbench-sdk";
@@ -48,6 +49,8 @@ export interface WorkbenchRendererContext {
   readonly aiRuns: WorkbenchAiRuns;
   /** 工作区全文搜索；浏览器开发模式不可用（isAvailable=false）。 */
   readonly search: WorkbenchSearch;
+  /** 小说领域派生投影；浏览器开发模式不可用（isAvailable=false）。 */
+  readonly projection: WorkbenchProjection;
   navigate(route: string): void;
   registerNavigationGuard(guard: WorkbenchNavigationGuard): () => void;
 }

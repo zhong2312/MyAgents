@@ -23,6 +23,7 @@ describe("createNovelProjectInitialization", () => {
       expect.arrayContaining([
         "manuscript/chapters",
         "characters",
+        "characters/records",
         "world/setting-library/pages",
         "world/setting-library/entries",
         "world/setting-library/proposals",
@@ -42,6 +43,7 @@ describe("createNovelProjectInitialization", () => {
         "manuscript/index.json",
         "inspiration/index.json",
         "characters/index.json",
+        "characters/records/.gitkeep",
         "world/setting-library/meta.json",
         "world/setting-library/spatial-tree.json",
         "world/setting-library/settings.json",
@@ -63,6 +65,9 @@ describe("createNovelProjectInitialization", () => {
           ) && path.endsWith(".md"),
       ),
     ).toBe(true);
+    expect(
+      initialization.files.find((file) => file.path === ".gitignore")?.content,
+    ).toContain(".cache/");
     expect(
       paths.filter((path) =>
         path.startsWith(

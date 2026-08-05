@@ -62,6 +62,7 @@ import {
   CustomSelect,
   OverlayBackdrop,
   Popover,
+  type WorkbenchProjection,
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
@@ -72,6 +73,7 @@ import {
 
 import {
   createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
   type LoadedCharacterLibrary,
 } from "./characterLibraryRepository";
 import type { CharacterLibraryMeta } from "./characterLibrarySchema";
@@ -300,6 +302,7 @@ interface RelationGraphLink extends SimulationLinkDatum<RelationGraphNode> {
 
 interface CharacterLibraryPrototypeProps {
   readonly storage: WorkbenchStorage;
+  readonly projection?: WorkbenchProjection;
   readonly projectTitle: string;
   readonly isActive: boolean;
   readonly onOpenAiAgent?: (target: CharacterAiTarget) => Promise<void>;
@@ -4410,6 +4413,7 @@ function GroupEditorDialog({
 
 export default function CharacterLibraryPrototype({
   storage,
+  projection,
   projectTitle,
   isActive,
   onOpenAiAgent,
@@ -4477,11 +4481,14 @@ export default function CharacterLibraryPrototype({
     isDirtyRef.current = isDirty;
   }, [isDirty]);
 
-  const applyLibrary = useCallback((next: LoadedCharacterLibrary) => {
+  const applyLibrary = useCallback((
+    next: LoadedCharacterLibrary,
+    nextCharacters: readonly CharacterRecord[],
+  ) => {
     libraryRef.current = next;
-    charactersRef.current = next.index.characters;
+    charactersRef.current = [...nextCharacters];
     setLibrary(next);
-    setCharacters(next.index.characters);
+    setCharacters([...nextCharacters]);
     setRaces(next.meta.races);
     setSouls(next.meta.souls);
     setGroups(next.meta.groups);
@@ -4504,7 +4511,11 @@ export default function CharacterLibraryPrototype({
     setIsLoading(true);
     setError(null);
     try {
-      applyLibrary(await repository.load());
+      const nextLibrary = await repository.load();
+      applyLibrary(
+        nextLibrary,
+        await loadCharacterRecords(repository, nextLibrary),
+      );
       setIsDirty(false);
       isDirtyRef.current = false;
     } catch (cause) {
@@ -4544,25 +4555,19 @@ export default function CharacterLibraryPrototype({
       setIsSaving(true);
       setError(null);
       try {
-        const saved = await repository.saveCharacters(
-          activeLibrary,
-          normalizedSnapshot,
-        );
+        let saved = activeLibrary;
+        const snapshotIds = new Set(normalizedSnapshot.map((item) => item.id));
+        for (const entry of saved.index.characters) {
+          if (!snapshotIds.has(entry.id)) {
+            saved = await repository.deleteCharacter(saved, entry.id);
+          }
+        }
+        for (const character of normalizedSnapshot) {
+          saved = await repository.saveCharacter(saved, character);
+        }
         const latestCharacters = charactersRef.current;
-        const next =
-          latestCharacters === snapshot
-            ? saved
-            : {
-                ...saved,
-                index: {
-                  ...saved.index,
-                  characters: latestCharacters.map(
-                    ensureCharacterCultivationProfile,
-                  ),
-                },
-              };
-        libraryRef.current = next;
-        setLibrary(next);
+        libraryRef.current = saved;
+        setLibrary(saved);
         if (latestCharacters === snapshot) {
           isDirtyRef.current = false;
           setIsDirty(false);
@@ -4598,7 +4603,7 @@ export default function CharacterLibraryPrototype({
       setError(null);
       try {
         const saved = await repository.saveMeta(activeLibrary, nextMeta);
-        applyLibrary(saved);
+        applyLibrary(saved, charactersRef.current);
         return true;
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -4818,6 +4823,7 @@ export default function CharacterLibraryPrototype({
         storage,
         "character",
         characterId,
+        projection,
       ).catch(() => []);
       if (inbound.length > 0) {
         setError(
@@ -4847,6 +4853,7 @@ export default function CharacterLibraryPrototype({
     }
   }, [
     flushCharacters,
+    projection,
     saveCharacters,
     selectedCharacterId,
     storage,

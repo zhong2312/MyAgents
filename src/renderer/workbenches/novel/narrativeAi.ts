@@ -213,8 +213,8 @@ function buildSnapshot(
       alias: character.alias,
       archetype: character.archetype,
       arc: clip(character.arc, 260),
-      arcStages: cap(character.arcStages, 12).map((stage, index) => ({
-        id: stage.id ?? `${character.id}-arc-stage-${index + 1}`,
+      arcStages: cap(character.arcStages, 12).map((stage) => ({
+        id: stage.id ?? "",
         title: clip(stage.title, 120),
         state: clip(stage.state, 160),
       })),

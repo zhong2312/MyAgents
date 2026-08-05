@@ -27,6 +27,8 @@ serde_json = "1.0"
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+# 仅用于可丢弃的小说领域派生投影；Markdown 与 JSON 仍是唯一事实源。
+rusqlite = { version = "0.32", features = ["bundled"] }
 log = "0.4"
 # `macos-private-api` is required for transparent webview windows on macOS —
 # the floating ball / companion panels (PRD 0.2.35) are transparent NSPanels.

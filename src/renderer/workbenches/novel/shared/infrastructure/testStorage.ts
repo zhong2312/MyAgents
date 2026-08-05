@@ -1,0 +1,290 @@
+import type {
+  WorkbenchProjection,
+  WorkbenchProjectionEntity,
+  WorkbenchProjectionRef,
+  WorkbenchStorage,
+  WorkbenchStorageChange,
+  WorkbenchStorageEntry,
+  WorkbenchStoragePathInfo,
+  WorkbenchStorageTransfer,
+  WorkbenchStorageTransferResult,
+} from "@/workbench-sdk";
+
+/** 供领域投影双路径测试使用的内存版 Tauri 投影替身。 */
+export class NovelMemoryProjection implements WorkbenchProjection {
+  readonly isAvailable: boolean;
+
+  constructor(
+    private readonly entities: readonly WorkbenchProjectionEntity[] = [],
+    private readonly refs: readonly WorkbenchProjectionRef[] = [],
+    isAvailable = true,
+  ) {
+    this.isAvailable = isAvailable;
+  }
+
+  async listEntities(kind?: string): Promise<readonly WorkbenchProjectionEntity[]> {
+    if (!this.isAvailable) return [];
+    return kind ? this.entities.filter((entity) => entity.kind === kind) : this.entities;
+  }
+
+  async inboundRefs(kind: string, id: string): Promise<readonly WorkbenchProjectionRef[]> {
+    if (!this.isAvailable) return [];
+    return this.refs.filter((ref) => ref.toKind === kind && ref.toId === id);
+  }
+
+  async rebuild(): Promise<readonly [number, number]> {
+    if (!this.isAvailable) throw new Error("投影不可用");
+    return [this.entities.length, this.refs.length];
+  }
+}
+
+function textSize(content: string): number {
+  return new TextEncoder().encode(content).byteLength;
+}
+
+export class NovelMemoryStorage implements WorkbenchStorage {
+  readonly rootPath = "F:/novels/test";
+  readonly isAvailable = true;
+  private readonly files = new Map<string, string>();
+  private readonly directories = new Set<string>([""]);
+  private readonly listeners = new Set<
+    (change: WorkbenchStorageChange) => void
+  >();
+  failNextIndexWrite = false;
+  failWritePathOnce: string | null = null;
+  afterWriteOnce: ((path: string) => void) | null = null;
+  requireExplicitParents = false;
+
+  constructor(initialFiles: Record<string, string>) {
+    for (const [path, content] of Object.entries(initialFiles)) {
+      this.files.set(path, content);
+      const segments = path.split("/");
+      segments.pop();
+      for (let length = 1; length <= segments.length; length += 1) {
+        this.directories.add(segments.slice(0, length).join("/"));
+      }
+    }
+  }
+
+  getText(path: string): string | undefined {
+    return this.files.get(path);
+  }
+
+  setExternalText(path: string, content: string): void {
+    this.files.set(path, content);
+    this.emitChange();
+  }
+
+  private emitChange(): void {
+    for (const listener of this.listeners)
+      listener({ kind: "workspace-changed" });
+  }
+
+  async stat(
+    paths: readonly string[],
+  ): Promise<readonly WorkbenchStoragePathInfo[]> {
+    return paths.map((path) =>
+      this.files.has(path)
+        ? { path, exists: true, kind: "file" as const }
+        : this.directories.has(path)
+          ? { path, exists: true, kind: "directory" as const }
+          : { path, exists: false },
+    );
+  }
+
+  async list(directory = ""): Promise<readonly WorkbenchStorageEntry[]> {
+    const prefix = directory ? `${directory}/` : "";
+    const entries = new Map<string, WorkbenchStorageEntry>();
+    for (const path of [...this.directories, ...this.files.keys()]) {
+      if (!path.startsWith(prefix) || path === directory) continue;
+      const remainder = path.slice(prefix.length);
+      if (!remainder || remainder.includes("/")) continue;
+      const kind = this.files.has(path)
+        ? ("file" as const)
+        : ("directory" as const);
+      entries.set(path, { path, name: remainder, kind });
+    }
+    return [...entries.values()];
+  }
+
+  async readText(path: string) {
+    const content = this.files.get(path);
+    if (content === undefined) throw new Error(`File not found: ${path}`);
+    return {
+      path,
+      name: path.split("/").at(-1) ?? path,
+      size: textSize(content),
+      content,
+    };
+  }
+
+  async readBinary(path: string): Promise<ArrayBuffer> {
+    const content = (await this.readText(path)).content;
+    return Uint8Array.from(new TextEncoder().encode(content)).buffer;
+  }
+
+  async createDirectory(path: string): Promise<WorkbenchStorageEntry> {
+    this.directories.add(path);
+    return { path, name: path.split("/").at(-1) ?? path, kind: "directory" };
+  }
+
+  async createText(
+    path: string,
+    content = "",
+    options: { createParents?: boolean } = {},
+  ) {
+    if (this.files.has(path) || this.directories.has(path))
+      throw new Error(`Already exists: ${path}`);
+    const parent = path.split("/").slice(0, -1).join("/");
+    if (parent && !this.directories.has(parent)) {
+      if (this.requireExplicitParents || !options.createParents)
+        throw new Error(`Parent not found: ${parent}`);
+      const segments = parent.split("/");
+      for (let length = 1; length <= segments.length; length += 1) {
+        this.directories.add(segments.slice(0, length).join("/"));
+      }
+    }
+    this.files.set(path, content);
+    return {
+      path,
+      name: path.split("/").at(-1) ?? path,
+      size: textSize(content),
+      content,
+    };
+  }
+
+  async writeText(
+    path: string,
+    content: string,
+    options: { expectedContent?: string } = {},
+  ) {
+    const current = this.files.get(path);
+    if (current === undefined) throw new Error(`File not found: ${path}`);
+    if (
+      options.expectedContent !== undefined &&
+      current !== options.expectedContent
+    ) {
+      throw new Error("File changed externally");
+    }
+    if (path === "manuscript/index.json" && this.failNextIndexWrite) {
+      this.failNextIndexWrite = false;
+      throw new Error("Index write failed");
+    }
+    if (path === this.failWritePathOnce) {
+      this.failWritePathOnce = null;
+      throw new Error(`Injected write failure: ${path}`);
+    }
+    this.files.set(path, content);
+    const afterWrite = this.afterWriteOnce;
+    this.afterWriteOnce = null;
+    afterWrite?.(path);
+    return {
+      path,
+      name: path.split("/").at(-1) ?? path,
+      size: textSize(content),
+      content,
+    };
+  }
+
+  async copy() {
+    return { transfers: [], errors: [] };
+  }
+
+  async move(
+    paths: readonly string[],
+    targetDirectory: string,
+  ): Promise<WorkbenchStorageTransferResult> {
+    const transfers: WorkbenchStorageTransfer[] = [];
+    const errors: string[] = [];
+    for (const source of paths) {
+      const content = this.files.get(source);
+      if (content === undefined) {
+        errors.push(`File not found: ${source}`);
+        continue;
+      }
+      const fileName = source.split("/").at(-1) ?? "";
+      const target = targetDirectory ? `${targetDirectory}/${fileName}` : fileName;
+      this.files.delete(source);
+      this.files.set(target, content);
+      const segments = target.split("/");
+      segments.pop();
+      for (let length = 1; length <= segments.length; length += 1) {
+        this.directories.add(segments.slice(0, length).join("/"));
+      }
+      transfers.push({ sourcePath: source, targetPath: target });
+    }
+    return { transfers, errors };
+  }
+
+  async rename(path: string, newName: string): Promise<WorkbenchStorageEntry> {
+    const content = this.files.get(path);
+    if (content === undefined) throw new Error(`File not found: ${path}`);
+    const parent = path.split("/").slice(0, -1).join("/");
+    const nextPath = parent ? `${parent}/${newName}` : newName;
+    this.files.delete(path);
+    this.files.set(nextPath, content);
+    return { path: nextPath, name: newName, kind: "file" };
+  }
+
+  async remove(path: string): Promise<boolean> {
+    const removedFile = this.files.delete(path);
+    let removedDirectory = false;
+    if (this.directories.has(path)) {
+      removedDirectory = true;
+      // 级联删除目录内的文件与子目录，与磁盘语义一致
+      const prefix = path ? `${path}/` : "";
+      for (const filePath of [...this.files.keys()]) {
+        if (filePath.startsWith(prefix)) this.files.delete(filePath);
+      }
+      for (const directoryPath of [...this.directories]) {
+        if (directoryPath !== path && directoryPath.startsWith(prefix)) {
+          this.directories.delete(directoryPath);
+        }
+      }
+      this.directories.delete(path);
+    }
+    return removedFile || removedDirectory;
+  }
+
+  async watch(listener: (change: WorkbenchStorageChange) => void) {
+    this.listeners.add(listener);
+    return {
+      dispose: async () => {
+        this.listeners.delete(listener);
+      },
+    };
+  }
+}
+
+export function createEmptyNovelStorage(): NovelMemoryStorage {
+  return new NovelMemoryStorage({
+    "novel.json": `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        projectId: "novel-test",
+        workbenchId: "io.myagents.novel",
+        projectName: "test-novel-01",
+        title: "测试小说",
+        genres: ["悬疑", "推理侦探"],
+        targetWordCountMin: 250_000,
+        targetWordCountMax: 350_000,
+        chapterWordCount: 2_500,
+        status: "planning",
+        language: "zh-CN",
+        createdAt: "2026-07-14T12:00:00.000Z",
+        updatedAt: "2026-07-14T12:00:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+    "manuscript/index.json": `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        nextChapterNumber: 1,
+        chapters: [],
+      },
+      null,
+      2,
+    )}\n`,
+  });
+}

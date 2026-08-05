@@ -1,4 +1,7 @@
-import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
+import {
+  ensureWorkbenchTextFile,
+  type WorkbenchStorage,
+} from "@/workbench-sdk";
 
 import {
   createEmptyNarrativeEngineering,
@@ -19,20 +22,6 @@ export interface NarrativeEngineeringRepository {
     current: LoadedNarrativeEngineering,
     library: NarrativeEngineering,
   ): Promise<LoadedNarrativeEngineering>;
-}
-
-async function ensureTextFile(
-  storage: WorkbenchStorage,
-  path: string,
-  content: string,
-): Promise<WorkbenchTextFile> {
-  const [info] = await storage.stat([path]);
-  if (info?.exists) return storage.readText(path);
-  try {
-    return await storage.createText(path, content, { createParents: true });
-  } catch {
-    return storage.readText(path);
-  }
 }
 
 export function createNarrativeEngineeringInitializationFiles(
@@ -56,7 +45,7 @@ export function createNarrativeEngineeringRepository(
       if (!storage.isAvailable) {
         throw new Error("剧情工程仅在 MyAgents 桌面端可用");
       }
-      const file = await ensureTextFile(
+      const file = await ensureWorkbenchTextFile(
         storage,
         NARRATIVE_ENGINEERING_PATH,
         serializeNarrativeEngineering(createEmptyNarrativeEngineering()),

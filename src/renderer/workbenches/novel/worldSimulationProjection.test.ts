@@ -202,9 +202,10 @@ describe("buildWorldSimulationBaseline", () => {
     });
     const characterRepository = createNovelCharacterLibraryRepository(storage);
     const characters = await characterRepository.load();
-    await characterRepository.saveCharacters(characters, [
+    await characterRepository.saveCharacter(
+      characters,
       character("hero-in-child", "沈砚", "青云城"),
-    ]);
+    );
 
     const scenario = {
       ...createDefaultWorldSimulationScenario(),
@@ -371,9 +372,10 @@ describe("buildWorldSimulationBaseline", () => {
     const storage = initializedStorage();
     const characterRepository = createNovelCharacterLibraryRepository(storage);
     const characters = await characterRepository.load();
-    await characterRepository.saveCharacters(characters, [
+    await characterRepository.saveCharacter(
+      characters,
       character("hero-1", "沈砚"),
-    ]);
+    );
     const narrative = createEmptyNarrativeEngineering(createdAt);
     storage.setExternalText(
       "narrative/index.json",

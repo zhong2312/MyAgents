@@ -127,6 +127,7 @@ import {
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import type { ItemIndexEntry } from "./itemLibrarySchema";
 import { parseCharacterLibraryIndex } from "./characterLibrarySchema";
+import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
 import FormationBackdropArt from "./FormationBackdropArt";
 import {
@@ -2134,9 +2135,16 @@ export default function CultivationEcologyWorkbench({
           const characterIndex = parseCharacterLibraryIndex(
             characterFile.content,
           );
-          const boundCharacters = characterIndex.characters.filter(
-            (character) =>
-              character.cultivationProfile.systemId === deletedSystemId,
+          const characterRepository = createNovelCharacterLibraryRepository(
+            storage,
+          );
+          const characterRecords = await Promise.all(
+            characterIndex.characters.map(async (entry) =>
+              (await characterRepository.loadCharacter(entry)).record,
+            ),
+          );
+          const boundCharacters = characterRecords.filter(
+            (character) => character.cultivationProfile.systemId === deletedSystemId,
           );
           if (boundCharacters.length > 0) {
             setError("");

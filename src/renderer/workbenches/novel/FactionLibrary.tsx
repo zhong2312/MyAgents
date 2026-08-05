@@ -29,9 +29,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { CustomSelect, Popover, type WorkbenchStorage } from "@/workbench-sdk";
+import { CustomSelect, Popover, type WorkbenchProjection, type WorkbenchStorage } from "@/workbench-sdk";
 
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import {
+  createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
+} from "./characterLibraryRepository";
 import type { DomainEntityRef } from "./domainIndex";
 import {
   findInboundReferences,
@@ -59,6 +62,7 @@ import { createNovelSettingLibraryRepository } from "./settingLibraryRepository"
 
 interface FactionLibraryProps {
   readonly storage: WorkbenchStorage;
+  readonly projection?: WorkbenchProjection;
   readonly projectTitle: string;
   readonly isActive: boolean;
   readonly onOpenWorldNode?: (nodeId: string) => void;
@@ -434,6 +438,7 @@ function fieldErrorKey(kind: StoredEntityKind, id: string): string {
 
 export default function FactionLibrary({
   storage,
+  projection,
   projectTitle,
   isActive,
   onOpenWorldNode,
@@ -500,7 +505,14 @@ export default function FactionLibrary({
           .catch(() => null),
       ]);
       setLoaded(next);
-      setCharacters(people?.index.characters ?? []);
+      setCharacters(
+        people
+          ? await loadCharacterRecords(
+              createNovelCharacterLibraryRepository(storage),
+              people,
+            )
+          : [],
+      );
       setWorldNodes(
         world?.spatialTree.nodes.map(({ id, name, parentId }) => ({
           id,
@@ -649,6 +661,7 @@ export default function FactionLibrary({
       storage,
       "faction",
       draft.id,
+      projection,
     ).catch(() => []);
     if (inbound.length > 0) {
       setError(

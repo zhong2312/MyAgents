@@ -2015,7 +2015,11 @@ const MAP_PROPOSAL_ROOT = "world/maps/proposals";
 const MAX_MAP_OPERATIONS = 40;
 
 /** 读取工作区 JSON 文件并返回其 id 集合；文件缺失时返回空集。 */
-async function readIdSet(workspace: string, path: string, field: string): Promise<Set<string>> {
+export async function readIdSet(
+  workspace: string,
+  path: string,
+  field: string,
+): Promise<Set<string>> {
   const content = await readOptional(workspaceFile(workspace, path));
   if (!content) return new Set();
   const document = JSON.parse(content) as unknown;

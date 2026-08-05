@@ -10,10 +10,10 @@ import {
 } from "./characterProposalSchema";
 import {
   createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
   type LoadedCharacterLibrary,
 } from "./characterLibraryRepository";
 import {
-  parseCharacterLibraryIndex,
   parseCharacterLibraryMeta,
   serializeCharacterLibraryFile,
   type CharacterGroupDefinition,
@@ -59,10 +59,6 @@ function parseMeta(value: unknown): LoadedCharacterLibrary["meta"] {
   return parseCharacterLibraryMeta(serializeCharacterLibraryFile(value));
 }
 
-function parseIndex(value: unknown): LoadedCharacterLibrary["index"] {
-  return parseCharacterLibraryIndex(serializeCharacterLibraryFile(value));
-}
-
 function applyDefinition<T extends { id: string }>(
   current: readonly T[],
   operation: CharacterProposalOperation,
@@ -88,17 +84,18 @@ function applyDefinition<T extends { id: string }>(
 
 function buildCandidateLibrary(
   library: LoadedCharacterLibrary,
+  sourceCharacters: readonly CharacterRecord[],
   operations: readonly CharacterProposalOperation[],
 ): {
   readonly meta: LoadedCharacterLibrary["meta"];
-  readonly index: LoadedCharacterLibrary["index"];
+  readonly characters: readonly CharacterRecord[];
   readonly hasMetaChanges: boolean;
   readonly hasCharacterChanges: boolean;
 } {
   let races: readonly RaceDefinition[] = library.meta.races;
   let groups: readonly CharacterGroupDefinition[] = library.meta.groups;
   let souls: readonly CharacterSoulDefinition[] = library.meta.souls;
-  let characters: readonly CharacterRecord[] = library.index.characters;
+  let characters: readonly CharacterRecord[] = sourceCharacters;
   let hasMetaChanges = false;
   let hasCharacterChanges = false;
 
@@ -119,8 +116,7 @@ function buildCandidateLibrary(
   }
 
   const meta = parseMeta({ ...library.meta, races, groups, souls });
-  const index = parseIndex({ ...library.index, characters });
-  return { meta, index, hasMetaChanges, hasCharacterChanges };
+  return { meta, characters, hasMetaChanges, hasCharacterChanges };
 }
 
 function updateOperations(
@@ -205,21 +201,28 @@ export function createNovelCharacterProposalRepository(
       if (operations.length === 0) throw new Error("没有可采纳的角色候选");
 
       const library = await characterRepository.load();
-      const candidate = buildCandidateLibrary(library, operations);
+      const sourceCharacters = await loadCharacterRecords(
+        characterRepository,
+        library,
+      );
+      const candidate = buildCandidateLibrary(
+        library,
+        sourceCharacters,
+        operations,
+      );
       let saved = library;
       let metaSaved = false;
-      let charactersSaved = false;
+      const savedCharacterIds = new Set<string>();
       try {
         if (candidate.hasMetaChanges) {
           saved = await characterRepository.saveMeta(saved, candidate.meta);
           metaSaved = true;
         }
         if (candidate.hasCharacterChanges) {
-          saved = await characterRepository.saveCharacters(
-            saved,
-            candidate.index.characters,
-          );
-          charactersSaved = true;
+          for (const character of candidate.characters) {
+            saved = await characterRepository.saveCharacter(saved, character);
+            savedCharacterIds.add(character.id);
+          }
         }
         return await writeManifest(
           storage,
@@ -232,11 +235,13 @@ export function createNovelCharacterProposalRepository(
         );
       } catch (error) {
         try {
-          if (charactersSaved) {
-            saved = await characterRepository.saveCharacters(
-              saved,
-              library.index.characters,
+          for (const id of savedCharacterIds) {
+            const source = sourceCharacters.find(
+              (character) => character.id === id,
             );
+            saved = source
+              ? await characterRepository.saveCharacter(saved, source)
+              : await characterRepository.deleteCharacter(saved, id);
           }
           if (metaSaved) {
             await characterRepository.saveMeta(saved, library.meta);

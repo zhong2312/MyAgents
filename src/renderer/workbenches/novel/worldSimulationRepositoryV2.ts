@@ -182,6 +182,45 @@ function runIndexEntry(run: WorldSimulationRun): SimulationRunIndexEntry {
   };
 }
 
+function serializeJsonl(values: readonly unknown[]): string {
+  return values.map((value) => `${JSON.stringify(value)}\n`).join("");
+}
+
+async function writeAppendOnlyJsonl(
+  storage: WorkbenchStorage,
+  path: string,
+  values: readonly unknown[],
+): Promise<void> {
+  const nextContent = serializeJsonl(values);
+  const [info] = await storage.stat([path]);
+  if (!info?.exists) {
+    try {
+      await storage.createText(path, nextContent);
+      return;
+    } catch (cause) {
+      const [afterCreate] = await storage.stat([path]);
+      if (!afterCreate?.exists || afterCreate.kind !== "file") throw cause;
+    }
+  }
+  const current = await storage.readText(path);
+  const existingLines = current.content === ""
+    ? []
+    : current.content.split("\n").filter((line) => line.length > 0);
+  if (existingLines.length > values.length) {
+    throw new Error(`推演 JSONL 账本不能回退：${path}`);
+  }
+  const expectedExisting = serializeJsonl(values.slice(0, existingLines.length));
+  if (current.content !== expectedExisting) {
+    throw new Error(`推演 JSONL 账本已被外部修改：${path}`);
+  }
+  const appended = nextContent.slice(expectedExisting.length);
+  if (appended) {
+    await storage.writeText(path, `${current.content}${appended}`, {
+      expectedContent: current.content,
+    });
+  }
+}
+
 async function writeMaterializedRunFiles(storage: WorkbenchStorage, run: WorldSimulationRun): Promise<void> {
   const root = `${WORLD_SIMULATION_PATHS.runRoot}/${run.id}`;
   await storage.createDirectory(root);
@@ -199,9 +238,7 @@ async function writeMaterializedRunFiles(storage: WorkbenchStorage, run: WorldSi
       const branchRoot = `${root}/branches/${branch.id}`;
       return [
         { path: `${branchRoot}/state.json`, value: branch.state },
-        { path: `${branchRoot}/event-ledger.json`, value: { schemaVersion: WORLD_SIMULATION_SCHEMA_VERSION, events: branch.ledger } },
         { path: `${branchRoot}/observations.json`, value: { schemaVersion: WORLD_SIMULATION_SCHEMA_VERSION, observations: branch.observations } },
-        { path: `${branchRoot}/checkpoints.json`, value: { schemaVersion: WORLD_SIMULATION_SCHEMA_VERSION, checkpoints: branch.checkpoints } },
       ];
     }),
   ];
@@ -223,6 +260,19 @@ async function writeMaterializedRunFiles(storage: WorkbenchStorage, run: WorldSi
         await storage.writeText(path, content, { expectedContent: current.content });
       }
     }
+  }
+  for (const branch of run.branches) {
+    const branchRoot = `${root}/branches/${branch.id}`;
+    await writeAppendOnlyJsonl(
+      storage,
+      `${branchRoot}/${WORLD_SIMULATION_PATHS.branchEventLedgerFile}`,
+      branch.ledger,
+    );
+    await writeAppendOnlyJsonl(
+      storage,
+      `${branchRoot}/${WORLD_SIMULATION_PATHS.branchCheckpointsFile}`,
+      branch.checkpoints,
+    );
   }
 }
 

@@ -146,3 +146,23 @@ export function normalizeWorkbenchStoragePath(
 export function joinWorkbenchStoragePath(...parts: readonly string[]): string {
   return normalizeWorkbenchStoragePath(parts.filter(Boolean).join("/"));
 }
+
+/**
+ * 读取文本文件；文件缺失时创建默认内容。并发创建被其它调用方抢先完成时，
+ * 回退读取已落盘的最终内容。
+ */
+export async function ensureWorkbenchTextFile(
+  storage: WorkbenchStorage,
+  path: string,
+  fallbackContent: string,
+): Promise<WorkbenchTextFile> {
+  const [info] = await storage.stat([path]);
+  if (info?.exists) return storage.readText(path);
+  try {
+    return await storage.createText(path, fallbackContent, {
+      createParents: true,
+    });
+  } catch {
+    return storage.readText(path);
+  }
+}

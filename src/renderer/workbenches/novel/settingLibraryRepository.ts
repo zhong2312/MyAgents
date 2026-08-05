@@ -1,4 +1,7 @@
-import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
+import {
+  ensureWorkbenchTextFile,
+  type WorkbenchStorage,
+} from "@/workbench-sdk";
 
 import { parseFactionLibrary } from "./factionLibrarySchema";
 import { parseLocationLibraryIndex } from "./locationLibrarySchema";
@@ -157,20 +160,6 @@ export function createSettingLibraryInitializationFiles(
       content: serializeSettings(createEmptySettingLibraryIndex()),
     },
   ];
-}
-
-async function ensureTextFile(
-  storage: WorkbenchStorage,
-  path: string,
-  content: string,
-): Promise<WorkbenchTextFile> {
-  const [info] = await storage.stat([path]);
-  if (info?.exists) return storage.readText(path);
-  try {
-    return await storage.createText(path, content, { createParents: true });
-  } catch {
-    return storage.readText(path);
-  }
 }
 
 function replaceLibrary(
@@ -377,7 +366,7 @@ export function createNovelSettingLibraryRepository(
         createSettingLibraryInitializationFiles(projectTitle);
       const [metaFile, treeFile, settingsFile] = await Promise.all(
         initialFiles.map((file) =>
-          ensureTextFile(storage, file.path, file.content),
+          ensureWorkbenchTextFile(storage, file.path, file.content),
         ),
       );
       const library: LoadedSettingLibrary = Object.freeze({

@@ -19,10 +19,7 @@ import {
   useCloseLayer,
 } from "@/workbench-sdk";
 
-import {
-  createLegacyCharacterArcStageId,
-  type CharacterRecord,
-} from "./characterLibrarySchema";
+import type { CharacterRecord } from "./characterLibrarySchema";
 import {
   NarrativeEntityMultiSelect,
   NarrativeEntitySelect,
@@ -879,11 +876,17 @@ function ArcEditor({
   );
   const stageOptions = [
     { id: "", label: "整条人物弧 / 暂不指定" },
-    ...(character?.arcStages.map((stage, index) => ({
-      id: stage.id ?? createLegacyCharacterArcStageId(character.id, index),
-      label: stage.title || `阶段 ${index + 1}`,
-      description: stage.state || "人物库弧阶段",
-    })) ?? []),
+    ...(character?.arcStages.flatMap((stage, index) =>
+      stage.id
+        ? [
+            {
+              id: stage.id,
+              label: stage.title || `阶段 ${index + 1}`,
+              description: stage.state || "人物库弧阶段",
+            },
+          ]
+        : [],
+    ) ?? []),
   ];
   const stageExists = stageOptions.some(
     (option) => option.id === arc.characterArcStageId,
@@ -987,12 +990,7 @@ function ArcEditor({
                   disabled={!character}
                   onChange={(value) => {
                     const stage = character?.arcStages.find(
-                      (candidate, index) =>
-                        (candidate.id ??
-                          createLegacyCharacterArcStageId(
-                            character.id,
-                            index,
-                          )) === value,
+                      (candidate) => candidate.id === value,
                     );
                     onChange({
                       ...arc,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef, memo, lazy, Suspense } from 'react';
 import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { invoke } from '@tauri-apps/api/core';
 import ChatBootOverlay from '@/components/ChatBootOverlay';
 import { arrayMove } from '@dnd-kit/sortable';
 
@@ -67,7 +68,7 @@ import {
   type ProviderVerifyStatus,
 } from '@/config/types';
 import { type Tab, type InitialMessage, type LaunchSessionBirthHint, type SidecarConfigDisposition, type FilePreviewIntent, createNewTab, getFolderName, buildChatFlipPatch, generateTabId, isWorkbenchAgentSurfaceTab, MAX_TABS } from '@/types/tab';
-import type { OpenWorkbenchRequest, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchSearch } from '../shared/workbench-sdk';
+import type { OpenWorkbenchRequest, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchProjection, WorkbenchProjectionEntity, WorkbenchProjectionRef, WorkbenchSearch } from '../shared/workbench-sdk';
 import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION } from '../shared/workbench-sdk';
 import { dispatchWorkbenchHostAction, type WorkbenchNavigationGuard } from '@/workbench-sdk';
 import { createWorkbenchTab, isSameWorkbenchTab } from '@/workbench-sdk/tab';
@@ -365,6 +366,7 @@ interface TabContentProps {
   onOpenWorkbenchAgentSession?: (workspacePath: string, request: WorkbenchAgentSessionRequest) => Promise<void>;
   onRunWorkbenchAi?: (workspacePath: string, request: WorkbenchAiRunRequest) => Promise<WorkbenchAiRunResult>;
   onProvideWorkbenchSearch?: (workspacePath: string) => WorkbenchSearch | null;
+  onProvideWorkbenchProjection?: (workspacePath: string) => WorkbenchProjection | null;
   onSettingsSectionChange: () => void;
   updateReady: boolean;
   updateVersion: string | null;
@@ -389,7 +391,7 @@ export const MemoizedTabContent = memo(function TabContent({
   claimSessionOpeningTransition,
   onSidecarConfigAdopted, onFilePreviewIntentConsumed,
   onUpdateWorkbenchRoute, onRegisterWorkbenchNavigationGuard,
-  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onProvideWorkbenchSearch,
+  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onProvideWorkbenchSearch, onProvideWorkbenchProjection,
   onLauncherWorkspaceSelectionChange,
   settingsInitialSection,
   capabilityInitialSection,
@@ -477,6 +479,7 @@ export const MemoizedTabContent = memo(function TabContent({
             onOpenAgentSession={onOpenWorkbenchAgentSession}
             onRunAi={onRunWorkbenchAi}
             onProvideSearch={onProvideWorkbenchSearch}
+            onProvideProjection={onProvideWorkbenchProjection}
           />
         </Suspense>
       ) : kind === 'cold' ? (
@@ -3793,6 +3796,26 @@ export default function App() {
     [],
   );
 
+  /** 宿主工作台投影提供者：仅 Tauri 桌面端维护可重建的 SQLite 派生索引。 */
+  const provideWorkbenchProjection = useCallback(
+    (workspacePath: string): WorkbenchProjection | null => {
+      if (!isTauriEnvironment()) return null;
+      return Object.freeze({
+        isAvailable: true,
+        async listEntities(kind?: string): Promise<readonly WorkbenchProjectionEntity[]> {
+          return invoke<readonly WorkbenchProjectionEntity[]>('cmd_novel_projection_list_entities', { workspace: workspacePath, kind });
+        },
+        async inboundRefs(kind: string, id: string): Promise<readonly WorkbenchProjectionRef[]> {
+          return invoke<readonly WorkbenchProjectionRef[]>('cmd_novel_projection_inbound_refs', { workspace: workspacePath, kind, id });
+        },
+        async rebuild(): Promise<readonly [number, number]> {
+          return invoke<readonly [number, number]>('cmd_novel_projection_rebuild', { workspace: workspacePath });
+        },
+      });
+    },
+    [],
+  );
+
   const handleOpenWorkbenchAgentSession = useCallback(async (
     workspacePath: string,
     request: WorkbenchAgentSessionRequest,
@@ -4937,6 +4960,7 @@ export default function App() {
               onOpenWorkbenchAgentSession={handleOpenWorkbenchAgentSession}
               onRunWorkbenchAi={handleRunWorkbenchAi}
               onProvideWorkbenchSearch={provideWorkbenchSearch}
+              onProvideWorkbenchProjection={provideWorkbenchProjection}
               sessionNotificationBadgeCounts={undefined}
               taskCenterPendingIntent={taskCenterPendingIntent}
             />

@@ -86,4 +86,46 @@ describe("WorldSimulationRepositoryV2", () => {
     await expect(storage.readText("simulation/runs/run-materialized-files/reports/index.json")).resolves.toBeDefined();
     await expect(storage.readText("simulation/runs/run-materialized-files/branches/branch-main/state.json")).resolves.toBeDefined();
   });
+
+  it("将事件账本与检查点以 JSONL 追加，保留既有行字节", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createWorldSimulationRepositoryV2(storage);
+    const created = await repository.createRun(runFixture());
+    const firstRun = {
+      ...created.run.value,
+      branches: [{
+        ...created.run.value.branches[0]!,
+        ledger: [{ id: "event-1", sequence: 1, title: "第一事件" }],
+        checkpoints: [{ id: "checkpoint-1", eventSequence: 1, label: "首次检查点" }],
+      }],
+    } as unknown as WorldSimulationRun;
+    const firstSaved = await repository.saveRun(created.run, firstRun);
+    const ledgerPath = "simulation/runs/run-materialized-files/branches/branch-main/event-ledger.jsonl";
+    const checkpointsPath = "simulation/runs/run-materialized-files/branches/branch-main/checkpoints.jsonl";
+    const firstLedgerLine = (await storage.readText(ledgerPath)).content;
+    const firstCheckpointLine = (await storage.readText(checkpointsPath)).content;
+
+    const secondRun = {
+      ...firstSaved.run.value,
+      branches: [{
+        ...firstSaved.run.value.branches[0]!,
+        ledger: [
+          ...firstSaved.run.value.branches[0]!.ledger,
+          { id: "event-2", sequence: 2, title: "第二事件" },
+        ],
+        checkpoints: [
+          ...firstSaved.run.value.branches[0]!.checkpoints,
+          { id: "checkpoint-2", eventSequence: 2, label: "第二检查点" },
+        ],
+      }],
+    } as unknown as WorldSimulationRun;
+    await repository.saveRun(firstSaved.run, secondRun);
+
+    const ledger = (await storage.readText(ledgerPath)).content;
+    const checkpoints = (await storage.readText(checkpointsPath)).content;
+    expect(ledger.startsWith(firstLedgerLine)).toBe(true);
+    expect(checkpoints.startsWith(firstCheckpointLine)).toBe(true);
+    expect(ledger.trim().split("\n")).toHaveLength(2);
+    expect(checkpoints.trim().split("\n")).toHaveLength(2);
+  });
 });

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { CharacterRecord } from "../../../shared/workbenches/novel/characterLibrarySchema";
 
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import {
+  createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
+} from "./characterLibraryRepository";
 import {
   createEmptyFactionLibrary,
   type FactionRecord,
@@ -262,10 +265,16 @@ async function seedRun(): Promise<{
   const storage = createEmptyNovelStorage();
   const characterRepository = createNovelCharacterLibraryRepository(storage);
   const characterLibrary = await characterRepository.load();
-  await characterRepository.saveCharacters(characterLibrary, [
+  let savedCharacters = characterLibrary;
+  for (const record of [
     character("character-1", "沈砚", "item-1"),
     character("character-2", "陆昭", null),
-  ]);
+  ]) {
+    savedCharacters = await characterRepository.saveCharacter(
+      savedCharacters,
+      record,
+    );
+  }
   const itemRepository = createNovelItemLibraryRepository(storage);
   const itemLibrary = await itemRepository.load();
   await itemRepository.createItem(itemLibrary, {
@@ -387,7 +396,8 @@ describe("WorldSimulationAdoptionV2", () => {
       (item) => item.manifest.proposalId === proposalId,
     );
     expect(proposal?.changes.map((change) => change.targetPath)).toEqual([
-      "characters/index.json",
+      "characters/records/character-1.json",
+      "characters/records/character-2.json",
       "world/factions/index.json",
       "timeline/index.json",
     ]);
@@ -398,16 +408,18 @@ describe("WorldSimulationAdoptionV2", () => {
       "测试小说",
     );
 
-    const characters =
-      await createNovelCharacterLibraryRepository(storage).load();
+    const characterRepository = createNovelCharacterLibraryRepository(storage);
+    const characterLibrary = await characterRepository.load();
+    const characters = await loadCharacterRecords(
+      characterRepository,
+      characterLibrary,
+    );
     const factions = await createNovelFactionLibraryRepository(storage).load();
     expect(
-      characters.index.characters.find((item) => item.id === "character-1")
-        ?.inventory,
+      characters.find((item) => item.id === "character-1")?.inventory,
     ).toEqual([]);
     expect(
-      characters.index.characters.find((item) => item.id === "character-2")
-        ?.inventory,
+      characters.find((item) => item.id === "character-2")?.inventory,
     ).toMatchObject([{ itemId: "item-1", name: "镇界印", quantity: 1 }]);
     expect(factions.library.factions[0]?.resources).toEqual([]);
   });
@@ -435,13 +447,16 @@ describe("WorldSimulationAdoptionV2", () => {
       "测试小说",
     );
 
-    const characters =
-      await createNovelCharacterLibraryRepository(storage).load();
+    const characterRepository = createNovelCharacterLibraryRepository(storage);
+    const characterLibrary = await characterRepository.load();
+    const characters = await loadCharacterRecords(
+      characterRepository,
+      characterLibrary,
+    );
     const factions = await createNovelFactionLibraryRepository(storage).load();
     const timeline = await createNovelTimelineLibraryRepository(storage).load();
     expect(
-      characters.index.characters.find((item) => item.id === "character-1")
-        ?.inventory,
+      characters.find((item) => item.id === "character-1")?.inventory,
     ).toMatchObject([{ itemId: "item-1" }]);
     expect(factions.library.factions[0]?.resources).toEqual([]);
     expect(timeline.library.factsThroughEventId).toBeNull();

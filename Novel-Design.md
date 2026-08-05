@@ -16,7 +16,7 @@ MyAgents 是平台底座，小说工作台是建立在 Workbench Platform 上的
 
 ## 2. 与 MyAgents 平台的关系
 
-小说工作台的标识为 `io.myagents.novel`，当前使用 Workbench API `1.7`。
+小说工作台的标识为 `io.myagents.novel`，当前使用 Workbench API `1.8`。
 
 依赖关系必须保持为：
 
@@ -142,7 +142,9 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 |-- settings/
 |   `-- ai-model-scenes.json
 |-- characters/
+|   |-- library.json
 |   |-- index.json
+|   |-- records/
 |   `-- proposals/
 |-- world/
 |   |-- cultivation-ecology.json
@@ -336,7 +338,7 @@ Markdown / JSON 事实源
 
 - Workbench manifest 使用 `manifestVersion: 1`。
 - 小说工作台当前版本为 `0.3.0`。
-- 宿主 API 兼容范围当前固定为 `1.7`（`src/shared/workbench-sdk/protocol.ts` 的 `WORKBENCH_HOST_API_VERSION` 为唯一权威）。
+- 宿主 API 兼容范围当前固定为 `1.8`（`src/shared/workbench-sdk/protocol.ts` 的 `WORKBENCH_HOST_API_VERSION` 为唯一权威）。
 - 项目文件使用各自的 `schemaVersion`，当前为 `1`。
 - 读取旧格式时可以做内存归一化，但未经明确迁移操作不得静默重写用户文件。
 - 旧版 `targetWordCount` 在内存中归一化为上下限相同的字数区间；旧项目缺少 `projectName` 时以内存中的原书名作为固定项目名。只有作者在总览明确保存项目资料时，才写入新字段并移除旧单值字段。
@@ -554,7 +556,7 @@ Markdown / JSON 事实源
 - 剧情工程内部顶部导航固定为“总览、线路、故事弧、大纲、章节、故事编排、叙事检查”。大纲页只管理卷、篇、组，采用目录树与目录详情两栏；章节页采用目录树、章节列表、章节详情三栏，默认显示所选目录及子目录章节，并允许切换为仅当前目录。
 - 章节保存标题、说明、状态、正文关联、所属目录、线路和故事弧关联；章节内可以添加、删除、折叠和拖动排序多个节。节保存可选标题、长文本简述、视角人物、线路和故事弧关联，并拥有多个可拖动排序的段。段只保存长文本规划，不得出现线路、故事弧或人物关联字段。
 - 正文仍以 `manuscript/index.json` 和 `manuscript/chapters/*.md` 为唯一事实源。章节规划通过稳定 `manuscriptChapterId` 可选关联正文，一篇正文最多关联一个章节规划；未关联正文和未关联规划都不阻止继续创作。修改或删除章节规划不得移动、改写或删除正文文件。
-- 人物仍以 `characters/index.json` 为唯一事实源。故事弧通过稳定 `characterId` 和 `characterArcStageId` 关联人物，并保存人物弧阶段标题快照用于人工核对；剧情工程不得反向覆盖人物小传、总弧光或弧阶段。人物不存在或角色弧阶段失效时只产生一致性提示，不自动删除作者的故事弧设计。
+- 人物库以 `characters/library.json`、`characters/index.json` 和 `characters/records/<id>.json` 为事实源：前两者分别保存元数据与可检索摘要，单角色详情独立保存。故事弧通过稳定 `characterId` 和 `characterArcStageId` 关联人物，并保存人物弧阶段标题快照用于人工核对；剧情工程不得反向覆盖人物小传、总弧光或弧阶段。人物不存在或角色弧阶段失效时只产生一致性提示，不自动删除作者的故事弧设计。
 - 线路与故事弧的活动关联由章和节单向拥有，最细绑定层级是节，段不得关联。删除线路或故事弧时必须清理章、节和故事弧内部的相应引用；跨库人物或正文被删除时保留剧情记录并提示作者重新关联。
 - “故事编排”是由章、节关联实时投影的甘特式泳道视图，不保存 `startChapter` 或 `endChapter`。横轴只显示全书章节序号；支持双头拖动选择起止章节，粒度为每格 `1~1000` 章，默认根据当前范围适配约 10 格。点击泳道色条弹出该格实际关联的章节列表，并下钻展示章级关联和命中的节级关联。
 - “总览”只汇总目录、章、节、段数量、正文关联进度、线路和故事弧覆盖、未归类章节、诊断数量与最近编辑章节，不再编辑主题、母题或项目叙事摘要。主题、关键节拍、代价账本和因果图不再属于活动功能。

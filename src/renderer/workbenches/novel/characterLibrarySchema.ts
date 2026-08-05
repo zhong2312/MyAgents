@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import {
-  createLegacyCharacterArcStageId,
+  characterLibraryIdSchema,
   characterGroupDefinitionSchema,
   characterRecordSchema,
   characterSoulDefinitionSchema,
@@ -12,7 +12,6 @@ import { normalizeWorkbenchStoragePath } from "@/workbench-sdk";
 import { CHARACTER_LIBRARY_SCHEMA_VERSION } from "./characterLibraryDefaults";
 
 export {
-  createLegacyCharacterArcStageId,
   characterAppearanceSchema,
   characterArcStageSchema,
   characterCultivationProfileSchema,
@@ -88,7 +87,50 @@ export type CharacterLibraryMeta = z.infer<typeof characterLibraryMetaSchema>;
 export const characterLibraryIndexSchema = z
   .object({
     schemaVersion: z.literal(CHARACTER_LIBRARY_SCHEMA_VERSION),
-    characters: z.array(characterRecordSchema),
+    characters: z.array(
+      z
+        .object({
+          id: characterLibraryIdSchema,
+          name: z.string().trim().min(1),
+          raceId: characterLibraryIdSchema.nullable(),
+          groupIds: z.array(characterLibraryIdSchema),
+          summary: z.string(),
+          recordPath: z.string().transform((path, context) => {
+            try {
+              const normalized = normalizeWorkbenchStoragePath(path);
+              if (
+                !/^characters\/records\/[a-z0-9][a-z0-9-]*\.json$/u.test(
+                  normalized,
+                )
+              ) {
+                context.addIssue({
+                  code: "custom",
+                  message: "角色记录路径必须位于 characters/records/",
+                });
+                return z.NEVER;
+              }
+              return normalized;
+            } catch (error) {
+              context.addIssue({
+                code: "custom",
+                message: error instanceof Error ? error.message : String(error),
+              });
+              return z.NEVER;
+            }
+          }),
+          updatedAt: z.string().datetime(),
+        })
+        .strict()
+        .superRefine((entry, context) => {
+          if (entry.recordPath !== `characters/records/${entry.id}.json`) {
+            context.addIssue({
+              code: "custom",
+              path: ["recordPath"],
+              message: "角色记录路径必须与角色 id 对应",
+            });
+          }
+        }),
+    ),
   })
   .strict()
   .superRefine((index, context) => {
@@ -106,6 +148,15 @@ export const characterLibraryIndexSchema = z
   });
 
 export type CharacterLibraryIndex = z.infer<typeof characterLibraryIndexSchema>;
+
+export type CharacterIndexEntry = CharacterLibraryIndex["characters"][number];
+
+/** 单角色事实文件；索引只保存其可检索摘要与记录路径。 */
+export const characterRecordFileSchema = characterRecordSchema.safeExtend({
+  schemaVersion: z.literal(CHARACTER_LIBRARY_SCHEMA_VERSION),
+});
+
+export type CharacterRecordFile = z.infer<typeof characterRecordFileSchema>;
 
 export class CharacterLibraryFormatError extends Error {
   constructor(
@@ -144,46 +195,6 @@ function parseFile<T>(
   return result.data;
 }
 
-function normalizeCharacterArcStageIds(value: unknown): unknown {
-  if (!value || typeof value !== "object") return value;
-  const characters = (value as { characters?: unknown }).characters;
-  if (!Array.isArray(characters)) return value;
-  characters.forEach((candidate) => {
-    if (!candidate || typeof candidate !== "object") return;
-    const character = candidate as {
-      id?: unknown;
-      arcStages?: unknown;
-    };
-    if (typeof character.id !== "string" || !Array.isArray(character.arcStages))
-      return;
-    const usedIds = new Set(
-      character.arcStages.flatMap((stage) => {
-        if (!stage || typeof stage !== "object") return [];
-        const id = (stage as { id?: unknown }).id;
-        return typeof id === "string" && id ? [id] : [];
-      }),
-    );
-    character.arcStages.forEach((stage, index) => {
-      if (!stage || typeof stage !== "object") return;
-      const record = stage as { id?: unknown };
-      if (typeof record.id === "string" && record.id) return;
-      const baseId = createLegacyCharacterArcStageId(
-        character.id as string,
-        index,
-      );
-      let nextId = baseId;
-      let suffix = 2;
-      while (usedIds.has(nextId)) {
-        nextId = `${baseId}-${suffix}`;
-        suffix += 1;
-      }
-      record.id = nextId;
-      usedIds.add(nextId);
-    });
-  });
-  return value;
-}
-
 export function parseCharacterLibraryMeta(
   content: string,
 ): CharacterLibraryMeta {
@@ -197,12 +208,14 @@ export function parseCharacterLibraryMeta(
 export function parseCharacterLibraryIndex(
   content: string,
 ): CharacterLibraryIndex {
-  return parseFile(
-    "characters/index.json",
-    characterLibraryIndexSchema,
-    content,
-    normalizeCharacterArcStageIds,
-  );
+  return parseFile("characters/index.json", characterLibraryIndexSchema, content);
+}
+
+export function parseCharacterRecordFile(
+  path: string,
+  content: string,
+): CharacterRecordFile {
+  return parseFile(path, characterRecordFileSchema, content);
 }
 
 export function serializeCharacterLibraryFile(value: unknown): string {

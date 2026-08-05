@@ -7,6 +7,8 @@ export const WORLD_SIMULATION_PATHS = Object.freeze({
   scenarios: "simulation/scenarios.json",
   runIndex: "simulation/runs/index.json",
   runRoot: "simulation/runs",
+  branchEventLedgerFile: "event-ledger.jsonl",
+  branchCheckpointsFile: "checkpoints.jsonl",
 });
 
 export type SimulationAuthority =

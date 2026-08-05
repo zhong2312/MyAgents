@@ -48,6 +48,7 @@ import {
   type WorkbenchAgentSessionRequest,
   type WorkbenchAiRunRequest,
   type WorkbenchAiRunResult,
+  type WorkbenchProjection,
   type WorkbenchSearch,
   type WorkbenchTabTarget,
 } from "../../shared/workbench-sdk";
@@ -72,6 +73,8 @@ interface WorkbenchShellProps {
   ) => Promise<WorkbenchAiRunResult>;
   /** 宿主提供工作区全文搜索；返回 null 表示当前环境不可用（如浏览器开发模式）。 */
   readonly onProvideSearch?: (workspacePath: string) => WorkbenchSearch | null;
+  /** 宿主提供小说领域投影；返回 null 表示当前环境不可用（如浏览器开发模式）。 */
+  readonly onProvideProjection?: (workspacePath: string) => WorkbenchProjection | null;
   readonly onNavigationGuardChange?: (
     guard: WorkbenchNavigationGuard | null,
   ) => void;
@@ -102,6 +105,20 @@ const UNAVAILABLE_SEARCH: WorkbenchSearch = Object.freeze({
   },
 });
 
+/** 当前环境不可用时的投影降级实现。读取方会改走事实源文件。 */
+const UNAVAILABLE_PROJECTION: WorkbenchProjection = Object.freeze({
+  isAvailable: false,
+  async listEntities() {
+    return [];
+  },
+  async inboundRefs() {
+    return [];
+  },
+  async rebuild() {
+    throw new Error("小说领域投影仅桌面模式可用");
+  },
+});
+
 /** 把宿主的可选搜索提供者包装为稳定能力；未提供或返回 null 时降级为不可用。 */
 function createSearchCapability(
   onProvideSearch: WorkbenchShellProps["onProvideSearch"],
@@ -109,6 +126,14 @@ function createSearchCapability(
 ): WorkbenchSearch {
   const search = onProvideSearch?.(workspacePath);
   return search ?? UNAVAILABLE_SEARCH;
+}
+
+function createProjectionCapability(
+  onProvideProjection: WorkbenchShellProps["onProvideProjection"],
+  workspacePath: string,
+): WorkbenchProjection {
+  const projection = onProvideProjection?.(workspacePath);
+  return projection ?? UNAVAILABLE_PROJECTION;
 }
 
 class WorkbenchModuleBoundary extends Component<BoundaryProps, BoundaryState> {
@@ -199,6 +224,7 @@ export default function WorkbenchShell({
   onOpenAgentSession,
   onRunAi,
   onProvideSearch,
+  onProvideProjection,
   onNavigationGuardChange,
   registry = workbenchRegistry,
 }: WorkbenchShellProps) {
@@ -393,6 +419,7 @@ export default function WorkbenchShell({
       run: runAi,
     }),
     search: createSearchCapability(onProvideSearch, workspacePath),
+    projection: createProjectionCapability(onProvideProjection, workspacePath),
     navigate,
     registerNavigationGuard,
   });

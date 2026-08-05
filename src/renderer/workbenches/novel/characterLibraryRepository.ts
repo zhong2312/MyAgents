@@ -1,4 +1,7 @@
-import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
+import {
+  ensureWorkbenchTextFile,
+  type WorkbenchStorage,
+} from "@/workbench-sdk";
 
 import {
   cultivationEcologySchema,
@@ -12,15 +15,19 @@ import {
 import {
   parseCharacterLibraryIndex,
   parseCharacterLibraryMeta,
+  parseCharacterRecordFile,
   serializeCharacterLibraryFile,
+  type CharacterIndexEntry,
   type CharacterLibraryIndex,
   type CharacterLibraryMeta,
   type CharacterRecord,
 } from "./characterLibrarySchema";
+import { createStorageTransaction } from "./storageTransaction";
 
 export const CHARACTER_LIBRARY_PATHS = Object.freeze({
   index: "characters/index.json",
   meta: "characters/library.json",
+  records: "characters/records",
 });
 
 const CULTIVATION_ECOLOGY_PATH = "world/cultivation-ecology.json";
@@ -32,11 +39,21 @@ export interface LoadedCharacterLibrary {
   readonly metaContent: string;
 }
 
+export interface LoadedCharacterRecord {
+  readonly record: CharacterRecord;
+  readonly content: string;
+}
+
 export interface NovelCharacterLibraryRepository {
   load(): Promise<LoadedCharacterLibrary>;
-  saveCharacters(
+  loadCharacter(entry: CharacterIndexEntry): Promise<LoadedCharacterRecord>;
+  saveCharacter(
     library: LoadedCharacterLibrary,
-    characters: readonly CharacterRecord[],
+    character: CharacterRecord,
+  ): Promise<LoadedCharacterLibrary>;
+  deleteCharacter(
+    library: LoadedCharacterLibrary,
+    id: string,
   ): Promise<LoadedCharacterLibrary>;
   saveMeta(
     library: LoadedCharacterLibrary,
@@ -59,22 +76,9 @@ function replaceLibrary(
   return Object.freeze({ ...library, ...patch });
 }
 
-async function ensureTextFile(
-  storage: WorkbenchStorage,
-  path: string,
-  content: string,
-): Promise<WorkbenchTextFile> {
-  const [info] = await storage.stat([path]);
-  if (info?.exists) return storage.readText(path);
-  try {
-    return await storage.createText(path, content, { createParents: true });
-  } catch {
-    return storage.readText(path);
-  }
-}
-
 function ensureUniqueReferences(
-  characters: readonly CharacterRecord[],
+  characters: readonly CharacterIndexEntry[],
+  currentCharacter: CharacterRecord | null,
   meta: CharacterLibraryMeta,
 ): void {
   const raceIds = new Set(meta.races.map((race) => race.id));
@@ -86,25 +90,35 @@ function ensureUniqueReferences(
     if (character.raceId && !raceIds.has(character.raceId)) {
       throw new Error(`角色“${character.name}”关联了不存在的种族`);
     }
-    if (character.soulId && !soulIds.has(character.soulId)) {
-      throw new Error(`角色“${character.name}”关联了不存在的角色灵魂`);
-    }
     for (const groupId of character.groupIds) {
       if (!groupIds.has(groupId)) {
         throw new Error(`角色“${character.name}”关联了不存在的角色分组`);
       }
     }
-    for (const relation of character.relations) {
-      if (!characterIds.has(relation.targetId)) {
-        throw new Error(`角色“${character.name}”的关系指向了不存在的角色`);
-      }
+  }
+  if (!currentCharacter) return;
+  characterIds.add(currentCharacter.id);
+  if (currentCharacter.raceId && !raceIds.has(currentCharacter.raceId)) {
+    throw new Error(`角色“${currentCharacter.name}”关联了不存在的种族`);
+  }
+  if (currentCharacter.soulId && !soulIds.has(currentCharacter.soulId)) {
+    throw new Error(`角色“${currentCharacter.name}”关联了不存在的角色灵魂`);
+  }
+  for (const groupId of currentCharacter.groupIds) {
+    if (!groupIds.has(groupId)) {
+      throw new Error(`角色“${currentCharacter.name}”关联了不存在的角色分组`);
+    }
+  }
+  for (const relation of currentCharacter.relations) {
+    if (!characterIds.has(relation.targetId)) {
+      throw new Error(`角色“${currentCharacter.name}”的关系指向了不存在的角色`);
     }
   }
 }
 
 async function ensureCultivationReferences(
   storage: WorkbenchStorage,
-  characters: readonly CharacterRecord[],
+  character: CharacterRecord,
 ): Promise<void> {
   const [entry] = await storage.stat([CULTIVATION_ECOLOGY_PATH]);
   if (!entry?.exists) return;
@@ -178,7 +192,7 @@ async function ensureCultivationReferences(
         `角色“${character.name}”的${label}引用了不存在的修行资产 ${id}`,
       );
   };
-  characters.forEach((character) => {
+  {
     const profile = character.cultivationProfile;
     if (!profile) return;
     const hasBoundAssets =
@@ -257,11 +271,44 @@ async function ensureCultivationReferences(
       if (foreignTransition)
         throw new Error(`角色“${character.name}”的突破记录不属于所选修行体系`);
     }
+  }
+}
+
+function characterRecordPath(id: string): string {
+  return `${CHARACTER_LIBRARY_PATHS.records}/${id}.json`;
+}
+
+function asCharacterRecord(
+  record: ReturnType<typeof parseCharacterRecordFile>,
+): CharacterRecord {
+  const { schemaVersion: _schemaVersion, ...character } = record;
+  return character;
+}
+
+function serializeRecord(record: CharacterRecord): string {
+  return serializeCharacterLibraryFile({
+    schemaVersion: createEmptyCharacterLibraryIndex().schemaVersion,
+    ...record,
   });
 }
 
-function parseCharacters(
-  characters: readonly CharacterRecord[],
+function toIndexEntry(
+  record: CharacterRecord,
+  updatedAt: string,
+): CharacterIndexEntry {
+  return {
+    id: record.id,
+    name: record.name.trim(),
+    raceId: record.raceId || null,
+    groupIds: [...record.groupIds],
+    summary: record.summary,
+    recordPath: characterRecordPath(record.id),
+    updatedAt,
+  };
+}
+
+function parseIndex(
+  characters: readonly CharacterIndexEntry[],
 ): CharacterLibraryIndex {
   return parseCharacterLibraryIndex(
     serializeIndex({
@@ -298,7 +345,7 @@ export function createNovelCharacterLibraryRepository(
       const initialFiles = createCharacterLibraryInitializationFiles();
       const [indexFile, metaFile] = await Promise.all(
         initialFiles.map((file) =>
-          ensureTextFile(storage, file.path, file.content),
+          ensureWorkbenchTextFile(storage, file.path, file.content),
         ),
       );
       const library: LoadedCharacterLibrary = Object.freeze({
@@ -307,29 +354,105 @@ export function createNovelCharacterLibraryRepository(
         meta: parseCharacterLibraryMeta(metaFile.content),
         metaContent: metaFile.content,
       });
-      ensureUniqueReferences(library.index.characters, library.meta);
-      await ensureCultivationReferences(storage, library.index.characters);
+      ensureUniqueReferences(library.index.characters, null, library.meta);
       return library;
     },
 
-    async saveCharacters(
-      library: LoadedCharacterLibrary,
-      characters: readonly CharacterRecord[],
-    ) {
-      const index = parseCharacters(characters);
-      ensureUniqueReferences(index.characters, library.meta);
-      await ensureCultivationReferences(storage, index.characters);
-      const content = serializeIndex(index);
-      const file = await storage.writeText(
-        CHARACTER_LIBRARY_PATHS.index,
-        content,
-        {
-          expectedContent: library.indexContent,
-        },
+    async loadCharacter(entry: CharacterIndexEntry) {
+      const file = await storage.readText(entry.recordPath);
+      const record = asCharacterRecord(
+        parseCharacterRecordFile(entry.recordPath, file.content),
       );
+      if (record.id !== entry.id) {
+        throw new Error(`人物索引与记录 id 不一致：${entry.id}`);
+      }
+      return Object.freeze({ record, content: file.content });
+    },
+
+    async saveCharacter(
+      library: LoadedCharacterLibrary,
+      character: CharacterRecord,
+    ) {
+      const recordPath = characterRecordPath(character.id);
+      const recordContent = serializeRecord(character);
+      const parsedRecord = asCharacterRecord(
+        parseCharacterRecordFile(recordPath, recordContent),
+      );
+      await ensureCultivationReferences(storage, parsedRecord);
+
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const [indexFile, recordInfo] = await Promise.all([
+          storage.readText(CHARACTER_LIBRARY_PATHS.index),
+          storage.stat([recordPath]),
+        ]);
+        const index = parseCharacterLibraryIndex(indexFile.content);
+        ensureUniqueReferences(index.characters, parsedRecord, library.meta);
+        const updatedAt = new Date().toISOString();
+        const nextIndex = parseIndex(
+          index.characters.some((entry) => entry.id === parsedRecord.id)
+            ? index.characters.map((entry) =>
+                entry.id === parsedRecord.id
+                  ? toIndexEntry(parsedRecord, updatedAt)
+                  : entry,
+              )
+            : [...index.characters, toIndexEntry(parsedRecord, updatedAt)],
+        );
+        const transaction = createStorageTransaction(storage);
+        if (recordInfo[0]?.exists) {
+          const currentRecord = await storage.readText(recordPath);
+          transaction.writeText(
+            recordPath,
+            recordContent,
+            currentRecord.content,
+          );
+        } else {
+          transaction.createText(recordPath, recordContent);
+        }
+        const nextIndexContent = serializeIndex(nextIndex);
+        transaction.writeText(
+          CHARACTER_LIBRARY_PATHS.index,
+          nextIndexContent,
+          indexFile.content,
+        );
+        try {
+          await transaction.commit();
+          return replaceLibrary(library, {
+            index: nextIndex,
+            indexContent: nextIndexContent,
+          });
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            error.message !== "File changed externally"
+          ) {
+            throw error;
+          }
+          lastError = error;
+        }
+      }
+      throw lastError;
+    },
+
+    async deleteCharacter(library: LoadedCharacterLibrary, id: string) {
+      const indexFile = await storage.readText(CHARACTER_LIBRARY_PATHS.index);
+      const index = parseCharacterLibraryIndex(indexFile.content);
+      const entry = index.characters.find((character) => character.id === id);
+      if (!entry) throw new Error(`角色不存在：${id}`);
+      const nextIndex = parseIndex(
+        index.characters.filter((character) => character.id !== id),
+      );
+      const nextIndexContent = serializeIndex(nextIndex);
+      await storage.writeText(CHARACTER_LIBRARY_PATHS.index, nextIndexContent, {
+        expectedContent: indexFile.content,
+      });
+      const removed = await storage.remove(entry.recordPath, {
+        permanent: true,
+      });
+      if (!removed) throw new Error(`角色记录删除失败：${entry.recordPath}`);
       return replaceLibrary(library, {
-        index: parseCharacterLibraryIndex(file.content),
-        indexContent: file.content,
+        index: nextIndex,
+        indexContent: nextIndexContent,
       });
     },
 
@@ -339,7 +462,7 @@ export function createNovelCharacterLibraryRepository(
     ) {
       const content = serializeMeta(meta);
       const parsedMeta = parseCharacterLibraryMeta(content);
-      ensureUniqueReferences(library.index.characters, parsedMeta);
+      ensureUniqueReferences(library.index.characters, null, parsedMeta);
       const file = await storage.writeText(
         CHARACTER_LIBRARY_PATHS.meta,
         content,
@@ -353,4 +476,17 @@ export function createNovelCharacterLibraryRepository(
       });
     },
   });
+}
+
+/** 仅由需要详情字段的调用方显式触发全量 record 读取。 */
+export async function loadCharacterRecords(
+  repository: NovelCharacterLibraryRepository,
+  library: LoadedCharacterLibrary,
+): Promise<readonly CharacterRecord[]> {
+  const records = await Promise.all(
+    library.index.characters.map(async (entry) =>
+      (await repository.loadCharacter(entry)).record,
+    ),
+  );
+  return Object.freeze(records);
 }

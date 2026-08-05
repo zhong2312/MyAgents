@@ -24,9 +24,11 @@ import type {
   WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
 import {
-  createLegacyCharacterArcStageId,
+  createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
+} from "./characterLibraryRepository";
+import {
   type CharacterRecord,
 } from "./characterLibrarySchema";
 import NarrativeAudit, {
@@ -91,35 +93,6 @@ function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function migrateCharacterArcStageReferences(
-  library: NarrativeEngineeringData,
-  characters: readonly CharacterRecord[],
-): NarrativeEngineeringData {
-  let changed = false;
-  const arcs = library.arcs.map((arc) => {
-    if (arc.kind !== "character" || !arc.characterId) return arc;
-    const character = characters.find(
-      (candidate) => candidate.id === arc.characterId,
-    );
-    if (!character) return arc;
-    if (arc.characterArcStageId) return arc;
-    const matchingStages = character.arcStages
-      .map((stage, index) => ({
-        stage,
-        id: stage.id ?? createLegacyCharacterArcStageId(character.id, index),
-      }))
-      .filter(({ stage }) =>
-        arc.characterArcStageTitle
-          ? stage.title === arc.characterArcStageTitle
-          : false,
-      );
-    if (matchingStages.length !== 1) return arc;
-    changed = true;
-    return { ...arc, characterArcStageId: matchingStages[0].id };
-  });
-  return changed ? { ...library, arcs } : library;
-}
-
 export default function NarrativeEngineering({
   storage,
   projectTitle,
@@ -164,23 +137,23 @@ export default function NarrativeEngineering({
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const characterRepository = createNovelCharacterLibraryRepository(storage);
       const [next, characterLibrary] = await Promise.all([
         repository.load(),
-        createNovelCharacterLibraryRepository(storage).load(),
+        characterRepository.load(),
       ]);
-      const nextCharacters = characterLibrary.index.characters;
-      const migratedLibrary = migrateCharacterArcStageReferences(
-        next.library,
-        nextCharacters,
+      const nextCharacters = await loadCharacterRecords(
+        characterRepository,
+        characterLibrary,
       );
       setLoaded(next);
-      setDraft(structuredClone(migratedLibrary));
+      setDraft(structuredClone(next.library));
       setCharacters(nextCharacters);
-      setSelectedLineId(migratedLibrary.lines[0]?.id ?? "");
-      setSelectedArcId(migratedLibrary.arcs[0]?.id ?? "");
-      setSelectedDirectoryId(migratedLibrary.directories[0]?.id ?? "");
+      setSelectedLineId(next.library.lines[0]?.id ?? "");
+      setSelectedArcId(next.library.arcs[0]?.id ?? "");
+      setSelectedDirectoryId(next.library.directories[0]?.id ?? "");
       setSelectedChapterId(
-        [...migratedLibrary.chapters].sort(
+        [...next.library.chapters].sort(
           (left, right) => left.order - right.order,
         )[0]?.id ?? "",
       );

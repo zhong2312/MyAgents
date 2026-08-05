@@ -84,7 +84,10 @@ import {
   type ManuscriptTrackingChange,
   type ManuscriptTrackingOperation,
 } from "./manuscriptTrackingSchema";
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import {
+  createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
+} from "./characterLibraryRepository";
 import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";
@@ -2308,8 +2311,10 @@ function RoomWorkspace({
       requested.has("characters")
         ? createNovelCharacterLibraryRepository(storage)
             .load()
-            .then((loaded) => {
-              context.characters = loaded.index.characters.map((character) => ({
+            .then(async (loaded) => {
+              const repository = createNovelCharacterLibraryRepository(storage);
+              const characters = await loadCharacterRecords(repository, loaded);
+              context.characters = characters.map((character) => ({
                 id: character.id,
                 name: character.name,
                 status: character.status,

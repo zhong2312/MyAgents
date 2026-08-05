@@ -72,6 +72,7 @@ import { createNovelRepository } from "./repository";
 import NovelWorkbenchRenderer from "./renderer";
 import {
   createEmptyNovelStorage,
+  NovelMemoryProjection,
   type NovelMemoryStorage,
 } from "./testStorage";
 
@@ -111,6 +112,7 @@ function context(
         throw new Error("Search unavailable in renderer fixture");
       },
     },
+    projection: new NovelMemoryProjection([], [], false),
     navigate,
     registerNavigationGuard: () => () => undefined,
   };

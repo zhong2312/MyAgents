@@ -1,6 +1,9 @@
 import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import {
+  createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
+} from "./characterLibraryRepository";
 import type {
   CharacterAppearance,
   CharacterInventoryItem,
@@ -49,9 +52,14 @@ interface ProjectionState {
   readonly timeline: Awaited<
     ReturnType<ReturnType<typeof createNovelTimelineLibraryRepository>["load"]>
   >;
-  readonly characters: Awaited<
-    ReturnType<ReturnType<typeof createNovelCharacterLibraryRepository>["load"]>
-  >;
+  readonly characters: {
+    readonly library: Awaited<
+      ReturnType<
+        ReturnType<typeof createNovelCharacterLibraryRepository>["load"]
+      >
+    >;
+    readonly records: readonly CharacterRecord[];
+  };
   readonly items: Awaited<
     ReturnType<ReturnType<typeof createNovelItemLibraryRepository>["load"]>
   >;
@@ -481,7 +489,7 @@ function writeMutationValue(
 function mutableProjection(state: ProjectionState): MutableProjection {
   return {
     timeline: cloneJson(state.timeline.library),
-    characters: cloneJson(state.characters.index.characters),
+    characters: [...cloneJson(state.characters.records)],
     locations: cloneJson(state.locations.index.locations),
     factions: cloneJson(state.factions.library.factions),
     continuity: cloneJson(state.continuity.state),
@@ -496,7 +504,7 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
   const factionRepository = createNovelFactionLibraryRepository(storage);
 
   const load = async (): Promise<ProjectionState> => {
-    const [timeline, characters, items, locations, factions, continuityFile] =
+    const [timeline, characterLibrary, items, locations, factions, continuityFile] =
       await Promise.all([
         timelineRepository.load(),
         characterRepository.load(),
@@ -507,7 +515,13 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       ]);
     return {
       timeline,
-      characters,
+      characters: {
+        library: characterLibrary,
+        records: await loadCharacterRecords(
+          characterRepository,
+          characterLibrary,
+        ),
+      },
       items,
       locations,
       factions,
@@ -533,17 +547,27 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
           timelineRepository.save(written, state.timeline.library),
         );
       }
-      if (!jsonEqual(state.characters.index.characters, next.characters)) {
-        const written = await characterRepository.saveCharacters(
-          state.characters,
-          next.characters,
+      if (!jsonEqual(state.characters.records, next.characters)) {
+        let written = state.characters.library;
+        const beforeById = new Map(
+          state.characters.records.map((character) => [character.id, character]),
         );
-        rollback.push(() =>
-          characterRepository.saveCharacters(
-            written,
-            state.characters.index.characters,
-          ),
-        );
+        const nextIds = new Set(next.characters.map((character) => character.id));
+        for (const character of next.characters) {
+          if (jsonEqual(beforeById.get(character.id), character)) continue;
+          written = await characterRepository.saveCharacter(written, character);
+          const previous = beforeById.get(character.id);
+          rollback.push(() =>
+            previous
+              ? characterRepository.saveCharacter(written, previous)
+              : characterRepository.deleteCharacter(written, character.id),
+          );
+        }
+        for (const character of state.characters.records) {
+          if (nextIds.has(character.id)) continue;
+          written = await characterRepository.deleteCharacter(written, character.id);
+          rollback.push(() => characterRepository.saveCharacter(written, character));
+        }
       }
       if (!jsonEqual(state.locations.index.locations, next.locations)) {
         const written = await locationRepository.save(state.locations, {
@@ -680,7 +704,7 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       }
       if (operation.kind === "character-appearance") {
         const character = findCharacter(
-          state.characters.index.characters,
+          state.characters.records,
           change.entityId,
         );
         const before =
@@ -710,7 +734,7 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       }
       if (operation.kind === "character-field") {
         const character = findCharacter(
-          state.characters.index.characters,
+          state.characters.records,
           change.entityId,
         );
         mutations.push(
@@ -730,11 +754,11 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       }
       if (operation.kind === "relationship") {
         const character = findCharacter(
-          state.characters.index.characters,
+          state.characters.records,
           change.entityId,
         );
         findCharacter(
-          state.characters.index.characters,
+          state.characters.records,
           operation.targetCharacterId,
         );
         const before =
@@ -764,7 +788,7 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       }
       if (operation.kind === "inventory") {
         const character = findCharacter(
-          state.characters.index.characters,
+          state.characters.records,
           change.entityId,
         );
         if (operation.itemId && !itemIds.has(operation.itemId))

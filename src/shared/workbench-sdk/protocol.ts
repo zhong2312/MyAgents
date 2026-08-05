@@ -13,7 +13,7 @@ export interface WorkbenchApiRequirement {
 
 export const WORKBENCH_HOST_API_VERSION: WorkbenchApiVersion = Object.freeze({
   major: 1,
-  minor: 7,
+  minor: 8,
 });
 
 export type WorkbenchCompatibilityReason =

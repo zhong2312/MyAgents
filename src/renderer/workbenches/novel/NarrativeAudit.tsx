@@ -350,9 +350,7 @@ export function buildNarrativeAuditFindings(
       character &&
       arc.characterArcStageId &&
       !character.arcStages.some(
-        (stage, index) =>
-          (stage.id ?? `${character.id}-arc-stage-${index + 1}`) ===
-          arc.characterArcStageId,
+        (stage) => stage.id === arc.characterArcStageId,
       )
     ) {
       addFinding(findings, {

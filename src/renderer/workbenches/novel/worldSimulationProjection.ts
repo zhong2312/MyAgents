@@ -1,6 +1,9 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import {
+  createNovelCharacterLibraryRepository,
+  loadCharacterRecords,
+} from "./characterLibraryRepository";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
 import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
 import {
@@ -207,6 +210,10 @@ export async function buildWorldSimulationBaseline(
     mapRepository.loadIndex(),
     settingRepository.load(project.metadata.title),
   ]);
+  const characterRecords = await loadCharacterRecords(
+    characterRepository,
+    characters,
+  );
 
   const diagnostics: SimulationDiagnostic[] = [];
   const metadataHash = await hashSimulationSource(project.metadataContent);
@@ -513,7 +520,7 @@ export async function buildWorldSimulationBaseline(
   const systems = cultivation?.ecology.systems ?? [];
   const levelById = new Map(systems.flatMap((system) => system.progressionTracks.flatMap((track) => track.levels.map((level) => [level.id, { level, track }] as const))));
   const knowledgeByCharacter = new Map<string, CharacterProjection["knowledge"]>();
-  characters.index.characters.forEach((character) => {
+  characterRecords.forEach((character) => {
     const knowledge = actualTimelineEvents.flatMap((event) => {
       if (event.knowledgeScope !== "public" && !event.characterIds.includes(character.id)) return [];
       return [{
@@ -527,7 +534,7 @@ export async function buildWorldSimulationBaseline(
     knowledgeByCharacter.set(character.id, knowledge);
   });
 
-  const characterProjections: CharacterProjection[] = characters.index.characters.map((character) => {
+  const characterProjections: CharacterProjection[] = characterRecords.map((character) => {
     const level = character.cultivationProfile.levelId ? levelById.get(character.cultivationProfile.levelId) : undefined;
     const locationId = latestLocationByCharacter.get(character.id) ?? inferLocationId(character.hometown, regionNodes) ?? null;
     return {

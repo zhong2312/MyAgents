@@ -13,9 +13,9 @@ import {
   createNovelCharacterLibraryRepository,
 } from "./characterLibraryRepository";
 import {
-  parseCharacterLibraryIndex,
+  parseCharacterRecordFile,
   serializeCharacterLibraryFile,
-  type CharacterLibraryIndex,
+  type CharacterRecord,
 } from "./characterLibrarySchema";
 import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
 import {
@@ -282,11 +282,11 @@ function assertTransferTarget(
 }
 
 function updateCharacters(
-  index: CharacterLibraryIndex,
+  sourceCharacters: readonly CharacterRecord[],
   run: WorldSimulationRun,
   events: readonly SimulationEvent[],
-): CharacterLibraryIndex {
-  let characters = [...index.characters];
+): CharacterRecord[] {
+  let characters = [...sourceCharacters];
   events.forEach((event) =>
     event.commands.forEach((command) => {
       if (isCharacterDomainCommand(command)) {
@@ -351,7 +351,7 @@ function updateCharacters(
       });
     }),
   );
-  return { ...index, characters };
+  return characters;
 }
 
 const FACTION_METRIC_LABELS = {
@@ -684,13 +684,19 @@ export async function createWorldSimulationAdoptionProposal(
     factionRepository.load(),
     timelineRepository.load(),
   ]);
+  const loadedCharacters = await Promise.all(
+    characters.index.characters.map((entry) =>
+      characterRepository.loadCharacter(entry),
+    ),
+  );
+  const sourceCharacters = loadedCharacters.map((loaded) => loaded.record);
   const now = new Date().toISOString();
   // 未来计划和作者秘密只能进入时间线；它们没有发生，不得提前改写
   // 人物或势力的当前正式状态。
   const nextCharacters =
     authority === "actual"
-      ? updateCharacters(characters.index, run, events)
-      : characters.index;
+      ? updateCharacters(sourceCharacters, run, events)
+      : sourceCharacters;
   const nextFactions =
     authority === "actual"
       ? updateFactions(factions.library, run, events)
@@ -702,14 +708,32 @@ export async function createWorldSimulationAdoptionProposal(
     authority,
     now,
   );
+  const characterChanges = nextCharacters.flatMap((character) => {
+    const current = loadedCharacters.find(
+      (loaded) => loaded.record.id === character.id,
+    );
+    if (!current) return [];
+    const content = serializeCharacterLibraryFile({
+      schemaVersion: 1,
+      ...character,
+    });
+    if (JSON.stringify(character) === JSON.stringify(current.record)) return [];
+    const entry = characters.index.characters.find(
+      (candidate) => candidate.id === character.id,
+    );
+    if (!entry) return [];
+    return [
+      proposalChange(
+        `change-character-${character.id}`,
+        entry.recordPath,
+        `同步角色“${character.name}”的生命、状态、修行阶段与物品持有候选`,
+        current.content,
+        content,
+      ),
+    ];
+  });
   const changes = [
-    proposalChange(
-      "change-characters",
-      CHARACTER_LIBRARY_PATHS.index,
-      "同步人物生命、状态、修行阶段与物品持有候选",
-      characters.indexContent,
-      serializeCharacterLibraryFile(nextCharacters),
-    ),
+    ...characterChanges,
     proposalChange(
       "change-factions",
       FACTION_LIBRARY_PATH,
@@ -835,15 +859,21 @@ async function writeValidatedTarget(
   expectedContent: string,
   content: string,
 ): Promise<void> {
-  if (targetPath === CHARACTER_LIBRARY_PATHS.index) {
+  if (targetPath.startsWith(`${CHARACTER_LIBRARY_PATHS.records}/`)) {
     const repository = createNovelCharacterLibraryRepository(storage);
     const current = await repository.load();
-    if (current.indexContent !== expectedContent)
-      throw new Error("人物库在审阅期间发生变化，请重新加载提案");
-    await repository.saveCharacters(
-      current,
-      parseCharacterLibraryIndex(content).characters,
+    const entry = current.index.characters.find(
+      (candidate) => candidate.recordPath === targetPath,
     );
+    if (!entry) throw new Error("人物记录在审阅期间已被删除，请重新加载提案");
+    const loaded = await repository.loadCharacter(entry);
+    if (loaded.content !== expectedContent)
+      throw new Error("人物库在审阅期间发生变化，请重新加载提案");
+    const { schemaVersion: _schemaVersion, ...record } = parseCharacterRecordFile(
+      targetPath,
+      content,
+    );
+    await repository.saveCharacter(current, record);
     return;
   }
   if (targetPath === FACTION_LIBRARY_PATH) {

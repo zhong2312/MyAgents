@@ -51,6 +51,7 @@ const DIRECTORIES = [
   "inspiration",
   "settings",
   "characters",
+  "characters/records",
   "characters/proposals",
   "world/locations",
   "world/factions",
@@ -79,6 +80,7 @@ const DIRECTORIES = [
 
 const EMPTY_DIRECTORY_MARKERS = [
   "manuscript/chapters/.gitkeep",
+  "characters/records/.gitkeep",
   "research/notes/.gitkeep",
   "assets/images/.gitkeep",
   "assets/references/.gitkeep",
@@ -133,6 +135,9 @@ function createFiles(
 Thumbs.db
 *.swp
 *.tmp
+
+# 可从项目事实源重新构建的派生投影。
+.cache/
 `,
     },
     {

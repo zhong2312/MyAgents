@@ -1,0 +1,1 @@
+verified $HOME without shell expansion
