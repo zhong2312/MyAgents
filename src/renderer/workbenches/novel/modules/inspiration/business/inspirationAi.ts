@@ -102,7 +102,7 @@ export function createInspirationAiAgentRequest(
   return {
     title: `灵感共创 · ${context.focusLabel}`,
     conversationKey: `novel.inspiration.coauthor:${context.focusId}`,
-    historyGroupPath: ["灵感"],
+    historyGroupPath: ["灵感", "共创"],
     initialMessage: `## 小说灵感共创任务
 
 你正在与作者共同处理“${context.projectTitle}”中的灵感“${context.focusLabel}”。

@@ -2,14 +2,14 @@ import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 
 import {
   validateFactionCrossReferences,
-} from "./crossLibraryReferences";
+} from "../../../shared/business/crossLibraryReferences";
 import {
   createEmptyFactionLibrary,
   FACTION_LIBRARY_PATH,
   parseFactionLibrary,
   serializeFactionLibrary,
   type FactionLibrary,
-} from "./factionLibrarySchema";
+} from "../entities/factionLibrarySchema";
 
 export interface LoadedFactionLibrary {
   readonly library: FactionLibrary;

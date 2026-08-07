@@ -6,8 +6,8 @@ import {
 import {
   serializeFactionProposalManifest,
   type FactionProposalManifest,
-} from "./factionProposalSchema";
-import { NovelMemoryStorage } from "./testStorage";
+} from "../entities/factionProposalSchema";
+import { NovelMemoryStorage } from "../../../shared/infrastructure/testStorage";
 
 function manifest(
   proposalId: string,

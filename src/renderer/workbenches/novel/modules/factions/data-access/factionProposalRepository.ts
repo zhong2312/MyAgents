@@ -2,7 +2,7 @@ import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
   validateFactionCrossReferences,
-} from "./crossLibraryReferences";
+} from "../../../shared/business/crossLibraryReferences";
 import {
   createNovelFactionLibraryRepository,
 } from "./factionLibraryRepository";
@@ -13,8 +13,8 @@ import {
   serializeFactionProposalManifest,
   type FactionProposalManifest,
   type FactionProposalOperation,
-} from "./factionProposalSchema";
-import type { FactionRecord } from "./factionLibrarySchema";
+} from "../entities/factionProposalSchema";
+import type { FactionRecord } from "../entities/factionLibrarySchema";
 
 export interface LoadedFactionProposal {
   readonly manifest: FactionProposalManifest;

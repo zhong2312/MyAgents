@@ -11,6 +11,7 @@ import { resolveLastVisibleTurnPreview } from '../utils/session-message-preview'
 import { deriveReloadResumeAnchor } from '../utils/rewind-anchor';
 import { findTurnUsageStampIndex } from '../utils/sdk-turn-outcome';
 import { seedBridgeThoughtSignatures } from '../bridge-cache';
+import { repairMalformedToolHistory } from '../session-core/sdk-tool-history-validation';
 import type { BuiltinTurnUsage, ContentBlock, MessageWire } from './types';
 import {
   addCurrentSessionUuid,
@@ -223,6 +224,74 @@ export function loadTranscriptFromSessionMessages(
 
   setPendingReloadAnchor(deriveReloadResumeAnchor(transcriptState.messages, transcriptState.currentSessionUuids));
   seedThoughtSignatureCacheFromTranscript();
+}
+
+export type MalformedToolTranscriptRepairResult = {
+  repaired: boolean;
+  issueCount: number;
+  changedMessageIds: string[];
+  removedMessageIds: string[];
+  removedSdkUuids: string[];
+};
+
+/**
+ * Remove provider-produced tool blocks that cannot be replayed by the SDK and
+ * force an equal-length-safe JSONL rewrite. Callers quarantine the matching
+ * SDK transcript separately because that store is owned by the SDK.
+ */
+export async function repairMalformedToolTranscript(options: {
+  sessionId: string;
+  getCurrentSessionId: () => string;
+}): Promise<MalformedToolTranscriptRepairResult> {
+  const pendingPersist = transcriptState.persistChainBySession.get(options.sessionId);
+  if (pendingPersist) {
+    await pendingPersist.catch(() => undefined);
+  }
+  if (options.getCurrentSessionId() !== options.sessionId) {
+    return {
+      repaired: false,
+      issueCount: 0,
+      changedMessageIds: [],
+      removedMessageIds: [],
+      removedSdkUuids: [],
+    };
+  }
+
+  await ensureTranscriptCursor(options.sessionId);
+  const sourceMessageIds = transcriptState.messages.map(message => message.id);
+  const repair = repairMalformedToolHistory(transcriptState.messages);
+  if (repair.issues.length === 0) {
+    return {
+      repaired: false,
+      issueCount: 0,
+      changedMessageIds: [],
+      removedMessageIds: [],
+      removedSdkUuids: [],
+    };
+  }
+
+  const repairedMessages = repair.messages.map(messageWireToSessionMessage);
+  await commitTranscriptMutation(options.sessionId, {
+    kind: 'content-repair',
+    sourceMessageIds,
+    repairedMessages,
+  });
+  replaceMessages(repair.messages);
+
+  const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(repairedMessages);
+  try {
+    await updateSessionMetadata(options.sessionId, { lastMessagePreview });
+  } catch (error) {
+    console.error('[agent-session] failed to update metadata after malformed tool repair:', error);
+  }
+
+  return {
+    repaired: true,
+    issueCount: repair.issues.length,
+    changedMessageIds: repair.changedMessageIds,
+    removedMessageIds: repair.removedMessageIds,
+    removedSdkUuids: repair.removedSdkUuids,
+  };
 }
 
 export function stampTurnUsageOnPendingAssistant(options: {

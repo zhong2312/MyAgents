@@ -79,6 +79,7 @@ export interface UpdateNovelProjectSettingsInput {
   readonly targetWordCountMax: number;
   readonly chapterWordCount: number;
   readonly language?: string;
+  readonly description?: string;
 }
 
 interface UpdatedChapterIndex {
@@ -498,6 +499,8 @@ export function createNovelRepository(
         raw.targetWordCountMax = input.targetWordCountMax;
         raw.chapterWordCount = input.chapterWordCount;
         if (input.language?.trim()) raw.language = input.language.trim();
+        if (input.description?.trim()) raw.description = input.description.trim();
+        else delete raw.description;
         delete raw.targetWordCount;
       });
     },

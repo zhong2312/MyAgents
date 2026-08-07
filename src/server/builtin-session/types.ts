@@ -167,6 +167,10 @@ export type MessageQueueItem = {
     rootQueueId: string;
     attempt: number;
   };
+  malformedToolHistoryRecovery?: {
+    rootQueueId: string;
+    attempt: number;
+  };
 };
 
 export type TurnBoundaryQueueItem = {

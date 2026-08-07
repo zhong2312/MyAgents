@@ -52,6 +52,8 @@ export interface WorkbenchAgentSessionRequest {
   readonly version: typeof WORKBENCH_AGENT_SESSION_REQUEST_VERSION;
   readonly title: string;
   readonly initialMessage: string;
+  /** Internal runtime instructions. Never persisted or rendered as a user message. */
+  readonly systemPrompt?: string;
   readonly promptId?: string;
   /**
    * Host-owned presentation for the full MyAgents conversation.

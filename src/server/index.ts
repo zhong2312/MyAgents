@@ -547,6 +547,7 @@ import {
 } from '../shared/providerExecution';
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
+import { parseSessionHistoryGroupPath } from '../shared/session-history';
 import {
   isSystemMaintenanceSession,
 } from '../shared/managedScheduledJob';
@@ -2927,6 +2928,7 @@ async function main() {
           providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
           providerEnvJson?: string | null;
           origin?: SessionOrigin | null;
+          historyGroupPath?: string[] | null;
         }
 
         let payload: PatchPayload;
@@ -3000,6 +3002,16 @@ async function main() {
                 return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
               }
               updates.origin = nextOrigin;
+            }
+          }
+          if (payload.historyGroupPath !== undefined) {
+            try {
+              updates.historyGroupPath = parseSessionHistoryGroupPath(payload.historyGroupPath);
+            } catch (error) {
+              return jsonResponse({
+                success: false,
+                error: error instanceof Error ? error.message : 'Invalid history group path.',
+              }, 400);
             }
           }
 

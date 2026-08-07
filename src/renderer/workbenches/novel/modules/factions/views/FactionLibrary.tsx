@@ -34,17 +34,17 @@ import { CustomSelect, Popover, type WorkbenchProjection, type WorkbenchStorage 
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
-} from "./characterLibraryRepository";
-import type { DomainEntityRef } from "./domainIndex";
+} from "../../../characterLibraryRepository";
+import type { DomainEntityRef } from "../../../shared/business/domainIndex";
 import {
   findInboundReferences,
   formatInboundReferenceHits,
-} from "./crossLibraryReferences";
+} from "../../../shared/business/crossLibraryReferences";
 import FactionProposalReview from "./FactionProposalReview";
 import {
   createNovelFactionLibraryRepository,
   type LoadedFactionLibrary,
-} from "./factionLibraryRepository";
+} from "../data-access/factionLibraryRepository";
 import {
   type FactionAsset,
   type FactionLink,
@@ -55,10 +55,10 @@ import {
   type FactionResource,
   type FactionRight,
   type FactionTerritory,
-} from "./factionLibrarySchema";
-import type { CharacterRecord } from "./characterLibrarySchema";
-import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
-import { createNovelSettingLibraryRepository } from "./settingLibraryRepository";
+} from "../entities/factionLibrarySchema";
+import type { CharacterRecord } from "../../../characterLibrarySchema";
+import { createNovelTimelineLibraryRepository } from "../../../timelineLibraryRepository";
+import { createNovelSettingLibraryRepository } from "../../../settingLibraryRepository";
 
 interface FactionLibraryProps {
   readonly storage: WorkbenchStorage;

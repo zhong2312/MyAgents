@@ -429,6 +429,7 @@
     "history": {
       "title": "工作区历史记录",
       "loading": "加载中...",
+      "loadFailed": "历史记录加载失败，点击重试",
       "empty": "暂无历史记录",
       "current": "当前",
       "turnCount": "{{count}} 轮",

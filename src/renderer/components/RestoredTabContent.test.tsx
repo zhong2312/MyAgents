@@ -20,9 +20,22 @@ vi.mock('@/context/TabProvider', () => ({
 // Stub the heavy page subtrees so importing App stays cheap and side-effect free.
 const chatRenderSpy = vi.hoisted(() => vi.fn());
 vi.mock('@/pages/Chat', () => ({
-  default: ({ isWindowFocused }: { isWindowFocused: boolean }) => {
+  default: ({
+    isWindowFocused,
+    workbenchSurface,
+  }: {
+    isWindowFocused: boolean;
+    workbenchSurface?: { promptId?: string; title?: string; promptContent?: string };
+  }) => {
     chatRenderSpy(isWindowFocused);
-    return <div data-testid="chat" />;
+    return (
+      <div
+        data-testid="chat"
+        data-workbench-prompt-id={workbenchSurface?.promptId}
+        data-workbench-title={workbenchSurface?.title}
+        data-workbench-prompt-content={workbenchSurface?.promptContent}
+      />
+    );
   },
 }));
 vi.mock('@/pages/Launcher', () => ({ default: () => <div data-testid="launcher" /> }));
@@ -139,6 +152,35 @@ describe('restored live chat tab', () => {
       />,
     );
     await waitFor(() => expect(chatRenderSpy).toHaveBeenLastCalledWith(false));
+  });
+
+  it('uses the novel-specific conversation surface for the registered workbench id', async () => {
+    render(
+      <MemoizedTabContent
+        tab={restoredTab({
+          workbenchAgentSurface: {
+            presentation: 'dialog',
+            sourceTabId: 'novel-source',
+            workbenchId: 'io.myagents.novel',
+            workspacePath: '/ws/a',
+            conversationKey: 'novel.characters.assist',
+            bootstrap: {
+              title: '人物设计',
+              initialMessage: '协助完善主角人物设定。',
+              systemPrompt: '你是小说人物设计助手。',
+              promptId: 'novel.characters.assist',
+            },
+          },
+        })}
+        isActive
+        {...noopProps}
+      />,
+    );
+
+    const chat = await screen.findByTestId('chat');
+    expect(chat).toHaveAttribute('data-workbench-prompt-id', 'novel.characters.assist');
+    expect(chat).toHaveAttribute('data-workbench-title', '人物设计');
+    expect(chat).toHaveAttribute('data-workbench-prompt-content', '你是小说人物设计助手。');
   });
 
   it('keeps Settings and Capabilities UI state in their own mounted Tab slots', async () => {

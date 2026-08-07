@@ -24,7 +24,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     invoke: mocks.invoke,
 }));
 
-import { deleteSession, getSessions } from '../sessionClient';
+import { deleteSession, getSessions, updateSession } from '../sessionClient';
 
 const okResponse = () => new Response(JSON.stringify({ success: true }), { status: 200 });
 
@@ -143,5 +143,29 @@ describe('getSessions', () => {
 
         expect(mocks.invoke).not.toHaveBeenCalled();
         expect(mocks.apiGetJson).toHaveBeenCalledWith('/sessions');
+    });
+});
+
+describe('updateSession', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mocks.apiFetch.mockResolvedValue(new Response(JSON.stringify({
+            success: true,
+            session: { id: 'session-1', historyGroupPath: ['人物库', '角色'] },
+        }), { status: 200 }));
+    });
+
+    it('sends the AI session history group path for persistence', async () => {
+        await expect(updateSession('session-1', {
+            historyGroupPath: ['人物库', '角色'],
+        })).resolves.toEqual({
+            id: 'session-1',
+            historyGroupPath: ['人物库', '角色'],
+        });
+
+        expect(mocks.apiFetch).toHaveBeenCalledWith('/sessions/session-1', expect.objectContaining({
+            method: 'PATCH',
+            body: JSON.stringify({ historyGroupPath: ['人物库', '角色'] }),
+        }));
     });
 });

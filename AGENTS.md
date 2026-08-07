@@ -20,3 +20,5 @@ Novel-Design.md
 - 数据隔离环境变量与测试包启动器一致：`MYAGENTS_DATA_DIR`、`HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`MYAGENTS_TEST_ROOT`。
 - 自定义测试目录或初始小说项目：`.\Start-MyAgents-Dev.cmd -TestRoot 'D:\MyAgents-test' -AgentDir 'D:\MyAgents-test\小说\枪出如龙'`。
 - PowerShell 实现位于 `scripts/start-myagents-dev.ps1`；根目录 `.cmd` 仅作为稳定入口保留。
+
+设计文档：Novel-Design.md 开发前先查阅设计文档

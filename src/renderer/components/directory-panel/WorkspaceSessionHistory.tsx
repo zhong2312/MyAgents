@@ -28,6 +28,8 @@ interface WorkspaceSessionHistoryProps {
   readonly agentDir: string;
   readonly currentSessionId?: string | null;
   readonly onSelectSession?: (sessionId: string) => void;
+  /** Controls the initial accordion state without changing generic workspace history defaults. */
+  readonly defaultExpanded?: boolean;
 }
 
 interface SessionHistoryGroup {
@@ -137,10 +139,11 @@ export default function WorkspaceSessionHistory({
   agentDir,
   currentSessionId,
   onSelectSession,
+  defaultExpanded = true,
 }: WorkspaceSessionHistoryProps) {
   const { t } = useTranslation("chat");
   const locale = currentSupportedLocale();
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [sessions, setSessions] = useState<SessionMetadata[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
@@ -300,7 +303,7 @@ export default function WorkspaceSessionHistory({
           />
           <History className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
           <span className="truncate font-semibold">
-            {t("shell.history.workspaceTitle")}
+            {t("shell.history.title")}
           </span>
           {sessions && (
             <span className="text-xs font-normal text-[var(--ink-subtle)]">
@@ -311,8 +314,8 @@ export default function WorkspaceSessionHistory({
         {isExpanded && (
           <button
             type="button"
-            aria-label={t("shell.history.refresh")}
-            title={t("shell.history.refresh")}
+            aria-label={t("workspaceFiles.common.refresh")}
+            title={t("workspaceFiles.common.refresh")}
             onClick={() => void refresh()}
             className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
           >
@@ -342,7 +345,7 @@ export default function WorkspaceSessionHistory({
               {t("shell.history.empty")}
             </div>
           ) : (
-            <div role="tree" aria-label={t("shell.history.workspaceTitle")}>
+            <div role="tree" aria-label={t("shell.history.title")}>
               {tree.groups.map((group) => renderGroup(group, 0))}
               {tree.rootSessions.map((session) => renderSession(session, 0))}
             </div>

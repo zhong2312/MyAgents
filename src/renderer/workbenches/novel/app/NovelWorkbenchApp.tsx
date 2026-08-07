@@ -57,8 +57,8 @@ import {
 import type { LoadedNovelChapter, LoadedNovelProject } from "../repository";
 import SettingLibrary from "../SettingLibrary";
 import ItemLibrary from "../ItemLibrary";
-import FactionLibrary, { type FactionAiTarget } from "../FactionLibrary";
-import { createNovelFactionLibraryRepository } from "../factionLibraryRepository";
+import FactionLibrary, { type FactionAiTarget } from "../modules/factions/views/FactionLibrary";
+import { createNovelFactionLibraryRepository } from "../modules/factions/data-access/factionLibraryRepository";
 import CultivationEcologyWorkbench, {
   type CultivationAiRunRequest,
 } from "../CultivationEcologyWorkbench";
@@ -339,6 +339,11 @@ function Overview({
           <h1 className="truncate text-3xl font-semibold text-[var(--ink)]">
             {project.metadata.title}
           </h1>
+          {project.metadata.description?.trim() && (
+            <p className="mt-3 max-w-3xl whitespace-pre-line text-sm leading-6 text-[var(--ink-secondary)]">
+              {project.metadata.description.trim()}
+            </p>
+          )}
           <p className="mt-2 text-sm text-[var(--ink-muted)]">
             项目 {project.metadata.projectName} · 共 {chapters.length} 章 ·
             已完成 {completed} 章 · {totalWords.toLocaleString()} 字
@@ -1193,7 +1198,8 @@ export default function NovelWorkbenchRenderer({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${isTemplateMode ? "模板配置向导" : "世界架构向导"} · ${project.metadata.title}`,
         promptId: selection.activation.prompt.id,
-        initialMessage,
+        systemPrompt: initialMessage,
+        initialMessage: "请开始执行当前小说工作台任务。",
         presentation: "dialog",
         conversationKey: isTemplateMode
           ? "novel.world.template-config"
@@ -1275,7 +1281,8 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${focus} · ${project.metadata.title}`,
         promptId: "novel.characters.assist",
-        initialMessage,
+        systemPrompt: initialMessage,
+        initialMessage: "请开始执行当前小说工作台人物任务。",
         presentation: "dialog",
         conversationKey: `novel.characters.assist:${targetKey}`,
         forceNew: true,
@@ -1331,7 +1338,8 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `修行体系逻辑共创 · ${project.metadata.title}`,
         promptId: "novel.cultivation.assist",
-        initialMessage,
+        systemPrompt: initialMessage,
+        initialMessage: "请开始执行当前小说工作台修行体系任务。",
         presentation: "dialog",
         conversationKey: "novel.cultivation.assist",
         historyGroupPath: ["修行体系", "逻辑共创"],
@@ -1406,7 +1414,8 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${focus} · ${project.metadata.title}`,
         promptId: "novel.factions.assist",
-        initialMessage,
+        systemPrompt: initialMessage,
+        initialMessage: "请开始执行当前小说工作台势力任务。",
         presentation: "dialog",
         conversationKey: `novel.factions.assist:${target.scope}:${target.targetFactionId ?? "library"}`,
         forceNew: true,
@@ -1478,7 +1487,8 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `势力批量设计 · ${project.metadata.title}`,
         promptId: "novel.factions.batch",
-        initialMessage,
+        systemPrompt: initialMessage,
+        initialMessage: "请开始执行当前小说工作台势力批量设计任务。",
         presentation: "dialog",
         conversationKey: "novel.factions.batch",
         forceNew: true,
@@ -1537,7 +1547,8 @@ ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `物品批量生产 · ${project.metadata.title}`,
         promptId: "novel.items.batch",
-        initialMessage,
+        systemPrompt: initialMessage,
+        initialMessage: "请开始执行当前小说工作台物品批量生产任务。",
         presentation: "dialog",
         conversationKey: "novel.items.batch",
         historyGroupPath: ["物品库", "批量生产"],
@@ -1652,7 +1663,8 @@ ${JSON.stringify(injectedContext, null, 2)}
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${target.label} · AI 写作`,
         promptId: "novel.ai-assist",
-        initialMessage,
+        systemPrompt: initialMessage,
+        initialMessage: "请开始执行当前小说工作台设定任务。",
         presentation: "dock",
         conversationKey: `novel.ai-assist:${targetKey}:${runId}`,
         forceNew: true,
@@ -1793,7 +1805,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: `novel.${request.sceneId}`,
-                    initialMessage: await applyScenePromptOverride(
+                    systemPrompt: await applyScenePromptOverride(
                       `novel.${request.sceneId}`,
                       {
                         projectName: project.metadata.title,
@@ -1802,6 +1814,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                       },
                       async () => request.initialMessage,
                     ),
+                    initialMessage: request.initialMessage,
                     presentation:
                       manuscriptAiSettings.settings.presentation ===
                       "compact-review"
@@ -1875,7 +1888,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: "novel.inspiration.coauthor",
-                    initialMessage: await applyScenePromptOverride(
+                    systemPrompt: await applyScenePromptOverride(
                       "novel.inspiration.coauthor",
                       {
                         projectName: project.metadata.title,
@@ -1884,6 +1897,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                       },
                       async () => request.initialMessage,
                     ),
+                    initialMessage: request.initialMessage,
                     presentation: "dialog",
                     conversationKey: request.conversationKey,
                     historyGroupPath: request.historyGroupPath,
@@ -1923,7 +1937,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: "novel.narrative.assist",
-                    initialMessage: await applyScenePromptOverride(
+                    systemPrompt: await applyScenePromptOverride(
                       "novel.narrative.assist",
                       {
                         projectName: project.metadata.title,
@@ -1932,6 +1946,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                       },
                       async () => request.initialMessage,
                     ),
+                    initialMessage: request.initialMessage,
                     presentation: "dock",
                     conversationKey: request.conversationKey,
                     historyGroupPath: request.historyGroupPath,
@@ -2193,7 +2208,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: "novel.timeline.assist",
-                    initialMessage: await applyScenePromptOverride(
+                    systemPrompt: await applyScenePromptOverride(
                       "novel.timeline.assist",
                       {
                         projectName: project.metadata.title,
@@ -2202,6 +2217,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                       },
                       async () => request.initialMessage,
                     ),
+                    initialMessage: request.initialMessage,
                     presentation: "dock",
                     conversationKey: request.conversationKey,
                     historyGroupPath: request.historyGroupPath,

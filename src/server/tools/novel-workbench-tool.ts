@@ -78,7 +78,23 @@ const LOCATION_LIBRARY_PATH = "world/locations/index.json";
 const LOCATION_SNAPSHOT_PATH = "__locations/index.json";
 const TARGET_PATTERN =
   /^(?:world\/setting-library\/(?:meta\.json|spatial-tree\.json|settings\.json|pages\/[a-z0-9-]+\/[a-z0-9-]+\.md|entries\/[a-z0-9-]+\/[a-z0-9-]+\.json)|world\/locations\/index\.json)$/;
+/**
+ * settings.json 中 pagePath / entriesPath 的分向约束。
+ *
+ * `TARGET_PATTERN` 是「允许被提案修改的目标文件」白名单，它是 pages 与 entries
+ * 的并集，还额外包含 meta / spatial-tree / settings / locations。用它校验
+ * pagePath / entriesPath 会放过 kind 混淆（例如 entriesPath 填了 pages 的 .md，
+ * 或直接填 settings.json），这些内容能通过服务端 validate 却过不了 renderer 的
+ * `settingFilePath()`，导致作者点“应用选中”时才报“非法entries文件路径”。
+ * 两条正则与 `settingLibrarySchema.ts::settingFilePath()` 保持一致。
+ */
+const SETTING_FILE_PATTERNS = {
+  pagePath: /^world\/setting-library\/pages\/[a-z0-9-]+\/[a-z0-9-]+\.md$/,
+  entriesPath: /^world\/setting-library\/entries\/[a-z0-9-]+\/[a-z0-9-]+\.json$/,
+} as const;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const SETTING_STATUS_VALUES = new Set(["draft", "completed"]);
+const SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
 const MAX_CHANGE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 const ITEM_LIBRARY_ROOT = "world/items";
@@ -498,6 +514,20 @@ async function validateChanges(
   const profiles = arrayField(meta, "profiles");
   const nodes = arrayField(tree, "nodes");
   const settingItems = arrayField(settings, "settings");
+  for (const [path, value] of [
+    [`${LIBRARY_ROOT}/meta.json`, meta],
+    [`${LIBRARY_ROOT}/spatial-tree.json`, tree],
+    [`${LIBRARY_ROOT}/settings.json`, settings],
+  ] as const) {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      (value as Record<string, unknown>).schemaVersion !== 1
+    ) {
+      errors.push(`${path} 的 schemaVersion 必须为 1`);
+    }
+  }
   if (!levelTypes) errors.push("meta.json 缺少 levelTypes 数组");
   if (!templates) errors.push("meta.json 缺少 settingTemplates 数组");
   if (!profiles) errors.push("meta.json 缺少 profiles 数组");
@@ -592,8 +622,11 @@ async function validateChanges(
   const settingIds = new Set<string>();
   const materializedTemplates = new Set<string>();
   const referencedSettingFiles = new Set<string>();
-  for (const setting of settingItems!) {
-    if (!setting || typeof setting !== "object") continue;
+  for (const [settingIndex, setting] of settingItems!.entries()) {
+    if (!setting || typeof setting !== "object" || Array.isArray(setting)) {
+      errors.push(`settings 第 ${settingIndex + 1} 个条目必须是对象`);
+      continue;
+    }
     const item = setting as Record<string, unknown>;
     if (
       typeof item.id !== "string" ||
@@ -607,7 +640,9 @@ async function validateChanges(
     if (typeof item.nodeId !== "string" || !nodeIds.has(item.nodeId)) {
       errors.push(`设定 ${String(item.id)} 引用了不存在的空间节点`);
     }
-    if (
+    if (!("templateId" in item)) {
+      errors.push(`设定 ${String(item.id)} 缺少 templateId`);
+    } else if (
       item.templateId !== null &&
       (typeof item.templateId !== "string" || !templateIds.has(item.templateId))
     ) {
@@ -625,6 +660,32 @@ async function validateChanges(
       }
       materializedTemplates.add(identity);
     }
+    // 这三个字段是 renderer `settingInstanceSchema` 的必填项。工具侧过去只校验
+    // id / nodeId / templateId / 路径，缺字段的提案能拿到 validationToken 并提交，
+    // 直到作者点“应用选中”时才由 zod 报错。在这里同步校验，保证受控写回协议的
+    // 校验强度不弱于落盘契约。
+    for (const key of ["name", "group"] as const) {
+      if (typeof item[key] !== "string" || item[key].trim() === "") {
+        errors.push(`设定 ${String(item.id)} 缺少 ${key}`);
+      }
+    }
+    if (
+      typeof item.status !== "string" ||
+      !SETTING_STATUS_VALUES.has(item.status)
+    ) {
+      errors.push(
+        `设定 ${String(item.id)} 的 status 必须是 draft 或 completed，当前为 ${String(item.status)}`,
+      );
+    }
+    if (
+      item.templateVersion !== undefined &&
+      (typeof item.templateVersion !== "string" ||
+        !SEMVER_PATTERN.test(item.templateVersion))
+    ) {
+      errors.push(
+        `设定 ${String(item.id)} 的 templateVersion 必须是 x.y.z 形式`,
+      );
+    }
     for (const key of ["pagePath", "entriesPath"] as const) {
       if (typeof item[key] !== "string") {
         errors.push(`设定 ${String(item.id)} 缺少 ${key}`);
@@ -636,6 +697,36 @@ async function validateChanges(
       } catch (error) {
         errors.push(message(error));
         continue;
+      }
+      // 分向校验：pagePath 必须落在 pages/ 且以 .md 结尾，entriesPath 必须落在
+      // entries/ 且以 .json 结尾。normalizeTargetPath 只保证「在提案可改白名单
+      // 内」，不区分 kind。
+      if (!SETTING_FILE_PATTERNS[key].test(path)) {
+        errors.push(
+          `设定 ${String(item.id)} 的 ${key} 必须形如 ${
+            key === "pagePath"
+              ? `${LIBRARY_ROOT}/pages/<nodeId>/<settingId>.md`
+              : `${LIBRARY_ROOT}/entries/<nodeId>/<settingId>.json`
+          }，当前为 ${path}`,
+        );
+        continue;
+      }
+      if (
+        typeof item.nodeId === "string" &&
+        ID_PATTERN.test(item.nodeId) &&
+        typeof item.id === "string" &&
+        ID_PATTERN.test(item.id)
+      ) {
+        const expectedPath =
+          key === "pagePath"
+            ? `${LIBRARY_ROOT}/pages/${item.nodeId}/${item.id}.md`
+            : `${LIBRARY_ROOT}/entries/${item.nodeId}/${item.id}.json`;
+        if (path !== expectedPath) {
+          errors.push(
+            `设定 ${item.id} 的 ${key} 必须与自身 nodeId/id 对应，期望 ${expectedPath}，当前为 ${path}`,
+          );
+          continue;
+        }
       }
       referencedSettingFiles.add(path);
       if (

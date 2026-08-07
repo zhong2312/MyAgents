@@ -3,7 +3,7 @@ import {
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import { parseFactionLibrary } from "./factionLibrarySchema";
+import { parseFactionLibrary } from "./modules/factions/entities/factionLibrarySchema";
 import { parseLocationLibraryIndex } from "./locationLibrarySchema";
 import {
   createDefaultSettingLibraryMeta,

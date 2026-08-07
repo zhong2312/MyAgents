@@ -20,6 +20,7 @@ import {
   loadTranscriptFromSessionMessages,
   messageWireToSessionMessage,
   persistTranscriptNow,
+  repairMalformedToolTranscript,
   saveForkTranscript,
   stampTurnUsageOnPendingAssistant,
   stripPlaywrightResults,
@@ -223,5 +224,48 @@ describe('builtin transcript persistence owner', () => {
     await expect(saveForkTranscript('fork-session', [stored('fork-1')]))
       .rejects.toThrow('non-empty target');
     expect(appendSessionMessages).not.toHaveBeenCalled();
+  });
+
+  it('commits malformed tool repair through the proven transcript cursor', async () => {
+    const messages: SessionMessage[] = [{
+      id: '0',
+      role: 'assistant',
+      content: JSON.stringify([
+        { type: 'text', text: '保留内容' },
+        { type: 'tool_use', tool: { id: '', name: '', input: {}, streamIndex: 1 } },
+      ]),
+      timestamp: 't0',
+    }];
+    loadTranscriptFromSessionMessages(messages, cursor(1));
+    vi.mocked(mutateSessionTranscript).mockResolvedValueOnce({
+      ok: true,
+      action: 'replaced',
+      cursor: cursor(1),
+    });
+
+    const result = await repairMalformedToolTranscript({
+      sessionId: 'session-1',
+      getCurrentSessionId: () => 'session-1',
+    });
+
+    expect(result).toMatchObject({
+      repaired: true,
+      issueCount: 2,
+      changedMessageIds: ['0'],
+    });
+    expect(mutateSessionTranscript).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ persistedMessageCount: 1 }),
+      {
+        kind: 'content-repair',
+        sourceMessageIds: ['0'],
+        repairedMessages: [expect.objectContaining({
+          id: '0',
+          content: JSON.stringify([{ type: 'text', text: '保留内容' }]),
+        })],
+      },
+    );
+    expect(transcriptState.transcriptCursor?.persistedMessageCount).toBe(1);
+    expect(transcriptState.messages[0].content).toEqual([{ type: 'text', text: '保留内容' }]);
   });
 });

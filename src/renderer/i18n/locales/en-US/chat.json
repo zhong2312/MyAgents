@@ -429,6 +429,7 @@
     "history": {
       "title": "Workspace history",
       "loading": "Loading...",
+      "loadFailed": "Failed to load history. Click to retry.",
       "empty": "No history yet",
       "current": "Current",
       "turnCount": "{{count}} turn(s)",

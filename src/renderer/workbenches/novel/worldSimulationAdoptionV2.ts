@@ -17,13 +17,13 @@ import {
   serializeCharacterLibraryFile,
   type CharacterRecord,
 } from "./characterLibrarySchema";
-import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
+import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import {
   FACTION_LIBRARY_PATH,
   parseFactionLibrary,
   serializeFactionLibrary,
   type FactionLibrary,
-} from "./factionLibrarySchema";
+} from "./modules/factions/entities/factionLibrarySchema";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
 import {
   MAIN_TIMELINE_BRANCH_ID,

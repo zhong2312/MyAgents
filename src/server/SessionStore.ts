@@ -1396,6 +1396,11 @@ export type AppendSessionMessagesResult =
 export type TranscriptMutationIntent =
     | { kind: 'builtin-rewind'; targetMessageId: string; targetMessageCount: number }
     | { kind: 'sdk-retraction'; sdkUuids: readonly string[]; streamingTailMessageId?: string }
+    | {
+        kind: 'content-repair';
+        sourceMessageIds: readonly string[];
+        repairedMessages: readonly SessionMessage[];
+    }
     | { kind: 'builtin-admission-rollback'; messageId: string }
     | { kind: 'builtin-transient-retry'; messageId: string }
     | { kind: 'external-rejected-message'; messageId: string }
@@ -1581,6 +1586,37 @@ function deriveTranscriptMutationTarget(
     messages: SessionMessage[],
     intent: TranscriptMutationIntent,
 ): { ok: true; target: SessionMessage[] | null } | { ok: false; error: string } {
+    if (intent.kind === 'content-repair') {
+        const sourceMatches = intent.sourceMessageIds.length === messages.length
+            && intent.sourceMessageIds.every((messageId, index) => messages[index]?.id === messageId);
+        if (!sourceMatches) {
+            return { ok: false, error: 'Content repair source does not match the proven durable transcript' };
+        }
+
+        let sourceIndex = 0;
+        const target: SessionMessage[] = [];
+        for (const repairedMessage of intent.repairedMessages) {
+            while (sourceIndex < messages.length && messages[sourceIndex].id !== repairedMessage.id) {
+                sourceIndex++;
+            }
+            if (sourceIndex >= messages.length) {
+                return { ok: false, error: 'Content repair target is not an ordered subset of the durable transcript' };
+            }
+
+            const sourceMessage = messages[sourceIndex];
+            const { content: _sourceContent, ...sourceIdentity } = sourceMessage;
+            const { content: _repairedContent, ...repairedIdentity } = repairedMessage;
+            if (JSON.stringify(sourceIdentity) !== JSON.stringify(repairedIdentity)) {
+                return { ok: false, error: 'Content repair may only replace message content or remove complete messages' };
+            }
+            target.push(repairedMessage);
+            sourceIndex++;
+        }
+
+        const unchanged = target.length === messages.length
+            && target.every((message, index) => JSON.stringify(message) === JSON.stringify(messages[index]));
+        return { ok: true, target: unchanged ? null : target };
+    }
     if (intent.kind === 'builtin-rewind' || intent.kind === 'external-retry') {
         const targetId = intent.kind === 'builtin-rewind' ? intent.targetMessageId : intent.userMessageId;
         const targetIndex = messages.findIndex(message => message.id === targetId && message.role === 'user');

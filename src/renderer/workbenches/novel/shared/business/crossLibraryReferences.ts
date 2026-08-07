@@ -7,7 +7,7 @@ import {
   parseFactionLibrary,
   type FactionLibrary,
   type FactionRecord,
-} from "../../factionLibrarySchema";
+} from "../../modules/factions/entities/factionLibrarySchema";
 import { parseItemLibraryIndex } from "../../itemLibrarySchema";
 import { ITEM_LIBRARY_PATHS } from "../../itemLibraryRepository";
 import {

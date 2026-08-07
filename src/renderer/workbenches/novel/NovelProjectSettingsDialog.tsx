@@ -45,6 +45,7 @@ export default function NovelProjectSettingsDialog({
       : String(metadata.chapterWordCount),
   );
   const [language, setLanguage] = useState(metadata.language ?? "zh-CN");
+  const [description, setDescription] = useState(metadata.description ?? "");
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,6 +88,7 @@ export default function NovelProjectSettingsDialog({
         genres,
         ...planning,
         language: language.trim() || "zh-CN",
+        description: description.trim(),
       });
       onClose();
     } catch (cause) {
@@ -211,6 +213,23 @@ export default function NovelProjectSettingsDialog({
               size="toolbar"
               disabled={isSaving}
               className="mt-2"
+            />
+          </div>
+
+          <div className="border-t border-[var(--line-subtle)] pt-5">
+            <label
+              htmlFor="novel-settings-description"
+              className="mb-2 block text-sm font-medium text-[var(--ink)]"
+            >
+              本书简介
+            </label>
+            <textarea
+              id="novel-settings-description"
+              value={description}
+              disabled={isSaving}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="一句话或一段话介绍本书的核心设定与看点"
+              className="h-[100px] w-full resize-none rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)] disabled:opacity-50"
             />
           </div>
 

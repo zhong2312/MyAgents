@@ -36,6 +36,7 @@ import TerminalReasonBanner from '@/components/TerminalReasonBanner';
 import RuntimeDiagnosticsBanner from '@/components/RuntimeDiagnosticsBanner';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import WorkspaceConfigPanel, { type Tab as WorkspaceTab } from '@/components/WorkspaceConfigPanel';
+import WorkbenchReferencePanel from '@/components/WorkbenchReferencePanel';
 import CronTaskSettingsModal, {
   GOAL_SLASH_PRESET,
   type CronInitialConfig,
@@ -432,6 +433,8 @@ interface ChatProps {
   compactAgentSurface?: boolean;
   /** Native desktop-window focus projection; independent from internal Tab activity. */
   isWindowFocused: boolean;
+  /** Novel workbench sessions replace the generic right workspace with references. */
+  workbenchSurface?: { promptId?: string; title?: string; promptContent?: string };
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Opens a persisted Session through App's canonical new/jump/revive path. */
@@ -465,7 +468,8 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ compactAgentSurface = false, isWindowFocused, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ compactAgentSurface = false, isWindowFocused, workbenchSurface, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+  const isNovelWorkbenchSurface = Boolean(workbenchSurface);
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -661,10 +665,10 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
   // Keep an overlay hidden by default. An explicit workspace preference may
   // override that responsive default, except in the compact Agent surface.
   const [showWorkspace, setShowWorkspace] = useState(
-    () => !compactAgentSurface && (currentProject?.workspacePanelVisible ?? shouldShowWorkspaceByDefault()),
+    () => !compactAgentSurface && !isNovelWorkbenchSurface && (currentProject?.workspacePanelVisible ?? shouldShowWorkspaceByDefault()),
   );
   const [workspacePanelMounted, setWorkspacePanelMounted] = useState(
-    () => !compactAgentSurface && (currentProject?.workspacePanelVisible ?? shouldShowWorkspaceByDefault()),
+    () => !compactAgentSurface && !isNovelWorkbenchSurface && (currentProject?.workspacePanelVisible ?? shouldShowWorkspaceByDefault()),
   );
   const [workspacePanelMotion, setWorkspacePanelMotion] = useState<'expand' | 'collapse' | null>(null);
   const workspacePanelUnmountTimerRef = useRef<number | null>(null);
@@ -690,14 +694,14 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
   }, [clearWorkspacePanelUnmountTimer]);
   useEffect(() => clearWorkspacePanelUnmountTimer, [clearWorkspacePanelUnmountTimer]);
   useEffect(() => {
-    if (compactAgentSurface || currentProject?.workspacePanelVisible === false) {
+    if (compactAgentSurface || isNovelWorkbenchSurface || currentProject?.workspacePanelVisible === false) {
       handleCollapseWorkspace();
       return;
     }
     if (currentProject?.workspacePanelVisible === true) {
       handleExpandWorkspace();
     }
-  }, [compactAgentSurface, currentProject?.workspacePanelVisible, handleCollapseWorkspace, handleExpandWorkspace]);
+  }, [compactAgentSurface, isNovelWorkbenchSurface, currentProject?.workspacePanelVisible, handleCollapseWorkspace, handleExpandWorkspace]);
   const [showWorkspaceConfig, setShowWorkspaceConfig] = useState(false); // Workspace config panel
   // State to trigger workspace refresh
   const [workspaceRefreshTrigger, setWorkspaceRefreshTrigger] = useState(0);
@@ -802,11 +806,11 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
   });
 
   // Derived: is the right split panel visible?
-  const splitPanelVisible = splitFile !== null
+  const splitPanelVisible = !isNovelWorkbenchSurface && (splitFile !== null
     || (terminalPinned && (terminalAlive || splitActiveView === 'terminal'))
-    || (browserUrl !== null);
+    || (browserUrl !== null));
   // Should the terminal component stay mounted? (for xterm.js state preservation)
-  const terminalMounted = terminalAlive || (terminalPinned && splitActiveView === 'terminal');
+  const terminalMounted = !isNovelWorkbenchSurface && (terminalAlive || (terminalPinned && splitActiveView === 'terminal'));
 
   const splitWidthTransitionTimerRef = useRef<number | null>(null);
   const startSplitWidthTransitionSuspension = useCallback(() => {
@@ -1725,6 +1729,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
           }
           await apiPost('/api/workbench-agent/configure', {
             toolset: launchMessage.workbenchToolset,
+            ...(launchMessage.systemPrompt ? { systemPrompt: launchMessage.systemPrompt } : {}),
           });
           const allServers = await getAllMcpServers();
           syncMcpServerNames(allServers);
@@ -1742,6 +1747,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
         if (launchMessage.workbenchToolset) {
           await apiPost('/api/workbench-agent/configure', {
             toolset: launchMessage.workbenchToolset,
+            ...(launchMessage.systemPrompt ? { systemPrompt: launchMessage.systemPrompt } : {}),
           });
         }
 
@@ -5115,7 +5121,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
                 </>
             )}
             {/* Workspace toggle button - always visible when workspace is hidden */}
-            {!showWorkspace && (
+            {!isNovelWorkbenchSurface && !showWorkspace && (
               <Tip label={t('shell.header.expandWorkspace')} position="bottom" align="end">
                 <button
                   type="button"
@@ -5473,7 +5479,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
       </div>
 
       {/* Workspace panel — single instance, container style switches between side panel and overlay */}
-      {workspacePanelMounted && (
+      {!isNovelWorkbenchSurface && workspacePanelMounted && (
         <>
           {/* Click-away layer for overlay mode */}
           {showWorkspace && shouldUseWorkspaceOverlay && (
@@ -5539,6 +5545,18 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
         </>
       )}
       </div>{/* End left-side wrapper */}
+
+      {isNovelWorkbenchSurface && (
+        <WorkbenchReferencePanel
+          promptId={workbenchSurface?.promptId}
+          promptTitle={workbenchSurface?.title}
+          promptContent={workbenchSurface?.promptContent}
+          messages={messages}
+          workspacePath={agentDir}
+          currentSessionId={sessionId}
+          onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
+        />
+      )}
 
       {/* Split view: draggable divider + right panel.
           Rendered when panel is visible OR terminal is alive (to preserve xterm.js state).
@@ -5832,7 +5850,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, onN
       )}
 
       {/* Workspace Config Panel */}
-      {showWorkspaceConfig && (
+      {!isNovelWorkbenchSurface && showWorkspaceConfig && (
         <WorkspaceConfigPanel
           agentDir={agentDir}
           onClose={() => {

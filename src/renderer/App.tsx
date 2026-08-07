@@ -58,6 +58,8 @@ const TaskCenter = lazy(() => import('@/pages/TaskCenter'));
 const Space = lazy(() => import('@/pages/Space'));
 const WorkbenchShell = lazy(() => import('@/workbench-sdk/WorkbenchShell'));
 
+const NOVEL_WORKBENCH_ID = 'io.myagents.novel';
+
 /** Layout-compatible Suspense fallback for a lazy page chunk — same paper fill
  *  as the deferred-mount placeholder, so a chunk-load is never a jarring blank. */
 const PAGE_FALLBACK = <div className="h-full w-full bg-[var(--paper)]" />;
@@ -171,6 +173,7 @@ async function configureWorkbenchAgentToolset(
   sessionId: string,
   tabId: string,
   toolset: WorkbenchAgentSessionRequest['toolset'],
+  systemPrompt: WorkbenchAgentSessionRequest['systemPrompt'],
   isCurrent: () => boolean,
 ): Promise<void> {
   if (!toolset) return;
@@ -186,7 +189,7 @@ async function configureWorkbenchAgentToolset(
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toolset }),
+          body: JSON.stringify({ toolset, ...(systemPrompt ? { systemPrompt } : {}) }),
         },
       );
       if (!response.ok) {
@@ -503,6 +506,13 @@ export const MemoizedTabContent = memo(function TabContent({
             <Chat
               compactAgentSurface={tab.workbenchAgentSurface?.presentation === 'compact-review'}
               isWindowFocused={isWindowFocused}
+              workbenchSurface={tab.workbenchAgentSurface?.workbenchId === NOVEL_WORKBENCH_ID
+                ? {
+                  promptId: tab.workbenchAgentSurface.bootstrap?.promptId,
+                  title: tab.workbenchAgentSurface.bootstrap?.title,
+                  promptContent: tab.workbenchAgentSurface.bootstrap?.systemPrompt,
+                }
+                : undefined}
               onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySession(tab.id, sessionId, title, historyEntrySource)}
               onOpenSessionInNewTab={(sessionId, title) => onOpenHistorySession(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
               onNewSession={() => onNewSession(tab.id)}
@@ -713,11 +723,17 @@ export default function App() {
         );
       }
       if (!surface.toolset) continue;
-      const configurationKey = `${tab.sessionId}:${JSON.stringify(surface.toolset)}`;
+      const configurationKey = `${tab.sessionId}:${JSON.stringify({ toolset: surface.toolset, systemPrompt: surface.bootstrap?.systemPrompt ?? null })}`;
       if (configuredWorkbenchToolsetsRef.current.get(tab.id) === configurationKey) continue;
       configuredWorkbenchToolsetsRef.current.set(tab.id, configurationKey);
       const isCurrent = () => configuredWorkbenchToolsetsRef.current.get(tab.id) === configurationKey;
-      void configureWorkbenchAgentToolset(tab.sessionId, tab.id, surface.toolset, isCurrent).catch((error) => {
+      void configureWorkbenchAgentToolset(
+        tab.sessionId,
+        tab.id,
+        surface.toolset,
+        surface.bootstrap?.systemPrompt,
+        isCurrent,
+      ).catch((error) => {
         if (!isCurrent()) return;
         configuredWorkbenchToolsetsRef.current.delete(tab.id);
         console.error(`[App] Failed to configure workbench tools for session ${tab.sessionId}:`, error);
@@ -3161,6 +3177,7 @@ export default function App() {
     const surfaceBootstrap = {
       title: request.title,
       initialMessage: request.initialMessage,
+      ...(request.systemPrompt ? { systemPrompt: request.systemPrompt } : {}),
       ...(request.promptId ? { promptId: request.promptId } : {}),
       ...(historyGroupPath ? { historyGroupPath } : {}),
       ...(request.modelSelection ? { modelSelection: request.modelSelection } : {}),
@@ -3291,6 +3308,7 @@ export default function App() {
     let initialMessage: InitialMessage | undefined;
     if (!resumeSession) {
       initialMessage = { text: request.initialMessage };
+      if (request.systemPrompt) initialMessage.systemPrompt = request.systemPrompt;
       if (request.toolset) initialMessage.workbenchToolset = request.toolset;
       if (effectiveRuntime === 'builtin') {
         const selection = sceneModelSelection ?? resolveBuiltinSelection(
@@ -4001,6 +4019,7 @@ export default function App() {
       version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
       title: surface.bootstrap.title,
       initialMessage: surface.bootstrap.initialMessage,
+      ...(surface.bootstrap.systemPrompt ? { systemPrompt: surface.bootstrap.systemPrompt } : {}),
       presentation: surface.companion ? 'compact-review' : 'dialog',
       conversationKey: surface.conversationKey,
       forceNew: true,

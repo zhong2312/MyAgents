@@ -387,6 +387,58 @@ Markdown / JSON 事实源
 - 小说文件 Schema：`src/renderer/workbenches/novel/projectSchema.ts`
 - 灵感模块协议：`specs/tech_docs/novel_inspiration.md`
 
+## 12.1 小说工作台 MVC 模块架构
+
+小说工作台 Renderer 代码按“公共层 + 应用层 + 领域模块”组织。目录拆分只改变源码职责边界，不引入旧数据兼容层，也不要求数据迁移；小说项目的事实源仍由各领域 Repository 按既有文件协议读写。
+
+```text
+src/renderer/workbenches/novel/
+|-- app/
+|   `-- NovelWorkbenchApp.tsx       # 应用组合入口：导航、路由和跨模块编排
+|-- shared/
+|   |-- views/                       # 公共界面组件（按需建立）
+|   |-- models/                      # 公共类型与视图模型（按需建立）
+|   |-- tools/                       # 公共非领域工具（按需建立）
+|   |-- constants/                   # 公共常量（按需建立）
+|   |-- business/                    # 跨领域校验、索引和引用分析
+|   |-- controllers/                 # 跨领域 React 控制器与组合 Hook
+|   `-- infrastructure/             # 存储事务、测试替身等基础设施
+|-- modules/
+|   `-- <domain>/
+|       |-- entities/                # Schema、实体类型和领域值对象
+|       |-- data-access/             # Repository、文件读写和 CAS
+|       |-- business/                # 领域规则、解析、AI 请求和用例
+|       |-- controllers/             # 模块级状态编排与 React Hook
+|       `-- views/                   # 页面、面板、对话框和样式
+`-- <legacy-entry>.ts(x)             # 仅保留源码导出桥接，逐步删除
+```
+
+### MVC 职责与依赖规则
+
+- `app` 只负责组装工作台和模块，不实现实体校验、文件协议或具体领域业务。
+- `entities` 不依赖 React、Workbench Storage 或其它模块；schema 解析失败必须显式报告格式错误。
+- `data-access` 只通过 `WorkbenchStorage` 访问小说项目文件，保存必须使用 `expectedContent`；事务和并发语义集中在 Repository 或公共基础设施。
+- `business` 负责领域规则、跨实体计算、AI 请求构造和提案校验，不直接渲染界面。
+- `controllers` 负责加载、刷新、保存、错误和外部焦点等状态编排；视图通过控制器使用业务和数据访问能力。
+- `views` 只负责用户交互和展示；跨模块引用必须使用目标模块的公开入口，不得引用其内部文件路径。
+- `shared` 不拥有某个具体领域的数据，不得把人物、时间线或物品的业务规则下沉为公共工具。
+- 依赖方向固定为 `app -> modules/shared`、`views/controllers -> business/data-access/entities`、`data-access/business -> entities`。领域模块不得反向依赖 `app` 或宿主内部实现。
+
+### 当前迁移状态
+
+已按该结构迁移并通过类型检查和定向测试的模块包括：
+
+- `modules/project`：项目实体、规划、Repository 和项目控制器；
+- `modules/inspiration`：灵感实体、Repository、画布数据访问、AI 业务和工作台视图；
+- `modules/timeline`：时间线实体、Repository、提案、AI 业务和时间线视图；
+- `modules/maps`：地图实体、地图与提案 Repository、画布、编辑器和原型视图；
+- `modules/prompts`：提示词实体、Repository、默认种子、解析业务和管理视图；
+- `modules/research`：资料库视图；
+- `modules/knowledge`：知识图谱业务、知识库、图谱和百科视图；
+- `modules/items`：物品实体、Repository、AI 业务、批量提案和管理视图。
+
+根目录中与这些模块同名的少量 `.ts` / `.tsx` 文件是过渡性的导出桥接，仅服务尚未完成分模块迁移的调用方；它们不负责旧数据兼容或迁移。后续人物、势力、设定、正文、叙事工程和世界推演模块完成迁移后，应删除对应桥接并让应用层直接引用模块公开入口。
+
 ## 13. 设定库编辑与独立地图模块
 
 - 设定库使用“空间节点 → 必选层级类型 → 类型默认设定模板 + 节点自定义设定”模型，不再使用固定的 15 类、82 节点结构。

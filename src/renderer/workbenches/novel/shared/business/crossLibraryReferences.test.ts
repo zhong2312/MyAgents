@@ -15,7 +15,7 @@ import {
   type FactionLibrary,
   type FactionMember,
   type FactionRecord,
-} from "../../factionLibrarySchema";
+} from "../../modules/factions/entities/factionLibrarySchema";
 import { NovelMemoryProjection, NovelMemoryStorage } from "../infrastructure/testStorage";
 import {
   createEmptyTimelineLibrary,

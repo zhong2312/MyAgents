@@ -210,7 +210,12 @@ function settingFilePath(kind: "pages" | "entries") {
         `^world/setting-library/${kind}/[a-z0-9-]+/[a-z0-9-]+\\.${extension}$`,
       );
       if (!pattern.test(normalized)) {
-        context.addIssue({ code: "custom", message: `非法${kind}文件路径` });
+        // 带上期望格式与实际值：仅说“非法entries文件路径”时，作者无法判断是
+        // 目录放错、扩展名写错，还是 id 含大写/下划线等非法字符。
+        context.addIssue({
+          code: "custom",
+          message: `路径必须形如 world/setting-library/${kind}/<nodeId>/<settingId>.${extension}（nodeId 与 settingId 只能用小写字母、数字和连字符），当前为 ${normalized}`,
+        });
         return z.NEVER;
       }
       return normalized;
@@ -314,6 +319,102 @@ export class SettingLibraryFormatError extends Error {
   }
 }
 
+/** 把 zod 的英文内部错误翻译成用户可读的中文（仅覆盖高频缺失字段场景）。 */
+function humanizeIssueMessage(message: string): string {
+  if (/^Invalid input: expected string, received undefined$/.test(message)) {
+    return "缺少该字段（应为字符串）";
+  }
+  if (/^Invalid input: expected number, received undefined$/.test(message)) {
+    return "缺少该字段（应为数值）";
+  }
+  if (/^Invalid input: expected boolean, received undefined$/.test(message)) {
+    return "缺少该字段（应为布尔值）";
+  }
+  if (/^Invalid input: expected object, received undefined$/.test(message)) {
+    return "缺少该字段（应为对象）";
+  }
+  if (/^Invalid input: expected array, received undefined$/.test(message)) {
+    return "缺少该字段（应为数组）";
+  }
+  if (/^Invalid input: expected string, received null$/.test(message)) {
+    return "该字段不能为 null（应为字符串）";
+  }
+  return message;
+}
+
+/**
+ * 把一条 format 校验的 zod issues 压缩成简洁、可操作的消息。
+ *
+ * 当数组里大量条目都缺同一批字段时（例如 AI 提案的 settings 用了空对象占位），
+ * zod 会为每个条目×每个字段各产生一条 issue，直接拼接会输出上百行内部错误。
+ * 这里做两级归并：
+ *  1. “数组条目缺字段 / 枚举取值非法”按字段合并成一行汇总；
+ *  2. 其余问题按“字段 + 错误原因”归并，只展示一个实例并附带条目数，
+ *     避免同一条长提示（如路径格式说明）重复输出几十遍。
+ */
+function summarizeZodIssues(issues: readonly z.ZodIssue[]): string {
+  if (issues.length === 0) return "未知结构错误";
+  const MAX_SHOWN = 4;
+  const missingByField = new Map<string, number>();
+  /** key = 字段名 + 错误原因骨架；用于把同类问题折叠成一条。 */
+  const otherByReason = new Map<
+    string,
+    { path: string; message: string; count: number }
+  >();
+  for (const issue of issues) {
+    const [root, index, field] = issue.path;
+    const isArrayItemField =
+      typeof root === "string" &&
+      typeof index === "number" &&
+      typeof field === "string";
+    const isMissingOrBadEnum =
+      /received undefined$/.test(issue.message) ||
+      /^Invalid option: expected one of/.test(issue.message);
+    if (isArrayItemField && isMissingOrBadEnum) {
+      missingByField.set(field, (missingByField.get(field) ?? 0) + 1);
+      continue;
+    }
+    const path = issue.path.join(".") || "root";
+    const message = humanizeIssueMessage(issue.message);
+    // 归并键去掉“当前为 xxx”这类随条目变化的尾部，使同类问题落到同一桶。
+    const reasonKey = `${isArrayItemField ? field : path}::${message.replace(/，当前为.*$/, "")}`;
+    const existing = otherByReason.get(reasonKey);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      otherByReason.set(reasonKey, { path, message, count: 1 });
+    }
+  }
+  const parts: string[] = [];
+  if (missingByField.size > 0) {
+    const maxCount = Math.max(...missingByField.values());
+    const fields = [...missingByField.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([field]) => field)
+      .join("、");
+    parts.push(`${maxCount} 个条目缺少必要字段：${fields}`);
+  }
+  const others = [...otherByReason.values()].sort((a, b) => b.count - a.count);
+  parts.push(
+    ...others
+      .slice(0, MAX_SHOWN)
+      .map((item) =>
+        item.count > 1
+          ? `${item.count} 个条目：${item.message}（例如 ${item.path}）`
+          : `${item.path}: ${item.message}`,
+      ),
+  );
+  const sumMissing = [...missingByField.values()].reduce((a, b) => a + b, 0);
+  const shownOtherIssues = others
+    .slice(0, MAX_SHOWN)
+    .reduce((total, item) => total + item.count, 0);
+  const remainder = issues.length - sumMissing - shownOtherIssues;
+  if (remainder > 0) {
+    parts.push(`…另有 ${remainder} 项问题`);
+  }
+  return parts.join("；");
+}
+
 function parseFile<T>(
   filePath: string,
   schema: z.ZodType<T>,
@@ -332,9 +433,7 @@ function parseFile<T>(
   if (!result.success) {
     throw new SettingLibraryFormatError(
       filePath,
-      result.error.issues
-        .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
-        .join("；"),
+      summarizeZodIssues(result.error.issues),
     );
   }
   return result.data;

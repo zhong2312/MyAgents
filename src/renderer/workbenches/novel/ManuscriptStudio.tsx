@@ -88,7 +88,7 @@ import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
 } from "./characterLibraryRepository";
-import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
+import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";
 import { parseSettingLibrarySettingsIndex } from "./settingLibrarySchema";

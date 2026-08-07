@@ -15,6 +15,7 @@ import type {
 export interface WorkbenchAgentSurfaceBootstrap {
     readonly title: string;
     readonly initialMessage: string;
+    readonly systemPrompt?: string;
     readonly promptId?: string;
     readonly historyGroupPath?: readonly string[];
     readonly modelSelection?: WorkbenchModelSelection;
@@ -86,6 +87,8 @@ export interface InitialMessageCron {
  *      Chat input box so the user can retry without losing their draft. */
 export interface InitialMessage {
     text: string;
+    /** Internal workbench instructions; sent through the runtime system/developer channel. */
+    systemPrompt?: string;
     images?: ImageAttachment[];
     permissionMode?: PermissionMode;
     mcpEnabledServers?: string[];

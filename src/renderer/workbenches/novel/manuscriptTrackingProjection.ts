@@ -10,8 +10,8 @@ import type {
   CharacterRecord,
   CharacterRelation,
 } from "./characterLibrarySchema";
-import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
-import type { FactionRecord } from "./factionLibrarySchema";
+import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
+import type { FactionRecord } from "./modules/factions/entities/factionLibrarySchema";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";
 import type { NovelLocation } from "./locationLibrarySchema";

@@ -31,6 +31,7 @@ const rawNovelMetadataSchema = z
     form: z.enum(["blank", "long", "short"]).optional(),
     status: z.enum(["planning", "writing", "completed", "paused"]),
     language: z.string().trim().min(1),
+    description: z.string().trim().optional(),
     knowledgeGraph: novelKnowledgeGraphSettingsSchema.optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),

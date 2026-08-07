@@ -52,6 +52,7 @@ export default function NovelProjectCreator({
     DEFAULT_CHAPTER_WORD_COUNT,
   );
   const [language, setLanguage] = useState("zh-CN");
+  const [synopsis, setSynopsis] = useState("");
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -118,6 +119,7 @@ export default function NovelProjectCreator({
           genres,
           ...planning,
           language,
+          description: synopsis.trim(),
           createdAt,
         }),
       });
@@ -254,27 +256,29 @@ export default function NovelProjectCreator({
             </p>
           </div>
 
-          <NovelGenrePicker
-            id="novel-genre"
-            genres={genres}
-            open={genreMenuOpen}
-            disabled={isCreating}
-            onChange={setGenres}
-            onOpenChange={setGenreMenuOpen}
-          />
-
-          <div>
-            <span className="mb-2 block text-sm font-medium text-[var(--ink)]">
-              创作语言
-            </span>
-            <CustomSelect
-              value={language}
-              options={novelLanguageOptions()}
-              onChange={setLanguage}
-              ariaLabel="创作语言"
-              size="toolbar"
+          <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
+            <NovelGenrePicker
+              id="novel-genre"
+              genres={genres}
+              open={genreMenuOpen}
               disabled={isCreating}
+              onChange={setGenres}
+              onOpenChange={setGenreMenuOpen}
             />
+
+            <div>
+              <span className="mb-2 block text-sm font-medium text-[var(--ink)]">
+                创作语言
+              </span>
+              <CustomSelect
+                value={language}
+                options={novelLanguageOptions()}
+                onChange={setLanguage}
+                ariaLabel="创作语言"
+                size="toolbar"
+                disabled={isCreating}
+              />
+            </div>
           </div>
 
           <div className="border-t border-[var(--line-subtle)] pt-5">
@@ -287,6 +291,22 @@ export default function NovelProjectCreator({
               onTargetWordCountMinWanChange={setTargetWordCountMinWan}
               onTargetWordCountMaxWanChange={setTargetWordCountMaxWan}
               onChapterWordCountChange={setChapterWordCount}
+            />
+          </div>
+
+          <div className="border-t border-[var(--line-subtle)] pt-5">
+            <label
+              htmlFor="novel-synopsis"
+              className="mb-2 block text-sm font-medium text-[var(--ink)]"
+            >
+              本书简介
+            </label>
+            <textarea
+              id="novel-synopsis"
+              value={synopsis}
+              onChange={(event) => setSynopsis(event.target.value)}
+              placeholder="一句话或一段话介绍本书的核心设定与看点"
+              className="h-[100px] w-full resize-none rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
             />
           </div>
 

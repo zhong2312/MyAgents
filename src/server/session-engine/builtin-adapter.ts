@@ -898,8 +898,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return { success: true, servers: servers.map(s => s.id) };
     },
 
-    configureWorkbenchToolset(toolset) {
-      return configureBuiltinWorkbenchToolset(toolset);
+    configureWorkbenchToolset(toolset, systemPrompt) {
+      return configureBuiltinWorkbenchToolset(toolset, systemPrompt);
     },
 
     async updateAgents(agents) {

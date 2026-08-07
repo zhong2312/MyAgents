@@ -438,7 +438,7 @@ export interface SessionEngine {
   forkAtAssistantMessage(messageId: string): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
-  configureWorkbenchToolset(toolset: unknown): Promise<WorkbenchToolsetConfigurationResult>;
+  configureWorkbenchToolset(toolset: unknown, systemPrompt?: unknown): Promise<WorkbenchToolsetConfigurationResult>;
   updateAgents(agents: Record<string, unknown>): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,

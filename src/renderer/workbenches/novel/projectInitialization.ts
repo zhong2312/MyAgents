@@ -17,7 +17,7 @@ import { createWorldSimulationV2InitializationFiles } from "./worldSimulationRep
 import {
   createEmptyFactionLibrary,
   serializeFactionLibrary,
-} from "./factionLibrarySchema";
+} from "./modules/factions/entities/factionLibrarySchema";
 import {
   createEmptyNovelChapterIndex,
   serializeNovelChapterIndex,
@@ -42,6 +42,8 @@ export interface NovelProjectInitializationInput {
   readonly createdAt: string;
   /** 创作语言，如 zh-CN / en-US；默认 zh-CN。 */
   readonly language?: string;
+  /** 本书简介。 */
+  readonly description?: string;
 }
 
 const DIRECTORIES = [
@@ -117,6 +119,9 @@ function createFiles(
         chapterWordCount: input.chapterWordCount,
         status: "planning",
         language: input.language?.trim() || "zh-CN",
+        ...(input.description?.trim()
+          ? { description: input.description.trim() }
+          : {}),
         createdAt: input.createdAt,
         updatedAt: input.createdAt,
       }),

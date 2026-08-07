@@ -15,9 +15,9 @@ import {
 import {
   createNovelFactionProposalRepository,
   type LoadedFactionProposal,
-} from "./factionProposalRepository";
-import type { FactionProposalOperation } from "./factionProposalSchema";
-import type { FactionRecord } from "./factionLibrarySchema";
+} from "../data-access/factionProposalRepository";
+import type { FactionProposalOperation } from "../entities/factionProposalSchema";
+import type { FactionRecord } from "../entities/factionLibrarySchema";
 
 interface FactionProposalReviewProps {
   readonly storage: WorkbenchStorage;

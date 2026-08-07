@@ -98,9 +98,11 @@ export async function handleSessionConfigRoute(
     try {
       const payload = (await request.json()) as {
         toolset?: { id?: unknown; context?: unknown };
+        systemPrompt?: unknown;
       };
       const result = await getSessionEngine().configureWorkbenchToolset(
         payload.toolset,
+        payload.systemPrompt,
       );
       return jsonResponse(result, result.success ? 200 : (result.status ?? 400));
     } catch (error) {

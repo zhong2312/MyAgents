@@ -40,7 +40,7 @@ import {
 } from "@/workbench-sdk";
 
 import { createNovelCharacterLibraryRepository } from "../../../characterLibraryRepository";
-import { createNovelFactionLibraryRepository } from "../../../factionLibraryRepository";
+import { createNovelFactionLibraryRepository } from "../../factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "../../../itemLibraryRepository";
 import { createNovelLocationLibraryRepository } from "../../../locationLibraryRepository";
 import { parseNovelChapterIndex } from "../../../projectSchema";

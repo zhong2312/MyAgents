@@ -5,7 +5,7 @@ import {
   loadCharacterRecords,
 } from "./characterLibraryRepository";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
-import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
+import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import {
   ITEM_LIBRARY_PATHS,
   createNovelItemLibraryRepository,

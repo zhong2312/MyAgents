@@ -146,6 +146,45 @@ describe('Session transcript mutation authority', () => {
     expect((await store.loadSessionTranscript(session.id)).messages.map(row => row.id)).toEqual(['keep']);
   });
 
+  it('atomically commits a content repair derived from the proven durable snapshot', async () => {
+    const session = await store.createSession('/tmp/transcript-content-repair');
+    const snapshot = await store.loadSessionTranscript(session.id);
+    const repairable = {
+      ...message('repairable', 'assistant'),
+      content: JSON.stringify([
+        { type: 'text', text: 'keep' },
+        { type: 'tool_use', tool: { id: '', name: '', input: {} } },
+      ]),
+    };
+    const removable = {
+      ...message('removable', 'assistant'),
+      content: JSON.stringify([
+        { type: 'tool_result', tool_use_id: '', content: 'invalid' },
+      ]),
+    };
+    const appended = await store.appendSessionMessages(
+      session.id,
+      snapshot.cursor,
+      [repairable, removable],
+    );
+    expect(appended.ok).toBe(true);
+    if (!appended.ok) return;
+
+    const repairedMessage = {
+      ...repairable,
+      content: JSON.stringify([{ type: 'text', text: 'keep' }]),
+    };
+    const result = await store.mutateSessionTranscript(session.id, appended.cursor, {
+      kind: 'content-repair',
+      sourceMessageIds: ['repairable', 'removable'],
+      repairedMessages: [repairedMessage],
+    });
+
+    expect(result).toMatchObject({ ok: true, action: 'replaced' });
+    if (result.ok) expect(result.cursor.persistedMessageCount).toBe(1);
+    expect((await store.loadSessionTranscript(session.id)).messages).toEqual([repairedMessage]);
+  });
+
   it('atomically migrates legacy JSON before the first cursor append', async () => {
     const session = await store.createSession('/tmp/transcript-legacy');
     writeFileSync(legacyTranscriptPath(session.id), JSON.stringify({ messages: [message('legacy')] }), 'utf-8');

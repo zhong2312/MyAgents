@@ -47,6 +47,13 @@ import {
   shouldSuppressRecoveredResumeAnchorError,
   type InvalidResumeAnchorKind,
 } from './session-core/resume-error-recovery';
+import {
+  findMalformedSdkToolHistory,
+  findMalformedToolHistory,
+  hasMalformedRawToolContent,
+  isInvalidProviderParameterError,
+  nextMalformedToolRecoveryAttempt,
+} from './session-core/sdk-tool-history-validation';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
@@ -445,6 +452,7 @@ import {
   applyTranscriptRetractionToPersistence,
   loadTranscriptFromSessionMessages,
   messageWireToSessionMessage,
+  repairMalformedToolTranscript,
   resetTranscriptPersistenceForSession,
   saveForkTranscript,
   scheduleTranscriptPersist,
@@ -1428,6 +1436,7 @@ function setCurrentSessionId(next: string): void {
   if (getCurrentProductSessionId() !== next) {
     flushPendingLiveEvents();
     resetBuiltinLiveRevision();
+    pendingFreshSdkSessionId = undefined;
   }
   setCurrentProductSessionId(next);
   bindNovelWorkbenchRuntime({
@@ -1744,6 +1753,10 @@ export function startOneShotBridge(
 // Pre-warm 永不修改此标志 — 从结构上消除超时/重试导致的状态错误。
 let sessionRegistered = false;
 
+// A quarantined SDK transcript must never be reopened. A fresh SDK id keeps
+// recovery isolated even if best-effort deletion of the corrupt store fails.
+let pendingFreshSdkSessionId: string | undefined;
+
 // 时间回溯：对话截断后，下次 query 需携带 resumeSessionAt 截断 SDK 对话历史
 let pendingResumeSessionAt: string | undefined;
 // PRD 0.2.27 — cold-reload window-B anchor. Captured at LOAD time (loadMessagesFromStorage)
@@ -1897,6 +1910,7 @@ async function backfillNovelWorkbenchToolsetMetadata(
 /** Bind a host-owned workbench toolset to the active builtin SDK session. */
 export async function configureWorkbenchToolset(
   toolset: unknown,
+  systemPrompt?: unknown,
 ): Promise<{
   success: boolean;
   toolsetId?: string;
@@ -1930,6 +1944,11 @@ export async function configureWorkbenchToolset(
   }
 
   try {
+    const normalizedSystemPrompt = typeof systemPrompt === 'string' && systemPrompt.trim().length > 0
+      ? systemPrompt.trim()
+      : undefined;
+    const systemPromptChanged = configState.currentWorkbenchSystemPrompt !== normalizedSystemPrompt;
+    configState.currentWorkbenchSystemPrompt = normalizedSystemPrompt;
     const previousContext = getNovelWorkbenchContext();
     const boundSessionId = sessionId.trim() || 'default';
     const context = configureNovelWorkbenchToolset(toolset, {
@@ -1941,7 +1960,8 @@ export async function configureWorkbenchToolset(
       previousContext?.promptId !== context.promptId ||
       previousContext?.promptVersion !== context.promptVersion ||
       previousContext?.sessionId !== context.sessionId ||
-      previousContext?.workspace !== context.workspace;
+      previousContext?.workspace !== context.workspace ||
+      systemPromptChanged;
     const toolsetSnapshot = getNovelWorkbenchToolsetSnapshot();
     const existingMetadata = getSessionMetadata(boundSessionId);
     if (existingMetadata && toolsetSnapshot) {
@@ -1956,6 +1976,12 @@ export async function configureWorkbenchToolset(
     // A cold-resumed SDK process may have been created before this rebinding.
     const toolsReady = await ensureSdkMcpInSync();
     if (!toolsReady) {
+      forceReloadActiveSession('mcp');
+    }
+    if (systemPromptChanged && toolsReady) {
+      // The custom workbench instructions are part of the SDK query's system
+      // prompt. Restart an idle/pre-warmed query so the next user turn sees
+      // them through the internal channel instead of as transcript text.
       forceReloadActiveSession('mcp');
     }
     return {
@@ -2365,6 +2391,104 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   forceWakeGeneratorWithNull();
   // 强制 subprocess 产出消息/错误，解除 for-await 阻塞
   lifecycleState.query?.interrupt().catch(() => {});
+}
+
+type MalformedToolSessionQuarantine = {
+  hostSessionId: string;
+  sdkSessionId: string;
+  workspacePath: string;
+  replayItem: MessageQueueItem | null;
+  fatalError?: string;
+};
+
+function buildMalformedToolReplayItem(source: MessageQueueItem | null): MessageQueueItem | null {
+  if (!source) return null;
+  const nextAttempt = nextMalformedToolRecoveryAttempt(
+    source.malformedToolHistoryRecovery?.attempt ?? 0,
+  );
+  if (nextAttempt === null) return null;
+  return {
+    ...source,
+    id: randomUUID(),
+    wasQueued: false,
+    resolve: () => {},
+    deferredUserSurface: undefined,
+    deferredSessionMetadata: undefined,
+    malformedToolHistoryRecovery: {
+      rootQueueId: source.malformedToolHistoryRecovery?.rootQueueId ?? source.id,
+      attempt: nextAttempt,
+    },
+  };
+}
+
+async function retractMalformedToolAttemptOutput(): Promise<void> {
+  const pendingPersist = transcriptState.persistChainBySession.get(sessionId);
+  if (pendingPersist) {
+    await pendingPersist.catch(() => undefined);
+  }
+  const tail = transcriptState.messages[transcriptState.messages.length - 1];
+  if (!tail || tail.role !== 'assistant' || !isStreamingMessage) return;
+
+  await applyTranscriptRetractionToPersistence(
+    sessionId,
+    new Set([tail.id]),
+    {
+      kind: 'sdk-retraction',
+      sdkUuids: [],
+      streamingTailMessageId: tail.id,
+    },
+  );
+  isStreamingMessage = false;
+  clearCurrentTurnTextBlocks();
+  pendingTextBlockTexts.clear();
+  broadcast('chat:messages-retracted', {
+    messageIds: [tail.id],
+    retractedStreamingTail: true,
+  });
+}
+
+async function deleteQuarantinedSdkTranscript(
+  sdkSessionId: string,
+  workspacePath: string,
+): Promise<void> {
+  if (!sdkSessionId.trim()) return;
+  try {
+    await sdkDeleteSession(sdkSessionId, { dir: workspacePath });
+    console.warn(`[agent][tool-history] deleted quarantined SDK transcript ${sdkSessionId}`);
+  } catch (error) {
+    // A fresh id is allocated regardless, so deletion failure cannot reopen
+    // the corrupt context. Keep the orphan visible in logs for diagnostics.
+    console.warn(
+      `[agent][tool-history] failed to delete quarantined SDK transcript ${sdkSessionId}:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+async function repairAndQuarantineLoadedToolHistory(
+  sdkSessionId: string | undefined,
+): Promise<boolean> {
+  if (findMalformedToolHistory(transcriptState.messages).length === 0) return false;
+
+  const repaired = await repairMalformedToolTranscript({
+    sessionId,
+    getCurrentSessionId: () => sessionId,
+  });
+  if (!repaired.repaired) return false;
+
+  const quarantinedSdkSessionId = sdkSessionId?.trim() || sessionId;
+  await deleteQuarantinedSdkTranscript(quarantinedSdkSessionId, agentDir);
+  sessionRegistered = false;
+  pendingFreshSdkSessionId = randomUUID();
+  pendingResumeSessionAt = undefined;
+  setPendingReloadAnchor(undefined);
+  clearCurrentSessionUuids();
+  clearLiveSessionUuids();
+  console.warn(
+    `[agent][tool-history] repaired ${repaired.issueCount} malformed tool field(s) `
+      + `while loading session ${sessionId}; next turn will use a fresh SDK context`,
+  );
+  return true;
 }
 
 // ===== Interaction Scenario (unified system prompt) =====
@@ -7492,6 +7616,7 @@ function pushInboxAbortReplyForQueuedItem(
 export async function resetSession(): Promise<void> {
   return runSerializedSessionMutation(async () => {
   console.log('[agent] resetSession: starting new conversation');
+  configState.currentWorkbenchSystemPrompt = undefined;
   // 1. Properly terminate the SDK session (same pattern as switchToSession)
   // Must abort persistent session so the generator exits and subprocess terminates
   if (lifecycleState.query || lifecycleState.termination) {
@@ -7662,6 +7787,7 @@ export async function initializeAgent(
     console.log('[agent] pre-warm disabled via --no-pre-warm');
   }
   agentDir = nextAgentDir;
+  configState.currentWorkbenchSystemPrompt = undefined;
   clearNovelWorkbenchContext();
   hasInitialPrompt = Boolean(initialPrompt && initialPrompt.trim());
   setCurrentProductSessionContext({ workspacePath: nextAgentDir, hasInitialPrompt });
@@ -7753,6 +7879,9 @@ export async function initializeAgent(
     const transcript = await loadSessionTranscript(initialSessionId);
     loadTranscriptFromSessionMessages(transcript.messages, transcript.cursor);
     if (transcript.messages.length > 0) {
+      if (!isExternalRuntime(getCurrentRuntimeType())) {
+        await repairAndQuarantineLoadedToolHistory(initMeta.sdkSessionId);
+      }
       if (!restoredPersistedWorkbench) {
         const restoredLegacyWorkbench = restoreLegacyNovelWorkbenchContext(transcript.messages, {
           sessionId,
@@ -7928,6 +8057,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     return false;
   }
 
+  configState.currentWorkbenchSystemPrompt = undefined;
   // Properly terminate the old session if one is running
   // Must abort persistent session so the generator exits and subprocess terminates
   // Otherwise the old session continues processing transcriptState.messages with stale settings
@@ -8014,6 +8144,10 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   // Update agentDir from session
   if (sessionMeta.agentDir) {
     agentDir = sessionMeta.agentDir;
+  }
+
+  if (!isExternalRuntime(getCurrentRuntimeType())) {
+    await repairAndQuarantineLoadedToolHistory(sessionMeta.sdkSessionId);
   }
 
   const restoredPersistedWorkbench = restorePersistedNovelWorkbenchContext(
@@ -10587,6 +10721,54 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let activeQuery: Query | null = null;
   let activeQueryAuthority: BuiltinQueryAuthority | null = null;
   const queryProductSessionId = sessionId;
+  let malformedToolQuarantine: MalformedToolSessionQuarantine | null = null;
+
+  const beginMalformedToolQuarantine = async (reason: string): Promise<void> => {
+    if (malformedToolQuarantine) return;
+
+    const source = getCurrentTurnSourceItem();
+    // Novel workbench mutations are draft-scoped and idempotent/reloadable.
+    // Outside that boundary a hidden replay could repeat arbitrary side
+    // effects, so quarantine the context but require an explicit resend.
+    const replayItem = getNovelWorkbenchContext()
+      ? buildMalformedToolReplayItem(source)
+      : null;
+    const fatalError = replayItem
+      ? undefined
+      : '模型连续返回了无效工具调用。已隔离损坏的模型上下文，请重新发送本条消息或切换模型。';
+    const metadata = getSessionMetadata(sessionId);
+    malformedToolQuarantine = {
+      hostSessionId: sessionId,
+      sdkSessionId: metadata?.sdkSessionId?.trim() || sessionId,
+      workspacePath: agentDir,
+      replayItem,
+      ...(fatalError ? { fatalError } : {}),
+    };
+
+    try {
+      await retractMalformedToolAttemptOutput();
+    } catch (error) {
+      console.warn(
+        '[agent][tool-history] failed to retract malformed tool attempt output:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+    if (fatalError) {
+      lastAgentError = fatalError;
+      const completionTerminal = handleMessageError(fatalError);
+      setSessionState('error');
+      broadcast(
+        'chat:message-error',
+        withSessionCompletionTerminal(fatalError, completionTerminal),
+      );
+    }
+
+    console.warn(
+      `[agent][tool-history] quarantining SDK transcript after ${reason}; `
+        + (replayItem ? 'current turn will be replayed once' : 'automatic replay limit reached'),
+    );
+    abortPersistentSession({ notifyPendingRequests: false });
+  };
 
   try {
     const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
@@ -10621,7 +10803,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     } else {
       resumeFrom = undefined;
       // For new sessions, ensure SDK gets a valid UUID
-      effectiveSdkSessionId = UUID_RE.test(sessionId) ? sessionId : randomUUID();
+      effectiveSdkSessionId = pendingFreshSdkSessionId
+        ?? (UUID_RE.test(sessionId) ? sessionId : randomUUID());
     }
     // sessionRegistered 不在此处修改 — 等待 system_init 确认
 
@@ -10898,7 +11081,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       systemPrompt: {
         type: 'preset' as const,
         preset: 'claude_code' as const,
-        append: buildSystemPromptAppend(currentScenario, {
+        append: [
+          buildSystemPromptAppend(currentScenario, {
           playwrightStorageEnabled: (configState.currentMcpServers ?? []).some(
             s => s.id === 'playwright' && (s.args ?? []).some((a: string) => /^--caps=.*\bstorage\b/.test(a))
           ),
@@ -10911,7 +11095,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           cliToolsEnabled: true,
           userCliToolsEnabled: cliToolRegistryEnabled,
           enabledOfficialToolIds,
-        }),
+          }),
+          configState.currentWorkbenchSystemPrompt,
+        ].filter((value): value is string => Boolean(value && value.trim())).join('\n\n'),
       },
       cwd: agentDir,
       includePartialMessages: true,
@@ -11900,6 +12086,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // Buffer system_init during pre-warm; replay when first user message arrives
         if (!lifecycleState.preWarming) {
           sessionRegistered = true;  // SDK 确认注册，后续必须 resume
+          pendingFreshSdkSessionId = undefined;
           // (issue #174) Subprocess is now ready — graduate 'starting' to
           // 'running' so the UI swaps the "AI 启动中" hint for the normal
           // thinking indicator. Skip on pre-warm (state is 'idle' anyway).
@@ -12227,6 +12414,16 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         break;
       }
 
+      if (
+        (sdkMessage.type === 'assistant' || sdkMessage.type === 'user')
+        && hasMalformedRawToolContent(
+          (sdkMessage as { message?: { content?: unknown } }).message?.content,
+        )
+      ) {
+        await beginMalformedToolQuarantine(`${sdkMessage.type} frame contained an empty tool reference`);
+        break;
+      }
+
       if (sdkMessage.type === 'stream_event') {
         // Clear api_retry status when streaming resumes after a successful retry
         if (isApiRetrying) {
@@ -12308,6 +12505,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             }
           }
         } else if (streamEvent.type === 'content_block_start') {
+          if (hasMalformedRawToolContent([streamEvent.content_block])) {
+            await beginMalformedToolQuarantine('streamed tool_use contained an empty id or name');
+            break;
+          }
           // Implicit thinking close: when a non-thinking content block starts (text, tool_use),
           // force-close any unclosed thinking blocks in backend state.
           // Frontend does its own implicit close, so this keeps backend state consistent.
@@ -12422,6 +12623,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               content?: string | unknown;
               is_error?: boolean;
             };
+
+            if (typeof toolResultBlock.tool_use_id !== 'string' || !toolResultBlock.tool_use_id.trim()) {
+              await beginMalformedToolQuarantine('streamed tool result contained an empty tool_use_id');
+              break;
+            }
 
             // #293 — never let image-block / data-URL base64 through to SSE / tool
             // state on the start event either; attachments are produced once on the
@@ -12907,7 +13113,33 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           }
         }
       } else if (sdkMessage.type === 'result') {
-        await builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
+        const resultMessage = sdkMessage as BuiltinSdkResultMessage;
+        const rawResultError = resultMessage.result
+          || resultMessage.errors?.join('; ')
+          || '';
+        if (resultMessage.is_error && isInvalidProviderParameterError(rawResultError)) {
+          let hasMalformedHistory = findMalformedToolHistory(transcriptState.messages).length > 0;
+          if (!hasMalformedHistory) {
+            const sdkSessionId = getSessionMetadata(sessionId)?.sdkSessionId?.trim() || sessionId;
+            try {
+              const sdkHistory = await sdkGetSessionMessages(sdkSessionId, {
+                dir: agentDir,
+                limit: 500,
+              });
+              hasMalformedHistory = findMalformedSdkToolHistory(sdkHistory).length > 0;
+            } catch (historyError) {
+              console.warn(
+                '[agent][tool-history] unable to inspect SDK history after provider 400:',
+                historyError instanceof Error ? historyError.message : historyError,
+              );
+            }
+          }
+          if (hasMalformedHistory) {
+            await beginMalformedToolQuarantine('provider rejected malformed tool history with HTTP 400');
+            break;
+          }
+        }
+        await builtinTurnLifecycle.handleSdkResult(resultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
         // half lives in the system block above): a type outside the 0.3.220
@@ -12929,6 +13161,28 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     if (errorMessage === 'STARTUP_ABORTED_BY_STOP') {
       console.log('[agent] session start aborted pre-launch by user stop');
       return;
+    }
+    if (isInvalidProviderParameterError(errorMessage)) {
+      let hasMalformedHistory = findMalformedToolHistory(transcriptState.messages).length > 0;
+      if (!hasMalformedHistory) {
+        const sdkSessionId = getSessionMetadata(sessionId)?.sdkSessionId?.trim() || sessionId;
+        try {
+          const sdkHistory = await sdkGetSessionMessages(sdkSessionId, {
+            dir: agentDir,
+            limit: 500,
+          });
+          hasMalformedHistory = findMalformedSdkToolHistory(sdkHistory).length > 0;
+        } catch (historyError) {
+          console.warn(
+            '[agent][tool-history] unable to inspect SDK history after thrown provider 400:',
+            historyError instanceof Error ? historyError.message : historyError,
+          );
+        }
+      }
+      if (hasMalformedHistory) {
+        await beginMalformedToolQuarantine('provider threw HTTP 400 for malformed tool history');
+        return;
+      }
     }
     const errorStack = error instanceof Error ? error.stack : String(error);
     console.error('[agent] session error:', errorMessage);
@@ -13188,6 +13442,33 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     setQuerySession(null);
     try { session?.close(); } catch { /* subprocess 可能已退出 */ }
 
+    // TypeScript cannot observe assignments performed through the nested
+    // quarantine callback while analyzing this finally block.
+    const settledMalformedToolQuarantine = malformedToolQuarantine as MalformedToolSessionQuarantine | null;
+    if (settledMalformedToolQuarantine) {
+      const quarantine = settledMalformedToolQuarantine;
+      try {
+        await repairMalformedToolTranscript({
+          sessionId: quarantine.hostSessionId,
+          getCurrentSessionId: () => sessionId,
+        });
+      } catch (repairError) {
+        console.error('[agent][tool-history] failed to repair MyAgents transcript:', repairError);
+      }
+      await deleteQuarantinedSdkTranscript(
+        quarantine.sdkSessionId,
+        quarantine.workspacePath,
+      );
+      if (sessionId === quarantine.hostSessionId) {
+        sessionRegistered = false;
+        pendingFreshSdkSessionId = randomUUID();
+        pendingResumeSessionAt = undefined;
+        setPendingReloadAnchor(undefined);
+        clearCurrentSessionUuids();
+        clearLiveSessionUuids();
+      }
+    }
+
     // PRD #124: unregister the bridge token now that the SDK subprocess
     // has exited. If the session restarts, `startStreamingSession` mints
     // a fresh token (freshToken: true) so late requests from this dying
@@ -13245,7 +13526,22 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // They are cleared when the Sidecar Owner is fully released (IM Bot stops).
     resolveTermination!();
 
-    if (wasPreWarming) {
+    if (settledMalformedToolQuarantine && sessionId === settledMalformedToolQuarantine.hostSessionId) {
+      const replayItem = settledMalformedToolQuarantine.replayItem;
+      resetAbortFlag();
+      resetPreWarmFailCount();
+      if (replayItem) {
+        unshiftMessage(replayItem);
+        console.warn(
+          `[agent][tool-history] requeued turn ${replayItem.id} in a fresh SDK context `
+            + `(attempt=${replayItem.malformedToolHistoryRecovery?.attempt ?? 1})`,
+        );
+      }
+      if (!settledMalformedToolQuarantine.fatalError) {
+        setSessionState('idle');
+      }
+      schedulePreWarm();
+    } else if (wasPreWarming) {
       // sessionRegistered 不修改 — pre-warm 永不触碰此标志
 
       if (!preWarmStartedOk) {

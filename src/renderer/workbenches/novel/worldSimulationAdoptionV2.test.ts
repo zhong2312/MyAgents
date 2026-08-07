@@ -9,8 +9,8 @@ import {
 import {
   createEmptyFactionLibrary,
   type FactionRecord,
-} from "./factionLibrarySchema";
-import { createNovelFactionLibraryRepository } from "./factionLibraryRepository";
+} from "./modules/factions/entities/factionLibrarySchema";
+import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import { MAIN_TIMELINE_BRANCH_ID } from "./timelineLibrarySchema";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";

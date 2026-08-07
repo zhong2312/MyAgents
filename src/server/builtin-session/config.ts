@@ -28,6 +28,7 @@ let currentBackgroundAgentPermissionMode: BackgroundAgentPermissionMode = DEFAUL
 let currentModel: string | undefined = undefined;
 let currentReasoningEffort: string | undefined = undefined;
 let currentProviderEnv: ProviderEnv | undefined = undefined;
+let currentWorkbenchSystemPrompt: string | undefined = undefined;
 let pendingProviderHistoryBoundaryReset = false;
 
 export const configState = {
@@ -96,6 +97,12 @@ export const configState = {
   },
   set currentProviderEnv(providerEnv: ProviderEnv | undefined) {
     currentProviderEnv = providerEnv;
+  },
+  get currentWorkbenchSystemPrompt(): string | undefined {
+    return currentWorkbenchSystemPrompt;
+  },
+  set currentWorkbenchSystemPrompt(prompt: string | undefined) {
+    currentWorkbenchSystemPrompt = prompt;
   },
   get pendingProviderHistoryBoundaryReset(): boolean {
     return pendingProviderHistoryBoundaryReset;
