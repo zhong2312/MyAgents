@@ -5,7 +5,7 @@ import type { CharacterRecord } from "../../../shared/workbenches/novel/characte
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
-} from "./characterLibraryRepository";
+} from "./modules/characters";
 import {
   createEmptyFactionLibrary,
   type FactionRecord,

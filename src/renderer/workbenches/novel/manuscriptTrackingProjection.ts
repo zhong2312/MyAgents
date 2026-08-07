@@ -3,13 +3,13 @@ import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
-} from "./characterLibraryRepository";
+} from "./modules/characters";
 import type {
   CharacterAppearance,
   CharacterInventoryItem,
   CharacterRecord,
   CharacterRelation,
-} from "./characterLibrarySchema";
+} from "./modules/characters";
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import type { FactionRecord } from "./modules/factions/entities/factionLibrarySchema";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";

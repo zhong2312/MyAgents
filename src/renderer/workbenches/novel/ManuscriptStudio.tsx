@@ -87,7 +87,7 @@ import {
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
-} from "./characterLibraryRepository";
+} from "./modules/characters";
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";

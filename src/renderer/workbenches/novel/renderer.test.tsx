@@ -367,7 +367,8 @@ describe("NovelWorkbenchRenderer storage loop", () => {
           promptId: "novel.world.guide",
           presentation: "dialog",
           conversationKey: "novel.world.architecture",
-          initialMessage: expect.stringContaining("资深的世界设计师"),
+          initialMessage: "请开始执行当前小说工作台任务。",
+          systemPrompt: expect.stringContaining("资深的世界设计师"),
           toolset: expect.objectContaining({
             id: "novel-world",
             context: expect.objectContaining({ mode: "world" }),
@@ -375,13 +376,13 @@ describe("NovelWorkbenchRenderer storage loop", () => {
         }),
       );
     });
-    expect(openAgentSession.mock.calls[0]?.[0].initialMessage).toContain(
+    expect(openAgentSession.mock.calls[0]?.[0].systemPrompt).toContain(
       '"title": "测试小说"',
     );
-    expect(openAgentSession.mock.calls[0]?.[0].initialMessage).toContain(
+    expect(openAgentSession.mock.calls[0]?.[0].systemPrompt).toContain(
       "受控写回协议",
     );
-    expect(openAgentSession.mock.calls[0]?.[0].initialMessage).toContain(
+    expect(openAgentSession.mock.calls[0]?.[0].systemPrompt).toContain(
       "novel_world_submit_draft",
     );
   });

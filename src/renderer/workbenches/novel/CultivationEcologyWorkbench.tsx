@@ -126,8 +126,10 @@ import {
 } from "../../../shared/workbenches/novel/cultivationEcologySchema";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import type { ItemIndexEntry } from "./itemLibrarySchema";
-import { parseCharacterLibraryIndex } from "./characterLibrarySchema";
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import {
+  createNovelCharacterLibraryRepository,
+  parseCharacterLibraryIndex,
+} from "./modules/characters";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
 import FormationBackdropArt from "./FormationBackdropArt";
 import {

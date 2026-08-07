@@ -3,7 +3,7 @@ import type { WorkbenchStorage } from "@/workbench-sdk";
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
-} from "./characterLibraryRepository";
+} from "./modules/characters";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import {

@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useMemo } from "react";
 
-import type { CharacterRecord } from "./characterLibrarySchema";
+import type { CharacterRecord } from "./modules/characters";
 import type { NarrativeEngineering } from "./narrativeEngineeringSchema";
 import type { LoadedNovelChapter } from "./repository";
 

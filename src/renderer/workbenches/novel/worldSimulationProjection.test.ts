@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CharacterRecord } from "../../../shared/workbenches/novel/characterLibrarySchema";
 
-import { createNovelCharacterLibraryRepository } from "./characterLibraryRepository";
+import { createNovelCharacterLibraryRepository } from "./modules/characters";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
 import { createNovelMapRepository } from "./mapRepository";
 import {

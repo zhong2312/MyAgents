@@ -34,7 +34,7 @@ import { CustomSelect, Popover, type WorkbenchProjection, type WorkbenchStorage 
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
-} from "../../../characterLibraryRepository";
+} from "../../characters";
 import type { DomainEntityRef } from "../../../shared/business/domainIndex";
 import {
   findInboundReferences,
@@ -56,7 +56,7 @@ import {
   type FactionRight,
   type FactionTerritory,
 } from "../entities/factionLibrarySchema";
-import type { CharacterRecord } from "../../../characterLibrarySchema";
+import type { CharacterRecord } from "../../characters";
 import { createNovelTimelineLibraryRepository } from "../../../timelineLibraryRepository";
 import { createNovelSettingLibraryRepository } from "../../../settingLibraryRepository";
 

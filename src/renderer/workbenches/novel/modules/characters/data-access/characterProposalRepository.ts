@@ -7,7 +7,7 @@ import {
   serializeCharacterProposalManifest,
   type CharacterProposalManifest,
   type CharacterProposalOperation,
-} from "./characterProposalSchema";
+} from "../entities/characterProposalSchema";
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
@@ -20,7 +20,7 @@ import {
   type CharacterRecord,
   type CharacterSoulDefinition,
   type RaceDefinition,
-} from "./characterLibrarySchema";
+} from "../entities/characterLibrarySchema";
 
 export interface LoadedCharacterProposal {
   readonly manifest: CharacterProposalManifest;

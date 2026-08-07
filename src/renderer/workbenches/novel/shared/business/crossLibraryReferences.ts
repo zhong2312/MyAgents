@@ -1,7 +1,9 @@
 import type { WorkbenchProjection, WorkbenchProjectionRef, WorkbenchStorage } from "@/workbench-sdk";
 
-import { parseCharacterLibraryIndex } from "../../characterLibrarySchema";
-import { createNovelCharacterLibraryRepository } from "../../characterLibraryRepository";
+import {
+  createNovelCharacterLibraryRepository,
+  parseCharacterLibraryIndex,
+} from "../../modules/characters";
 import {
   FACTION_LIBRARY_PATH,
   parseFactionLibrary,

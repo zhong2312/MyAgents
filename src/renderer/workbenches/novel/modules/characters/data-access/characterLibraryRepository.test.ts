@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { CharacterRecord } from "../../../shared/workbenches/novel/characterLibrarySchema";
+import type { CharacterRecord } from "../entities/characterLibrarySchema";
 
 import {
   CHARACTER_LIBRARY_PATHS,
   createNovelCharacterLibraryRepository,
 } from "./characterLibraryRepository";
-import { createEmptyNovelStorage } from "./testStorage";
+import { createEmptyNovelStorage } from "../../../shared/infrastructure/testStorage";
 
 function character(id: string, name: string): CharacterRecord {
   return {

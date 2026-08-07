@@ -1,6 +1,6 @@
 import type { WorkbenchProjection, WorkbenchStorage } from "@/workbench-sdk";
 
-import { parseCharacterLibraryIndex } from "../../characterLibrarySchema";
+import { parseCharacterLibraryIndex } from "../../modules/characters";
 import { parseFactionLibrary } from "../../modules/factions/entities/factionLibrarySchema";
 import { parseItemLibraryIndex } from "../../itemLibrarySchema";
 import { parseLocationLibraryIndex } from "../../locationLibrarySchema";

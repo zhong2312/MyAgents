@@ -27,10 +27,10 @@ import type {
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
-} from "./characterLibraryRepository";
+} from "./modules/characters";
 import {
   type CharacterRecord,
-} from "./characterLibrarySchema";
+} from "./modules/characters";
 import NarrativeAudit, {
   buildNarrativeAuditFindings,
   type NarrativeAuditFinding,

@@ -1,4 +1,4 @@
-import type { CharacterRecord } from "./characterLibrarySchema";
+import type { CharacterRecord } from "./modules/characters";
 import type {
   NarrativeAuditFinding,
   NarrativeWorkspaceView,

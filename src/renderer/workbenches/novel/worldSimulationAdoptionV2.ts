@@ -11,12 +11,12 @@ import type {
 import {
   CHARACTER_LIBRARY_PATHS,
   createNovelCharacterLibraryRepository,
-} from "./characterLibraryRepository";
+} from "./modules/characters";
 import {
   parseCharacterRecordFile,
   serializeCharacterLibraryFile,
   type CharacterRecord,
-} from "./characterLibrarySchema";
+} from "./modules/characters";
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import {
   FACTION_LIBRARY_PATH,

@@ -39,7 +39,7 @@ import {
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import { createNovelCharacterLibraryRepository } from "../../../characterLibraryRepository";
+import { createNovelCharacterLibraryRepository } from "../../characters";
 import { createNovelFactionLibraryRepository } from "../../factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "../../../itemLibraryRepository";
 import { createNovelLocationLibraryRepository } from "../../../locationLibraryRepository";

@@ -4,7 +4,7 @@ import type {
   CharacterLibraryMeta,
   CharacterSoulDefinition,
   RaceDefinition,
-} from "./characterLibrarySchema";
+} from "../entities/characterLibrarySchema";
 
 export const CHARACTER_LIBRARY_SCHEMA_VERSION = 1 as const;
 export const UNGROUPED_CHARACTER_GROUP_ID = "ungrouped";

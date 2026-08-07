@@ -69,22 +69,22 @@ import {
 import {
   cultivationEcologySchema,
   type CultivationEcology,
-} from "../../../shared/workbenches/novel/cultivationEcologySchema";
+} from "../../../../../../shared/workbenches/novel/cultivationEcologySchema";
 
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
   type LoadedCharacterLibrary,
-} from "./characterLibraryRepository";
-import type { CharacterLibraryMeta } from "./characterLibrarySchema";
+} from "../data-access/characterLibraryRepository";
+import type { CharacterLibraryMeta } from "../entities/characterLibrarySchema";
 import CharacterProposalReview from "./CharacterProposalReview";
 import {
   findInboundReferences,
   formatInboundReferenceHits,
-} from "./crossLibraryReferences";
-import type { DomainEntityRef } from "./domainIndex";
-import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
-import type { ItemIndexEntry } from "./itemLibrarySchema";
+} from "../../../shared/business/crossLibraryReferences";
+import type { DomainEntityRef } from "../../../shared/business/domainIndex";
+import { createNovelItemLibraryRepository } from "../../items/data-access/itemLibraryRepository";
+import type { ItemIndexEntry } from "../../items/entities/itemLibrarySchema";
 
 type RoleWeight = "main" | "secondary" | "npc" | "extra";
 type DetailTab =

@@ -11,8 +11,8 @@ import {
   createNovelCharacterProposalRepository,
   type CharacterProposalLoadError,
   type LoadedCharacterProposal,
-} from "./characterProposalRepository";
-import type { CharacterProposalOperation } from "./characterProposalSchema";
+} from "../data-access/characterProposalRepository";
+import type { CharacterProposalOperation } from "../entities/characterProposalSchema";
 
 interface CharacterProposalReviewProps {
   readonly storage: WorkbenchStorage;

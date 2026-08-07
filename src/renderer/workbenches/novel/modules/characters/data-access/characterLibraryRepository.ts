@@ -6,12 +6,12 @@ import {
 import {
   cultivationEcologySchema,
   type CultivationEcology,
-} from "../../../shared/workbenches/novel/cultivationEcologySchema";
+} from "../../../../../../shared/workbenches/novel/cultivationEcologySchema";
 
 import {
   createDefaultCharacterLibraryMeta,
   createEmptyCharacterLibraryIndex,
-} from "./characterLibraryDefaults";
+} from "../business/characterLibraryDefaults";
 import {
   parseCharacterLibraryIndex,
   parseCharacterLibraryMeta,
@@ -21,8 +21,8 @@ import {
   type CharacterLibraryIndex,
   type CharacterLibraryMeta,
   type CharacterRecord,
-} from "./characterLibrarySchema";
-import { createStorageTransaction } from "./storageTransaction";
+} from "../entities/characterLibrarySchema";
+import { createStorageTransaction } from "../../../shared/infrastructure/storageTransaction";
 
 export const CHARACTER_LIBRARY_PATHS = Object.freeze({
   index: "characters/index.json",

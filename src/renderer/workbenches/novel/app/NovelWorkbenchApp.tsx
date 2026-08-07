@@ -39,9 +39,10 @@ import {
 import type { NovelChapterStatus, NovelMetadata } from "../projectSchema";
 import NovelProjectSettingsDialog from "../NovelProjectSettingsDialog";
 import { estimateChapterRange, formatWordCountInWan } from "../projectPlanning";
-import CharacterLibraryPrototype, {
+import {
+  CharacterLibraryPrototype,
   type CharacterAiTarget,
-} from "../CharacterLibraryPrototype";
+} from "../modules/characters";
 import NovelModelScenarioSettings from "../NovelModelScenarioSettings";
 import PromptManager from "../PromptManager";
 import {

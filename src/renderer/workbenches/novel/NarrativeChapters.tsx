@@ -13,7 +13,7 @@ import { useMemo, useState } from "react";
 
 import { ConfirmDialog } from "@/workbench-sdk";
 
-import type { CharacterRecord } from "./characterLibrarySchema";
+import type { CharacterRecord } from "./modules/characters";
 import NarrativeDirectoryTree, {
   type NarrativeDirectorySelection,
 } from "./NarrativeDirectoryTree";

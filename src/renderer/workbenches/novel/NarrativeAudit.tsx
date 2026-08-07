@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import type { CharacterRecord } from "./characterLibrarySchema";
+import type { CharacterRecord } from "./modules/characters";
 import { planNarrativeDuplicateRepair } from "./narrativeDuplicateRepair";
 import type { NarrativeEngineering } from "./narrativeEngineeringSchema";
 import { orderedNarrativeChapters } from "./narrativePlanningModel";
