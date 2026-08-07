@@ -14,6 +14,10 @@ import type {
   TaskCreateFromAlignmentInput,
   TaskListFilter,
   TaskRunStats,
+  TaskTrigger,
+  TaskTriggerCheckNowResult,
+  TaskTriggerRuntimeState,
+  TaskTriggerTestResponse,
   TaskUpdateInput,
   TaskUpdateStatusInput,
 } from '@/../shared/types/task';
@@ -136,6 +140,46 @@ export function taskUpdate(input: TaskUpdateInput): Promise<Task> {
   return inv('cmd_task_update', { input });
 }
 
+export function taskTriggerValidate(trigger: TaskTrigger): Promise<TaskTrigger> {
+  return inv('cmd_task_trigger_validate', { trigger });
+}
+
+export function taskTriggerTestTask(taskId: string): Promise<TaskTriggerTestResponse> {
+  return inv('cmd_task_trigger_test', { taskId });
+}
+
+export function taskTriggerTestSpec(
+  trigger: TaskTrigger,
+  workspacePath: string,
+  checkpointState?: Pick<
+    TaskTriggerRuntimeState,
+    'checkpoint' | 'checkpointRevision' | 'checkpointUpdatedAt'
+  >,
+  ownerTaskId?: string,
+): Promise<TaskTriggerTestResponse> {
+  return inv('cmd_task_trigger_test', {
+    ownerTaskId,
+    trigger,
+    workspacePath,
+    checkpoint: checkpointState?.checkpoint ?? undefined,
+    checkpointRevision: checkpointState?.checkpointRevision,
+    checkpointUpdatedAt: checkpointState?.checkpointUpdatedAt,
+  });
+}
+
+export function taskCheckNow(id: string): Promise<TaskTriggerCheckNowResult> {
+  return inv('cmd_task_check_now', { id });
+}
+
+/** Force one AI turn through the ordinary Task queue without running Detector. */
+export function taskRunNow(id: string): Promise<string> {
+  return inv('cmd_task_run_now', { id });
+}
+
+export function taskResetCheckpoint(id: string): Promise<TaskTriggerRuntimeState> {
+  return inv('cmd_task_reset_checkpoint', { id });
+}
+
 export function taskUpdateStatus(input: TaskUpdateStatusInput): Promise<Task> {
   return inv('cmd_task_update_status', { input });
 }
@@ -256,6 +300,12 @@ interface AdminResponse<T = unknown> {
   error?: string;
 }
 
+export interface TaskRunResult {
+  task: Task;
+  /** One-based ordinal assigned by the Task execution owner after admission. */
+  attemptOrdinal: number;
+}
+
 async function postAdmin<T = unknown>(
   path: string,
   body: Record<string, unknown>,
@@ -269,12 +319,12 @@ async function postAdmin<T = unknown>(
 }
 
 /** Dispatch task execution (PRD §11.1 unified primitive). */
-export function taskRun(id: string): Promise<unknown> {
+export function taskRun(id: string): Promise<TaskRunResult> {
   return postAdmin('/api/admin/task/run', { id });
 }
 
 /** Reset status → todo, then dispatch (PRD §10.2.2 row "rerun"). */
-export function taskRerun(id: string): Promise<unknown> {
+export function taskRerun(id: string): Promise<TaskRunResult> {
   return postAdmin('/api/admin/task/rerun', { id });
 }
 

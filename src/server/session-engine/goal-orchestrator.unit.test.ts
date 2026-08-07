@@ -13,6 +13,17 @@ import type {
 } from './types';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 
+const scheduledMocks = vi.hoisted(() => ({
+  metadata: { origin: { kind: 'desktop', surface: 'unknown' }, source: '' } as Record<string, unknown>,
+}));
+
+vi.mock('../SessionStore', () => ({
+  getSessionMetadata: vi.fn(() => scheduledMocks.metadata),
+}));
+vi.mock('../tools/cron-tools', () => ({
+  clearCronTaskContext: vi.fn(),
+}));
+
 function goal(overrides: Partial<SessionGoal> = {}): SessionGoal {
   return {
     id: 'goal-1',
@@ -240,6 +251,16 @@ describe('Goal orchestrator', () => {
 
   it('uses the Rust-provided queue id for an automatic continuation', async () => {
     const client = clientWithGoal();
+    scheduledMocks.metadata = {
+      origin: { kind: 'agent-channel', surface: 'channel_message' },
+      source: 'telegram_group',
+    };
+    const prepareScheduledTurn = vi.fn(async () => ({
+      success: true,
+      sessionId: 'session-1',
+      runtime: 'builtin' as const,
+      permissionMode: 'fullAgency',
+    }));
     const runInjectedTurn = vi.fn(async (request: InjectedTurnRequest) => {
       expect(await request.beforeDispatch?.()).toEqual({ accepted: true });
       await request.onTerminal?.({
@@ -256,19 +277,13 @@ describe('Goal orchestrator', () => {
     });
 
     const result = await createGoalOrchestrator(client).runScheduledTurn(
-      { runInjectedTurn },
+      { prepareScheduledTurn, runInjectedTurn },
       {
         goal: goal(),
         queueId: 'goal-queue-3',
         expectedControlRevision: 3,
-        channelDeliveryExpected: true,
-        turn: {
-          prompt: '<system-reminder>continue</system-reminder>',
-          sessionId: 'session-1',
-          workspacePath: '/workspace',
-          scenario: { type: 'desktop', surface: 'chat' },
-          timeoutMs: 10_000,
-        },
+        turnNumber: 3,
+        permissionMode: 'fullAgency',
       },
     );
 
@@ -285,6 +300,13 @@ describe('Goal orchestrator', () => {
 
   it('keeps a claimed Goal turn authoritative when runtime termination is unconfirmed', async () => {
     const client = clientWithGoal();
+    scheduledMocks.metadata = { origin: { kind: 'desktop', surface: 'unknown' }, source: '' };
+    const prepareScheduledTurn = vi.fn(async () => ({
+      success: true,
+      sessionId: 'session-1',
+      runtime: 'builtin' as const,
+      permissionMode: 'fullAgency',
+    }));
     const runInjectedTurn = vi.fn(async (request: InjectedTurnRequest) => {
       expect(await request.beforeDispatch?.()).toEqual({ accepted: true });
       return {
@@ -297,19 +319,13 @@ describe('Goal orchestrator', () => {
     });
 
     const result = await createGoalOrchestrator(client).runScheduledTurn(
-      { runInjectedTurn },
+      { prepareScheduledTurn, runInjectedTurn },
       {
         goal: goal(),
         queueId: 'goal-orphan-turn',
         expectedControlRevision: 3,
-        channelDeliveryExpected: false,
-        turn: {
-          prompt: '<system-reminder>continue</system-reminder>',
-          sessionId: 'session-1',
-          workspacePath: '/workspace',
-          scenario: { type: 'desktop', surface: 'chat' },
-          timeoutMs: 10_000,
-        },
+        turnNumber: 3,
+        permissionMode: 'fullAgency',
       },
     );
 

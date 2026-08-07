@@ -1,14 +1,21 @@
 import { describe, it, expect } from 'vitest';
 
-import { mapCodexTokenUsage } from './codex-token-usage';
+import { addCodexExactResponseUsage, mapCodexTokenUsage } from './codex-token-usage';
 import { computeContextUsage } from '../../shared/contextUsage';
 
 // Realistic payload shape from `codex app-server generate-ts` (v0.136.0):
 //   thread/tokenUsage/updated → { threadId, turnId, tokenUsage: ThreadTokenUsage }
 //   ThreadTokenUsage    = { total, last, modelContextWindow }
 //   TokenUsageBreakdown = { totalTokens, inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens }
-function breakdown(input: number, cached: number, output = 0) {
-  return { totalTokens: input + output, inputTokens: input, cachedInputTokens: cached, outputTokens: output, reasoningOutputTokens: 0 };
+function breakdown(input: number, cached: number, output = 0, cacheWrite = 0) {
+  return {
+    totalTokens: input + output,
+    inputTokens: input,
+    cachedInputTokens: cached,
+    cacheWriteInputTokens: cacheWrite,
+    outputTokens: output,
+    reasoningOutputTokens: 0,
+  };
 }
 
 describe('mapCodexTokenUsage', () => {
@@ -34,6 +41,16 @@ describe('mapCodexTokenUsage', () => {
       modelContextWindow: 200_000,
     });
     expect(mapped!.contextOccupiedTokens).toBe(80_000);
+  });
+
+  it('does not expose cumulative cache totals as a per-turn fallback baseline', () => {
+    const mapped = mapCodexTokenUsage({
+      total: breakdown(200_000, 70_000, 3_000, 12_000),
+      last: breakdown(80_000, 40_000, 1_000, 2_000),
+      modelContextWindow: 272_000,
+    });
+    expect(mapped).not.toHaveProperty('runningTotalCacheReadTokens');
+    expect(mapped).not.toHaveProperty('runningTotalCacheCreationTokens');
   });
 
   it('returns null modelContextWindow when the runtime does not report one', () => {
@@ -69,5 +86,26 @@ describe('mapCodexTokenUsage', () => {
     expect(usage.windowSource).toBe('runtime');
     expect(usage.usedPercent).toBeCloseTo(50, 5); // 136K / 272K
     expect(usage.source).toBe('codex');
+  });
+});
+
+describe('addCodexExactResponseUsage', () => {
+  it('sums exact per-response provider usage including cache writes', () => {
+    const first = addCodexExactResponseUsage(null, breakdown(100, 40, 20, 10));
+    const total = addCodexExactResponseUsage(first, breakdown(80, 30, 15, 5));
+    expect(total).toEqual({
+      inputTokens: 180,
+      outputTokens: 35,
+      cacheReadTokens: 70,
+      cacheCreationTokens: 15,
+    });
+  });
+
+  it('rejects incomplete provider usage instead of persisting a partial exact total', () => {
+    expect(addCodexExactResponseUsage(null, {
+      inputTokens: Number.NaN,
+      outputTokens: -1,
+      cachedInputTokens: 5,
+    })).toBeNull();
   });
 });

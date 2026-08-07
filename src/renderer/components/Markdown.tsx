@@ -12,7 +12,7 @@
 import 'katex/dist/katex.min.css';
 import './Markdown.css';
 
-import { memo, useContext, useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { Components } from 'react-markdown';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
@@ -20,8 +20,7 @@ import { useTranslation } from 'react-i18next';
 import CodeBlock from './markdown/CodeBlock';
 import InlineCode from './markdown/InlineCode';
 import MermaidDiagram from './markdown/MermaidDiagram';
-import { openExternal, isExternalUrl } from '@/utils/openExternal';
-import { BrowserPanelContext } from '@/context/BrowserPanelContext';
+import { useOpenWebLink } from '@/context/BrowserPanelContext';
 import { useFileLinkAction } from '@/context/FileActionContext';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
@@ -96,8 +95,8 @@ const MarkdownLink = memo(function MarkdownLink({
   node: _node,
   ...props
 }: React.ComponentProps<'a'> & { node?: unknown }) {
-  const browserPanel = useContext(BrowserPanelContext);
   const fileLinkAction = useFileLinkAction();
+  const openWebLink = useOpenWebLink();
 
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
@@ -110,16 +109,10 @@ const MarkdownLink = memo(function MarkdownLink({
       // Cmd (macOS) / Ctrl (Win/Linux) + click bypasses the embedded browser
       // panel and opens directly in the system default browser.
       const forceExternal = e.metaKey || e.ctrlKey;
-      if (!forceExternal && fileLinkAction?.openFileLink(href)) {
+      if (fileLinkAction?.openFileLink(href, { forceExternal })) {
         return;
       }
-      if (!forceExternal && browserPanel && isExternalUrl(href) && !href.toLowerCase().startsWith('mailto:')) {
-        // Route to embedded browser panel (exclude mailto: — those go to system email client)
-        browserPanel.openUrl(href);
-      } else {
-        // Fallback: system browser / default app
-        openExternal(href);
-      }
+      openWebLink(href, { forceExternal });
     }
   };
 

@@ -18,7 +18,7 @@ export const REQUIRED_THEME_CSS_TOKENS = [
   '--fb-highlight-a0', '--fb-highlight-line', '--fb-mask-opaque', '--fb-shadow-strong',
   '--fb-shadow-soft', '--fb-shadow-panel', '--fb-shadow-preview', '--fb-core-shadow',
   '--fb-inset-shadow', '--fb-window-shadow', '--fb-control-hover', '--fb-line-input', '--fb-line-thumb',
-  '--fb-drag-handle', '--fb-scroll-thumb',
+  '--fb-drag-handle',
   '--line', '--line-strong', '--line-subtle',
   '--theme-radius-base', '--theme-radius-sm', '--theme-radius-md', '--theme-radius-lg',
   '--theme-radius-xl', '--theme-radius-2xl', '--theme-radius-full',

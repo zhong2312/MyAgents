@@ -19,11 +19,16 @@ import type {
 import type { McpServerDefinition } from '../../shared/config-types';
 import { CODEX_PERMISSION_MODES } from '../../shared/types/runtime';
 import { coerceFileChanges, formatFileChangeForResult } from '../../shared/fileChange';
-import type { AgentPlanTodo, AgentRuntime, RuntimeConfigCapabilities, RuntimeProcess, SessionStartOptions, UnifiedEvent, UnifiedEventCallback, ResolvedImagePayload, SubAgentScope } from './types';
-import { StaleRuntimeSessionError } from './types';
+import type { AgentPlanTodo, AgentRuntime, ConversationBranchBoundary, ConversationBranchResult, RuntimeConfigCapabilities, RuntimeProcess, SessionStartOptions, UnifiedEvent, UnifiedEventCallback, ResolvedImagePayload, SubAgentScope } from './types';
+import { RuntimeConversationBranchError, StaleRuntimeSessionError } from './types';
 import type { InteractionScenario } from '../system-prompt';
 import { shouldDisallowAskUserQuestion } from '../host-interaction';
-import { mapCodexTokenUsage, type CodexThreadTokenUsage } from './codex-token-usage';
+import {
+  addCodexExactResponseUsage,
+  mapCodexTokenUsage,
+  type CodexExactUsageTotals,
+  type CodexThreadTokenUsage,
+} from './codex-token-usage';
 import { stripAnsi } from './env-utils';
 import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
@@ -43,6 +48,7 @@ import {
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
 import { summarizeSensitiveValueForLog } from '../utils/log-summary';
+import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
 
 type CodexDecision = 'deny' | 'allow_once' | 'always_allow';
 type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -84,9 +90,12 @@ export function buildCodexInitializeParams(experimentalApi = false): Record<stri
 export function summarizeCodexThreadParamsForLog(
   params: Record<string, unknown>,
 ): Record<string, unknown> {
-  const { developerInstructions, ...safeParams } = params;
+  const { developerInstructions, threadId, ...safeParams } = params;
   return {
     ...safeParams,
+    ...(typeof threadId === 'string'
+      ? { threadId: summarizeSensitiveValueForLog(threadId) }
+      : {}),
     developerInstructions: summarizeSensitiveValueForLog(
       typeof developerInstructions === 'string' ? developerInstructions : null,
     ),
@@ -96,7 +105,7 @@ export function summarizeCodexThreadParamsForLog(
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
 const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
-const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
+const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
 const CODEX_MCP_PROXY_ENV_KEYS = [
   'HTTP_PROXY',
   'HTTPS_PROXY',
@@ -871,6 +880,7 @@ export function buildCodexTurnStartParams(args: {
    *  Schema: TurnStartParams.effort "Override the reasoning effort for this
    *  turn and subsequent turns" (codex app-server v2). */
   reasoningEffort?: string | null;
+  clientUserMessageId?: string | null;
 }): Record<string, unknown> {
   return {
     threadId: args.threadId,
@@ -883,7 +893,48 @@ export function buildCodexTurnStartParams(args: {
     // Omit when default — an explicit null is "no override" per schema, but
     // omitting is the conservative shape older codex builds also accept.
     ...(args.reasoningEffort ? { effort: args.reasoningEffort } : {}),
+    ...(args.clientUserMessageId ? { clientUserMessageId: args.clientUserMessageId } : {}),
   };
+}
+
+export function resolveCodexConversationBranchPoint(
+  turns: unknown,
+  targetTurnId: string,
+): { kind: 'fresh-thread' } | { kind: 'through-turn'; runtimeTurnId: string } {
+  if (!Array.isArray(turns)) {
+    throw new RuntimeConversationBranchError('anchor_unavailable', 'Codex did not return full turn history');
+  }
+  const matches = turns.filter((entry) => (
+    entry && typeof entry === 'object' && (entry as { id?: unknown }).id === targetTurnId
+  ));
+  if (matches.length !== 1) {
+    throw new RuntimeConversationBranchError('anchor_unavailable', 'The Codex turn anchor is unavailable');
+  }
+  const target = matches[0] as { status?: unknown };
+  if (target.status !== 'completed') {
+    throw new RuntimeConversationBranchError('anchor_unavailable', 'The Codex turn anchor is not completed');
+  }
+  const index = turns.indexOf(matches[0]);
+  if (index === 0) return { kind: 'fresh-thread' };
+  const previous = turns[index - 1] as { id?: unknown; status?: unknown } | undefined;
+  if (!previous || typeof previous.id !== 'string' || previous.status !== 'completed') {
+    throw new RuntimeConversationBranchError('anchor_unavailable', 'The previous Codex turn boundary is unavailable');
+  }
+  return { kind: 'through-turn', runtimeTurnId: previous.id };
+}
+
+function codexConversationRpcFailureCode(
+  error: unknown,
+  fallback: 'anchor_unavailable' | 'native_fork_failed',
+): 'capability_unavailable' | 'anchor_unavailable' | 'native_fork_failed' {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (/no rollout|(?:turn|anchor).*(?:not found|missing|unavailable)|unknown turn/i.test(detail)) {
+    return 'anchor_unavailable';
+  }
+  if (/-3260[12]|method not found|invalid params|unknown field|schema/i.test(detail)) {
+    return 'capability_unavailable';
+  }
+  return fallback;
 }
 
 export function buildCodexTurnSteerParams(args: {
@@ -1286,7 +1337,7 @@ export function resolveTopLevelSpawnCard(
  *     finalize the user's turn early + resetTurnAccumulators() mid-fan-out.
  *     A child's turn/plan/updated would also overwrite the main AgentStatusPanel
  *     todo snapshot.
- *   - USAGE (thread/tokenUsage/updated): a child's token usage would otherwise
+ *   - USAGE (thread/tokenUsage/updated, rawResponse/completed): a child's token usage would otherwise
  *     flow through as a `usage` event and pollute the MAIN session's context
  *     indicator + persisted lastContextUsage (external-session attributes every
  *     `usage` event to the main turn). Codex sends { threadId, turnId, tokenUsage }.
@@ -1300,6 +1351,7 @@ const CHILD_GATED_METHODS: ReadonlySet<string> = new Set([
   'thread/status/changed',
   'thread/closed',
   'thread/tokenUsage/updated',
+  'rawResponse/completed',
 ]);
 export function isChildThreadGatedMethod(method: string): boolean {
   return CHILD_GATED_METHODS.has(method);
@@ -1759,6 +1811,50 @@ function recordLegacySpawnAgentLifecycle(
 
 type CodexV2InteractionDelivery = 'queue-only' | 'trigger-turn';
 
+type CodexExactTurnUsageState = {
+  responseIds: Set<string>;
+  complete: boolean;
+  usage: CodexExactUsageTotals;
+};
+
+function recordCodexExactResponseUsage(
+  exactUsageByTurn: Map<string, CodexExactTurnUsageState>,
+  params: Record<string, unknown>,
+): void {
+  const turnId = stringValue(params.turnId);
+  const responseId = stringValue(params.responseId);
+  if (!turnId || !responseId) return;
+
+  const existing = exactUsageByTurn.get(turnId);
+  if (existing?.responseIds.has(responseId)) return;
+
+  const next: CodexExactTurnUsageState = existing ?? {
+    responseIds: new Set<string>(),
+    complete: true,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+  };
+  next.responseIds.add(responseId);
+  const nextUsage = addCodexExactResponseUsage(next.usage, params.usage);
+  if (!nextUsage) {
+    // One missing provider usage would make a partial sum look exact. Invalidate
+    // the whole turn and let thread/tokenUsage/updated remain authoritative.
+    next.complete = false;
+  } else {
+    next.usage = nextUsage;
+  }
+  exactUsageByTurn.set(turnId, next);
+}
+
+function takeCodexExactTurnUsage(
+  exactUsageByTurn: Map<string, CodexExactTurnUsageState>,
+  turnId: string | undefined,
+): CodexExactUsageTotals | null {
+  if (!turnId) return null;
+  const exact = exactUsageByTurn.get(turnId);
+  exactUsageByTurn.delete(turnId);
+  return exact?.complete && exact.responseIds.size > 0 ? exact.usage : null;
+}
+
 function hasDeferredToolOwner(
   proc: CodexSubAgentRoutingState,
   toolUseId: string,
@@ -1812,7 +1908,7 @@ export function dispatchCodexItemEvent(
   if (!deferred) {
     deferred = [];
     proc.deferredSubAgentEvents.set(itemThreadId, deferred);
-    console.warn(`[codex] Deferring foreign-thread items until sub-agent correlation arrives thread=${itemThreadId.slice(0, 12)}`);
+    console.warn(`[codex] Deferring foreign-thread items until sub-agent correlation arrives thread=${JSON.stringify(summarizeSensitiveValueForLog(itemThreadId))}`);
   }
   deferred.push(event);
 }
@@ -2059,6 +2155,14 @@ class CodexProcess implements RuntimeProcess {
   rpc: JsonRpcClient;
   threadId = '';
   currentTurnId = '';
+  version = '';
+  activeRootTurnAdmission: {
+    clientUserMessageId: string;
+    responseTurnId?: string;
+    notificationTurnId?: string;
+    deferredTerminalEvents?: UnifiedEvent[];
+  } | null = null;
+  rootEventHandler: UnifiedEventCallback | null = null;
   agentMessageTextById = new Map<string, string>();
   pendingRequests = new Map<string, PendingCodexRequest>();
 
@@ -2104,6 +2208,11 @@ class CodexProcess implements RuntimeProcess {
   // official raw item stream so the originating function name can be latched
   // by call_id before the lossy terminal item arrives.
   codexV2InteractionDeliveryByCallId = new Map<string, CodexV2InteractionDelivery>();
+  // Codex 0.146 rawResponse/completed reports provider-authored usage for one
+  // Responses API completion. A turn can make several completions around tool
+  // calls, so accumulate them by turn and dedupe response ids until the root
+  // terminal hands one exact delta to external-session's existing usage owner.
+  exactUsageByTurn = new Map<string, CodexExactTurnUsageState>();
   // `interacted` conflates queue-only send_message and turn-triggering
   // followup_task. Remember an activity that precedes turn/started so the
   // latter does not install a stale causal fence, but never infer execution
@@ -2934,6 +3043,7 @@ export class CodexRuntime implements AgentRuntime {
     codexProc.workspacePath = options.workspacePath;
     codexProc.scenario = options.scenario;
     codexProc.runtimeSource = runtimeSource;
+    codexProc.version = context.version ?? '';
 
     // Dedup guard: prevent double session_complete from notification + process exit
     let sessionCompleteEmitted = false;
@@ -2948,6 +3058,7 @@ export class CodexRuntime implements AgentRuntime {
       }
       withLogContext({ runtime: 'codex', runtimeSource }, () => onEvent(event));
     };
+    codexProc.rootEventHandler = wrappedOnEvent;
 
     const readyMcpServerNames = new Set<string>();
     let lastMcpToolCatalog: string[] = [];
@@ -3007,18 +3118,19 @@ export class CodexRuntime implements AgentRuntime {
       // Skip noisy notifications from logging: deltas, legacy duplicates, account events
       const isNoisy = method.startsWith('codex/event/') || method.startsWith('account/')
         || method === 'item/agentMessage/delta' || method === 'item/reasoning/summaryTextDelta'
-        || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta';
+        || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta'
+        || method === 'rawResponse/completed';
       if (!isNoisy) {
         let detail = '';
         if (method === 'item/started' || method === 'item/completed') {
           const item = p?.item as Record<string, unknown> | undefined;
           if (item) {
             detail = ` type=${item.type}`;
-            if (item.id) detail += ` id=${(item.id as string).slice(0, 12)}`;
+            if (typeof item.id === 'string') detail += ` id=${JSON.stringify(summarizeSensitiveValueForLog(item.id))}`;
             // PRD 0.2.27 — log threadId so sub-agent items are distinguishable
             // from main-thread items in production triage (Codex carries it; we
             // previously dropped it from logs, making this class of issue opaque).
-            if (typeof p?.threadId === 'string') detail += ` thread=${p.threadId.slice(0, 12)}`;
+            if (typeof p?.threadId === 'string') detail += ` thread=${JSON.stringify(summarizeSensitiveValueForLog(p.threadId))}`;
             // Tool-specific context
             if (item.type === 'commandExecution' && item.command) detail += ` cmd=${(item.command as string).slice(0, 80)}`;
             if (item.type === 'fileChange' && Array.isArray(item.changes)) {
@@ -3029,7 +3141,7 @@ export class CodexRuntime implements AgentRuntime {
             if (item.type === 'agentMessage' && typeof item.text === 'string') detail += ` text=${(item.text as string).length}chars`;
             if (item.type === 'userMessage') {
               const clientId = codexUserMessageClientId(item) ?? codexUserMessageClientId(p ?? {});
-              if (clientId) detail += ` client=${clientId.slice(0, 16)}`;
+              if (clientId) detail += ` client=${JSON.stringify(summarizeSensitiveValueForLog(clientId))}`;
             }
             // Exit code / error for completed items
             if (method === 'item/completed') {
@@ -3049,7 +3161,7 @@ export class CodexRuntime implements AgentRuntime {
           if (status) detail = ` type=${status.type}`;
         } else if (method === 'thread/started') {
           const thread = p?.thread as Record<string, unknown> | undefined;
-          if (thread?.id) detail = ` threadId=${thread.id}`;
+          if (typeof thread?.id === 'string') detail = ` threadId=${JSON.stringify(summarizeSensitiveValueForLog(thread.id))}`;
         } else if (method === 'mcpServer/startupStatus/updated') {
           detail = ` name=${String(p?.name ?? '(unknown)')} status=${String(p?.status ?? '(unknown)')}`;
         }
@@ -3222,7 +3334,7 @@ export class CodexRuntime implements AgentRuntime {
           approvalPolicy: approval,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
-          ephemeral: false,
+          ephemeral: options.ephemeral ?? false,
           ...(enableManagedRawEvents ? { experimentalRawEvents: true } : {}),
         };
         console.log(`[codex] RPC thread/start: ${JSON.stringify(summarizeCodexThreadParamsForLog(startParams))}`);
@@ -3260,6 +3372,11 @@ export class CodexRuntime implements AgentRuntime {
 
       // 4. Send initial message if provided
       if (options.initialMessage) {
+        const clientUserMessageId = options.initialClientUserMessageId;
+        if (!clientUserMessageId) {
+          throw new Error('Codex initial root turn is missing clientUserMessageId');
+        }
+        this.beginRootTurnAdmission(codexProc, clientUserMessageId);
         const input = buildCodexInput(options.initialMessage, options.initialImages);
         const turnResult = await codexProc.rpc.call('turn/start', buildCodexTurnStartParams({
           threadId: codexProc.threadId,
@@ -3269,8 +3386,9 @@ export class CodexRuntime implements AgentRuntime {
           sandbox,
           model: options.model || null,
           reasoningEffort: codexProc.reasoningEffort || null,
+          clientUserMessageId,
         }), 15_000) as { turn: { id: string } };
-        codexProc.currentTurnId = turnResult.turn.id;
+        this.completeRootTurnAdmission(codexProc, turnResult.turn.id, wrappedOnEvent);
       }
 
       // 5. Fire-and-forget diagnostic fan-out (issue #194). Never block startup
@@ -3330,21 +3448,104 @@ export class CodexRuntime implements AgentRuntime {
     return codexProc;
   }
 
-  async sendMessage(process: RuntimeProcess, message: string, images?: ResolvedImagePayload[]): Promise<void> {
+  async sendMessage(
+    process: RuntimeProcess,
+    message: string,
+    images?: ResolvedImagePayload[],
+    options?: { clientUserMessageId?: string },
+  ): Promise<void> {
     const codexProc = process as CodexProcess;
     if (codexProc.exited) throw new Error('Codex process has exited');
+    const clientUserMessageId = options?.clientUserMessageId;
+    if (!clientUserMessageId) throw new Error('Codex root turn is missing clientUserMessageId');
 
+    this.beginRootTurnAdmission(codexProc, clientUserMessageId);
     const input = buildCodexInput(message, images);
-    const turnResult = await codexProc.rpc.call('turn/start', buildCodexTurnStartParams({
-      threadId: codexProc.threadId,
-      input,
-      cwd: codexProc.workspacePath,
-      approvalPolicy: codexProc.approvalPolicy,
-      sandbox: codexProc.sandbox,
-      model: codexProc.model || null,
-      reasoningEffort: codexProc.reasoningEffort || null,
-    }), 15_000) as { turn: { id: string } };
-    codexProc.currentTurnId = turnResult.turn.id;
+    try {
+      const turnResult = await codexProc.rpc.call('turn/start', buildCodexTurnStartParams({
+        threadId: codexProc.threadId,
+        input,
+        cwd: codexProc.workspacePath,
+        approvalPolicy: codexProc.approvalPolicy,
+        sandbox: codexProc.sandbox,
+        model: codexProc.model || null,
+        reasoningEffort: codexProc.reasoningEffort || null,
+        clientUserMessageId,
+      }), 15_000) as { turn: { id: string } };
+      this.completeRootTurnAdmission(codexProc, turnResult.turn.id, (event) => {
+        withLogContext({ runtime: 'codex', runtimeSource: codexProc.runtimeSource }, () => {
+          const handler = codexProc.rootEventHandler;
+          if (handler) handler(event);
+        });
+      });
+    } catch (error) {
+      codexProc.activeRootTurnAdmission = null;
+      throw error;
+    }
+  }
+
+  async branchConversation(
+    process: RuntimeProcess,
+    boundary: ConversationBranchBoundary,
+  ): Promise<ConversationBranchResult> {
+    const codexProc = process as CodexProcess;
+    if (codexProc.exited) {
+      throw new RuntimeConversationBranchError('native_fork_failed', 'Codex process has exited');
+    }
+    const version = codexProc.runtimeSource === 'managed-provider'
+      ? codexProc.version
+      : (await this.detect()).version;
+    if (!supportsCodexConversationBranch(codexProc.runtimeSource, version)) {
+      throw new RuntimeConversationBranchError('capability_unavailable', 'Codex must be updated to support conversation branching');
+    }
+
+    let branchBoundary = boundary;
+    if (boundary.kind === 'before-turn') {
+      let readResult: { thread?: { id?: string; turns?: unknown } };
+      try {
+        readResult = await codexProc.rpc.call('thread/read', {
+          threadId: codexProc.threadId,
+          includeTurns: true,
+        }, 15_000) as { thread?: { id?: string; turns?: unknown } };
+      } catch (error) {
+        throw new RuntimeConversationBranchError(
+          codexConversationRpcFailureCode(error, 'anchor_unavailable'),
+          'Unable to read the Codex turn history',
+        );
+      }
+      if (readResult.thread?.id !== codexProc.threadId) {
+        throw new RuntimeConversationBranchError('anchor_unavailable', 'Codex returned a different thread');
+      }
+      const resolved = resolveCodexConversationBranchPoint(readResult.thread.turns, boundary.runtimeTurnId);
+      if (resolved.kind === 'fresh-thread') return resolved;
+      branchBoundary = resolved;
+    }
+
+    let replacementId: string;
+    try {
+      const result = await codexProc.rpc.call('thread/fork', {
+        threadId: codexProc.threadId,
+        lastTurnId: branchBoundary.runtimeTurnId,
+      }, 15_000) as { thread?: { id?: string } };
+      replacementId = result.thread?.id ?? '';
+      if (!replacementId || replacementId === codexProc.threadId) {
+        throw new Error('Codex returned an invalid forked thread id');
+      }
+    } catch (error) {
+      if (error instanceof RuntimeConversationBranchError) throw error;
+      const code = codexConversationRpcFailureCode(error, 'native_fork_failed');
+      throw new RuntimeConversationBranchError(code, 'Codex could not create the conversation branch');
+    }
+
+    try {
+      await codexProc.rpc.call('thread/unsubscribe', { threadId: replacementId }, 10_000);
+    } catch {
+      await this.stopSession(codexProc);
+      if (!codexProc.exited) {
+        throw new RuntimeConversationBranchError('unsubscribe_failed', 'Codex branch subscription could not be released');
+      }
+    }
+    return { kind: 'native-thread', runtimeSessionId: replacementId };
   }
 
   async steerMessage(
@@ -3446,14 +3647,68 @@ export class CodexRuntime implements AgentRuntime {
     codexProc.subAgentThreadsAwaitingActivity.clear();
     codexProc.subAgentActivitySeenBeforeTurnStart.clear();
     codexProc.codexV2InteractionDeliveryByCallId.clear();
+    codexProc.exactUsageByTurn.clear();
     codexProc.subAgentInterruptsInFlight.clear();
     codexProc.pendingMainTurnCompletion = null;
     codexProc.interruptPendingSubAgentTurns = false;
     codexProc.releaseHeldMainTurnOnExit = false;
   }
 
+  private beginRootTurnAdmission(codexProc: CodexProcess, clientUserMessageId: string): void {
+    if (codexProc.activeRootTurnAdmission) {
+      throw new Error('Codex root turn admission already exists');
+    }
+    codexProc.activeRootTurnAdmission = { clientUserMessageId };
+  }
+
+  private completeRootTurnAdmission(
+    codexProc: CodexProcess,
+    runtimeTurnId: string,
+    emit: UnifiedEventCallback,
+  ): void {
+    const admission = codexProc.activeRootTurnAdmission;
+    if (!admission) throw new Error('Codex root turn response has no admission owner');
+    if (admission.notificationTurnId && admission.notificationTurnId !== runtimeTurnId) {
+      void this.stopSession(codexProc);
+      throw new Error('Codex root turn id mismatch between response and notification');
+    }
+    admission.responseTurnId = runtimeTurnId;
+    codexProc.currentTurnId = runtimeTurnId;
+    const admissionEvent = {
+      runtimeTurnId,
+      clientUserMessageId: admission.clientUserMessageId,
+    };
+    emit({ kind: 'root_turn_admitted', ...admissionEvent });
+    if (admission.deferredTerminalEvents) {
+      const terminalEvents = admission.deferredTerminalEvents;
+      codexProc.activeRootTurnAdmission = null;
+      for (const event of terminalEvents) emit(event);
+    }
+  }
+
+  private observeRootTurnId(codexProc: CodexProcess, runtimeTurnId: string): boolean {
+    const admission = codexProc.activeRootTurnAdmission;
+    if (!admission) return true;
+    if (
+      (admission.notificationTurnId && admission.notificationTurnId !== runtimeTurnId)
+      || (admission.responseTurnId && admission.responseTurnId !== runtimeTurnId)
+    ) {
+      codexProc.activeRootTurnAdmission = null;
+      void this.stopSession(codexProc);
+      return false;
+    }
+    admission.notificationTurnId = runtimeTurnId;
+    return true;
+  }
+
   private completeMainTurn(codexProc: CodexProcess, events: UnifiedEvent[]): UnifiedEvent[] {
     this.clearTurnLocalSubAgentState(codexProc);
+    const admission = codexProc.activeRootTurnAdmission;
+    if (admission && !admission.responseTurnId) {
+      admission.deferredTerminalEvents = events;
+      return [];
+    }
+    codexProc.activeRootTurnAdmission = null;
     return events;
   }
 
@@ -3512,7 +3767,7 @@ export class CodexRuntime implements AgentRuntime {
           || codexProc.releaseHeldMainTurnOnExit
         ) return;
         console.warn(
-          `[codex] Child turn interrupt failed thread=${threadId.slice(0, 12)}; restarting runtime to preserve the held root boundary: ${err instanceof Error ? err.message : String(err)}`,
+          `[codex] Child turn interrupt failed thread=${JSON.stringify(summarizeSensitiveValueForLog(threadId))}; restarting runtime to preserve the held root boundary: ${err instanceof Error ? err.message : String(err)}`,
         );
         codexProc.releaseHeldMainTurnOnExit = true;
         await this.stopSession(codexProc);
@@ -3734,6 +3989,13 @@ export class CodexRuntime implements AgentRuntime {
         const turnId = stringValue(p.turnId)
           ?? stringValue(objectValue(p.turn).id);
         if (turnId) {
+          if (!this.observeRootTurnId(codexProc, turnId)) {
+            return {
+              kind: 'turn_complete',
+              status: 'failed',
+              error: 'Codex root turn id changed unexpectedly',
+            };
+          }
           codexProc.currentTurnId = turnId;
         }
         return [
@@ -3745,7 +4007,26 @@ export class CodexRuntime implements AgentRuntime {
 
       case 'turn/completed': {
         const turn = p.turn;
+        const completedTurnId = stringValue(objectValue(turn).id)
+          ?? stringValue(p.turnId)
+          ?? codexProc.currentTurnId;
+        if (completedTurnId && !this.observeRootTurnId(codexProc, completedTurnId)) {
+          return {
+            kind: 'turn_complete',
+            status: 'failed',
+            error: 'Codex root turn id changed unexpectedly',
+          };
+        }
+        const exactUsage = takeCodexExactTurnUsage(codexProc.exactUsageByTurn, completedTurnId);
         const events: UnifiedEvent[] = [
+          ...(exactUsage ? [{
+            kind: 'usage' as const,
+            inputTokens: exactUsage.inputTokens,
+            outputTokens: exactUsage.outputTokens,
+            cacheReadTokens: exactUsage.cacheReadTokens || undefined,
+            cacheCreationTokens: exactUsage.cacheCreationTokens || undefined,
+            semantics: 'delta' as const,
+          }] : []),
           mapCodexTurnCompletedNotification(turn),
           { kind: 'agent_plan_update', todos: [] },
         ];
@@ -3794,6 +4075,13 @@ export class CodexRuntime implements AgentRuntime {
         }
         return null;
       }
+
+      // Codex 0.146 exact provider usage for one Responses API completion.
+      // Keep the raw payload inside the adapter; the root terminal emits one
+      // deduplicated turn delta through the existing UnifiedEvent usage owner.
+      case 'rawResponse/completed':
+        recordCodexExactResponseUsage(codexProc.exactUsageByTurn, p);
+        return null;
 
       // ── Text streaming ──
       case 'item/agentMessage/delta': {

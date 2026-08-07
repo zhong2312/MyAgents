@@ -16,7 +16,7 @@ import {
   stopSocksBridge,
 } from './utils/socks-bridge';
 
-export const PROXY_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
+export const PROXY_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
 
 const PROXY_VARS_LIST = [
   'HTTP_PROXY',
@@ -197,7 +197,10 @@ function copyProxyEnvVars(
 function mergeNoProxyWithLocalhost(value: string | undefined): string {
   if (!value) return PROXY_NO_PROXY_VAL;
   if (value.trim() === '*') return '*';
-  const entries = value.split(',').map(entry => entry.trim()).filter(Boolean);
+  const entries = value
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(entry => Boolean(entry) && entry.toLowerCase() !== '[::1]');
   const seen = new Set(entries.map(entry => entry.toLowerCase()));
   for (const entry of PROXY_NO_PROXY_VAL.split(',')) {
     if (!seen.has(entry.toLowerCase())) entries.push(entry);

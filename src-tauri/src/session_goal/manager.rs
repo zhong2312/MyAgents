@@ -1576,12 +1576,12 @@ mod tests {
         #[cfg(not(windows))]
         let mut command = crate::process_cmd::new("true");
 
-        let mut process = command
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn test sidecar placeholder");
+            .stderr(Stdio::null());
+        let mut process =
+            crate::process_cmd::spawn_tree(&mut command).expect("spawn test sidecar placeholder");
         process.wait().expect("reap test sidecar placeholder");
         let mut manager = SidecarManager::new();
         manager.insert_sidecar(
@@ -1590,9 +1590,12 @@ mod tests {
                 process,
                 port,
                 session_id: session_id.to_string(),
+                management_id: session_id.to_string(),
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 state: SidecarState::Healthy,
                 owners: HashSet::from([SidecarOwner::Goal(goal_id.to_string())]),
+                completion_claims: HashSet::new(),
+                dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                 created_at: Instant::now(),
                 runtime: None,
                 runtime_source: None,

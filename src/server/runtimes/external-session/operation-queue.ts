@@ -4,9 +4,11 @@ import { canDrainExternalQueue, shouldQueueExternalSend } from '../external-queu
 import { mergeRuntimeConfigPatches } from '../../session-core/runtime-config-policy';
 import type { ChatQueueResponseMode } from '../../../shared/config-types';
 import type { TurnOwner } from '../../session-core/turn-queue';
+import type { SessionMessage } from '../../types/session';
 import type {
   ExternalConfigSource,
   ExternalQueuedConfigOperation,
+  ExternalMessageOperation,
   ExternalQueuedMessageOperation,
   ExternalSendContext,
   ExternalSendResult,
@@ -15,6 +17,7 @@ import type {
 } from './types';
 
 const externalOperationQueue: ExternalTurnOperation[] = [];
+const externalInFlightMessageOperations: ExternalMessageOperation[] = [];
 let externalReservedDrainOperation: ExternalTurnOperation | null = null;
 let externalQueueSeq = 0;
 let externalConfigSeq = 0;
@@ -101,11 +104,81 @@ export function nextExternalQueueId(): string {
   return `xq-${Date.now()}-${externalQueueSeq++}`;
 }
 
+export function createExternalMessageOperation(input: {
+  text: string;
+  images?: ImagePayload[];
+  context: ExternalSendContext;
+  runtimeConfig: ExternalRuntimeConfigSnapshot;
+  userMessage: SessionMessage;
+  surfaceMode?: 'chat-replay' | 'queue-started';
+  queueId?: string;
+}): ExternalMessageOperation {
+  const queueId = input.queueId ?? input.context.queueId ?? nextExternalQueueId();
+  return {
+    kind: 'message',
+    queueId,
+    text: input.text,
+    images: input.images,
+    context: { ...input.context, queueId },
+    runtimeConfig: input.runtimeConfig,
+    userProjection: {
+      message: input.userMessage,
+      surfaceMode: input.surfaceMode ?? 'chat-replay',
+      surfaced: false,
+      inTranscript: false,
+      persisted: false,
+      retracted: false,
+    },
+  };
+}
+
+export async function withExternalMessageOperation<T>(
+  operation: ExternalMessageOperation,
+  dispatch: () => Promise<T>,
+): Promise<T> {
+  externalInFlightMessageOperations.push(operation);
+  try {
+    return await dispatch();
+  } finally {
+    const index = externalInFlightMessageOperations.indexOf(operation);
+    if (index !== -1) externalInFlightMessageOperations.splice(index, 1);
+  }
+}
+
+export function getExternalPendingUserMessageProjections(sessionId: string): SessionMessage[] {
+  return externalInFlightMessageOperations
+    .filter(operation => (
+      operation.context.sessionId === sessionId
+      && operation.userProjection.surfaced
+      && !operation.userProjection.persisted
+      && !operation.userProjection.retracted
+    ))
+    .map(operation => operation.userProjection.message);
+}
+
+export function markExternalUserMessageSurfaced(operation: ExternalMessageOperation): void {
+  operation.userProjection.surfaced = true;
+}
+
+export function markExternalUserMessageInTranscript(operation: ExternalMessageOperation): void {
+  operation.userProjection.inTranscript = true;
+}
+
+export function markExternalUserMessagePersisted(operation: ExternalMessageOperation): void {
+  operation.userProjection.persisted = true;
+}
+
+export function markExternalUserMessageRetracted(operation: ExternalMessageOperation): void {
+  operation.userProjection.retracted = true;
+}
+
 export function enqueueExternalMessageOperation(input: {
   text: string;
   images?: ImagePayload[];
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
+  userMessage: SessionMessage;
+  surfaceMode?: 'chat-replay' | 'queue-started';
   queueId?: string;
 }): {
   queued: true;
@@ -115,18 +188,14 @@ export function enqueueExternalMessageOperation(input: {
   if (queuedExternalMessageCount() >= EXTERNAL_MAX_QUEUE_SIZE) {
     return { queued: false, error: '排队消息已达上限，请稍后再发' };
   }
-  const queueId = input.queueId ?? nextExternalQueueId();
+  const operation = createExternalMessageOperation(input);
+  const queueId = operation.queueId;
   let settleDispatchAcceptance!: (result: ExternalSendResult) => void;
   const dispatchAcceptance = new Promise<ExternalSendResult>((resolve) => {
     settleDispatchAcceptance = resolve;
   });
   externalOperationQueue.push({
-    kind: 'message',
-    queueId,
-    text: input.text,
-    images: input.images,
-    context: { ...input.context, queueId },
-    runtimeConfig: input.runtimeConfig,
+    ...operation,
     dispatchAcceptance,
     settleDispatchAcceptance,
   });
@@ -156,11 +225,13 @@ export function clearExternalQueueOperationsWithCancellation(): ExternalQueuedMe
   const queuedMessages = externalOperationQueue
     .filter((item): item is ExternalQueuedMessageOperation => item.kind === 'message');
   for (const item of queuedMessages) {
+    markExternalUserMessageRetracted(item);
     item.context.beforeDispatch?.cancel?.();
     item.settleDispatchAcceptance({ queued: false });
   }
   if (externalReservedDrainOperation?.kind === 'message') {
     queuedMessages.push(externalReservedDrainOperation);
+    markExternalUserMessageRetracted(externalReservedDrainOperation);
     externalReservedDrainOperation.context.beforeDispatch?.cancel?.();
     externalReservedDrainOperation.settleDispatchAcceptance({
       queued: false,
@@ -187,6 +258,7 @@ export function cancelExternalQueuedMessageOperationsByOwner(owner: TurnOwner): 
     const item = externalOperationQueue[index];
     if (item.kind !== 'message' || !matches(item)) continue;
     externalOperationQueue.splice(index, 1);
+    markExternalUserMessageRetracted(item);
     item.context.beforeDispatch?.cancel?.();
     item.settleDispatchAcceptance({ queued: false });
     canceled.push(item);
@@ -255,6 +327,7 @@ export function cancelExternalQueuedMessageOperation(queueId: string): ExternalQ
   const idx = externalOperationQueue.findIndex(q => q.kind === 'message' && q.queueId === queueId);
   if (idx < 0) return null;
   const [item] = externalOperationQueue.splice(idx, 1) as ExternalQueuedMessageOperation[];
+  markExternalUserMessageRetracted(item);
   item.context.beforeDispatch?.cancel?.();
   item.settleDispatchAcceptance({ queued: false });
   return item;

@@ -55,6 +55,7 @@ MyAgents 内置「想法 + 任务中心」。你可以先把零散念头记下�
 
 - 想法速记、标签归类和归档。
 - 一次性任务、周期任务和 Cron 表达式。
+- 可选的本地命令感知器：低成本检查，只有命中条件才唤醒 AI。
 - 任务状态、运行次数、执行日志和异常恢复。
 - Chat、AI 工具、IM Bot、后台任务共享同一套调度能力。
 
@@ -329,6 +330,7 @@ Task Center supports:
 
 - Idea capture, tagging, and archiving.
 - One-shot tasks, recurring tasks, and Cron expressions.
+- Optional local-command sensors that wake the AI only when a condition matches.
 - Task status, run count, execution logs, and failure recovery.
 - One shared scheduler across Chat, AI tools, IM bots, and background tasks.
 

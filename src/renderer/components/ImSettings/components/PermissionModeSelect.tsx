@@ -5,15 +5,19 @@ import { PERMISSION_MODES } from '@/config/types';
 export default function PermissionModeSelect({
     value,
     onChange,
+    modes,
 }: {
     value: string;
 	onChange: (mode: string) => void;
+    modes?: readonly { value: string; label: string; icon: string; description: string }[];
 }) {
     const { t } = useTranslation('settings');
+    const displayModes = modes ?? PERMISSION_MODES;
+    const usesProductVocabulary = modes === undefined;
     return (
         <div className="space-y-2">
             <div className="space-y-2">
-                {PERMISSION_MODES.map((mode) => (
+                {displayModes.map((mode) => (
                     <label
                         key={mode.value}
                         className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
@@ -43,10 +47,14 @@ export default function PermissionModeSelect({
                         </div>
                         <div>
                             <div className="text-sm font-medium text-[var(--ink)]">
-                                {mode.icon} {t(`agentSettings.permission.${mode.value}`, { defaultValue: mode.label })}
+                                {mode.icon} {usesProductVocabulary
+                                    ? t(`agentSettings.permission.${mode.value}`, { defaultValue: mode.label })
+                                    : mode.label}
                             </div>
                             <p className="text-xs text-[var(--ink-muted)]">
-                                {t(`agentSettings.permission.${mode.value}Description`, { defaultValue: mode.description })}
+                                {usesProductVocabulary
+                                    ? t(`agentSettings.permission.${mode.value}Description`, { defaultValue: mode.description })
+                                    : mode.description}
                             </p>
                         </div>
                     </label>

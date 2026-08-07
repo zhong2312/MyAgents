@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { proxyFetch } from '@/api/tauriClient';
+import { sessionSidecarFetch } from '@/api/tauriClient';
 
 export type SessionReadyState =
   | { kind: 'loading' }
@@ -36,8 +36,8 @@ export type SessionReadyState =
   | { kind: 'failed'; phase: string; error: string; retryable: boolean };
 
 interface UseSessionReadyOptions {
-  /** Sidecar port, or null/undefined if not yet known. */
-  port: number | null | undefined;
+  sessionId: string | null | undefined;
+  tabId: string;
   /** Set to false to stop polling (e.g., Chat fully loaded). */
   enabled: boolean;
   /** Poll interval in ms. Default 1000. */
@@ -52,7 +52,8 @@ interface UseSessionReadyOptions {
  * `failed` (terminal states), or when `enabled` flips false.
  */
 export function useSessionReady({
-  port,
+  sessionId,
+  tabId,
   enabled,
   intervalMs = 1000,
 }: UseSessionReadyOptions): SessionReadyState {
@@ -62,7 +63,7 @@ export function useSessionReady({
   useEffect(() => {
     cancelledRef.current = false;
 
-    if (!enabled || !port) {
+    if (!enabled || !sessionId) {
       // No active polling; reset to loading so a remount starts fresh.
       setState({ kind: 'loading' });
       return () => { cancelledRef.current = true; };
@@ -73,7 +74,12 @@ export function useSessionReady({
     const tick = async () => {
       if (cancelledRef.current) return;
       try {
-        const resp = await proxyFetch(`http://127.0.0.1:${port}/health/ready`, { method: 'GET' });
+        const resp = await sessionSidecarFetch(
+          sessionId,
+          { type: 'tab', id: tabId },
+          '/health/ready',
+          { method: 'GET' },
+        );
         if (cancelledRef.current) return;
         const body = await resp.json().catch(() => ({})) as Record<string, unknown>;
         if (resp.status === 200 && body.state === 'ready') {
@@ -111,7 +117,7 @@ export function useSessionReady({
       cancelledRef.current = true;
       if (timeoutId !== null) clearTimeout(timeoutId);
     };
-  }, [port, enabled, intervalMs]);
+  }, [sessionId, tabId, enabled, intervalMs]);
 
   return state;
 }

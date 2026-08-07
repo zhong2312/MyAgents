@@ -1,4 +1,5 @@
 use super::*;
+use tauri::Manager;
 
 static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
@@ -468,6 +469,7 @@ pub(super) async fn restart_agent_channel_instance<R: Runtime>(
             err
         );
     }
+    let creation_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let (new_instance, _) = create_bot_instance_with_pending_cron_events(
         app_handle,
         sidecar_manager,
@@ -475,6 +477,7 @@ pub(super) async fn restart_agent_channel_instance<R: Runtime>(
         config,
         Some(agent_id.to_string()),
         Some(pending_cron_events),
+        &creation_permit,
     )
     .await?;
 
@@ -525,6 +528,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     bot_id: String,
     config: ImConfig,
     agent_id: Option<String>,
+    creation_permit: &crate::sidecar::LifecycleSpawnPermit,
 ) -> Result<(ImBotInstance, ImBotStatus), String> {
     create_bot_instance_with_pending_cron_events(
         app_handle,
@@ -533,6 +537,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         config,
         agent_id,
         None,
+        creation_permit,
     )
     .await
 }
@@ -544,8 +549,8 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     config: ImConfig,
     agent_id: Option<String>,
     carried_pending_cron_events: Option<Arc<Mutex<Vec<types::PendingCronEvent>>>>,
+    creation_permit: &crate::sidecar::LifecycleSpawnPermit,
 ) -> Result<(ImBotInstance, ImBotStatus), String> {
-    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
     ulog_info!(
         "[im] Starting IM Bot {} (configured workspace: {:?})",
         bot_id,
@@ -707,6 +712,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                 rust_port,
                 &bot_id,
                 config.openclaw_plugin_config.as_ref(),
+                creation_permit,
             )
             .await?;
 
@@ -1610,6 +1616,12 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                         if is_external_runtime_type(&current_runtime) {
                             let current_runtime_config = runtime_config_for_loop.read().await.clone();
+                            let current_runtime_source = runtime_config_string(
+                                current_runtime_config.as_ref(),
+                                "source",
+                            );
+                            let managed_codex_runtime = current_runtime == "codex"
+                                && current_runtime_source.as_deref() == Some("managed-provider");
                             let current_display = runtime_config_string(
                                 current_runtime_config.as_ref(),
                                 "model",
@@ -1617,10 +1629,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                             let mut models = fallback_runtime_models(&current_runtime);
                             if models.is_empty() {
-                                let current_runtime_source = runtime_config_string(
-                                    current_runtime_config.as_ref(),
-                                    "source",
-                                );
                                 match ensure_sidecar_port_for_command(
                                     &router_clone,
                                     &session_key,
@@ -1639,6 +1647,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                             &client,
                                             port,
                                             &current_runtime,
+                                            current_runtime_source.as_deref(),
                                         ).await {
                                             Ok(remote_models) => models = remote_models,
                                             Err(e) => {
@@ -1710,40 +1719,94 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                                 match model_id {
                                     Some(id) => {
-                                        let new_config = runtime_config_with_string(
-                                            current_runtime_config,
-                                            "model",
-                                            Some(id.clone()),
-                                        );
-                                        *runtime_config_for_loop.write().await = Some(new_config.clone());
-                                        let sync_config = if id.is_empty() {
-                                            let mut map = new_config.as_object().cloned().unwrap_or_default();
-                                            map.insert("model".to_string(), serde_json::Value::Null);
-                                            serde_json::Value::Object(map)
-                                        } else {
-                                            new_config.clone()
-                                        };
-                                        sync_runtime_config_to_sidecars(
-                                            &router_clone,
-                                            &current_runtime,
-                                            &sync_config,
-                                        ).await;
-
                                         let link = agent_link_for_loop.read().await.clone();
-                                        if let Some(link) = link {
-                                            *link.runtime_config.write().await = Some(new_config.clone());
-                                            let agent_id = link.agent_id.clone();
-                                            let config_for_disk = new_config.clone();
-                                            tokio::task::spawn_blocking(move || {
-                                                let patch = AgentConfigPatch {
-                                                    runtime_config: Some(Some(config_for_disk)),
-                                                    ..Default::default()
+                                        if managed_codex_runtime {
+                                            if let Some(link) = link {
+                                                let agent_id = link.agent_id.clone();
+                                                let channel_id = link.channel_id.clone();
+                                                let model_for_disk = id.clone();
+                                                let persisted = tokio::task::spawn_blocking(move || {
+                                                    persist_agent_channel_model(
+                                                        &agent_id,
+                                                        &channel_id,
+                                                        &model_for_disk,
+                                                    )
+                                                    .map(|patch| (agent_id, patch))
+                                                })
+                                                .await
+                                                .map_err(|error| error.to_string())
+                                                .and_then(|result| result);
+                                                let reload_result = match persisted {
+                                                    Ok((agent_id, patch)) => {
+                                                        match app_clone.try_state::<ManagedAgents>() {
+                                                            Some(agent_state) => reload_agent_config_from_disk(
+                                                                &app_clone,
+                                                                agent_state.inner(),
+                                                                &manager_clone,
+                                                                agent_id,
+                                                                patch,
+                                                            ).await,
+                                                            None => Err("Agent runtime state is unavailable".to_string()),
+                                                        }
+                                                    }
+                                                    Err(error) => Err(error),
                                                 };
-                                                if let Err(e) = persist_agent_config_patch(&agent_id, &patch) {
-                                                    ulog_warn!("[im] /model runtime persist failed: {}", e);
+                                                if let Err(error) = reload_result {
+                                                    ulog_warn!("[im] /model managed model update failed: {}", error);
+                                                    if let Err(reply_error) = send_immediate_reply(
+                                                        adapter_for_reply.as_ref(),
+                                                        &msg,
+                                                        &format!("❌ 模型切换失败：{}", error),
+                                                    ).await {
+                                                        ulog_warn!("[im-cmd] send_message (/model managed update failed) failed: {}", reply_error);
+                                                    }
+                                                    continue;
                                                 }
-                                            });
-                                            let _ = app_clone.emit("agent:config-changed", json!({}));
+                                            } else {
+                                                ulog_warn!("[im] /model managed runtime has no Agent owner");
+                                                if let Err(error) = send_immediate_reply(
+                                                    adapter_for_reply.as_ref(),
+                                                    &msg,
+                                                    "❌ 当前 managed Runtime 未绑定 Agent，无法持久化模型",
+                                                ).await {
+                                                    ulog_warn!("[im-cmd] send_message (/model managed owner missing) failed: {}", error);
+                                                }
+                                                continue;
+                                            }
+                                        } else {
+                                            let new_config = runtime_config_with_string(
+                                                current_runtime_config,
+                                                "model",
+                                                Some(id.clone()),
+                                            );
+                                            *runtime_config_for_loop.write().await = Some(new_config.clone());
+                                            let sync_config = if id.is_empty() {
+                                                let mut map = new_config.as_object().cloned().unwrap_or_default();
+                                                map.insert("model".to_string(), serde_json::Value::Null);
+                                                serde_json::Value::Object(map)
+                                            } else {
+                                                new_config.clone()
+                                            };
+                                            sync_runtime_config_to_sidecars(
+                                                &router_clone,
+                                                &current_runtime,
+                                                &sync_config,
+                                            ).await;
+                                            if let Some(link) = link {
+                                                let agent_id = link.agent_id.clone();
+                                                *link.runtime_config.write().await = Some(new_config.clone());
+                                                let config_for_disk = new_config.clone();
+                                                tokio::task::spawn_blocking(move || {
+                                                    let patch = AgentConfigPatch {
+                                                        runtime_config: Some(Some(config_for_disk)),
+                                                        ..Default::default()
+                                                    };
+                                                    if let Err(e) = persist_agent_config_patch(&agent_id, &patch) {
+                                                        ulog_warn!("[im] /model runtime persist failed: {}", e);
+                                                    }
+                                                });
+                                                let _ = app_clone.emit("agent:config-changed", json!({}));
+                                            }
                                         }
                                         let display = if id.is_empty() { "(默认)".to_string() } else { id.clone() };
                                         ulog_info!("[im] /model: set {} runtime model to {}", current_runtime, display);
@@ -2036,14 +2099,17 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     if text.starts_with("/mode") {
                         let arg = text.strip_prefix("/mode").unwrap_or("").trim().to_lowercase();
                         let current_runtime = runtime_for_loop.read().await.clone();
+                        let current_runtime_config = runtime_config_for_loop.read().await.clone();
+                        let managed_codex_runtime = current_runtime == "codex"
+                            && current_runtime_config
+                                .as_ref()
+                                .and_then(|value| value.get("source"))
+                                .and_then(|value| value.as_str())
+                                == Some("managed-provider");
 
-                        if is_external_runtime_type(&current_runtime) {
+                        if is_external_runtime_type(&current_runtime) && !managed_codex_runtime {
                             let choices = runtime_permission_choices(&current_runtime);
-                            let current_runtime_config = runtime_config_for_loop.read().await.clone();
-                            let current = runtime_config_string(
-                                current_runtime_config.as_ref(),
-                                "permissionMode",
-                            ).unwrap_or_else(|| "(默认)".to_string());
+                            let current = permission_mode_for_loop.read().await.clone();
 
                             if arg.is_empty() {
                                 let mut menu = format!(
@@ -2085,29 +2151,27 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     "permissionMode",
                                     Some(target.value.clone()),
                                 );
-                                *runtime_config_for_loop.write().await = Some(new_config.clone());
+                                *permission_mode_for_loop.write().await = target.value.clone();
                                 sync_runtime_config_to_sidecars(
                                     &router_clone,
                                     &current_runtime,
                                     &new_config,
                                 ).await;
 
-                                let link = agent_link_for_loop.read().await.clone();
-                                if let Some(link) = link {
-                                    *link.runtime_config.write().await = Some(new_config.clone());
-                                    let agent_id = link.agent_id.clone();
-                                    let config_for_disk = new_config.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        let patch = AgentConfigPatch {
-                                            runtime_config: Some(Some(config_for_disk)),
-                                            ..Default::default()
-                                        };
-                                        if let Err(e) = persist_agent_config_patch(&agent_id, &patch) {
-                                            ulog_warn!("[im] /mode runtime persist failed: {}", e);
-                                        }
-                                    });
-                                    let _ = app_clone.emit("agent:config-changed", json!({}));
-                                }
+                                let bid = bot_id_for_loop.clone();
+                                let mode_for_disk = target.value.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let patch = BotConfigPatch {
+                                        permission_mode: Some(mode_for_disk),
+                                        ..Default::default()
+                                    };
+                                    if let Err(e) = persist_bot_config_patch(&bid, &patch) {
+                                        ulog_warn!("[im] /mode runtime persist failed: {}", e);
+                                    }
+                                });
+                                let _ = app_clone.emit("im:bot-config-changed", json!({
+                                    "botId": bot_id_for_loop,
+                                }));
 
                                 ulog_info!("[im] /mode: set {} runtime permission to {}", current_runtime, target.value);
                                 if let Err(e) = send_immediate_reply(
@@ -2125,9 +2189,14 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             }
                         } else {
                             let current = permission_mode_for_loop.read().await.clone();
+                            let current_product_mode = if managed_codex_runtime {
+                                types::managed_permission_for_display(&current)
+                            } else {
+                                current.as_str()
+                            };
 
                             if arg.is_empty() {
-                                let display = match current.as_str() {
+                                let display = match current_product_mode {
                                     "plan" => "🛡 计划模式 (plan) — AI 执行操作前需要审批",
                                     "auto" => "⚡ 自动模式 (auto) — 安全操作自动执行，敏感操作需审批",
                                     "fullAgency" => "🚀 全自主模式 (fullAgency) — 所有操作自动执行",
@@ -2164,7 +2233,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         continue;
                                     }
                                 };
-                                *permission_mode_for_loop.write().await = new_mode.to_string();
+                                let execution_mode = if managed_codex_runtime {
+                                    types::project_permission_for_provider(
+                                        Some("codex-sub"),
+                                        new_mode.to_string(),
+                                    )
+                                } else {
+                                    new_mode.to_string()
+                                };
+                                *permission_mode_for_loop.write().await = execution_mode;
 
                                 let display = match new_mode {
                                     "plan" => "🛡 计划模式 — AI 执行操作前需要审批",
@@ -3473,6 +3550,7 @@ pub async fn start_im_bot<R: Runtime>(
         let _ = shutdown_bot_instance(instance, sidecar_manager, &bot_id).await;
     }
 
+    let creation_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let (instance, status) = create_bot_instance_with_pending_cron_events(
         app_handle,
         sidecar_manager,
@@ -3480,6 +3558,7 @@ pub async fn start_im_bot<R: Runtime>(
         config,
         None,
         carried_pending_cron_events,
+        &creation_permit,
     )
     .await?;
 

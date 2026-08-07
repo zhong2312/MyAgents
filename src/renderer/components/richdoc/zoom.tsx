@@ -18,11 +18,15 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next';
 import { Minus, Plus } from 'lucide-react';
 
+import { bindZoomGestureListeners } from '@/utils/zoomGesture';
+
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
 const STEP = 0.1;
 
-const clamp = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
+const clamp = (zoom: number) => (
+  Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(zoom * 100) / 100))
+);
 
 export function useZoom(scrollRef: RefObject<HTMLElement | null>) {
   const [zoom, setZoomState] = useState(1);
@@ -46,32 +50,10 @@ export function useZoom(scrollRef: RefObject<HTMLElement | null>) {
     const el = scrollRef.current;
     if (!el) return;
 
-    // Trackpad pinch → ctrl+wheel (Chromium + modern WebKit).
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      setZoom((z) => z - e.deltaY * 0.01);
-    };
-    // Safari/WKWebView non-standard gesture events (relative scale since start).
-    let gestureBase = 1;
-    const onGestureStart = (e: Event) => {
-      e.preventDefault();
-      gestureBase = zoomRef.current;
-    };
-    const onGestureChange = (e: Event) => {
-      e.preventDefault();
-      const scale = (e as unknown as { scale: number }).scale;
-      if (scale) setZoom(gestureBase * scale);
-    };
-
-    el.addEventListener('wheel', onWheel, { passive: false });
-    el.addEventListener('gesturestart', onGestureStart as EventListener);
-    el.addEventListener('gesturechange', onGestureChange as EventListener);
-    return () => {
-      el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('gesturestart', onGestureStart as EventListener);
-      el.removeEventListener('gesturechange', onGestureChange as EventListener);
-    };
+    return bindZoomGestureListeners(el, {
+      getZoom: () => zoomRef.current,
+      setZoom,
+    });
   }, [scrollRef, setZoom]);
 
   return { zoom, zoomIn, zoomOut, reset, setZoom };

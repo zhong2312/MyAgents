@@ -46,6 +46,7 @@ const requiredSkill: SkillItem = {
   scope: 'user',
   path: '/tmp/myagents-cli/SKILL.md',
   folderName: 'myagents-cli',
+  author: 'MyAgents',
   systemOwned: true,
   required: true,
   enabled: true,
@@ -95,6 +96,7 @@ describe('GlobalSkillsPanel required skill controls', () => {
     expect(requiredCard?.querySelector('[role="switch"]')).toBeNull();
     expect(optionalCard?.querySelector('[role="switch"]')).not.toBeNull();
     expect(screen.getAllByRole('switch')).toHaveLength(1);
+    expect(screen.getByText('MyAgents')).toBeInTheDocument();
 
     fireEvent.click(requiredCard!);
     await waitFor(() => expect(onDetailChange).toHaveBeenLastCalledWith(true));

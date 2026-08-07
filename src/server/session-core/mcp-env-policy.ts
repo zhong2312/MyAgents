@@ -7,7 +7,7 @@ const OUTBOUND_PROXY_ENV_KEYS = [
   'all_proxy',
 ] as const;
 
-export const MCP_LOCALHOST_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
+export const MCP_LOCALHOST_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value && value.trim().length > 0 ? value : undefined;
@@ -19,7 +19,7 @@ function mergeNoProxyWithLocalhost(value: string | undefined): string {
     ...(value?.split(',') ?? []),
   ]
     .map(item => item.trim())
-    .filter(Boolean);
+    .filter(item => Boolean(item) && item.toLowerCase() !== '[::1]');
   const seen = new Set<string>();
   const merged: string[] = [];
   for (const entry of entries) {

@@ -12,7 +12,6 @@ function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     id: 'agent-1',
     name: 'Agent',
     enabled: true,
-    workspacePath: '/tmp/workspace',
     permissionMode: 'auto',
     channels: [],
     ...overrides,
@@ -70,7 +69,7 @@ describe('Agent Channel effective config', () => {
     expect(effective.runtimeConfig).toEqual({ permissionMode: 'full-auto' });
   });
 
-  it('projects the managed Codex subscription provider to Codex max permission', () => {
+  it('keeps managed Channel permission in product vocabulary until execution projection', () => {
     const a = agent({ permissionMode: 'plan', runtime: 'builtin' });
     const ch = channel({
       overrides: {
@@ -81,6 +80,34 @@ describe('Agent Channel effective config', () => {
 
     const effective = resolveEffectiveConfig(a, ch);
     expect(effective.runtime).toBe('codex');
-    expect(effective.permissionMode).toBe('no-restrictions');
+    expect(effective.permissionMode).toBe('fullAgency');
+  });
+
+  it('does not let a dormant managed provider override an explicit system runtime', () => {
+    const a = agent({
+      providerId: 'codex-sub',
+      model: 'gpt-5.5-codex',
+      runtime: 'gemini',
+      runtimeConfig: { source: 'managed-provider' },
+    });
+
+    expect(resolveAgentChannelRuntime(a, channel())).toBe('gemini');
+    expect(resolveAgentChannelPermissionMode(a, channel())).toBe('yolo');
+  });
+
+  it('projects invalid system Runtime history to the interactive default without changing missing-override max agency', () => {
+    const a = agent({ runtime: 'claude-code' });
+
+    expect(resolveAgentChannelPermissionMode(a, channel())).toBe('bypassPermissions');
+    expect(resolveAgentChannelPermissionMode(a, channel({
+      overrides: { permissionMode: 'fullAgency' },
+    }))).toBe('manual');
+  });
+
+  it('projects invalid managed Channel history to the product auto mode', () => {
+    const a = agent({ providerId: 'codex-sub', runtime: 'builtin' });
+    const ch = channel({ overrides: { permissionMode: 'full-auto' } });
+
+    expect(resolveAgentChannelPermissionMode(a, ch)).toBe('auto');
   });
 });

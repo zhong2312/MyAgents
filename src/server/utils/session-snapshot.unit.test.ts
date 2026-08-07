@@ -12,7 +12,6 @@ function makeAgent(overrides: Partial<AgentConfig>): AgentConfig {
     id: 'a1',
     name: 'A',
     enabled: true,
-    workspacePath: '/tmp/ws',
     permissionMode: 'auto',
     channels: [],
     ...overrides,
@@ -91,9 +90,9 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     const snap = snapshotForOwnedSession(makeAgent({
       providerId: 'codex-sub',
       model: 'gpt-5.4-codex',
+      permissionMode: 'fullAgency',
       runtimeConfig: {
         model: 'stale-runtime-model',
-        permissionMode: 'no-restrictions',
         reasoningEffort: 'high',
       },
       mcpEnabledServers: ['myagents'],
@@ -165,6 +164,25 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(systemCliSnap.providerExecutionIdentity).toBeUndefined();
     expect(systemCliSnap.providerId).toBeUndefined();
     expect(systemCliSnap.model).toBeUndefined();
+  });
+
+  it('implicit system Codex identity is not hijacked by a dormant managed provider id', () => {
+    const snap = snapshotForOwnedSession(makeAgent({
+      providerId: 'codex-sub',
+      model: 'gpt-5.4-codex',
+      runtime: 'codex',
+      runtimeConfig: {
+        source: 'system-cli',
+        model: 'gpt-5.6-sol',
+        permissionMode: 'full-auto',
+      },
+    }), { managedCodexProviderReady: true });
+
+    expect(snap.runtime).toBe('codex');
+    expect(snap.runtimeSource).toBe('system-cli');
+    expect(snap.providerExecutionIdentity).toBeUndefined();
+    expect(snap.model).toBe('gpt-5.6-sol');
+    expect(snap.permissionMode).toBe('full-auto');
   });
 
   it('explicit managed-provider runtime override preserves Managed Codex provider identity', () => {

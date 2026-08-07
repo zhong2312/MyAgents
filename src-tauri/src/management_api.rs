@@ -180,7 +180,18 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/task/archive", post(task_archive_handler))
         .route("/api/task/delete", post(task_delete_handler))
         .route("/api/task/run", post(task_run_handler))
+        .route("/api/task/run-now", post(task_run_now_handler))
         .route("/api/task/rerun", post(task_rerun_handler))
+        .route(
+            "/api/task/trigger/validate",
+            post(task_trigger_validate_handler),
+        )
+        .route("/api/task/trigger/test", post(task_trigger_test_handler))
+        .route("/api/task/check-now", post(task_check_now_handler))
+        .route(
+            "/api/task/reset-checkpoint",
+            post(task_reset_checkpoint_handler),
+        )
         .route("/api/task/read-doc", get(task_read_doc_handler))
         .route("/api/task/write-doc", post(task_write_doc_handler))
         .route("/api/thought/list", get(thought_list_handler))
@@ -237,6 +248,10 @@ pub async fn start_management_api() -> Result<u16, String> {
         )
         // Session Inbox cross-sidecar delivery (PRD 0.2.18)
         .route("/api/inbox/deliver", post(inbox_deliver_handler))
+        .route(
+            "/api/inbox/start-session",
+            post(inbox_start_session_handler),
+        )
         // Session Event watch registration (PRD 0.2.37)
         .route("/api/session/watch", post(session_watch_handler))
         // Secret-bearing internal route. Identity is validated against the
@@ -712,6 +727,10 @@ struct UpdateCronRequest {
 #[serde(rename_all = "camelCase")]
 struct TaskIdRequest {
     task_id: String,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 #[derive(Debug, Serialize)]
@@ -990,34 +1009,35 @@ async fn delete_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse
     }
 }
 
-async fn run_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
+async fn run_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
 
     // Check task exists
-    let task = match get_ordinary_cron_task(manager, &req.task_id).await {
-        Ok(t) => t,
-        Err(e) => {
-            return Json(ApiResponse {
-                ok: false,
-                error: Some(e),
-            });
-        }
-    };
-
-    // If task is stopped, start it first
-    if task.status == cron_task::TaskStatus::Stopped {
-        if let Err(e) = manager.start_task(&req.task_id).await {
-            return Json(ApiResponse {
-                ok: false,
-                error: Some(format!("Failed to start task: {}", e)),
-            });
-        }
+    if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
+        return Json(serde_json::json!({ "ok": false, "error": e }));
     }
 
-    Json(ApiResponse {
-        ok: true,
-        error: None,
-    })
+    // The Task application owns the full state check. Calling it for every
+    // status keeps Running idempotent while rejecting terminal Tasks instead
+    // of letting the lossy Cron projection report a false successful start.
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
+    };
+    match application
+        .start_scheduled_task_with_origin(
+            &req.task_id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(task) => Json(task_lifecycle_success_response(
+            task::project_task(task).await,
+            None,
+        )),
+        Err(error) => task_application_error_response(error),
+    }
 }
 
 /// PRD 0.2.5 R4 — POST /api/cron/trigger
@@ -1991,15 +2011,29 @@ async fn send_media_handler(Json(req): Json<SendMediaRequest>) -> Json<serde_jso
     }
 }
 
-// ===== Cron Stop handler =====
+// ===== Task lifecycle responses =====
 
-fn cron_stop_success_response(task: &crate::task::Task) -> serde_json::Value {
-    serde_json::json!({
+fn task_lifecycle_success_response(
+    projection: task::TaskProjection,
+    attempt_ordinal: Option<u32>,
+) -> serde_json::Value {
+    let task_id = projection.task.id.clone();
+    let status = projection.task.status.as_str();
+    let next_execution_at = projection.next_execution_at;
+    let mut response = serde_json::json!({
         "ok": true,
-        "taskId": task.id,
-        "status": task.status.as_str(),
-    })
+        "taskId": task_id,
+        "status": status,
+        "nextExecutionAt": next_execution_at,
+        "task": projection,
+    });
+    if let Some(attempt_ordinal) = attempt_ordinal {
+        response["attemptOrdinal"] = serde_json::json!(attempt_ordinal);
+    }
+    response
 }
+
+// ===== Cron Stop handler =====
 
 async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
@@ -2010,7 +2044,12 @@ async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::V
         return Json(serde_json::json!({ "ok": false, "error": e }));
     }
     match manager
-        .stop_task(&req.task_id, Some("Stopped via admin CLI".to_string()))
+        .stop_task_with_origin(
+            &req.task_id,
+            Some("Stopped via admin CLI".to_string()),
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
         .await
     {
         Ok(_) => {
@@ -2026,7 +2065,10 @@ async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::V
                     "error": format!("Task not found: {}", req.task_id),
                 }));
             };
-            Json(cron_stop_success_response(&task))
+            Json(task_lifecycle_success_response(
+                task::project_task(task).await,
+                None,
+            ))
         }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
@@ -2495,17 +2537,17 @@ async fn handle_bridge_message(
 // ========================================================================
 //
 // These endpoints are called by the Bun Admin API (admin-api.ts), which in
-// turn is called by the `myagents task` CLI. The CLI is the **entry point of
-// trust inference** for `actor` / `source` (PRD §10.2.1 caller-inference table):
+// turn is called by the `myagents task` CLI. The CLI is the entry point for
+// `actor` / `source` audit classification (PRD §10.2.1 caller-inference table):
 //
-// - `MYAGENTS_PORT` env var set → AI sub-process → `actor=agent, source=cli`
+// - `MYAGENTS_SESSION_ID` set in the CLI process → `actor=agent, source=cli`
 // - Otherwise (user terminal reading `~/.myagents/sidecar.port`) →
 //   `actor=user, source=cli`
 //
-// That inference happens in the CLI script itself (knows its own env) and is
-// forwarded to the Bun Admin API, which forwards here. We take the caller's
-// word for actor/source: the CLI process running inside an SDK subprocess is
-// inside a trust boundary already (the whole host is the user's machine).
+// That classification happens in the CLI script itself (knows its own env)
+// and is forwarded through the Sidecar. Rust still enforces legal actor/source
+// combinations. This is provenance for the trusted local CLI, not a new
+// authentication protocol.
 // For UI transitions the Tauri command layer stamps `user/ui` authoritatively
 // without ever reaching this path.
 
@@ -2533,16 +2575,7 @@ async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::V
         include_managed: None,
     };
     let tasks = store.list(filter).await;
-    let executions = crate::task_scheduler::get_task_scheduler()
-        .execution_projections_snapshot()
-        .await;
-    let tasks = tasks
-        .into_iter()
-        .map(|task| {
-            let execution = executions.get(&task.id).cloned();
-            task::TaskProjection::new(task, execution)
-        })
-        .collect::<Vec<_>>();
+    let tasks = task::project_task_list(tasks).await;
     Json(serde_json::json!({ "ok": true, "tasks": tasks }))
 }
 
@@ -2599,6 +2632,20 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
             let execution = crate::task_scheduler::get_task_scheduler()
                 .execution_projection(&t.id)
                 .await;
+            let trigger_state = if t.effective_trigger().is_command() {
+                match store.read_trigger_state(&t.id).await {
+                    Ok(state) => Some(state),
+                    Err(error) => {
+                        return Json(serde_json::json!({ "ok": false, "error": error }));
+                    }
+                }
+            } else {
+                None
+            };
+            let next_execution_at = crate::task_scheduler::next_execution_at(&t)
+                .ok()
+                .flatten()
+                .map(|value| value.timestamp_millis());
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
@@ -2606,6 +2653,8 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
                     docs,
                     execution_state: execution.as_ref().map(|value| value.state),
                     execution_error: execution.and_then(|value| value.error),
+                    trigger_state,
+                    next_execution_at,
                 }
             }))
         }
@@ -2613,55 +2662,90 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
     }
 }
 
-async fn task_create_direct_handler(
-    Json(input): Json<task::TaskCreateDirectInput>,
+fn task_application_error_response(
+    error: crate::task_application::TaskApplicationError,
 ) -> Json<serde_json::Value> {
-    let Some(task_store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
-    };
-    let source_thought = input.source_thought_id.clone();
-    match task_store.create_direct(input).await {
-        Ok(t) => {
-            // Best-effort bidirectional link (same as Tauri command layer).
-            if let (Some(thought_id), Some(thoughts)) =
-                (source_thought, thought::get_thought_store())
-            {
-                let _ = thoughts.link_task(&thought_id, &t.id).await;
-            }
-            Json(serde_json::json!({ "ok": true, "task": t }))
+    Json(task_error_response_value(error.code(), error.to_string()))
+}
+
+fn task_error_response_value(
+    fallback_code: crate::task_application::TaskApplicationErrorCode,
+    error: String,
+) -> serde_json::Value {
+    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&error) {
+        if let (Some(code), Some(message)) = (
+            payload.get("code").and_then(serde_json::Value::as_str),
+            payload.get("message").and_then(serde_json::Value::as_str),
+        ) {
+            return serde_json::json!({
+                "ok": false,
+                "code": code,
+                "error": message,
+            });
         }
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+    serde_json::json!({
+        "ok": false,
+        "code": fallback_code,
+        "error": error,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskCreateDirectApiRequest {
+    #[serde(flatten)]
+    input: task::TaskCreateDirectInput,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
+}
+
+async fn task_create_direct_handler(
+    Json(req): Json<TaskCreateDirectApiRequest>,
+) -> Json<serde_json::Value> {
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
+    };
+    match application
+        .create_direct_with_origin(
+            req.input,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
+        Err(error) => task_application_error_response(error),
     }
 }
 
 async fn task_create_attached_handler(
     Json(input): Json<task::TaskCreateAttachedInput>,
 ) -> Json<serde_json::Value> {
-    let Some(task_store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    match task_store.create_attached(input).await {
-        Ok(t) => Json(serde_json::json!({ "ok": true, "task": t })),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    match application.create_attached(input).await {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
+        Err(error) => task_application_error_response(error),
     }
 }
 
 async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<serde_json::Value> {
-    let Some(store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    if let Err(error) = store.get_ordinary(&input.id).await {
-        return Json(serde_json::json!({ "ok": false, "error": error }));
-    }
     // Reuses `TaskStore::update`, which:
     //   * rejects updates on Running/Verifying tasks (state-machine guard),
     //   * applies mode-transition hygiene (clearing recurring fields when
@@ -2669,7 +2753,7 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
     //   * projects schedule/notification/override changes back to the linked
     //     CronTask via `update_task_fields`, so a CLI patch like
     //     `--intervalMinutes 180` actually re-arms the scheduler.
-    match store.update(input).await {
+    match application.update_ordinary(input).await {
         Ok(task) => {
             let docs = match task::build_task_docs(&task.id) {
                 Ok(d) => d,
@@ -2686,6 +2770,24 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
             let execution = crate::task_scheduler::get_task_scheduler()
                 .execution_projection(&task.id)
                 .await;
+            let trigger_state = if task.effective_trigger().is_command() {
+                match task::get_task_store()
+                    .expect("TaskStore initialized for management API")
+                    .read_trigger_state(&task.id)
+                    .await
+                {
+                    Ok(state) => Some(state),
+                    Err(error) => {
+                        return Json(serde_json::json!({ "ok": false, "error": error }));
+                    }
+                }
+            } else {
+                None
+            };
+            let next_execution_at = crate::task_scheduler::next_execution_at(&task)
+                .ok()
+                .flatten()
+                .map(|value| value.timestamp_millis());
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
@@ -2693,10 +2795,129 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
                     docs,
                     execution_state: execution.as_ref().map(|value| value.state),
                     execution_error: execution.and_then(|value| value.error),
+                    trigger_state,
+                    next_execution_at,
                 },
             }))
         }
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(error) => task_application_error_response(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskTriggerValidateRequest {
+    trigger: crate::task_trigger::TaskTrigger,
+}
+
+async fn task_trigger_validate_handler(
+    Json(input): Json<TaskTriggerValidateRequest>,
+) -> Json<serde_json::Value> {
+    match crate::task_trigger::validate_task_trigger(&input.trigger) {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "trigger": input.trigger })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
+}
+
+fn deserialize_present_nullable_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<serde_json::Map<String, serde_json::Value>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<serde_json::Map<String, serde_json::Value>>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskTriggerTestRequest {
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    trigger: Option<crate::task_trigger::TaskTrigger>,
+    #[serde(default)]
+    workspace_path: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable_map")]
+    checkpoint: Option<Option<serde_json::Map<String, serde_json::Value>>>,
+}
+
+async fn task_trigger_test_handler(
+    Json(input): Json<TaskTriggerTestRequest>,
+) -> Json<serde_json::Value> {
+    let scheduler = crate::task_scheduler::get_task_scheduler();
+    let result = match (input.task_id, input.trigger, input.workspace_path) {
+        (Some(task_id), None, None) => scheduler.test_trigger(&task_id, input.checkpoint).await,
+        (None, Some(trigger), Some(workspace_path)) => {
+            scheduler
+                .test_trigger_spec(
+                    None,
+                    trigger,
+                    workspace_path,
+                    input.checkpoint.flatten(),
+                    0,
+                    None,
+                )
+                .await
+        }
+        _ => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "provide either taskId or trigger + workspacePath"
+            }));
+        }
+    };
+    match result {
+        Ok(result) => Json(serde_json::json!({ "ok": true, "result": result })),
+        Err(result) => Json(serde_json::json!({
+            "ok": false,
+            "error": result.error.message,
+            "result": result,
+        })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskTriggerActionRequest {
+    id: String,
+}
+
+async fn task_check_now_handler(
+    Json(input): Json<TaskTriggerActionRequest>,
+) -> Json<serde_json::Value> {
+    match crate::task_scheduler::get_task_scheduler()
+        .check_now(&input.id)
+        .await
+    {
+        Ok(result)
+            if result.outcome == Some(crate::task_trigger::TaskTriggerRuntimeOutcome::Error) =>
+        {
+            let message = result
+                .state
+                .last_error
+                .as_ref()
+                .map(|error| error.message.as_str())
+                .unwrap_or("Detector check failed");
+            Json(serde_json::json!({
+                "ok": false,
+                "code": "detector_check_failed",
+                "error": message,
+                "result": result,
+            }))
+        }
+        Ok(result) => Json(serde_json::json!({ "ok": true, "result": result })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
+}
+
+async fn task_reset_checkpoint_handler(
+    Json(input): Json<TaskTriggerActionRequest>,
+) -> Json<serde_json::Value> {
+    match crate::task_scheduler::get_task_scheduler()
+        .reset_checkpoint(&input.id)
+        .await
+    {
+        Ok(state) => Json(serde_json::json!({ "ok": true, "state": state })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
 }
 
@@ -2781,45 +3002,32 @@ async fn task_turn_authorize_handler(
 async fn task_update_status_handler(
     Json(req): Json<TaskUpdateStatusApiRequest>,
 ) -> Json<serde_json::Value> {
-    let Some(store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    let task_control = crate::task_scheduler::acquire_task_control(&req.id).await;
-    let current = match store.get_ordinary(&req.id).await {
-        Ok(task) => task,
-        Err(error) => return Json(serde_json::json!({ "ok": false, "error": error })),
-    };
-    if task::is_terminal_execution_stop_request(current.status, req.status) {
-        return match crate::task_scheduler::get_task_scheduler()
-            .stop_with_control_held(&current.id, &task_control)
-            .await
-        {
-            Ok(()) => Json(serde_json::json!({ "ok": true, "task": current })),
-            Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
-        };
-    }
-    match store
-        .update_status_with_task_control_held(
-            task::TaskUpdateStatusInput {
-                id: req.id,
-                status: req.status,
-                message: req.message,
-                actor: req.actor,
-                source: req.source.or(Some(task::TransitionSource::Cli)),
-            },
-            &task_control,
-        )
+    match application
+        .update_status_ordinary(task::TaskUpdateStatusInput {
+            id: req.id,
+            status: req.status,
+            message: req.message,
+            actor: req.actor,
+            source: req.source.or(Some(task::TransitionSource::Cli)),
+        })
         .await
     {
-        Ok((task, transition)) => Json(serde_json::json!({
-            "ok": true,
-            "task": task,
-            "transition": transition
-        })),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+        Ok(result) => {
+            let mut response = serde_json::json!({
+                "ok": true,
+                "task": task::project_task(result.task).await,
+            });
+            if let Some(transition) = result.transition {
+                response["transition"] =
+                    serde_json::to_value(transition).unwrap_or(serde_json::Value::Null);
+            }
+            Json(response)
+        }
+        Err(error) => task_application_error_response(error),
     }
 }
 
@@ -2833,18 +3041,16 @@ struct TaskAppendSessionApiRequest {
 async fn task_append_session_handler(
     Json(req): Json<TaskAppendSessionApiRequest>,
 ) -> Json<serde_json::Value> {
-    let Some(store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    if let Err(error) = store.get_ordinary(&req.id).await {
-        return Json(serde_json::json!({ "ok": false, "error": error }));
-    }
-    match store.append_session(&req.id, &req.session_id).await {
-        Ok(t) => Json(serde_json::json!({ "ok": true, "task": t })),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    match application
+        .append_session_ordinary(&req.id, &req.session_id)
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({ "ok": true, "task": task })),
+        Err(error) => task_application_error_response(error),
     }
 }
 
@@ -2854,21 +3060,31 @@ struct TaskArchiveApiRequest {
     id: String,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 async fn task_archive_handler(Json(req): Json<TaskArchiveApiRequest>) -> Json<serde_json::Value> {
-    let Some(store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    if let Err(error) = store.get_ordinary(&req.id).await {
-        return Json(serde_json::json!({ "ok": false, "error": error }));
-    }
-    match store.archive(&req.id, req.message).await {
-        Ok(t) => Json(serde_json::json!({ "ok": true, "task": t })),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    match application
+        .archive_ordinary_with_origin(
+            &req.id,
+            req.message,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
+        Err(error) => task_application_error_response(error),
     }
 }
 
@@ -2876,29 +3092,38 @@ async fn task_archive_handler(Json(req): Json<TaskArchiveApiRequest>) -> Json<se
 #[serde(rename_all = "camelCase")]
 struct TaskDeleteApiRequest {
     id: String,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 async fn task_delete_handler(Json(req): Json<TaskDeleteApiRequest>) -> Json<serde_json::Value> {
-    let Some(store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    let source_thought = match store.get_ordinary(&req.id).await {
-        Ok(task) => task.source_thought_id,
-        Err(error) => return Json(serde_json::json!({ "ok": false, "error": error })),
-    };
-    match store.delete(&req.id).await {
-        Ok(()) => {
-            if let (Some(thought_id), Some(thoughts)) =
-                (source_thought, thought::get_thought_store())
-            {
-                let _ = thoughts.unlink_task(&thought_id, &req.id).await;
-            }
-            Json(serde_json::json!({ "ok": true }))
-        }
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    match application
+        .delete_ordinary_with_origin(
+            &req.id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true,
+            "taskId": req.id,
+            "status": "deleted",
+            "nextExecutionAt": serde_json::Value::Null,
+            "task": {
+                "id": req.id,
+                "status": "deleted",
+                "deleted": true,
+                "nextExecutionAt": serde_json::Value::Null,
+            },
+        })),
+        Err(error) => task_application_error_response(error),
     }
 }
 
@@ -3191,30 +3416,37 @@ async fn space_attachment_inspect_handler(
 // Task Center execution handlers (v0.1.69)
 // ========================================================================
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskCreateFromAlignmentApiRequest {
+    #[serde(flatten)]
+    input: task::TaskCreateFromAlignmentInput,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
+}
+
 async fn task_create_from_alignment_handler(
-    Json(input): Json<task::TaskCreateFromAlignmentInput>,
+    Json(req): Json<TaskCreateFromAlignmentApiRequest>,
 ) -> Json<serde_json::Value> {
-    let Some(task_store) = task::get_task_store() else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "task store not initialized"
-        }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    match task_store.create_from_alignment(input).await {
-        Ok(t) => {
-            // Resolve thought→task linkage from the created task's record,
-            // not the raw input — `source_thought_id` may have been
-            // auto-inherited from alignment metadata.json and thus absent
-            // on the input. Reading from `t` covers both code paths
-            // uniformly.
-            if let (Some(thought_id), Some(thoughts)) =
-                (t.source_thought_id.clone(), thought::get_thought_store())
-            {
-                let _ = thoughts.link_task(&thought_id, &t.id).await;
-            }
-            Json(serde_json::json!({ "ok": true, "task": t }))
-        }
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    match application
+        .create_from_alignment_with_origin(
+            req.input,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
+        Err(error) => task_application_error_response(error),
     }
 }
 
@@ -3223,89 +3455,46 @@ async fn task_create_from_alignment_handler(
 /// The Task row is the sole scheduling authority. Starting persists Running,
 /// then arms the in-memory Task scheduler from that committed row.
 async fn task_run_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json::Value> {
-    if let Some(store) = task::get_task_store() {
-        if let Err(error) = store.get_ordinary(&req.id).await {
-            return Json(serde_json::json!({ "ok": false, "error": error }));
-        }
-    }
-    match run_task_by_id(&req.id).await {
-        Ok(task) => Json(serde_json::json!({
-            "ok": true,
-            "task": task,
-        })),
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
-    }
-}
-
-pub(crate) async fn run_task_by_id(id: &str) -> Result<task::Task, String> {
-    let task_control = crate::task_scheduler::try_acquire_task_control(id)
-        .await
-        .ok_or_else(|| {
-            format!("task {id} is stopping or changing scheduler state; retry after it settles")
-        })?;
-    run_task_by_id_with_control(id, &task_control).await
-}
-
-pub(crate) async fn run_task_by_id_with_control(
-    id: &str,
-    task_control: &crate::task_scheduler::TaskControlGuard,
-) -> Result<task::Task, String> {
-    let Some(task_store) = task::get_task_store() else {
-        return Err("task store not initialized".to_string());
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    let Some(ta) = task_store.get(id).await else {
-        return Err("task not found".to_string());
-    };
-
-    if ta.status != task::TaskStatus::Todo {
-        return Err(format!(
-            "task is in state '{}'; use 'myagents task rerun {}' to re-dispatch it",
-            ta.status.as_str(),
-            ta.id
-        ));
-    }
-    if let Some(execution) = crate::task_scheduler::get_task_scheduler()
-        .execution_projection(id)
-        .await
-    {
-        return Err(format!(
-            "task {id} still has an unresolved {} execution; stop it before rerunning",
-            execution.state.as_str()
-        ));
-    }
-
-    crate::task_scheduler::validate_task_schedule(&ta)?;
-    let (task, _) = task_store
-        .update_status_with_task_control_held(
-            task::TaskUpdateStatusInput {
-                id: ta.id.clone(),
-                status: task::TaskStatus::Running,
-                message: Some("dispatched".to_string()),
-                actor: task::TransitionActor::System,
-                source: Some(task::TransitionSource::Scheduler),
-            },
-            task_control,
+    match application
+        .run_ordinary_with_origin(
+            &req.id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
         )
-        .await?;
-    if let Err(error) = crate::task_scheduler::get_task_scheduler()
-        .start_with_control_held(&task.id, task_control)
         .await
     {
-        let _ = task_store
-            .update_status_with_task_control_held(
-                task::TaskUpdateStatusInput {
-                    id: task.id.clone(),
-                    status: task::TaskStatus::Blocked,
-                    message: Some(format!("scheduler start failed: {error}")),
-                    actor: task::TransitionActor::System,
-                    source: Some(task::TransitionSource::Scheduler),
-                },
-                task_control,
-            )
-            .await;
-        return Err(error);
+        Ok(result) => Json(task_lifecycle_success_response(
+            task::project_task(result.task).await,
+            Some(result.attempt_ordinal),
+        )),
+        Err(error) => task_application_error_response(error),
     }
-    Ok(task)
+}
+
+/// Force one AI turn through the ordinary Task execution claim while leaving
+/// schedule anchors and command Detector checkpoint state untouched.
+async fn task_run_now_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json::Value> {
+    let Some(store) = task::get_task_store() else {
+        return Json(serde_json::json!({ "ok": false, "error": "task store not initialized" }));
+    };
+    if let Err(error) = store.get_ordinary(&req.id).await {
+        return Json(serde_json::json!({ "ok": false, "error": error }));
+    }
+    match crate::task_scheduler::get_task_scheduler()
+        .trigger_now(&req.id)
+        .await
+    {
+        Ok(session_id) => Json(serde_json::json!({
+            "ok": true,
+            "taskId": req.id,
+            "sessionId": session_id,
+        })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
 }
 
 /// PRD §10.2.2 `POST /api/task/rerun` — reset the status back to `todo` (via
@@ -3313,66 +3502,23 @@ pub(crate) async fn run_task_by_id_with_control(
 /// is stuck in `blocked` / `stopped` / `done` / `archived` and the user wants
 /// to try again from scratch.
 async fn task_rerun_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json::Value> {
-    let Some(task_store) = task::get_task_store() else {
-        return Json(serde_json::json!({ "ok": false, "error": "task store not initialized" }));
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
     };
-    let Some(task_control) = crate::task_scheduler::try_acquire_task_control(&req.id).await else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": format!("task {} is stopping or changing scheduler state; retry after it settles", req.id)
-        }));
-    };
-    let ta = match task_store.get_ordinary(&req.id).await {
-        Ok(task) => task,
-        Err(error) => return Json(serde_json::json!({ "ok": false, "error": error })),
-    };
-
-    if !matches!(
-        ta.status,
-        task::TaskStatus::Blocked
-            | task::TaskStatus::Stopped
-            | task::TaskStatus::Done
-            | task::TaskStatus::Archived
-    ) {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": format!("rerun only valid from blocked/stopped/done/archived; current = '{}'", ta.status.as_str())
-        }));
-    }
-
-    // Step 1: reset → todo with source=rerun (PRD §10.2.1 caller-inference
-    // table row "rerun").
-    if let Some(execution) = crate::task_scheduler::get_task_scheduler()
-        .execution_projection(&ta.id)
-        .await
-    {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": format!("task {} still has an unresolved {} execution; retry stop before rerunning", ta.id, execution.state.as_str())
-        }));
-    }
-
-    if let Err(e) = task_store
-        .update_status_with_task_control_held(
-            task::TaskUpdateStatusInput {
-                id: ta.id.clone(),
-                status: task::TaskStatus::Todo,
-                message: Some("rerun requested".to_string()),
-                actor: task::TransitionActor::System,
-                source: Some(task::TransitionSource::Rerun),
-            },
-            &task_control,
+    match application
+        .rerun_ordinary_with_origin(
+            &req.id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
         )
         .await
     {
-        return Json(serde_json::json!({ "ok": false, "error": format!("reset failed: {}", e) }));
-    }
-
-    // Step 2: defer to the same path as `task/run`. Re-fetch to pick up the
-    // fresh `todo` status.
-    match run_task_by_id_with_control(&ta.id, &task_control).await {
-        Ok(task) => Json(serde_json::json!({ "ok": true, "task": task })),
-        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+        Ok(result) => Json(task_lifecycle_success_response(
+            task::project_task(result.task).await,
+            Some(result.attempt_ordinal),
+        )),
+        Err(error) => task_application_error_response(error),
     }
 }
 
@@ -3472,6 +3618,10 @@ async fn task_write_doc_handler(Json(req): Json<TaskWriteDocRequest>) -> Json<se
 #[serde(rename_all = "camelCase")]
 struct TaskIdApiRequest {
     id: String,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 // ============================================================================
@@ -3738,6 +3888,27 @@ async fn inbox_deliver_handler(Json(req): Json<InboxDeliverRequest>) -> Json<ser
     }))
 }
 
+/// `POST /api/inbox/start-session` — mint a fresh Session identity and admit
+/// its first Inbox request under the target Agent's own runtime/config.
+async fn inbox_start_session_handler(
+    Json(req): Json<crate::inbox::deliver::FreshSessionStartRequest>,
+) -> Json<serde_json::Value> {
+    let Some(manager) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "sidecar manager not initialized"
+        }));
+    };
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "global AppHandle not initialized — cannot start inbox Session"
+        }));
+    };
+    let outcome = crate::inbox::deliver::start_fresh_session(app_handle, manager, req).await;
+    Json(serde_json::json!({ "ok": true, "outcome": outcome }))
+}
+
 /// `POST /api/session/watch` — register a one-shot cross-session watch.
 ///
 /// The caller sidecar validates session metadata and passes watcher resume
@@ -4000,7 +4171,7 @@ mod tests {
     }
 
     #[test]
-    fn cron_stop_response_preserves_authoritative_blocked_status() {
+    fn task_lifecycle_response_uses_the_canonical_projection() {
         let task: crate::task::Task = serde_json::from_value(serde_json::json!({
             "id": "blocked-task",
             "name": "blocked task",
@@ -4019,7 +4190,15 @@ mod tests {
         }))
         .unwrap();
 
-        let response = cron_stop_success_response(&task);
+        let response = task_lifecycle_success_response(
+            crate::task::TaskProjection {
+                task,
+                execution_state: None,
+                execution_error: None,
+                next_execution_at: Some(1_780_000_000_000),
+            },
+            Some(3),
+        );
 
         assert_eq!(
             response.get("taskId").and_then(Value::as_str),
@@ -4029,6 +4208,102 @@ mod tests {
             response.get("status").and_then(Value::as_str),
             Some("blocked")
         );
+        assert_eq!(
+            response.pointer("/task/status").and_then(Value::as_str),
+            Some("blocked")
+        );
+        assert_eq!(
+            response.get("nextExecutionAt").and_then(Value::as_i64),
+            Some(1_780_000_000_000)
+        );
+        assert_eq!(
+            response
+                .pointer("/task/nextExecutionAt")
+                .and_then(Value::as_i64),
+            Some(1_780_000_000_000)
+        );
+        assert_eq!(
+            response.get("attemptOrdinal").and_then(Value::as_u64),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn task_error_response_decodes_the_existing_task_op_error() {
+        let response = task_error_response_value(
+            crate::task_application::TaskApplicationErrorCode::MutationFailed,
+            r#"{"code":"archive_user_only","message":"archive is user-only"}"#.to_string(),
+        );
+
+        assert_eq!(
+            response.get("code").and_then(Value::as_str),
+            Some("archive_user_only")
+        );
+        assert_eq!(
+            response.get("error").and_then(Value::as_str),
+            Some("archive is user-only")
+        );
+    }
+
+    #[test]
+    fn task_error_response_preserves_the_application_error_code() {
+        let response = task_error_response_value(
+            crate::task_application::TaskApplicationErrorCode::InvalidState,
+            "task is in state 'done'; use rerun".to_string(),
+        );
+
+        assert_eq!(
+            response.get("code").and_then(Value::as_str),
+            Some("invalid_state")
+        );
+        assert_eq!(
+            response.get("error").and_then(Value::as_str),
+            Some("task is in state 'done'; use rerun")
+        );
+    }
+
+    #[test]
+    fn direct_create_request_separates_cli_origin_from_domain_input() {
+        let request: TaskCreateDirectApiRequest = serde_json::from_value(serde_json::json!({
+            "name": "agent-created",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "taskMdContent": "Do the work",
+            "executionMode": "once",
+            "actor": "agent",
+            "source": "cli"
+        }))
+        .unwrap();
+
+        assert_eq!(request.input.workspace_id, "workspace");
+        assert_eq!(request.actor, Some(task::TransitionActor::Agent));
+        assert_eq!(request.source, Some(task::TransitionSource::Cli));
+    }
+
+    #[test]
+    fn alignment_and_lifecycle_requests_preserve_cli_origin() {
+        let alignment: TaskCreateFromAlignmentApiRequest =
+            serde_json::from_value(serde_json::json!({
+                "name": "aligned",
+                "executor": "agent",
+                "alignmentSessionId": "alignment-1",
+                "executionMode": "once",
+                "actor": "user",
+                "source": "cli"
+            }))
+            .unwrap();
+        assert_eq!(alignment.actor, Some(task::TransitionActor::User));
+        assert_eq!(alignment.source, Some(task::TransitionSource::Cli));
+
+        let lifecycle: TaskIdApiRequest = serde_json::from_value(serde_json::json!({
+            "id": "task-1",
+            "actor": "agent",
+            "source": "cli"
+        }))
+        .unwrap();
+        assert_eq!(lifecycle.actor, Some(task::TransitionActor::Agent));
+        assert_eq!(lifecycle.source, Some(task::TransitionSource::Cli));
     }
 
     #[tokio::test]

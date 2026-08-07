@@ -18,6 +18,7 @@ import {
   CONFIG_FILE,
   safeLoadJson,
   safeWriteJson,
+  isLockBusyError,
 } from "./configStore";
 import { mockLoadConfig, mockSaveConfig } from "@/utils/browserMock";
 import {
@@ -410,6 +411,7 @@ export async function ensureBundledWorkspace(): Promise<boolean> {
         try {
           await patchProject(found.id, metadataPatch);
         } catch (e) {
+          if (isLockBusyError(e)) throw e;
           console.warn(
             "[configService] Failed to repair bundled workspace metadata:",
             e,
@@ -429,6 +431,7 @@ export async function ensureBundledWorkspace(): Promise<boolean> {
       );
       await patchProject(project.id, metadataPatch);
     } catch (e) {
+      if (isLockBusyError(e)) throw e;
       console.warn("[configService] Failed to set bundled workspace icon:", e);
     }
 
@@ -457,6 +460,10 @@ export async function ensureBundledWorkspace(): Promise<boolean> {
     );
     return true;
   } catch (err) {
+    if (isLockBusyError(err)) {
+      _bundledWorkspaceChecked = false;
+      throw err;
+    }
     console.warn("[configService] ensureBundledWorkspace failed:", err);
     return false;
   }

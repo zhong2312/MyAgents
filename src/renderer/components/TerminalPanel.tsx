@@ -153,20 +153,11 @@ export function TerminalPanel({
       });
       if (cancelled) { unlistenExit(); unlistenData?.(); creatingRef.current = false; return; }
 
-      // Step 2: Resolve sidecar port
-      let port: number | null = null;
-      if (sessionIdProp) {
-        try {
-          const mod = await import('@/api/tauriClient');
-          port = await mod.getSessionPort(sessionIdProp);
-        } catch { /* port stays null */ }
-      }
-      if (cancelled) { unlistenData?.(); unlistenExit?.(); creatingRef.current = false; return; }
-
-      // Step 3: Create PTY with pre-generated ID
+      // Step 2: Create PTY with pre-generated ID. Rust resolves the current
+      // Session generation before injecting MYAGENTS_PORT.
       const id = await invoke<string>('cmd_terminal_create', {
         workspacePath, rows, cols,
-        sidecarPort: port ?? null,
+        sessionId: sessionIdProp ?? null,
         terminalId: preId,
       });
 

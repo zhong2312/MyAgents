@@ -204,8 +204,7 @@ let flushTimeout: ReturnType<typeof setTimeout> | null = null;
 const FLUSH_INTERVAL = 500; // Flush every 500ms
 const MAX_BUFFER_SIZE = 50; // Force flush if buffer exceeds this size
 
-// Server URL cache
-let serverUrl: string | null = null;
+let logServerReady = false;
 
 // Circuit breaker: prevents infinite error spam when Global Sidecar is dead
 let consecutiveFailures = 0;
@@ -220,8 +219,8 @@ const BACKOFF_MAX_MS = 60_000;
  * Tab sidecars should NOT override this - logs should always go to global
  * Also resets the circuit breaker (e.g., when Global Sidecar auto-restarts)
  */
-export function setLogServerUrl(url: string): void {
-  serverUrl = url;
+export function setLogServerReady(): void {
+  logServerReady = true;
   consecutiveFailures = 0;
   circuitBrokenUntil = 0;
   void flushLogs();
@@ -231,7 +230,7 @@ export function setLogServerUrl(url: string): void {
  * Clear the server URL (e.g., on app shutdown)
  */
 export function clearLogServerUrl(): void {
-  serverUrl = null;
+  logServerReady = false;
   consecutiveFailures = 0;
   circuitBrokenUntil = 0;
 }
@@ -256,7 +255,7 @@ function formatArgs(args: unknown[]): string {
  * Shared by flushLogs and sendLogBatch
  */
 async function sendToServer(entries: LogEntry[]): Promise<void> {
-  if (entries.length === 0 || !serverUrl) return;
+  if (entries.length === 0 || !logServerReady) return;
 
   // Circuit breaker: skip requests while broken
   if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -269,9 +268,9 @@ async function sendToServer(entries: LogEntry[]): Promise<void> {
 
   try {
     // Dynamic import to avoid circular dependency
-    const { proxyFetch } = await import('@/api/tauriClient');
+    const { globalSidecarFetch } = await import('@/api/tauriClient');
 
-    await proxyFetch(`${serverUrl}/api/unified-log`, {
+    await globalSidecarFetch('/api/unified-log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ entries }),
@@ -297,7 +296,7 @@ async function sendToServer(entries: LogEntry[]): Promise<void> {
  */
 async function flushLogs(): Promise<void> {
   if (logBuffer.length === 0) return;
-  if (!serverUrl) {
+  if (!logServerReady) {
     if (logBuffer.length > MAX_BUFFER_SIZE * 2) {
       logBuffer.splice(0, logBuffer.length - MAX_BUFFER_SIZE * 2);
     }

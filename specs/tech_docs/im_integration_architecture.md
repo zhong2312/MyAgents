@@ -1110,7 +1110,6 @@ Agent Channel 与 IM Bot 的区别：`platform` 字段为 `string` 而非固定�
 interface AgentConfig {
  id: string;
  name: string;
- workspacePath?: string;
  providerId?: string;
  model?: string;
  lastActivePrivateTarget?: LastActivePrivateTarget;
@@ -1129,6 +1128,12 @@ interface ChannelConfig {
  // ... credentials per type
 }
 ```
+
+Agent 持久化记录不再包含工作区字段。Project-backed Channel / heartbeat / memory / Sidecar
+运行目录由 `Project.path` 解析，AgentConfig 由 `Project.agentId` exact lookup；旧
+`Agent.workspacePath` 只在 raw compatibility adapter 中用于缺失链接修复、历史 extra
+关联或真 orphan fallback，且不会因更新其他 Agent 字段被清除。Rust
+`AgentConfigRust.resolved_workspace_path` 是不序列化的运行时投影，不是第二份 authority。
 
 ### Agent Channel 权限默认值
 
@@ -1153,8 +1158,8 @@ Mino 默认工作区的"文件内容模板"和 MyAgents 的"产品级 Agent 默�
 `Project` 会记录 `templateId` / `templateSource`。只有 `templateSource === 'builtin'` 且模板本身带 `agentDefaults` 时，`buildAgentForProject()` 才会把这些默认策略复制进 `AgentConfig`。用户模板即使复用了 `mino` 这个 id，也不会自动继承 builtin 默认能力。
 
 关键不变式：
-- 新建 project / 启动补齐历史 project 的 Agent 配置必须走 `buildAgentForProject()`，避免 Launcher、ConfigProvider、migration 路径分叉。
-- `ensureAllProjectsHaveAgent()` 只负责保证每个 project 有一个基础 Agent；对 builtin Mino project 会应用 `agentDefaults`，并把 `project.isAgent` 标为 true。
+- 新建 project / 启动补齐历史 project 的 Agent 配置必须走共享 reconciliation + `buildAgentForProject()`；在 `agent-config-intent.lock` 内先持久化 `Project.agentId`，再以同一 ID 创建 pathless Agent，避免 Launcher、ConfigProvider、migration 路径分叉与中断重复 birth。
+- `ensureAllProjectsHaveAgent()` 只负责保证每个 project 有一个基础 Agent；对 builtin Mino project 会应用 `agentDefaults`。只有所选或新建 Agent 已 enabled 时才把历史 projection `project.isAgent` 升为 `true`；disabled 不会强制设为 `true`，也不会清除旧值。
 - `agentDefaults.enabled = true` 只表示这个 workspace 的 Agent 能力默认打开；它不自动创建 Channel，也不绕过运行时门槛。
 - `memoryAutoUpdate.enabled = true` 不要求 Mino 文件模板预置 `UPDATE_MEMORY.md`。自动更新真正执行时由 Rust `memory_update.rs` 在工作区根目录 ensure 该文件：已存在则读取用户内容；缺失则从 `src/shared/default-update-memory.md` 初始化默认指令。
 - Rust 启动 Channel / heartbeat 仍以 `agent.enabled && channel.enabled && credentials` 为准。没有 channel 或 credential 时不会产生外部 IM 连接。

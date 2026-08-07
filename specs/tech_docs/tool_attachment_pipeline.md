@@ -270,7 +270,7 @@ Owner 模型决定 attachments 由 sessionOwner sidecar 持有：
 | Tab session | Chat Tab Sidecar 的 trusted root + 内存 registry |
 | IM Bot session | IM Bot Sidecar 的 trusted root + 内存 registry |
 | Cron / Background | 各自 owner Sidecar |
-| Handover (scenario 4) | 切到目标 Sidecar 时通过 SessionStore 反查 attachments，调 `rebuildAttachmentRegistryFromBlocks` 重 register |
+| 已有 Session 创建 / revive Sidecar | 启动时通过 SessionStore 反查 attachments，调 `rebuildAttachmentRegistryFromBlocks` 重 register |
 
 **out-of-scope（本期不支持）**：A Sidecar 上的 renderer 跨进程 fetch B Sidecar 持有的
 attachment。任何触发这种路径的入口视为 bug。

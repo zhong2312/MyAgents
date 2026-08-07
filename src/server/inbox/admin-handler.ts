@@ -60,6 +60,17 @@ function getFirstUserMessageText(sessionId: string): string {
   return '';
 }
 
+export function deriveCallerInboxLabel(
+  callerSessionId: string,
+  callerMeta: SessionMetadata | null = getSessionMetadata(callerSessionId) ?? null,
+): string {
+  const rawLabel = deriveSessionLabel(
+    callerMeta,
+    callerMeta ? getFirstUserMessageText(callerSessionId) : undefined,
+  );
+  return sanitizeInboxLabel(rawLabel);
+}
+
 /// Build the PendingInboxMessage envelope (kind=Request) from admin API input.
 function buildRequestMessage(
   callerSessionId: string,
@@ -68,12 +79,8 @@ function buildRequestMessage(
   prompt: string,
   replyBack: boolean,
 ): PendingInboxMessage {
-  const rawLabel = deriveSessionLabel(
-    callerMeta,
-    callerMeta ? getFirstUserMessageText(callerSessionId) : undefined,
-  );
   // sanitize at construction; recipients will receive only sanitized form
-  const fromLabel = sanitizeInboxLabel(rawLabel);
+  const fromLabel = deriveCallerInboxLabel(callerSessionId, callerMeta);
 
   const messageId = randomUUID();
   const createdAt = new Date().toISOString();

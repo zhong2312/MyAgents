@@ -23,6 +23,7 @@ import { CUSTOM_EVENTS } from '@/../shared/constants';
 import { humanizeCron, relativeTime } from '@/utils/taskCenterUtils';
 import { TaskCategoryBadge } from '../TaskCategoryBadge';
 import { TaskStatusBadge } from '../TaskStatusBadge';
+import { TaskTriggerBadge } from '../TaskTriggerBadge';
 import { TaskItemActions, deriveTaskRowStatus } from './TaskItemActions';
 import type { LegacyCronRow } from './types';
 import { isSupportedLocale, type SupportedLocale } from '@/../shared/i18n';
@@ -90,7 +91,10 @@ export function TaskCardItem(props: TaskCardItemProps) {
           ever grows a third element or when the row gets wrapped in
           another flex context during a refactor. */}
       <div className="flex w-full items-center gap-1.5">
-        <TaskStatusBadge status={status} executionState={task?.executionState} />
+        <div className="flex items-center gap-1.5">
+          {task?.trigger?.detector.type === 'command' && <TaskTriggerBadge />}
+          <TaskStatusBadge status={status} executionState={task?.executionState} />
+        </div>
         <TaskCategoryBadge mode={category} legacy={isLegacy} />
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <ViewSessionButton task={task} />

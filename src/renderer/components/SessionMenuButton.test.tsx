@@ -75,10 +75,13 @@ describe('SessionMenuButton', () => {
   it('hides the trigger tooltip while the session menu is open', () => {
     renderMenu();
 
-    expect(screen.getByText('对话操作')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '对话操作' }));
+    const trigger = screen.getByRole('button', { name: '对话操作' });
+    fireEvent.mouseEnter(trigger.parentElement!);
+    expect(screen.getByRole('tooltip', { name: '对话操作' })).toBeInTheDocument();
 
-    expect(screen.queryByText('对话操作')).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+
+    expect(screen.queryByRole('tooltip', { name: '对话操作' })).not.toBeInTheDocument();
     expect(screen.getByText('SessionID:')).toBeInTheDocument();
   });
 

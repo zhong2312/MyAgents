@@ -17,7 +17,8 @@ import {
 } from '../session-core/turn-result-policy';
 import { isSdkMissingResumeMessageError } from '../session-core/resume-error-recovery';
 import { decideInFlightActionOnResult } from '../utils/inflight-terminal';
-import type { InFlightMetadata, ProviderEnv, TurnProviderAnalytics } from './types';
+import type { ProviderEnv } from '../provider-types';
+import type { InFlightMetadata, TurnProviderAnalytics } from './types';
 import {
   getCurrentTurnText,
   getCurrentTurnInboxMeta,
@@ -150,7 +151,7 @@ export type BuiltinTurnLifecycleDeps = {
   scheduleTransientProviderRetry: (
     decision: Extract<TransientProviderTextRetryDecision, { retry: true }>,
   ) => boolean;
-  retractTransientProviderTextOutput: (resultText: string) => void;
+  retractTransientProviderTextOutput: (resultText: string) => Promise<void>;
   clearApiRetryStatus: () => void;
   trackServer?: typeof defaultTrackServer;
   firePostTurnTitleHook: (
@@ -171,7 +172,7 @@ export type BuiltinTurnLifecycleDeps = {
 };
 
 export type BuiltinTurnLifecycle = {
-  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => void;
+  handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => Promise<void>;
   completeTurn: (
     durationMs?: number,
     terminalError?: string,
@@ -309,7 +310,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     const outputOwner = outputOwnerClaimedByCancellation
       ? null
       : deps.takeCurrentOutputOwner();
-    if (outputOwnerClaimedByCancellation) {
+    if (outputOwnerClaimedByCancellation && !hasCurrentTurnImTerminalEmitted()) {
       deps.cancelCurrentImRequest(buildImCancelledPayload());
     } else if (terminalError) {
       deps.failOutputOwner(outputOwner, buildImErrorPayload(deps.localizeImError(terminalError)));
@@ -390,7 +391,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
     }
     commonTerminalCleanup('stopped');
-    deps.cancelCurrentImRequest(buildImCancelledPayload());
+    if (!hasCurrentTurnImTerminalEmitted()) {
+      deps.cancelCurrentImRequest(buildImCancelledPayload());
+    }
     setCurrentTurnImTerminalEmitted(false);
     forceCloseOrphanThinkingBlocks('handleMessageStopped');
     lastTurnEndPersist = deps.persistTranscript(undefined, activityAt);
@@ -458,7 +461,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     return completionTerminal;
   };
 
-  const handleSdkResult = (resultMessage: BuiltinSdkResultMessage): void => {
+  const handleSdkResult = async (resultMessage: BuiltinSdkResultMessage): Promise<void> => {
     deps.resetInFlightToolCount();
     deps.resetWatchdogFired();
 
@@ -483,7 +486,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     let terminalTransientProviderRetryExhausted = false;
     let terminalTransientProviderMaxRetries = transientRetryDecision.maxRetries;
     if (transientRetryDecision.retry) {
-      deps.retractTransientProviderTextOutput(resultText);
+      await deps.retractTransientProviderTextOutput(resultText);
       if (deps.scheduleTransientProviderRetry(transientRetryDecision)) {
         console.warn(
           `[agent][transient-provider-text] ${transientRetryDecision.error.kind}; ` +
@@ -503,7 +506,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
 
     if (terminalTransientProviderError) {
-      deps.retractTransientProviderTextOutput(resultText);
+      await deps.retractTransientProviderTextOutput(resultText);
       const retrySuffix = terminalTransientProviderRetryExhausted
         ? `已自动重试 ${terminalTransientProviderMaxRetries} 次仍失败。`
         : '当前会话无法安全自动重试。';

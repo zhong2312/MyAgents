@@ -802,6 +802,7 @@ mod imp {
     fn ensure_windows(app: &AppHandle) -> Result<(), String> {
         if app.get_webview_window(BALL_LABEL).is_none() {
             let win = WebviewWindowBuilder::new(app, BALL_LABEL, WebviewUrl::default())
+                .scroll_bar_style(crate::webview_policy::scroll_bar_style())
                 .title("MyAgents Ball")
                 .inner_size(BALL_WIN, BALL_WIN)
                 .resizable(false)
@@ -845,6 +846,7 @@ mod imp {
 
         if app.get_webview_window(SHIELD_LABEL).is_none() {
             let win = WebviewWindowBuilder::new(app, SHIELD_LABEL, WebviewUrl::default())
+                .scroll_bar_style(crate::webview_policy::scroll_bar_style())
                 .title("MyAgents Floating Shield")
                 .inner_size(1.0, 1.0)
                 .resizable(false)
@@ -877,6 +879,7 @@ mod imp {
 
         if app.get_webview_window(COMPANION_LABEL).is_none() {
             let win = WebviewWindowBuilder::new(app, COMPANION_LABEL, WebviewUrl::default())
+                .scroll_bar_style(crate::webview_policy::scroll_bar_style())
                 .title("MyAgents Companion")
                 .inner_size(COMPANION_W, COMPANION_H)
                 .resizable(false) // JS-driven resize via cmd_fb_set_companion_size
@@ -1937,6 +1940,7 @@ mod imp {
     fn ensure_windows(app: &AppHandle) -> Result<(), String> {
         if app.get_webview_window(BALL_LABEL).is_none() {
             let win = WebviewWindowBuilder::new(app, BALL_LABEL, WebviewUrl::default())
+                .scroll_bar_style(crate::webview_policy::scroll_bar_style())
                 .title("MyAgents Ball")
                 .inner_size(BALL_WIN, BALL_WIN)
                 .resizable(false)
@@ -1961,6 +1965,7 @@ mod imp {
 
         if app.get_webview_window(COMPANION_LABEL).is_none() {
             let win = WebviewWindowBuilder::new(app, COMPANION_LABEL, WebviewUrl::default())
+                .scroll_bar_style(crate::webview_policy::scroll_bar_style())
                 .title("MyAgents Companion")
                 .inner_size(COMPANION_W, COMPANION_H)
                 .resizable(false)

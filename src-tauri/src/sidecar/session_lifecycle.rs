@@ -40,6 +40,10 @@ async fn has_non_tab_session_owner(
 pub struct EnsureSidecarResult {
     pub port: u16,
     pub is_new: bool,
+    /// Internal process identity used to commit replacement work. This is not
+    /// part of the renderer/Tauri wire contract.
+    #[serde(skip)]
+    pub(crate) generation: u64,
 }
 
 /// Upper bound on ensure re-entry. The ensure path re-runs itself on
@@ -50,6 +54,7 @@ pub struct EnsureSidecarResult {
 /// is generous — real churn settles in 1–2 (cross-review: all three reviewers
 /// flagged the prior unbounded self-recursion).
 const MAX_ENSURE_ATTEMPTS: u32 = 8;
+const RECOVERY_ATTEMPT_STALE: &str = "RECOVERY_ATTEMPT_STALE";
 
 fn sidecar_generation_is_alive(
     manager: &ManagedSidecarManager,
@@ -100,9 +105,10 @@ pub(crate) fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
     owner: SidecarOwner,
     runtime_override: Option<String>,
     runtime_source_override: Option<String>,
+    expected_recovery_epoch: Option<u64>,
 ) -> Result<EnsureSidecarResult, String> {
-    let _update_spawn_permit = begin_update_spawn_permit()?;
-    ensure_session_sidecar_attempt(
+    let _lifecycle_spawn_permit = begin_lifecycle_spawn_permit()?;
+    let attempt_result = ensure_session_sidecar_attempt(
         app_handle,
         manager,
         session_id,
@@ -111,7 +117,71 @@ pub(crate) fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
         runtime_override,
         runtime_source_override,
         0,
-    )
+        expected_recovery_epoch,
+    );
+    let mut result = match attempt_result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Ok(mut manager_guard) = manager.lock() {
+                if error != RECOVERY_ATTEMPT_STALE {
+                    if let Some(failure) = manager_guard.record_session_recovery_failure(
+                        session_id,
+                        expected_recovery_epoch,
+                        std::time::Instant::now(),
+                    ) {
+                        ulog_error!(
+                            "[sidecar-recovery] action=retry-scheduled session={} epoch={} dead_generation={} candidate_generation={:?} attempt={} next_retry_ms={} error={}",
+                            session_id,
+                            failure.epoch,
+                            failure.dead_generation,
+                            failure.candidate_generation,
+                            failure.failed_attempts,
+                            failure.retry_after.as_millis(),
+                            error
+                        );
+                    }
+                }
+            }
+            return Err(error);
+        }
+    };
+    let should_commit = result.is_new
+        || manager
+            .lock()
+            .map_err(|error| error.to_string())?
+            .has_session_recovery(session_id);
+    if should_commit {
+        let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+        let Some(commit) = manager_guard.commit_ready_session_sidecar(session_id) else {
+            let error = format!(
+                "Session {} replacement on port {} lost lifecycle authority before commit",
+                session_id, result.port
+            );
+            if let Some(failure) = manager_guard.record_session_recovery_failure(
+                session_id,
+                expected_recovery_epoch,
+                std::time::Instant::now(),
+            ) {
+                ulog_error!(
+                    "[sidecar-recovery] action=commit-rejected session={} epoch={} dead_generation={} candidate_generation={:?} attempt={} next_retry_ms={} error={}",
+                    session_id,
+                    failure.epoch,
+                    failure.dead_generation,
+                    failure.candidate_generation,
+                    failure.failed_attempts,
+                    failure.retry_after.as_millis(),
+                    error
+                );
+            }
+            return Err(error);
+        };
+        if commit.generation != result.generation || commit.port != result.port {
+            result.port = commit.port;
+            result.generation = commit.generation;
+            result.is_new = false;
+        }
+    }
+    Ok(result)
 }
 
 /// Async pit-of-success entrypoint for every owner-acquiring ensure.
@@ -185,19 +255,39 @@ pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecy
     // Keep the caller's authority alive until the blocking ensure and its
     // readiness wait finish. This is intentionally not a fresh acquisition.
     let _lifecycle = lifecycle;
-    tauri::async_runtime::spawn_blocking(move || {
+    let ensure_app_handle = app_handle.clone();
+    let event_session_id = session_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         ensure_session_sidecar_with_runtime_identity_override(
-            &app_handle,
+            &ensure_app_handle,
             &manager,
             &session_id,
             &workspace_path,
             owner,
             runtime_override,
             runtime_source_override,
+            None,
         )
     })
     .await
-    .map_err(|error| format!("ensure_session_sidecar blocking task failed: {error:?}"))?
+    .map_err(|error| format!("ensure_session_sidecar blocking task failed: {error:?}"))??;
+
+    // Every newly-created process starts a fresh liveRevision epoch. Emit from
+    // the shared async ensure authority (not just the renderer command) so a
+    // Task/IM/Goal revive cannot leave an attached Tab comparing revisions
+    // from the previous process. First-ever creates are harmless: renderer
+    // consumers filter by their currently attached Session, and pending births
+    // already ignore this event.
+    if result.is_new {
+        let _ = app_handle.emit(
+            "session-sidecar:restarted",
+            serde_json::json!({
+                "sessionId": event_session_id,
+                "port": result.port,
+            }),
+        );
+    }
+    Ok(result)
 }
 
 fn resolve_runtime_identity_for_owner(
@@ -282,6 +372,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     runtime_override: Option<String>,
     runtime_source_override: Option<String>,
     attempt: u32,
+    expected_recovery_epoch: Option<u64>,
 ) -> Result<EnsureSidecarResult, String> {
     if attempt >= MAX_ENSURE_ATTEMPTS {
         return Err(format!(
@@ -321,7 +412,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     // a new session sidecar that races with the stale-process sweep (the very
     // case db58545 set out to prevent). In the common case this returns
     // immediately (AtomicBool load; cleanup completes in ~50 ms).
-    wait_for_startup_cleanup(Duration::from_secs(15));
+    wait_for_startup_cleanup(Duration::from_secs(15))?;
 
     ulog_debug!("[sidecar] Acquiring manager lock...");
     let mut manager_guard = manager.lock().map_err(|e| {
@@ -329,6 +420,11 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
         e.to_string()
     })?;
     ulog_debug!("[sidecar] Manager lock acquired");
+    if expected_recovery_epoch.is_some_and(|epoch| {
+        !manager_guard.recovery_attempt_is_authorized(session_id, epoch, &owner)
+    }) {
+        return Err(RECOVERY_ATTEMPT_STALE.to_string());
+    }
 
     // Check if Session already has a healthy Sidecar
     // We use a two-phase approach to avoid holding the lock during HTTP check:
@@ -368,7 +464,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     "[sidecar] Session {} has dead Sidecar process, removing",
                     session_id
                 );
-                manager_guard.remove_sidecar(session_id);
+                manager_guard.begin_session_sidecar_replacement(session_id);
                 None
             } else if sidecar.is_reusable() {
                 if validate_sidecar_runtime_invariant(
@@ -380,7 +476,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 )
                 .is_err()
                 {
-                    manager_guard.remove_sidecar(session_id);
+                    manager_guard.begin_session_sidecar_replacement(session_id);
                     manager_guard.clear_generation(session_id);
                     None
                 } else {
@@ -410,7 +506,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 )
                 .is_err()
                 {
-                    manager_guard.remove_sidecar(session_id);
+                    manager_guard.begin_session_sidecar_replacement(session_id);
                     manager_guard.clear_generation(session_id);
                     None
                 } else {
@@ -490,6 +586,11 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
 
         // Re-acquire lock after HTTP check
         let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+        if expected_recovery_epoch.is_some_and(|epoch| {
+            !manager_guard.recovery_attempt_is_authorized(session_id, epoch, &owner)
+        }) {
+            return Err(RECOVERY_ATTEMPT_STALE.to_string());
+        }
         let post_gen = manager_guard.current_generation(session_id);
 
         if post_gen != pre_gen {
@@ -518,7 +619,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     )
                     .is_err()
                     {
-                        manager_guard.remove_sidecar(session_id);
+                        manager_guard.begin_session_sidecar_replacement(session_id);
                         manager_guard.clear_generation(session_id);
                     } else {
                         drop(manager_guard);
@@ -531,6 +632,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                             runtime_override,
                             runtime_source_override,
                             attempt + 1,
+                            expected_recovery_epoch,
                         );
                     }
                 }
@@ -580,6 +682,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                         return Ok(EnsureSidecarResult {
                             port,
                             is_new: false,
+                            generation: pre_gen,
                         });
                     }
                 } else if sidecar.port == port && wait_for_starting {
@@ -614,12 +717,13 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                         return Ok(EnsureSidecarResult {
                             port,
                             is_new: false,
+                            generation: pre_gen,
                         });
                     }
                 }
             }
             if remove_for_runtime_drift {
-                manager_guard.remove_sidecar(session_id);
+                manager_guard.begin_session_sidecar_replacement(session_id);
                 manager_guard.clear_generation(session_id);
             }
             // Sidecar gone but generation unchanged (removed without replacement)
@@ -667,7 +771,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 "[sidecar] Session {} Sidecar process alive but HTTP unresponsive on port {}, removing",
                 session_id, port
             );
-            manager_guard.remove_sidecar(session_id);
+            manager_guard.begin_session_sidecar_replacement(session_id);
         }
 
         let result = create_new_session_sidecar(
@@ -681,6 +785,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
             runtime_source_override.as_deref(),
             &expected_runtime_identity,
             attempt,
+            expected_recovery_epoch,
         );
         if let Ok(ensure_result) = &result {
             emit_perf_trace(
@@ -708,6 +813,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
         runtime_source_override.as_deref(),
         &expected_runtime_identity,
         attempt,
+        expected_recovery_epoch,
     );
     if let Ok(ensure_result) = &result {
         emit_perf_trace(
@@ -736,6 +842,7 @@ fn create_new_session_sidecar<R: Runtime>(
     runtime_source_override: Option<&str>,
     resolved_identity: &RuntimeIdentity,
     attempt: u32,
+    expected_recovery_epoch: Option<u64>,
 ) -> Result<EnsureSidecarResult, String> {
     let boot_started = trace_start();
 
@@ -757,10 +864,11 @@ fn create_new_session_sidecar<R: Runtime>(
                 runtime_override.map(str::to_string),
                 runtime_source_override.map(str::to_string),
                 attempt + 1,
+                expected_recovery_epoch,
             );
         }
         // Exists but process dead — remove before creating fresh
-        manager_guard.remove_sidecar(session_id);
+        manager_guard.begin_session_sidecar_replacement(session_id);
     }
 
     // Need to start a new Sidecar
@@ -827,15 +935,6 @@ fn create_new_session_sidecar<R: Runtime>(
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    // Windows: CREATE_NO_WINDOW already applied by process_cmd::new()
-
-    // Unix: Make child a process group leader so kill(-PGID) kills the entire tree
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-
     // Spawn
     emit_perf_trace(
         PerfTrace::new(PerfTraceName::SidecarBoot, "spawn_start")
@@ -844,7 +943,7 @@ fn create_new_session_sidecar<R: Runtime>(
             .detail("runtimeSource", &runtime_source_for_trace)
             .detail("owner", format!("{:?}", owner)),
     );
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = crate::process_cmd::spawn_tree(&mut cmd).map_err(|e| {
         manager_guard.clear_generation(session_id);
         ulog_error!("[sidecar] Failed to spawn SessionSidecar: {}", e);
         emit_perf_trace(
@@ -942,9 +1041,12 @@ fn create_new_session_sidecar<R: Runtime>(
         process: child,
         port,
         session_id: session_id.to_string(),
+        management_id: session_id.to_string(),
         workspace_path: workspace_path.to_path_buf(),
         state: SidecarState::Starting,
         owners,
+        completion_claims: HashSet::new(),
+        dispatch_gate: DispatchGate::new(),
         created_at: std::time::Instant::now(),
         runtime: resolved_identity.runtime_for_env().map(str::to_string),
         runtime_source: resolved_identity
@@ -1045,7 +1147,11 @@ fn create_new_session_sidecar<R: Runtime>(
                     .status("ok")
                     .detail("port", port),
             );
-            Ok(EnsureSidecarResult { port, is_new: true })
+            Ok(EnsureSidecarResult {
+                port,
+                is_new: true,
+                generation: sidecar_generation,
+            })
         }
         Err(e) => {
             ulog_error!("[sidecar] SessionSidecar health check failed: {}", e);
@@ -1181,7 +1287,6 @@ pub async fn cmd_ensure_session_sidecar(
     };
 
     let workspace_path = PathBuf::from(&workspacePath);
-
     // The async lifecycle entrypoint owns both the per-session deletion fence
     // and the blocking-thread handoff for the full cold boot/readiness wait.
     let manager = state.inner().clone();
@@ -1247,18 +1352,31 @@ pub async fn cmd_upgrade_session_id(
     state: tauri::State<'_, ManagedSidecarManager>,
     oldSessionId: String,
     newSessionId: String,
+    tabId: String,
 ) -> Result<bool, String> {
     let _lifecycle = acquire_session_lifecycle(&[&oldSessionId, &newSessionId]).await;
+    {
+        let manager = state.lock().map_err(|e| e.to_string())?;
+        if manager.session_id_upgrade_is_already_applied_for_tab(
+            &oldSessionId,
+            &newSessionId,
+            &tabId,
+        ) {
+            return Ok(true);
+        }
+    }
     if has_persisted_session_owner(&oldSessionId).await?
         || has_persisted_session_owner(&newSessionId).await?
     {
         return Ok(false);
     }
     let mut manager = state.lock().map_err(|e| e.to_string())?;
-    if manager.session_has_persistent_owners(&oldSessionId) {
+    if manager.session_has_persistent_owners(&oldSessionId)
+        || manager.session_has_persistent_owners(&newSessionId)
+    {
         return Ok(false);
     }
-    Ok(manager.upgrade_session_id(&oldSessionId, &newSessionId))
+    Ok(manager.upgrade_session_id_for_tab(&oldSessionId, &newSessionId, &tabId))
 }
 
 /// Check whether a session identity must remain stable after a Tab detaches.
@@ -1416,16 +1534,15 @@ pub async fn cmd_delete_session_if_unowned(
         for tab_id in &releasable_tab_ids {
             manager.release_tab_session(&sessionId, tab_id, false);
         }
-        manager.deactivate_session(&sessionId);
         Ok(result)
     })
     .await
     .map_err(|error| format!("Session deletion task failed: {error:?}"))?
 }
 
-/// Release a Tab owner and update the activation under the Session lifecycle guard.
-/// This prevents a newly-created Goal/Agent owner from landing between a
-/// renderer-side presence check and activation mutation.
+/// Release a Tab owner under the Session lifecycle guard. This prevents a
+/// newly-created Goal/Agent owner from landing between the renderer-side
+/// presence check and owner removal.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn cmd_release_tab_session(
@@ -1443,8 +1560,8 @@ pub async fn cmd_release_tab_session(
 mod session_lifecycle_tests {
     use super::{
         acquire_session_lifecycle, is_canonical_session_id, resolve_runtime_identity_for_owner,
-        validate_sidecar_runtime_invariant, RuntimeIdentity, SessionDeleteCommandResult,
-        SidecarOwner,
+        validate_sidecar_runtime_invariant, EnsureSidecarResult, RuntimeIdentity,
+        SessionDeleteCommandResult, SidecarOwner,
     };
     use std::time::Duration;
 
@@ -1536,6 +1653,19 @@ mod session_lifecycle_tests {
         assert_eq!(
             serde_json::to_value(SessionDeleteCommandResult::refused("in-use")).unwrap(),
             serde_json::json!({ "deleted": false, "reason": "in-use" })
+        );
+    }
+
+    #[test]
+    fn ensure_result_process_generation_is_not_part_of_public_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(EnsureSidecarResult {
+                port: 32001,
+                is_new: true,
+                generation: 42,
+            })
+            .unwrap(),
+            serde_json::json!({ "port": 32001, "isNew": true })
         );
     }
 

@@ -46,14 +46,14 @@ registerBuiltinMcpMeta({
 
 `exit_cron_task` 不再是 SDK MCP。Task 执行时仍使用
 `src/server/tools/cron-tools.ts` 保存最小的 per-session Task 上下文，但模型出口是
-`myagents cron exit --reason ...`。该命令只记录当前 Turn 的退出请求，不直接修改
+`myagents task exit --reason ...`（`cron exit` 保留兼容）。该命令只记录当前 Turn 的退出请求，不直接修改
 Task 状态。
 
 ### 基本信息
 
 | 属性 | 值 |
 |------|---|
-| **入口** | `myagents cron exit --reason ...` |
+| **入口** | `myagents task exit --reason ...` |
 | **文件** | `src/server/tools/cron-tools.ts` |
 | **可用场景** | 仅在定时任务执行期间，且任务创建者启用了"允许 AI 退出" |
 
@@ -89,7 +89,7 @@ clearCronTaskContext(sessionId?)                  // 任务 terminal cleanup 后
 ### 执行流程
 
 ```
-AI 调用 myagents cron exit --reason ...
+AI 调用 myagents task exit --reason ...
   → 验证 cronContext.taskId 存在
   → 验证 cronContext.canExit = true
   → Sidecar 记录当前 Session 的 exit request
@@ -102,7 +102,7 @@ AI 调用 myagents cron exit --reason ...
 ## 已退役：im-cron MCP
 
 历史能力说明，仅用于理解旧会话和日志；当前 IM 定时任务调用
-`myagents cron` CLI，最终写入 TaskStore。
+canonical `myagents task` CLI，最终写入 TaskStore；`myagents cron` 仅保留兼容。
 
 ### 基本信息
 

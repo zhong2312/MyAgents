@@ -14,6 +14,19 @@ const mocks = vi.hoisted(() => ({
   readPreview: vi.fn(),
   readLocalPreview: vi.fn(),
   onInsertReference: vi.fn(),
+  onFilePreviewExternal: vi.fn(),
+  onRevealInTree: vi.fn(),
+  toastError: vi.fn(),
+  toastInfo: vi.fn(),
+}));
+
+vi.mock('@/components/Toast', () => ({
+  useToastOptional: () => ({
+    info: mocks.toastInfo,
+    error: mocks.toastError,
+    success: vi.fn(),
+    warning: vi.fn(),
+  }),
 }));
 
 vi.mock('@/context/ImagePreviewContext', () => ({
@@ -31,6 +44,8 @@ vi.mock('@/hooks/useWorkspaceFileService', () => ({
     openInFinder: mocks.openInFinder,
     readPreview: mocks.readPreview,
     readLocalPreview: mocks.readLocalPreview,
+    downloadFile: vi.fn(),
+    downloadLocalFile: vi.fn(),
     readFileAsBlobUrl: vi.fn(),
     readLocalFileAsBlobUrl: vi.fn(),
   }),
@@ -55,7 +70,12 @@ const MISSING_PATH = `${WORKSPACE}/${REL_MISSING}`;
 
 function renderFilePath(path: string) {
   render(
-    <FileActionProvider workspacePath={WORKSPACE} onInsertReference={mocks.onInsertReference}>
+    <FileActionProvider
+      workspacePath={WORKSPACE}
+      onInsertReference={mocks.onInsertReference}
+      onFilePreviewExternal={mocks.onFilePreviewExternal}
+      onRevealInTree={mocks.onRevealInTree}
+    >
       <FilePath path={path} />
     </FileActionProvider>,
   );
@@ -70,6 +90,11 @@ describe('FilePath tool chip — clickable file paths', () => {
     mocks.openPathWithDefault.mockResolvedValue(undefined);
     mocks.openPathExternal.mockResolvedValue(undefined);
     mocks.openInFinder.mockResolvedValue(undefined);
+    mocks.readPreview.mockResolvedValue({
+      name: 'utils.tsx',
+      content: 'export const value = true;',
+      size: 26,
+    });
   });
 
   // A file tool can arrive with NO path — a partial/streaming tool input
@@ -95,7 +120,7 @@ describe('FilePath tool chip — clickable file paths', () => {
     }
   });
 
-  it('renders a real file as an interactive chip and opens the action menu on click', async () => {
+  it('renders a real file as an interactive chip, previews on click, and keeps actions on right-click', async () => {
     mocks.checkPaths.mockResolvedValue({ results: { [REL_FILE]: { exists: true, type: 'file' } } });
     renderFilePath(FILE_PATH);
 
@@ -112,7 +137,14 @@ describe('FilePath tool chip — clickable file paths', () => {
 
     fireEvent.click(chip);
 
-    // File menu surfaces the same actions as inline paths in AI text.
+    await waitFor(() => expect(mocks.onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
+      path: REL_FILE,
+      content: 'export const value = true;',
+    })));
+    expect(screen.queryByText('预览')).not.toBeInTheDocument();
+
+    // Right-click still surfaces the shared file menu.
+    fireEvent.contextMenu(chip);
     expect(screen.getByText('预览')).toBeInTheDocument();
     expect(screen.getByText('引用')).toBeInTheDocument();
     expect(screen.getByText('打开')).toBeInTheDocument();
@@ -201,32 +233,42 @@ describe('FilePath tool chip — clickable file paths', () => {
     expect(mocks.checkPaths).not.toHaveBeenCalledWith({ paths: [FILE_PATH] });
   });
 
-  it('leaves an absolute path OUTSIDE the workspace as a plain chip', async () => {
+  it('keeps a rejected absolute path actionable and explains the unavailable target', async () => {
     const OUTSIDE = '/etc/passwd';
     mocks.checkLocalPaths.mockResolvedValue({ results: { [OUTSIDE]: { exists: false, type: 'file' } } });
     renderFilePath(OUTSIDE);
 
-    await waitFor(() => expect(mocks.checkLocalPaths).toHaveBeenCalled());
-    // Can't be made workspace-relative → local checker rejects it → stays plain.
+    const chip = await waitFor(() => {
+      const el = screen.getByText(OUTSIDE);
+      expect(el).toHaveClass('cursor-pointer');
+      return el;
+    });
     expect(mocks.checkLocalPaths).toHaveBeenCalledWith({ paths: [OUTSIDE], workspace: WORKSPACE });
-    const chip = screen.getByText(OUTSIDE);
-    expect(chip).not.toHaveClass('cursor-pointer');
+
     fireEvent.click(chip);
-    expect(screen.queryByText('预览')).not.toBeInTheDocument();
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('文件不存在或无法访问'));
+
+    fireEvent.contextMenu(chip);
+    expect(screen.getByText('复制')).toBeInTheDocument();
+    expect(screen.getByText('打开')).toBeInTheDocument();
   });
 
-  it('keeps a non-existent path as a plain chip with no menu', async () => {
+  it('keeps a non-existent path actionable with explicit failure and the product menu', async () => {
     mocks.checkPaths.mockResolvedValue({ results: { [REL_MISSING]: { exists: false, type: 'file' } } });
     renderFilePath(MISSING_PATH);
 
-    // Wait for the existence check to flush, then assert it stayed plain.
-    await waitFor(() => expect(mocks.checkPaths).toHaveBeenCalled());
-    const chip = screen.getByText(MISSING_PATH);
-    expect(chip).not.toHaveClass('cursor-pointer');
+    const chip = await waitFor(() => {
+      const el = screen.getByText(MISSING_PATH);
+      expect(el).toHaveClass('cursor-pointer');
+      return el;
+    });
 
     fireEvent.click(chip);
-    expect(screen.queryByText('预览')).not.toBeInTheDocument();
-    expect(screen.queryByText('打开')).not.toBeInTheDocument();
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('文件不存在或无法访问'));
+
+    fireEvent.contextMenu(chip);
+    expect(screen.getByText('预览')).toBeInTheDocument();
+    expect(screen.getByText('打开')).toBeInTheDocument();
   });
 
   it('omits 预览 for directories and labels them as folders', async () => {
@@ -241,6 +283,10 @@ describe('FilePath tool chip — clickable file paths', () => {
     expect(chip.getAttribute('title')).toBe(`文件夹: ${DIR_PATH}`);
 
     fireEvent.click(chip);
+    await waitFor(() => expect(mocks.onRevealInTree).toHaveBeenCalledWith(REL_DIR));
+    expect(screen.queryByText('打开所在文件夹')).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(chip);
     expect(screen.queryByText('预览')).not.toBeInTheDocument();
     expect(screen.getByText('引用')).toBeInTheDocument();
     expect(screen.getByText('打开所在文件夹')).toBeInTheDocument();

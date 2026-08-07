@@ -17,11 +17,11 @@
  *      discovered/added by the user via the UI on preset providers.
  *   3. `PRESET_PROVIDERS` (bundled in `renderer/config/types.ts`) — fallback.
  *   4. `~/.myagents/cache/litellm_model_prices.json` — LiteLLM community data,
- *      fetched by the Rust side on a 24h cadence. LOWEST priority: fills only
- *      gaps 1–3 left (a model none of them defined, OR a field — e.g.
- *      contextLength — that a higher source left undefined; see the per-field
- *      merge below). Covers third-party models whose `/v1/models` doesn't
- *      report a context window. Absent until the first fetch.
+ *      fetched by the Rust side on a 24h cadence. LOWEST priority in the flat,
+ *      provider-unknown registry. A provider-scoped lookup only reaches this
+ *      fallback when the active provider has no corresponding model row; a
+ *      provider-owned row with a missing field stays unknown until discovery
+ *      or explicit configuration fills it (#516).
  *
  * Rationale for the order: it mirrors the `findProvider`-style disk-first
  * precedence elsewhere in admin-config. If a user pins a corrected
@@ -209,6 +209,23 @@ function ingestProviderList(
   }
 }
 
+function providerListContainsModel(providers: unknown, bareModelId: string): boolean {
+  if (!Array.isArray(providers)) return false;
+  for (const provider of providers) {
+    if (!provider || typeof provider !== 'object') continue;
+    const models = (provider as Record<string, unknown>).models;
+    if (!Array.isArray(models)) continue;
+    if (models.some(model => {
+      if (!model || typeof model !== 'object') return false;
+      const rawModelId = (model as Record<string, unknown>).model;
+      return typeof rawModelId === 'string' && stripModelSuffix(rawModelId) === bareModelId;
+    })) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function loadCustomProvidersFromDisk(home: string): Array<Record<string, unknown>> {
   const dir = resolve(home, '.myagents', 'providers');
   if (!existsSync(dir)) return [];
@@ -274,19 +291,22 @@ function loadPresetCustomModels(home: string): Record<string, unknown> | null {
  *    `max_output_tokens` → maxOutputTokens (reusing coercePositiveFinite so
  *    string numbers / bogus values are handled identically to other sources).
  *  - Indexes each model under its literal key AND, for `provider/model` keys,
- *    the provider-stripped tail — so our bare `deepseek-chat` matches LiteLLM's
- *    `deepseek/deepseek-chat`. First-wins WITHIN this map (literal key beats a
- *    later tail collision); the caller enforces first-wins across sources.
+ *    a safe provider-stripped tail — so our bare `deepseek-chat` can match
+ *    LiteLLM's `deepseek/deepseek-chat` without making one provider's limit
+ *    globally authoritative. An unqualified literal is canonical across casing;
+ *    without one, a field is exposed through the tail only when every candidate
+ *    that defines that field agrees. Never select an arbitrary entry or max:
+ *    provider-enforced limits legitimately differ for the same tail (#516).
  */
 export function parseLiteLLMCatalog(raw: unknown): Map<string, ModelCapability> {
   const out = new Map<string, ModelCapability>();
   if (!raw || typeof raw !== 'object') return out;
-  // Two passes so a literal key always beats a provider-stripped tail,
-  // independent of Object.entries order: pass 1 claims every literal key, pass 2
-  // fills tails only for ids no literal key already took. (A single pass would
-  // let `provider/model` install the `model` tail before a later literal
-  // `model` could — the opposite of the intended precedence.)
-  const tailCandidates: Array<[string, ModelCapability]> = [];
+  type ParsedCatalogEntry = {
+    tail: string;
+    isUnqualified: boolean;
+    cap: ModelCapability;
+  };
+  const entriesByFoldedTail = new Map<string, ParsedCatalogEntry[]>();
   for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
     if (key === 'sample_spec') continue;
     if (!val || typeof val !== 'object') continue;
@@ -299,10 +319,35 @@ export function parseLiteLLMCatalog(raw: unknown): Map<string, ModelCapability> 
     const cap: ModelCapability = { contextLength, maxOutputTokens, source: 'litellm' };
     if (!out.has(key)) out.set(key, cap);
     const slash = key.lastIndexOf('/');
-    if (slash >= 0 && slash < key.length - 1) tailCandidates.push([key.slice(slash + 1), cap]);
+    const tail = slash >= 0 && slash < key.length - 1 ? key.slice(slash + 1) : key;
+    const foldedTail = tail.toLocaleLowerCase('en-US');
+    const grouped = entriesByFoldedTail.get(foldedTail) ?? [];
+    grouped.push({ tail, isUnqualified: slash < 0, cap });
+    entriesByFoldedTail.set(foldedTail, grouped);
   }
-  for (const [tail, cap] of tailCandidates) {
-    if (!out.has(tail)) out.set(tail, cap);
+
+  const consensusField = (
+    candidates: ParsedCatalogEntry[],
+    field: 'contextLength' | 'maxOutputTokens',
+  ): number | undefined => {
+    const values = new Set(
+      candidates
+        .map(candidate => candidate.cap[field])
+        .filter((value): value is number => typeof value === 'number'),
+    );
+    return values.size === 1 ? values.values().next().value : undefined;
+  };
+
+  for (const candidates of entriesByFoldedTail.values()) {
+    const canonical = candidates.filter(candidate => candidate.isUnqualified);
+    const authority = canonical.length > 0 ? canonical : candidates;
+    const contextLength = consensusField(authority, 'contextLength');
+    const maxOutputTokens = consensusField(authority, 'maxOutputTokens');
+    if (!contextLength && !maxOutputTokens) continue;
+    const alias: ModelCapability = { contextLength, maxOutputTokens, source: 'litellm' };
+    for (const tail of new Set(candidates.map(candidate => candidate.tail))) {
+      if (!out.has(tail)) out.set(tail, alias);
+    }
   }
   return out;
 }
@@ -456,17 +501,48 @@ export function lookupModelContextLength(modelId: string | undefined | null): nu
  *
  * The flat registry is intentionally model-keyed for SDK env injection, but
  * custom providers can reuse the same model id with a tighter account/proxy
- * limit. In UI context usage, the active provider is known, so prefer that
- * provider's own model row before falling back to the global registry.
+ * limit. In UI context usage, the active provider is known, so its own model
+ * row claims authority even when the optional contextLength field is absent.
+ * Only a model that is absent from that provider may reach the flat fallback;
+ * collapsing "row absent" and "field absent" leaks another provider's limit
+ * into the active session (#516).
  */
 export function lookupProviderModelContextLength(
   modelId: string | undefined | null,
   providerId: string | undefined | null,
 ): number | undefined {
   const bare = stripModelSuffix(modelId);
-  if (!bare || !providerId) return lookupModelContextLength(bare);
+  if (!bare) return undefined;
+  return snapshotProviderModelContextLengths([bare], providerId).get(bare);
+}
+
+export type ModelContextLengthSnapshot = ReadonlyMap<string, number | undefined>;
+
+/**
+ * Resolve every model needed by one SDK launch from one Provider-file view.
+ * The returned map is immutable by convention and can safely cross async
+ * startup work without re-reading a newer capability generation.
+ */
+export function snapshotProviderModelContextLengths(
+  modelIds: Iterable<string | undefined | null>,
+  providerId: string | undefined | null,
+): ModelContextLengthSnapshot {
+  const bareModelIds = new Set<string>();
+  for (const modelId of modelIds) {
+    const bare = stripModelSuffix(modelId);
+    if (bare) bareModelIds.add(bare);
+  }
+  const snapshot = new Map<string, number | undefined>();
+  if (bareModelIds.size === 0) return snapshot;
+
   const home = getHomeDirOrNull();
-  if (!home) return lookupModelContextLength(bare);
+  if (!providerId || !home) {
+    const flatRegistry = buildRegistry();
+    for (const bare of bareModelIds) {
+      snapshot.set(bare, flatRegistry.get(bare)?.contextLength);
+    }
+    return snapshot;
+  }
 
   const providerCandidates: unknown[] = [];
   const custom = loadCustomProvidersFromDisk(home).find(p => p.id === providerId);
@@ -486,7 +562,25 @@ export function lookupProviderModelContextLength(
 
   const providerMap = new Map<string, ModelCapability>();
   ingestProviderList(providerCandidates, providerMap, custom ? 'custom' : 'discovered');
-  return providerMap.get(bare)?.contextLength ?? lookupModelContextLength(bare);
+  const flatRegistry = buildRegistry();
+  for (const bare of bareModelIds) {
+    const providerOwnsModel = providerListContainsModel(providerCandidates, bare);
+    snapshot.set(
+      bare,
+      providerOwnsModel
+        ? providerMap.get(bare)?.contextLength
+        : flatRegistry.get(bare)?.contextLength,
+    );
+  }
+  return snapshot;
+}
+
+export function lookupSnapshotModelContextLength(
+  snapshot: ModelContextLengthSnapshot,
+  modelId: string | undefined | null,
+): number | undefined {
+  const bare = stripModelSuffix(modelId);
+  return bare ? snapshot.get(bare) : undefined;
 }
 
 /** Full capability record (contextLength + maxOutputTokens + inputModalities). */
@@ -570,14 +664,28 @@ const CONTEXT_WINDOW_UNLOCK_THRESHOLD = 200_000;
  *         `undefined` / `NaN` / negative) → return the bare id
  */
 export function applyContextWindowSuffix(model: string | undefined | null): string | undefined {
+  const bare = stripModelSuffix(model);
+  if (!bare) return undefined;
+  if (model && /\[1m\]/i.test(model)) return model;
+  return applyContextWindowSuffixForContextLength(bare, lookupModelContextLength(bare));
+}
+
+/**
+ * Pure SDK-ingress decorator for a context value already snapshotted by the
+ * caller. Use this after `buildClaudeSessionEnv()` so the query model and its
+ * subprocess env cannot observe different Provider-file generations.
+ */
+export function applyContextWindowSuffixForContextLength(
+  model: string | undefined | null,
+  contextLength: number | undefined,
+): string | undefined {
   if (!model) return undefined;
   // Empty / whitespace-only / suffix-only (e.g. " 1m", "   ") strips to nothing
   // usable — return undefined rather than feed the SDK a garbage model option.
   const bare = stripModelSuffix(model);
   if (!bare) return undefined;
   if (/\[1m\]/i.test(model)) return model;
-  const ctx = lookupModelContextLength(bare);
-  if (typeof ctx === 'number' && ctx > CONTEXT_WINDOW_UNLOCK_THRESHOLD) {
+  if (typeof contextLength === 'number' && contextLength > CONTEXT_WINDOW_UNLOCK_THRESHOLD) {
     return `${bare}[1m]`;
   }
   return bare;
@@ -593,15 +701,13 @@ export function applyProviderContextWindowSuffix(
   model: string | undefined | null,
   providerId: string | undefined | null,
 ): string | undefined {
-  if (!model) return undefined;
   const bare = stripModelSuffix(model);
   if (!bare) return undefined;
-  if (/\[1m\]/i.test(model)) return model;
-  const ctx = lookupProviderModelContextLength(bare, providerId);
-  if (typeof ctx === 'number' && ctx > CONTEXT_WINDOW_UNLOCK_THRESHOLD) {
-    return `${bare}[1m]`;
-  }
-  return bare;
+  if (model && /\[1m\]/i.test(model)) return model;
+  return applyContextWindowSuffixForContextLength(
+    bare,
+    lookupProviderModelContextLength(bare, providerId),
+  );
 }
 
 /**

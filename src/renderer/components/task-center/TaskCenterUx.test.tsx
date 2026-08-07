@@ -7,15 +7,23 @@ import type { Task } from '@/../shared/types/task';
 import { DispatchTaskDialog } from './DispatchTaskDialog';
 import { TaskSessionsList } from './TaskSessionsList';
 import { TaskStatusBadge } from './TaskStatusBadge';
+import { TaskListPanel } from './TaskListPanel';
 import { TaskCardItem } from './views/TaskCardItem';
 import { TaskItemActions } from './views/TaskItemActions';
+import { __setTaskCenterSessionsForTest } from '@/hooks/taskCenterStore';
 
 const taskApiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
   taskGetRunStats: vi.fn(),
   taskCreateDirect: vi.fn(),
+  taskList: vi.fn(),
   taskRun: vi.fn(),
+  taskRerun: vi.fn(),
   taskWriteDoc: vi.fn(),
+}));
+
+const analyticsMocks = vi.hoisted(() => ({
+  track: vi.fn(),
 }));
 
 vi.mock('@/api/sessionClient', async (importOriginal) => {
@@ -32,10 +40,16 @@ vi.mock('@/api/taskCenter', async (importOriginal) => {
     ...actual,
     taskGetRunStats: taskApiMocks.taskGetRunStats,
     taskCreateDirect: taskApiMocks.taskCreateDirect,
+    taskList: taskApiMocks.taskList,
     taskRun: taskApiMocks.taskRun,
+    taskRerun: taskApiMocks.taskRerun,
     taskWriteDoc: taskApiMocks.taskWriteDoc,
   };
 });
+
+vi.mock('@/analytics', () => ({
+  track: analyticsMocks.track,
+}));
 
 vi.mock('@/hooks/useConfig', () => ({
   useConfig: () => ({
@@ -55,16 +69,32 @@ vi.mock('@/components/Toast', () => ({ useToast: () => ({ success: vi.fn(), erro
 vi.mock('@/components/OverlayBackdrop', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock('@/components/CustomSelect', () => ({
-  default: ({ value, options }: { value: string; options: Array<{ value: string; label: string }> }) => (
-    <div role="button">{options.find((option) => option.value === value)?.label ?? value}</div>
-  ),
-}));
 vi.mock('./editors/TaskAdvancedConfigEditor', () => ({
   TaskAdvancedConfigEditor: () => <div>高级配置</div>,
 }));
 vi.mock('@/components/task-center/NotificationConfigEditor', () => ({
   default: () => <div>任务通知配置</div>,
+}));
+vi.mock('./views/TaskListRow', () => ({
+  TaskListRow: ({
+    task,
+    onRun,
+    onRerun,
+  }: {
+    task?: Task;
+    onRun?: () => void;
+    onRerun?: () => void;
+  }) => (
+    <div>
+      <span>{task?.name}</span>
+      <button type="button" title="更多操作">更多操作</button>
+      {task?.status === 'todo' ? (
+        <button type="button" onClick={onRun}>立即执行</button>
+      ) : (
+        <button type="button" onClick={onRerun}>重新派发</button>
+      )}
+    </div>
+  ),
 }));
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -102,7 +132,106 @@ function expectedTaskSessionTimestamp(iso: string): string {
 describe('Task Center UX refinements', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.setItem('myagents:task-center:view', 'list');
     taskApiMocks.taskGetRunStats.mockResolvedValue({ executionCount: 0 });
+    taskApiMocks.taskList.mockResolvedValue([]);
+    taskApiMocks.getSessions.mockResolvedValue([]);
+    __setTaskCenterSessionsForTest([]);
+  });
+
+  it('defaults the task panel to list view when no preference is stored', async () => {
+    window.localStorage.removeItem('myagents:task-center:view');
+
+    render(<TaskListPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle(/列表视图|List view/)).toHaveAttribute('aria-pressed', 'true');
+    });
+    expect(screen.getByTitle(/卡片视图|Card view/)).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps an explicit card preference and persists a later list choice', async () => {
+    window.localStorage.setItem('myagents:task-center:view', 'card');
+
+    render(<TaskListPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle(/卡片视图|Card view/)).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    fireEvent.click(screen.getByTitle(/列表视图|List view/));
+
+    expect(window.localStorage.getItem('myagents:task-center:view')).toBe('list');
+    expect(screen.getByTitle(/列表视图|List view/)).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('tracks a run only after using the ordinal accepted by the Task owner', async () => {
+    const accepted = task({
+      status: 'running',
+      executionMode: 'once',
+      sessionIds: ['shared-session'],
+    });
+    taskApiMocks.taskList.mockResolvedValueOnce([
+      task({
+        status: 'todo',
+        executionMode: 'once',
+        sessionIds: [],
+      }),
+    ]);
+    taskApiMocks.taskRun.mockResolvedValueOnce({ task: accepted, attemptOrdinal: 6 });
+
+    render(<TaskListPanel />);
+
+    await screen.findByText('每日 AI 行业新闻与暴论');
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    fireEvent.click(screen.getByText('立即执行'));
+
+    await waitFor(() => expect(taskApiMocks.taskRun).toHaveBeenCalledWith('task-1'));
+    expect(analyticsMocks.track).toHaveBeenCalledWith('task_run', {
+      source: 'desktop',
+      run_count: 6,
+    });
+  });
+
+  it('does not track a run rejected before admission', async () => {
+    taskApiMocks.taskList.mockResolvedValueOnce([
+      task({ status: 'todo', executionMode: 'once' }),
+    ]);
+    taskApiMocks.taskRun.mockRejectedValueOnce(new Error('task is busy'));
+
+    render(<TaskListPanel />);
+
+    await screen.findByText('每日 AI 行业新闻与暴论');
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    fireEvent.click(screen.getByText('立即执行'));
+
+    await waitFor(() => expect(taskApiMocks.taskRun).toHaveBeenCalledWith('task-1'));
+    expect(analyticsMocks.track).not.toHaveBeenCalled();
+  });
+
+  it('tracks rerun with the same accepted ordinal contract', async () => {
+    const stopped = task({
+      status: 'stopped',
+      executionMode: 'once',
+      sessionIds: [],
+    });
+    taskApiMocks.taskList.mockResolvedValueOnce([stopped]);
+    taskApiMocks.taskRerun.mockResolvedValueOnce({
+      task: { ...stopped, status: 'running' },
+      attemptOrdinal: 5,
+    });
+
+    render(<TaskListPanel />);
+
+    await screen.findByText('每日 AI 行业新闻与暴论');
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    fireEvent.click(screen.getByText('重新派发'));
+
+    await waitFor(() => expect(taskApiMocks.taskRerun).toHaveBeenCalledWith('task-1'));
+    expect(analyticsMocks.track).toHaveBeenCalledWith('task_run', {
+      source: 'desktop',
+      run_count: 5,
+    });
   });
 
   it('does not render latest status messages on task cards', () => {
@@ -124,6 +253,25 @@ describe('Task Center UX refinements', () => {
     );
 
     expect(screen.queryByText(/上次运行被应用重启中断/)).not.toBeInTheDocument();
+  });
+
+  it('marks command Detector tasks in the normal task list surface', () => {
+    render(
+      <TaskCardItem
+        task={task({
+          trigger: {
+            source: { type: 'time' },
+            detector: {
+              type: 'command',
+              command: { executable: 'node', args: ['detector.js'] },
+            },
+          },
+        })}
+        onOpen={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('命令感知')).toBeInTheDocument();
   });
 
   it('projects a failed stop separately from the persisted stopped status', () => {
@@ -244,5 +392,61 @@ describe('Task Center UX refinements', () => {
         expect.objectContaining({ tags: [] }),
       );
     });
+  });
+
+  it('materializes an existing Session when continuous conversation is selected', async () => {
+    const existing: SessionMetadata = {
+      id: 'session-existing',
+      agentDir: '/Users/me/mino',
+      title: '构建排障上下文',
+      createdAt: '2026-08-03T01:00:00.000Z',
+      lastActiveAt: '2026-08-03T02:00:00.000Z',
+    };
+    const other: SessionMetadata = {
+      id: 'session-other',
+      agentDir: '/Users/me/mino',
+      title: '其他排障上下文',
+      createdAt: '2026-08-02T01:00:00.000Z',
+      lastActiveAt: '2026-08-02T02:00:00.000Z',
+    };
+    __setTaskCenterSessionsForTest([other, existing]);
+    taskApiMocks.taskCreateDirect.mockResolvedValue(task({
+      executionMode: 'once',
+      runMode: 'single-session',
+      preselectedSessionId: existing.id,
+      status: 'todo',
+    }));
+    taskApiMocks.taskRun.mockResolvedValue(true);
+
+    render(
+      <DispatchTaskDialog
+        defaultWorkspacePath="/Users/me/mino"
+        currentSessionId="session-existing"
+        onClose={vi.fn()}
+        onDispatched={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText('例如: 升级 OpenClaw lark 适配器到 v2.4'), {
+      target: { value: '等待构建完成' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('AI 执行时看到的 prompt，默认取自想法原文。你可以补充细节、目标、约束。'), {
+      target: { value: '构建失败后分析日志。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '连续对话' }));
+    // The actual current Session is selected by default; opening that selector
+    // must still expose the distinction from other workspace Sessions.
+    fireEvent.click(screen.getByRole('button', { name: '当前 Session · 构建排障上下文' }));
+    const currentSessionButtons = screen.getAllByRole('button', { name: '当前 Session · 构建排障上下文' });
+    expect(currentSessionButtons).toHaveLength(2);
+    expect(screen.getByRole('button', { name: '其他 Session · 其他排障上下文' })).toBeInTheDocument();
+    fireEvent.click(currentSessionButtons[1]);
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+
+    await waitFor(() => expect(taskApiMocks.taskCreateDirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runMode: 'single-session',
+        preselectedSessionId: 'session-existing',
+      }),
+    ));
   });
 });

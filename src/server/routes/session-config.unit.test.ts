@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SessionEngineRuntimeIdentity } from '../session-engine/types';
 
 const mocks = vi.hoisted(() => ({
   engine: {
+    getRuntimeIdentity: vi.fn<() => SessionEngineRuntimeIdentity>(() => ({
+      kind: 'builtin',
+      runtime: 'builtin',
+      sessionId: 'session-1',
+    })),
     updateDesktopInteractionScenario: vi.fn(async () => ({ success: true })),
     updateMcpServers: vi.fn(async (servers: Array<{ id: string }>) => ({
       success: true,
@@ -58,6 +64,11 @@ describe('handleSessionConfigRoute', () => {
     }));
     mocks.engine.updateProviderEnv.mockResolvedValue({ success: true, skipped: 'external-runtime' });
     mocks.engine.updatePermissionMode.mockResolvedValue({ success: true });
+    mocks.engine.getRuntimeIdentity.mockReturnValue({
+      kind: 'builtin',
+      runtime: 'builtin',
+      sessionId: 'session-1',
+    });
     mocks.engine.materializePendingDesktopSession.mockResolvedValue({
       success: true,
       sessionId: 'real-session',
@@ -174,6 +185,29 @@ describe('handleSessionConfigRoute', () => {
       preparedSessionId: undefined,
       snapshotPatch: { permissionMode: 'plan' },
     });
+  });
+
+  it('rejects full-auto when a managed Codex Session is being materialized', async () => {
+    mocks.engine.getRuntimeIdentity.mockReturnValue({
+      kind: 'external',
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      sessionId: 'session-1',
+    });
+
+    const response = await handleSessionConfigRoute(
+      '/api/session/materialize',
+      new Request('http://local/api/session/materialize', {
+        method: 'POST',
+        body: JSON.stringify({
+          workspacePath: '/tmp/workspace',
+          snapshotPatch: { permissionMode: 'full-auto' },
+        }),
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(mocks.engine.materializePendingDesktopSession).not.toHaveBeenCalled();
   });
 
   it('passes pending materialize phase and prepared id through to the active engine', async () => {

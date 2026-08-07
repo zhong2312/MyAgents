@@ -5,11 +5,11 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 #[cfg(unix)]
 use std::sync::Once;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::perf_trace::{elapsed_ms, emit_perf_trace, trace_start, PerfTrace, PerfTraceName};
+use crate::process_cmd::ChildTree;
 use crate::proxy_config;
 
 pub(crate) mod background;
@@ -44,19 +45,15 @@ pub use background::{
     cmd_start_background_completion, start_background_completion,
     start_headless_background_completion, BackgroundCompletionResult,
 };
+use cleanup::CHILD_CLEANUP_PATTERNS;
 pub use cleanup::{
     cleanup_stale_sidecars, cleanup_stale_sidecars_preamble, init_startup_cleanup_barrier,
-    mark_startup_cleanup_done, wait_for_startup_cleanup,
+    mark_startup_cleanup_done, recover_proxy_spills_after_startup_cleanup,
+    wait_for_startup_cleanup,
 };
-use cleanup::{
-    remove_global_port_file, write_global_port_file, CHILD_CLEANUP_PATTERNS,
-    STARTUP_CLEANUP_PATTERNS,
-};
+use cleanup::{remove_global_port_file, write_global_port_file, STARTUP_CLEANUP_PATTERNS};
 #[allow(unused_imports)]
-pub use commands::{
-    cmd_activate_session, cmd_deactivate_session, cmd_get_session_activation,
-    cmd_update_session_tab,
-};
+pub use commands::cmd_reconcile_session_tab_activation;
 #[allow(unused_imports)]
 pub use cron_execute::{
     ensure_goal_sidecar_owner, execute_cron_task, execute_goal_turn, CronExecutePayload,
@@ -74,6 +71,7 @@ pub use legacy::{
 };
 #[allow(unused_imports)]
 pub use manager::create_sidecar_manager;
+pub(crate) use manager::FrontendSidecarBinding;
 pub use manager::{
     create_sidecar_state, LegacySidecarConfig, ManagedSidecar, ManagedSidecarManager,
     SidecarManager, SidecarStatus,
@@ -82,6 +80,7 @@ pub use manager::{
 pub use proxy::cmd_propagate_proxy;
 #[allow(unused_imports)]
 pub use runtime_identity::cmd_can_restore_session;
+pub(crate) use runtime_identity::resolve_agent_runtime_identity_by_id_from_config;
 #[cfg(test)]
 use runtime_identity::resolve_session_runtime_identity_from_json;
 #[allow(unused_imports)]
@@ -110,14 +109,15 @@ pub use session_lifecycle::{
     EnsureSidecarResult,
 };
 pub use shutdown::{
-    begin_update_shutdown, begin_update_spawn_permit, is_update_shutdown_in_progress,
-    shutdown_for_update_verified, stop_all_sidecars,
+    begin_app_exit_shutdown, begin_lifecycle_spawn_permit, begin_update_shutdown,
+    is_update_shutdown_in_progress, shutdown_for_update_verified, stop_all_sidecars,
+    LifecycleSpawnPermit,
 };
 pub use spawn::find_node_executable_pub;
 pub(crate) use spawn::normalize_external_path;
 use spawn::{
     diagnose_immediate_exit, diagnose_node_not_found, find_node_executable, find_server_script,
-    is_port_available, kill_process,
+    is_port_available,
 };
 pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
 #[allow(unused_imports)]
@@ -127,10 +127,8 @@ use types::{
     owner_prefers_live_agent_runtime, resolve_runtime_for_owner, sidecar_removal_event_policy,
     ExistingSidecarReuse,
 };
-pub use types::{
-    RuntimeDriftResult, SessionActivation, SessionSidecar, SidecarInstance, SidecarOwner,
-    SidecarState,
-};
+pub(crate) use types::{DispatchGate, DispatchLease, SessionCompletionClaim};
+pub use types::{RuntimeDriftResult, SessionSidecar, SidecarInstance, SidecarOwner, SidecarState};
 
 // Ensure file descriptor limit is increased only once (unix only)
 #[cfg(unix)]
@@ -209,8 +207,6 @@ const HTTP_HEALTH_CHECK_TIMEOUT_MS: u64 = 2000;
 // Prevents the monitor from killing a sidecar that's still completing its initial startup
 // (TCP health check, Bun init, Plugin Bridge, etc.), especially on Windows with Defender.
 const STARTUP_GRACE_SECS: u64 = 45;
-#[cfg(unix)]
-const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 // Port range: 500 ports (31415-31914)
 const PORT_RANGE: u16 = 500;
 // Special identifier for global sidecar (used by Settings page)

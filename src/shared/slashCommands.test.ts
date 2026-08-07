@@ -5,6 +5,7 @@ import {
     parseFullSkillContent,
     parseSkillFrontmatter,
     parseYamlFrontmatter,
+    serializeSkillContent,
 } from './slashCommands';
 
 const invalidPlainScalarFrontmatter = `---
@@ -38,8 +39,56 @@ describe('slash command frontmatter parsing', () => {
         expect(parsed.frontmatter).toMatchObject({
             name: 'prompt-writer',
             description: 'Methodology for writing prompts. Triggers: "write a prompt", "help me write a prompt". Not for: direct answers.',
+            author: 'MyAgents',
         });
         expect(parsed.body.trim()).toBe('# Prompt Writer\n\nBody text.');
+    });
+
+    it('prefers standard metadata.author while keeping legacy top-level author readable', () => {
+        const standard = `---
+name: standard-skill
+description: Standard metadata
+license: Apache-2.0
+compatibility: Requires git
+author: Legacy Author
+metadata:
+  author: Standard Author
+  version: "1.2"
+---
+
+# Standard Skill`;
+
+        expect(parseSkillFrontmatter(standard).author).toBe('Standard Author');
+        expect(parseFullSkillContent(standard).frontmatter).toMatchObject({
+            author: 'Standard Author',
+            license: 'Apache-2.0',
+            compatibility: 'Requires git',
+            metadata: {
+                author: 'Standard Author',
+                version: '1.2',
+            },
+        });
+        expect(parseSkillFrontmatter(invalidPlainScalarFrontmatter).author).toBe('MyAgents');
+    });
+
+    it('serializes normalized legacy author as metadata.author and preserves standard metadata', () => {
+        const parsed = parseFullSkillContent(`---
+name: legacy-skill
+description: Legacy author
+author: MyAgents
+metadata:
+  version: 2
+---
+
+# Legacy Skill`);
+        const serialized = serializeSkillContent(parsed.frontmatter, parsed.body);
+
+        expect(serialized).not.toMatch(/^author:/m);
+        expect(serialized).toContain('metadata:\n  version: "2"\n  author: "MyAgents"');
+        expect(parseFullSkillContent(serialized).frontmatter).toMatchObject({
+            author: 'MyAgents',
+            metadata: { version: '2', author: 'MyAgents' },
+        });
     });
 
     it('applies the same loose scalar fallback to command metadata', () => {

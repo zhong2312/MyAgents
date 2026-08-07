@@ -1,7 +1,7 @@
 /**
  * Single app-level store for Task Center data (P2).
  *
- * Task-center data (sessions / cronTasks / tasks / backgroundSessions /
+ * Task-center data (sessions / cronTasks / backgroundSessions /
  * agentStatuses / agents) is app-GLOBAL — none of it is tab-scoped. Previously
  * `useTaskCenterData` owned it PER Launcher mount (its own state + a 6-way
  * Promise.all fan-out + its own Tauri listeners), and C-2 bolted a module-level
@@ -16,7 +16,8 @@
  * spinner — which supersedes and removes `taskCenterCache.ts`.
  *
  * The app-global sidebar is a passive projection over this same authority. It
- * demand-loads only expanded workspace Session slices and never starts Task
+ * demand-loads only expanded workspace Session slices and keeps one lightweight
+ * listener for authoritative Session projection changes, without starting Task
  * polling/listeners. Full Task Center/search reads take over through the same
  * generation fence, then hand current workspace demand back on teardown.
  *
@@ -37,7 +38,6 @@ import {
     type SessionMetadata,
 } from '@/api/sessionClient';
 import { getAllCronTasks, getBackgroundSessions } from '@/api/cronTaskClient';
-import { taskCenterAvailable, taskList } from '@/api/taskCenter';
 import { getUserSchedulerLifecycleSnapshot } from '@/api/tauriClient';
 import { loadAppConfig } from '@/config/configService';
 import { i18n } from '@/i18n';
@@ -50,7 +50,6 @@ import { CUSTOM_EVENTS } from '../../shared/constants';
 import { isManagedScheduledJob } from '../../shared/managedScheduledJob';
 import { normalizeWorkspacePathIdentity } from '../../shared/workspacePath';
 import type { CronTask } from '@/types/cronTask';
-import type { Task } from '../../shared/types/task';
 
 function taskText(key: string, options?: Record<string, unknown>): string {
     return String(i18n.t(`task:${key}`, options));
@@ -70,7 +69,6 @@ export interface TaskCenterData {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
     deleteProtectedSessionIds: ReadonlySet<string>;
-    tasks: Task[];
     sessionTagsMap: Map<string, SessionTag[]>;
     cronBotInfoMap: Map<string, { name: string; platform: string }>;
     isLoading: boolean;
@@ -86,7 +84,7 @@ export interface WorkspaceSessionLoadState {
     error: string | null;
 }
 
-export type TaskCenterRefreshScope = 'all' | 'sessions' | 'cronTasks' | 'tasks' | 'backgroundSessions' | 'agentStatuses';
+export type TaskCenterRefreshScope = 'all' | 'sessions' | 'cronTasks' | 'backgroundSessions' | 'agentStatuses';
 
 export interface TaskCenterRefreshOptions {
     force?: boolean;
@@ -103,7 +101,6 @@ export interface TaskCenterActions {
     setSessionFavorite: (sessionId: string, favorite: boolean) => Promise<boolean>;
     refreshSessions: () => void;
     refreshCronTasks: () => void;
-    refreshTasks: () => void;
 }
 
 export const TASK_CENTER_FRESHNESS_TTL_MS = 2_000;
@@ -111,6 +108,7 @@ export const TASK_CENTER_FRESHNESS_TTL_MS = 2_000;
 const MAX_AUTO_RETRIES = 3;
 const RETRY_DELAY_MS = 2_000;
 const BACKGROUND_REFRESH_INTERVAL_MS = 60_000;
+const SESSION_METADATA_LISTENER_RETRY_MS = 2_000;
 
 // ===== Pure helpers (unit-tested) =====
 
@@ -189,13 +187,6 @@ export function computeCronBotInfoMap(agents: AgentConfig[]): Map<string, { name
     return map;
 }
 
-/** `taskList` is Tauri-only; browser dev mode returns [] silently. */
-async function fetchTaskList(): Promise<Task[]> {
-    if (!taskCenterAvailable()) return []; // non-Tauri / unavailable → legitimately empty
-    const tasks = await taskList({});
-    return tasks.filter((task) => !isManagedScheduledJob(task)); // in Tauri: let failures REJECT so callers preserve the prior slice (not blank it)
-}
-
 function filterManagedCronTasks(data: CronTask[]): CronTask[] {
     return data.filter((task) => !isManagedScheduledJob(task));
 }
@@ -206,7 +197,6 @@ interface StoreState {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
     deleteProtectedSessionIds: string[];
-    tasks: Task[];
     backgroundSessionIds: string[];
     agentStatuses: AgentStatusMap;
     agents: AgentConfig[];
@@ -222,7 +212,6 @@ let state: StoreState = {
     sessions: [],
     cronTasks: [],
     deleteProtectedSessionIds: [],
-    tasks: [],
     backgroundSessionIds: [],
     agentStatuses: {},
     agents: [],
@@ -257,6 +246,8 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let intervalTimer: ReturnType<typeof setInterval> | null = null;
 const refreshTimers: Record<string, ReturnType<typeof setTimeout> | null> = {};
 let cleanupTauriListeners: (() => void) | null = null;
+let sessionMetadataListenerAbort: AbortController | null = null;
+let sessionMetadataListenerRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let lastFullFetchAt = 0;
 
 // per-scope request sequence (latest-wins) — protects against out-of-order async
@@ -268,7 +259,6 @@ function startRequest(scope: TaskCenterRefreshScope): number {
     if (scope === 'all') {
         latestSeqByScope.sessions = s;
         latestSeqByScope.cronTasks = s;
-        latestSeqByScope.tasks = s;
         latestSeqByScope.backgroundSessions = s;
         latestSeqByScope.agentStatuses = s;
     }
@@ -321,7 +311,6 @@ function buildSnapshot(): TaskCenterData {
         sessions: state.sessions,
         cronTasks: state.cronTasks,
         deleteProtectedSessionIds: new Set(state.deleteProtectedSessionIds),
-        tasks: state.tasks,
         sessionTagsMap: mapsCache.sessionTagsMap,
         cronBotInfoMap: mapsCache.cronBotInfoMap,
         isLoading: state.isLoading,
@@ -444,7 +433,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         // rejects the whole fetch → retry/error (an initial total failure must
         // not become a silent empty state). The other sources are best-effort:
         // a PARTIAL failure preserves the prior slice (`ok.*` false → skipped).
-        const ok = { cron: true, lifecycle: true, tasks: true, bg: true, agents: true, status: true };
+        const ok = { cron: true, lifecycle: true, bg: true, agents: true, status: true };
         const sessionsPromise = getSessions().then((sessionsData) => {
             if (gen !== lifecycleGen) return sessionsData;
             if (!isLatest('all', requestSeq) || !isLatest('sessions', requestSeq)) return sessionsData;
@@ -467,14 +456,13 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
                 .catch(() => { ok.status = false; return state.agentStatuses; })
             : Promise.resolve({} as AgentStatusMap);
 
-        const [sessionsData, cronData, schedulerLifecycle, newTasks, bgSessions, agentStatusResult, appConfig] = await Promise.all([
+        const [sessionsData, cronData, schedulerLifecycle, bgSessions, agentStatusResult, appConfig] = await Promise.all([
             sessionsPromise,
             getAllCronTasks().then(filterManagedCronTasks).catch(() => { ok.cron = false; return state.cronTasks; }),
             getUserSchedulerLifecycleSnapshot().catch(() => {
                 ok.lifecycle = false;
                 return { runningTaskCount: 0, deleteProtectedSessionIds: state.deleteProtectedSessionIds };
             }),
-            fetchTaskList().catch(() => { ok.tasks = false; return state.tasks; }),
             getBackgroundSessions().catch(() => { ok.bg = false; return state.backgroundSessionIds; }),
             agentStatusPromise,
             loadAppConfig().catch(() => { ok.agents = false; return null; }),
@@ -500,7 +488,6 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         if (ok.lifecycle && isLatest('cronTasks', requestSeq)) {
             patch.deleteProtectedSessionIds = schedulerLifecycle.deleteProtectedSessionIds;
         }
-        if (ok.tasks && isLatest('tasks', requestSeq)) patch.tasks = newTasks;
         if (ok.bg && isLatest('backgroundSessions', requestSeq)) patch.backgroundSessionIds = bgSessions;
         if (ok.status && isLatest('agentStatuses', requestSeq)) patch.agentStatuses = agentStatusResult;
         if (ok.agents) {
@@ -566,11 +553,6 @@ function refreshCronTasksNow(): void {
             }
         })
         .catch((err) => console.warn('[taskCenterStore] refresh cron failed:', err));
-}
-function refreshTasksNow(): void {
-    const s = startRequest('tasks');
-    void fetchTaskList().then((data) => { if (isLatest('tasks', s)) setState({ tasks: data }); })
-        .catch((err) => console.warn('[taskCenterStore] refresh tasks failed:', err));
 }
 function refreshBackgroundNow(): void {
     const s = startRequest('backgroundSessions');
@@ -696,6 +678,86 @@ export function setSidebarWorkspaceSessionDemand(agentDirs: readonly string[]): 
     ensureWorkspaceSessions(agentDirs);
 }
 
+interface SessionMetadataChangedPayload {
+    agentDirs?: string[];
+}
+
+/**
+ * Invalidate the passive workspace cache from the persisted projection owner,
+ * not from whichever Runtime/channel happened to author the write.
+ */
+function handleSessionMetadataChanged(payload: SessionMetadataChangedPayload): void {
+    const changedKeys = new Set(
+        (payload.agentDirs ?? [])
+            .map(normalizeWorkspacePathIdentity)
+            .filter(Boolean),
+    );
+    if (changedKeys.size === 0) {
+        loadedWorkspaceSessionKeys.clear();
+    } else {
+        for (const key of changedKeys) loadedWorkspaceSessionKeys.delete(key);
+    }
+
+    // Active Task Center/search surfaces own a complete global snapshot. A
+    // newer global request also supersedes any full read that raced this event.
+    if (started || fullSessionAuthoritySeq !== null) {
+        refreshSessionsNow();
+        return;
+    }
+
+    const affectedDemand = [...demandedWorkspaceDirs]
+        .filter(([key]) => changedKeys.size === 0 || changedKeys.has(key))
+        .map(([, agentDir]) => agentDir);
+    if (affectedDemand.length > 0) ensureWorkspaceSessions(affectedDemand, true);
+}
+
+function ensureSessionMetadataListener(): void {
+    if (
+        sessionMetadataListenerAbort ||
+        !isTauriEnvironment() ||
+        (listeners.size === 0 && passiveListeners.size === 0)
+    ) return;
+    if (sessionMetadataListenerRetryTimer) {
+        clearTimeout(sessionMetadataListenerRetryTimer);
+        sessionMetadataListenerRetryTimer = null;
+    }
+    const ac = new AbortController();
+    sessionMetadataListenerAbort = ac;
+    void listenWithCleanup<SessionMetadataChangedPayload>(
+        'session:metadata-changed',
+        (event) => handleSessionMetadataChanged(event.payload ?? {}),
+        ac.signal,
+    ).then((registration) => {
+        if (sessionMetadataListenerAbort !== ac || ac.signal.aborted) return;
+        if (!registration.isRegistered()) {
+            ac.abort();
+            sessionMetadataListenerAbort = null;
+            if (listeners.size > 0 || passiveListeners.size > 0) {
+                sessionMetadataListenerRetryTimer = setTimeout(() => {
+                    sessionMetadataListenerRetryTimer = null;
+                    ensureSessionMetadataListener();
+                }, SESSION_METADATA_LISTENER_RETRY_MS);
+            }
+            return;
+        }
+
+        // Tauri events are edge-triggered and are not replayed. Re-read the
+        // persisted authority after registration to close both the async
+        // install window and any zero-subscriber interval before this mount.
+        handleSessionMetadataChanged({});
+    });
+}
+
+function maybeStopSessionMetadataListener(): void {
+    if (listeners.size > 0 || passiveListeners.size > 0) return;
+    sessionMetadataListenerAbort?.abort();
+    sessionMetadataListenerAbort = null;
+    if (sessionMetadataListenerRetryTimer) {
+        clearTimeout(sessionMetadataListenerRetryTimer);
+        sessionMetadataListenerRetryTimer = null;
+    }
+}
+
 function debounced(key: string, fn: () => void, delayMs: number): void {
     if (refreshTimers[key]) clearTimeout(refreshTimers[key]!);
     refreshTimers[key] = setTimeout(() => { refreshTimers[key] = null; fn(); }, delayMs);
@@ -708,7 +770,6 @@ export const refresh = (scope: TaskCenterRefreshScope = 'all', options: TaskCent
     switch (scope) {
         case 'sessions': return refreshSessionsNow();
         case 'cronTasks': return refreshCronTasksNow();
-        case 'tasks': return refreshTasksNow();
         case 'backgroundSessions': return refreshBackgroundNow();
         case 'agentStatuses': return refreshAgentStatusNow();
         default: void fetchData(0, options.silent ?? false);
@@ -748,7 +809,6 @@ export const actions: TaskCenterActions = {
     },
     refreshSessions: () => refresh('sessions', { force: true, silent: true }),
     refreshCronTasks: () => refresh('cronTasks', { force: true, silent: true }),
-    refreshTasks: () => refresh('tasks', { force: true, silent: true }),
 };
 
 // First snapshot — built now that `refresh` and `actions` are defined
@@ -775,9 +835,6 @@ function registerTauriListeners(): void {
         debounced('cron', refreshCronTasksNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
     }, ac.signal);
-    void listenWithCleanup('cron:execution-state-changed', () => {
-        debounced('tasks', refreshTasksNow, 100);
-    }, ac.signal);
     void listenWithCleanup('cron:scheduler-started', () => {
         debounced('cron', refreshCronTasksNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
@@ -791,11 +848,9 @@ function registerTauriListeners(): void {
         debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
     void listenWithCleanup('task:status-changed', () => {
-        debounced('tasks', refreshTasksNow, 500);
         debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
     void listenWithCleanup('task:session-rebound', () => {
-        debounced('tasks', refreshTasksNow, 100);
         debounced('sessions', refreshSessionsNow, 100);
         debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
@@ -836,18 +891,22 @@ function maybeStop(): void {
 
 export function subscribe(listener: () => void): () => void {
     listeners.add(listener);
+    ensureSessionMetadataListener();
     ensureStarted();
     return () => {
         listeners.delete(listener);
         maybeStop();
+        maybeStopSessionMetadataListener();
     };
 }
 
 /** Subscribe to the shared snapshot without starting the full Task Center lifecycle. */
 export function subscribePassive(listener: () => void): () => void {
     passiveListeners.add(listener);
+    ensureSessionMetadataListener();
     return () => {
         passiveListeners.delete(listener);
+        maybeStopSessionMetadataListener();
     };
 }
 
@@ -858,7 +917,8 @@ export function getSnapshot(): TaskCenterData {
 /** Test-only: reset all module state between cases. */
 export function __resetTaskCenterStoreForTest(): void {
     onDemandGeneration++;
-    state = { sessions: [], cronTasks: [], deleteProtectedSessionIds: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null, workspaceSessionStates: new Map() };
+    lifecycleGen++;
+    state = { sessions: [], cronTasks: [], deleteProtectedSessionIds: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null, workspaceSessionStates: new Map() };
     listeners.clear();
     passiveListeners.clear();
     deletedSessionIds.clear();
@@ -876,6 +936,12 @@ export function __resetTaskCenterStoreForTest(): void {
     seq = 0;
     cleanupTauriListeners?.();
     cleanupTauriListeners = null;
+    sessionMetadataListenerAbort?.abort();
+    sessionMetadataListenerAbort = null;
+    if (sessionMetadataListenerRetryTimer) {
+        clearTimeout(sessionMetadataListenerRetryTimer);
+        sessionMetadataListenerRetryTimer = null;
+    }
     if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     for (const k of Object.keys(refreshTimers)) {

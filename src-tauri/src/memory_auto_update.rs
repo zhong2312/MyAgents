@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -198,10 +197,9 @@ fn authoritative_configure_request(
     requested: ConfigureMemoryAutoUpdateTaskRequest,
     disk_agents: Vec<DiskMemoryAutoUpdateAgent>,
 ) -> ConfigureMemoryAutoUpdateTaskRequest {
-    let workspace_identity = normalize_path(&requested.workspace_path);
     disk_agents
         .into_iter()
-        .find(|agent| normalize_path(&agent.request.workspace_path) == workspace_identity)
+        .find(|agent| agent.request.agent_id == requested.agent_id)
         .map(|agent| agent.request)
         .unwrap_or(ConfigureMemoryAutoUpdateTaskRequest {
             agent_id: requested.agent_id,
@@ -232,23 +230,22 @@ pub async fn cmd_configure_memory_auto_update_task(
 pub async fn configure_memory_auto_update_task(
     request: ConfigureMemoryAutoUpdateTaskRequest,
 ) -> Result<ConfigureMemoryAutoUpdateTaskResult, String> {
-    // The hidden Task is unique per workspace, so creation, drift repair, and
-    // disable must share one transaction boundary. Per-Task control cannot
-    // serialize the initial create because no Task id exists yet.
-    let workspace_identity = normalize_path(&request.workspace_path);
-    let _configure_lifecycle = CONFIGURE_LIFECYCLES.acquire(&[&workspace_identity]).await;
+    // The hidden Task belongs to the exact Agent. Multiple historical Agents
+    // may legitimately resolve to the same Project.path, so workspace identity
+    // can serialize file IO but must never select or deduplicate Agent config.
+    let _configure_lifecycle = CONFIGURE_LIFECYCLES.acquire(&[&request.agent_id]).await;
     let request = load_authoritative_configure_request(request).await?;
     let store =
         crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
-    let mut existing = find_managed_tasks_for_workspace(&request.workspace_path).await;
+    let mut existing = find_managed_tasks_for_agent(&request.agent_id).await;
     existing.sort_by_key(|task| task.created_at);
-    let keep = existing.first().cloned();
+    let mut keep = existing.first().cloned();
 
     for duplicate in existing.iter().skip(1) {
         ulog_warn!(
-            "[memory-auto-update] deleting duplicate managed Task {} for workspace {}",
+            "[memory-auto-update] deleting duplicate managed Task {} for agent {}",
             duplicate.id,
-            request.workspace_path
+            request.agent_id
         );
         stop_managed_task(store, duplicate, "duplicate managed Task cleanup")
             .await
@@ -258,12 +255,38 @@ pub async fn configure_memory_auto_update_task(
                     duplicate.id, error
                 )
             })?;
-        store.delete(&duplicate.id).await.map_err(|error| {
-            format!(
-                "failed to delete duplicate managed Task {}: {}",
-                duplicate.id, error
+        crate::task_application::TaskApplication::from_globals()
+            .map_err(|error| error.to_string())?
+            .delete_internal(&duplicate.id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to delete duplicate managed Task {}: {}",
+                    duplicate.id, error
+                )
+            })?;
+    }
+
+    if let Some(existing) = keep.as_ref() {
+        if normalize_path(&existing.workspace_path) != normalize_path(&request.workspace_path) {
+            stop_managed_task(
+                store,
+                existing,
+                "memory auto-update workspace changed; recreating",
             )
-        })?;
+            .await?;
+            crate::task_application::TaskApplication::from_globals()
+                .map_err(|error| error.to_string())?
+                .delete_internal(&existing.id)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "failed to replace stale-workspace managed Task {}: {}",
+                        existing.id, error
+                    )
+                })?;
+            keep = None;
+        }
     }
 
     let Some(mut config) = request
@@ -333,6 +356,8 @@ pub async fn configure_memory_auto_update_task(
                     start_at: Some(start_at),
                     recurring_window: Some(desired_window),
                     dispatch_at: None,
+                    trigger: None,
+                    clear_trigger: true,
                     model: None,
                     provider_id: None,
                     clear_provider_override: true,
@@ -350,6 +375,7 @@ pub async fn configure_memory_auto_update_task(
                         bot_thread: None,
                         events: Some(vec![]),
                     }),
+                    notification_patch: None,
                     prompt: Some(MANAGED_AUTO_UPDATE_PROMPT.to_string()),
                 })
                 .await?
@@ -374,6 +400,7 @@ pub async fn configure_memory_auto_update_task(
                 start_at: Some(next_scan_start_at(&config).to_rfc3339()),
                 recurring_window: Some(desired_window),
                 dispatch_at: None,
+                trigger: None,
                 model: None,
                 provider_id: None,
                 permission_mode: None,
@@ -439,8 +466,11 @@ async fn arm_managed_task(
             })
             .await?;
     }
-    crate::management_api::run_task_by_id(&task.id)
+    crate::task_application::TaskApplication::from_globals()
+        .map_err(|error| error.to_string())?
+        .run(&task.id)
         .await
+        .map_err(|error| error.to_string())
         .map(|_| ())
 }
 
@@ -475,17 +505,10 @@ async fn stop_managed_task(
 
 pub async fn reconcile_memory_auto_update_tasks_from_disk() -> Result<(), String> {
     let agents = load_disk_memory_auto_update_agents()?;
-    let mut enabled_workspaces = HashSet::new();
+    let mut reconciled_agent_ids = HashSet::new();
 
     for agent in agents {
-        if agent
-            .request
-            .memory_auto_update
-            .as_ref()
-            .is_some_and(|config| config.enabled)
-        {
-            enabled_workspaces.insert(normalize_path(&agent.request.workspace_path));
-        }
+        reconciled_agent_ids.insert(agent.request.agent_id.clone());
         if let Err(error) = configure_memory_auto_update_task(agent.request.clone()).await {
             ulog_warn!(
                 "[memory-auto-update] startup reconcile failed for agent {} workspace {}: {}",
@@ -507,7 +530,7 @@ pub async fn reconcile_memory_auto_update_tasks_from_disk() -> Result<(), String
         .await;
     for task in existing {
         if task.managed_kind.as_deref() != Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
-            || enabled_workspaces.contains(&normalize_path(&task.workspace_path))
+            || reconciled_agent_ids.contains(&task.workspace_id)
         {
             continue;
         }
@@ -522,7 +545,12 @@ pub async fn reconcile_memory_auto_update_tasks_from_disk() -> Result<(), String
     Ok(())
 }
 
-async fn find_managed_tasks_for_workspace(workspace_path: &str) -> Vec<crate::task::Task> {
+fn is_managed_memory_task_for_agent(task: &crate::task::Task, agent_id: &str) -> bool {
+    task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
+        && task.workspace_id == agent_id
+}
+
+async fn find_managed_tasks_for_agent(agent_id: &str) -> Vec<crate::task::Task> {
     let Some(store) = crate::task::get_task_store() else {
         return Vec::new();
     };
@@ -533,10 +561,7 @@ async fn find_managed_tasks_for_workspace(workspace_path: &str) -> Vec<crate::ta
         })
         .await
         .into_iter()
-        .filter(|task| {
-            task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
-                && normalize_path(&task.workspace_path) == normalize_path(workspace_path)
-        })
+        .filter(|task| is_managed_memory_task_for_agent(task, agent_id))
         .collect()
 }
 pub async fn run_managed_task_batch(
@@ -544,12 +569,12 @@ pub async fn run_managed_task_batch(
     task: &crate::task::Task,
     queue_id: &str,
 ) -> Result<ManagedMemoryAutoUpdateOutcome, String> {
-    let Some((agent_id, mut config, heartbeat)) =
-        load_enabled_memory_auto_update_agent_for_workspace(&task.workspace_path)?
+    let Some((workspace_path, mut config, heartbeat)) =
+        load_enabled_memory_auto_update_agent_by_id(&task.workspace_id)?
     else {
         let text = format!(
-            "Memory auto-update hidden batch skipped for {}: memoryAutoUpdate is not explicitly enabled.",
-            task.workspace_path
+            "Memory auto-update hidden batch skipped for agent {}: proactive Agent or memoryAutoUpdate is disabled.",
+            task.workspace_id
         );
         return Ok(ManagedMemoryAutoUpdateOutcome {
             success: true,
@@ -562,7 +587,7 @@ pub async fn run_managed_task_batch(
     if !is_in_update_window(&config) {
         let text = format!(
             "Memory auto-update hidden batch skipped for {}: outside update window {}-{}.",
-            task.workspace_path, config.update_window_start, config.update_window_end
+            workspace_path, config.update_window_start, config.update_window_end
         );
         return Ok(ManagedMemoryAutoUpdateOutcome {
             success: true,
@@ -576,8 +601,8 @@ pub async fn run_managed_task_batch(
         .ok_or_else(|| "SidecarManager state not available".to_string())?;
     let summary = run_batch(
         handle,
-        &agent_id,
-        &task.workspace_path,
+        &task.workspace_id,
+        &workspace_path,
         &config,
         &sidecar_state,
         &task.id,
@@ -777,60 +802,26 @@ fn apply_heartbeat_timezone_fallback(
 }
 
 fn load_disk_memory_auto_update_agents() -> Result<Vec<DiskMemoryAutoUpdateAgent>, String> {
-    let Some(data_dir) = crate::app_dirs::myagents_data_dir() else {
-        return Ok(Vec::new());
-    };
-    let config_path = data_dir.join("config.json");
-    let content = match std::fs::read_to_string(&config_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("read config.json: {}", error)),
-    };
-    let config: Value =
-        serde_json::from_str(strip_bom(&content)).map_err(|e| format!("parse config: {}", e))?;
-    Ok(collect_disk_memory_auto_update_agents(&config))
+    Ok(collect_disk_memory_auto_update_agents(
+        crate::im::read_agent_configs_from_disk(),
+    ))
 }
 
-fn collect_disk_memory_auto_update_agents(config: &Value) -> Vec<DiskMemoryAutoUpdateAgent> {
-    let Some(agents) = config.get("agents").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-
+fn collect_disk_memory_auto_update_agents(
+    agents: Vec<crate::im::types::AgentConfigRust>,
+) -> Vec<DiskMemoryAutoUpdateAgent> {
     let mut result = Vec::new();
     for agent in agents {
-        let Some(agent_id) = agent.get("id").and_then(Value::as_str) else {
+        let Some(memory_auto_update) = agent.memory_auto_update else {
             continue;
         };
-        let Some(workspace_path) = agent.get("workspacePath").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(mau_value) = agent.get("memoryAutoUpdate") else {
-            continue;
-        };
-        let memory_auto_update = match serde_json::from_value::<MemoryAutoUpdateConfig>(
-            mau_value.clone(),
-        ) {
-            Ok(config) => Some(config),
-            Err(error) => {
-                ulog_warn!(
-                    "[memory-auto-update] skipping startup reconcile for agent {}: invalid memoryAutoUpdate config: {}",
-                    agent_id,
-                    error
-                );
-                continue;
-            }
-        };
-        let heartbeat = agent
-            .get("heartbeat")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok());
 
         result.push(DiskMemoryAutoUpdateAgent {
             request: ConfigureMemoryAutoUpdateTaskRequest {
-                agent_id: agent_id.to_string(),
-                workspace_path: workspace_path.to_string(),
-                memory_auto_update,
-                heartbeat,
+                agent_id: agent.id,
+                workspace_path: agent.resolved_workspace_path,
+                memory_auto_update: agent.enabled.then_some(memory_auto_update),
+                heartbeat: agent.heartbeat,
             },
         });
     }
@@ -1197,49 +1188,28 @@ async fn update_successful_completion<R: Runtime>(
     }
 }
 
-fn load_enabled_memory_auto_update_agent_for_workspace(
-    workspace_path: &str,
+fn enabled_memory_auto_update_agent_by_id(
+    agent_id: &str,
+    agents: Vec<crate::im::types::AgentConfigRust>,
+) -> Option<(String, MemoryAutoUpdateConfig, Option<HeartbeatConfig>)> {
+    let agent = agents
+        .into_iter()
+        .find(|agent| agent.id == agent_id && agent.enabled)?;
+    let memory_auto_update = agent.memory_auto_update.filter(|config| config.enabled)?;
+    Some((
+        agent.resolved_workspace_path,
+        memory_auto_update,
+        agent.heartbeat,
+    ))
+}
+
+fn load_enabled_memory_auto_update_agent_by_id(
+    agent_id: &str,
 ) -> Result<Option<(String, MemoryAutoUpdateConfig, Option<HeartbeatConfig>)>, String> {
-    let Some(data_dir) = crate::app_dirs::myagents_data_dir() else {
-        return Ok(None);
-    };
-    let config_path = data_dir.join("config.json");
-    let content = match std::fs::read_to_string(&config_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("read config.json: {}", error)),
-    };
-    let config: Value =
-        serde_json::from_str(strip_bom(&content)).map_err(|e| format!("parse config: {}", e))?;
-    let Some(agents) = config.get("agents").and_then(Value::as_array) else {
-        return Ok(None);
-    };
-    let normalized_workspace = normalize_path(workspace_path);
-    for agent in agents {
-        let Some(agent_workspace) = agent.get("workspacePath").and_then(Value::as_str) else {
-            continue;
-        };
-        if normalize_path(agent_workspace) != normalized_workspace {
-            continue;
-        }
-        let Some(mau_value) = agent.get("memoryAutoUpdate") else {
-            continue;
-        };
-        if mau_value.get("enabled").and_then(Value::as_bool) != Some(true) {
-            continue;
-        }
-        let Some(agent_id) = agent.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let mau: MemoryAutoUpdateConfig = serde_json::from_value(mau_value.clone())
-            .map_err(|e| format!("parse memoryAutoUpdate: {}", e))?;
-        let heartbeat = agent
-            .get("heartbeat")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok());
-        return Ok(Some((agent_id.to_string(), mau, heartbeat)));
-    }
-    Ok(None)
+    Ok(enabled_memory_auto_update_agent_by_id(
+        agent_id,
+        crate::im::read_agent_configs_from_disk(),
+    ))
 }
 
 pub fn is_in_update_window(config: &MemoryAutoUpdateConfig) -> bool {
@@ -1362,9 +1332,54 @@ fn is_human_user_message(message: &MessageLine, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn runtime_agent(
+        id: &str,
+        workspace: &str,
+        memory_auto_update: Option<MemoryAutoUpdateConfig>,
+    ) -> crate::im::types::AgentConfigRust {
+        let mut agent = serde_json::from_value::<crate::im::types::AgentConfigRust>(
+            serde_json::json!({ "id": id, "name": "Agent", "enabled": true }),
+        )
+        .expect("valid runtime Agent fixture");
+        agent.resolved_workspace_path = workspace.to_string();
+        agent.memory_auto_update = memory_auto_update;
+        agent
+    }
+
+    fn paused_runtime_agent(
+        id: &str,
+        workspace: &str,
+        memory_auto_update: Option<MemoryAutoUpdateConfig>,
+    ) -> crate::im::types::AgentConfigRust {
+        let mut agent = runtime_agent(id, workspace, memory_auto_update);
+        agent.enabled = false;
+        agent
+    }
+
+    fn managed_memory_task(agent_id: &str, workspace: &str) -> crate::task::Task {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("task-{agent_id}"),
+            "name": MANAGED_AUTO_UPDATE_NAME,
+            "executor": "agent",
+            "workspaceId": agent_id,
+            "workspacePath": workspace,
+            "executionMode": "recurring",
+            "runMode": "single-session",
+            "sessionIds": [],
+            "status": "running",
+            "tags": ["system", "memory"],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct",
+            "managedKind": crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH
+        }))
+        .expect("valid managed Memory Task fixture")
+    }
     use crate::workspace_files::memory_rules::ensure_update_memory_file_at as ensure_update_memory_file;
 
-    fn spawn_owner_guard_test_child() -> std::process::Child {
+    fn spawn_owner_guard_test_child() -> crate::process_cmd::ChildTree {
         #[cfg(windows)]
         let mut command = {
             let mut command = crate::process_cmd::new("powershell");
@@ -1380,9 +1395,8 @@ mod tests {
         command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn owner guard test child")
+            .stderr(std::process::Stdio::null());
+        crate::process_cmd::spawn_tree(&mut command).expect("spawn owner guard test child")
     }
 
     fn base_config() -> MemoryAutoUpdateConfig {
@@ -1611,9 +1625,12 @@ mod tests {
                     process: spawn_owner_guard_test_child(),
                     port: 31419,
                     session_id: session_id.to_string(),
+                    management_id: session_id.to_string(),
                     workspace_path: PathBuf::from("/tmp/workspace"),
                     state: crate::sidecar::SidecarState::Healthy,
                     owners: HashSet::from([tab_owner.clone()]),
+                    completion_claims: HashSet::new(),
+                    dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                     created_at: std::time::Instant::now(),
                     runtime: None,
                     runtime_source: None,
@@ -1661,9 +1678,12 @@ mod tests {
                     process: spawn_owner_guard_test_child(),
                     port: 31420,
                     session_id: session_id.to_string(),
+                    management_id: session_id.to_string(),
                     workspace_path: PathBuf::from("/tmp/workspace"),
                     state: crate::sidecar::SidecarState::Healthy,
                     owners: HashSet::from([task_owner.clone()]),
+                    completion_claims: HashSet::new(),
+                    dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                     created_at: std::time::Instant::now(),
                     runtime: None,
                     runtime_source: None,
@@ -1704,9 +1724,12 @@ mod tests {
                     process: spawn_owner_guard_test_child(),
                     port: 31421,
                     session_id: session_id.to_string(),
+                    management_id: session_id.to_string(),
                     workspace_path: PathBuf::from("/tmp/workspace"),
                     state: crate::sidecar::SidecarState::Healthy,
                     owners: HashSet::from([task_owner.clone()]),
+                    completion_claims: HashSet::new(),
+                    dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                     created_at: std::time::Instant::now(),
                     runtime: None,
                     runtime_source: None,
@@ -1825,115 +1848,120 @@ mod tests {
     }
 
     #[test]
-    fn disk_reconcile_only_uses_explicit_memory_auto_update_config() {
-        let config = serde_json::json!({
-            "agents": [
-                {
-                    "id": "missing",
-                    "workspacePath": "/tmp/missing"
-                },
-                {
-                    "id": "enabled",
-                    "workspacePath": "/tmp/enabled",
-                    "memoryAutoUpdate": {
-                        "enabled": true,
-                        "intervalHours": 24,
-                        "queryThreshold": 3,
-                        "updateWindowStart": "00:00",
-                        "updateWindowEnd": "07:00",
-                        "updateWindowTimezone": "Asia/Shanghai"
-                    }
-                },
-                {
-                    "id": "disabled",
-                    "workspacePath": "/tmp/disabled",
-                    "memoryAutoUpdate": {
-                        "enabled": false,
-                        "intervalHours": 24,
-                        "queryThreshold": 3,
-                        "updateWindowStart": "00:00",
-                        "updateWindowEnd": "07:00",
-                        "updateWindowTimezone": "Asia/Shanghai"
-                    }
-                }
-            ]
-        });
+    fn disk_reconcile_uses_agent_enabled_as_the_proactive_memory_gate() {
+        let mut disabled = base_config();
+        disabled.enabled = false;
+        let agents = collect_disk_memory_auto_update_agents(vec![
+            runtime_agent("missing", "/tmp/missing", None),
+            runtime_agent("enabled", "/tmp/enabled", Some(base_config())),
+            paused_runtime_agent("agent-paused", "/tmp/paused", Some(base_config())),
+            runtime_agent("memory-disabled", "/tmp/disabled", Some(disabled)),
+        ]);
 
-        let agents = collect_disk_memory_auto_update_agents(&config);
-
-        assert_eq!(agents.len(), 2);
+        assert_eq!(agents.len(), 3);
         assert_eq!(agents[0].request.agent_id, "enabled");
-        assert_eq!(
+        assert!(
             agents[0]
                 .request
                 .memory_auto_update
                 .as_ref()
                 .unwrap()
-                .enabled,
-            true
+                .enabled
         );
-        assert_eq!(agents[1].request.agent_id, "disabled");
-        assert_eq!(
-            agents[1]
+        assert_eq!(agents[1].request.agent_id, "agent-paused");
+        assert!(agents[1].request.memory_auto_update.is_none());
+        assert_eq!(agents[2].request.agent_id, "memory-disabled");
+        assert!(
+            !agents[2]
                 .request
                 .memory_auto_update
                 .as_ref()
                 .unwrap()
-                .enabled,
-            false
+                .enabled
         );
     }
 
     #[test]
-    fn configure_request_uses_latest_disk_authority_not_arrival_order() {
-        let disabled_disk = collect_disk_memory_auto_update_agents(&serde_json::json!({
-            "agents": [{
-                "id": "agent-current",
-                "workspacePath": "/tmp/workspace",
-                "memoryAutoUpdate": {
-                    "enabled": false,
-                    "intervalHours": 24,
-                    "queryThreshold": 3,
-                    "updateWindowStart": "00:00",
-                    "updateWindowEnd": "07:00"
-                }
-            }]
-        }));
-        let stale_enable = ConfigureMemoryAutoUpdateTaskRequest {
-            agent_id: "agent-stale".to_string(),
-            workspace_path: "/tmp/workspace".to_string(),
-            memory_auto_update: Some(base_config()),
-            heartbeat: None,
-        };
-
-        let resolved = authoritative_configure_request(stale_enable, disabled_disk);
-
-        assert_eq!(resolved.agent_id, "agent-current");
-        assert!(!resolved.memory_auto_update.unwrap().enabled);
-
-        let enabled_disk = collect_disk_memory_auto_update_agents(&serde_json::json!({
-            "agents": [{
-                "id": "agent-current",
-                "workspacePath": "/tmp/workspace",
-                "memoryAutoUpdate": {
-                    "enabled": true,
-                    "intervalHours": 24,
-                    "queryThreshold": 3,
-                    "updateWindowStart": "00:00",
-                    "updateWindowEnd": "07:00"
-                }
-            }]
-        }));
-        let stale_disable = ConfigureMemoryAutoUpdateTaskRequest {
-            agent_id: "agent-stale".to_string(),
-            workspace_path: "/tmp/workspace".to_string(),
+    fn configure_request_uses_exact_agent_id_not_shared_workspace_order() {
+        let mut first_config = base_config();
+        first_config.interval_hours = 1;
+        let mut exact_config = base_config();
+        exact_config.interval_hours = 24;
+        let disk_agents = collect_disk_memory_auto_update_agents(vec![
+            runtime_agent("agent-first", "/repo/current", Some(first_config)),
+            runtime_agent("agent-exact", "/repo/current", Some(exact_config)),
+        ]);
+        let stale_request = ConfigureMemoryAutoUpdateTaskRequest {
+            agent_id: "agent-exact".to_string(),
+            workspace_path: "/repo/old".to_string(),
             memory_auto_update: None,
             heartbeat: None,
         };
 
-        let resolved = authoritative_configure_request(stale_disable, enabled_disk);
+        let resolved = authoritative_configure_request(stale_request, disk_agents);
 
-        assert_eq!(resolved.agent_id, "agent-current");
-        assert!(resolved.memory_auto_update.unwrap().enabled);
+        assert_eq!(resolved.agent_id, "agent-exact");
+        assert_eq!(resolved.workspace_path, "/repo/current");
+        assert_eq!(resolved.memory_auto_update.unwrap().interval_hours, 24);
+    }
+
+    #[test]
+    fn configure_request_fails_closed_when_exact_agent_has_no_memory_config() {
+        let disk_agents = collect_disk_memory_auto_update_agents(vec![runtime_agent(
+            "agent-other",
+            "/repo/shared",
+            Some(base_config()),
+        )]);
+        let stale_request = ConfigureMemoryAutoUpdateTaskRequest {
+            agent_id: "agent-exact".to_string(),
+            workspace_path: "/repo/shared".to_string(),
+            memory_auto_update: Some(base_config()),
+            heartbeat: None,
+        };
+
+        let resolved = authoritative_configure_request(stale_request, disk_agents);
+
+        assert_eq!(resolved.agent_id, "agent-exact");
+        assert!(resolved.memory_auto_update.is_none());
+    }
+
+    #[test]
+    fn batch_config_lookup_uses_exact_agent_id_and_proactive_gate() {
+        let mut first_config = base_config();
+        first_config.interval_hours = 1;
+        let mut exact_config = base_config();
+        exact_config.interval_hours = 24;
+
+        let resolved = enabled_memory_auto_update_agent_by_id(
+            "agent-exact",
+            vec![
+                runtime_agent("agent-first", "/repo/shared", Some(first_config)),
+                runtime_agent("agent-exact", "/repo/shared", Some(exact_config)),
+            ],
+        )
+        .expect("exact Agent is eligible");
+
+        assert_eq!(resolved.0, "/repo/shared");
+        assert_eq!(resolved.1.interval_hours, 24);
+
+        assert!(enabled_memory_auto_update_agent_by_id(
+            "agent-exact",
+            vec![paused_runtime_agent(
+                "agent-exact",
+                "/repo/shared",
+                Some(base_config()),
+            )],
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn managed_tasks_are_isolated_by_agent_id_even_on_the_same_workspace() {
+        let task_a = managed_memory_task("agent-a", "/repo/shared");
+        let task_b = managed_memory_task("agent-b", "/repo/shared");
+
+        assert!(is_managed_memory_task_for_agent(&task_a, "agent-a"));
+        assert!(!is_managed_memory_task_for_agent(&task_b, "agent-a"));
+        assert!(is_managed_memory_task_for_agent(&task_b, "agent-b"));
     }
 }

@@ -31,6 +31,8 @@ interface CustomSelectProps {
   placeholder?: string;
   triggerIcon?: ReactNode;
   className?: string;
+  /** Keep a portaled menu usable when a compact trigger is narrower than its options. */
+  popoverMinWidth?: number;
   /**
    * Trigger size — controls the closed-state padding + font size:
    *   'compact' (default when `compact={true}`): 12px / px-2 py-1
@@ -62,6 +64,7 @@ export default function CustomSelect({
   placeholder,
   triggerIcon,
   className,
+  popoverMinWidth,
   size = "sm",
   compact,
   footerAction,
@@ -138,6 +141,7 @@ export default function CustomSelect({
         placement="bottom-start"
         matchAnchorWidth
         className="shadow-md"
+        style={popoverMinWidth ? { minWidth: `${popoverMinWidth}px` } : undefined}
         // Elevated above modal backdrops since selects are often
         // rendered inside OverlayBackdrop-wrapped dialogs.
         zIndex={300}

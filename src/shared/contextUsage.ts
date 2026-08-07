@@ -10,11 +10,18 @@
 import type { ContextUsage } from './types/context-usage';
 
 /**
- * SDK `MODEL_CONTEXT_WINDOW_DEFAULT`。当 runtime 不报窗口、registry 也查不到时的兜底分母——
- * 与 sidecar 给非 Anthropic 模型回落的有效 auto-compact 窗口一致（agent-session.ts 注入
- * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 的同一语义）。约「窗口 − 13K」处触发自动压缩。
+ * SDK `MODEL_CONTEXT_WINDOW_DEFAULT`。当 runtime 不报窗口、registry 也查不到时的兜底分母。
+ * Builtin session 使用同一个有效窗口，并在其 `BUILTIN_AUTO_COMPACT_PERCENT` 处开始自动压缩。
  */
 export const SDK_DEFAULT_CONTEXT_WINDOW = 200_000;
+
+/** Builtin Claude SDK 的自动压缩策略，由子进程 env 与 UI 投影共同消费。 */
+export const BUILTIN_AUTO_COMPACT_PERCENT = 90;
+
+export function computeBuiltinAutoCompactThreshold(contextWindow: number): number {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) return 0;
+  return Math.round(contextWindow * BUILTIN_AUTO_COMPACT_PERCENT / 100);
+}
 
 /**
  * 去掉模型 id 的能力后缀，返回裸 id。registry 的 key 是裸 id，查窗口前必须 strip——否则

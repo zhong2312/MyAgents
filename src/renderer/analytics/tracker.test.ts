@@ -98,21 +98,4 @@ describe('analytics tracker active context', () => {
     }));
   });
 
-  it('keeps session_switch target id and legacy compat marker', () => {
-    setAnalyticsContext({ sessionId: 'session-active', tabId: 'tab-active' });
-
-    track('session_switch', {
-      session_id: 'session-target',
-      legacy_compat: true,
-    });
-
-    expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      event: 'session_switch',
-      params: expect.objectContaining({
-        session_id: 'session-target',
-        tab_id: 'tab-active',
-        legacy_compat: true,
-      }),
-    }));
-  });
 });

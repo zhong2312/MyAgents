@@ -1,22 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  state: {
-    kind: 'builtin' as 'builtin' | 'external',
-    runtime: 'codex',
-  },
   engine: {
-    updateRuntimeConfig: vi.fn(async () => ({ success: true })),
-    prewarm: vi.fn(async () => ({ prewarmed: true })),
     respondPermission: vi.fn(async () => true),
   },
+  updateExternalRuntimeConfigAtSelector: vi.fn<() => Promise<{
+    httpStatus: number;
+    body: Record<string, unknown>;
+  }>>(async () => ({ httpStatus: 200, body: { success: true } })),
+  prewarmExternalRuntimeAtSelector: vi.fn<() => Promise<{
+    httpStatus: number;
+    body: Record<string, unknown>;
+  }>>(async () => ({ httpStatus: 200, body: { success: true, prewarmed: true } })),
 }));
 
 vi.mock('../session-engine', () => ({
   getSessionEngine: () => mocks.engine,
-  getSessionEngineKind: () => mocks.state.kind,
-  getSessionRuntimeType: () => mocks.state.runtime,
   getPermissionResponseEngine: () => mocks.engine,
+  updateExternalRuntimeConfigAtSelector: mocks.updateExternalRuntimeConfigAtSelector,
+  prewarmExternalRuntimeAtSelector: mocks.prewarmExternalRuntimeAtSelector,
 }));
 
 import { handleSessionEngineRuntimeRoute } from './session-engine-runtime';
@@ -33,8 +35,14 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
 describe('handleSessionEngineRuntimeRoute', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.state.kind = 'builtin';
-    mocks.state.runtime = 'codex';
+    mocks.updateExternalRuntimeConfigAtSelector.mockResolvedValue({
+      httpStatus: 200,
+      body: { success: true },
+    });
+    mocks.prewarmExternalRuntimeAtSelector.mockResolvedValue({
+      httpStatus: 200,
+      body: { success: true, prewarmed: true },
+    });
   });
 
   it('returns null for unrelated routes', async () => {
@@ -43,6 +51,10 @@ describe('handleSessionEngineRuntimeRoute', () => {
   });
 
   it('rejects runtime config when the active engine is builtin', async () => {
+    mocks.updateExternalRuntimeConfigAtSelector.mockResolvedValueOnce({
+      httpStatus: 400,
+      body: { success: false, error: 'Runtime config endpoint is only for external runtimes' },
+    });
     const response = await handleSessionEngineRuntimeRoute(
       '/api/runtime/config',
       new Request('http://local/api/runtime/config', {
@@ -57,12 +69,14 @@ describe('handleSessionEngineRuntimeRoute', () => {
       success: false,
       error: 'Runtime config endpoint is only for external runtimes',
     });
-    expect(mocks.engine.updateRuntimeConfig).not.toHaveBeenCalled();
+    expect(mocks.updateExternalRuntimeConfigAtSelector).toHaveBeenCalledWith({
+      runtime: 'codex',
+      runtimeConfig: { model: 'gpt-5' },
+      source: undefined,
+    });
   });
 
   it('applies external runtime config patches through the active engine', async () => {
-    mocks.state.kind = 'external';
-
     const response = await handleSessionEngineRuntimeRoute(
       '/api/runtime/config',
       new Request('http://local/api/runtime/config', {
@@ -81,15 +95,14 @@ describe('handleSessionEngineRuntimeRoute', () => {
 
     expect(response?.status).toBe(200);
     expect(await readJson(response!)).toEqual({ success: true });
-    expect(mocks.engine.updateRuntimeConfig).toHaveBeenCalledWith(
-      { model: 'gpt-5', permissionMode: '', reasoningEffort: 'high' },
-      { source: 'runtime-config' },
-    );
+    expect(mocks.updateExternalRuntimeConfigAtSelector).toHaveBeenCalledWith({
+      runtime: 'codex',
+      runtimeConfig: { model: 'gpt-5', permissionMode: null, reasoningEffort: 'high' },
+      source: undefined,
+    });
   });
 
   it('preserves IM sync source on external runtime config patches', async () => {
-    mocks.state.kind = 'external';
-
     const response = await handleSessionEngineRuntimeRoute(
       '/api/runtime/config',
       new Request('http://local/api/runtime/config', {
@@ -105,15 +118,94 @@ describe('handleSessionEngineRuntimeRoute', () => {
 
     expect(response?.status).toBe(200);
     expect(await readJson(response!)).toEqual({ success: true });
-    expect(mocks.engine.updateRuntimeConfig).toHaveBeenCalledWith(
-      { model: 'channel-model' },
-      { source: 'im-sync' },
+    expect(mocks.updateExternalRuntimeConfigAtSelector).toHaveBeenCalledWith({
+      runtime: 'codex',
+      runtimeConfig: { model: 'channel-model' },
+      source: 'im-sync',
+    });
+  });
+
+  it('rejects system-only full-auto at the managed Codex runtime boundary', async () => {
+    mocks.updateExternalRuntimeConfigAtSelector.mockResolvedValueOnce({
+      httpStatus: 400,
+      body: { success: false, error: "Invalid permissionMode 'full-auto' for managed-provider" },
+    });
+
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'codex', runtimeConfig: { permissionMode: 'full-auto' } }),
+      }),
+      deps,
     );
+
+    expect(response?.status).toBe(400);
+    expect(await readJson(response!)).toEqual({
+      success: false,
+      error: "Invalid permissionMode 'full-auto' for managed-provider",
+    });
+  });
+
+  it('keeps full-auto legal for the system Codex runtime', async () => {
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'codex', runtimeConfig: { permissionMode: 'full-auto' } }),
+      }),
+      deps,
+    );
+
+    expect(response?.status).toBe(200);
+    expect(mocks.updateExternalRuntimeConfigAtSelector).toHaveBeenCalledWith({
+      runtime: 'codex',
+      runtimeConfig: { permissionMode: 'full-auto' },
+      source: undefined,
+    });
+  });
+
+  it.each(['auto', 'manual'])('accepts Claude Code native %s mode', async (permissionMode) => {
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'claude-code', runtimeConfig: { permissionMode } }),
+      }),
+      deps,
+    );
+
+    expect(response?.status).toBe(200);
+    expect(mocks.updateExternalRuntimeConfigAtSelector).toHaveBeenCalledWith({
+      runtime: 'claude-code',
+      runtimeConfig: { permissionMode },
+      source: undefined,
+    });
+  });
+
+  it('rejects obsolete Claude Code default literal', async () => {
+    mocks.updateExternalRuntimeConfigAtSelector.mockResolvedValueOnce({
+      httpStatus: 400,
+      body: { success: false, error: "Invalid permissionMode 'default' for system-cli" },
+    });
+
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'claude-code', runtimeConfig: { permissionMode: 'default' } }),
+      }),
+      deps,
+    );
+
+    expect(response?.status).toBe(400);
+    expect(await readJson(response!)).toEqual({
+      success: false,
+      error: "Invalid permissionMode 'default' for system-cli",
+    });
   });
 
   it('prewarms external runtime sessions with resolved session id and workspace', async () => {
-    mocks.state.kind = 'external';
-
     const response = await handleSessionEngineRuntimeRoute(
       '/api/runtime/prewarm',
       new Request('http://local/api/runtime/prewarm', {
@@ -126,11 +218,10 @@ describe('handleSessionEngineRuntimeRoute', () => {
     expect(response?.status).toBe(200);
     expect(await readJson(response!)).toEqual({ success: true, prewarmed: true });
     expect(deps.resolvePrewarmSessionId).toHaveBeenCalledWith(undefined);
-    expect(mocks.engine.prewarm).toHaveBeenCalledWith({
+    expect(mocks.prewarmExternalRuntimeAtSelector).toHaveBeenCalledWith({
       sessionId: 'resolved-session',
       workspacePath: '/workspace',
       model: 'gpt-5',
-      permissionMode: 'no-restrictions',
     });
   });
 

@@ -20,6 +20,8 @@ import { buildInReplyToSnippet } from './types';
 import type { PendingInboxMessage, DrainResponse, InboxTurnMeta } from './types';
 import type { SessionEvent } from './session-event';
 import type { InteractionScenario } from '../system-prompt';
+import type { DispatchGuard } from '../session-core/turn-queue';
+import type { InboxAdmissionResult } from '../session-engine/types';
 
 function nowIsoFromMessage(msg: PendingInboxMessage): string {
   return new Date(msg.timestampMs || Date.now()).toISOString();
@@ -54,7 +56,7 @@ function legacySendResultEvent(msg: PendingInboxMessage): SessionEvent {
   };
 }
 
-function buildSessionEventPrompt(msg: PendingInboxMessage): string {
+export function buildSessionEventPrompt(msg: PendingInboxMessage): string {
   if (msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery') {
     return msg.text;
   }
@@ -85,7 +87,7 @@ function buildSessionEventPrompt(msg: PendingInboxMessage): string {
 
 /// Build per-turn InboxTurnMeta to bind on the dequeued message. Only present
 /// for Request kind with replyBack=true — Reply kind never triggers further reply.
-function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefined {
+export function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefined {
   if (msg.kind === 'reply') return undefined;
   if (msg.kind === 'event') return undefined;
   if (!msg.replyBack) return undefined;
@@ -105,8 +107,13 @@ function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefined {
 export type InboxInjector = (
   text: string,
   inboxMeta?: InboxTurnMeta,
-  options?: { allowLazySessionMaterialization?: boolean; scenario?: InteractionScenario },
-) => Promise<{ queued: boolean; error?: string }>;
+  options?: {
+    allowLazySessionMaterialization?: boolean;
+    scenario?: InteractionScenario;
+    queueId?: string;
+    beforeDispatch?: DispatchGuard;
+  },
+) => Promise<InboxAdmissionResult>;
 
 function scenarioForInboxMessage(msg: PendingInboxMessage): InteractionScenario | undefined {
   if (msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery') {

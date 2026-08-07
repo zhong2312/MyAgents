@@ -526,65 +526,30 @@ export async function setWorkspaceEnabledPlugins(
   let scope: 'agent' | 'project' | 'none' = 'none';
   await withAgentConfigIntentLock(async () => {
     let agentId: string | undefined;
-    let previousAgentIds: string[] | undefined;
-    let agentCommitted = false;
+    await atomicModifyProjects(projects => {
+      const matches = projects
+        .map((project, index) => ({ project, index }))
+        .filter(entry => workspacePathsEqual(entry.project.path, workspacePath));
+      if (matches.length !== 1) return projects;
+      const { project, index } = matches[0];
+      agentId = project.agentId;
+      const next = [...projects];
+      next[index] = { ...project, enabledPluginIds: dedup };
+      scope = agentId ? 'agent' : 'project';
+      return next;
+    });
+
+    if (!agentId) return;
     await withConfigLock(async cfg => {
       const agents = cfg.agents ?? [];
-      // #320 family: caller workspacePath (renderer/CLI, POSIX-style) vs config
-      // agent workspacePath (may be native Windows backslashes) — canonical identity.
-      const idx = agents.findIndex(a => workspacePathsEqual(a.workspacePath, workspacePath));
+      const idx = agents.findIndex(agent => agent.id === agentId);
       if (idx === -1) return cfg;
-      agentId = agents[idx].id;
-      previousAgentIds = agents[idx].enabledPluginIds;
       const next = { ...cfg };
       const newAgents = agents.slice();
       newAgents[idx] = { ...agents[idx], enabledPluginIds: dedup };
       next.agents = newAgents;
-      scope = 'agent';
-      agentCommitted = JSON.stringify(previousAgentIds) !== JSON.stringify(dedup);
       return next;
     });
-
-    try {
-      await atomicModifyProjects(projects => {
-        const idx = projects.findIndex(project =>
-          (agentId !== undefined && project.agentId === agentId)
-          || workspacePathsEqual(project.path, workspacePath));
-        if (idx === -1) return projects;
-        const next = [...projects];
-        next[idx] = { ...projects[idx], enabledPluginIds: dedup };
-        if (scope === 'none') scope = 'project';
-        return next;
-      });
-    } catch (error) {
-      if (agentCommitted && agentId) {
-        try {
-          await withConfigLock(async cfg => {
-            const agents = [...(cfg.agents ?? [])];
-            const idx = agents.findIndex(agent => agent.id === agentId);
-            if (idx < 0 || JSON.stringify(agents[idx].enabledPluginIds) !== JSON.stringify(dedup)) {
-              return cfg;
-            }
-            const restored = { ...agents[idx] };
-            if (previousAgentIds === undefined) delete restored.enabledPluginIds;
-            else restored.enabledPluginIds = previousAgentIds;
-            agents[idx] = restored;
-            return { ...cfg, agents };
-          });
-        } catch (rollbackError) {
-          const reason = error instanceof Error ? error.message : String(error);
-          const rollbackReason = rollbackError instanceof Error
-            ? rollbackError.message
-            : String(rollbackError);
-          throw new PluginStoreError(
-            `Project plugin mirror save failed (${reason}) and Agent rollback also failed (${rollbackReason})`,
-            'PLUGIN_CONFIG_ROLLBACK_FAILED',
-            500,
-          );
-        }
-      }
-      throw error;
-    }
   });
   return { scope, ids: dedup };
 }
@@ -746,22 +711,22 @@ export function getDefaultEnabledPluginIdsForWorkspace(workspacePath: string): s
   if (!workspacePath) return [];
   try {
     const cfg = loadConfig();
-    const agents = (cfg.agents as Array<{ workspacePath?: string; enabledPluginIds?: string[] }> | undefined) ?? [];
-    const agent = agents.find(a => workspacePathsEqual(a.workspacePath, workspacePath));
-    if (agent?.enabledPluginIds) return [...agent.enabledPluginIds];
-    // Fall back to Project entry (legacy workspaces that haven't been
-    // upgraded to Agents still get plugin support via the workspace path).
     const home = getHomeDirOrNull();
     if (!home) return [];
     const projectsPath = resolve(home, '.myagents', 'projects.json');
     if (!existsSync(projectsPath)) return [];
     const projects = JSON.parse(stripBom(readFileSync(projectsPath, 'utf-8'))) as Array<{
+      agentId?: string;
       path?: string;
       enabledPluginIds?: string[];
     }>;
     const project = Array.isArray(projects)
       ? projects.find(p => workspacePathsEqual(p.path, workspacePath))
       : null;
+    const agent = project?.agentId
+      ? (cfg.agents ?? []).find(candidate => candidate.id === project.agentId)
+      : undefined;
+    if (agent?.enabledPluginIds) return [...agent.enabledPluginIds];
     return project?.enabledPluginIds ? [...project.enabledPluginIds] : [];
   } catch {
     return [];

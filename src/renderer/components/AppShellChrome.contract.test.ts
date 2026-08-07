@@ -23,10 +23,21 @@ describe('App Shell chrome contract', () => {
   it('keeps the Chat owner subtree mounted while its existing boot surface covers startup', () => {
     const chat = source('src/renderer/pages/Chat.tsx');
     const app = source('src/renderer/App.tsx');
+    const tabProvider = source('src/renderer/context/TabProvider.tsx');
 
     expect(app).toContain('<Suspense fallback={<ChatBootOverlay />}>');
     expect(app).not.toContain(') : isLoading ? (\n        <ChatBootOverlay />');
-    expect(chat).toContain('<ChatBootOverlay show={showStartupOverlay} />');
+    expect(chat).toContain('show={showStartupOverlay || isSessionLoading}');
+    expect(chat).toContain('error={sessionRestoreError}');
+    expect(chat).not.toContain("isSessionLoading && sessionRestoreMode === 'live-recovery'");
+    expect(chat).toContain('if (isSessionLoading || (!text');
+    expect(chat).toContain('sendBlocked={isSessionLoading}');
+    expect(tabProvider.match(/isRestoreActionBlocked/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
+    const replacementHandler = tabProvider.slice(
+      tabProvider.indexOf("listenWithCleanup<{ sessionId: string; port: number }>('session-sidecar:restarted'"),
+      tabProvider.indexOf('// Send message with optional images'),
+    );
+    expect(replacementHandler).not.toContain("restore.phase === 'failed'");
   });
 
   it('uses one simple right-panel glyph and custom tips at the stable far-right slot', () => {
@@ -61,6 +72,19 @@ describe('App Shell chrome contract', () => {
     expect(locales.every(locale => !locale.includes('"stats": "{{files}}'))).toBe(true);
   });
 
+  it('gives the workspace name priority while keeping the git branch badge on one line', () => {
+    const directory = source('src/renderer/components/directory-panel/DirectoryPanel.tsx');
+    const identityRow = directory.slice(
+      directory.indexOf('{/* First row: name and git branch */}'),
+      directory.indexOf('{/* Second row: path */}'),
+    );
+
+    expect(identityRow).toContain('className="min-w-0 flex-1 truncate text-sm font-medium');
+    expect(identityRow).toContain('max-w-[45%] shrink-0');
+    expect(identityRow).toContain('overflow-hidden whitespace-nowrap');
+    expect(identityRow).toContain('<span className="min-w-0 truncate">{gitBranch}</span>');
+  });
+
   it('uses the global new-chat glyph for the matching Chat header action', () => {
     const chat = source('src/renderer/pages/Chat.tsx');
     const newSessionAction = chat.slice(
@@ -82,7 +106,7 @@ describe('App Shell chrome contract', () => {
     expect(chat).toContain('if (!isChatHistoryEntryVisible) setShowHistory(false);');
     expect(chat).toContain('{isChatHistoryEntryVisible && (');
     expect(chat).toContain('<SessionHistoryDropdown');
-    expect(chat).toContain("handleSelectSession(id, 'chat_dropdown')");
+    expect(chat).toContain("handleSelectSession(id, title, 'chat_dropdown')");
     expect(settings).toContain('about.developer.chatHistoryEntryTitle');
     expect(settings).toContain('updateConfig({ showChatHistoryEntry: config.showChatHistoryEntry !== true })');
     expect(settings.indexOf('about.developer.devModeTitle'))

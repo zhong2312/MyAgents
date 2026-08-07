@@ -241,6 +241,14 @@ const SkillDetailPanel = forwardRef<SkillDetailPanelRef, SkillDetailPanelProps>(
                 const frontmatter: Partial<SkillFrontmatter> = {
                     name: skillName.trim(),
                     description,
+                    // These standard fields are not editable in this panel,
+                    // so carry them through unchanged. `author` is a normalized
+                    // read projection; the shared serializer writes it back as
+                    // standard `metadata.author` while preserving legacy reads.
+                    license: skill.frontmatter.license,
+                    compatibility: skill.frontmatter.compatibility,
+                    metadata: skill.frontmatter.metadata,
+                    author: skill.frontmatter.author,
                 };
 
                 // 将调用模式转换为两个开关值

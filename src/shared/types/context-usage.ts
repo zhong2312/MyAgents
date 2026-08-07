@@ -9,8 +9,8 @@
  * - 占用 = **最近一次 API 调用**的 input 系 token（非整 turn 聚合，避免多步工具轮高估）。
  *   两系 cache 语义相反：Anthropic 系（builtin/CC）`input` 不含 cache 需相加；
  *   OpenAI 系（Codex）`inputTokens` 已含 cached，不再加。详见 PRD §3.2。
- * - 分母永远有值：`runtime 报的窗口 ?? registry 查到 ?? 200K`（= auto-compact 有效窗口），
- *   故 `contextWindow` / `usedPercent` 非空。
+ * - 分母永远有值：`runtime 报的窗口 ?? registry 查到 ?? 200K`，表示模型的有效完整窗口；
+ *   builtin auto-compact 阈值由共享的 90% policy 单独投影，故 `contextWindow` / `usedPercent` 非空。
  */
 export interface ContextUsage {
   /** 当前占用 token（最近一次调用的 input[+cache，按系]）。 */

@@ -3,10 +3,33 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExternalRuntimeConfigSnapshot } from '../types';
 import type { ExternalSendContext } from './types';
 import { NO_CHANNEL_DELIVERY } from '../../session-core/channel-delivery';
+import type { SessionMessage } from '../../types/session';
 
 async function loadFreshQueueOwner() {
   vi.resetModules();
   return await import('./operation-queue');
+}
+
+type QueueOwner = Awaited<ReturnType<typeof loadFreshQueueOwner>>;
+let userMessageSequence = 0;
+
+function userMessage(content: string): SessionMessage {
+  return {
+    id: `user-test-${userMessageSequence++}`,
+    role: 'user',
+    content,
+    timestamp: '2026-08-02T00:00:00.000Z',
+  };
+}
+
+function enqueueMessage(
+  queue: QueueOwner,
+  input: Omit<Parameters<QueueOwner['enqueueExternalMessageOperation']>[0], 'userMessage'>,
+) {
+  return queue.enqueueExternalMessageOperation({
+    ...input,
+    userMessage: userMessage(input.text),
+  });
 }
 
 function context(overrides: Partial<ExternalSendContext> = {}): ExternalSendContext {
@@ -37,6 +60,41 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('external operation queue owner', () => {
+  it('tracks user-message projection state per in-flight operation', async () => {
+    const queue = await loadFreshQueueOwner();
+    const firstGate = deferred();
+    const secondGate = deferred();
+    const first = queue.createExternalMessageOperation({
+      text: 'first',
+      context: context(),
+      runtimeConfig: snapshot(),
+      userMessage: userMessage('first'),
+    });
+    const second = queue.createExternalMessageOperation({
+      text: 'second',
+      context: context(),
+      runtimeConfig: snapshot(),
+      userMessage: userMessage('second'),
+    });
+
+    queue.markExternalUserMessageSurfaced(first);
+    queue.markExternalUserMessageSurfaced(second);
+    const firstRun = queue.withExternalMessageOperation(first, () => firstGate.promise);
+    const secondRun = queue.withExternalMessageOperation(second, () => secondGate.promise);
+    expect(queue.getExternalPendingUserMessageProjections('session-1').map(message => message.content))
+      .toEqual(['first', 'second']);
+
+    queue.markExternalUserMessagePersisted(first);
+    expect(queue.getExternalPendingUserMessageProjections('session-1').map(message => message.content))
+      .toEqual(['second']);
+    queue.markExternalUserMessageRetracted(second);
+    expect(queue.getExternalPendingUserMessageProjections('session-1')).toEqual([]);
+
+    firstGate.resolve();
+    secondGate.resolve();
+    await Promise.all([firstRun, secondRun]);
+  });
+
   it('claims an idle direct-send slot synchronously and releases it after the tail settles', async () => {
     const queue = await loadFreshQueueOwner();
     const releaseFirst = deferred();
@@ -87,7 +145,7 @@ describe('external operation queue owner', () => {
     const queue = await loadFreshQueueOwner();
 
     queue.enqueueExternalConfigOperation({ model: 'model-a' }, 'desktop');
-    const queued = queue.enqueueExternalMessageOperation({
+    const queued = enqueueMessage(queue, {
       text: 'hello',
       context: context(),
       runtimeConfig: snapshot({ model: 'model-a' }),
@@ -112,7 +170,7 @@ describe('external operation queue owner', () => {
 
   it('reports queued and reserved messages by domain owner', async () => {
     const queue = await loadFreshQueueOwner();
-    queue.enqueueExternalMessageOperation({
+    enqueueMessage(queue, {
       text: 'goal clarification',
       context: context({ turnOwner: { kind: 'goal', id: 'goal-1' } }),
       runtimeConfig: snapshot(),
@@ -129,12 +187,12 @@ describe('external operation queue owner', () => {
     const firstConfig = snapshot({ model: 'model-a', permissionMode: 'default' });
     const secondConfig = snapshot({ model: 'model-b', permissionMode: 'full-auto' });
 
-    const first = queue.enqueueExternalMessageOperation({
+    const first = enqueueMessage(queue, {
       text: 'first',
       context: context({ model: firstConfig.model, permissionMode: firstConfig.permissionMode }),
       runtimeConfig: firstConfig,
     });
-    const second = queue.enqueueExternalMessageOperation({
+    const second = enqueueMessage(queue, {
       text: 'second',
       context: context({ model: secondConfig.model, permissionMode: secondConfig.permissionMode }),
       runtimeConfig: secondConfig,
@@ -188,7 +246,7 @@ describe('external operation queue owner', () => {
       responseMode: 'realtime',
       canSteerActiveTurn: true,
     })).toBe(false);
-    queue.enqueueExternalMessageOperation({
+    enqueueMessage(queue, {
       text: 'already queued',
       context: context(),
       runtimeConfig: snapshot(),
@@ -207,12 +265,12 @@ describe('external operation queue owner', () => {
     const queue = await loadFreshQueueOwner();
 
     queue.enqueueExternalConfigOperation({ model: 'model-a' }, 'desktop');
-    const first = queue.enqueueExternalMessageOperation({
+    const first = enqueueMessage(queue, {
       text: 'first-message',
       context: context(),
       runtimeConfig: snapshot({ model: 'model-a' }),
     });
-    const second = queue.enqueueExternalMessageOperation({
+    const second = enqueueMessage(queue, {
       text: 'second-message',
       context: context(),
       runtimeConfig: snapshot({ model: 'model-b' }),
@@ -234,12 +292,12 @@ describe('external operation queue owner', () => {
     const queue = await loadFreshQueueOwner();
 
     queue.enqueueExternalConfigOperation({ model: 'model-a' }, 'desktop');
-    const first = queue.enqueueExternalMessageOperation({
+    const first = enqueueMessage(queue, {
       text: 'first',
       context: context(),
       runtimeConfig: snapshot(),
     });
-    const second = queue.enqueueExternalMessageOperation({
+    const second = enqueueMessage(queue, {
       text: 'second',
       context: context(),
       runtimeConfig: snapshot(),
@@ -252,7 +310,7 @@ describe('external operation queue owner', () => {
 
   it('cancels a reserved drain message when clearing the queue', async () => {
     const queue = await loadFreshQueueOwner();
-    const first = queue.enqueueExternalMessageOperation({
+    const first = enqueueMessage(queue, {
       text: 'reserved',
       context: context(),
       runtimeConfig: snapshot(),
@@ -268,7 +326,7 @@ describe('external operation queue owner', () => {
 
   it('settles queued dispatch acceptance only when the drained operation is accepted', async () => {
     const queue = await loadFreshQueueOwner();
-    const queued = queue.enqueueExternalMessageOperation({
+    const queued = enqueueMessage(queue, {
       text: 'wait for drain',
       context: context(),
       runtimeConfig: snapshot(),
@@ -289,7 +347,7 @@ describe('external operation queue owner', () => {
 
   it('settles queued dispatch acceptance as rejected when the queue item is cancelled', async () => {
     const queue = await loadFreshQueueOwner();
-    const queued = queue.enqueueExternalMessageOperation({
+    const queued = enqueueMessage(queue, {
       text: 'cancel me',
       context: context(),
       runtimeConfig: snapshot(),
@@ -302,7 +360,7 @@ describe('external operation queue owner', () => {
 
   it('finds and cancels a queued IM operation by request identity', async () => {
     const queue = await loadFreshQueueOwner();
-    const queued = queue.enqueueExternalMessageOperation({
+    const queued = enqueueMessage(queue, {
       text: 'follow-up from IM',
       context: context({
         requestId: 'request-2',
@@ -324,7 +382,7 @@ describe('external operation queue owner', () => {
 
   it('exposes a reserved IM operation without letting queue cancellation steal drain ownership', async () => {
     const queue = await loadFreshQueueOwner();
-    const queued = queue.enqueueExternalMessageOperation({
+    const queued = enqueueMessage(queue, {
       text: 'reserved IM follow-up',
       context: context({
         requestId: 'request-reserved',
@@ -376,7 +434,7 @@ describe('external operation queue owner', () => {
 
     for (let i = 0; i < 50; i += 1) {
       queue.enqueueExternalConfigOperation({ model: `model-${i}` }, 'desktop');
-      const result = queue.enqueueExternalMessageOperation({
+      const result = enqueueMessage(queue, {
         text: `message-${i}`,
         context: context(),
         runtimeConfig: snapshot({ model: `model-${i}` }),
@@ -384,7 +442,7 @@ describe('external operation queue owner', () => {
       expect(result.queued).toBe(true);
     }
 
-    const overflow = queue.enqueueExternalMessageOperation({
+    const overflow = enqueueMessage(queue, {
       text: 'overflow',
       context: context(),
       runtimeConfig: snapshot(),

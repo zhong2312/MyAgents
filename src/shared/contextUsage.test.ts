@@ -1,6 +1,25 @@
 import { describe, it, expect } from 'vitest';
 
-import { computeContextUsage, stripModelSuffix, SDK_DEFAULT_CONTEXT_WINDOW } from './contextUsage';
+import {
+  BUILTIN_AUTO_COMPACT_PERCENT,
+  computeBuiltinAutoCompactThreshold,
+  computeContextUsage,
+  stripModelSuffix,
+  SDK_DEFAULT_CONTEXT_WINDOW,
+} from './contextUsage';
+
+describe('builtin auto-compaction policy', () => {
+  it('projects the same 90% threshold injected into the SDK environment', () => {
+    expect(BUILTIN_AUTO_COMPACT_PERCENT).toBe(90);
+    expect(computeBuiltinAutoCompactThreshold(200_000)).toBe(180_000);
+    expect(computeBuiltinAutoCompactThreshold(1_048_576)).toBe(943_718);
+  });
+
+  it('fails closed for invalid windows', () => {
+    expect(computeBuiltinAutoCompactThreshold(0)).toBe(0);
+    expect(computeBuiltinAutoCompactThreshold(Number.NaN)).toBe(0);
+  });
+});
 
 describe('stripModelSuffix', () => {
   it('strips the [1m] suffix (case-insensitive)', () => {

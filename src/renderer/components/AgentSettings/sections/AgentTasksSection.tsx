@@ -1,7 +1,6 @@
 // Agent tasks section — display cron tasks associated with this agent, clickable to open detail
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AgentConfig } from '../../../../shared/types/agent';
 import { getWorkspaceCronTasks, deleteCronTask, startCronTask, stopCronTask } from '@/api/cronTaskClient';
 import type { CronTask } from '@/types/cronTask';
 import { useToast } from '@/components/Toast';
@@ -46,10 +45,10 @@ function cronStatusDotColor(status: string): string {
 }
 
 interface AgentTasksSectionProps {
-  agent: AgentConfig;
+  workspacePath: string;
 }
 
-export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
+export default function AgentTasksSection({ workspacePath }: AgentTasksSectionProps) {
   const { t } = useTranslation('settings');
   const { t: tTask } = useTranslation('task');
   const [tasks, setTasks] = useState<CronTask[]>([]);
@@ -66,13 +65,13 @@ export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
 
   const loadTasks = useCallback(async () => {
     try {
-      const tasks = await getWorkspaceCronTasks(agent.workspacePath);
+      const tasks = await getWorkspaceCronTasks(workspacePath);
       if (!isMountedRef.current) return;
       setTasks(tasks);
     } catch {
       // Silent — tasks are optional
     }
-  }, [agent.workspacePath]);
+  }, [workspacePath]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loadTasks fetches from external API then sets state, which is the correct pattern for effects

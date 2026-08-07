@@ -813,17 +813,15 @@ pub async fn check_and_download_update(app: AppHandle) -> Result<bool, String> {
     }
 }
 
-/// Command: Restart the application to apply the update
-/// Note: This function never returns as app.restart() terminates the process
+/// Command: Restart the application to apply the update.
+///
+/// `request_restart` reliably routes through `RunEvent::ExitRequested`, whose
+/// app lifecycle owner closes IM agents, Sidecars, terminals, browsers, and the
+/// process lock before Tauri relaunches.
 #[tauri::command]
 pub fn restart_app(app: AppHandle) {
     logger::info(&app, "[Updater] Restarting application to apply update...");
-    // `restart()` fires RunEvent::ExitRequested with code == RESTART_EXIT_CODE
-    // (or, on the main thread, exits directly without firing it). Either way the
-    // ExitRequested handler does NOT record a clean-exit marker for that code,
-    // so the next boot offers to restore the session (Issue #309 / #232) — no
-    // flag needed here.
-    app.restart();
+    app.request_restart();
 }
 
 /// Command: Check if a pending update exists on disk (for Windows startup prompt)

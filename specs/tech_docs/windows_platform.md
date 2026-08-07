@@ -81,9 +81,16 @@ Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgent
 
 **PATH 注入策略**：SDK 子进程（AI Bash 工具）实际看到的 PATH 优先**系统**，其次 bundled —— 用户自己维护的 Node 往往比我们 bundle 的版本新，npm 也更可靠（见 `buildClaudeSessionEnv`）。详见 `bundled_node.md`。
 
+Task command Detector 不经过 SDK shell：bare `node` / `node.exe` 固定解析到 bundled Node.js v24，其他 bare executable 走 `system_binary::find()`；`executable + args + cwd` 分开传递，不经 `cmd /c` 或字符串重拼。Rust 进入进程边界前对绝对路径使用现有 external-path normalize，不能把 Windows verbatim/长路径前缀直接泄漏给 Node。
+
 ### 进程清理
 
-**Windows**（当前使用 `sysinfo` 原生枚举 + 进程树清理，避免旧 PowerShell/WMI 冷启动开销）：
+进程清理分成两种不能互换的 authority：
+
+1. **Live lifecycle**：Sidecar / Plugin Bridge 使用 `process_cmd::spawn_tree()` 创建。Windows child 先以 `CREATE_SUSPENDED` 创建，绑定配置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，再恢复初始线程；owner 持有 `ChildTree`，stop / Drop 直接终止 Job 内所有后代。`CREATE_NO_WINDOW` child 没有可靠的 console signal，不能增加无实际作用的等待步骤。应用退出时的创建入口关闭与登记等待是跨平台规则，统一见 `pit_of_success.md` 的 `process_cmd` 小节。正常退出不得扫描全机 argv。
+2. **Recovery**：只有 prior instance 已确定死亡后的启动恢复，以及 updater 的 residual / protected-root / file-lock 验证，才使用 `sysinfo` 枚举。它处理 crash 后已经没有 live handle 的遗留进程，不是正常 shutdown 的 fallback。
+
+**Windows recovery**（`sysinfo` 原生枚举，避免旧 PowerShell/WMI 冷启动开销）：
 ```rust
 // src-tauri/src/sidecar/cleanup.rs -> src-tauri/src/process_cleanup.rs
 let report = crate::process_cleanup::kill_stale_processes(STARTUP_CLEANUP_PATTERNS);
@@ -95,7 +102,9 @@ let report = crate::process_cleanup::kill_stale_processes(STARTUP_CLEANUP_PATTER
 pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport;
 ```
 
-> **关键**：普通子进程 spawn 仍 MUST 使用 `process_cmd::new()`（Windows CREATE_NO_WINDOW）和 `system_binary::find()`（PATH 补充），禁止裸 `std::process::Command::new()`。stale cleanup 是例外：它由 `process_cleanup::kill_stale_processes()` 统一 owner，调用方不要再写 ad-hoc PowerShell / `pgrep`。
+> **关键**：普通短生命周期子进程 spawn 仍 MUST 使用 `process_cmd::new()`（Windows CREATE_NO_WINDOW）；会创建后代的长生命周期进程 MUST 再用 `spawn_tree()`。外部 binary 解析继续走 `system_binary::find()`（PATH 补充）。禁止裸 `std::process::Command::new()`，也禁止把 stale cleanup 扩展到正常退出；recovery 扫描统一由 `process_cleanup::kill_stale_processes()` owner，调用方不要再写 ad-hoc PowerShell / `pgrep`。
+
+Activation Trigger 的 Detector 也属于 Live lifecycle：每次 invocation 保留自己的 Job Object，timeout、stdout 超限、Task Stop/Delete 和 App shutdown 都终止同一棵树；不能只 kill 根 PID。harness 先 `env_clear()`，再恢复 Windows system/home/temp、证书、通用代理、增强 PATH 与 `LANG/LC_ALL/PYTHONUTF8/PYTHONIOENCODING` 规范 baseline，不继承 Provider credential 或 `MYAGENTS_*` 端口。它以 UTF-8 JSON 写 stdin，并把 stdout 当严格 UTF-8 协议解析；任意仍输出本地代码页字节的脚本会得到可诊断的 protocol failure，而不是静默替换字符或激活 AI。
 
 ---
 
@@ -127,7 +136,7 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport;
 ❌ 误以为要用 fetch-src（非标准、引擎忽略；真正生效的是 connect-src）
 ```
 
-**详见**：[build_troubleshooting.md#CSP配置错误](./build_troubleshooting.md#csp-配置错误)
+**详见**：[build_troubleshooting.md#CSP配置错误](../guides/build_troubleshooting.md#csp-配置错误)
 
 ---
 
@@ -202,7 +211,7 @@ Remove-Item src-tauri\target\x86_64-pc-windows-msvc\release\resources -Recurse -
 .\build_dev_win.ps1 -BundleNsis
 ```
 
-**详见**：[build_troubleshooting.md](./build_troubleshooting.md)
+**详见**：[build_troubleshooting.md](../guides/build_troubleshooting.md)
 
 ---
 
@@ -244,7 +253,7 @@ Remove-Item src-tauri\target\x86_64-pc-windows-msvc\release\resources -Recurse -
 
 ### process_cmd (`src-tauri/src/process_cmd.rs`)
 
-所有 Rust 层子进程 MUST 通过 `crate::process_cmd::new()` 创建。内置 Windows `CREATE_NO_WINDOW` 标志，防止 GUI 应用启动子进程时弹出黑色控制台窗口。
+所有 Rust 层子进程 MUST 通过 `crate::process_cmd::new()` 创建，以统一应用 Windows `CREATE_NO_WINDOW`。会派生后代的长生命周期进程还 MUST 使用 `crate::process_cmd::spawn_tree()` 并保留返回的 `ChildTree`。完整跨平台不变量、例外和禁止项只在 [`pit_of_success.md`](pit_of_success.md#process_cmd) 维护，本节只记录 Windows 的 Job Object 行为。
 
 ### system_binary (`src-tauri/src/system_binary.rs`)
 
@@ -310,6 +319,6 @@ $env:CLAUDE_CODE_GIT_BASH_PATH="C:\Program Files\Git\bin\bash.exe"
 ## 📚 相关文档
 
 - [Windows 构建指南](../guides/windows_build_guide.md)
-- [构建问题排查](./build_troubleshooting.md)
+- [构建问题排查](../guides/build_troubleshooting.md)
 - [代理配置](../tech_docs/proxy_config.md)
 - [自动更新](../tech_docs/auto_update.md)

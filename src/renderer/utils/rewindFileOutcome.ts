@@ -3,7 +3,33 @@ export type RewindResponse = {
   error?: string;
   skippedLinks?: number;
   fileRewindStatus?: 'complete' | 'partial' | 'failed' | 'not_attempted';
+  rewindScope?: 'conversation-only';
+  errorCode?: string;
 };
+
+export type CodexRewindTransportOutcome = 'committed' | 'unchanged' | 'target-unknown' | 'unresolved';
+
+export type CodexRewindRecoveryProjection = {
+  restoreMessageSnapshot: boolean;
+  restoreComposerSnapshot: boolean;
+};
+
+export function classifyCodexRewindTransportOutcome(
+  result: { restored: boolean; targetMessagePresent: boolean | null } | null,
+): CodexRewindTransportOutcome {
+  if (!result?.restored) return 'unresolved';
+  if (result.targetMessagePresent === null) return 'target-unknown';
+  return result.targetMessagePresent ? 'unchanged' : 'committed';
+}
+
+export function projectCodexRewindRecovery(
+  outcome: CodexRewindTransportOutcome,
+): CodexRewindRecoveryProjection {
+  return {
+    restoreMessageSnapshot: outcome === 'unresolved',
+    restoreComposerSnapshot: outcome !== 'committed',
+  };
+}
 
 type Translate = (key: string, options?: { count: number }) => string;
 

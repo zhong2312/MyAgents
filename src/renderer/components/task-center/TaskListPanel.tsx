@@ -2,14 +2,14 @@
 // Three sections: active (running/verifying), pending (todo/blocked/stopped),
 // finished (done/archived). PRD §7.2.
 //
-// Two render modes: a 2-column card view (default) and a dense single-line
-// list view (quick scan / filter). The choice is persisted in localStorage
-// so returning users see their last-picked view.
+// Two render modes: a 2-column card view and a dense single-line list view
+// (default, optimized for quick scan / filter). The choice is persisted in
+// localStorage so returning users see their last-picked view.
 //
 // Unmigrated historical Cron rows remain visible as read-only diagnostics.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckSquare, Plus } from 'lucide-react';
+import { CheckSquare, Folder, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -47,6 +47,7 @@ type TaskCardLike =
 
 interface Props {
   highlightTaskId?: string | null;
+  currentSessionId?: string | null;
   /** Bumped by parent to trigger re-fetch (tab activation, post-dispatch). */
   refreshKey?: unknown;
   /** Intent forwarded from `App.tsx`'s `OPEN_TASK_CENTER` event handler.
@@ -74,12 +75,12 @@ const BUCKET_STATUSES: Record<Bucket, TaskStatus[]> = {
 const VIEW_STORAGE_KEY = 'myagents:task-center:view';
 
 function loadStoredView(): TaskView {
-  if (typeof window === 'undefined') return 'card';
+  if (typeof window === 'undefined') return 'list';
   const raw = window.localStorage.getItem(VIEW_STORAGE_KEY);
-  return raw === 'list' ? 'list' : 'card';
+  return raw === 'card' ? 'card' : 'list';
 }
 
-export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Props) {
+export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent, currentSessionId }: Props) {
   const toast = useToast();
   const { t } = useTranslation('task');
   const toastRef = useRef(toast);
@@ -96,6 +97,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   const [legacy, setLegacy] = useState<LegacyCronRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   // Workspace filter — empty string = "全部" (no filter). Stored by
   // workspace path (same key the Task row uses), resolved to a
   // display name via `projects` in the option list below.
@@ -233,11 +235,11 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   const handleRun = useCallback(
     (task: Task) =>
       runAction(task.id, t('tasks.actions.run'), async () => {
+        const result = await taskRun(task.id);
         track('task_run', {
           source: 'desktop',
-          run_count: task.sessionIds.length + 1,
+          run_count: result.attemptOrdinal,
         });
-        await taskRun(task.id);
       }),
     [runAction, t],
   );
@@ -252,11 +254,11 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   const handleRerun = useCallback(
     (task: Task) =>
       runAction(task.id, t('tasks.actions.rerun'), async () => {
+        const result = await taskRerun(task.id);
         track('task_run', {
           source: 'desktop',
-          run_count: task.sessionIds.length + 1,
+          run_count: result.attemptOrdinal,
         });
-        await taskRerun(task.id);
       }),
     [runAction, t],
   );
@@ -412,6 +414,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   }, [workspaceFilter, workspaceOptions]);
 
   const totalCount = tasks.length + legacy.length;
+  const searchActive = searchFocused || query.length > 0;
 
   const openTaskDetail = (t: Task) => {
     setSelectedTaskStartEditing(false);
@@ -477,18 +480,18 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="@container/task-panel flex h-full min-w-0 flex-col">
       {/* Section header — label + persistent search pill + view toggle.
           h-12 per DESIGN.md §7.4 (aligns with TaskCenter page header).
           v0.1.69 polish: bottom hairline removed; breathing room
           below replaces it as the separator, so the right column
           reads as a single continuous surface from header → buckets. */}
-      <div className="flex h-12 items-center gap-3 px-4">
-        <div className="flex items-center gap-2">
+      <div className="flex h-12 items-center gap-2 px-4 @[720px]:gap-3">
+        <div className={`${searchActive ? 'hidden @[720px]:flex' : 'flex'} shrink-0 items-center gap-2`}>
           {/* `relative top-[1px]` keeps optical centering consistent with
               ThoughtPanel's Lightbulb — see the comment there. */}
           <CheckSquare className="relative top-[1px] h-4 w-4 text-[var(--ink-muted)]" strokeWidth={1.5} />
-          <span className="text-base font-semibold text-[var(--ink)]">
+          <span className="whitespace-nowrap text-base font-semibold text-[var(--ink)]">
             {t('tasks.title')}
           </span>
           {/* v0.1.69 — inline "+ 新建" entry point so users aren't forced
@@ -506,30 +509,31 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
               type="button"
               onClick={() => setShowCreateModal(true)}
               aria-label={t('tasks.newTask')}
-              className="inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] @[720px]:w-auto @[720px]:gap-1 @[720px]:px-2.5"
             >
               <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-              {t('tasks.new')}
+              <span className="sr-only @[720px]:not-sr-only">{t('tasks.new')}</span>
             </button>
             <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--ink)] px-2 py-1 text-xs font-medium text-[var(--paper)] opacity-0 shadow-md transition-opacity duration-150 group-hover/newTask:opacity-100">
               {t('tasks.newTask')}
             </span>
           </div>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className={`${searchActive ? 'ml-0 flex-1 @[720px]:ml-auto @[720px]:flex-initial' : 'ml-auto'} flex min-w-0 items-center gap-1.5 @[720px]:gap-2`}>
           {/* Workspace filter — hidden when there's only one (or zero)
               workspaces producing tasks; the dropdown would be pointless
               in that case and would just eat header width. */}
           {workspaceOptions.length > 2 && (
-            <div className="w-[160px]">
-              <CustomSelect
-                value={workspaceFilter}
-                options={workspaceOptions}
-                onChange={setWorkspaceFilter}
-                compact
-                placeholder={t('tasks.allWorkspaces')}
-              />
-            </div>
+            <CustomSelect
+              className={`${searchActive ? 'hidden @[720px]:block' : 'block'} w-7 @[720px]:w-[160px] [&>button]:h-7 [&>button]:justify-center [&>button]:!rounded-full [&>button]:!border-transparent [&>button]:!bg-[var(--paper-inset)] [&>button]:!p-0 [&>button]:active:scale-[0.97] @[720px]:[&>button]:justify-start @[720px]:[&>button]:!rounded-lg @[720px]:[&>button]:!border-[var(--line)] @[720px]:[&>button]:!bg-[var(--paper)] @[720px]:[&>button]:!px-2 [&>button>span:nth-of-type(2)]:sr-only @[720px]:[&>button>span:nth-of-type(2)]:not-sr-only [&>button>svg]:hidden @[720px]:[&>button>svg]:block`}
+              value={workspaceFilter}
+              options={workspaceOptions}
+              onChange={setWorkspaceFilter}
+              compact
+              placeholder={t('tasks.allWorkspaces')}
+              triggerIcon={<Folder className="h-3.5 w-3.5" strokeWidth={1.5} />}
+              popoverMinWidth={160}
+            />
           )}
           <SearchPill
             inputRef={searchInputRef}
@@ -537,8 +541,13 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
             onChange={setQuery}
             onClear={clearSearch}
             placeholder={t('tasks.searchPlaceholder')}
+            collapseWhenNarrow
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
           />
-          <ViewToggle value={view} onChange={updateView} />
+          <div className={`${searchActive ? 'hidden @[720px]:block' : 'block'} shrink-0`}>
+            <ViewToggle value={view} onChange={updateView} />
+          </div>
         </div>
       </div>
 
@@ -566,7 +575,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
             return view === 'card' ? (
               <section key={b} className="mb-6">
                 <BucketHeader label={t(`tasks.groups.${b}`)} count={rows.length} />
-                <div className="grid grid-cols-2 gap-3 @[900px]:grid-cols-3">
+                <div className="grid grid-cols-1 gap-3 @[560px]:grid-cols-2 @[900px]:grid-cols-3">
                   {rows.map(renderCard)}
                 </div>
               </section>
@@ -614,6 +623,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
 
       {showCreateModal && (
         <DispatchTaskDialog
+          currentSessionId={currentSessionId ?? null}
           onClose={() => setShowCreateModal(false)}
           onDispatched={(created) => {
             setShowCreateModal(false);

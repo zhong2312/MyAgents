@@ -73,15 +73,18 @@ Rust spawn_plugin_bridge()
 1. 定位内置 node 可执行文件 + `plugin-bridge-dist.mjs`
 2. SDK shim 完整性检查（package.json version 含 "-shim"?）
    └─ 不通过 → 自动重新安装 shim
-3. spawn(node, script, --plugin-dir, --port, --rust-port, --bot-id)
+3. 构造 node 启动命令，并通过 `process_cmd::spawn_tree()` 创建进程树
    └─ 敏感配置通过 BRIDGE_PLUGIN_CONFIG 环境变量传递（不暴露到 ps）
    └─ 注入 per-channel OpenClaw 状态目录（OPENCLAW_STATE_DIR / OPENCLAW_CONFIG_PATH / OPENCLAW_OAUTH_DIR；名字以上游 utils.ts/paths.ts 实际消费者为准）
    └─ 注入 proxy_config 环境变量
-4. stdout/stderr → 统一日志（Rust 是 Bridge 进程唯一持久化 owner；过滤 heartbeat 噪音）
-5. Health check: GET /health × 30 次, 500ms 间隔, 最多 15s
+4. Rust 持有返回的 ChildTree，负责 Bridge 及其后代进程的停止与 Drop 清理
+5. stdout/stderr → 统一日志（Rust 是 Bridge 进程唯一持久化 owner；过滤 heartbeat 噪音）
+6. Health check: GET /health × 30 次, 500ms 间隔, 最多 15s
   ↓
 Bridge HTTP Server 就绪
 ```
+
+Plugin Bridge 的正常停止只使用创建时保留的 `ChildTree`，不能按进程名或 argv 扫描整机。全机扫描只属于前一应用实例已经退出后的启动恢复和更新器残留检查；完整规则见 `pit_of_success.md` 的 `process_cmd` 小节。
 
 OpenClaw 插件安装目录保持共享（`~/.myagents/openclaw-plugins/<plugin_id>`），但运行时状态必须按 MyAgents Channel 隔离：Agent Channel 使用 `~/.myagents/agents/<agentId>/channels/<channelId>/openclaw-state`，legacy IM Bot 使用 `~/.myagents/im_bots/<botId>/openclaw-state`。不要让 Bridge 回落到上游默认的 `~/.openclaw`；二维码登录类插件（例如 Weixin）会把本地 token list 带给平台，如果多个工作区共享这份状态，平台会把它们识别为同一个 OpenClaw 实例。
 
@@ -415,6 +418,7 @@ Bridge 消费；Builtin SDK、Managed Codex 与用户原生外部 Runtime 仍保
 | 文件 | 职责 |
 |------|------|
 | `src-tauri/src/im/bridge.rs` | Rust 层：安装、启动、健康检查、消息路由 |
+| `src-tauri/src/process_cmd.rs` | Bridge 进程树创建与精确停止 |
 | `src/server/plugin-bridge/index.ts` | Bridge HTTP Server + 插件加载入口 |
 | `src/server/plugin-bridge/compat-api.ts` | OpenClaw API 适配（registerChannel/Tool） |
 | `src/server/plugin-bridge/compat-runtime.ts` | Channel Runtime Mock + 消息拦截路由 |

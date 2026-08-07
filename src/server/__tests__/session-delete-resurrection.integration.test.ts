@@ -4,12 +4,12 @@
  * Artifact state in the wild: a session's sessions.json entry is GONE while its
  * full JSONL sits on disk (10MB / 221 messages in the report). Root cause:
  * deleteSession removes the index entry + unlinks the JSONL, but a live sidecar
- * still holding the session in memory persists afterwards — saveSessionMessages
+ * still holding the session in memory persists afterwards — the old cumulative saver
  * saw existsSync=false → existingCount=0 → re-appended the ENTIRE in-memory
  * array, resurrecting the file as an invisible orphan no UI can reach.
  *
  * The fix enforces the index⟺data invariant at the single point that creates
- * JSONL files: saveSessionMessages refuses a WOULD-CREATE write when the session
+ * JSONL files: cursor append refuses a WOULD-CREATE write when the session
  * has no sessions.json entry. Appends to an EXISTING unindexed file stay allowed
  * (legacy orphans keep accumulating their data rather than losing it).
  *
@@ -56,6 +56,15 @@ function sessionMeta(id: string, agentDir: string): SessionMetadata {
     };
 }
 
+async function appendAll(sessionId: string, messages: ReturnType<typeof msg>[]) {
+    const snapshot = await store.loadSessionTranscript(sessionId);
+    return store.appendSessionMessages(
+        sessionId,
+        snapshot.cursor,
+        messages.slice(snapshot.cursor.persistedMessageCount),
+    );
+}
+
 beforeAll(async () => {
     home = mkdtempSync(join(tmpdir(), 'myagents-336-'));
     originalHome = process.env.HOME;
@@ -91,9 +100,27 @@ describe('issue #336 — delete vs persist resurrection', () => {
         expect(backupNames.length).toBeGreaterThan(0);
         expect(readFileSync(join(home, '.myagents', backupNames[0]), 'utf-8')).toBe('{"truncated"');
 
-        const persistResult = await store.saveSessionMessages(meta.id, [msg(10)]);
+        const persistResult = await appendAll(meta.id, [msg(10)]);
         expect(persistResult.ok).toBe(true);
         expect(existsSync(jsonlPath(meta.id))).toBe(true);
+    });
+
+    it('treats a durable transcript append as success when only derived stats fail', async () => {
+        const meta = await store.createSession('/tmp/workspace-stats-failure');
+        mkdirSync(sessionsTmpJson());
+
+        try {
+            const result = await appendAll(meta.id, [msg(11)]);
+
+            expect(result).toMatchObject({
+                ok: true,
+                action: 'appended',
+                count: 1,
+            });
+            expect(readFileSync(jsonlPath(meta.id), 'utf-8')).toContain('message 11');
+        } finally {
+            rmSync(sessionsTmpJson(), { recursive: true, force: true });
+        }
     });
 
     it('salvages valid metadata from a malformed sessions.json array before metadata creation', async () => {
@@ -204,7 +231,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
     it('a post-delete persist must NOT resurrect the JSONL (the #336 race)', async () => {
         const meta = await store.createSession('/tmp/workspace-a');
         const history = [msg(0), msg(1)];
-        const initialSave = await store.saveSessionMessages(meta.id, history);
+        const initialSave = await appendAll(meta.id, history);
         expect(initialSave.ok).toBe(true);
         expect(existsSync(jsonlPath(meta.id))).toBe(true);
 
@@ -215,7 +242,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
 
         // Simulate the live owner sidecar persisting its in-memory array after
         // the delete (resetSession's "persist before clearing" / turn complete).
-        const postDeleteSave = await store.saveSessionMessages(meta.id, [...history, msg(2)]);
+        const postDeleteSave = await appendAll(meta.id, [...history, msg(2)]);
         expect(postDeleteSave.ok).toBe(false);
         if (!postDeleteSave.ok) {
             expect(postDeleteSave.reason).toBe('unindexed-create-refused');
@@ -229,7 +256,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
 
     it('refuses to CREATE a JSONL for a never-registered session id', async () => {
         const ghostId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-        const result = await store.saveSessionMessages(ghostId, [msg(0)]);
+        const result = await appendAll(ghostId, [msg(0)]);
         expect(result.ok).toBe(false);
         if (!result.ok) {
             expect(result.reason).toBe('unindexed-create-refused');
@@ -242,11 +269,30 @@ describe('issue #336 — delete vs persist resurrection', () => {
         mkdirSync(sessionsDir(), { recursive: true });
         writeFileSync(jsonlPath(orphanId), JSON.stringify(msg(0)) + '\n', 'utf-8');
 
-        const result = await store.saveSessionMessages(orphanId, [msg(0), msg(1)]);
+        const result = await appendAll(orphanId, [msg(0), msg(1)]);
         expect(result.ok).toBe(true);
 
         const lines = readFileSync(jsonlPath(orphanId), 'utf-8').trim().split('\n');
         expect(lines).toHaveLength(2);
+    });
+
+    it('only a named destructive mutation may replace durable rows', async () => {
+        const meta = await store.createSession('/tmp/workspace-explicit-mutation');
+        const original = [msg(0), msg(1)];
+        expect((await appendAll(meta.id, original)).ok).toBe(true);
+        const snapshot = await store.loadSessionTranscript(meta.id);
+
+        const result = await store.mutateSessionTranscript(meta.id, snapshot.cursor, {
+            kind: 'builtin-admission-rollback',
+            messageId: original[1].id,
+        });
+
+        expect(result).toMatchObject({ ok: true, action: 'replaced' });
+        const stored = readFileSync(jsonlPath(meta.id), 'utf-8')
+            .trim()
+            .split('\n')
+            .map(line => JSON.parse(line) as { content: string });
+        expect(stored.map(message => message.content)).toEqual([original[0].content]);
     });
 
     it('deleteSession returns a typed not-found result for an unknown id', async () => {
@@ -261,7 +307,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         prepared.materializationState = 'prepared';
         prepared.materializationSourceSessionId = 'pending-source';
         await store.saveSessionMetadata(prepared);
-        expect((await store.saveSessionMessages(prepared.id, [msg(0)])).ok).toBe(true);
+        expect((await appendAll(prepared.id, [msg(0)])).ok).toBe(true);
 
         const deletion = await store.deleteSession(prepared.id, {
             kind: 'prepared-materialization-rollback',
@@ -277,7 +323,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         const pending = sessionMeta('pending-identity-source', '/tmp/workspace-pending');
         const targetId = '13131313-1313-4313-8313-131313131313';
         await store.saveSessionMetadata(pending);
-        expect((await store.saveSessionMessages(pending.id, [msg(0), msg(1)])).ok).toBe(true);
+        expect((await appendAll(pending.id, [msg(0), msg(1)])).ok).toBe(true);
 
         const migration = await store.migratePendingSessionIdentity(pending.id, targetId, {
             sdkSessionId: targetId,
@@ -313,7 +359,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         const pending = sessionMeta('pending-data-collision-source', '/tmp/workspace-pending');
         const targetId = '16161616-1616-4616-8616-161616161616';
         await store.saveSessionMetadata(pending);
-        expect((await store.saveSessionMessages(pending.id, [msg(0)])).ok).toBe(true);
+        expect((await appendAll(pending.id, [msg(0)])).ok).toBe(true);
         writeFileSync(jsonlPath(targetId), JSON.stringify(msg(99)) + '\n', 'utf-8');
 
         expect(await store.migratePendingSessionIdentity(pending.id, targetId, {
@@ -329,7 +375,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         const pending = sessionMeta('pending-staged-source', '/tmp/workspace-pending');
         const targetId = '17171717-1717-4717-8717-171717171717';
         await store.saveSessionMetadata(pending);
-        expect((await store.saveSessionMessages(pending.id, [msg(0), msg(1)])).ok).toBe(true);
+        expect((await appendAll(pending.id, [msg(0), msg(1)])).ok).toBe(true);
 
         // Simulate a process crash after hard-link staging but before the
         // sessions.json identity commit.
@@ -351,7 +397,7 @@ describe('issue #336 — delete vs persist resurrection', () => {
         const pending = sessionMeta('pending-post-commit-source', '/tmp/workspace-pending');
         const targetId = '18181818-1818-4818-8818-181818181818';
         await store.saveSessionMetadata(pending);
-        expect((await store.saveSessionMessages(pending.id, [msg(0), msg(1)])).ok).toBe(true);
+        expect((await appendAll(pending.id, [msg(0), msg(1)])).ok).toBe(true);
         linkSync(jsonlPath(pending.id), jsonlPath(targetId));
 
         // Simulate the exact durable state after the sessions.json identity

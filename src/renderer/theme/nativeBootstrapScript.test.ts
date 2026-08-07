@@ -49,7 +49,7 @@ describe('native Theme bootstrap script', () => {
 
     expect(readSnapshot(storage)).toEqual({
       version: 2,
-      themeId: 'default-black',
+      themeId: 'myagents-light',
       appearanceMode: 'dark',
       themeSelectionExplicit: false,
     });
@@ -82,7 +82,7 @@ describe('native Theme bootstrap script', () => {
 
     expect(readSnapshot(storage)).toEqual({
       version: 2,
-      themeId: 'default-black',
+      themeId: 'myagents-light',
       appearanceMode: 'dark',
       themeSelectionExplicit: false,
     });
@@ -102,7 +102,7 @@ describe('native Theme bootstrap script', () => {
 
     expect(readSnapshot(storage)).toEqual({
       version: 2,
-      themeId: 'default-black',
+      themeId: 'myagents-light',
       appearanceMode: 'system',
       themeSelectionExplicit: false,
     });

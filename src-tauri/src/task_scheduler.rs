@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeZone, Utc};
 use tauri::{AppHandle, Emitter};
@@ -9,15 +10,29 @@ use tokio::sync::RwLock;
 use crate::cron_task::CronRunRecord;
 use crate::task::task_protects_session_identity;
 use crate::task::{
-    task_protected_session_ids, Task, TaskExecutionMode, TaskExecutionTrigger, TaskListFilter,
-    TaskStatus, TaskUpdateStatusInput, TransitionActor, TransitionSource,
+    task_protected_session_ids, Task, TaskExecutionMode, TaskExecutionTerminalTransition,
+    TaskExecutionTrigger, TaskListFilter, TaskStatus, TaskUpdateStatusInput, TransitionActor,
+    TransitionSource,
+};
+use crate::task_trigger::{
+    DetectorCancellation, DetectorInvocationCause, DetectorRunRequest, PendingTaskActivation,
+    TaskActivationPayload, TriggerCommitDisposition,
 };
 use crate::{ulog_error, ulog_info, ulog_warn};
 
 pub struct TaskSchedulerController {
     handles: Arc<RwLock<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
+    wakeups: Arc<RwLock<HashMap<String, Arc<tokio::sync::Notify>>>>,
     executions: ActiveExecutions,
     app_handle: Arc<RwLock<Option<AppHandle>>>,
+    shutting_down: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskTriggerCheckNowResult {
+    pub outcome: Option<crate::task_trigger::TaskTriggerRuntimeOutcome>,
+    pub state: crate::task_trigger::TaskTriggerRuntimeState,
 }
 
 #[derive(Debug)]
@@ -28,11 +43,81 @@ struct ActiveTaskExecution {
     pending_session_birth: Option<PendingSessionBirth>,
     state: TaskExecutionState,
     error: Option<String>,
+    detector: Option<DetectorExecutionLifecycle>,
+}
+
+#[derive(Debug, Clone)]
+struct DetectorExecutionLifecycle {
+    cancellation: DetectorCancellation,
+    done: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl DetectorExecutionLifecycle {
+    fn new() -> Self {
+        Self {
+            cancellation: DetectorCancellation::new(),
+            done: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn finish(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        // `notify_one` stores a permit when no waiter is registered. This
+        // closes the done-check/notified-registration race in wait_finished;
+        // there is only one lifecycle waiter per exact execution claim.
+        self.notify.notify_one();
+    }
+
+    async fn wait_finished(&self) -> bool {
+        loop {
+            if self.done.load(Ordering::SeqCst) {
+                return true;
+            }
+            if tokio::time::timeout(Duration::from_secs(8), self.notify.notified())
+                .await
+                .is_err()
+            {
+                return self.done.load(Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+/// Cancels a test-only Detector when the HTTP/Tauri request future disappears.
+/// The detached worker still owns process settlement and exact-claim cleanup;
+/// this guard only connects caller lifetime to the worker's cancellation token.
+struct DetectorRequestCancellationGuard {
+    cancellation: DetectorCancellation,
+    armed: bool,
+}
+
+impl DetectorRequestCancellationGuard {
+    fn new(cancellation: DetectorCancellation) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DetectorRequestCancellationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.cancel();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskExecutionState {
+    Checking,
     Running,
     Stopping,
     StopFailed,
@@ -41,6 +126,7 @@ pub enum TaskExecutionState {
 impl TaskExecutionState {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Checking => "checking",
             Self::Running => "running",
             Self::Stopping => "stopping",
             Self::StopFailed => "stop_failed",
@@ -87,6 +173,80 @@ static TASK_CONTROL_LIFECYCLES: std::sync::OnceLock<
     crate::keyed_lifecycle::KeyedLifecycleRegistry,
 > = std::sync::OnceLock::new();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupPendingRecoveryPlan {
+    Scheduler,
+    ManualOneShot,
+    None,
+}
+
+fn pending_execution_trigger(
+    pending: &PendingTaskActivation,
+) -> Result<TaskExecutionTrigger, String> {
+    match pending.invocation_cause {
+        DetectorInvocationCause::Scheduled => Ok(TaskExecutionTrigger::Scheduled),
+        DetectorInvocationCause::CheckNow => Ok(TaskExecutionTrigger::Manual),
+        DetectorInvocationCause::Test => {
+            Err("test Detector invocation cannot own a pending Activation Event".to_string())
+        }
+    }
+}
+
+fn startup_pending_recovery_plan(
+    task: &Task,
+    pending: &PendingTaskActivation,
+) -> StartupPendingRecoveryPlan {
+    if task.deleted {
+        return StartupPendingRecoveryPlan::None;
+    }
+    if task.status == TaskStatus::Running {
+        return StartupPendingRecoveryPlan::Scheduler;
+    }
+    if pending.invocation_cause == DetectorInvocationCause::CheckNow
+        && matches!(task.status, TaskStatus::Stopped | TaskStatus::Blocked)
+    {
+        return StartupPendingRecoveryPlan::ManualOneShot;
+    }
+    StartupPendingRecoveryPlan::None
+}
+
+fn detector_test_checkpoint_snapshot(
+    state: &crate::task_trigger::TaskTriggerRuntimeState,
+    checkpoint_override: Option<Option<serde_json::Map<String, serde_json::Value>>>,
+) -> (
+    u64,
+    Option<serde_json::Map<String, serde_json::Value>>,
+    Option<i64>,
+) {
+    match checkpoint_override {
+        Some(checkpoint) => (0, checkpoint, None),
+        None => (
+            state.checkpoint_revision,
+            state.checkpoint.clone(),
+            state.checkpoint_updated_at,
+        ),
+    }
+}
+
+async fn ensure_run_now_outbox_clear(
+    store: &crate::task::TaskStore,
+    task: &Task,
+) -> Result<(), String> {
+    if task.effective_trigger().is_command()
+        && store
+            .read_trigger_state(&task.id)
+            .await?
+            .pending_activation
+            .is_some()
+    {
+        return Err(
+            "run-now is unavailable while an Activation Event is pending; wait for it to settle or stop the Task"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub(crate) async fn acquire_task_control(task_id: &str) -> TaskControlGuard {
     TASK_CONTROL_LIFECYCLES
         .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
@@ -105,8 +265,10 @@ impl TaskSchedulerController {
     fn new() -> Self {
         Self {
             handles: Arc::new(RwLock::new(HashMap::new())),
+            wakeups: Arc::new(RwLock::new(HashMap::new())),
             executions: Arc::new(RwLock::new(HashMap::new())),
             app_handle: Arc::new(RwLock::new(None)),
+            shutting_down: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -116,15 +278,108 @@ impl TaskSchedulerController {
             ulog_error!("[task-scheduler] TaskStore is not initialized");
             return;
         };
-        let running = store
+        let tasks = store
             .list(TaskListFilter {
-                status: Some(crate::task::StatusFilter::One(TaskStatus::Running)),
                 include_managed: Some(true),
                 ..Default::default()
             })
             .await;
 
-        for task in running {
+        for task in tasks {
+            // Task outcome and Trigger outbox are two crash-durable files. A
+            // matching receipt proves this event already entered a terminal
+            // Runtime turn and its Task accounting committed; only the outbox
+            // cleanup was interrupted. Reconcile it before arming any timer so
+            // startup cannot re-admit the same event.
+            let mut pending_activation = None;
+            if task.effective_trigger().is_command() {
+                match store.read_trigger_state(&task.id).await {
+                    Ok(state) => {
+                        if let Some(pending) = state.pending_activation.as_ref() {
+                            if task.last_activation_event_id.as_deref()
+                                == Some(pending.event.id.as_str())
+                            {
+                                if let Err(error) = store
+                                    .settle_pending_activation(&task.id, &pending.event.id)
+                                    .await
+                                {
+                                    ulog_error!(
+                                        "[task-scheduler] failed to reconcile activation receipt task={}: {}",
+                                        task.id,
+                                        error
+                                    );
+                                    if task.status == TaskStatus::Running {
+                                        let _ = block_task(
+                                            store,
+                                            &task,
+                                            format!(
+                                                "Activation Event recovery failed; retry required: {error}"
+                                            ),
+                                        )
+                                        .await;
+                                    }
+                                    continue;
+                                }
+                            } else {
+                                pending_activation = Some(pending.clone());
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        ulog_error!(
+                            "[task-scheduler] failed to read trigger recovery state task={}: {}",
+                            task.id,
+                            error
+                        );
+                        if task.status == TaskStatus::Running {
+                            let _ = block_task(
+                                store,
+                                &task,
+                                format!("Trigger recovery state is unreadable: {error}"),
+                            )
+                            .await;
+                        }
+                        continue;
+                    }
+                }
+            }
+            if let Some(pending) = pending_activation {
+                match startup_pending_recovery_plan(&task, &pending) {
+                    StartupPendingRecoveryPlan::ManualOneShot => {
+                        let task = task.clone();
+                        let executions = Arc::clone(&self.executions);
+                        let app_handle = Arc::clone(&self.app_handle);
+                        let shutting_down = Arc::clone(&self.shutting_down);
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(error) = dispatch_pending_activation(
+                                &task,
+                                pending,
+                                &executions,
+                                &app_handle,
+                                shutting_down.as_ref(),
+                                TaskExecutionTrigger::Manual,
+                            )
+                            .await
+                            {
+                                // Keep the durable outbox entry intact. A later
+                                // restart or an explicit Stop can recover/cancel
+                                // this one-shot without arming a timer or changing
+                                // the stopped/blocked Task status.
+                                ulog_error!(
+                                    "[task-scheduler] check-now activation recovery failed task={}: {}",
+                                    task.id,
+                                    error
+                                );
+                            }
+                        });
+                        continue;
+                    }
+                    StartupPendingRecoveryPlan::Scheduler | StartupPendingRecoveryPlan::None => {}
+                }
+            }
+            if task.status != TaskStatus::Running {
+                continue;
+            }
             if task.execution_mode == TaskExecutionMode::Loop {
                 let _ = store
                     .update_status(TaskUpdateStatusInput {
@@ -143,7 +398,12 @@ impl TaskSchedulerController {
                     task.id,
                     error
                 );
-                block_task(&task, format!("Task scheduler recovery failed: {error}")).await;
+                let _ = block_task(
+                    store,
+                    &task,
+                    format!("Task scheduler recovery failed: {error}"),
+                )
+                .await;
             }
         }
         let _ = handle.emit("task:scheduler-ready", serde_json::json!({}));
@@ -159,6 +419,9 @@ impl TaskSchedulerController {
         task_id: &str,
         _control: &TaskControlGuard,
     ) -> Result<(), String> {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err("Task scheduler is shutting down".to_string());
+        }
         let store = crate::task::get_task_store()
             .ok_or_else(|| "task store not initialized".to_string())?;
         let task = store
@@ -201,8 +464,21 @@ impl TaskSchedulerController {
         let task_id_owned = task_id.to_string();
         let executions = Arc::clone(&self.executions);
         let app_handle = Arc::clone(&self.app_handle);
+        let shutting_down = Arc::clone(&self.shutting_down);
+        let wakeup = Arc::new(tokio::sync::Notify::new());
+        self.wakeups
+            .write()
+            .await
+            .insert(task_id.to_string(), Arc::clone(&wakeup));
         let handle = tauri::async_runtime::spawn(async move {
-            run_scheduler_loop(task_id_owned.clone(), executions, app_handle).await;
+            run_scheduler_loop(
+                task_id_owned.clone(),
+                executions,
+                app_handle,
+                shutting_down,
+                wakeup,
+            )
+            .await;
             ulog_info!("[task-scheduler] loop exited task={}", task_id_owned);
         });
         handles.insert(task_id.to_string(), handle);
@@ -223,7 +499,40 @@ impl TaskSchedulerController {
 
     pub async fn stop(&self, task_id: &str) -> Result<(), String> {
         let control = acquire_task_control(task_id).await;
-        self.stop_with_control_held(task_id, &control).await
+        self.stop_with_control_held(task_id, &control).await?;
+        if let Some(store) = crate::task::get_task_store() {
+            if store
+                .get(task_id)
+                .await
+                .is_some_and(|task| task.effective_trigger().is_command())
+            {
+                store.cancel_pending_activation(task_id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// App-exit owner: close scheduler admission, cancel every exact active
+    /// Detector/turn, and wait for process-tree settlement without canceling
+    /// durable pending Activation Events needed after restart.
+    pub async fn shutdown_all(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let task_ids: Vec<String> = self.executions.read().await.keys().cloned().collect();
+        for task_id in task_ids {
+            let control = acquire_task_control(&task_id).await;
+            if let Err(error) = self.stop_with_control_held(&task_id, &control).await {
+                ulog_error!(
+                    "[task-scheduler] shutdown failed task={}: {}",
+                    task_id,
+                    error
+                );
+            }
+        }
+        let mut handles = self.handles.write().await;
+        for (_, handle) in handles.drain() {
+            handle.abort();
+        }
+        self.wakeups.write().await.clear();
     }
 
     pub(crate) async fn stop_with_control_held(
@@ -237,13 +546,23 @@ impl TaskSchedulerController {
                 execution.canceled = true;
                 execution.state = TaskExecutionState::Stopping;
                 execution.error = None;
-                (execution.queue_id.clone(), execution.session_id.clone())
+                if let Some(detector) = execution.detector.as_ref() {
+                    detector.cancellation.cancel();
+                }
+                (
+                    execution.queue_id.clone(),
+                    execution.session_id.clone(),
+                    execution.detector.clone(),
+                )
             })
         };
         if active.is_some() {
             self.emit_execution_state(task_id).await;
         }
         let scheduler_handle = self.handles.write().await.remove(task_id);
+        if let Some(wakeup) = self.wakeups.write().await.remove(task_id) {
+            wakeup.notify_waiters();
+        }
         // The timer loop must stop immediately. Its claimed execution is a
         // detached worker and is stopped below by exact queue identity.
         if let Some(handle) = scheduler_handle {
@@ -254,30 +573,45 @@ impl TaskSchedulerController {
             None => None,
         };
         let app_handle = self.app_handle.read().await.clone();
-        let stop_result = match (&active, app_handle.as_ref(), task.as_ref()) {
-            (Some((queue_id, active_session)), Some(handle), Some(task)) => {
-                crate::task_execution::stop_task_turn(
-                    handle,
-                    task,
-                    active_session.as_deref(),
-                    queue_id,
-                )
-                .await
-                .map(|()| {
-                    crate::task_execution::release_task_sessions(
+        let detector_stopped = match active
+            .as_ref()
+            .and_then(|(_, _, detector)| detector.as_ref())
+        {
+            Some(detector) => detector.wait_finished().await,
+            None => true,
+        };
+        let stop_result = if !detector_stopped {
+            Err("Detector process tree did not confirm termination within 8 seconds".to_string())
+        } else {
+            match (&active, app_handle.as_ref(), task.as_ref()) {
+                (Some((queue_id, active_session, _)), Some(handle), Some(task)) => {
+                    crate::task_execution::stop_task_turn(
                         handle,
                         task,
                         active_session.as_deref(),
-                    );
-                })
+                        queue_id,
+                    )
+                    .await
+                    .map(|()| {
+                        crate::task_execution::release_task_sessions(
+                            handle,
+                            task,
+                            active_session.as_deref(),
+                        );
+                    })
+                }
+                // Draft/spec Detector tests deliberately have no TaskStore
+                // row, but they are registered in the same exact lifecycle
+                // map so App shutdown can cancel and join them.
+                (Some((_, _, Some(_))), _, None) => Ok(()),
+                (Some(_), None, _) => Err("Task scheduler app handle is unavailable".to_string()),
+                (Some(_), _, None) => Err(format!("task not found while stopping: {task_id}")),
+                (None, Some(handle), Some(task)) => {
+                    crate::task_execution::release_task_sessions(handle, task, None);
+                    Ok(())
+                }
+                (None, _, _) => Ok(()),
             }
-            (Some(_), None, _) => Err("Task scheduler app handle is unavailable".to_string()),
-            (Some(_), _, None) => Err(format!("task not found while stopping: {task_id}")),
-            (None, Some(handle), Some(task)) => {
-                crate::task_execution::release_task_sessions(handle, task, None);
-                Ok(())
-            }
-            (None, _, _) => Ok(()),
         };
 
         if let Err(error) = stop_result {
@@ -285,7 +619,7 @@ impl TaskSchedulerController {
                 "Task schedule is stopped, but the current turn could not be confirmed stopped: {error}"
             );
             let mut executions = self.executions.write().await;
-            if let Some((queue_id, _)) = active.as_ref() {
+            if let Some((queue_id, _, _)) = active.as_ref() {
                 if let Some(execution) = executions
                     .get_mut(task_id)
                     .filter(|execution| execution.queue_id == *queue_id)
@@ -300,7 +634,7 @@ impl TaskSchedulerController {
             return Err(message);
         }
 
-        if let Some((queue_id, _)) = active {
+        if let Some((queue_id, _, _)) = active {
             release_execution(&self.executions, task_id, &queue_id).await;
             self.emit_execution_state(task_id).await;
         }
@@ -314,13 +648,21 @@ impl TaskSchedulerController {
     }
 
     pub async fn trigger_now(&self, task_id: &str) -> Result<String, String> {
+        let store = crate::task::get_task_store()
+            .ok_or_else(|| "task store not initialized".to_string())?;
+        self.trigger_now_with_store(task_id, store).await
+    }
+
+    async fn trigger_now_with_store(
+        &self,
+        task_id: &str,
+        store: &crate::task::TaskStore,
+    ) -> Result<String, String> {
         let control = try_acquire_task_control(task_id).await.ok_or_else(|| {
             format!(
                 "task {task_id} is stopping or changing scheduler state; retry after it settles"
             )
         })?;
-        let store = crate::task::get_task_store()
-            .ok_or_else(|| "task store not initialized".to_string())?;
         let task = store
             .get(task_id)
             .await
@@ -334,10 +676,12 @@ impl TaskSchedulerController {
                 task.status.as_str()
             ));
         }
+        ensure_run_now_outbox_clear(store, &task).await?;
         if self.app_handle.read().await.is_none() {
             return Err("task scheduler app handle is unavailable".to_string());
         }
-        let queue_id = claim_execution(&self.executions, task_id).await?;
+        let queue_id =
+            claim_execution_if_open(&self.executions, &self.shutting_down, task_id).await?;
         let reserved_session = match reserve_claimed_execution_session(
             &self.executions,
             store,
@@ -377,6 +721,7 @@ impl TaskSchedulerController {
                 &app_handle,
                 TaskExecutionTrigger::Manual,
                 Some(reserved_session),
+                None,
             )
             .await
             {
@@ -389,6 +734,358 @@ impl TaskSchedulerController {
             claim.settle().await;
         });
         Ok(session_id)
+    }
+
+    /// Run a real command Detector check and commit its state. Activate enters
+    /// the ordinary Task/SessionEngine path; unlike run-now this never bypasses
+    /// the Detector and never moves the recurring timer anchor.
+    pub async fn check_now(&self, task_id: &str) -> Result<TaskTriggerCheckNowResult, String> {
+        let control = try_acquire_task_control(task_id).await.ok_or_else(|| {
+            format!(
+                "task {task_id} is stopping or changing scheduler state; retry after it settles"
+            )
+        })?;
+        let store = crate::task::get_task_store()
+            .ok_or_else(|| "task store not initialized".to_string())?;
+        let task = store
+            .get(task_id)
+            .await
+            .ok_or_else(|| format!("task not found: {task_id}"))?;
+        if task.deleted {
+            return Err(format!("task {task_id} is deleted"));
+        }
+        if !task.effective_trigger().is_command() {
+            return Err(
+                "check-now requires a command Detector; use run-now for always".to_string(),
+            );
+        }
+        if !matches!(
+            task.status,
+            TaskStatus::Running | TaskStatus::Stopped | TaskStatus::Blocked
+        ) {
+            return Err(format!(
+                "task {task_id} is {}; check-now supports running, stopped, or blocked tasks",
+                task.status.as_str()
+            ));
+        }
+        if task.status == TaskStatus::Running && end_condition_reached(&task) {
+            store
+                .update_status_with_task_control_held(
+                    TaskUpdateStatusInput {
+                        id: task.id.clone(),
+                        status: TaskStatus::Done,
+                        message: Some("Task end condition reached before check-now".to_string()),
+                        actor: TransitionActor::System,
+                        source: Some(TransitionSource::EndCondition),
+                    },
+                    &control,
+                )
+                .await?;
+            return Err(format!(
+                "task {task_id} has reached its end condition and was completed"
+            ));
+        }
+        let current_state = store.read_trigger_state(task_id).await?;
+        if current_state.pending_activation.is_some() {
+            return Err(
+                "check-now requires a fresh Detector invocation; settle or stop the pending Activation Event first"
+                    .to_string(),
+            );
+        }
+        let schedule_wakeup = self.wakeups.read().await.get(task_id).cloned();
+        let (queue_id, detector) =
+            claim_detector_invocation(&self.executions, &self.shutting_down, task_id).await?;
+
+        let task_id_owned = task_id.to_string();
+        let queue_id_owned = queue_id.clone();
+        let store_for_worker = Arc::clone(store);
+        let executions = Arc::clone(&self.executions);
+        let app_handle = Arc::clone(&self.app_handle);
+        let worker_wakeup = schedule_wakeup.clone();
+        let worker = tauri::async_runtime::spawn(async move {
+            let claim = ExecutionClaimGuard::new(
+                Arc::clone(&executions),
+                Arc::clone(&app_handle),
+                task_id_owned.clone(),
+                queue_id_owned.clone(),
+            );
+            emit_execution_state_event(&executions, &app_handle, &task_id_owned).await;
+            let result = run_command_check_claimed(
+                &task_id_owned,
+                &queue_id_owned,
+                &store_for_worker,
+                &executions,
+                &app_handle,
+                CommandCheckInvocation {
+                    cause: DetectorInvocationCause::CheckNow,
+                    scheduled_at: None,
+                    detector_lifecycle: detector,
+                    detach_activation: true,
+                    schedule_wakeup,
+                    #[cfg(test)]
+                    detector_result_override: None,
+                },
+            )
+            .await;
+            if result
+                .as_ref()
+                .is_ok_and(|result| result.activation_detached)
+            {
+                claim.transfer();
+            } else {
+                claim.settle().await;
+                if let Some(wakeup) = worker_wakeup {
+                    wakeup.notify_one();
+                }
+            }
+            result
+        });
+        drop(control);
+        worker
+            .await
+            .map_err(|error| format!("check-now worker failed: {error}"))??;
+        let state = store.read_trigger_state(task_id).await?;
+        Ok(TaskTriggerCheckNowResult {
+            outcome: state.last_outcome,
+            state,
+        })
+    }
+
+    /// Execute a Task's command Detector with a read-only checkpoint snapshot.
+    /// No Task/Trigger state, counter, Activation Event, Session, or AI turn is
+    /// committed by this path.
+    pub async fn test_trigger(
+        &self,
+        task_id: &str,
+        checkpoint_override: Option<Option<serde_json::Map<String, serde_json::Value>>>,
+    ) -> crate::task_trigger::DetectorRunResult {
+        let control = match try_acquire_task_control(task_id).await {
+            Some(control) => control,
+            None => {
+                return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                    "detector_busy",
+                    format!("task {task_id} is busy"),
+                ));
+            }
+        };
+        let Some(store) = crate::task::get_task_store() else {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "task_store_unavailable",
+                "task store not initialized",
+            ));
+        };
+        let Some(task) = store.get(task_id).await else {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "task_not_found",
+                format!("task not found: {task_id}"),
+            ));
+        };
+        if task.deleted {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "task_deleted",
+                format!("task {task_id} is deleted"),
+            ));
+        }
+        if !task.effective_trigger().is_command() {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "detector_not_command",
+                "test requires a command Detector",
+            ));
+        }
+        let state = match store.read_trigger_state(task_id).await {
+            Ok(state) => state,
+            Err(error) => {
+                return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                    "trigger_state_read_failed",
+                    error,
+                ));
+            }
+        };
+        let Some(handle) = self.app_handle.read().await.clone() else {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "scheduler_unavailable",
+                "task scheduler app handle is unavailable",
+            ));
+        };
+        let (checkpoint_revision, checkpoint, checkpoint_updated_at) =
+            detector_test_checkpoint_snapshot(&state, checkpoint_override);
+        let request = DetectorRunRequest {
+            task_id: task.id.clone(),
+            workspace_path: task.workspace_path.clone(),
+            trigger: task.effective_trigger(),
+            cause: DetectorInvocationCause::Test,
+            scheduled_at: None,
+            checkpoint,
+            checkpoint_revision,
+            checkpoint_updated_at,
+        };
+        let (queue_id, detector) =
+            match claim_detector_invocation(&self.executions, &self.shutting_down, task_id).await {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                        "detector_busy",
+                        error,
+                    ));
+                }
+            };
+        let mut request_guard =
+            DetectorRequestCancellationGuard::new(detector.cancellation.clone());
+        let worker = tauri::async_runtime::spawn(run_test_detector_claimed(
+            task_id.to_string(),
+            queue_id,
+            Arc::clone(&self.executions),
+            Arc::clone(&self.app_handle),
+            handle,
+            request,
+            detector,
+        ));
+        drop(control);
+        match worker.await {
+            Ok(result) => {
+                request_guard.disarm();
+                result
+            }
+            Err(error) => Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "detector_worker_failed",
+                format!("Detector test worker failed: {error}"),
+            )),
+        }
+    }
+
+    pub async fn test_trigger_spec(
+        &self,
+        owner_task_id: Option<String>,
+        trigger: crate::task_trigger::TaskTrigger,
+        workspace_path: String,
+        checkpoint: Option<serde_json::Map<String, serde_json::Value>>,
+        checkpoint_revision: u64,
+        checkpoint_updated_at: Option<i64>,
+    ) -> crate::task_trigger::DetectorRunResult {
+        if let Err(error) = crate::task_trigger::validate_task_trigger(&trigger) {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "detector_spec_invalid",
+                error,
+            ));
+        }
+        if !trigger.is_command() {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "detector_not_command",
+                "test requires a command Detector",
+            ));
+        }
+        let task_control = if let Some(task_id) = owner_task_id.as_deref() {
+            let Some(control) = try_acquire_task_control(task_id).await else {
+                return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                    "detector_busy",
+                    format!("task {task_id} is busy"),
+                ));
+            };
+            let Some(store) = crate::task::get_task_store() else {
+                return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                    "task_store_unavailable",
+                    "task store not initialized",
+                ));
+            };
+            let Some(task) = store.get(task_id).await else {
+                return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                    "task_not_found",
+                    format!("task not found: {task_id}"),
+                ));
+            };
+            if task.deleted {
+                return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                    "task_deleted",
+                    format!("task {task_id} is deleted"),
+                ));
+            }
+            Some(control)
+        } else {
+            None
+        };
+        let Some(handle) = self.app_handle.read().await.clone() else {
+            return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "scheduler_unavailable",
+                "task scheduler app handle is unavailable",
+            ));
+        };
+        let owner_id =
+            owner_task_id.unwrap_or_else(|| format!("detector-spec-test:{}", uuid::Uuid::new_v4()));
+        let (queue_id, detector) =
+            match claim_detector_invocation(&self.executions, &self.shutting_down, &owner_id).await
+            {
+                Ok(claim) => claim,
+                Err(error) => {
+                    return Err(crate::task_trigger::DetectorRunFailure::from_message(
+                        "detector_unavailable",
+                        error,
+                    ));
+                }
+            };
+        let mut request_guard =
+            DetectorRequestCancellationGuard::new(detector.cancellation.clone());
+        let worker = tauri::async_runtime::spawn(run_test_detector_claimed(
+            owner_id.clone(),
+            queue_id,
+            Arc::clone(&self.executions),
+            Arc::clone(&self.app_handle),
+            handle,
+            DetectorRunRequest {
+                task_id: owner_id,
+                workspace_path,
+                trigger,
+                cause: DetectorInvocationCause::Test,
+                scheduled_at: None,
+                checkpoint,
+                checkpoint_revision,
+                checkpoint_updated_at,
+            },
+            detector,
+        ));
+        drop(task_control);
+        match worker.await {
+            Ok(result) => {
+                request_guard.disarm();
+                result
+            }
+            Err(error) => Err(crate::task_trigger::DetectorRunFailure::from_message(
+                "detector_worker_failed",
+                format!("Detector spec test worker failed: {error}"),
+            )),
+        }
+    }
+
+    pub async fn reset_checkpoint(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::task_trigger::TaskTriggerRuntimeState, String> {
+        let _control = try_acquire_task_control(task_id).await.ok_or_else(|| {
+            format!("task {task_id} is stopping or changing Trigger state; retry after it settles")
+        })?;
+        if self.execution_projection(task_id).await.is_some() {
+            return Err(format!(
+                "task {task_id} has an unresolved execution; stop it before resetting checkpoint"
+            ));
+        }
+        let store = crate::task::get_task_store()
+            .ok_or_else(|| "task store not initialized".to_string())?;
+        let task = store
+            .get(task_id)
+            .await
+            .ok_or_else(|| format!("task not found: {task_id}"))?;
+        if task.deleted {
+            return Err(format!("task {task_id} is deleted"));
+        }
+        if !task.effective_trigger().is_command() {
+            return Err("reset-checkpoint requires a command Detector".to_string());
+        }
+        let state = store.read_trigger_state(task_id).await?;
+        if state.pending_activation.is_some() {
+            return Err(
+                "pending Activation Event must settle or be stopped before reset".to_string(),
+            );
+        }
+        store.reset_trigger_checkpoint(task_id).await
     }
 
     pub async fn is_executing(&self, task_id: &str) -> bool {
@@ -473,8 +1170,16 @@ impl TaskSchedulerController {
     async fn emit_execution_state(&self, task_id: &str) {
         emit_execution_state_event(&self.executions, &self.app_handle, task_id).await;
     }
+
+    #[cfg(test)]
+    async fn wake_task_schedule(&self, task_id: &str) {
+        if let Some(wakeup) = self.wakeups.read().await.get(task_id).cloned() {
+            wakeup.notify_one();
+        }
+    }
 }
 
+#[cfg(test)]
 async fn claim_execution(executions: &ActiveExecutions, task_id: &str) -> Result<String, String> {
     let mut active = executions.write().await;
     if active.contains_key(task_id) {
@@ -490,9 +1195,149 @@ async fn claim_execution(executions: &ActiveExecutions, task_id: &str) -> Result
             pending_session_birth: None,
             state: TaskExecutionState::Running,
             error: None,
+            detector: None,
         },
     );
     Ok(queue_id)
+}
+
+async fn claim_execution_if_open(
+    executions: &ActiveExecutions,
+    shutting_down: &AtomicBool,
+    task_id: &str,
+) -> Result<String, String> {
+    let mut active = executions.write().await;
+    if shutting_down.load(Ordering::SeqCst) {
+        return Err("Task scheduler is shutting down".to_string());
+    }
+    if active.contains_key(task_id) {
+        return Err(format!("task {task_id} is already executing"));
+    }
+    let queue_id = uuid::Uuid::new_v4().to_string();
+    active.insert(
+        task_id.to_string(),
+        ActiveTaskExecution {
+            queue_id: queue_id.clone(),
+            canceled: false,
+            session_id: None,
+            pending_session_birth: None,
+            state: TaskExecutionState::Running,
+            error: None,
+            detector: None,
+        },
+    );
+    Ok(queue_id)
+}
+
+async fn claim_detector_invocation(
+    executions: &ActiveExecutions,
+    shutting_down: &AtomicBool,
+    task_id: &str,
+) -> Result<(String, DetectorExecutionLifecycle), String> {
+    let mut active = executions.write().await;
+    if shutting_down.load(Ordering::SeqCst) {
+        return Err("Task scheduler is shutting down".to_string());
+    }
+    if active.contains_key(task_id) {
+        return Err(format!("task {task_id} is already executing"));
+    }
+    let queue_id = uuid::Uuid::new_v4().to_string();
+    let detector = DetectorExecutionLifecycle::new();
+    active.insert(
+        task_id.to_string(),
+        ActiveTaskExecution {
+            queue_id: queue_id.clone(),
+            canceled: false,
+            session_id: None,
+            pending_session_birth: None,
+            state: TaskExecutionState::Checking,
+            error: None,
+            detector: Some(detector.clone()),
+        },
+    );
+    Ok((queue_id, detector))
+}
+
+async fn claim_pending_activation(
+    executions: &ActiveExecutions,
+    shutting_down: &AtomicBool,
+    task_id: &str,
+    persisted_queue_id: Option<&str>,
+) -> Result<PendingActivationClaim, String> {
+    let mut active = executions.write().await;
+    if shutting_down.load(Ordering::SeqCst) {
+        return Err("Task scheduler is shutting down".to_string());
+    }
+    if let Some(existing) = active.get(task_id) {
+        if persisted_queue_id == Some(existing.queue_id.as_str()) {
+            return Ok(PendingActivationClaim::AlreadyOwned(
+                existing.queue_id.clone(),
+            ));
+        }
+        return Err(format!("task {task_id} is already executing"));
+    }
+    let queue_id = persisted_queue_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    active.insert(
+        task_id.to_string(),
+        ActiveTaskExecution {
+            queue_id: queue_id.clone(),
+            canceled: false,
+            session_id: None,
+            pending_session_birth: None,
+            state: TaskExecutionState::Running,
+            error: None,
+            detector: None,
+        },
+    );
+    Ok(PendingActivationClaim::Claimed(queue_id))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingActivationClaim {
+    Claimed(String),
+    /// The durable outbox queue is the exact same generation already owned by
+    /// a detached check-now worker. Recovery must wait, never redispatch or
+    /// treat this ordinary in-flight state as corruption.
+    AlreadyOwned(String),
+}
+
+async fn wait_for_exact_execution_settlement(
+    executions: &ActiveExecutions,
+    shutting_down: &AtomicBool,
+    task_id: &str,
+    queue_id: &str,
+) -> bool {
+    loop {
+        if shutting_down.load(Ordering::SeqCst) {
+            return false;
+        }
+        let still_owned = executions
+            .read()
+            .await
+            .get(task_id)
+            .is_some_and(|execution| execution.queue_id == queue_id);
+        if !still_owned {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn promote_detector_to_execution(
+    executions: &ActiveExecutions,
+    task_id: &str,
+    queue_id: &str,
+) -> Result<(), String> {
+    let mut active = executions.write().await;
+    let execution = active
+        .get_mut(task_id)
+        .filter(|execution| execution.queue_id == queue_id && !execution.canceled)
+        .ok_or_else(|| "Detector invocation was canceled before activation dispatch".to_string())?;
+    execution.detector = None;
+    execution.state = TaskExecutionState::Running;
+    Ok(())
 }
 
 async fn execution_is_authorized(
@@ -664,6 +1509,7 @@ async fn execute_task_with_reservation(
     queue_id: &str,
     executions: &ActiveExecutions,
     reservation: Option<ReservedExecutionSession>,
+    activation: Option<TaskActivationPayload>,
 ) -> Result<crate::task_execution::TaskExecutionOutcome, String> {
     let Some(reservation) = reservation else {
         return crate::task_execution::execute_managed_task(handle, task, queue_id).await;
@@ -680,6 +1526,7 @@ async fn execute_task_with_reservation(
         session_id.clone(),
         initialize_session,
         birth_lifecycle,
+        activation,
     )
     .await;
     if !result
@@ -794,6 +1641,13 @@ impl ExecutionClaimGuard {
         emit_execution_state_event(&self.executions, &self.app_handle, &self.task_id).await;
         self.settled = true;
     }
+
+    /// Transfer exact-generation settlement to another guard created before
+    /// this one leaves scope (used when check-now admits an AI turn but returns
+    /// to the caller without waiting for Runtime terminal).
+    fn transfer(mut self) {
+        self.settled = true;
+    }
 }
 
 impl Drop for ExecutionClaimGuard {
@@ -824,12 +1678,41 @@ impl Drop for ExecutionClaimGuard {
     }
 }
 
+async fn run_test_detector_claimed<R: tauri::Runtime>(
+    owner_id: String,
+    queue_id: String,
+    executions: ActiveExecutions,
+    app_handle: Arc<RwLock<Option<AppHandle>>>,
+    handle: AppHandle<R>,
+    request: DetectorRunRequest,
+    detector: DetectorExecutionLifecycle,
+) -> crate::task_trigger::DetectorRunResult {
+    let claim = ExecutionClaimGuard::new(
+        Arc::clone(&executions),
+        Arc::clone(&app_handle),
+        owner_id.clone(),
+        queue_id,
+    );
+    emit_execution_state_event(&executions, &app_handle, &owner_id).await;
+    let result =
+        crate::task_trigger::run_command_detector(&handle, request, detector.cancellation.clone())
+            .await;
+    detector.finish();
+    claim.settle().await;
+    result
+}
+
 async fn run_scheduler_loop(
     task_id: String,
     executions: ActiveExecutions,
     app_handle: Arc<RwLock<Option<AppHandle>>>,
+    shutting_down: Arc<AtomicBool>,
+    wakeup: Arc<tokio::sync::Notify>,
 ) {
     loop {
+        if shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         let Some(store) = crate::task::get_task_store() else {
             return;
         };
@@ -839,35 +1722,192 @@ async fn run_scheduler_loop(
         if task.deleted || task.status != TaskStatus::Running {
             return;
         }
+        if task.effective_trigger().is_command() {
+            match store.read_trigger_state(&task.id).await {
+                Ok(state) => {
+                    if let Some(pending) = state.pending_activation {
+                        let execution_trigger = match pending_execution_trigger(&pending) {
+                            Ok(trigger) => trigger,
+                            Err(error) => {
+                                let transition = block_task(
+                                    store,
+                                    &task,
+                                    format!("Trigger recovery state is invalid: {error}"),
+                                )
+                                .await;
+                                if retry_running_scheduler_after_transition_failure(
+                                    store, &task_id, &wakeup, transition,
+                                )
+                                .await
+                                {
+                                    continue;
+                                }
+                                return;
+                            }
+                        };
+                        match dispatch_pending_activation(
+                            &task,
+                            pending,
+                            &executions,
+                            &app_handle,
+                            &shutting_down,
+                            execution_trigger,
+                        )
+                        .await
+                        {
+                            Ok(RunDisposition::Continue) => continue,
+                            Ok(RunDisposition::Stop) => return,
+                            Err(error) => {
+                                let transition = block_task(
+                                    store,
+                                    &task,
+                                    format!("Pending Activation Event recovery failed: {error}"),
+                                )
+                                .await;
+                                if retry_running_scheduler_after_transition_failure(
+                                    store, &task_id, &wakeup, transition,
+                                )
+                                .await
+                                {
+                                    continue;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    let transition = block_task(
+                        store,
+                        &task,
+                        format!("Trigger state recovery failed: {error}"),
+                    )
+                    .await;
+                    if retry_running_scheduler_after_transition_failure(
+                        store, &task_id, &wakeup, transition,
+                    )
+                    .await
+                    {
+                        continue;
+                    }
+                    return;
+                }
+            }
+        }
         if end_condition_reached(&task) {
-            finish_task(
+            let transition = finish_task(
+                store,
                 &task,
                 "Task end condition reached",
                 TransitionSource::EndCondition,
             )
             .await;
+            if retry_running_scheduler_after_transition_failure(
+                store, &task_id, &wakeup, transition,
+            )
+            .await
+            {
+                continue;
+            }
             return;
         }
-        let target = match next_execution_at(&task) {
+        let mut target = match next_execution_at(&task) {
             Ok(Some(target)) => target,
             Ok(None) => return,
             Err(error) => {
-                block_task(&task, error).await;
+                let transition = block_task(store, &task, error).await;
+                if retry_running_scheduler_after_transition_failure(
+                    store, &task_id, &wakeup, transition,
+                )
+                .await
+                {
+                    continue;
+                }
                 return;
             }
         };
-        sleep_until_wallclock(target).await;
+        if task.effective_trigger().is_command() {
+            if let Ok(state) = store.read_trigger_state(&task.id).await {
+                if let Some(backoff_until) = state
+                    .backoff_until
+                    .and_then(|value| Utc.timestamp_millis_opt(value).single())
+                {
+                    target = target.max(backoff_until);
+                }
+            }
+        }
+        if !sleep_until_wallclock_or_wakeup(target, &wakeup).await {
+            continue;
+        }
 
-        let result = run_one(&task_id, &executions, &app_handle).await;
+        let result = run_one(
+            &task_id,
+            &executions,
+            &app_handle,
+            &shutting_down,
+            target.timestamp_millis(),
+        )
+        .await;
         match result {
             Ok(RunDisposition::Continue) => {}
             Ok(RunDisposition::Stop) => return,
             Err(error) => {
                 ulog_error!("[task-scheduler] task={} run failed: {}", task_id, error);
+                let transition = if let Some(current) = store
+                    .get(&task_id)
+                    .await
+                    .filter(|current| current.status == TaskStatus::Running)
+                {
+                    block_task(
+                        store,
+                        &current,
+                        format!("Task scheduler execution failed: {error}"),
+                    )
+                    .await
+                } else {
+                    Ok(())
+                };
+                if retry_running_scheduler_after_transition_failure(
+                    store, &task_id, &wakeup, transition,
+                )
+                .await
+                {
+                    continue;
+                }
                 return;
             }
         }
     }
+}
+
+/// Keep this timer generation alive when a terminal status write failed and
+/// the authoritative Task row is therefore still Running.
+async fn retry_running_scheduler_after_transition_failure(
+    store: &crate::task::TaskStore,
+    task_id: &str,
+    wakeup: &tokio::sync::Notify,
+    transition: Result<(), String>,
+) -> bool {
+    let Err(error) = transition else {
+        return false;
+    };
+    ulog_error!(
+        "[task-scheduler] task={} terminal transition failed: {}",
+        task_id,
+        error
+    );
+    if !store
+        .get(task_id)
+        .await
+        .is_some_and(|task| task.status == TaskStatus::Running)
+    {
+        return false;
+    }
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+        _ = wakeup.notified() => {}
+    }
+    true
 }
 
 enum RunDisposition {
@@ -875,10 +1915,41 @@ enum RunDisposition {
     Stop,
 }
 
+struct CommandCheckResult {
+    disposition: RunDisposition,
+    /// The Detector claim was promoted and its exact queue ownership moved to
+    /// a background AI-turn worker. The caller must not settle that claim.
+    activation_detached: bool,
+}
+
+struct CommandCheckInvocation {
+    cause: DetectorInvocationCause,
+    scheduled_at: Option<i64>,
+    detector_lifecycle: DetectorExecutionLifecycle,
+    detach_activation: bool,
+    /// The currently armed timer generation, when check-now is invoked for a
+    /// running Task. Detached activation and every pre-detach exit both wake
+    /// this exact scheduler without depending on the request future.
+    schedule_wakeup: Option<Arc<tokio::sync::Notify>>,
+    #[cfg(test)]
+    detector_result_override: Option<crate::task_trigger::DetectorRunResult>,
+}
+
+impl CommandCheckResult {
+    fn settled(disposition: RunDisposition) -> Self {
+        Self {
+            disposition,
+            activation_detached: false,
+        }
+    }
+}
+
 async fn run_one(
     task_id: &str,
     executions: &ActiveExecutions,
     app_handle: &Arc<RwLock<Option<AppHandle>>>,
+    shutting_down: &AtomicBool,
+    scheduled_at: i64,
 ) -> Result<RunDisposition, String> {
     let control = acquire_task_control(task_id).await;
     let Some(store) = crate::task::get_task_store() else {
@@ -890,8 +1961,80 @@ async fn run_one(
     if task.deleted || task.status != TaskStatus::Running {
         return Ok(RunDisposition::Stop);
     }
+    if task.effective_trigger().is_command() {
+        let state = store.read_trigger_state(task_id).await?;
+        if state
+            .backoff_until
+            .is_some_and(|backoff_until| backoff_until > Utc::now().timestamp_millis())
+        {
+            return Ok(RunDisposition::Continue);
+        }
+        if let Some(pending) = state.pending_activation {
+            let execution_trigger = pending_execution_trigger(&pending)?;
+            drop(control);
+            return dispatch_pending_activation(
+                &task,
+                pending,
+                executions,
+                app_handle,
+                shutting_down,
+                execution_trigger,
+            )
+            .await;
+        }
+    }
 
-    let queue_id = match claim_execution(executions, task_id).await {
+    if task.effective_trigger().is_command() {
+        let (queue_id, detector) =
+            match claim_detector_invocation(executions, shutting_down, task_id).await {
+                Ok(claim) => claim,
+                Err(_) => {
+                    ulog_warn!("[task-scheduler] detector overlap skipped task={}", task_id);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    return Ok(RunDisposition::Continue);
+                }
+            };
+        emit_execution_state_event(executions, app_handle, task_id).await;
+        drop(control);
+
+        let task_id_owned = task_id.to_string();
+        let queue_id_owned = queue_id.clone();
+        let store_for_worker = Arc::clone(store);
+        let executions = Arc::clone(executions);
+        let app_handle = Arc::clone(app_handle);
+        let worker = tauri::async_runtime::spawn(async move {
+            let claim = ExecutionClaimGuard::new(
+                Arc::clone(&executions),
+                Arc::clone(&app_handle),
+                task_id_owned.clone(),
+                queue_id_owned.clone(),
+            );
+            let result = run_command_check_claimed(
+                &task_id_owned,
+                &queue_id_owned,
+                &store_for_worker,
+                &executions,
+                &app_handle,
+                CommandCheckInvocation {
+                    cause: DetectorInvocationCause::Scheduled,
+                    scheduled_at: Some(scheduled_at),
+                    detector_lifecycle: detector,
+                    detach_activation: false,
+                    schedule_wakeup: None,
+                    #[cfg(test)]
+                    detector_result_override: None,
+                },
+            )
+            .await;
+            claim.settle().await;
+            result.map(|result| result.disposition)
+        });
+        return worker
+            .await
+            .map_err(|error| format!("Detector worker failed: {error}"))?;
+    }
+
+    let queue_id = match claim_execution_if_open(executions, shutting_down, task_id).await {
         Ok(queue_id) => queue_id,
         Err(_) => {
             ulog_warn!("[task-scheduler] overlap skipped task={}", task_id);
@@ -928,6 +2071,7 @@ async fn run_one(
             &app_handle,
             TaskExecutionTrigger::Scheduled,
             reserved_session,
+            None,
         )
         .await;
         claim.settle().await;
@@ -938,6 +2082,443 @@ async fn run_one(
         .map_err(|error| format!("task execution worker failed: {error}"))?
 }
 
+async fn run_command_check_claimed(
+    task_id: &str,
+    queue_id: &str,
+    store: &crate::task::TaskStore,
+    executions: &ActiveExecutions,
+    app_handle: &Arc<RwLock<Option<AppHandle>>>,
+    invocation: CommandCheckInvocation,
+) -> Result<CommandCheckResult, String> {
+    let CommandCheckInvocation {
+        cause,
+        scheduled_at,
+        detector_lifecycle,
+        detach_activation,
+        schedule_wakeup,
+        #[cfg(test)]
+        detector_result_override,
+    } = invocation;
+    let Some(task) = store.get(task_id).await else {
+        detector_lifecycle.finish();
+        return Ok(CommandCheckResult::settled(RunDisposition::Stop));
+    };
+    let state = match store.read_trigger_state(task_id).await {
+        Ok(state) => state,
+        Err(error) => {
+            detector_lifecycle.finish();
+            return Err(error);
+        }
+    };
+    #[cfg(test)]
+    let run = if let Some(result) = detector_result_override {
+        result
+    } else {
+        let handle = match app_handle.read().await.clone() {
+            Some(handle) => handle,
+            None => {
+                detector_lifecycle.finish();
+                return Err("task scheduler app handle is unavailable".to_string());
+            }
+        };
+        crate::task_trigger::run_command_detector(
+            &handle,
+            DetectorRunRequest {
+                task_id: task.id.clone(),
+                workspace_path: task.workspace_path.clone(),
+                trigger: task.effective_trigger(),
+                cause,
+                scheduled_at,
+                checkpoint: state.checkpoint,
+                checkpoint_revision: state.checkpoint_revision,
+                checkpoint_updated_at: state.checkpoint_updated_at,
+            },
+            detector_lifecycle.cancellation.clone(),
+        )
+        .await
+    };
+    #[cfg(not(test))]
+    let run = {
+        let handle = match app_handle.read().await.clone() {
+            Some(handle) => handle,
+            None => {
+                detector_lifecycle.finish();
+                return Err("task scheduler app handle is unavailable".to_string());
+            }
+        };
+        crate::task_trigger::run_command_detector(
+            &handle,
+            DetectorRunRequest {
+                task_id: task.id.clone(),
+                workspace_path: task.workspace_path.clone(),
+                trigger: task.effective_trigger(),
+                cause,
+                scheduled_at,
+                checkpoint: state.checkpoint,
+                checkpoint_revision: state.checkpoint_revision,
+                checkpoint_updated_at: state.checkpoint_updated_at,
+            },
+            detector_lifecycle.cancellation.clone(),
+        )
+        .await
+    };
+    // Stop/Delete wait for actual subprocess-tree shutdown, not for the later
+    // TaskStore commit. Exact queue authorization fences that commit.
+    detector_lifecycle.finish();
+
+    let task_control = acquire_task_control(task_id).await;
+    if !execution_is_authorized(executions, task_id, queue_id).await {
+        return Ok(CommandCheckResult::settled(RunDisposition::Stop));
+    }
+    let Some(task) = store.get(task_id).await else {
+        return Ok(CommandCheckResult::settled(RunDisposition::Stop));
+    };
+    if task.deleted
+        || (cause == DetectorInvocationCause::Scheduled && task.status != TaskStatus::Running)
+    {
+        return Ok(CommandCheckResult::settled(RunDisposition::Stop));
+    }
+
+    match run {
+        Ok(success) => {
+            let committed = match store.commit_detector_success(&task, &success, cause).await {
+                Ok(committed) => committed,
+                Err(error) => {
+                    if cause == DetectorInvocationCause::Scheduled {
+                        let _ = block_task_with_control_held(
+                            store,
+                            &task,
+                            format!("Detector state commit failed: {error}"),
+                            &task_control,
+                        )
+                        .await;
+                    }
+                    return Err(error);
+                }
+            };
+            emit_cron_ui_event(
+                app_handle,
+                "task:trigger-checked",
+                serde_json::json!({
+                    "taskId": task_id,
+                    "outcome": committed.state.last_outcome,
+                    "checkCount": committed.state.check_count,
+                }),
+            )
+            .await;
+            match committed.disposition {
+                TriggerCommitDisposition::Quiet | TriggerCommitDisposition::Deduplicated => {
+                    let mut updated = task.clone();
+                    if cause == DetectorInvocationCause::Scheduled {
+                        updated = match store
+                            .record_scheduled_check_if_status(task_id, task.status)
+                            .await?
+                        {
+                            Some(updated) => updated,
+                            None => {
+                                return Ok(CommandCheckResult::settled(RunDisposition::Stop));
+                            }
+                        };
+                    }
+                    if cause == DetectorInvocationCause::Scheduled
+                        && detector_scheduled_terminal_status(
+                            updated.execution_mode,
+                            DetectorScheduledOutcome::QuietOrDeduplicated,
+                        ) == Some(TaskStatus::Done)
+                    {
+                        finish_task_with_control_held(
+                            store,
+                            &updated,
+                            "Task check completed without activation",
+                            TransitionSource::EndCondition,
+                            &task_control,
+                        )
+                        .await?;
+                        return Ok(CommandCheckResult::settled(RunDisposition::Stop));
+                    }
+                    Ok(CommandCheckResult::settled(RunDisposition::Continue))
+                }
+                TriggerCommitDisposition::Activate => {
+                    let pending = committed.pending_activation.ok_or_else(|| {
+                        "activate commit did not return pending Activation Event".to_string()
+                    })?;
+                    store
+                        .bind_pending_activation_queue(task_id, &pending.event.id, queue_id)
+                        .await?;
+                    promote_detector_to_execution(executions, task_id, queue_id).await?;
+                    let reserved_session =
+                        match reserve_claimed_execution_session(executions, store, &task, queue_id)
+                            .await
+                        {
+                            Ok(reservation) => reservation,
+                            Err(error) => {
+                                if cause == DetectorInvocationCause::Scheduled {
+                                    let _ = block_task_with_control_held(
+                                        store,
+                                        &task,
+                                        format!("Activation dispatch reservation failed: {error}"),
+                                        &task_control,
+                                    )
+                                    .await;
+                                }
+                                return Err(error);
+                            }
+                        };
+                    emit_execution_state_event(executions, app_handle, task_id).await;
+                    drop(task_control);
+                    let execution_trigger = if cause == DetectorInvocationCause::Scheduled {
+                        TaskExecutionTrigger::Scheduled
+                    } else {
+                        TaskExecutionTrigger::Manual
+                    };
+                    if detach_activation {
+                        let task_id_owned = task_id.to_string();
+                        let queue_id_owned = queue_id.to_string();
+                        let executions = Arc::clone(executions);
+                        let app_handle = Arc::clone(app_handle);
+                        // Establish the replacement owner before transferring the
+                        // caller's claim. If the spawned future is cancelled before
+                        // its first poll, Drop still surfaces the unsettled execution.
+                        let claim = ExecutionClaimGuard::new(
+                            Arc::clone(&executions),
+                            Arc::clone(&app_handle),
+                            task_id_owned.clone(),
+                            queue_id_owned.clone(),
+                        );
+                        tauri::async_runtime::spawn(async move {
+                            let result = run_one_claimed(
+                                &task_id_owned,
+                                &queue_id_owned,
+                                &executions,
+                                &app_handle,
+                                execution_trigger,
+                                reserved_session,
+                                Some(pending),
+                            )
+                            .await;
+                            if let Err(error) = result.as_ref() {
+                                ulog_error!(
+                                    "[task-scheduler] check-now activation failed task={}: {}",
+                                    task_id_owned,
+                                    error
+                                );
+                            }
+                            claim.settle().await;
+                            // The ordinary timer loop may be asleep at a
+                            // distant target. Every detached activation result
+                            // invalidates that sleep generation: terminal
+                            // outcomes must retire it before rerun, successful
+                            // recurring outcomes must recalculate the next
+                            // target, and errors may leave a durable pending
+                            // event for the loop to recover.
+                            if let Some(wakeup) = schedule_wakeup {
+                                wakeup.notify_one();
+                            }
+                        });
+                        Ok(CommandCheckResult {
+                            disposition: RunDisposition::Continue,
+                            activation_detached: true,
+                        })
+                    } else {
+                        run_one_claimed(
+                            task_id,
+                            queue_id,
+                            executions,
+                            app_handle,
+                            execution_trigger,
+                            reserved_session,
+                            Some(pending),
+                        )
+                        .await
+                        .map(CommandCheckResult::settled)
+                    }
+                }
+            }
+        }
+        Err(failure) => {
+            let state = match store
+                .commit_detector_failure(task_id, (*failure.error).clone())
+                .await
+            {
+                Ok(state) => state,
+                Err(error) => {
+                    if cause == DetectorInvocationCause::Scheduled {
+                        let _ = block_task_with_control_held(
+                            store,
+                            &task,
+                            format!("Detector failure state commit failed: {error}"),
+                            &task_control,
+                        )
+                        .await;
+                    }
+                    return Err(error);
+                }
+            };
+            let mut updated = task.clone();
+            if cause == DetectorInvocationCause::Scheduled {
+                updated = match store
+                    .record_scheduled_check_if_status(task_id, task.status)
+                    .await?
+                {
+                    Some(updated) => updated,
+                    None => return Ok(CommandCheckResult::settled(RunDisposition::Stop)),
+                };
+            }
+            emit_cron_ui_event(
+                app_handle,
+                "task:trigger-error",
+                serde_json::json!({
+                    "taskId": task_id,
+                    "error": &failure.error,
+                    "consecutiveFailures": state.consecutive_failures,
+                    "backoffUntil": state.backoff_until,
+                }),
+            )
+            .await;
+            let terminal_failure = cause == DetectorInvocationCause::Scheduled
+                && detector_scheduled_terminal_status(
+                    updated.execution_mode,
+                    DetectorScheduledOutcome::Failure {
+                        consecutive_failures: state.consecutive_failures,
+                    },
+                ) == Some(TaskStatus::Blocked);
+            if terminal_failure {
+                block_task_with_control_held(
+                    store,
+                    &updated,
+                    failure.error.message.clone(),
+                    &task_control,
+                )
+                .await?;
+                Ok(CommandCheckResult::settled(RunDisposition::Stop))
+            } else {
+                Ok(CommandCheckResult::settled(RunDisposition::Continue))
+            }
+        }
+    }
+}
+
+async fn dispatch_pending_activation(
+    task: &Task,
+    pending: PendingTaskActivation,
+    executions: &ActiveExecutions,
+    app_handle: &Arc<RwLock<Option<AppHandle>>>,
+    shutting_down: &AtomicBool,
+    execution_trigger: TaskExecutionTrigger,
+) -> Result<RunDisposition, String> {
+    let control = acquire_task_control(&task.id).await;
+    let Some(store) = crate::task::get_task_store() else {
+        return Err("task store not initialized".to_string());
+    };
+    let Some(current_task) = store.get(&task.id).await else {
+        return Ok(RunDisposition::Stop);
+    };
+    if current_task.deleted
+        || (execution_trigger == TaskExecutionTrigger::Scheduled
+            && current_task.status != TaskStatus::Running)
+    {
+        return Ok(RunDisposition::Stop);
+    }
+    let current_state = store.read_trigger_state(&task.id).await?;
+    let Some(current_pending) = current_state
+        .pending_activation
+        .filter(|value| value.event.id == pending.event.id)
+    else {
+        return Ok(RunDisposition::Continue);
+    };
+    if current_task.last_activation_event_id.as_deref() == Some(current_pending.event.id.as_str()) {
+        store
+            .settle_pending_activation(&task.id, &current_pending.event.id)
+            .await?;
+        return Ok(if current_task.status == TaskStatus::Running {
+            RunDisposition::Continue
+        } else {
+            RunDisposition::Stop
+        });
+    }
+    let queue_id = match claim_pending_activation(
+        executions,
+        shutting_down,
+        &task.id,
+        current_pending.queue_id.as_deref(),
+    )
+    .await?
+    {
+        PendingActivationClaim::Claimed(queue_id) => queue_id,
+        PendingActivationClaim::AlreadyOwned(queue_id) => {
+            drop(control);
+            return Ok(
+                if wait_for_exact_execution_settlement(
+                    executions,
+                    shutting_down,
+                    &task.id,
+                    &queue_id,
+                )
+                .await
+                {
+                    RunDisposition::Continue
+                } else {
+                    RunDisposition::Stop
+                },
+            );
+        }
+    };
+    let pending = match store
+        .bind_pending_activation_queue(&task.id, &current_pending.event.id, &queue_id)
+        .await
+    {
+        Ok(pending) => pending,
+        Err(error) => {
+            release_execution(executions, &task.id, &queue_id).await;
+            return Err(error);
+        }
+    };
+    let reserved = match reserve_claimed_execution_session(
+        executions,
+        store,
+        &current_task,
+        &queue_id,
+    )
+    .await
+    {
+        Ok(reserved) => reserved,
+        Err(error) => {
+            release_execution(executions, &task.id, &queue_id).await;
+            return Err(error);
+        }
+    };
+    emit_execution_state_event(executions, app_handle, &task.id).await;
+    drop(control);
+
+    let task_id = task.id.clone();
+    let queue_id_owned = queue_id.clone();
+    let executions = Arc::clone(executions);
+    let app_handle = Arc::clone(app_handle);
+    let worker = tauri::async_runtime::spawn(async move {
+        let claim = ExecutionClaimGuard::new(
+            Arc::clone(&executions),
+            Arc::clone(&app_handle),
+            task_id.clone(),
+            queue_id_owned.clone(),
+        );
+        let result = run_one_claimed(
+            &task_id,
+            &queue_id_owned,
+            &executions,
+            &app_handle,
+            execution_trigger,
+            reserved,
+            Some(pending),
+        )
+        .await;
+        claim.settle().await;
+        result
+    });
+    worker
+        .await
+        .map_err(|error| format!("pending Activation Event worker failed: {error}"))?
+}
+
 async fn run_one_claimed(
     task_id: &str,
     queue_id: &str,
@@ -945,6 +2526,7 @@ async fn run_one_claimed(
     app_handle: &RwLock<Option<AppHandle>>,
     trigger: TaskExecutionTrigger,
     reserved_session: Option<ReservedExecutionSession>,
+    activation: Option<PendingTaskActivation>,
 ) -> Result<RunDisposition, String> {
     if !execution_is_authorized(executions, task_id, queue_id).await {
         return Ok(RunDisposition::Stop);
@@ -978,8 +2560,15 @@ async fn run_one_claimed(
     .await;
     let execution = match handle.as_ref() {
         Ok(handle) => {
-            execute_task_with_reservation(handle, &task, queue_id, executions, reserved_session)
-                .await
+            execute_task_with_reservation(
+                handle,
+                &task,
+                queue_id,
+                executions,
+                reserved_session,
+                activation.as_ref().map(TaskActivationPayload::from),
+            )
+            .await
         }
         Err(error) => Err(error.clone()),
     };
@@ -1035,16 +2624,75 @@ async fn run_one_claimed(
     if !authorized {
         return Ok(RunDisposition::Stop);
     }
-    let updated = match store
-        .record_execution_if_status(task_id, trigger, task.status)
-        .await
-    {
+    let activation_execution = activation.is_some();
+    let execution_commit = if let Some(activation) = activation.as_ref() {
+        let Some(outcome) = outcome.as_ref() else {
+            drop(active);
+            let error = record
+                .error
+                .clone()
+                .unwrap_or_else(|| "Task turn failed before Runtime admission".to_string());
+            if trigger == TaskExecutionTrigger::Scheduled {
+                release_execution(executions, task_id, queue_id).await;
+                emit_execution_state_event(executions, app_handle, task_id).await;
+                let _ = block_task_with_control_held(
+                    store,
+                    &task,
+                    format!("Activation Event was not admitted; retry required: {error}"),
+                    &task_control,
+                )
+                .await;
+            }
+            return Err(error);
+        };
+        if !outcome.turn_dispatched {
+            drop(active);
+            let error = outcome
+                .error
+                .clone()
+                .unwrap_or_else(|| "Task turn was rejected before Runtime admission".to_string());
+            if trigger == TaskExecutionTrigger::Scheduled {
+                release_execution(executions, task_id, queue_id).await;
+                emit_execution_state_event(executions, app_handle, task_id).await;
+                let _ = block_task_with_control_held(
+                    store,
+                    &task,
+                    format!("Activation Event was not admitted; retry required: {error}"),
+                    &task_control,
+                )
+                .await;
+            }
+            return Err(error);
+        }
+        let terminal = activation_terminal_transition(
+            &task,
+            trigger,
+            activation.invocation_cause,
+            &record,
+            outcome,
+        );
+        store
+            .record_activation_execution_if_status(
+                task_id,
+                &activation.event.id,
+                trigger,
+                task.status,
+                terminal,
+            )
+            .await
+    } else {
+        store
+            .record_execution_if_status(task_id, trigger, task.status)
+            .await
+    };
+    let updated = match execution_commit {
         Ok(Some(updated)) => updated,
         Ok(None) => return Ok(RunDisposition::Stop),
         Err(error) => {
             drop(active);
             if trigger == TaskExecutionTrigger::Scheduled {
-                block_task_with_control_held(
+                let _ = block_task_with_control_held(
+                    store,
                     &task,
                     format!("Task execution commit failed; scheduler stopped: {error}"),
                     &task_control,
@@ -1055,6 +2703,23 @@ async fn run_one_claimed(
         }
     };
     drop(active);
+    if let Some(activation) = activation.as_ref() {
+        if let Err(error) = store
+            .settle_pending_activation(task_id, &activation.event.id)
+            .await
+        {
+            if updated.status == TaskStatus::Running {
+                let _ = block_task_with_control_held(
+                    store,
+                    &updated,
+                    format!("Activation Event settlement failed; retry required: {error}"),
+                    &task_control,
+                )
+                .await;
+            }
+            return Err(format!("Activation Event settlement failed: {error}"));
+        }
+    }
     if let Err(error) = crate::cron_task::record_cron_run(task_id, &record).await {
         ulog_warn!(
             "[task-scheduler] run history write failed task={}: {}",
@@ -1090,7 +2755,25 @@ async fn run_one_claimed(
     // The committed status is authoritative; never let the late outcome
     // transition that terminal Task again.
     if updated.status != TaskStatus::Running {
+        // `execute_task()` made its retain/release decision before the atomic
+        // activation receipt commit terminalized the Task, so it observed the
+        // old Running row. Close that time-of-check gap explicitly or a
+        // single-session Task owner can keep the Sidecar alive indefinitely.
+        if let (Ok(handle), Some(outcome)) = (handle.as_ref(), outcome.as_ref()) {
+            crate::task_execution::release_task_sessions(
+                handle,
+                &updated,
+                outcome.session_id.as_deref(),
+            );
+        }
         return Ok(RunDisposition::Stop);
+    }
+
+    if activation_execution {
+        // Command-trigger terminal transitions were committed atomically with
+        // the event receipt above. A recurring non-terminal outcome simply
+        // keeps the scheduler armed.
+        return Ok(RunDisposition::Continue);
     }
 
     if trigger == TaskExecutionTrigger::Manual {
@@ -1106,6 +2789,7 @@ async fn run_one_claimed(
     });
     if provider_failure || outcome.is_none() {
         block_task_with_control_held(
+            store,
             &updated,
             record
                 .error
@@ -1113,7 +2797,7 @@ async fn run_one_claimed(
                 .unwrap_or_else(|| "Task execution failed".to_string()),
             &task_control,
         )
-        .await;
+        .await?;
         return Ok(RunDisposition::Stop);
     }
 
@@ -1125,6 +2809,7 @@ async fn run_one_claimed(
         )
     {
         block_task_with_control_held(
+            store,
             &updated,
             outcome
                 .error
@@ -1132,18 +2817,19 @@ async fn run_one_claimed(
                 .unwrap_or_else(|| "Task execution failed".to_string()),
             &task_control,
         )
-        .await;
+        .await?;
         return Ok(RunDisposition::Stop);
     }
 
     if let Some(reason) = outcome.ai_exit_reason {
         finish_task_with_control_held(
+            store,
             &updated,
             &reason,
             TransitionSource::EndCondition,
             &task_control,
         )
-        .await;
+        .await?;
         return Ok(RunDisposition::Stop);
     }
     if matches!(
@@ -1152,12 +2838,13 @@ async fn run_one_claimed(
     ) || end_condition_reached(&updated)
     {
         finish_task_with_control_held(
+            store,
             &updated,
             "Task execution completed",
             TransitionSource::EndCondition,
             &task_control,
         )
-        .await;
+        .await?;
         return Ok(RunDisposition::Stop);
     }
 
@@ -1174,11 +2861,13 @@ async fn emit_cron_ui_event(
     }
 }
 
-async fn finish_task(task: &Task, message: &str, source: TransitionSource) {
-    let Some(store) = crate::task::get_task_store() else {
-        return;
-    };
-    let _ = store
+async fn finish_task(
+    store: &crate::task::TaskStore,
+    task: &Task,
+    message: &str,
+    source: TransitionSource,
+) -> Result<(), String> {
+    store
         .update_status(TaskUpdateStatusInput {
             id: task.id.clone(),
             status: TaskStatus::Done,
@@ -1186,19 +2875,18 @@ async fn finish_task(task: &Task, message: &str, source: TransitionSource) {
             actor: TransitionActor::System,
             source: Some(source),
         })
-        .await;
+        .await
+        .map(|_| ())
 }
 
 async fn finish_task_with_control_held(
+    store: &crate::task::TaskStore,
     task: &Task,
     message: &str,
     source: TransitionSource,
     task_control: &TaskControlGuard,
-) {
-    let Some(store) = crate::task::get_task_store() else {
-        return;
-    };
-    let _ = store
+) -> Result<(), String> {
+    store
         .update_status_with_task_control_held(
             TaskUpdateStatusInput {
                 id: task.id.clone(),
@@ -1209,14 +2897,16 @@ async fn finish_task_with_control_held(
             },
             task_control,
         )
-        .await;
+        .await
+        .map(|_| ())
 }
 
-async fn block_task(task: &Task, message: String) {
-    let Some(store) = crate::task::get_task_store() else {
-        return;
-    };
-    let _ = store
+async fn block_task(
+    store: &crate::task::TaskStore,
+    task: &Task,
+    message: String,
+) -> Result<(), String> {
+    store
         .update_status(TaskUpdateStatusInput {
             id: task.id.clone(),
             status: TaskStatus::Blocked,
@@ -1224,18 +2914,17 @@ async fn block_task(task: &Task, message: String) {
             actor: TransitionActor::System,
             source: Some(TransitionSource::Scheduler),
         })
-        .await;
+        .await
+        .map(|_| ())
 }
 
 async fn block_task_with_control_held(
+    store: &crate::task::TaskStore,
     task: &Task,
     message: String,
     task_control: &TaskControlGuard,
-) {
-    let Some(store) = crate::task::get_task_store() else {
-        return;
-    };
-    let _ = store
+) -> Result<(), String> {
+    store
         .update_status_with_task_control_held(
             TaskUpdateStatusInput {
                 id: task.id.clone(),
@@ -1246,7 +2935,8 @@ async fn block_task_with_control_held(
             },
             task_control,
         )
-        .await;
+        .await
+        .map(|_| ())
 }
 
 fn end_condition_reached(task: &Task) -> bool {
@@ -1259,6 +2949,110 @@ fn end_condition_reached(task: &Task) -> bool {
         || conditions
             .max_executions
             .is_some_and(|max| task.execution_count >= max)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectorScheduledOutcome {
+    QuietOrDeduplicated,
+    Failure { consecutive_failures: u32 },
+}
+
+/// Decide only the Task-level effect of a scheduled Detector result that did
+/// not activate AI. Activate enters the durable AI execution path, whose
+/// terminal transition is decided separately below.
+fn detector_scheduled_terminal_status(
+    mode: TaskExecutionMode,
+    outcome: DetectorScheduledOutcome,
+) -> Option<TaskStatus> {
+    match outcome {
+        DetectorScheduledOutcome::QuietOrDeduplicated
+            if matches!(mode, TaskExecutionMode::Once | TaskExecutionMode::Scheduled) =>
+        {
+            Some(TaskStatus::Done)
+        }
+        DetectorScheduledOutcome::Failure { .. }
+            if matches!(mode, TaskExecutionMode::Once | TaskExecutionMode::Scheduled) =>
+        {
+            Some(TaskStatus::Blocked)
+        }
+        DetectorScheduledOutcome::Failure {
+            consecutive_failures,
+        } if mode == TaskExecutionMode::Recurring && consecutive_failures >= 3 => {
+            Some(TaskStatus::Blocked)
+        }
+        DetectorScheduledOutcome::QuietOrDeduplicated
+        | DetectorScheduledOutcome::Failure { .. } => None,
+    }
+}
+
+fn activation_terminal_transition(
+    task: &Task,
+    trigger: TaskExecutionTrigger,
+    invocation_cause: DetectorInvocationCause,
+    record: &CronRunRecord,
+    outcome: &crate::task_execution::TaskExecutionOutcome,
+) -> Option<TaskExecutionTerminalTransition> {
+    // Run-now remains observational. Check-now is different: when its
+    // Activation Event belongs to a Running Task it is a real AI execution and
+    // must honor maxExecutions/AI-exit/provider terminal semantics. For a
+    // Stopped or Blocked Task, check-now remains a one-shot diagnostic and must
+    // preserve the user's status choice.
+    if trigger == TaskExecutionTrigger::Manual
+        && (invocation_cause != DetectorInvocationCause::CheckNow
+            || task.status != TaskStatus::Running)
+    {
+        return None;
+    }
+    let provider_failure = record.error.as_deref().is_some_and(|error| {
+        error.starts_with("Provider '")
+            && (error.contains("not found in config") || error.contains("has no API Key"))
+    });
+    if provider_failure {
+        return Some(TaskExecutionTerminalTransition {
+            status: TaskStatus::Blocked,
+            message: record
+                .error
+                .clone()
+                .unwrap_or_else(|| "Task execution failed".to_string()),
+            source: TransitionSource::Scheduler,
+        });
+    }
+    if !outcome.success
+        && matches!(
+            task.execution_mode,
+            TaskExecutionMode::Once | TaskExecutionMode::Scheduled
+        )
+    {
+        return Some(TaskExecutionTerminalTransition {
+            status: TaskStatus::Blocked,
+            message: outcome
+                .error
+                .clone()
+                .unwrap_or_else(|| "Task execution failed".to_string()),
+            source: TransitionSource::Scheduler,
+        });
+    }
+    if let Some(reason) = outcome.ai_exit_reason.as_ref() {
+        return Some(TaskExecutionTerminalTransition {
+            status: TaskStatus::Done,
+            message: reason.clone(),
+            source: TransitionSource::EndCondition,
+        });
+    }
+    let mut after_execution = task.clone();
+    after_execution.execution_count = after_execution.execution_count.saturating_add(1);
+    if matches!(
+        task.execution_mode,
+        TaskExecutionMode::Once | TaskExecutionMode::Scheduled
+    ) || end_condition_reached(&after_execution)
+    {
+        return Some(TaskExecutionTerminalTransition {
+            status: TaskStatus::Done,
+            message: "Task execution completed".to_string(),
+            source: TransitionSource::EndCondition,
+        });
+    }
+    None
 }
 
 pub fn validate_task_schedule(task: &Task) -> Result<(), String> {
@@ -1353,14 +3147,22 @@ pub fn next_execution_at(task: &Task) -> Result<Option<DateTime<Utc>>, String> {
     }
 }
 
-async fn sleep_until_wallclock(target: DateTime<Utc>) {
+/// Return `false` when a manual state change invalidated the previously
+/// calculated target (for example check-now cleared a stale backoff).
+async fn sleep_until_wallclock_or_wakeup(
+    target: DateTime<Utc>,
+    wakeup: &tokio::sync::Notify,
+) -> bool {
     loop {
         let now = Utc::now();
         if now >= target {
-            return;
+            return true;
         }
         let seconds = (target - now).num_seconds().clamp(1, 30) as u64;
-        tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(seconds)) => {}
+            _ = wakeup.notified() => return false,
+        }
     }
 }
 
@@ -1446,6 +3248,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_status_write_failures_remain_retryable() {
+        let mut task = matrix_task(TaskExecutionMode::Recurring);
+        task.id = format!("task-transition-retry-{}", uuid::Uuid::new_v4());
+        let (dir, store) = store_with_task(&task);
+        let data_dir = dir.path().join("data");
+        std::fs::remove_dir_all(&data_dir).unwrap();
+        std::fs::write(&data_dir, "not-a-directory").unwrap();
+        let control = acquire_task_control(&task.id).await;
+
+        assert!(finish_task_with_control_held(
+            &store,
+            &task,
+            "done",
+            TransitionSource::EndCondition,
+            &control,
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            store.get(&task.id).await.unwrap().status,
+            TaskStatus::Running
+        );
+
+        assert!(
+            block_task_with_control_held(&store, &task, "blocked".to_string(), &control,)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.get(&task.id).await.unwrap().status,
+            TaskStatus::Running
+        );
+
+        let wakeup = tokio::sync::Notify::new();
+        wakeup.notify_one();
+        assert!(
+            retry_running_scheduler_after_transition_failure(
+                &store,
+                &task.id,
+                &wakeup,
+                Err("persist failed".to_string()),
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
     async fn stop_fences_a_claimed_execution_before_runtime_dispatch() {
         let controller = TaskSchedulerController::new();
         let queue_id = claim_execution(&controller.executions, "task-1")
@@ -1458,6 +3307,370 @@ mod tests {
 
         release_execution(&controller.executions, "task-1", &queue_id).await;
         assert!(!controller.is_executing("task-1").await);
+    }
+
+    #[tokio::test]
+    async fn shutdown_gate_rejects_every_new_execution_kind() {
+        let controller = TaskSchedulerController::new();
+        controller.shutting_down.store(true, Ordering::SeqCst);
+
+        assert!(claim_execution_if_open(
+            &controller.executions,
+            &controller.shutting_down,
+            "run-now"
+        )
+        .await
+        .is_err());
+        assert!(claim_detector_invocation(
+            &controller.executions,
+            &controller.shutting_down,
+            "detector"
+        )
+        .await
+        .is_err());
+        assert!(claim_pending_activation(
+            &controller.executions,
+            &controller.shutting_down,
+            "pending",
+            None
+        )
+        .await
+        .is_err());
+        assert!(controller.executions.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn detector_finish_before_wait_is_observed_without_timeout() {
+        let lifecycle = DetectorExecutionLifecycle::new();
+        lifecycle.finish();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), lifecycle.wait_finished())
+                .await
+                .expect("a completed Detector lifecycle must not wait for the 8s fallback")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_cancels_a_draft_detector_test_owned_by_the_task() {
+        let app = tauri::test::mock_app();
+        let controller = TaskSchedulerController::new();
+        let task_id = "draft-detector-owner";
+        let control = try_acquire_task_control(task_id).await.unwrap();
+        let (queue_id, detector) =
+            claim_detector_invocation(&controller.executions, &controller.shutting_down, task_id)
+                .await
+                .unwrap();
+        let worker = tauri::async_runtime::spawn(run_test_detector_claimed(
+            task_id.to_string(),
+            queue_id,
+            Arc::clone(&controller.executions),
+            Arc::clone(&controller.app_handle),
+            app.handle().clone(),
+            DetectorRunRequest {
+                task_id: task_id.to_string(),
+                workspace_path: "/tmp".to_string(),
+                trigger: crate::task_trigger::TaskTrigger {
+                    source: crate::task_trigger::TaskTriggerSource::Time,
+                    detector: crate::task_trigger::TaskTriggerDetector::Command {
+                        command: crate::task_trigger::TaskTriggerCommand {
+                            executable: "/bin/sh".to_string(),
+                            args: vec!["-c".to_string(), "sleep 30".to_string()],
+                            cwd: Some("/tmp".to_string()),
+                        },
+                        timeout_ms: Some(30_000),
+                    },
+                },
+                cause: DetectorInvocationCause::Test,
+                scheduled_at: None,
+                checkpoint: None,
+                checkpoint_revision: 0,
+                checkpoint_updated_at: None,
+            },
+            detector,
+        ));
+        drop(control);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if controller.is_executing(task_id).await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let stop_control = acquire_task_control(task_id).await;
+        controller
+            .stop_with_control_held(task_id, &stop_control)
+            .await
+            .unwrap();
+        let result = worker.await.unwrap();
+
+        assert!(result.is_err());
+        assert!(!controller.is_executing(task_id).await);
+    }
+
+    #[test]
+    fn detector_test_checkpoint_sources_are_explicit_and_read_only() {
+        let current_checkpoint =
+            serde_json::Map::from_iter([("cursor".to_string(), serde_json::json!(41))]);
+        let state = crate::task_trigger::TaskTriggerRuntimeState {
+            checkpoint: Some(current_checkpoint.clone()),
+            checkpoint_revision: 7,
+            checkpoint_updated_at: Some(1_722_656_400_000),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            detector_test_checkpoint_snapshot(&state, None),
+            (7, Some(current_checkpoint.clone()), Some(1_722_656_400_000)),
+            "task-id tests read the Task's current durable checkpoint"
+        );
+
+        let fixture = serde_json::Map::from_iter([("cursor".to_string(), serde_json::json!(99))]);
+        assert_eq!(
+            detector_test_checkpoint_snapshot(&state, Some(Some(fixture.clone()))),
+            (0, Some(fixture), None),
+            "an explicit CLI fixture is an isolated revision-zero snapshot"
+        );
+        assert_eq!(
+            detector_test_checkpoint_snapshot(&state, Some(None)),
+            (0, None, None),
+            "a spec-file test starts from an explicit null checkpoint"
+        );
+        assert_eq!(state.checkpoint, Some(current_checkpoint));
+        assert_eq!(state.checkpoint_revision, 7);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aborting_a_detector_test_request_cancels_the_tree_and_releases_its_claim() {
+        let app = tauri::test::mock_app();
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let app_handle: Arc<RwLock<Option<AppHandle>>> = Arc::new(RwLock::new(None));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let owner_id = "detector-request-abort".to_string();
+        let (queue_id, detector) =
+            claim_detector_invocation(&executions, &shutting_down, &owner_id)
+                .await
+                .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let child_pid_path = dir.path().join("test-request-child.pid");
+        let trigger = crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "/bin/sh".to_string(),
+                    args: vec![
+                        "-c".to_string(),
+                        "sleep 30 & echo $! > \"$1\"; wait".to_string(),
+                        "detector".to_string(),
+                        child_pid_path.to_string_lossy().into_owned(),
+                    ],
+                    cwd: Some(dir.path().to_string_lossy().into_owned()),
+                },
+                timeout_ms: Some(30_000),
+            },
+        };
+        let workspace_path = dir.path().to_string_lossy().into_owned();
+        let executions_for_request = Arc::clone(&executions);
+        let app_handle_for_request = Arc::clone(&app_handle);
+        let mock_handle = app.handle().clone();
+        let request = tauri::async_runtime::spawn(async move {
+            let mut request_guard =
+                DetectorRequestCancellationGuard::new(detector.cancellation.clone());
+            let worker = tauri::async_runtime::spawn(run_test_detector_claimed(
+                owner_id,
+                queue_id,
+                executions_for_request,
+                app_handle_for_request,
+                mock_handle,
+                DetectorRunRequest {
+                    task_id: "detector-request-abort".to_string(),
+                    workspace_path,
+                    trigger,
+                    cause: DetectorInvocationCause::Test,
+                    scheduled_at: None,
+                    checkpoint: None,
+                    checkpoint_revision: 0,
+                    checkpoint_updated_at: None,
+                },
+                detector,
+            ));
+            let result = worker.await.expect("Detector worker must not panic");
+            request_guard.disarm();
+            result
+        });
+
+        let child_pid = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(value) = std::fs::read_to_string(&child_pid_path) {
+                    if let Ok(pid) = value.trim().parse::<u32>() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Detector descendant must become observable before request abort");
+
+        request.abort();
+        assert!(request.await.is_err(), "the request future must be aborted");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if executions.read().await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the detached worker must settle and release its exact claim");
+
+        let still_alive = crate::process_cmd::new("/bin/sh")
+            .args(["-c", &format!("kill -0 {child_pid} 2>/dev/null")])
+            .status()
+            .expect("probe Detector descendant")
+            .success();
+        assert!(
+            !still_alive,
+            "Detector descendant {child_pid} survived request cancellation"
+        );
+
+        let quiet = r#"{"protocolVersion":1,"control":{"decision":"quiet","reason":{"code":"request_recovered","message":"recovered"}}}"#;
+        let (next_queue_id, next_detector) =
+            claim_detector_invocation(&executions, &shutting_down, "detector-request-abort")
+                .await
+                .expect("a later test must be admitted after exact cleanup");
+        let next_result = run_test_detector_claimed(
+            "detector-request-abort".to_string(),
+            next_queue_id,
+            Arc::clone(&executions),
+            Arc::clone(&app_handle),
+            app.handle().clone(),
+            DetectorRunRequest {
+                task_id: "detector-request-abort".to_string(),
+                workspace_path: dir.path().to_string_lossy().into_owned(),
+                trigger: crate::task_trigger::TaskTrigger {
+                    source: crate::task_trigger::TaskTriggerSource::Time,
+                    detector: crate::task_trigger::TaskTriggerDetector::Command {
+                        command: crate::task_trigger::TaskTriggerCommand {
+                            executable: "/bin/sh".to_string(),
+                            args: vec!["-c".to_string(), format!("printf '%s' '{quiet}'")],
+                            cwd: Some(dir.path().to_string_lossy().into_owned()),
+                        },
+                        timeout_ms: Some(5_000),
+                    },
+                },
+                cause: DetectorInvocationCause::Test,
+                scheduled_at: None,
+                checkpoint: None,
+                checkpoint_revision: 0,
+                checkpoint_updated_at: None,
+            },
+            next_detector,
+        )
+        .await
+        .expect("a later Detector process must complete after cleanup");
+        assert_eq!(
+            next_result.decision,
+            crate::task_trigger::DetectorDecision::Quiet
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_check_now_pending_queue_is_waited_not_redispatched() {
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let queue_id = match claim_pending_activation(
+            &executions,
+            &shutting_down,
+            "task-detached-check",
+            Some("queue-check-now"),
+        )
+        .await
+        .unwrap()
+        {
+            PendingActivationClaim::Claimed(queue_id) => queue_id,
+            PendingActivationClaim::AlreadyOwned(_) => panic!("first owner must claim"),
+        };
+        assert_eq!(queue_id, "queue-check-now");
+        assert_eq!(
+            claim_pending_activation(
+                &executions,
+                &shutting_down,
+                "task-detached-check",
+                Some("queue-check-now"),
+            )
+            .await
+            .unwrap(),
+            PendingActivationClaim::AlreadyOwned(queue_id.clone())
+        );
+
+        let waiter_executions = Arc::clone(&executions);
+        let waiter_shutdown = Arc::clone(&shutting_down);
+        let waiter_queue = queue_id.clone();
+        let mut waiter = tauri::async_runtime::spawn(async move {
+            wait_for_exact_execution_settlement(
+                &waiter_executions,
+                &waiter_shutdown,
+                "task-detached-check",
+                &waiter_queue,
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err(),
+            "recovery must wait for the live exact owner"
+        );
+        release_execution(&executions, "task-detached-check", &queue_id).await;
+        assert!(tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should observe exact settlement")
+            .expect("waiter should not panic"));
+        assert!(executions.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scheduler_sleep_reloads_a_rerun_that_follows_terminal_check_now() {
+        let controller = TaskSchedulerController::new();
+        let wakeup = Arc::new(tokio::sync::Notify::new());
+        let waiter_wakeup = Arc::clone(&wakeup);
+        let authoritative_status = Arc::new(RwLock::new(TaskStatus::Done));
+        let waiter_status = Arc::clone(&authoritative_status);
+        controller
+            .wakeups
+            .write()
+            .await
+            .insert("task-check-now".to_string(), wakeup);
+        let waiter = tauri::async_runtime::spawn(async move {
+            let reached_deadline = sleep_until_wallclock_or_wakeup(
+                Utc::now() + chrono::Duration::minutes(5),
+                &waiter_wakeup,
+            )
+            .await;
+            (reached_deadline, *waiter_status.read().await)
+        });
+        tokio::task::yield_now().await;
+        *authoritative_status.write().await = TaskStatus::Running;
+        controller.wake_task_schedule("task-check-now").await;
+        let (reached_deadline, observed_status) =
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .expect("manual wake should not wait for the stale deadline")
+                .expect("waiter should not panic");
+        assert!(!reached_deadline);
+        assert_eq!(
+            observed_status,
+            TaskStatus::Running,
+            "the awakened scheduler must reload a rerun committed after check-now terminalized"
+        );
     }
 
     #[tokio::test]
@@ -1786,6 +3999,7 @@ mod tests {
                 pending_session_birth: None,
                 state: TaskExecutionState::Running,
                 error: None,
+                detector: None,
             },
         );
 
@@ -2061,6 +4275,412 @@ mod tests {
         let next = next_execution_at(&task).unwrap().unwrap();
         let expected = scheduled + chrono::Duration::minutes(60);
         assert!((next - expected).num_seconds().abs() <= 1);
+    }
+
+    fn matrix_task(mode: TaskExecutionMode) -> Task {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "task-detector-matrix",
+            "name": "detector matrix",
+            "executor": "agent",
+            "workspaceId": "ws",
+            "workspacePath": "/tmp/ws",
+            "executionMode": "once",
+            "sessionIds": [],
+            "status": "running",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "executionCount": 0,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .unwrap();
+        task.execution_mode = mode;
+        task
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn quiet_detector_check_never_reserves_or_persists_a_session() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut task = matrix_task(TaskExecutionMode::Recurring);
+        task.id = format!("task-quiet-no-session-{}", uuid::Uuid::new_v4());
+        task.workspace_path = workspace.path().to_string_lossy().into_owned();
+        task.run_mode = Some(crate::task::TaskRunMode::NewSession);
+        task.preselected_session_id = None;
+        task.session_ids.clear();
+        let quiet = r#"{"protocolVersion":1,"control":{"decision":"quiet","reason":{"code":"unchanged","message":"No change"}}}"#;
+        task.trigger = Some(crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "/bin/sh".to_string(),
+                    args: vec!["-c".to_string(), format!("printf '%s' '{quiet}'")],
+                    cwd: Some(workspace.path().to_string_lossy().into_owned()),
+                },
+                timeout_ms: Some(5_000),
+            },
+        });
+        let (_store_dir, store) = store_with_task(&task);
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let app_handle: Arc<RwLock<Option<AppHandle>>> = Arc::new(RwLock::new(None));
+        let (queue_id, detector) = claim_detector_invocation(&executions, &shutting_down, &task.id)
+            .await
+            .unwrap();
+
+        let result = run_command_check_claimed(
+            &task.id,
+            &queue_id,
+            &store,
+            &executions,
+            &app_handle,
+            CommandCheckInvocation {
+                cause: DetectorInvocationCause::CheckNow,
+                scheduled_at: None,
+                detector_lifecycle: detector,
+                detach_activation: true,
+                schedule_wakeup: None,
+                detector_result_override: Some(Ok(crate::task_trigger::DetectorRunSuccess {
+                    invocation_id: "quiet-no-session".to_string(),
+                    decision: crate::task_trigger::DetectorDecision::Quiet,
+                    reason: crate::task_trigger::TaskTriggerReason {
+                        code: "unchanged".to_string(),
+                        message: "No change".to_string(),
+                    },
+                    event: None,
+                    handoff: None,
+                    next_checkpoint: None,
+                    duration_ms: 1,
+                    exit_code: 0,
+                    stderr_tail: None,
+                })),
+            },
+        )
+        .await
+        .expect("quiet check should commit successfully");
+
+        assert!(!result.activation_detached);
+        assert!(matches!(result.disposition, RunDisposition::Continue));
+        let active = executions.read().await;
+        let exact = active
+            .get(&task.id)
+            .expect("Detector claim remains caller-owned");
+        assert_eq!(exact.state, TaskExecutionState::Checking);
+        assert_eq!(exact.session_id, None);
+        assert!(exact.pending_session_birth.is_none());
+        drop(active);
+        assert!(
+            store.get(&task.id).await.unwrap().session_ids.is_empty(),
+            "quiet must not persist a Session identity"
+        );
+        release_execution(&executions, &task.id, &queue_id).await;
+    }
+
+    fn matrix_pending(cause: DetectorInvocationCause) -> PendingTaskActivation {
+        PendingTaskActivation {
+            event: crate::task_trigger::TaskActivationEvent {
+                id: "event-matrix".to_string(),
+                kind: "state.changed".to_string(),
+                occurred_at: "2026-08-03T09:30:00Z".to_string(),
+            },
+            handoff: crate::task_trigger::TaskActivationHandoff {
+                summary: "State changed".to_string(),
+                text: None,
+                data: None,
+            },
+            reason: crate::task_trigger::TaskTriggerReason {
+                code: "changed".to_string(),
+                message: "Changed".to_string(),
+            },
+            invocation_cause: cause,
+            detected_at: 1,
+            task_updated_at: 1,
+            delivery_state: crate::task_trigger::TaskActivationDeliveryState::Pending,
+            queue_id: None,
+        }
+    }
+
+    #[test]
+    fn startup_pending_recovery_preserves_detector_origin_and_task_status() {
+        let mut task = matrix_task(TaskExecutionMode::Recurring);
+        for cause in [
+            DetectorInvocationCause::Scheduled,
+            DetectorInvocationCause::CheckNow,
+        ] {
+            let pending = matrix_pending(cause);
+            task.status = TaskStatus::Running;
+            assert_eq!(
+                startup_pending_recovery_plan(&task, &pending),
+                StartupPendingRecoveryPlan::Scheduler
+            );
+            assert_eq!(
+                pending_execution_trigger(&pending).unwrap(),
+                if cause == DetectorInvocationCause::Scheduled {
+                    TaskExecutionTrigger::Scheduled
+                } else {
+                    TaskExecutionTrigger::Manual
+                }
+            );
+
+            for status in [TaskStatus::Stopped, TaskStatus::Blocked] {
+                task.status = status;
+                assert_eq!(
+                    startup_pending_recovery_plan(&task, &pending),
+                    if cause == DetectorInvocationCause::CheckNow {
+                        StartupPendingRecoveryPlan::ManualOneShot
+                    } else {
+                        StartupPendingRecoveryPlan::None
+                    },
+                    "recovery plan for {cause:?}/{status:?}"
+                );
+                assert_eq!(task.status, status, "planning must not mutate Task status");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn run_now_rejects_a_durable_pending_activation() {
+        let mut task = matrix_task(TaskExecutionMode::Recurring);
+        task.id = format!("task-run-now-pending-{}", uuid::Uuid::new_v4());
+        task.trigger = Some(crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "node".to_string(),
+                    args: vec!["detector.mjs".to_string()],
+                    cwd: None,
+                },
+                timeout_ms: None,
+            },
+        });
+        let (_dir, store) = store_with_task(&task);
+        store
+            .commit_detector_success(
+                &task,
+                &crate::task_trigger::DetectorRunSuccess {
+                    invocation_id: "invocation-run-now-fence".to_string(),
+                    decision: crate::task_trigger::DetectorDecision::Activate,
+                    reason: crate::task_trigger::TaskTriggerReason {
+                        code: "changed".to_string(),
+                        message: "Changed".to_string(),
+                    },
+                    event: Some(matrix_pending(DetectorInvocationCause::CheckNow).event),
+                    handoff: Some(matrix_pending(DetectorInvocationCause::CheckNow).handoff),
+                    next_checkpoint: None,
+                    duration_ms: 1,
+                    exit_code: 0,
+                    stderr_tail: None,
+                },
+                DetectorInvocationCause::CheckNow,
+            )
+            .await
+            .unwrap();
+
+        let error = ensure_run_now_outbox_clear(&store, &task)
+            .await
+            .expect_err("pending Activation Event must be exclusive");
+        assert!(error.contains("Activation Event is pending"));
+
+        let controller = TaskSchedulerController::new();
+        let task_control = acquire_task_control(&task.id).await;
+        let busy = controller
+            .trigger_now_with_store(&task.id, &store)
+            .await
+            .expect_err("Task control must serialize run-now admission");
+        assert!(busy.contains("changing scheduler state"));
+        drop(task_control);
+
+        let pending = controller
+            .trigger_now_with_store(&task.id, &store)
+            .await
+            .expect_err("controller path must reject the durable outbox");
+        assert!(pending.contains("Activation Event is pending"));
+        assert!(controller.executions.read().await.is_empty());
+    }
+
+    fn matrix_outcome(success: bool) -> crate::task_execution::TaskExecutionOutcome {
+        crate::task_execution::TaskExecutionOutcome {
+            success,
+            turn_dispatched: true,
+            termination_unconfirmed: false,
+            error: (!success).then(|| "AI execution failed".to_string()),
+            ai_exit_reason: None,
+            output_text: None,
+            session_id: Some("session-matrix".to_string()),
+            duration_ms: 1,
+        }
+    }
+
+    #[test]
+    fn scheduled_detector_and_activation_matrix_preserves_binary_semantics() {
+        use crate::cron_task::CronRunRecord;
+
+        let success_record = CronRunRecord {
+            ts: 1,
+            ok: true,
+            duration_ms: 1,
+            content: None,
+            error: None,
+        };
+        for mode in [
+            TaskExecutionMode::Once,
+            TaskExecutionMode::Scheduled,
+            TaskExecutionMode::Recurring,
+        ] {
+            let one_shot = matches!(mode, TaskExecutionMode::Once | TaskExecutionMode::Scheduled);
+            assert_eq!(
+                detector_scheduled_terminal_status(
+                    mode,
+                    DetectorScheduledOutcome::QuietOrDeduplicated,
+                ),
+                one_shot.then_some(TaskStatus::Done),
+                "quiet/deduplicated matrix for {mode:?}"
+            );
+            assert_eq!(
+                detector_scheduled_terminal_status(
+                    mode,
+                    DetectorScheduledOutcome::Failure {
+                        consecutive_failures: 1,
+                    },
+                ),
+                one_shot.then_some(TaskStatus::Blocked),
+                "first Detector program failure matrix for {mode:?}"
+            );
+            assert_eq!(
+                detector_scheduled_terminal_status(
+                    mode,
+                    DetectorScheduledOutcome::Failure {
+                        consecutive_failures: 3,
+                    },
+                ),
+                Some(TaskStatus::Blocked),
+                "third Detector program failure matrix for {mode:?}"
+            );
+
+            let transition = activation_terminal_transition(
+                &matrix_task(mode),
+                TaskExecutionTrigger::Scheduled,
+                DetectorInvocationCause::Scheduled,
+                &success_record,
+                &matrix_outcome(true),
+            );
+            assert_eq!(
+                transition.as_ref().map(|value| value.status),
+                one_shot.then_some(TaskStatus::Done),
+                "activate AI-success matrix for {mode:?}"
+            );
+
+            let ai_failure_record = CronRunRecord {
+                ok: false,
+                error: Some("AI execution failed".to_string()),
+                ..success_record.clone()
+            };
+            let transition = activation_terminal_transition(
+                &matrix_task(mode),
+                TaskExecutionTrigger::Scheduled,
+                DetectorInvocationCause::Scheduled,
+                &ai_failure_record,
+                &matrix_outcome(false),
+            );
+            assert_eq!(
+                transition.as_ref().map(|value| value.status),
+                one_shot.then_some(TaskStatus::Blocked),
+                "activate AI-failure matrix for {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_executions_counts_ai_turns_not_quiet_detector_checks() {
+        let mut recurring = matrix_task(TaskExecutionMode::Recurring);
+        recurring.end_conditions = Some(crate::task::TaskEndConditions {
+            deadline: None,
+            max_executions: Some(1),
+            ai_can_exit: true,
+        });
+        assert_eq!(
+            detector_scheduled_terminal_status(
+                recurring.execution_mode,
+                DetectorScheduledOutcome::QuietOrDeduplicated,
+            ),
+            None,
+            "a quiet check must not consume maxExecutions"
+        );
+        let record = crate::cron_task::CronRunRecord {
+            ts: 1,
+            ok: true,
+            duration_ms: 1,
+            content: None,
+            error: None,
+        };
+        assert_eq!(
+            activation_terminal_transition(
+                &recurring,
+                TaskExecutionTrigger::Scheduled,
+                DetectorInvocationCause::Scheduled,
+                &record,
+                &matrix_outcome(true),
+            )
+            .map(|value| value.status),
+            Some(TaskStatus::Done)
+        );
+    }
+
+    #[test]
+    fn check_now_activation_honors_running_end_conditions_but_preserves_paused_status() {
+        let mut recurring = matrix_task(TaskExecutionMode::Recurring);
+        recurring.end_conditions = Some(crate::task::TaskEndConditions {
+            deadline: None,
+            max_executions: Some(1),
+            ai_can_exit: true,
+        });
+        let record = crate::cron_task::CronRunRecord {
+            ts: 1,
+            ok: true,
+            duration_ms: 1,
+            content: None,
+            error: None,
+        };
+        assert_eq!(
+            activation_terminal_transition(
+                &recurring,
+                TaskExecutionTrigger::Manual,
+                DetectorInvocationCause::CheckNow,
+                &record,
+                &matrix_outcome(true),
+            )
+            .map(|value| value.status),
+            Some(TaskStatus::Done),
+            "a check-now AI turn counts toward maxExecutions"
+        );
+
+        let mut ai_exit = matrix_outcome(true);
+        ai_exit.ai_exit_reason = Some("Goal reached".to_string());
+        assert_eq!(
+            activation_terminal_transition(
+                &recurring,
+                TaskExecutionTrigger::Manual,
+                DetectorInvocationCause::CheckNow,
+                &record,
+                &ai_exit,
+            )
+            .map(|value| value.message),
+            Some("Goal reached".to_string())
+        );
+
+        for status in [TaskStatus::Stopped, TaskStatus::Blocked] {
+            recurring.status = status;
+            assert!(activation_terminal_transition(
+                &recurring,
+                TaskExecutionTrigger::Manual,
+                DetectorInvocationCause::CheckNow,
+                &record,
+                &ai_exit,
+            )
+            .is_none());
+            assert_eq!(recurring.status, status);
+        }
     }
 
     #[test]

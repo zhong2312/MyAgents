@@ -15,15 +15,17 @@ import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import {
-  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  isProjectArchived,
+  isProjectVisibleToUser,
   splitProviderModelInput,
   type McpServerDefinition,
   type PermissionMode,
   type ProxySettings,
 } from '../shared/config-types';
 import {
+  agentUsesManagedCodexProvider,
+  isPermissionModeForRuntimeIdentity,
   managedCodexProviderPermissionToRuntimePermission,
-  managedCodexRuntimePermissionToProviderPermission,
 } from '../shared/providerExecution';
 import { deriveCliToolKind, type CliToolRegistryEntry } from '../shared/types/cliTools';
 import { workspacePathsEqual } from '../shared/workspacePath';
@@ -73,7 +75,14 @@ import { buildCronScope } from './utils/cron-scope';
 import { readLoopbackJson } from './utils/loopback-response';
 import { ADMIN_LOOPBACK_TIMEOUT_MS, managementApi } from './utils/management-api-client';
 import { getCuseDiagnostics } from './utils/cuse-diagnostics';
+import { buildSessionExecutablePath } from './utils/session-executable-path';
 import { getSessionEngine } from './session-engine';
+import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
+import {
+  agentWorkspaceIdentityFailure,
+  resolvePersistedAgentWorkspaceRegistry,
+  type PersistedAgentWorkspaceProjection,
+} from './utils/agent-workspace-identity';
 
 // Long-running sidecar operations need their own budget. Anchored to the
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
@@ -101,6 +110,8 @@ import {
   RUNTIME_DISPLAY_NAMES,
   getRuntimePermissionModes,
   getDefaultRuntimePermissionMode,
+  isRuntimePermissionMode,
+  projectPermissionModeForRuntime,
   buildRuntimeChangePatch,
   type RuntimeType,
   type RecoveryHint,
@@ -108,9 +119,11 @@ import {
   type RuntimeModelInfo,
   type RuntimeDetection,
   type RuntimeConfig,
+  type RuntimeSource,
 } from '../shared/types/runtime';
 import { getExternalRuntime, isRuntimeSupported } from './runtimes/factory';
 import { queryRuntimeModels } from './runtimes/external-session';
+import { isManagedCodexRuntimeInstalled } from './runtimes/codex-command-context';
 import { trackServer } from './analytics';
 
 /**
@@ -121,9 +134,8 @@ import { trackServer } from './analytics';
  *   the CLI as a tool (`cli_agent`). Otherwise it's the user typing in their
  *   terminal (`cli`).
  *
- * Same logic that `handleTaskUpdateStatus` already uses for the persisted
- * `actor` field — extracted so every CLI handler can tag analytics events
- * consistently without re-deriving the heuristic.
+ * Used by legacy handlers that do not yet carry explicit caller metadata.
+ * Task lifecycle handlers instead use the actor stamped by the CLI process.
  */
 function cliSource(): 'cli' | 'cli_agent' {
   return process.env.MYAGENTS_PORT ? 'cli_agent' : 'cli';
@@ -400,15 +412,26 @@ export async function handleMcpAdd(payload: {
   };
 
   if (dryRun) {
+    if ((loadConfig().mcpServers ?? []).some(existing => existing.id === server.id)) {
+      return mcpAlreadyExistsResponse(server.id);
+    }
     return { success: true, dryRun: true, preview: server };
   }
 
-  await atomicModifyConfig(c => ({
-    ...c,
-    mcpServers: [...(c.mcpServers || []).filter(x => x.id !== server.id), server],
-  }));
+  let alreadyExists = false;
+  await atomicModifyConfig(c => {
+    if ((c.mcpServers ?? []).some(existing => existing.id === server.id)) {
+      alreadyExists = true;
+      return c;
+    }
+    return {
+      ...c,
+      mcpServers: [...(c.mcpServers || []), server],
+    };
+  });
+  if (alreadyExists) return mcpAlreadyExistsResponse(server.id);
 
-  notifyMcpChange('add', server.id);
+  await notifyMcpChange('add', server.id);
   return {
     success: true,
     data: { id: server.id, name: server.name },
@@ -422,7 +445,7 @@ export async function handleMcpRemove(payload: { id: string }): Promise<AdminRes
 
   try {
     const result = await removeCustomMcpServerCascade(id);
-    notifyMcpChange('remove', id);
+    await notifyMcpChange('remove', id);
     return { success: true, data: result, hint: 'Server removed.' };
   } catch (err) {
     const response: AdminResponse = {
@@ -466,7 +489,7 @@ export async function handleMcpEnable(payload: { id: string; scope?: string }): 
     }
   }
 
-  notifyMcpChange('enable', id);
+  await notifyMcpChange('enable', id);
   const scopeLabel = scope === 'both' ? 'global + project' : scope;
   const skipHint = projectMutation && projectMutation.status !== 'updated'
     ? ` Project scope skipped: ${projectMcpMutationReason(projectMutation)}.`
@@ -502,7 +525,7 @@ export async function handleMcpDisable(payload: { id: string; scope?: string }):
     }
   }
 
-  notifyMcpChange('disable', id);
+  await notifyMcpChange('disable', id);
   const skipHint = projectMutation && projectMutation.status !== 'updated'
     ? ` Project scope skipped: ${projectMcpMutationReason(projectMutation)}.`
     : '';
@@ -541,7 +564,7 @@ export async function handleMcpEnv(payload: {
       mcpServerEnv[id] = { ...(mcpServerEnv[id] || {}), ...env };
       return { ...c, mcpServerEnv };
     });
-    notifyMcpChange('env', id);
+    await notifyMcpChange('env', id);
     return { success: true, data: { id, keys: Object.keys(env) }, hint: 'Environment variables updated.' };
   }
 
@@ -565,7 +588,7 @@ export async function handleMcpEnv(payload: {
       }
       return { ...c, mcpServerEnv };
     });
-    notifyMcpChange('env', id);
+    await notifyMcpChange('env', id);
     return { success: true, data: { id, deletedKeys: Object.keys(env) } };
   }
 
@@ -579,6 +602,14 @@ export async function handleMcpTest(payload: { id: string }): Promise<AdminRespo
   const allServers = getAllMcpServers();
   const server = allServers.find(s => s.id === id);
   if (!server) return { success: false, error: `MCP server '${id}' not found` };
+
+  const transportType = (server as { type?: unknown }).type;
+  if (transportType !== 'stdio' && transportType !== 'sse' && transportType !== 'http') {
+    return {
+      success: false,
+      error: `MCP server '${id}' has unsupported transport type '${String(transportType)}'`,
+    };
+  }
 
   // Validate config completeness
   if (server.type === 'stdio' && !server.command) {
@@ -655,75 +686,79 @@ export async function handleMcpTest(payload: { id: string }): Promise<AdminRespo
     };
   }
 
-  // SSE/HTTP: test URL reachability
-  if (server.type === 'sse' || server.type === 'http') {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      // Inject stored OAuth token if no explicit Authorization header
-      const { resolveAuthHeaders } = await import('./mcp-oauth');
-      const configHeaders = server.headers || {};
-      const hasExplicitAuth = Object.keys(configHeaders).some(k => k.toLowerCase() === 'authorization');
-      const oauthHeaders = hasExplicitAuth ? {} : await resolveAuthHeaders(server.id);
-
-      const headers: Record<string, string> = {
-        'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json, text/event-stream',
-        'Accept-Encoding': 'identity',
-        ...configHeaders,
-        ...oauthHeaders,
-      };
-
-      const resp = server.type === 'http'
-        ? await fetchWithGeneralProxy(server.url!, {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'MyAgents', version: '1.0' } } }),
-            signal: controller.signal,
-          })
-        : await fetchWithGeneralProxy(server.url!, { method: 'GET', headers, signal: controller.signal });
-
-      clearTimeout(timeout);
-
-      if (resp.status === 401 || resp.status === 403) {
-        const hint = oauthHeaders['Authorization']
-          ? 'OAuth token may be expired or revoked. Try re-authorizing.'
-          : 'This server may require OAuth authorization. Use Settings UI or `myagents mcp oauth start`.';
-        return { success: false, error: `Authentication failed (HTTP ${resp.status}). ${hint}` };
-      }
-      if (!resp.ok) {
-        return { success: false, error: `Server returned HTTP ${resp.status}` };
+  // External MCPs are valid only after the exact configured transport completes
+  // protocol initialization. PATH/HTTP reachability is merely a prerequisite and
+  // cannot prove package resolution, args/env, framing, or MCP compatibility.
+  let usedStoredOAuth = false;
+  let operationTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const {
+      MCP_CONNECTION_TEST_TIMEOUT_MS,
+      McpConnectionTestError,
+      testMcpServerConnection,
+    } = await import('./utils/mcp-connection-test');
+    const deadlineAt = Date.now() + MCP_CONNECTION_TEST_TIMEOUT_MS;
+    const operation = (async () => {
+      let probeServer: McpServerDefinition = server;
+      if (server.type === 'sse' || server.type === 'http') {
+        const { resolveAuthHeaders } = await import('./mcp-oauth');
+        const configHeaders = server.headers || {};
+        // Match the Session path exactly: only the two canonical spellings with
+        // a non-empty value suppress stored OAuth injection.
+        const hasExplicitAuth = Boolean(configHeaders.Authorization || configHeaders.authorization);
+        const oauthHeaders = hasExplicitAuth ? {} : await resolveAuthHeaders(server.id);
+        usedStoredOAuth = typeof oauthHeaders.Authorization === 'string';
+        probeServer = {
+          ...server,
+          headers: { ...configHeaders, ...oauthHeaders },
+        };
       }
 
-      return { success: true, data: { id, type: server.type, status: resp.status }, hint: `Connection OK (HTTP ${resp.status}).` };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('abort')) return { success: false, error: 'Connection timed out (15s).' };
-      return { success: false, error: `Connection failed: ${msg}` };
-    }
-  }
-
-  // stdio: check command exists in PATH
-  if (server.type === 'stdio' && server.command && server.command !== '__builtin__') {
-    try {
-      const { getShellEnv } = await import('./utils/shell');
-      const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-      const { spawn } = await import('child_process');
-      const code = await new Promise<number | null>(resolve => {
-        const proc = spawn(checkCmd, [server.command!], { stdio: 'ignore', env: getShellEnv() });
-        proc.on('close', resolve);
-        proc.on('error', () => resolve(null));
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) {
+        throw new McpConnectionTestError('Connection timed out (15s)');
+      }
+      const executablePath = buildSessionExecutablePath();
+      return await testMcpServerConnection(probeServer, {
+        fetch: (url, init) => fetchWithGeneralProxy(String(url), init),
+        timeoutMs: remainingMs,
+        executionEnv: { [executablePath.key]: executablePath.value },
+        cwd: getCurrentWorkspacePath(),
       });
-      if (code === 0) {
-        return { success: true, data: { id, type: 'stdio', command: server.command }, hint: `Command '${server.command}' found.` };
-      }
-      return { success: false, error: `Command '${server.command}' not found in PATH.` };
-    } catch (err) {
-      return { success: false, error: `Failed to check command: ${err instanceof Error ? err.message : String(err)}` };
+    });
+    const overallDeadline = new Promise<never>((_, reject) => {
+      operationTimer = setTimeout(() => {
+        reject(new McpConnectionTestError('Connection timed out (15s)'));
+      }, MCP_CONNECTION_TEST_TIMEOUT_MS);
+      operationTimer.unref?.();
+    });
+    const result = await Promise.race([operation(), overallDeadline]);
+    const identity = [result.serverName, result.serverVersion].filter(Boolean).join(' ');
+    return {
+      success: true,
+      data: {
+        id,
+        type: result.transport,
+        serverName: result.serverName,
+        serverVersion: result.serverVersion,
+        resolvedCommand: result.resolvedCommand,
+      },
+      hint: `MCP initialize succeeded${identity ? ` (${identity})` : ''}.`,
+    };
+  } catch (err) {
+    const probeError = err as { message?: unknown; statusCode?: unknown };
+    const statusCode = typeof probeError.statusCode === 'number' ? probeError.statusCode : undefined;
+    if (statusCode === 401 || statusCode === 403) {
+      const hint = usedStoredOAuth
+        ? 'OAuth token may be expired or revoked. Try re-authorizing.'
+        : 'This server may require OAuth authorization. Use Settings UI or `myagents mcp oauth start`.';
+      return { success: false, error: `Authentication failed (HTTP ${statusCode}). ${hint}` };
     }
+    const message = typeof probeError.message === 'string' ? probeError.message : String(err);
+    return { success: false, error: `MCP initialize failed: ${message}` };
+  } finally {
+    if (operationTimer) clearTimeout(operationTimer);
   }
-
-  return { success: true, data: { id, type: server.type }, hint: 'Configuration valid.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -909,11 +944,15 @@ export function handleModelList(): AdminResponse {
   return { success: true, data };
 }
 
-async function notifyModelConfigChanged(action: string, id: string): Promise<void> {
+async function notifyAppConfigChanged(
+  section: 'model' | 'mcp',
+  action: string,
+  id: string,
+): Promise<void> {
   // Preserve the current Sidecar-local event for tabs connected to this
   // process, then fan out an app-scoped invalidation through Rust so every
   // renderer reloads the disk authorities regardless of Sidecar ownership.
-  broadcast('config:changed', { section: 'model', action, id });
+  broadcast('config:changed', { section, action, id });
   const result = await managementApi(
     '/api/app/config-changed',
     'POST',
@@ -921,10 +960,15 @@ async function notifyModelConfigChanged(action: string, id: string): Promise<voi
     { timeoutMs: 2_000 },
   );
   if (result.ok !== true) {
+    const label = section === 'model' ? 'Model' : 'MCP';
     throw new Error(
-      `Model configuration was saved, but app-wide refresh failed after ${action} '${id}': ${String(result.error ?? 'unknown Management API error')}. Restart MyAgents or retry the command to refresh every open window.`,
+      `${label} configuration was saved, but app-wide refresh failed after ${action} '${id}': ${String(result.error ?? 'unknown Management API error')}. Restart MyAgents or retry the command to refresh every open window.`,
     );
   }
+}
+
+async function notifyModelConfigChanged(action: string, id: string): Promise<void> {
+  await notifyAppConfigChanged('model', action, id);
 }
 
 export async function handleModelSetKey(payload: { id: string; apiKey: string }): Promise<AdminResponse> {
@@ -1159,10 +1203,11 @@ function findProjectForAgent(
   projects: ProjectSlim[],
   agent: AgentConfigSlim,
 ): { index: number; project: ProjectSlim } | null {
-  const index = projects.findIndex(project => (
-    project.agentId === agent.id ||
-    (!!project.path && !!agent.workspacePath && workspacePathsEqual(project.path, agent.workspacePath))
-  ));
+  const matches = projects
+    .map((project, index) => ({ project, index }))
+    .filter(entry => entry.project.agentId === agent.id);
+  if (matches.length !== 1) return null;
+  const index = matches[0].index;
   return index >= 0 ? { index, project: projects[index] } : null;
 }
 
@@ -1172,58 +1217,110 @@ function isProjectArchivedSlim(project: { archivedAt?: unknown } | null | undefi
 
 function normalizeAgentLifecycleFilter(value: unknown): 'all' | 'active' | 'archived' {
   if (value === 'active' || value === 'archived') return value;
-  return 'all';
+  return value === 'all' ? 'all' : 'active';
 }
 
-function getArchivedProjectForAgent(agent: AgentConfigSlim): ProjectSlim | undefined {
-  const project = findProjectForAgent(loadProjects(), agent)?.project;
-  return isProjectArchivedSlim(project) ? project : undefined;
+function isCurrentAgentIdentity(
+  identity: PersistedAgentWorkspaceProjection,
+  currentWorkspacePath: string | undefined,
+): boolean {
+  return identity.association === 'project-linked'
+    && !!currentWorkspacePath
+    && workspacePathsEqual(identity.workspacePath, currentWorkspacePath);
 }
 
-export function handleAgentList(payload: { lifecycle?: string } = {}): AdminResponse {
-  const config = loadConfig();
-  const projects = loadProjects();
-  const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
-  const agents = (config.agents ?? [])
-    .map(a => {
-      const projectEntry = findProjectForAgent(projects, a);
-      const project = projectEntry?.project;
-      const archived = isProjectArchivedSlim(project);
-      return {
-        id: a.id,
-        name: a.name,
-        enabled: a.enabled,
-        archived,
-        archivedAt: archived ? project?.archivedAt : undefined,
-        workspacePath: a.workspacePath,
-        projectId: project?.id,
-        channelCount: (a.channels ?? []).length,
-        channels: (a.channels ?? []).map(ch => ({
-          id: ch.id,
-          type: ch.type,
-          name: ch.name,
-          enabled: ch.enabled,
+export async function handleAgentList(payload: { lifecycle?: string } = {}): Promise<AdminResponse> {
+  try {
+    const registry = await resolvePersistedAgentWorkspaceRegistry();
+    const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
+    const currentWorkspacePath = getCurrentWorkspacePath();
+    const agents = registry.agentProjections
+      .filter(identity => !identity.project || isProjectVisibleToUser(identity.project))
+      .filter(identity => {
+        const archived = identity.project ? isProjectArchived(identity.project) : false;
+        if (lifecycle === 'active') return !archived;
+        if (lifecycle === 'archived') return archived;
+        return true;
+      })
+      .map(identity => {
+        const { agent, project, workspacePath } = identity;
+        return ({
+        agentId: agent.id,
+        name: agent.name,
+        projectId: project?.id ?? null,
+        workspacePath,
+        enabled: agent.enabled === true,
+        archived: project ? isProjectArchived(project) : false,
+        archivedAt: project && isProjectArchived(project) ? project.archivedAt ?? null : null,
+        association: identity.association,
+        isCurrent: isCurrentAgentIdentity(identity, currentWorkspacePath),
+        channelCount: (agent.channels ?? []).length,
+        channels: (agent.channels ?? []).map(channel => ({
+          id: channel.id,
+          type: channel.type,
+          name: channel.name,
+          enabled: channel.enabled,
         })),
+      });
+      });
+    return { success: true, data: agents };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
+export async function handleAgentCurrent(): Promise<AdminResponse> {
+  try {
+    const registry = await resolvePersistedAgentWorkspaceRegistry();
+    const workspacePath = getCurrentWorkspacePath() ?? defaultCronWorkspace();
+    const identity = registry.agentProjections.find(item =>
+      item.association === 'project-linked'
+      && !!item.project
+      && workspacePathsEqual(item.workspacePath, workspacePath),
+    );
+    if (!identity?.project) {
+      return {
+        success: false,
+        error: `Current workspace is not linked to a visible Agent project: ${workspacePath}`,
+        recoveryHint: {
+          recoveryCommand: 'myagents agent list',
+          message: 'Inspect addressable Agent workspaces.',
+        },
       };
-    })
-    .filter(agent => {
-      if (lifecycle === 'active') return !agent.archived;
-      if (lifecycle === 'archived') return agent.archived;
-      return true;
-    });
-  return { success: true, data: agents };
+    }
+    return {
+      success: true,
+      data: {
+        agentId: identity.agent.id,
+        name: identity.agent.name,
+        workspaceId: identity.project.id,
+        workspacePath: identity.workspacePath,
+        sessionId: getSessionEngine().getCurrentSessionContext().sessionId ?? null,
+      },
+    };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
 }
 
 export async function handleAgentEnable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
-  const config = loadConfig();
-  const agent = (config.agents ?? []).find(a => a.id === id);
-  if (agent && getArchivedProjectForAgent(agent)) {
+  let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+  const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(id));
+  if (diagnostic) return { success: false, error: diagnostic.message, code: diagnostic.code };
+  const projection = registry.agentProjections.find(item => item.agentId === id);
+  if (projection?.project && isProjectArchived(projection.project)) {
+    const lifecycleAgentId = projection.project.agentId ?? id;
     return {
       success: false,
       error: `Agent '${id}' belongs to an archived workspace.`,
       recoveryHint: {
-        recoveryCommand: `myagents agent unarchive ${id}`,
+        recoveryCommand: `myagents agent unarchive ${lifecycleAgentId}`,
         message: 'Unarchive the Agent workspace before enabling proactive channels.',
       },
     };
@@ -1428,6 +1525,15 @@ export async function handleAgentUnarchive(payload: { id?: string }): Promise<Ad
   };
 }
 
+const AGENT_SET_FIELDS = [
+  'enabled',
+  'runtime',
+  'runtimeConfig',
+  'providerId',
+  'model',
+  'permissionMode',
+] as const;
+
 export async function handleAgentSet(payload: { id: string; key: string; value: unknown }): Promise<AdminResponse> {
   const { id, key, value } = payload;
   if (!id) return { success: false, error: 'Missing required field: id' };
@@ -1437,6 +1543,19 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
   const protectedFields = ['id', 'channels'];
   if (protectedFields.includes(key)) {
     return { success: false, error: `Cannot directly set field '${key}'. Use specific commands instead.` };
+  }
+  if (!AGENT_SET_FIELDS.includes(key as typeof AGENT_SET_FIELDS[number])) {
+    const canonicalKey = key === 'provider'
+      ? 'providerId'
+      : key === 'permission'
+        ? 'permissionMode'
+        : undefined;
+    return {
+      success: false,
+      error: canonicalKey
+        ? `Unknown Agent field '${key}'; use '${canonicalKey}'. Supported fields: ${AGENT_SET_FIELDS.join(', ')}.`
+        : `Unknown Agent field '${key}'. Supported fields: ${AGENT_SET_FIELDS.join(', ')}.`,
+    };
   }
 
   if (key === 'enabled') {
@@ -1497,33 +1616,79 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
     id,
     (agent, currentConfig) => {
       let normalizedValue = value;
+      if (key === 'runtimeConfig') {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          return {
+            ok: false,
+            response: { success: false, error: 'runtimeConfig must be a JSON object.' },
+          };
+        }
+        const runtimeConfig = value as RuntimeConfig;
+        const targetManagedCodex = agentUsesManagedCodexProvider({
+          providerId: agent.providerId,
+          runtime: typeof agent.runtime === 'string' ? agent.runtime : undefined,
+          runtimeConfig,
+        });
+        if (targetManagedCodex && (
+          runtimeConfig.source !== undefined
+          || runtimeConfig.model !== undefined
+          || runtimeConfig.permissionMode !== undefined
+          || runtimeConfig.additionalArgs !== undefined
+        )) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: 'Managed Codex Agent defaults keep provider/model/permission in product fields, not runtimeConfig.',
+            },
+          };
+        }
+        if (runtimeConfig.source === 'managed-provider' && !targetManagedCodex) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: 'runtimeConfig.source=managed-provider requires the complete managed Codex provider identity.',
+            },
+          };
+        }
+        if (runtimeConfig.permissionMode !== undefined) {
+          if (typeof runtimeConfig.permissionMode !== 'string') {
+            return {
+              ok: false,
+              response: { success: false, error: 'runtimeConfig.permissionMode must be a string.' },
+            };
+          }
+          const runtime = (agent.runtime ?? 'builtin') as RuntimeType;
+          if (runtime === 'builtin' || !isRuntimePermissionMode(runtimeConfig.permissionMode, runtime)) {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: `Invalid runtimeConfig.permissionMode for ${runtime}. Run 'myagents runtime describe ${runtime}' for valid values.`,
+              },
+            };
+          }
+        }
+      }
       if (key === 'permissionMode') {
         const requestedMode = (value as string).trim();
-        if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
-          // `full-auto` keeps Codex's workspace-write sandbox, while the product
-          // vocabulary has no lossless storage value for it. Mapping it to
-          // fullAgency would later project as danger-full-access
-          // (`no-restrictions`), silently escalating permissions.
-          if (requestedMode === 'full-auto') {
+        if (agentUsesManagedCodexProvider({
+          providerId: agent.providerId,
+          runtime: typeof agent.runtime === 'string' ? agent.runtime : undefined,
+          runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
+        })) {
+          const validModes: PermissionMode[] = ['auto', 'plan', 'fullAgency'];
+          if (!validModes.includes(requestedMode as PermissionMode)) {
             return {
               ok: false,
               response: {
                 success: false,
-                error: "Managed Codex permissionMode 'full-auto' cannot be stored losslessly. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.",
+                error: `Invalid managed Codex permissionMode. Valid: ${validModes.join(', ')}.`,
               },
             };
           }
-          const normalized = managedCodexRuntimePermissionToProviderPermission(requestedMode);
-          if (!normalized) {
-            return {
-              ok: false,
-              response: {
-                success: false,
-                error: 'Invalid managed Codex permissionMode. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.',
-              },
-            };
-          }
-          normalizedValue = normalized;
+          normalizedValue = requestedMode;
         } else {
           const validModes: PermissionMode[] = ['auto', 'plan', 'fullAgency'];
           if (!validModes.includes(requestedMode as PermissionMode)) {
@@ -1602,14 +1767,7 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
         }
       }
 
-      const projectMirrorFields = new Set([
-        'providerId',
-        'model',
-        'permissionMode',
-        'mcpEnabledServers',
-        'enabledPluginIds',
-      ]);
-      const liveReloadFields = new Set(['providerId', 'model', 'permissionMode']);
+      const syncExecutionDefault = key === 'providerId' || key === 'model' || key === 'permissionMode';
       const providerEnvJson = key === 'providerId'
         ? (() => {
             const resolved = resolveProviderEnv(String(normalizedValue), currentConfig);
@@ -1623,8 +1781,8 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
           [key]: normalizedValue,
           ...(key === 'providerId' ? { providerEnvJson } : {}),
         },
-        projectPatch: projectMirrorFields.has(key) ? { [key]: normalizedValue } : undefined,
-        livePatch: liveReloadFields.has(key)
+        projectPatch: syncExecutionDefault ? { [key]: normalizedValue } : undefined,
+        livePatch: syncExecutionDefault
           ? {
               [key]: normalizedValue,
               ...(key === 'providerId' ? { providerEnvJson: providerEnvJson ?? null } : {}),
@@ -1889,6 +2047,34 @@ Enable it from Settings → About & Feedback → Lab → CLI tool registry befor
 using 'myagents tool ...'. The stable built-in myagents CLI commands
 (cron, thought, im, widget, task, runtime, etc.) remain available.`;
 
+function taskLeafHelp(input: {
+  usage: string;
+  when: string;
+  effect: string;
+  options: string;
+  mutation: string;
+  output: string;
+  example: string;
+  recovery: string;
+}): string {
+  return `${input.usage}
+
+WHEN TO CALL
+  ${input.when}
+EFFECT
+  ${input.effect}
+OPTIONS
+${input.options}
+MUTATION / AI
+  ${input.mutation}
+OUTPUT
+  ${input.output}
+EXAMPLE
+  ${input.example}
+RECOVERY
+  ${input.recovery}`;
+}
+
 const HELP_TEXTS: Record<string, string> = {
   mcp: `myagents mcp — Manage MCP tool servers
 
@@ -2016,7 +2202,7 @@ Options for 'update' <id>:
   accepted as an alias for --prompt here. --prompt-file is supported and
   cannot be combined with --prompt or --message.
 
-See 'myagents cron readme' for long-form usage + exit-from-task flow.`,
+See 'myagents task readme' for the canonical automation + exit flow.`,
 
   goal: `myagents goal — Manage the current session Goal Mode
 
@@ -2610,7 +2796,7 @@ RECOVERY
   task: `myagents task — Manage Task Center tasks (v0.1.69+)
 
 Commands:
-  list                            List tasks (filter via --workspaceId / --status / --tag)
+  list                            Compact current-workspace list (--query / --limit supported)
   get <taskId>                    Task metadata + .task/ doc paths
   create-direct <name>            Create a task with inline task.md content
   create-from-alignment <sid>     Materialize a task from an alignment session
@@ -2619,17 +2805,31 @@ Commands:
                                   prompt / overrides). Rejected while running.
   update-status <taskId> <status> Transition state (running/verifying/done/blocked/stopped)
   append-session <taskId> <sid>   Link an SDK session id to a task
-  run <taskId>                    Dispatch a todo task for execution
+  run <taskId>                    Enable the Task scheduler from todo
+  start <taskId>                  Resume a stopped schedule and return its next tick
+  stop <taskId>                   Pause schedule and stop an active execution
+  runs <taskId> [--limit N]       Show recent AI execution records
+  exit [--reason <text>]          End the current eligible scheduled Task from inside its run
+  readme                          Full scheduled/conditional automation guide
+  run-now <taskId>                Bypass Detector and dispatch one AI execution
   rerun <taskId>                  Reset to 'todo' and dispatch
-  archive <taskId>                Soft-archive (with 30d retention)
-  delete <taskId>                 Hard delete (alias: 'remove' for cron-CLI parity)
+  check-now <taskId>              Run Detector now; activate AI only on a hit
+  trigger validate --spec-file <json>
+                                  Validate a Trigger without running it
+  trigger test <taskId> [--checkpoint-file <json>] [--expect quiet|activate]
+  trigger test --spec-file <json> --workspacePath <abs> [--checkpoint-file <json>]
+                                  Really run the command, but do not commit MyAgents
+                                  state, create an event, or activate AI
+  reset-checkpoint <taskId>       Clear the platform-managed Detector checkpoint
+  archive <taskId>                User-only recoverable long-lived archive state
+  delete <taskId>                 Irreversible product deletion (alias: remove)
 
 Options for 'create-direct':
   --name               Task name (required; may also be the 1st positional)
   --executor           'agent' | 'user' (default: agent)
   --description        Short description
-  --workspaceId        Workspace id (required)
-  --workspacePath      Absolute workspace path (required)
+  --workspaceId        Explicit cross-workspace project id (normally omit)
+  --workspacePath      Explicit cross-workspace absolute path (normally omit)
   --taskMdFile <path>  Read task.md body from a file (preferred for multi-line
                        markdown — avoids shell-escape hell). Max 1 MB.
   --taskMdContent      Inline task.md body (use --taskMdFile instead when
@@ -2637,13 +2837,24 @@ Options for 'create-direct':
                        Exactly one of --taskMdFile / --taskMdContent must be set.
     --executionMode      'once' | 'scheduled' | 'recurring' (default: once)
   --runMode            'single-session' | 'new-session'
+  --preselectedSessionId current|<id>
+                       Required for single-session; current resolves from
+                       MYAGENTS_SESSION_ID before the Task is created
+  --trigger-file <path> Strict Trigger v1 JSON (always or command Detector)
   --tags               Comma-separated tag list
   --sourceThoughtId    Link back to the originating thought
+
+End conditions for scheduled/recurring Task creation:
+  --deadline 2026-08-31T23:59:00+08:00  Stop starting AI turns after this instant
+  --maxExecutions <n>                    Cap settled AI turns; quiet checks do not count
+  --aiCanExit true|false                 Allow the Task AI to call 'task exit'
 
 Scheduling (for executionMode = 'recurring' / 'scheduled'; omitting
 --intervalMinutes on recurring silently defaults to 60 min — the CLI now
 emits a warning when you do):
   --intervalMinutes <n>            Fixed interval in minutes (recurring; min 5)
+  --startAt <ISO-with-offset>       First interval tick. Without it, the first
+                                   interval tick is about 2 seconds after run.
   --cronExpression "0 */3 * * *"   Cron expression (recurring; takes precedence over interval)
   --cronTimezone Asia/Shanghai     IANA tz id for cronExpression; create-direct
                                   defaults to local timezone when omitted
@@ -2662,6 +2873,7 @@ silently to disk, even if you set --notificationDesktop):
 Per-task RUNTIME overrides (all optional; omit to inherit workspace defaults):
   --runtime            Override runtime (${RUNTIMES_ENUM_LINE})
                        See: myagents runtime list
+  --providerId         Override builtin provider; must be paired with --model
   --model              Override model — values depend on runtime
                        See: myagents runtime describe <runtime>
   --permissionMode     Override permission mode — values depend on runtime
@@ -2674,7 +2886,9 @@ Options for 'create-from-alignment' (identical override flags):
   --name               Task name (required)
   --executor --description --workspaceId --workspacePath
   --executionMode --runMode --tags --sourceThoughtId
-  --runtime --model --permissionMode --runtimeConfig --mcpEnabledServers
+  --preselectedSessionId current|<id> --trigger-file <path>
+  --deadline <ISO-with-offset> --maxExecutions <n> --aiCanExit true|false
+  --runtime --providerId --model --permissionMode --runtimeConfig --mcpEnabledServers
 
 Options for 'create-attached':
   --name                  Task name (required)
@@ -2693,17 +2907,28 @@ Options for 'create-attached':
   MYAGENTS_SESSION_ID and is not guessed by the CLI.
 
 Options for 'update' <taskId>:
-  Accepts every create-direct flag (each optional; missing = leave unchanged).
+  Accepts schedule, prompt, routing, notification and runtime fields from
+  create-direct (each optional; missing = leave unchanged). End-condition
+  flags are create-only; edit existing end conditions in Task Center.
   Additional flags for clearing overrides:
     --clearProviderOverride   Reset providerId + model to follow Agent
     --clearRuntimeOverride    Reset runtime + runtimeConfig to follow Agent
     --clearMcpOverride        Reset MCP override to follow Agent
+    --clear-trigger           Restore the effective always Detector
   Update is rejected when the task is Running/Verifying.
   Notification semantics: --notification* flags MERGE with the existing
-  config (CLI reads current state, overlays your values, then writes). So
+  config (CLI sends only provided fields; the Task owner merges them under
+  its authoritative write lock). So
   '--notificationDesktop false' preserves botChannelId / botThread / events.
   To clear bot routing entirely, recreate the task — empty values are
   rejected at the CLI boundary to catch typos.
+
+Detector safety:
+  --trigger-file / --spec-file are regular non-symlink UTF-8 JSON files.
+  Command args remain a JSON array and are never shell-split. trigger test is
+  a real process execution: MyAgents does not commit checkpoint/event state or
+  activate AI, but the script's own external side effects still happen.
+  check-now uses the persisted checkpoint and commits the normal outcome.
 
 Options for 'update-status':
   Positional: <taskId> <status>
@@ -2715,14 +2940,12 @@ Output:
     inheritedFromWorkspace[], nextSteps.{dispatch,inspect,complete}).
 
 Examples:
-  myagents task list --workspaceId my-proj
+  myagents task list --query "review" --limit 20
   myagents task create-direct --name "review PR" \\
-      --workspaceId my-proj --workspacePath /path/to/my-proj \\
       --taskMdContent "Review the latest PR and file findings in progress.md" \\
       --runtime codex --model gpt-5.2 --permissionMode full-auto
   # Recurring + IM push — was GUI-only before issue #205
   myagents task create-direct --name "issue triage" \\
-      --workspaceId my-proj --workspacePath /path/to/my-proj \\
       --taskMdFile /tmp/triage-prompt.md \\
       --executionMode recurring --intervalMinutes 180 \\
       --notificationBotChannelId feishu_main
@@ -2731,12 +2954,255 @@ Examples:
       --workspaceId my-proj --workspacePath /path/to/my-proj \\
       --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
   myagents task run t_abc123
+  myagents task run-now t_abc123  # force AI without running Detector
   myagents task update t_abc123 --intervalMinutes 240   # change cadence after the fact
   myagents task update-status t_abc123 done --message "shipped in v0.1.70"
 
 Related:
   myagents agent show <id>          Inspect an agent's effective defaults first,
                                     so you know what you are overriding.`,
+
+  'task/list': taskLeafHelp({
+    usage: 'myagents task list — Discover Tasks in the current workspace',
+    when: 'Before creating a possible duplicate, or when the Task id is unknown.',
+    effect: 'Read-only. Defaults to the current workspace and returns a compact projection; task get owns full detail.',
+    options: '  --query <text>       Match id, name, description, or tag\n  --limit <1..200>     Bound returned rows\n  --status / --tag     Existing lifecycle/tag filters\n  --workspaceId <id>   Explicit cross-workspace scope',
+    mutation: 'None; never starts AI. JSON omits expanded sessionIds and returns sessionCount.',
+    output: 'Compact identity, status, schedule, detector type, counters, nextExecutionAt, and execution health.',
+    example: 'myagents task list --query "release" --limit 20 --json',
+    recovery: 'Use myagents agent current --json when current workspace resolution fails; use task get <id> for full data.',
+  }),
+
+  'task/get': taskLeafHelp({
+    usage: 'myagents task get <taskId> — Read one authoritative Task',
+    when: 'After creation/mutation or whenever full configuration, docs, sessions, or Detector health is needed.',
+    effect: 'Read-only. Returns the full ordinary Task plus docs paths, runtime health, and computed nextExecutionAt.',
+    options: '  <taskId>             Required Task id\n  --json               Machine-readable full record',
+    mutation: 'None; never starts AI.',
+    output: 'Full Task record. Unlike task list, sessionIds and detailed Trigger state are intentionally included.',
+    example: 'myagents task get <taskId> --json',
+    recovery: 'Run task list --query <name> if the id is unknown.',
+  }),
+
+  'task/create-direct': taskLeafHelp({
+    usage: 'myagents task create-direct --name <name> --taskMdFile <path> — Create a Task',
+    when: 'When work must persist beyond this turn and run once in the future, on a schedule, or after a conditional check.',
+    effect: 'Creates a Todo Task in the current workspace. Omit workspace flags normally; pass both only for explicit cross-workspace creation.',
+    options: '  --taskMdFile <path>  Preferred action body (or --taskMdContent)\n  --executionMode once|scheduled|recurring\n  --dispatchAt <ISO>    Scheduled one-shot time\n  --intervalMinutes <n> Fixed interval; --startAt controls the first tick\n  --cronExpression / --cronTimezone for wall-clock recurrence\n  --trigger-file <path> Optional command Detector\n  --providerId <id> --model <id>  Optional builtin route pair',
+    mutation: 'Persists Todo only; does not start AI. A recurring interval without startAt gets its first tick about 2 seconds after task run.',
+    output: 'Persisted Task, caller audit provenance, docs path, overrides, nextExecutionAt, and next-step commands.',
+    example: 'myagents task create-direct --name "daily review" --taskMdFile task-action.md --executionMode recurring --cronExpression "0 9 * * *" --json',
+    recovery: 'Run task get <id> to verify. agent current is diagnostic, not a prerequisite.',
+  }),
+
+  'task/create-from-alignment': taskLeafHelp({
+    usage: 'myagents task create-from-alignment <alignmentSessionId> --name <name> — Materialize aligned work',
+    when: 'After the task-alignment flow has produced a reviewed Task directory.',
+    effect: 'Moves the alignment artifacts into one ordinary Task and inherits workspace metadata from the alignment Session.',
+    options: '  <alignmentSessionId> Required alignment Session id\n  --name <name>         Required Task name\n  --providerId <id> --model <id>  Optional builtin route pair\n  --run                 Dispatch after successful creation',
+    mutation: 'Creates a once Task; --run also starts its asynchronous AI execution.',
+    output: 'Persisted Task/docs plus optional run result.',
+    example: 'myagents task create-from-alignment <sessionId> --name "ship feature" --run --json',
+    recovery: 'If metadata is missing, pass explicit workspace fields or repair the alignment artifacts.',
+  }),
+
+  'task/create-attached': taskLeafHelp({
+    usage: 'myagents task create-attached --name <name> --sourceIssueId <id> — Attach current Session work',
+    when: 'Only for a claimed Space Issue already executing in the current MyAgents Session.',
+    effect: 'Creates a Running attached-session Task linked to the Space Issue and current canonical Session.',
+    options: '  --name / --sourceIssueId / workspace identity are required\n  --taskMdFile <path>   Preferred action body\n  --source space-issue  Only supported source',
+    mutation: 'Creates lifecycle state but does not start a second AI turn.',
+    output: 'Attached Task, docs, and current Session linkage.',
+    example: 'myagents task create-attached --name "Issue" --sourceIssueId <id> --taskMdFile task.md --workspaceId <id> --workspacePath <abs> --json',
+    recovery: 'Run only inside a Session with MYAGENTS_SESSION_ID; use the Space claim recovery command on partial failure.',
+  }),
+
+  'task/update': taskLeafHelp({
+    usage: 'myagents task update <taskId> [fields] — Patch Task configuration',
+    when: 'When a non-running Task schedule, action, Trigger, notification, or runtime override must change.',
+    effect: 'Updates the existing Task under its authoritative lock; omitted fields stay unchanged.',
+    options: '  <taskId>             Required Task id\n  Use create-direct schedule/runtime flags; --clear-trigger restores always\n  --clearProviderOverride / --clearRuntimeOverride / --clearMcpOverride',
+    mutation: 'Rejected while Running/Verifying; does not start AI.',
+    output: 'Authoritative updated Task and docs.',
+    example: 'myagents task update <taskId> --intervalMinutes 30 --json',
+    recovery: 'Stop first when a running Task must be edited; inspect task get after failure.',
+  }),
+
+  'task/run': taskLeafHelp({
+    usage: 'myagents task run <taskId> — Enable a Todo Task',
+    when: 'Immediately after a Todo Task has been created and verified.',
+    effect: 'Moves Todo to Running and arms the existing scheduler.',
+    options: '  <taskId>             Required Todo Task id\n  --json               Return the authoritative post-mutation state',
+    mutation: 'Does not wait for an AI result. Interval recurrence without startAt gets a tick in about 2 seconds; Cron waits for its next wall-clock tick; scheduled waits for dispatchAt.',
+    output: 'Current Task, attemptOrdinal, and scheduler-computed nextExecutionAt.',
+    example: 'myagents task run <taskId> --json',
+    recovery: 'Use task rerun for a terminal/stopped Task, or task get to inspect a schedule error.',
+  }),
+
+  'task/start': taskLeafHelp({
+    usage: 'myagents task start <taskId> — Resume a stopped schedule',
+    when: 'When a previously stopped scheduled/recurring Task should continue.',
+    effect: 'Re-arms the existing schedule through the Cron compatibility adapter; it does not bypass the Detector.',
+    options: '  <taskId>             Required Task id\n  --json               Return the authoritative post-mutation state',
+    mutation: 'May schedule the next tick near now when the preserved interval anchor is overdue; returned nextExecutionAt is authoritative.',
+    output: 'Current Task status and nextExecutionAt; never an empty success object.',
+    example: 'myagents task start <taskId> --json',
+    recovery: 'Use task get for schedule/Trigger health, or task rerun when the Task is terminal.',
+  }),
+
+  'task/rerun': taskLeafHelp({
+    usage: 'myagents task rerun <taskId> — Re-dispatch a terminal Task',
+    when: 'When blocked, stopped, done, or archived work should start again from Todo.',
+    effect: 'Writes the audited rerun transition and arms the same Task scheduler.',
+    options: '  <taskId>             Required Task id\n  --json               Authoritative post-mutation state',
+    mutation: 'May start AI asynchronously according to the Task schedule; attached-session Tasks cannot rerun.',
+    output: 'Current Task, attemptOrdinal, and nextExecutionAt.',
+    example: 'myagents task rerun <taskId> --json',
+    recovery: 'Use task get when the current state or unresolved execution blocks rerun.',
+  }),
+
+  'task/stop': taskLeafHelp({
+    usage: 'myagents task stop <taskId> — Pause a Task',
+    when: 'When future ticks and any active execution must stop.',
+    effect: 'Stops the scheduler/execution and preserves command Detector checkpoint state.',
+    options: '  <taskId>             Required Task id\n  --json               Return the authoritative post-mutation state',
+    mutation: 'Mutates lifecycle; does not delete the Task or its workspace script.',
+    output: 'Current stopped state and nextExecutionAt=null.',
+    example: 'myagents task stop <taskId> --json',
+    recovery: 'Use task start to resume or reset-checkpoint only when the managed cursor must be cleared.',
+  }),
+
+  'task/runs': taskLeafHelp({
+    usage: 'myagents task runs <taskId> [--limit N] — Read recent AI execution history',
+    when: 'To inspect settled AI outputs/errors after asynchronous admission.',
+    effect: 'Read-only compatibility projection over the existing Task run history.',
+    options: '  <taskId>             Required Task id\n  --limit <n>           Positive row limit\n  --full                Do not truncate human output',
+    mutation: 'None; never waits, retries, or starts AI.',
+    output: 'Recent settled run rows; no new execution-receipt protocol is added.',
+    example: 'myagents task runs <taskId> --limit 5 --json',
+    recovery: 'Use task get for current executionState when no settled row exists yet.',
+  }),
+
+  'task/update-status': taskLeafHelp({
+    usage: 'myagents task update-status <taskId> <status> — Write an ordinary lifecycle transition',
+    when: 'When the current actor legitimately advances running work to verifying/done/blocked/stopped.',
+    effect: 'Applies the existing Task state machine with caller actor/source audit.',
+    options: '  <taskId> <status>    Required\n  --message <text>      Optional audit reason',
+    mutation: 'Mutates lifecycle; illegal transitions and Agent archive attempts fail closed.',
+    output: 'Authoritative Task, transition, and nextExecutionAt.',
+    example: 'myagents task update-status <taskId> done --message "shipped" --json',
+    recovery: 'Read task get and choose a legal next state; do not forge actor/source flags.',
+  }),
+
+  'task/append-session': taskLeafHelp({
+    usage: 'myagents task append-session <taskId> <sessionId> — Link an existing Session',
+    when: 'When work moved into another Session and the Task history should reference it.',
+    effect: 'Adds the canonical Session id once to the existing Task.',
+    options: '  <taskId> <sessionId> Both required',
+    mutation: 'Mutates Task metadata only; does not message or start that Session.',
+    output: 'Authoritative Task with updated sessionIds.',
+    example: 'myagents task append-session <taskId> <sessionId> --json',
+    recovery: 'Use session discovery to obtain a real id; never use a workspace path as Session identity.',
+  }),
+
+  'task/exit': taskLeafHelp({
+    usage: 'myagents task exit --reason <text> — End the currently executing eligible Task',
+    when: 'Only from inside that Task run when aiCanExit is enabled and the recurring goal is genuinely finished.',
+    effect: 'Requests terminal settlement for the active Task-owned turn.',
+    options: '  --reason <text>      Concise completion reason',
+    mutation: 'Mutates only the active authorized Task run; rejected outside Task context.',
+    output: 'Accepted Task exit request.',
+    example: 'myagents task exit --reason "goal achieved" --json',
+    recovery: 'Use ordinary error handling for transient failures; do not exit a Task that still serves user intent.',
+  }),
+
+  'task/run-now': taskLeafHelp({
+    usage: 'myagents task run-now <taskId> — Force one AI turn',
+    when: 'For an explicit manual execution that must bypass activation filtering.',
+    effect: 'Dispatches one AI execution without running the Detector.',
+    options: '  <taskId>             Required Running ordinary Task id\n  --json               Machine-readable admission result',
+    mutation: 'Starts AI asynchronously; schedule anchor and Detector checkpoint are unchanged.',
+    output: 'Admission data including taskId and sessionId. It is not a terminal execution receipt.',
+    example: 'myagents task run-now <taskId> --json',
+    recovery: 'Use task runs <id> and task get <id> to inspect the eventual result.',
+  }),
+
+  'task/check-now': taskLeafHelp({
+    usage: 'myagents task check-now <taskId> — Run the persisted Detector now',
+    when: 'After a production Detector is deployed or repaired and a real stateful check is intended.',
+    effect: 'Runs the Detector with persisted checkpoint, commits checkpoint/health, and activates AI only on activate.',
+    options: '  <taskId>             Required Running command-Detector Task id\n  --json               Structured decision/admission data',
+    mutation: 'quiet commits state without AI; activate starts AI asynchronously; failure commits health/backoff and is not a decision.',
+    output: 'Detector result and, on activate, durable admission identity. It is not a terminal execution receipt.',
+    example: 'myagents task check-now <taskId> --json',
+    recovery: 'Use trigger test first for no-commit diagnosis, then task get for health and checkpoint.',
+  }),
+
+  'task/trigger/validate': taskLeafHelp({
+    usage: 'myagents task trigger validate --spec-file <json> — Validate a Trigger',
+    when: 'Before running or attaching a command Detector spec.',
+    effect: 'Parses and validates strict Trigger v1 JSON without executing the command.',
+    options: '  --spec-file <path>   Required regular non-symlink UTF-8 JSON file\n  --json               Return normalized Trigger JSON',
+    mutation: 'None; never runs a process or AI.',
+    output: 'Normalized Trigger on success; precise schema error on failure.',
+    example: 'myagents task trigger validate --spec-file trigger.production.json --json',
+    recovery: 'Read myagents-task-automation/references/command-detector.md and correct the strict schema.',
+  }),
+
+  'task/trigger/test': taskLeafHelp({
+    usage: 'myagents task trigger test <taskId>|--spec-file <json> — Execute a Detector without committing MyAgents state',
+    when: 'During fixture validation or diagnosis before a real check-now.',
+    effect: 'Really executes the command using a snapshot/fixture checkpoint but does not commit MyAgents checkpoint, health, events, or AI activation.',
+    options: '  <taskId>             Test the persisted Trigger\n  --spec-file <path>   Or test an unpersisted Trigger with --workspacePath\n  --checkpoint-file    Optional checkpoint fixture\n  --expect quiet|activate',
+    mutation: 'No MyAgents state or AI mutation. Script file/network/database side effects are real and are not rolled back.',
+    output: 'Structured quiet/activate result or harness failure diagnostics.',
+    example: 'myagents task trigger test --spec-file trigger.test.json --workspacePath /abs/workspace --expect quiet --json',
+    recovery: 'Isolate fixtures; a failure is a program/harness error, not a third decision.',
+  }),
+
+  'task/reset-checkpoint': taskLeafHelp({
+    usage: 'myagents task reset-checkpoint <taskId> — Clear MyAgents-managed Detector checkpoint',
+    when: 'Only when the persisted cursor must intentionally restart from null.',
+    effect: 'Clears the platform checkpoint and advances its revision; preserves check history and script-owned state.',
+    options: '  <taskId>             Required command-Detector Task id\n  --json               Return the new state',
+    mutation: 'Mutates checkpoint only; does not run the Detector or AI.',
+    output: 'Authoritative Trigger runtime state after reset.',
+    example: 'myagents task reset-checkpoint <taskId> --json',
+    recovery: 'Use task get first; do not reset merely to hide a Detector failure.',
+  }),
+
+  'task/archive': taskLeafHelp({
+    usage: 'myagents task archive <taskId> — Move a completed Task to long-lived archive',
+    when: 'When a completed Task should leave active views but remain recoverable and auditable.',
+    effect: 'Transitions Done to Archived. This is a user-only product action.',
+    options: '  <taskId>             Required Done Task id\n  --message <text>      Optional audit message',
+    mutation: 'Mutates lifecycle; Agent callers are rejected by the Task authority.',
+    output: 'Authoritative archived Task and nextExecutionAt=null.',
+    example: 'myagents task archive <taskId> --message "shipped" --json',
+    recovery: 'A user can use task rerun to reactivate an archived Task.',
+  }),
+
+  'task/delete': taskLeafHelp({
+    usage: 'myagents task delete <taskId> — Irreversibly remove a Task from product use',
+    when: 'Only after the user confirms the exact Task to remove.',
+    effect: 'Stops execution, removes Trigger runtime state/pending activation, and hides the Task from ordinary surfaces. An internal tombstone/audit remains for authority and migration safety.',
+    options: '  <taskId>             Required Task id (remove is a compatibility alias)',
+    mutation: 'Irreversible product deletion. It does not delete workspace-owned scripts, databases, or external state.',
+    output: 'Deletion receipt with status=deleted and nextExecutionAt=null.',
+    example: 'myagents task delete <taskId> --json',
+    recovery: 'There is no undelete command. Recreate a Task if deletion was a mistake; clean scripts only under separate explicit user intent.',
+  }),
+
+  'task/readme': taskLeafHelp({
+    usage: 'myagents task readme — Read the compact Task automation contract',
+    when: 'When the Task product model or canonical lifecycle is unclear before choosing a leaf command.',
+    effect: 'Read-only. Explains action, schedule, activation, Session routing, lifecycle, and safety boundaries.',
+    options: '  --json               Return the readme text in a machine-readable response',
+    mutation: 'None; never creates a Task, runs a Detector, or starts AI.',
+    output: 'Current Task command model and links to exact leaf help.',
+    example: 'myagents task readme',
+    recovery: 'Use myagents task <leaf> --help for exact input/output details.',
+  }),
 
   im: `myagents im — IM Bot capabilities (run 'myagents im readme' for long-form docs)
 
@@ -2815,17 +3281,25 @@ Commands:
                              top-level form is provided so AI guesses route
                              to a real handler (issue #194).`,
 
-  agent: `myagents agent — Manage agents & channels
+  agent: `myagents agent — Discover stable Workspace Agent identities
 
-Commands:
-  list [--active|--archived]      List all agents
-  show <id>                       Show an agent's effective runtime/model/permissionMode defaults
+Every user-visible Workspace selects one stable Agent identity through
+Project.agentId. Historical extra/orphan Agents remain addressable by exact ID.
+The Agent owns execution defaults; Project.path owns the current workspace.
+enabled=false only pauses proactive capabilities such as channels and heartbeat.
+
+Discovery:
+  list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
+  show <agentId>                  Inspect identity and effective birth defaults
+
+Management:
   enable <id>                     Enable an agent
   disable <id>                    Disable an agent
   archive <id>                    Archive an Agent workspace and pause proactive channels
   unarchive <id>                  Restore an archived Agent workspace
-  set <id> <key> <value>          Set one Agent field; provider/model/permission
-                                  also sync the Project mirror and live channels
+  set <id> <key> <value>          Set enabled/runtime/runtimeConfig or one of
+                                  providerId/model/permissionMode; the latter
+                                  sync the Project mirror and live channels
   runtime-status                  Runtime drift status across agents
   channel list <agent-id>         List channels
   channel add <agent-id>          Add a channel
@@ -2837,99 +3311,244 @@ Options for 'channel add':
   --app-id      App ID (for feishu/dingtalk)
   --app-secret  App Secret (for feishu/dingtalk)
 
-Managed Codex permissionMode accepts either product values
-(auto | plan | fullAgency) or Codex values
-(auto-edit | suggest | no-restrictions); storage is normalized to
-the product vocabulary and 'show' reports the effective Codex value.
-Codex 'full-auto' is rejected because product storage cannot distinguish its
-workspace-write sandbox from unrestricted danger-full-access.
+Visibility: default list shows user-visible, non-archived Project-backed Agents
+plus compatible historical orphan Agents. A conflicting exact target fails
+without hiding healthy targets. Project lifecycle commands require an exact
+Project.agentId claim.
 
-Typical flow (AI preparing a task override):
-  1. myagents agent show <id>          — learn current defaults
-  2. myagents runtime describe <rt>    — see valid model + permission values
-  3. myagents task create-direct ... --runtime <rt> --model <m>`,
+Collaboration flow:
+  myagents agent list
+  myagents agent show <agentId>
+  myagents session list --agent <agentId>
+  myagents session start --agent <agentId> -p "<prompt>"
 
-  session: `myagents session — 跨 session 推送与监听 (PRD 0.2.37)
+See also: myagents session --help`,
 
-USAGE
-  myagents session send <sessionId> -p "<prompt>" [OPTIONS]
-  myagents session send <sessionId> --prompt-file <path> [OPTIONS]
-  myagents session watch <sessionId>
+  'agent/list': `myagents agent list — Discover addressable Workspace Agents
 
-DESCRIPTION
-  MyAgents 提供跨 session 系统推送能力。所有返回到 AI 上下文里的跨
-  session 事件都使用 <myagents-session-event> 协议块。
+WHEN TO CALL
+  Before choosing a collaboration target, or to identify this Session's Agent.
 
-  send:
-    把一条消息异步投送给另一个 session。CLI 立即返回投递结果,不等待
-    目标处理。默认情况下,目标 session 本轮完成后,MyAgents 会把最终
-    结果自动推送回当前 session,事件类型为 send.result。
-
-    --no-reply 表示 one-way delivery:目标会收到请求或通知,但当前
-    session 不会自动收到目标本轮结果。
-
-  watch:
-    监听另一个 session 当前/最近的工作结果。watch 不向目标 session
-    注入新任务。目标正在运行时会注册 watcher,完成后推送 watch.completed;
-    目标注册时已经 idle 时会立即返回 watch.already_idle 和最近结果。
-
-WHEN TO USE
-  ✓ 用户希望另一个 session 做新工作、收到通知、补充验证 → send
-  ✓ 当前任务依赖另一个 session 的工作,或用户让你监听它 → watch
-  ✓ 用户在对话里给了你一个 sessionId,让你与其交互或监听
-  ✗ 想答复当前用户——直接回复就行,不要用这个工具
-  ✗ 想给 IM peer 发消息——用 \`myagents im send-media\`,不是这个
+EFFECT
+  Read-only. Lists Project-backed and compatible historical Agent identities;
+  does not start a Sidecar.
 
 OPTIONS
-  send <sessionId>       目标 session 的 ID(必填)
-  -p, --prompt TEXT      send 的消息内容(与 --prompt-file 二选一)
-  --prompt-file PATH     send 的消息内容文件路径(适合多行 / 长文本)
-  --no-reply             send 单向投递,不把目标结果推回当前 session
-  watch <sessionId>      监听目标 session;不接受 prompt / then 参数
+  --active      Visible, non-archived Agents (default)
+  --archived    Visible archived Agents; mutually exclusive with --active
+  --json        Machine-readable records
 
-ABOUT IDENTITY
-  系统会自动用 session 元数据作为对方看到的 label。不要手动指定身份。
+OUTPUT
+  agentId, name, projectId, workspacePath, association, enabled, archived,
+  archivedAt, isCurrent, channelCount, channels. Human output marks the current
+  Project-selected Agent with *.
 
-PLATFORM NOTE
-  Windows 上 cmd.exe 会把 -p 文本中的换行符当成命令边界截断,导致后续
-  flag 全部丢失。本 CLI 在 -p 模式下检测到内容含 \\n 或长度 > 4KB 时
-  会立即 fail-fast(exit 3),提示你切到 --prompt-file。所有平台行为
-  一致——养成统一习惯,长 / 多行内容写到临时文件再传路径。
-
-EXIT CODES
-  0   投递成功
-  1   sessionId 不存在 / 业务错误
-  2   投递失败(目标 sidecar 不可达 / Rust 路由错误等)
-  3   参数错误(包括 -p 含 \\n 或超长时的 fail-fast)
+IDENTITY / PERMISSIONS
+  Use agentId from this command; never guess IDs or use workspace paths as
+  selectors. enabled controls proactive behavior, not explicit addressability.
 
 EXAMPLES
-  # 让目标 session 处理一件事并把结果推回来(最常见,短文本)
-  myagents session send sess_abc123 -p "用户希望加上 deepseek 也跑一遍"
+  myagents agent list
+  myagents agent list --archived --json
 
-  # 仅通知,不期待回应
-  myagents session send sess_xyz789 -p "任务已完成,无需回应" --no-reply
+RECOVERY
+  No current marker is valid from Global/terminal contexts or when the caller
+  is filtered out. Identity conflicts are reported instead of guessed.`,
 
-  # 多行 / 长文本(必须用 --prompt-file,跨平台稳定)
-  myagents session send sess_abc123 --prompt-file /tmp/inbox_msg.txt
+  'agent/current': `myagents agent current — Inspect only this CLI caller's current context
 
-  # 当前任务依赖另一个 session 的结果
-  myagents session watch sess_abc123
+WHEN TO CALL
+  When a diagnostic needs the current Agent, workspace, or Session identity.
+EFFECT
+  Read-only. Resolves the Sidecar's current Project-backed Agent without listing other Agents.
+OPTIONS
+  --json        Machine-readable compact record
+OUTPUT
+  agentId, name, workspaceId, workspacePath, and sessionId when available.
+IDENTITY / PERMISSIONS
+  This is diagnostic only; Task create/list already inherit the current workspace.
+EXAMPLE
+  myagents agent current --json
+RECOVERY
+  Run myagents agent list if the current workspace is not Project-linked.`,
 
-SESSION EVENT NOTES
-  你可能在当前 turn 的命令输出或后续系统推送中看到:
+  'agent/show': `myagents agent show <agentId> — Inspect one Agent identity
 
-    <myagents-session-event type="send.result" ...>
-    ...
-    </myagents-session-event>
+WHEN TO CALL
+  After agent list, when you need the target Workspace or Session birth defaults.
 
-  或:
+EFFECT
+  Read-only. Resolves current effective defaults without starting a Session.
 
-    <myagents-session-event type="watch.completed" ...>
-    ...
-    </myagents-session-event>
+OPTIONS
+  <agentId>     Required stable Agent ID
+  --json        Machine-readable record
 
-SEE ALSO
-  myagents im send-media     给 IM peer 发消息(不是给 session)`,
+OUTPUT
+  Identity, lifecycle, isCurrent, channel summary, and effectiveDefaults:
+  runtime/source, model, permissionMode, provider, runtimeConfig, MCP, plugins,
+  and official tools. Secret and environment values are never returned.
+
+IDENTITY / PERMISSIONS
+  Defaults belong to the target Agent. A later session start uses them and does
+  not accept caller overrides.
+
+EXAMPLE
+  myagents agent show <agentId>
+
+RECOVERY
+  Run myagents agent list (or agent list --archived) to obtain a visible Agent
+  ID. Archived and compatible historical orphan Agents remain inspectable.`,
+
+  session: `myagents session — Discover and collaborate across Agent Sessions
+
+An Agent owns many isolated Sessions. Choose by context intent:
+  Fresh context:       session start --agent <agentId> -p "<prompt>"
+  Reuse known context: session send <sessionId> -p "<prompt>"
+  Observe only:        session watch <sessionId>
+
+Discover before choosing:
+  myagents agent list
+  myagents session list --agent <agentId>
+
+start and send are asynchronous admission requests: success means the target
+accepted the request, not that work completed. By default the final target turn
+is pushed back as a <myagents-session-event type="send.result"> block. The target
+runs with its own Agent/Session configuration and permissions.
+
+Run exact leaf help for flags, output, exit codes, and recovery:
+  myagents session list --help
+  myagents session start --help
+  myagents session send --help
+  myagents session watch --help`,
+
+  'session/list': `myagents session list --agent <agentId> — Recent reusable contexts
+
+WHEN TO CALL
+  After agent list, when deciding whether prior context should be preserved.
+
+EFFECT
+  Read-only persisted-history lookup. Does not wake Sessions, probe live state,
+  or read transcripts.
+
+OPTIONS
+  --agent <agentId>    Required; Agent ID from agent list
+  --limit <1..50>      Maximum records (default 5)
+  --json               Machine-readable envelope and records
+
+OUTPUT
+  History-visible Sessions ordered by persisted lastActiveAt: sessionId, title,
+  existing lastMessagePreview, runtime/source, model, and origin. This is not
+  proof that a Session is currently running.
+
+IDENTITY / PERMISSIONS
+  Agent IDs are selectors; workspace paths are not. Listing never changes or
+  adopts the target Session's configuration.
+
+EXAMPLE
+  myagents session list --agent <agentId> --limit 10
+
+RECOVERY
+  Run myagents agent list (or agent list --archived) for a valid Agent ID.
+  Archived Agent history remains readable; hidden targets are rejected and
+  identity conflicts fail closed with diagnostics.`,
+
+  'session/start': `myagents session start --agent <agentId> — Start clean work
+
+WHEN TO CALL
+  When the target Agent should work in a brand-new isolated context. Use send
+  instead when an existing Session's context matters.
+
+EFFECT
+  Atomically creates a fresh Session and admits its first prompt. Returns
+  immediately after admission; it does not wait for completion.
+
+OPTIONS
+  --agent <agentId>    Required target from agent list
+  -p, --prompt TEXT    Short single-line prompt; exclusive with --prompt-file
+  --prompt-file PATH   Prompt file for multiline/long text (maximum 1 MB)
+  --no-reply           Do not push the target turn result back
+  --json               Machine-readable receipt
+
+OUTPUT
+  accepted asynchronous receipt with agentId, new sessionId, messageId,
+  replyBack, and (when replyBack=true) resultDelivery=send.result. messageId
+  correlates with the later send.result requestEventId. No completion is implied.
+
+IDENTITY / PERMISSIONS
+  Must be called from a real MyAgents Session. The target Agent owns runtime,
+  model, permission, provider, MCP, plugin, and tool defaults; caller overrides
+  are rejected.
+
+EXAMPLES
+  myagents session start --agent <agentId> -p "Review this change"
+  myagents session start --agent <agentId> --prompt-file request.txt --no-reply
+
+RECOVERY
+  Exit 1: Agent/lifecycle rejection. Exit 2: delivery rejection, transport
+  failure, or admission unconfirmed. Exit 3: local argument error. On an
+  unconfirmed receipt, keep its IDs, run session list --agent <agentId>, and do
+  not automatically resend. Inline newline or >4 KB input must use a file.`,
+
+  'session/send': `myagents session send <sessionId> — Assign work in existing context
+
+WHEN TO CALL
+  When a known Session should do new work and retain its existing context.
+
+EFFECT
+  Asynchronously injects one prompt into the target Session and returns after
+  delivery, not completion. An idle/dead target can be awakened.
+
+OPTIONS
+  <sessionId>           Required target Session ID
+  -p, --prompt TEXT     Short single-line prompt; exclusive with --prompt-file
+  --prompt-file PATH    Prompt file for multiline/long text (maximum 1 MB)
+  --no-reply            One-way delivery; suppress automatic result push
+  --json                Machine-readable receipt
+
+OUTPUT
+  Delivery receipt with message ID. By default a later send.result event is
+  pushed to the caller Session.
+
+IDENTITY / PERMISSIONS
+  Caller label is derived from Session metadata. The target keeps its own
+  runtime, configuration, context, and permissions.
+
+EXAMPLES
+  myagents session send <sessionId> -p "Run the focused tests"
+  myagents session send <sessionId> --prompt-file request.txt --no-reply
+
+RECOVERY
+  Exit 1: Session not found/business error. Exit 2: delivery failure/rejection.
+  Exit 3: argument error. Inline newline or >4 KB input must use a file.`,
+
+  'session/watch': `myagents session watch <sessionId> — Observe without assigning work
+
+WHEN TO CALL
+  When current work depends on another Session's current/latest result and no
+  new instruction should be injected.
+
+EFFECT
+  Registers observation only. A running target later pushes watch.completed;
+  an already-idle target returns watch.already_idle with its recent result.
+
+OPTIONS
+  <sessionId>    Required target Session ID
+  --json         Machine-readable registration/result
+  Prompt and then flags are rejected; use session send for new work.
+
+OUTPUT
+  Watch registration or a system-delivered <myagents-session-event> block.
+
+IDENTITY / PERMISSIONS
+  watch never changes target context, configuration, or permissions.
+
+EXAMPLE
+  myagents session watch <sessionId>
+
+RECOVERY
+  Exit 1: Session not found/business error. Exit 2: watch delivery failure.
+  Discover Sessions with session list --agent <agentId>.`,
 };
 
 export function handleHelp(payload: { path?: string[] }): AdminResponse {
@@ -3298,9 +3917,11 @@ export async function handleGoalUpdate(payload: {
 // ---------------------------------------------------------------------------
 // Task Center forwarding (v0.1.69)
 //
-// Trust-boundary note: the CLI stamps `actor` + `source` from its own env
-// (AI subprocess = agent/cli, user terminal = user/cli) BEFORE posting here.
-// We forward these fields verbatim to the Rust Management API. The renderer-
+// Audit-provenance note: the trusted local CLI stamps `actor` + `source` from its own env
+// (a Session id means agent/cli; an ordinary terminal means user/cli) BEFORE
+// posting here. The Sidecar cannot infer this from its own server env.
+// We forward these fields to the Rust Management API, which validates legal
+// combinations. This is not a separate authentication protocol. The renderer-
 // originated path (Tauri IPC) never reaches this module — it goes through
 // `cmd_task_update_status` in Rust which stamps `user/ui` authoritatively.
 // ---------------------------------------------------------------------------
@@ -3314,15 +3935,154 @@ function qsFrom(params: Record<string, string | number | boolean | undefined>): 
   return parts.length ? `?${parts.join('&')}` : '';
 }
 
+type TaskCliCaller = {
+  actor?: 'agent' | 'user';
+  source?: 'cli';
+};
+
+function normalizedTaskCliCaller(payload: TaskCliCaller): Required<TaskCliCaller> {
+  return {
+    actor: payload.actor === 'agent' ? 'agent' : 'user',
+    source: 'cli',
+  };
+}
+
+function taskCliAnalyticsSource(payload: TaskCliCaller): 'cli' | 'cli_agent' {
+  return payload.actor === 'agent' ? 'cli_agent' : 'cli';
+}
+
+function resolveTaskWorkspace(
+  payload: Record<string, unknown>,
+): { payload: Record<string, unknown> } | { response: AdminResponse } {
+  const explicitId = typeof payload.workspaceId === 'string' && payload.workspaceId.trim()
+    ? payload.workspaceId.trim()
+    : undefined;
+  const explicitPath = typeof payload.workspacePath === 'string' && payload.workspacePath.trim()
+    ? payload.workspacePath.trim()
+    : undefined;
+  if (payload.workspaceId !== undefined && !explicitId) {
+    return { response: { success: false, error: 'workspaceId must be a non-empty string' } };
+  }
+  if (payload.workspacePath !== undefined && !explicitPath) {
+    return { response: { success: false, error: 'workspacePath must be a non-empty string' } };
+  }
+
+  const projects = loadProjects();
+  const currentPath = getCurrentWorkspacePath() ?? defaultCronWorkspace();
+  const projectById = explicitId
+    ? projects.find(item => item.id === explicitId)
+    : undefined;
+  const projectByPath = projects.find(item =>
+    workspacePathsEqual(item.path, explicitPath ?? currentPath),
+  );
+  if (explicitId && !projectById) {
+    return {
+      response: {
+        success: false,
+        error: `workspaceId does not identify a registered Task project: ${explicitId}`,
+        recoveryHint: {
+          recoveryCommand: 'myagents agent list',
+          message: 'Choose a visible Project-backed Agent workspace.',
+        },
+      },
+    };
+  }
+  if (explicitId && explicitPath && !workspacePathsEqual(projectById!.path, explicitPath)) {
+    return {
+      response: {
+        success: false,
+        error: `workspaceId '${explicitId}' does not own workspacePath '${explicitPath}'.`,
+        recoveryHint: {
+          recoveryCommand: 'myagents agent current --json',
+          message: 'Use the id and path from the same Project-backed Agent workspace.',
+        },
+      },
+    };
+  }
+  const project = projectById ?? projectByPath;
+  const workspaceId = project?.id;
+  const workspacePath = project?.path;
+  if (!workspaceId || !workspacePath) {
+    return {
+      response: {
+        success: false,
+        error: 'Current workspace could not be resolved to a Task project.',
+        recoveryHint: {
+          recoveryCommand: 'myagents agent current --json',
+          message: 'Pass both --workspaceId and --workspacePath only for an explicit cross-workspace operation.',
+        },
+      },
+    };
+  }
+  return { payload: { ...payload, workspaceId, workspacePath } };
+}
+
+function compactTaskForAgent(task: Record<string, unknown>): Record<string, unknown> {
+  const trigger = task.trigger as { detector?: { type?: unknown } } | undefined;
+  return {
+    id: task.id,
+    name: task.name,
+    status: task.status,
+    workspaceId: task.workspaceId,
+    executionMode: task.executionMode,
+    runMode: task.runMode,
+    dispatchOrigin: task.dispatchOrigin,
+    detectorType: trigger?.detector?.type ?? 'always',
+    intervalMinutes: task.intervalMinutes,
+    cronExpression: task.cronExpression,
+    cronTimezone: task.cronTimezone,
+    startAt: task.startAt,
+    dispatchAt: task.dispatchAt,
+    nextExecutionAt: task.nextExecutionAt ?? null,
+    executionCount: task.executionCount ?? 0,
+    sessionCount: Array.isArray(task.sessionIds) ? task.sessionIds.length : 0,
+    lastExecutedAt: task.lastExecutedAt,
+    updatedAt: task.updatedAt,
+    tags: task.tags,
+    executionState: task.executionState,
+    executionError: task.executionError,
+  };
+}
+
 export async function handleTaskList(payload: {
   workspaceId?: string;
+  workspacePath?: string;
   status?: string;
   tag?: string;
+  query?: string;
+  limit?: number;
   includeDeleted?: boolean;
 }): Promise<AdminResponse> {
-  const resp = await managementApi(`/api/task/list${qsFrom(payload)}`);
+  const resolved = resolveTaskWorkspace(payload);
+  if ('response' in resolved) return resolved.response;
+  const { query, limit, workspacePath: _workspacePath, ...filters } = resolved.payload;
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 200)) {
+    return { success: false, error: 'limit must be an integer from 1 to 200' };
+  }
+  const resp = await managementApi(`/api/task/list${qsFrom(filters as Record<string, string | number | boolean | undefined>)}`);
   if (resp.ok) {
-    return { success: true, data: (resp as Record<string, unknown>).tasks ?? [] };
+    const tasks = Array.isArray((resp as Record<string, unknown>).tasks)
+      ? ((resp as Record<string, unknown>).tasks as Array<Record<string, unknown>>)
+      : [];
+    const needle = typeof query === 'string' ? query.trim().toLocaleLowerCase() : '';
+    const matched = needle
+      ? tasks.filter(task => {
+          const tags = Array.isArray(task.tags) ? task.tags.join(' ') : '';
+          return [task.id, task.name, task.description, tags]
+            .map(value => String(value ?? '').toLocaleLowerCase())
+            .some(value => value.includes(needle));
+        })
+      : tasks;
+    const limited = limit === undefined ? matched : matched.slice(0, Number(limit));
+    return {
+      success: true,
+      data: limited.map(compactTaskForAgent),
+      scope: {
+        workspacePath: String(resolved.payload.workspacePath),
+        source: payload.workspaceId || payload.workspacePath ? 'explicit' : 'default',
+        visibility: 'current Task workspace',
+      },
+    };
   }
   return mgmtError(resp, 'Failed to list tasks');
 }
@@ -3338,18 +4098,30 @@ export async function handleTaskGet(payload: { id: string }): Promise<AdminRespo
 export async function handleTaskCreateDirect(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
-  const validationError = await validateTaskOverrides(payload);
+  const resolved = resolveTaskWorkspace(payload);
+  if ('response' in resolved) {
+    // Preserve the most actionable argument error when an explicit runtime
+    // override is malformed, even if current workspace discovery is also
+    // unavailable. A valid request still fails closed on missing workspace.
+    const validationError = await validateTaskOverrides(payload);
+    return validationError ?? resolved.response;
+  }
+  const request: Record<string, unknown> = {
+    ...resolved.payload,
+    ...normalizedTaskCliCaller(resolved.payload as TaskCliCaller),
+  };
+  const validationError = await validateTaskOverrides(request);
   if (validationError) return validationError;
 
-  const overridden = computeOverriddenFields(payload);
-  const resp = await managementApi('/api/task/create-direct', 'POST', payload);
+  const overridden = computeOverriddenFields(request);
+  const resp = await managementApi('/api/task/create-direct', 'POST', request);
   const wrapped = wrapMgmtResponse(resp);
-  const enriched = enrichTaskCreateResponse(wrapped, payload, overridden);
+  const enriched = enrichTaskCreateResponse(wrapped, request, overridden);
   if (enriched.success) {
     trackServer('task_create', {
-      source: cliSource(),
+      source: taskCliAnalyticsSource(request as TaskCliCaller),
       origin: 'manual',
-      has_workspace: typeof payload.workspacePath === 'string' && payload.workspacePath.length > 0,
+      has_workspace: true,
     });
   }
   return enriched;
@@ -3367,7 +4139,7 @@ export async function handleTaskCreateFromAlignment(
   const enriched = enrichTaskCreateResponse(wrapped, payload, overridden);
   if (enriched.success) {
     trackServer('task_create', {
-      source: cliSource(),
+      source: taskCliAnalyticsSource(payload as TaskCliCaller),
       origin: 'thought_dispatch',
       has_workspace: typeof payload.workspacePath === 'string' && payload.workspacePath.length > 0,
     });
@@ -3397,52 +4169,87 @@ export async function handleTaskCreateAttached(
   return enriched;
 }
 
-/**
- * Read the task's `sessionIds.length` from Rust before kicking off a run.
- * Returns `null` if the read fails — analytics call sites then fall back to
- * `null` for `run_count` so we don't fabricate a count. Best-effort: a
- * failed pre-fetch does NOT abort the run itself.
- */
-async function fetchTaskSessionCount(id: string): Promise<number | null> {
-  try {
-    const resp = await managementApi(`/api/task/get${qsFrom({ id })}`);
-    if (!resp.ok) return null;
-    const task = (resp as Record<string, unknown>).task as Record<string, unknown> | undefined;
-    const sessions = task?.sessionIds;
-    return Array.isArray(sessions) ? sessions.length : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function handleTaskRun(payload: { id: string }): Promise<AdminResponse> {
-  // Fetch run count BEFORE the run so the analytics value matches the GUI's
-  // `task.sessionIds.length + 1` semantic (i.e. "if this run succeeds, it'll
-  // be the Nth"). Doing it after would over-count by 1 since the run
-  // appends a new sessionId.
-  const priorCount = await fetchTaskSessionCount(payload.id);
   const resp = await managementApi('/api/task/run', 'POST', payload);
   const wrapped = wrapMgmtResponse(resp);
   if (wrapped.success) {
+    const { attemptOrdinal } = wrapped.data as { attemptOrdinal: number };
     trackServer('task_run', {
-      source: cliSource(),
-      run_count: priorCount !== null ? priorCount + 1 : null,
+      source: taskCliAnalyticsSource(payload as TaskCliCaller),
+      run_count: attemptOrdinal,
     });
   }
   return wrapped;
 }
 
 export async function handleTaskRerun(payload: { id: string }): Promise<AdminResponse> {
-  const priorCount = await fetchTaskSessionCount(payload.id);
   const resp = await managementApi('/api/task/rerun', 'POST', payload);
   const wrapped = wrapMgmtResponse(resp);
   if (wrapped.success) {
+    const { attemptOrdinal } = wrapped.data as { attemptOrdinal: number };
     trackServer('task_run', {
-      source: cliSource(),
-      run_count: priorCount !== null ? priorCount + 1 : null,
+      source: taskCliAnalyticsSource(payload as TaskCliCaller),
+      run_count: attemptOrdinal,
     });
   }
   return wrapped;
+}
+
+export async function handleTaskRunNow(payload: { id: string }): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/run-now', 'POST', payload);
+  return wrapMgmtResponse(resp);
+}
+
+export async function handleTaskTriggerValidate(
+  payload: { trigger?: unknown },
+): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/trigger/validate', 'POST', payload);
+  return wrapMgmtResponse(resp);
+}
+
+export async function handleTaskTriggerTest(
+  payload: Record<string, unknown>,
+): Promise<AdminResponse> {
+  const { expect, ...request } = payload;
+  if (expect !== undefined && expect !== 'quiet' && expect !== 'activate') {
+    return { success: false, error: '--expect must be quiet or activate' };
+  }
+  // Rust accepts Detector timeouts up to 300s. Keep the transport alive for
+  // the valid execution window plus bounded serialization/IPC overhead.
+  const resp = await managementApi('/api/task/trigger/test', 'POST', request, {
+    timeoutMs: 310_000,
+  });
+  const wrapped = wrapMgmtResponse(resp);
+  if (!wrapped.success && resp.result && typeof resp.result === 'object') {
+    wrapped.data = { result: resp.result };
+  }
+  if (!wrapped.success || expect === undefined) return wrapped;
+  const data = wrapped.data as { result?: { decision?: unknown } } | undefined;
+  const actual = data?.result?.decision;
+  if (actual !== expect) {
+    return {
+      success: false,
+      error: `Detector returned ${String(actual ?? 'unknown')}; expected ${expect}`,
+      data: wrapped.data,
+    };
+  }
+  return wrapped;
+}
+
+export async function handleTaskCheckNow(payload: { id: string }): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/check-now', 'POST', payload, {
+    timeoutMs: 310_000,
+  });
+  const wrapped = wrapMgmtResponse(resp);
+  if (!wrapped.success && resp.result && typeof resp.result === 'object') {
+    wrapped.data = { result: resp.result };
+  }
+  return wrapped;
+}
+
+export async function handleTaskResetCheckpoint(payload: { id: string }): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/reset-checkpoint', 'POST', payload);
+  return wrapMgmtResponse(resp);
 }
 
 /**
@@ -3485,6 +4292,7 @@ function enrichTaskCreateResponse(
   // lacked model/permission_mode), we want the mismatch to be visible here.
   const persistedOverrides = {
     runtime: (persistedTask.runtime as string | undefined) ?? null,
+    providerId: (persistedTask.providerId as string | undefined) ?? null,
     model: (persistedTask.model as string | undefined) ?? null,
     permissionMode: (persistedTask.permissionMode as string | undefined) ?? null,
     runtimeConfig: persistedTask.runtimeConfig ?? null,
@@ -3506,7 +4314,7 @@ function enrichTaskCreateResponse(
     // a field you sent").
     overridesRequested: requestedOverrides,
     inheritedFromWorkspace:
-      ['runtime', 'model', 'permissionMode'].filter(f => !fieldsWithValue.includes(f)),
+      ['runtime', 'providerId', 'model', 'permissionMode'].filter(f => !fieldsWithValue.includes(f)),
   };
   if (taskId) {
     enriched.nextSteps = options.attached
@@ -3540,7 +4348,22 @@ export async function handleTaskUpdate(
   if (typeof payload.id !== 'string' || payload.id.length === 0) {
     return { success: false, error: 'task id is required' };
   }
-  const validationError = await validateTaskOverrides(payload);
+  let validationPayload = payload;
+  if (hasTaskRuntimeOverride(payload)) {
+    const current = await handleTaskGet({ id: payload.id });
+    if (!current.success) return current;
+    if (!current.data || typeof current.data !== 'object' || Array.isArray(current.data)) {
+      return { success: false, error: `Task '${payload.id}' returned invalid persisted data.` };
+    }
+    validationPayload = {
+      ...(current.data as Record<string, unknown>),
+      ...payload,
+      ...(payload.clearRuntimeOverride === true
+        ? { runtime: undefined, runtimeConfig: undefined }
+        : {}),
+    };
+  }
+  const validationError = await validateTaskOverrides(validationPayload);
   if (validationError) return validationError;
   const resp = await managementApi('/api/task/update', 'POST', payload);
   return wrapMgmtResponse(resp);
@@ -3549,25 +4372,14 @@ export async function handleTaskUpdate(
 export async function handleTaskUpdateStatus(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
-  // Infer actor/source if caller omitted them:
-  //   Inside an AI subprocess → MYAGENTS_PORT is set → actor=agent, source=cli.
-  //   Otherwise (user ran `myagents` in their terminal) → actor=user, source=cli.
-  // `MYAGENTS_PORT` is injected by `buildClaudeSessionEnv()` into SDK subproc
-  // env (see cli_architecture.md); the user's own shell does NOT have it set
-  // (the user's CLI binary reads `~/.myagents/sidecar.port` instead).
-  if (payload.actor === undefined) {
-    payload.actor = process.env.MYAGENTS_PORT ? 'agent' : 'user';
-  }
-  if (payload.source === undefined) {
-    payload.source = 'cli';
-  }
-  const resp = await managementApi('/api/task/update-status', 'POST', payload);
+  const request = { ...payload, ...normalizedTaskCliCaller(payload as TaskCliCaller) };
+  const resp = await managementApi('/api/task/update-status', 'POST', request);
   const wrapped = wrapMgmtResponse(resp);
   // Only `stopped` counts as a "stop" event in analytics terms — other
   // status transitions (running/done/blocked/etc) flow through the same
   // endpoint but aren't user-initiated stops.
   if (wrapped.success && payload.status === 'stopped') {
-    trackServer('task_stop', { source: cliSource() });
+    trackServer('task_stop', { source: taskCliAnalyticsSource(request as TaskCliCaller) });
   }
   return wrapped;
 }
@@ -3583,12 +4395,21 @@ export async function handleTaskAppendSession(payload: {
 export async function handleTaskArchive(payload: {
   id: string;
   message?: string;
+  actor?: 'agent' | 'user';
+  source?: 'cli';
 }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/archive', 'POST', payload);
+  const resp = await managementApi('/api/task/archive', 'POST', {
+    ...payload,
+    ...normalizedTaskCliCaller(payload),
+  });
   return wrapMgmtResponse(resp);
 }
 
-export async function handleTaskDelete(payload: { id: string }): Promise<AdminResponse> {
+export async function handleTaskDelete(payload: {
+  id: string;
+  actor?: 'agent' | 'user';
+  source?: 'cli';
+}): Promise<AdminResponse> {
   // Fetch the task's status BEFORE the delete so we can report it in the
   // analytics event. Best-effort — if the read fails (e.g. id doesn't exist),
   // we still attempt the delete and just report `status: 'unknown'`. We
@@ -3609,10 +4430,13 @@ export async function handleTaskDelete(payload: { id: string }): Promise<AdminRe
   } catch {
     // Silent — analytics must not affect the main flow.
   }
-  const resp = await managementApi('/api/task/delete', 'POST', payload);
+  const resp = await managementApi('/api/task/delete', 'POST', {
+    ...payload,
+    ...normalizedTaskCliCaller(payload),
+  });
   const wrapped = wrapMgmtResponse(resp);
   if (wrapped.success) {
-    trackServer('task_delete', { source: cliSource(), status });
+    trackServer('task_delete', { source: taskCliAnalyticsSource(payload), status });
   }
   return wrapped;
 }
@@ -3693,10 +4517,10 @@ export async function handleThoughtCreate(payload: {
 export function handleCronExit(payload: { reason?: string }): AdminResponse {
   const ctx = getCronTaskContext();
   if (!ctx.taskId) {
-    return { success: false, error: 'No active cron task in this session. This command only works inside a cron task run.' };
+    return { success: false, error: 'No active scheduled Task in this session. This command only works inside a scheduled Task run.' };
   }
   if (!ctx.canExit) {
-    return { success: false, error: 'This cron task has "Allow AI to exit" disabled — only the user can stop it from the UI.' };
+    return { success: false, error: 'This Task has "Allow AI to exit" disabled — only the user can stop it from the UI.' };
   }
   const reason = payload.reason?.trim() || 'AI requested task exit';
   const request = markCronTaskExitRequested(reason) ?? {
@@ -3812,7 +4636,70 @@ export async function handleImSendMedia(payload: { filePath?: string; caption?: 
 // it calls `myagents X readme` to pull the full usage doc on demand.
 // ---------------------------------------------------------------------------
 
-const README_CRON = `myagents cron — Scheduled task management
+const README_TASK_AUTOMATION = `myagents task — Scheduled and conditional automation
+
+PRODUCT MODEL
+  Every future or recurring automation is one Task:
+    schedule + activation + task.md action + Session routing + end conditions
+
+  The schedule decides when a tick happens. The effective activation is either:
+    always            Run the AI action at every tick (default; omit --trigger-file)
+    command Detector  Run a cheap program first; quiet stays silent and activate
+                      dispatches the ordinary Task AI turn
+
+  Use the required system skill 'myagents-task-automation' for the complete
+  Agent workflow. It routes command Detector authoring to its protocol reference.
+
+CANONICAL COMMANDS
+  create-direct ...                 Create ordinary or scheduled Task
+  get <taskId> --json               Read authoritative config and runtime health
+  run <taskId>                      Enable a newly-created Todo Task
+  start <taskId>                    Resume schedule; read returned nextExecutionAt
+  stop <taskId>                     Pause schedule and stop active execution
+  runs <taskId> [--limit N]         Read recent AI execution history
+  run-now <taskId>                  Bypass Detector; does not change schedule/checkpoint
+  check-now <taskId>                Real Detector check; commits state and may activate AI
+  trigger validate/test ...         Validate without committing MyAgents state
+  reset-checkpoint <taskId>         Clear only platform-managed Detector checkpoint
+  rerun <taskId>                    Re-dispatch a terminal Task
+  exit --reason <text>              End the current eligible scheduled Task from inside it
+  delete <taskId>                   Delete after explicit user confirmation
+
+SCHEDULE CREATION
+  --executionMode scheduled --dispatchAt <ISO-with-offset>
+  --executionMode recurring --intervalMinutes <n>             (minimum 5)
+  --startAt <ISO-with-offset>                                 (optional first interval tick)
+  --executionMode recurring --cronExpression "0 9 * * *" \
+                            --cronTimezone Asia/Shanghai
+
+  Wall-clock Cron schedules use an IANA timezone. Absolute dispatch/deadline
+  inputs require ISO 8601 with an explicit offset or Z.
+
+END CONDITIONS
+  --deadline <ISO-with-offset>       Stop starting new AI turns after the instant
+  --maxExecutions <n>                Cap settled AI turns; quiet checks do not count
+  --aiCanExit true|false             Allow/disallow 'myagents task exit'
+
+LIFECYCLE
+  create --json -> parse taskId -> get --json -> run --json.
+  'run' is initial Todo enablement; 'start' resumes Stopped; 'rerun' handles a
+  terminal Task. Running means scheduler enabled, not necessarily executing now.
+  A new fixed-interval Task without startAt gets its first tick about 2 seconds
+  after run; Cron waits for the next wall-clock tick; scheduled waits for dispatchAt.
+
+SAFETY
+  Never use system cron/crontab/at/launchctl/schtasks for a MyAgents Task.
+  The App must remain online. Archive is recoverable; delete is not and has no
+  undelete/retention promise. Delete does not remove user workspace scripts.
+  trigger test runs the external command for real; only MyAgents state is not
+  committed, so isolate fixtures and external side effects.`;
+
+const README_CRON = `myagents cron — Compatibility scheduled-task commands
+
+NOTE
+  Cron is not a separate store or scheduler. New Agent workflows use the
+  canonical guide 'myagents task readme'; these commands remain compatible for
+  existing users and scripts.
 
 WHAT
   Create, list, inspect, stop, and delete scheduled AI tasks (cron / interval /
@@ -3848,8 +4735,8 @@ COMMANDS
   status                          Totals + next execution time
   add OPTIONS                     Create a new task
   start <taskId>                  Enable scheduled task (resume from stopped).
-                                  Does NOT trigger immediate execution — use
-                                  'cron run-now <taskId>' for that.
+                                  Does not bypass schedule/Detector; an overdue
+                                  interval anchor may make the next tick near now.
   run-now <taskId>                Fire one execution immediately without
                                   changing the task's schedule or status.
   stop <taskId>                   Pause a running task
@@ -3868,7 +4755,7 @@ STATUS VOCABULARY (in 'list' / 'status' output and --json)
                executing" — see currentlyExecuting below.
     Stopped    Scheduler is disabled. The task never fires while in this
                state, even when the schedule expression matches. Resume
-               with 'cron start <taskId>'.
+               with 'task start <taskId>' (or compatibility 'cron start').
 
   currentlyExecuting field (--json) / '*' marker after the ID (plain text):
     A tick is firing this very instant — either a scheduled fire or a
@@ -3929,15 +4816,16 @@ EXAMPLES
   myagents cron list
   myagents cron runs <taskId> --limit 5
 
-EXIT FROM INSIDE A TASK (cron scenario only)
-  If you are currently running as a cron task AND the task creator enabled
+EXIT FROM INSIDE A TASK
+  If you are currently running as a scheduled Task AND the task creator enabled
   "Allow AI to exit", call:
-    myagents cron exit --reason "goal achieved"
+    myagents task exit --reason "goal achieved"
   to mark the task complete and stop future executions.
 
 DO NOT
   Use system cron / crontab / at / launchctl — they can't see MyAgents state.
-  Only \`myagents cron\` can create tasks inside MyAgents.`;
+  Only the \`myagents task\` canonical surface or compatible \`myagents cron\`
+  commands can create tasks inside MyAgents.`;
 
 const README_IM = `myagents im — IM Bot capabilities
 
@@ -4164,6 +5052,9 @@ export async function handleSpaceAttachmentInspect(payload: Record<string, unkno
 
 export function handleReadme(payload: { topic?: string; modules?: string[] }): AdminResponse {
   const topic = (payload.topic ?? '').toLowerCase();
+  if (topic === 'task') {
+    return { success: true, data: { text: README_TASK_AUTOMATION } };
+  }
   if (topic === 'cron') {
     return { success: true, data: { text: README_CRON } };
   }
@@ -4190,7 +5081,7 @@ export function handleReadme(payload: { topic?: string; modules?: string[] }): A
   }
   return {
     success: false,
-    error: `Unknown readme topic "${payload.topic}". Available: cron, im, widget.`,
+    error: `Unknown readme topic "${payload.topic}". Available: task, cron, im, widget.`,
   };
 }
 
@@ -4704,7 +5595,9 @@ export async function handleRuntimeDescribe(payload: {
   // Only query models when the CLI is actually installed — otherwise we'd
   // waste 10+ seconds trying to spawn a binary that doesn't exist.
   const models: RuntimeModelInfo[] = detection.installed
-    ? ((await queryRuntimeModels(runtimeArg)) as RuntimeModelInfo[])
+    ? ((await queryRuntimeModels(runtimeArg, {
+        runtimeSource: runtimeArg === 'codex' ? 'system-cli' : undefined,
+      })) as RuntimeModelInfo[])
     : [];
   const permissionModes = getRuntimePermissionModes(runtimeArg);
   const defaultPermissionMode = getDefaultRuntimePermissionMode(runtimeArg);
@@ -4836,8 +5729,8 @@ export async function handleRuntimeDiagnose(payload: {
  * Show one agent's effective defaults so the AI can decide whether a given
  * task override is a no-op (same as workspace default) or meaningful.
  */
-export function handleAgentShow(payload: { id?: string }): AdminResponse {
-  const id = payload.id;
+export async function handleAgentShow(payload: { id?: string; agentId?: string }): Promise<AdminResponse> {
+  const id = payload.agentId ?? payload.id;
   if (!id) {
     return {
       success: false,
@@ -4848,9 +5741,16 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
       },
     };
   }
-  const config = loadConfig();
-  const agent = (config.agents ?? []).find(a => a.id === id);
-  if (!agent) {
+  let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+  const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(id));
+  if (diagnostic) return { success: false, error: diagnostic.message, code: diagnostic.code };
+  const identity = registry.agentProjections.find(item => item.agentId === id);
+  if (!identity || (identity.project && !isProjectVisibleToUser(identity.project))) {
     return {
       success: false,
       error: `Agent '${id}' not found.`,
@@ -4860,13 +5760,17 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
       },
     };
   }
+  const { agent, project, workspacePath } = identity;
 
   // AgentConfigSlim is intentionally permissive (`[key: string]: unknown`) —
   // runtime / permissionMode / runtimeConfig exist on the full AgentConfig
   // but not on the slim shape. Extract defensively.
   const storedRuntime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
-  const usesManagedCodex = agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    && storedRuntime === 'builtin';
+  const usesManagedCodex = agentUsesManagedCodexProvider({
+    providerId: agent.providerId,
+    runtime: storedRuntime,
+    runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
+  });
   const runtime: RuntimeType = usesManagedCodex ? 'codex' : storedRuntime;
   const agentPermissionMode = (agent.permissionMode as string | undefined) ?? '';
   const runtimeConfig = (agent.runtimeConfig as Record<string, unknown> | undefined) ?? undefined;
@@ -4891,26 +5795,106 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
     ? (agent.model as string | undefined)
     : (rcModel ?? (agent.model as string | undefined));
   const effectivePermissionMode = usesManagedCodex
-    ? managedCodexProviderPermissionToRuntimePermission(agentPermissionMode)
-    : (rcPermissionMode ?? agentPermissionMode);
+    ? (managedCodexProviderPermissionToRuntimePermission(agentPermissionMode) ?? 'auto-edit')
+    : (isExternal
+      ? (projectPermissionModeForRuntime(rcPermissionMode, runtime)
+        ?? getDefaultRuntimePermissionMode(runtime))
+      : agentPermissionMode);
 
   return {
     success: true,
     data: {
-      id: agent.id,
+      agentId: agent.id,
       name: agent.name,
       enabled: agent.enabled,
-      workspacePath: agent.workspacePath,
+      projectId: project?.id ?? null,
+      workspacePath,
+      archived: project ? isProjectArchived(project) : false,
+      archivedAt: project && isProjectArchived(project) ? project.archivedAt ?? null : null,
+      association: identity.association,
+      isCurrent: isCurrentAgentIdentity(identity, getCurrentWorkspacePath()),
       effectiveDefaults: {
         runtime,
-        ...(usesManagedCodex ? { runtimeSource: 'managed-provider' } : {}),
+        ...(runtime !== 'builtin'
+          ? { runtimeSource: usesManagedCodex ? 'managed-provider' : 'system-cli' }
+          : {}),
         model: effectiveModel || null,
         permissionMode: effectivePermissionMode || null,
         providerId: agent.providerId ?? null,
-        runtimeConfig: runtimeConfig ?? null,
+        runtimeConfig: runtimeConfig ?? {},
+        mcpEnabledServers: Array.isArray(agent.mcpEnabledServers) ? agent.mcpEnabledServers : [],
+        enabledPluginIds: Array.isArray(agent.enabledPluginIds) ? agent.enabledPluginIds : [],
+        enabledOfficialToolIds: Array.isArray(agent.enabledOfficialToolIds)
+          ? agent.enabledOfficialToolIds
+          : [],
       },
       channelCount: (agent.channels ?? []).length,
     },
+  };
+}
+
+export async function handleSessionList(payload: {
+  agentId?: unknown;
+  limit?: unknown;
+}): Promise<AdminResponse> {
+  const agentId = typeof payload.agentId === 'string' ? payload.agentId.trim() : '';
+  if (!agentId) {
+    return {
+      success: false,
+      error: 'Missing required option: --agent <agentId>',
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list',
+        message: 'Discover a stable Agent id first.',
+      },
+    };
+  }
+  const limit = payload.limit === undefined ? 5 : Number(payload.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    return { success: false, error: '--limit must be an integer from 1 to 50.' };
+  }
+
+  let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+  const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(agentId));
+  if (diagnostic) return { success: false, error: diagnostic.message, code: diagnostic.code };
+  const identity = registry.agentProjections.find(item => item.agentId === agentId);
+  if (!identity || (identity.project && !isProjectVisibleToUser(identity.project))) {
+    return {
+      success: false,
+      error: `Agent '${agentId}' not found.`,
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list',
+        message: 'See visible active Agent ids; use --archived for archived workspaces.',
+      },
+    };
+  }
+
+  const sessions = getSessionsByAgentDir(identity.workspacePath)
+    .filter(isHistoryVisibleSession)
+    .slice(0, limit)
+    .map(session => ({
+      sessionId: session.id,
+      title: session.title,
+      lastActiveAt: session.lastActiveAt,
+      lastMessagePreview: session.lastMessagePreview ?? null,
+      runtime: session.runtime ?? 'builtin',
+      runtimeSource: session.runtime && session.runtime !== 'builtin'
+        ? session.runtimeSource ?? 'system-cli'
+        : null,
+      model: session.model ?? null,
+      origin: session.origin ?? null,
+    }));
+  return {
+    success: true,
+    data: sessions,
+    agentId,
+    projectId: identity.projectId ?? null,
+    workspacePath: identity.workspacePath,
+    limit,
   };
 }
 
@@ -4949,6 +5933,8 @@ function hintForMissingRuntime(runtime: RuntimeType): string {
 /** Fields on a task-create payload that we validate as overrides. */
 interface TaskOverrideFields {
   runtime?: unknown;
+  runtimeConfig?: unknown;
+  providerId?: unknown;
   model?: unknown;
   permissionMode?: unknown;
   /** Workspace path — used to resolve the agent's default runtime when the
@@ -4958,6 +5944,11 @@ interface TaskOverrideFields {
   workspaceId?: unknown;
 }
 
+function hasTaskRuntimeOverride(payload: Record<string, unknown>): boolean {
+  return ['runtime', 'runtimeConfig', 'providerId', 'model', 'permissionMode', 'clearRuntimeOverride']
+    .some(field => payload[field] !== undefined && payload[field] !== null && payload[field] !== '');
+}
+
 /**
  * Validate the runtime/model/permissionMode fields on a task-create payload.
  * Returns an error `AdminResponse` on first failure, or `null` if all fields
@@ -4965,6 +5956,8 @@ interface TaskOverrideFields {
  *
  * Effective-runtime resolution (cross-review fix, v0.1.69):
  *   - If `payload.runtime` is set → use it.
+ *   - Else if `payload.providerId` is set → builtin; Rust owns provider/model
+ *     pair validation and pins the persisted Task runtime to builtin.
  *   - Else if `payload.model` / `payload.permissionMode` is set → resolve the
  *     agent's default runtime from `workspacePath` so we can still validate
  *     the model/mode against the correct allowlist. Without this step a
@@ -4975,8 +5968,21 @@ interface TaskOverrideFields {
 async function validateTaskOverrides(
   payload: TaskOverrideFields,
 ): Promise<AdminResponse | null> {
-  // Step 1: resolve the effective runtime that downstream checks should use.
-  let effectiveRuntime: RuntimeType | undefined;
+  const runtimeConfigModel = taskRuntimeConfigField(payload.runtimeConfig, 'model');
+  const rawRuntimeSource = taskRuntimeConfigField(payload.runtimeConfig, 'source');
+  if (
+    rawRuntimeSource !== undefined
+    && rawRuntimeSource !== 'system-cli'
+    && rawRuntimeSource !== 'managed-provider'
+  ) {
+    return {
+      success: false,
+      error: `Invalid runtimeConfig.source: '${String(rawRuntimeSource)}'. Valid: system-cli, managed-provider.`,
+    };
+  }
+  const runtimeConfigSource = rawRuntimeSource as RuntimeSource | undefined;
+  // Step 1: resolve the complete runtime identity that downstream checks use.
+  let effectiveRuntimeIdentity: { runtime: RuntimeType; runtimeSource?: RuntimeSource } | undefined;
   if (payload.runtime !== undefined && payload.runtime !== null && payload.runtime !== '') {
     if (typeof payload.runtime !== 'string' || !isValidRuntimeType(payload.runtime)) {
       return {
@@ -4988,39 +5994,25 @@ async function validateTaskOverrides(
         },
       };
     }
-    effectiveRuntime = payload.runtime;
-    if (effectiveRuntime !== 'builtin' && isRuntimeSupported(effectiveRuntime)) {
-      try {
-        const detection = await getExternalRuntime(effectiveRuntime).detect();
-        if (!detection.installed) {
-          return {
-            success: false,
-            error: `Runtime '${effectiveRuntime}' is not installed on this machine.`,
-            recoveryHint: {
-              recoveryCommand: 'myagents runtime list',
-              message: 'See which runtimes are available + install hints.',
-            },
-          };
-        }
-      } catch {
-        return {
-          success: false,
-          error: `Runtime '${effectiveRuntime}' detection failed.`,
-          recoveryHint: {
-            recoveryCommand: 'myagents runtime list',
-            message: 'See which runtimes are available.',
-          },
-        };
-      }
-    }
+    const runtime = payload.runtime;
+    effectiveRuntimeIdentity = {
+      runtime,
+      ...(runtime === 'codex'
+        ? { runtimeSource: runtimeConfigSource ?? 'system-cli' }
+        : {}),
+    };
+  } else if (payload.providerId !== undefined && payload.providerId !== null && payload.providerId !== '') {
+    effectiveRuntimeIdentity = { runtime: 'builtin' };
   } else if (
     (payload.model !== undefined && payload.model !== null && payload.model !== '')
+    || (runtimeConfigModel !== undefined && runtimeConfigModel !== null && runtimeConfigModel !== '')
+    || runtimeConfigSource !== undefined
     || (payload.permissionMode !== undefined && payload.permissionMode !== null && payload.permissionMode !== '')
   ) {
     // --model / --permissionMode passed without --runtime: try to resolve the
     // workspace's agent default so we can still validate against the correct
     // allowlist. If resolution fails, reject rather than silently trust.
-    const resolved = resolveAgentRuntimeFromWorkspace(payload);
+    const resolved = resolveAgentRuntimeIdentityFromWorkspace(payload);
     if (resolved === undefined) {
       return {
         success: false,
@@ -5033,10 +6025,44 @@ async function validateTaskOverrides(
         },
       };
     }
-    effectiveRuntime = resolved;
+    effectiveRuntimeIdentity = resolved;
   } else {
     // No overrides at all — nothing to validate.
     return null;
+  }
+  const { runtime: effectiveRuntime, runtimeSource: effectiveRuntimeSource } = effectiveRuntimeIdentity;
+  if (runtimeConfigSource === 'managed-provider' && effectiveRuntime !== 'codex') {
+    return {
+      success: false,
+      error: 'runtimeConfig.source=managed-provider requires runtime=codex.',
+    };
+  }
+  if (effectiveRuntime !== 'builtin' && isRuntimeSupported(effectiveRuntime)) {
+    try {
+      const installed = effectiveRuntime === 'codex'
+        && effectiveRuntimeSource === 'managed-provider'
+        ? isManagedCodexRuntimeInstalled()
+        : (await getExternalRuntime(effectiveRuntime).detect()).installed;
+      if (!installed) {
+        return {
+          success: false,
+          error: `Runtime '${effectiveRuntime}' is not installed on this machine.`,
+          recoveryHint: {
+            recoveryCommand: 'myagents runtime list',
+            message: 'See which runtimes are available + install hints.',
+          },
+        };
+      }
+    } catch {
+      return {
+        success: false,
+        error: `Runtime '${effectiveRuntime}' detection failed.`,
+        recoveryHint: {
+          recoveryCommand: 'myagents runtime list',
+          message: 'See which runtimes are available.',
+        },
+      };
+    }
   }
 
   // Step 2: permissionMode is validated against the runtime's allowlist.
@@ -5062,8 +6088,17 @@ async function validateTaskOverrides(
         },
       };
     }
-    const modes = getRuntimePermissionModes(effectiveRuntime);
-    if (modes.length > 0 && !modes.some(m => m.value === payload.permissionMode)) {
+    const modes = getRuntimePermissionModes(effectiveRuntime)
+      .filter(mode => isPermissionModeForRuntimeIdentity(
+        mode.value,
+        effectiveRuntime,
+        effectiveRuntimeSource,
+      ));
+    if (!isPermissionModeForRuntimeIdentity(
+      payload.permissionMode,
+      effectiveRuntime,
+      effectiveRuntimeSource,
+    )) {
       return {
         success: false,
         error: `--permissionMode '${payload.permissionMode}' is not valid for runtime '${effectiveRuntime}'. Valid: ${modes.map(m => m.value).join(', ')}.`,
@@ -5080,16 +6115,19 @@ async function validateTaskOverrides(
   // server to discover them) so an empty list is treated as "can't validate,
   // trust the caller". builtin runtime model ids depend on the active
   // provider — out of scope for this validator.
+  const modelOverride = effectiveRuntime === 'builtin' || runtimeConfigModel === undefined
+    ? payload.model
+    : runtimeConfigModel;
   if (
-    payload.model !== undefined
-    && payload.model !== null
-    && payload.model !== ''
+    modelOverride !== undefined
+    && modelOverride !== null
+    && modelOverride !== ''
     && effectiveRuntime !== 'builtin'
   ) {
-    if (typeof payload.model !== 'string') {
+    if (typeof modelOverride !== 'string') {
       return {
         success: false,
-        error: `--model must be a string (got ${typeof payload.model}).`,
+        error: `--model must be a string (got ${typeof modelOverride}).`,
         recoveryHint: {
           recoveryCommand: `myagents runtime describe ${effectiveRuntime}`,
           message: 'See valid model ids for this runtime.',
@@ -5097,15 +6135,17 @@ async function validateTaskOverrides(
       };
     }
     try {
-      const models = (await queryRuntimeModels(effectiveRuntime)) as RuntimeModelInfo[];
+      const models = (await queryRuntimeModels(effectiveRuntime, {
+        runtimeSource: effectiveRuntimeSource,
+      })) as RuntimeModelInfo[];
       // Empty list means either "runtime is not installed" (handled above)
       // or "discovery failed transiently" — in both cases, don't block the
       // write. The Rust side will surface the real dispatch error if any.
-      if (models.length > 0 && !models.some(m => m.value === payload.model)) {
+      if (models.length > 0 && !models.some(m => m.value === modelOverride)) {
         const examples = models.slice(0, 5).map(m => m.value).filter(Boolean).join(', ');
         return {
           success: false,
-          error: `--model '${payload.model}' is not available for runtime '${effectiveRuntime}'. Examples: ${examples || '(none found)'}.`,
+          error: `--model '${modelOverride}' is not available for runtime '${effectiveRuntime}'. Examples: ${examples || '(none found)'}.`,
           recoveryHint: {
             recoveryCommand: `myagents runtime describe ${effectiveRuntime}`,
             message: 'See the full model list.',
@@ -5126,7 +6166,7 @@ async function validateTaskOverrides(
  * effect (vs. silently falling back to the workspace default).
  */
 function computeOverriddenFields(payload: Record<string, unknown>): string[] {
-  const fields = ['runtime', 'model', 'permissionMode', 'runtimeConfig'];
+  const fields = ['runtime', 'providerId', 'model', 'permissionMode', 'runtimeConfig'];
   return fields.filter(f => {
     const v = payload[f];
     return v !== undefined && v !== null && v !== '';
@@ -5134,36 +6174,51 @@ function computeOverriddenFields(payload: Record<string, unknown>): string[] {
 }
 
 /**
- * Look up the workspace's agent from config and return the agent's default
- * runtime (falling back to 'builtin' when unset). Used by `validateTaskOverrides`
- * to decide which runtime's permission-mode / model allowlist to validate
- * against when the caller passes `--model` / `--permissionMode` without
- * `--runtime`.
+ * Look up the workspace's agent and return its effective runtime identity.
+ * Managed Codex is stored in the builtin/provider shape, so model validation
+ * must project that raw config to `codex/managed-provider` before choosing a
+ * catalogue.
  *
  * Returns `undefined` when neither `workspacePath` nor `workspaceId` matches
  * an agent — forces the validator to reject rather than guess.
  */
-function resolveAgentRuntimeFromWorkspace(
+function resolveAgentRuntimeIdentityFromWorkspace(
   payload: { workspacePath?: unknown; workspaceId?: unknown },
-): RuntimeType | undefined {
+): { runtime: RuntimeType; runtimeSource?: RuntimeSource } | undefined {
   const wsPath = typeof payload.workspacePath === 'string' ? payload.workspacePath : undefined;
   const wsId = typeof payload.workspaceId === 'string' ? payload.workspaceId : undefined;
   if (!wsPath && !wsId) return undefined;
 
   const config = loadConfig();
   const agents = config.agents ?? [];
-  // Match by workspacePath first (most specific), then by workspaceId.
-  // #320 family: CLI/cron callers send POSIX-style paths while config agents
-  // may keep native Windows backslashes — compare on the canonical identity.
-  const agent =
-    (wsPath && agents.find(a => workspacePathsEqual(a.workspacePath, wsPath)))
-    ?? (wsId && agents.find(a => a.id === wsId))
-    ?? undefined;
+  const projects = loadProjects();
+  const project = (wsPath
+    ? projects.find(candidate => workspacePathsEqual(candidate.path, wsPath))
+    : undefined)
+    ?? (wsId ? projects.find(candidate => candidate.id === wsId) : undefined);
+  const agentId = project?.agentId ?? (wsId && agents.some(candidate => candidate.id === wsId) ? wsId : undefined);
+  const agent = agentId ? agents.find(candidate => candidate.id === agentId) : undefined;
   if (!agent) return undefined;
 
   const raw = agent.runtime as unknown;
-  if (typeof raw === 'string' && isValidRuntimeType(raw)) return raw;
-  return 'builtin';
+  const runtime = typeof raw === 'string' && isValidRuntimeType(raw) ? raw : 'builtin';
+  if (agentUsesManagedCodexProvider({
+    providerId: agent.providerId,
+    runtime,
+    runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
+  })) {
+    return { runtime: 'codex', runtimeSource: 'managed-provider' };
+  }
+  return runtime === 'codex'
+    ? { runtime, runtimeSource: 'system-cli' }
+    : { runtime };
+}
+
+function taskRuntimeConfigField(runtimeConfig: unknown, field: string): unknown {
+  if (!runtimeConfig || typeof runtimeConfig !== 'object' || Array.isArray(runtimeConfig)) {
+    return undefined;
+  }
+  return (runtimeConfig as Record<string, unknown>)[field];
 }
 
 // ---------------------------------------------------------------------------
@@ -5195,13 +6250,24 @@ function parseMcpScope(scope: string | undefined): McpScope | null {
 /** Update Sidecar MCP state and notify frontend after config change.
  *  Respects project-scope: only servers enabled both globally AND in the
  *  current workspace project are pushed to the session. */
-function notifyMcpChange(action: string, id: string): void {
+function mcpAlreadyExistsResponse(id: string): AdminResponse {
+  return {
+    success: false,
+    error: `MCP server '${id}' already exists; mcp add only creates new servers`,
+    recoveryHint: {
+      recoveryCommand: `myagents mcp show ${id}`,
+      message: 'Inspect the existing definition. Remove it first if you intend to replace it.',
+    },
+  };
+}
+
+async function notifyMcpChange(action: string, id: string): Promise<void> {
   const workspacePath = getCurrentWorkspacePath();
   const config = loadConfig();
   const effectiveServers = resolveEffectiveMcpServersForWorkspace(config, workspacePath, 'notifyMcpChange');
 
   setMcpServers(effectiveServers);
-  broadcast('config:changed', { section: 'mcp', action, id });
+  await notifyAppConfigChanged('mcp', action, id);
 }
 
 type ProjectMcpMutationResult =

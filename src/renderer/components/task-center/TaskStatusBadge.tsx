@@ -75,6 +75,11 @@ interface Props {
 }
 
 const EXECUTION_STYLE: Record<TaskExecutionState, StatusStyle> = {
+  checking: {
+    bg: 'bg-[var(--accent-soft)]',
+    fg: 'text-[var(--accent)]',
+    dot: 'bg-[var(--accent)]',
+  },
   running: {
     bg: 'bg-[var(--success-bg)]',
     fg: 'text-[var(--success)]',

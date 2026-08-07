@@ -7,14 +7,31 @@ import {
   size,
   useFloating,
 } from "@floating-ui/react";
-import { memo, useCallback, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type HTMLAttributes,
+} from "react";
 
 const VIEWPORT_PADDING = 8;
 const MAX_TOOLTIP_WIDTH = 520;
 
-interface OverflowNameTooltipProps {
+interface OverflowNameTooltipProps
+  extends Omit<
+    HTMLAttributes<HTMLSpanElement>,
+    | "children"
+    | "onBlur"
+    | "onPointerDown"
+    | "onPointerEnter"
+    | "onPointerLeave"
+  > {
   label: string;
-  className?: string;
+  tooltipLabel?: string;
+  contentIsTruncated?: boolean;
+  delayMs?: number;
 }
 
 function isTruncated(element: HTMLElement): boolean {
@@ -25,17 +42,23 @@ function isTruncated(element: HTMLElement): boolean {
 }
 
 /**
- * Instant, portaled tooltip for truncated workspace tree names.
+ * Portaled tooltip for truncated workspace tree names, with an optional delay.
  * The tree viewport clips overflow by design, so the tooltip must escape to
  * body and let floating-ui keep it inside the visible window.
  */
 export const OverflowNameTooltip = memo(function OverflowNameTooltip({
   label,
+  tooltipLabel,
+  contentIsTruncated = false,
   className = "",
+  delayMs = 0,
+  ...spanProps
 }: OverflowNameTooltipProps) {
+  const resolvedTooltipLabel = tooltipLabel ?? label;
   const [openLabel, setOpenLabel] = useState<string | null>(null);
-  const open = openLabel === label;
+  const open = openLabel === resolvedTooltipLabel;
   const referenceRef = useRef<HTMLSpanElement | null>(null);
+  const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { refs, floatingStyles, update } = useFloating({
     open,
     placement: "bottom-start",
@@ -81,23 +104,65 @@ export const OverflowNameTooltip = memo(function OverflowNameTooltip({
     [refs],
   );
 
-  const showIfTruncated = useCallback(() => {
+  const clearShowTimer = useCallback(() => {
+    if (showTimerRef.current === null) return;
+    clearTimeout(showTimerRef.current);
+    showTimerRef.current = null;
+  }, []);
+
+  useEffect(
+    () => clearShowTimer,
+    [clearShowTimer, contentIsTruncated, delayMs, resolvedTooltipLabel],
+  );
+
+  const shouldShowTooltip = useCallback(() => {
     const element = referenceRef.current;
-    if (!element || !isTruncated(element)) {
+    return Boolean(
+      element && (contentIsTruncated || isTruncated(element)),
+    );
+  }, [contentIsTruncated]);
+
+  useEffect(() => {
+    const element = referenceRef.current;
+    if (!open || !element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (!shouldShowTooltip()) setOpenLabel(null);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [open, shouldShowTooltip]);
+
+  const showIfTruncated = useCallback(() => {
+    clearShowTimer();
+    if (!shouldShowTooltip()) {
       setOpenLabel(null);
       return;
     }
-    setOpenLabel(label);
-    void update();
-  }, [label, update]);
+    if (delayMs <= 0) {
+      setOpenLabel(resolvedTooltipLabel);
+      void update();
+      return;
+    }
+    showTimerRef.current = setTimeout(() => {
+      showTimerRef.current = null;
+      if (!shouldShowTooltip()) {
+        setOpenLabel(null);
+        return;
+      }
+      setOpenLabel(resolvedTooltipLabel);
+      void update();
+    }, delayMs);
+  }, [clearShowTimer, delayMs, resolvedTooltipLabel, shouldShowTooltip, update]);
 
   const hide = useCallback(() => {
+    clearShowTimer();
     setOpenLabel(null);
-  }, []);
+  }, [clearShowTimer]);
 
   return (
     <>
       <span
+        {...spanProps}
         ref={setReference}
         className={className}
         onPointerEnter={showIfTruncated}
@@ -123,7 +188,7 @@ export const OverflowNameTooltip = memo(function OverflowNameTooltip({
               wordBreak: "break-word",
             }}
           >
-            {label}
+            {resolvedTooltipLabel}
           </div>
         </FloatingPortal>
       )}

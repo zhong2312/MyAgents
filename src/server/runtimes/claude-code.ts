@@ -228,21 +228,21 @@ const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 // ─── ClaudeCodeRuntime ───
 
 /**
- * Map MyAgents permission mode values to CC CLI's --permission-mode values.
- * MyAgents uses internal names (auto/plan/fullAgency), CC uses different names.
+ * Pass Claude Code's native values through. Product values remain readable for
+ * older scheduled/injected callers that have not materialized a native mode.
  */
 function mapPermissionModeToCc(mode: string): string {
   switch (mode) {
-    case 'auto': return 'acceptEdits';
     case 'plan': return 'plan';
     case 'fullAgency': return 'bypassPermissions';
-    // CC's own mode values pass through directly
-    case 'default':
+    case 'auto':
+    case 'manual':
     case 'acceptEdits':
     case 'bypassPermissions':
     case 'dontAsk':
       return mode;
-    default: return 'default';
+    case 'default':
+    default: return 'manual';
   }
 }
 
@@ -364,7 +364,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       args.push('--dangerously-skip-permissions');
     } else {
       // Desktop and explicit runtime permission mode: delegate or bypass based on mode.
-      const ccMode = options.permissionMode ? mapPermissionModeToCc(options.permissionMode) : 'default';
+      const ccMode = options.permissionMode ? mapPermissionModeToCc(options.permissionMode) : 'manual';
 
       if (ccMode === 'bypassPermissions') {
         // bypassPermissions requires these two flags — even in desktop mode

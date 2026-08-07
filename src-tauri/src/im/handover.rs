@@ -408,7 +408,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             channel.bot_instance.router.clone(),
             channel.bot_instance.adapter.clone(),
             channel.bot_instance.health.clone(),
-            agent.config.workspace_path.clone(),
+            agent.config.resolved_workspace_path.clone(),
             agent.last_active_channel.clone(),
             agent.last_active_private_target.clone(),
             fallback_snapshot,

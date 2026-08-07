@@ -22,6 +22,7 @@ import {
   mapCodexTurnCompletedNotification,
   mapCodexTurnPlanUpdatedNotification,
   resolveCodexThreadModelProvider,
+  resolveCodexConversationBranchPoint,
   resolveCodexSkillExtraRoots,
   serializeCodexPermissionResponse,
   summarizeCodexThreadParamsForLog,
@@ -51,12 +52,18 @@ describe('Codex app-server protocol helpers', () => {
     const summary = summarizeCodexThreadParamsForLog({
       cwd: '/workspace',
       model: 'gpt-5',
+      threadId: 'native-thread-secret',
       developerInstructions,
     });
 
     expect(summary).toMatchObject({
       cwd: '/workspace',
       model: 'gpt-5',
+      threadId: {
+        present: true,
+        chars: 'native-thread-secret'.length,
+        hash: expect.stringMatching(/^[a-f0-9]{12}$/),
+      },
       developerInstructions: {
         present: true,
         chars: developerInstructions.length,
@@ -64,6 +71,7 @@ describe('Codex app-server protocol helpers', () => {
       },
     });
     expect(JSON.stringify(summary)).not.toContain('private identity');
+    expect(JSON.stringify(summary)).not.toContain('native-thread-secret');
   });
 
   it('uses v2 initialize capabilities and sends initialized notification', async () => {
@@ -534,6 +542,7 @@ describe('Codex app-server protocol helpers', () => {
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
       model: 'gpt-5.2-codex',
+      clientUserMessageId: 'user-1',
     })).toEqual({
       threadId: 'thread-1',
       input: [{ type: 'text', text: 'hi' }],
@@ -542,7 +551,206 @@ describe('Codex app-server protocol helpers', () => {
       sandboxPolicy: { type: 'dangerFullAccess' },
       model: 'gpt-5.2-codex',
       summary: 'concise',
+      clientUserMessageId: 'user-1',
     });
+  });
+
+  it('resolves a stable before-turn boundary without persisting a previous-turn pointer', () => {
+    const turns = [
+      { id: 'turn-1', status: 'completed' },
+      { id: 'turn-2', status: 'completed' },
+    ];
+    expect(resolveCodexConversationBranchPoint(turns, 'turn-1')).toEqual({ kind: 'fresh-thread' });
+    expect(resolveCodexConversationBranchPoint(turns, 'turn-2')).toEqual({
+      kind: 'through-turn',
+      runtimeTurnId: 'turn-1',
+    });
+    expect(() => resolveCodexConversationBranchPoint(turns, 'missing')).toThrow(/anchor/i);
+    expect(() => resolveCodexConversationBranchPoint([
+      ...turns,
+      { id: 'turn-2', status: 'completed' },
+    ], 'turn-2')).toThrow(/anchor/i);
+    expect(() => resolveCodexConversationBranchPoint([
+      { id: 'turn-1', status: 'failed' },
+    ], 'turn-1')).toThrow(/not completed/i);
+    expect(() => resolveCodexConversationBranchPoint([
+      { id: 'turn-1', status: 'failed' },
+      { id: 'turn-2', status: 'completed' },
+    ], 'turn-2')).toThrow(/previous/i);
+    expect(() => resolveCodexConversationBranchPoint(undefined, 'turn-1')).toThrow(/full turn history/i);
+  });
+
+  it('branches only through the stable v2 read/fork/unsubscribe RPCs', async () => {
+    const runtime = new CodexRuntime();
+    const rpc = {
+      call: vi.fn(async (method: string) => {
+        if (method === 'thread/read') {
+          return {
+            thread: {
+              id: 'source-thread',
+              turns: [
+                { id: 'turn-1', status: 'completed' },
+                { id: 'turn-2', status: 'completed' },
+              ],
+            },
+          };
+        }
+        if (method === 'thread/fork') return { thread: { id: 'fork-thread' } };
+        if (method === 'thread/unsubscribe') return {};
+        throw new Error(`unexpected RPC ${method}`);
+      }),
+    };
+    const process = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      version: '0.146.0',
+      threadId: 'source-thread',
+      rpc,
+    } as unknown as import('../runtimes/types').RuntimeProcess;
+
+    await expect(runtime.branchConversation(process, {
+      kind: 'before-turn',
+      runtimeTurnId: 'turn-2',
+    })).resolves.toEqual({ kind: 'native-thread', runtimeSessionId: 'fork-thread' });
+    expect(rpc.call.mock.calls).toEqual([
+      ['thread/read', { threadId: 'source-thread', includeTurns: true }, 15_000],
+      ['thread/fork', { threadId: 'source-thread', lastTurnId: 'turn-1' }, 15_000],
+      ['thread/unsubscribe', { threadId: 'fork-thread' }, 10_000],
+    ]);
+  });
+
+  it('represents the boundary before the first Codex turn without creating an empty thread', async () => {
+    const runtime = new CodexRuntime();
+    const rpc = {
+      call: vi.fn(async () => ({
+        thread: {
+          id: 'source-thread',
+          turns: [{ id: 'turn-1', status: 'completed' }],
+        },
+      })),
+    };
+    const process = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      version: '0.146.0',
+      threadId: 'source-thread',
+      rpc,
+    } as unknown as import('../runtimes/types').RuntimeProcess;
+
+    await expect(runtime.branchConversation(process, {
+      kind: 'before-turn',
+      runtimeTurnId: 'turn-1',
+    })).resolves.toEqual({ kind: 'fresh-thread' });
+    expect(rpc.call).toHaveBeenCalledOnce();
+    expect(rpc.call).toHaveBeenCalledWith(
+      'thread/read',
+      { threadId: 'source-thread', includeTurns: true },
+      15_000,
+    );
+  });
+
+  it.each([
+    ['thread/read', { kind: 'before-turn', runtimeTurnId: 'turn-2' }],
+    ['thread/fork', { kind: 'through-turn', runtimeTurnId: 'turn-1' }],
+  ] as const)('classifies %s schema rejection as a Codex capability mismatch', async (rejectedMethod, boundary) => {
+    const runtime = new CodexRuntime();
+    const rpc = {
+      call: vi.fn(async (method: string) => {
+        if (method === rejectedMethod) {
+          throw new Error('JSON-RPC error -32602: Invalid params: unknown field');
+        }
+        if (method === 'thread/read') {
+          return {
+            thread: {
+              id: 'source-thread',
+              turns: [
+                { id: 'turn-1', status: 'completed' },
+                { id: 'turn-2', status: 'completed' },
+              ],
+            },
+          };
+        }
+        throw new Error(`unexpected RPC ${method}`);
+      }),
+    };
+    const process = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      version: '0.146.0',
+      threadId: 'source-thread',
+      rpc,
+    } as unknown as import('../runtimes/types').RuntimeProcess;
+
+    await expect(runtime.branchConversation(process, boundary)).rejects.toMatchObject({
+      code: 'capability_unavailable',
+    });
+  });
+
+  it.each([
+    ['JSON-RPC error -32601: Method not found', 'capability_unavailable'],
+    ['no rollout found for thread', 'anchor_unavailable'],
+  ] as const)('normalizes thread/read failure %s', async (failure, expectedCode) => {
+    const runtime = new CodexRuntime();
+    const process = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      version: '0.146.0',
+      threadId: 'source-thread',
+      rpc: { call: vi.fn(async () => { throw new Error(failure); }) },
+    } as unknown as import('../runtimes/types').RuntimeProcess;
+
+    await expect(runtime.branchConversation(process, {
+      kind: 'before-turn',
+      runtimeTurnId: 'turn-2',
+    })).rejects.toMatchObject({ code: expectedCode });
+  });
+
+  it('normalizes a rejected previous turn boundary as an unavailable anchor', async () => {
+    const runtime = new CodexRuntime();
+    const process = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      version: '0.146.0',
+      threadId: 'source-thread',
+      rpc: {
+        call: vi.fn(async (method: string) => {
+          if (method === 'thread/fork') throw new Error('unknown turn turn-1');
+          throw new Error(`unexpected RPC ${method}`);
+        }),
+      },
+    } as unknown as import('../runtimes/types').RuntimeProcess;
+
+    await expect(runtime.branchConversation(process, {
+      kind: 'through-turn',
+      runtimeTurnId: 'turn-1',
+    })).rejects.toMatchObject({ code: 'anchor_unavailable' });
+  });
+
+  it('terminates the source connection when the fork subscription cannot be released', async () => {
+    const runtime = new CodexRuntime();
+    const rpc = {
+      call: vi.fn(async (method: string) => {
+        if (method === 'thread/fork') return { thread: { id: 'fork-thread' } };
+        if (method === 'thread/unsubscribe') throw new Error('unsubscribe unavailable');
+        throw new Error(`unexpected RPC ${method}`);
+      }),
+    };
+    const process = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      version: '0.146.0',
+      threadId: 'source-thread',
+      rpc,
+    } as unknown as import('../runtimes/types').RuntimeProcess;
+    const stop = vi.spyOn(runtime, 'stopSession').mockImplementation(async (target) => {
+      target.exited = true;
+    });
+
+    await expect(runtime.branchConversation(process, {
+      kind: 'through-turn',
+      runtimeTurnId: 'turn-1',
+    })).resolves.toEqual({ kind: 'native-thread', runtimeSessionId: 'fork-thread' });
+    expect(stop).toHaveBeenCalledWith(process);
   });
 
   // #324 — turn/start.effort: included only when the user picked a non-default
@@ -683,6 +891,87 @@ describe('Codex app-server protocol helpers', () => {
       { kind: 'status_change', state: 'running' },
       { kind: 'agent_plan_update', todos: [] },
     ]);
+  });
+
+  it('holds an early Codex terminal until the turn/start response binds the root user id', () => {
+    const runtime = new CodexRuntime();
+    const codexProc = {
+      threadId: 'thread-1',
+      currentTurnId: '',
+      activeRootTurnAdmission: null,
+      deferredSubAgentEvents: new Map(),
+      subThreadToCard: new Map(),
+      subThreadToParent: new Map(),
+      subThreadMeta: new Map(),
+      collabControlToolParents: new Map(),
+      activeSubAgentTurns: new Map(),
+      completedSubAgentTurnsBeforeActivity: new Set(),
+      subAgentThreadsAwaitingActivity: new Set(),
+      codexV2SubAgentActivityObserved: false,
+      codexV2InteractionDeliveryByCallId: new Map(),
+      subAgentActivitySeenBeforeTurnStart: new Set(),
+      exactUsageByTurn: new Map(),
+      subAgentInterruptsInFlight: new Map(),
+      pendingMainTurnCompletion: null,
+      interruptPendingSubAgentTurns: false,
+      releaseHeldMainTurnOnExit: false,
+    };
+    const internals = runtime as unknown as {
+      beginRootTurnAdmission(process: object, clientUserMessageId: string): void;
+      completeRootTurnAdmission(
+        process: object,
+        runtimeTurnId: string,
+        emit: (event: unknown) => void,
+      ): unknown;
+      parseNotification(
+        process: object,
+        method: string,
+        params: unknown,
+        emit: (event: unknown) => void,
+      ): unknown;
+    };
+    const emitted: unknown[] = [];
+
+    internals.beginRootTurnAdmission(codexProc, 'user-1');
+    expect(internals.parseNotification(codexProc, 'turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'turn-1', status: 'completed' },
+    }, () => {})).toEqual([]);
+    expect(emitted).toEqual([]);
+
+    internals.completeRootTurnAdmission(codexProc, 'turn-1', event => emitted.push(event));
+    expect(emitted).toEqual([
+      { kind: 'root_turn_admitted', runtimeTurnId: 'turn-1', clientUserMessageId: 'user-1' },
+      { kind: 'turn_complete', status: 'completed' },
+      { kind: 'agent_plan_update', todos: [] },
+    ]);
+  });
+
+  it('terminates the Codex process when response and notification bind different root turns', () => {
+    const runtime = new CodexRuntime();
+    const codexProc = {
+      exited: false,
+      currentTurnId: '',
+      activeRootTurnAdmission: {
+        clientUserMessageId: 'user-1',
+        notificationTurnId: 'turn-from-notification',
+      },
+    };
+    const stop = vi.spyOn(runtime, 'stopSession').mockResolvedValue();
+    const internals = runtime as unknown as {
+      completeRootTurnAdmission(
+        process: object,
+        runtimeTurnId: string,
+        emit: (event: unknown) => void,
+      ): void;
+    };
+
+    expect(() => internals.completeRootTurnAdmission(
+      codexProc,
+      'turn-from-response',
+      () => {},
+    )).toThrow(/mismatch/i);
+    expect(stop).toHaveBeenCalledWith(codexProc);
   });
 
   it('maps Codex turn/plan/updated into an AgentStatusPanel todo snapshot', () => {

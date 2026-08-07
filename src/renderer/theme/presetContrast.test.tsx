@@ -78,7 +78,9 @@ describe('production Theme contrast', () => {
   it('keeps every optional light Theme toggle thumb on the light control surface', () => {
     const lightSurfaceFloor = luminance('#f0f0f0');
 
-    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+    for (const definition of themeRegistry.getAcceptedDefinitions().filter(
+      candidate => candidate.id !== 'myagents-default',
+    )) {
       const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
       expect(
         luminance(tokens.get('--toggle-thumb')!),
@@ -90,7 +92,9 @@ describe('production Theme contrast', () => {
   it('keeps every optional light Theme primary action foreground on the light control surface', () => {
     const lightSurfaceFloor = luminance('#f0f0f0');
 
-    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+    for (const definition of themeRegistry.getAcceptedDefinitions().filter(
+      candidate => candidate.id !== 'myagents-default',
+    )) {
       const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
       expect(
         luminance(resolvedColorToken(tokens, '--button-primary-text')),
@@ -102,7 +106,9 @@ describe('production Theme contrast', () => {
   it('keeps every optional light Theme solid Accent foreground on the light control surface', () => {
     const lightSurfaceFloor = luminance('#f0f0f0');
 
-    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+    for (const definition of themeRegistry.getAcceptedDefinitions().filter(
+      candidate => candidate.id !== 'myagents-default',
+    )) {
       const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
       expect(
         luminance(tokens.get('--on-accent')!),
@@ -244,9 +250,9 @@ describe('production Theme contrast', () => {
     }
   });
 
-  it('keeps the Default Black light primary action readable', () => {
+  it.each(['myagents-light', 'default-black'])('keeps %s light primary action readable', (themeId) => {
     const definition = themeRegistry.getAcceptedDefinitions().find(
-      candidate => candidate.id === 'default-black',
+      candidate => candidate.id === themeId,
     )!;
     const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
     const foreground = resolvedColorToken(tokens, '--button-primary-text');

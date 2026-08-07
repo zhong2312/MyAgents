@@ -146,6 +146,7 @@ interface Provider {
 
 ### ProviderRoute vs ProviderEnv
 
+- `ProviderEnv` 只在 `src/server/provider-types.ts` 定义。它属于 Server 的 Provider 模块，不由 builtin Session facade 或 Renderer 定义。
 - `ProviderRoute` 是会话持久身份，只保存 provider/model：`{kind:'provider', providerId, model}` 或 `{kind:'subscription', providerId:'anthropic-sub'|'xai-sub', model}`。
 - `ProviderEnv` 是请求运行时派生物，包含 `baseUrl`、`apiKey`、`authType`、`modelAliases` 或非 secret `credentialSource`；只能从当前配置即时 materialize，不能作为新会话身份写回 `sessions.json`。`credentialSource` 是 owner 引用，不是 bearer 快照。
 - `providerEnvJson` 只读兼容旧数据：没有 `providerRoute` 的历史 session 才允许 fallback 读取。新写入路径必须写 `providerRoute`，并省略/清空 `providerEnvJson`。

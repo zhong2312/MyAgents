@@ -10,6 +10,7 @@ import { HeartPulse } from 'lucide-react';
 import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import { DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
 import { getPlatformLabel } from '@/utils/platformLabel';
+import { resolveAgentWorkspaceProjections } from '../../../shared/agentWorkspaceIdentity';
 
 interface AgentCardListProps {
   onSelectAgent: (agentId: string, workspacePath: string) => void;
@@ -29,6 +30,10 @@ export default function AgentCardList({ onSelectAgent }: AgentCardListProps) {
   const { statuses } = useAgentStatuses();
 
   const agents: AgentConfig[] = useMemo(() => config.agents || [], [config.agents]);
+  const workspaceByAgentId = useMemo(() => new Map(
+    resolveAgentWorkspaceProjections(projects, agents).agentProjections
+      .map(item => [item.agentId, item.workspacePath]),
+  ), [agents, projects]);
 
   // Map agentId → Project for reading canonical name/icon from Project
   const projectByAgentId = useMemo(() => {
@@ -62,12 +67,14 @@ export default function AgentCardList({ onSelectAgent }: AgentCardListProps) {
         const iconId = proj?.icon || agent.icon || DEFAULT_WORKSPACE_ICON;
         const providerName = providers.find(p => p.id === (proj?.providerId ?? agent.providerId))?.name;
         const modelDisplay = proj?.model || agent.model || t('agentSettings.agentList.defaultModel');
+        const workspacePath = workspaceByAgentId.get(agent.id);
+        if (!workspacePath) return null;
 
         return (
           <button
             key={agent.id}
             className="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-all hover:border-[var(--line-strong)] hover:shadow-sm hover:translate-y-[-1px]"
-            onClick={() => onSelectAgent(agent.id, agent.workspacePath)}
+            onClick={() => onSelectAgent(agent.id, workspacePath)}
           >
             {/* Icon + status dot */}
             <div className="relative flex h-8 w-8 shrink-0 items-center justify-center">
@@ -93,7 +100,7 @@ export default function AgentCardList({ onSelectAgent }: AgentCardListProps) {
 
               {/* Workspace path */}
               <div className="mt-0.5 truncate text-xs text-[var(--ink-subtle)]">
-                {shortenPathForDisplay(agent.workspacePath)}
+                {shortenPathForDisplay(workspacePath)}
               </div>
 
               {/* Channel badges */}

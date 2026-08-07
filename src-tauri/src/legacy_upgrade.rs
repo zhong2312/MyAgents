@@ -88,7 +88,7 @@ fn workspace_id_for(
     agents
         .iter()
         .find(|agent| {
-            crate::workspace_path::normalize_workspace_path_identity(&agent.workspace_path)
+            crate::workspace_path::normalize_workspace_path_identity(&agent.resolved_workspace_path)
                 == target
         })
         .map(|agent| agent.id.clone())
@@ -221,6 +221,7 @@ fn migration_input(
             start_at,
             recurring_window: window,
             dispatch_at,
+            trigger: None,
             model: cron.model.clone(),
             provider_id,
             permission_mode: (!cron.permission_mode.is_empty())

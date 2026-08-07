@@ -13,8 +13,14 @@ vi.mock('../../sse', () => ({
 vi.mock('../../SessionStore', () => ({
   getSessionMetadata: vi.fn(() => mocks.metadata),
   getSessionData: vi.fn(() => mocks.data),
+  loadSessionTranscript: vi.fn(async () => ({
+    messages: mocks.data?.messages ?? [],
+    cursor: { persistedMessageCount: mocks.data?.messages.length ?? 0 },
+    hasMalformedRows: false,
+  })),
+  appendSessionMessages: vi.fn(),
+  mutateSessionTranscript: vi.fn(),
   saveSessionMetadata: vi.fn(),
-  saveSessionMessages: vi.fn(),
   updateSessionMetadata: vi.fn(),
 }));
 

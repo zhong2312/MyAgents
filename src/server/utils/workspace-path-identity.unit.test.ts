@@ -87,10 +87,15 @@ describe('Windows workspace path identity for server config helpers', () => {
         id: 'agent-1',
         name: 'Agent',
         enabled: true,
-        workspacePath: 'C:\\Users\\Me\\Project',
         enabledPluginIds: ['reviewer', 'charts'],
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Win Project',
+      path: 'C:\\Users\\Me\\Project',
+      agentId: 'agent-1',
+    }]);
 
     expect(getDefaultEnabledPluginIdsForWorkspace('c:/users/me/project/'))
       .toEqual(['reviewer', 'charts']);
@@ -134,13 +139,14 @@ describe('Windows workspace path identity for server config helpers', () => {
       ['reviewer', 'reviewer', 'charts'],
     )).resolves.toEqual({ scope: 'agent', ids: ['reviewer', 'charts'] });
 
-    const config = readJson<{ agents: Array<{ enabledPluginIds?: string[] }> }>(
+    const config = readJson<{ agents: Array<{ enabledPluginIds?: string[]; workspacePath?: string }> }>(
       join(scratch, '.myagents', 'config.json'),
     );
     const projects = readJson<Array<{ enabledPluginIds?: string[] }>>(
       join(scratch, '.myagents', 'projects.json'),
     );
     expect(config.agents[0].enabledPluginIds).toEqual(['reviewer', 'charts']);
+    expect(config.agents[0].workspacePath).toBe('C:\\Users\\Me\\Project');
     expect(projects[0].enabledPluginIds).toEqual(['reviewer', 'charts']);
   });
 

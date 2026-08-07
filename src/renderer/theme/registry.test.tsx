@@ -40,6 +40,7 @@ function presetTokens(
 
 describe('ThemeRegistry', () => {
   const productionThemeIds = [
+    'myagents-light',
     'myagents-default',
     'default-black',
     'sage',
@@ -50,11 +51,12 @@ describe('ThemeRegistry', () => {
     'raycast',
   ];
 
-  it('ships eight complete production Themes in product order', () => {
+  it('ships nine complete production Themes in product order', () => {
     expect(themeRegistry.getProductionIds()).toEqual(productionThemeIds);
     expect(themeRegistry.getAcceptedDefinitions().map(definition => definition.displayName)).toEqual([
-      'MyAgents Default',
-      'Default Black',
+      'MyAgents Light',
+      'MyAgents Classic',
+      'MyAgents Classic2',
       'Sage',
       'Claude',
       'Linear',
@@ -66,7 +68,7 @@ describe('ThemeRegistry', () => {
   });
 
   it('resolves an omitted preference to the current product default', () => {
-    expect(themeRegistry.resolve(undefined, 'light', false).themeId).toBe('default-black');
+    expect(themeRegistry.resolve(undefined, 'light', false).themeId).toBe('myagents-light');
   });
 
   it('derives selector swatches from each Theme package primary action tokens', () => {
@@ -77,6 +79,7 @@ describe('ThemeRegistry', () => {
     }
     expect(themeRegistry.getPreviewSwatches('myagents-default').light).toBe('#c26d3a');
     expect(themeRegistry.getPreviewSwatches('default-black').light).toBe('#111111');
+    expect(themeRegistry.getPreviewSwatches('myagents-light').light).toBe('#111111');
   });
 
   it('keeps Theme and Appearance orthogonal for every production package', () => {

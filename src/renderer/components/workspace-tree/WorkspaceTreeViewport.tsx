@@ -391,6 +391,7 @@ export const WorkspaceTreeViewport = memo(
           <Virtuoso
             ref={virtuosoRef}
             className="h-full overscroll-none"
+            style={{ scrollbarGutter: "stable" }}
             components={TREE_COMPONENTS}
             computeItemKey={(_index, item) => item.key}
             context={context}

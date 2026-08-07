@@ -16,11 +16,10 @@ import { Minimize2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { useTabState } from '@/context/TabContext';
+import { computeBuiltinAutoCompactThreshold } from '../../shared/contextUsage';
 import Popover from './ui/Popover';
 import Tip from './Tip';
 
-/** ≈ 有效窗口 − 13K 处触发自动压缩（SDK 对 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 的 headroom；仅 builtin 适用）。 */
-const COMPACT_HEADROOM_TOKENS = 13_000;
 /** hover 离开后延迟关闭，给「环 → 卡片」鼠标移动留缓冲（safe-bridge 替代）。 */
 const HOVER_CLOSE_DELAY_MS = 140;
 
@@ -98,10 +97,10 @@ export default function ContextUsageIndicator({ onCompact }: ContextUsageIndicat
 
   const { contextTokens, contextWindow, usedPercent, source, windowSource } = contextUsage;
   const isBuiltin = source === 'builtin';
-  const compactAt = Math.max(0, contextWindow - COMPACT_HEADROOM_TOKENS);
+  const compactAt = computeBuiltinAutoCompactThreshold(contextWindow);
   const showCompact = isBuiltin && !!onCompact;
 
-  // 窗口来源描述 + （仅 builtin）自动压缩阈值。"窗口 − 13K 自动压缩" 是 builtin SDK 的行为；
+  // 窗口来源描述 + （仅 builtin）共享 90% policy 投影的自动压缩阈值；
   // 外部 runtime 的压缩阈值各不相同（Codex 有自己的 auto-compact），不能套用同一文案（review #W4）。
   const windowDesc =
     windowSource === 'default'

@@ -6,11 +6,15 @@ import type { Message as MessageType } from '@/types/chat';
 import { projectVisibleChatTimelineRows } from '@/utils/chatTimelineRows';
 
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: (props: { data: MessageType[]; itemContent: (index: number, message: MessageType) => React.ReactNode }) => (
+  Virtuoso: (props: {
+    data: MessageType[];
+    context?: unknown;
+    itemContent: (index: number, message: MessageType, context?: unknown) => React.ReactNode;
+  }) => (
     <div data-testid="virtuoso" data-message-ids={props.data.map(message => message.id).join(',')}>
       {props.data.map((message, index) => (
         <React.Fragment key={message.id}>
-          {props.itemContent(index, message)}
+          {props.itemContent(index, message, props.context)}
         </React.Fragment>
       ))}
     </div>

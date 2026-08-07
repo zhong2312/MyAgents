@@ -156,7 +156,6 @@ function sanitizeParams(params: EventParams): EventParams {
  */
 const SESSION_SCOPED_AUTO_INJECT_EVENTS: ReadonlySet<string> = new Set([
   'session_new',
-  'session_switch',
   'session_fork',          // Chat.tsx:2797 — fork from an existing session, intrinsically session-scoped
   'session_rewind',
   'session_title_edit',

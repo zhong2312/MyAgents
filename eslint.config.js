@@ -106,6 +106,11 @@ const GLOBAL_RESTRICTED_SYNTAX = [
 const SIDECAR_RESTRICTED_SYNTAX = [
   ...GLOBAL_RESTRICTED_SYNTAX,
   {
+    selector: 'ImportDeclaration > Literal[value=/^\\.\\./][value=/renderer/]',
+    message:
+      'Server imports from Renderer reverse the Node/WebView owner boundary and can pull browser-owned contracts into the Sidecar. Move shared wire/domain types to src/shared and import that owner directly.'
+  },
+  {
     // CLAUDE.md red-line: esbuild bundles src/server into a single
     // server-dist.js, hardcoding __dirname to the SOURCE file's directory.
     // At runtime the bundle lives in dist/, so any path.join(__dirname,

@@ -14,11 +14,11 @@
  * - Concurrent safety: append is atomic on most filesystems
  */
 
-import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync } from 'fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync, truncateSync, openSync, readSync, closeSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-import type { SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
+import type { PendingConversationMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
@@ -32,9 +32,9 @@ import { stripBom } from '../shared/utils';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync } from './utils/fs-utils';
 import { withFileLock } from './utils/file-lock';
-import { countNonEmptyJsonlLines } from './utils/jsonl-line-count';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { normalizeSessionRuntimeIdentity } from './utils/session-runtime-identity';
+import { resolveLastVisibleTurnPreview } from './utils/session-message-preview';
 
 const MYAGENTS_DIR = join(homedir(), '.myagents');
 const SESSIONS_FILE = join(MYAGENTS_DIR, 'sessions.json');
@@ -46,17 +46,48 @@ const SESSIONS_LOCK_DIR = join(MYAGENTS_DIR, 'session-locks');
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 30000;
 
+type TranscriptFileIdentity = Readonly<{
+    exists: boolean;
+    dev: number;
+    ino: number;
+    size: number;
+    mtimeMs: number;
+    ctimeMs: number;
+    endsWithNewline: boolean;
+}>;
+
+const transcriptCursorState: unique symbol = Symbol('TranscriptWriteCursor');
+
 /**
- * Line count cache for JSONL files
- * Avoids repeated file reads when appending messages
- * Cache is per-process (each Sidecar maintains its own cache)
+ * In-process capability proving which durable transcript snapshot an owner
+ * loaded. The symbol-keyed physical identity is deliberately unavailable to
+ * callers; only SessionStore can issue or advance the capability.
  */
-const lineCountCache = new Map<string, number>();
+export type TranscriptWriteCursor = Readonly<{
+    persistedMessageCount: number;
+    [transcriptCursorState]: Readonly<{
+        sessionId: string;
+        file: TranscriptFileIdentity;
+    }>;
+}>;
+
+export type SessionTranscriptSnapshot = Readonly<{
+    messages: SessionMessage[];
+    cursor: TranscriptWriteCursor;
+    hasMalformedRows: boolean;
+}>;
 
 class CorruptSessionsIndexError extends Error {
     constructor(message: string) {
         super(message);
         this.name = 'CorruptSessionsIndexError';
+    }
+}
+
+class MalformedSessionTranscriptError extends Error {
+    constructor(sessionId: string) {
+        super(`Session ${sessionId} contains malformed JSONL rows`);
+        this.name = 'MalformedSessionTranscriptError';
     }
 }
 
@@ -74,58 +105,6 @@ function dedupeSessionMetadata(sessions: SessionMetadata[]): SessionMetadata[] {
         byId.set(session.id, session);
     }
     return [...byId.values()];
-}
-
-/**
- * Get cached line count, reading from file only on cache miss
- */
-function getCachedLineCount(sessionId: string, filePath: string): number {
-    const cached = lineCountCache.get(sessionId);
-    if (cached !== undefined) {
-        emitPerfTrace({
-            trace: 'storage_io',
-            phase: 'line_count_cache_hit',
-            sessionId,
-            count: cached,
-            status: 'ok',
-        });
-        return cached;
-    }
-    // Cold start: read from file
-    const start = nowMs();
-    const count = countLinesFromFile(filePath);
-    let sizeBytes: number | undefined;
-    try {
-        sizeBytes = existsSync(filePath) ? statSync(filePath).size : 0;
-    } catch {
-        sizeBytes = undefined;
-    }
-    emitPerfTrace({
-        trace: 'storage_io',
-        phase: 'line_count_cache_miss',
-        sessionId,
-        durationMs: elapsedMs(start),
-        sizeBytes,
-        count,
-        status: 'ok',
-    });
-    lineCountCache.set(sessionId, count);
-    return count;
-}
-
-/**
- * Update cached line count after appending messages
- */
-function incrementLineCount(sessionId: string, delta: number): void {
-    const current = lineCountCache.get(sessionId) ?? 0;
-    lineCountCache.set(sessionId, current + delta);
-}
-
-/**
- * Clear line count cache for a session (on delete)
- */
-function clearLineCountCache(sessionId: string): void {
-    lineCountCache.delete(sessionId);
 }
 
 /**
@@ -416,13 +395,6 @@ function getLegacySessionFilePath(sessionId: string): string {
 }
 
 /**
- * Count lines in a JSONL file by reading the file (internal, use getCachedLineCount for performance)
- */
-function countLinesFromFile(filePath: string): number {
-    return countNonEmptyJsonlLines(filePath);
-}
-
-/**
  * Read messages from JSONL file with per-line error tolerance
  * Corrupted lines are skipped to prevent data loss
  */
@@ -449,6 +421,116 @@ function readMessagesFromJsonl(filePath: string): SessionMessage[] {
     } catch (error) {
         console.error('[SessionStore] Failed to read JSONL file:', error);
         return [];
+    }
+}
+
+function readJsonlSnapshot(filePath: string): {
+    messages: SessionMessage[];
+    hasMalformedRows: boolean;
+} {
+    if (!existsSync(filePath)) {
+        return { messages: [], hasMalformedRows: false };
+    }
+
+    const content = readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n');
+    const messages: SessionMessage[] = [];
+    let hasMalformedRows = false;
+    for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+            messages.push(JSON.parse(line) as SessionMessage);
+        } catch {
+            hasMalformedRows = true;
+        }
+    }
+    return { messages, hasMalformedRows };
+}
+
+function getTranscriptFileIdentity(filePath: string): TranscriptFileIdentity {
+    if (!existsSync(filePath)) {
+        return { exists: false, dev: 0, ino: 0, size: 0, mtimeMs: 0, ctimeMs: 0, endsWithNewline: false };
+    }
+    const stat = statSync(filePath);
+    let endsWithNewline = false;
+    if (stat.size > 0) {
+        const fd = openSync(filePath, 'r');
+        try {
+            const byte = Buffer.allocUnsafe(1);
+            readSync(fd, byte, 0, 1, stat.size - 1);
+            endsWithNewline = byte[0] === 0x0a;
+        } finally {
+            closeSync(fd);
+        }
+    }
+    return {
+        exists: true,
+        dev: stat.dev,
+        ino: stat.ino,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
+        endsWithNewline,
+    };
+}
+
+function sameTranscriptFileIdentity(
+    left: TranscriptFileIdentity,
+    right: TranscriptFileIdentity,
+): boolean {
+    return left.exists === right.exists
+        && left.dev === right.dev
+        && left.ino === right.ino
+        && left.size === right.size
+        && left.mtimeMs === right.mtimeMs
+        && left.ctimeMs === right.ctimeMs
+        && left.endsWithNewline === right.endsWithNewline;
+}
+
+function issueTranscriptCursor(
+    sessionId: string,
+    persistedMessageCount: number,
+    file: TranscriptFileIdentity,
+): TranscriptWriteCursor {
+    return Object.freeze({
+        persistedMessageCount,
+        [transcriptCursorState]: Object.freeze({ sessionId, file }),
+    });
+}
+
+function cursorMatches(
+    sessionId: string,
+    cursor: TranscriptWriteCursor,
+    file: TranscriptFileIdentity,
+): boolean {
+    return cursor[transcriptCursorState].sessionId === sessionId
+        && sameTranscriptFileIdentity(cursor[transcriptCursorState].file, file);
+}
+
+function readSessionMessagesForMutation(sessionId: string): SessionMessage[] {
+    const jsonlPath = getSessionFilePath(sessionId);
+    if (existsSync(jsonlPath)) {
+        const snapshot = readJsonlSnapshot(jsonlPath);
+        if (snapshot.hasMalformedRows) throw new MalformedSessionTranscriptError(sessionId);
+        return snapshot.messages;
+    }
+    if (existsSync(getLegacySessionFilePath(sessionId))) return migrateToJsonl(sessionId);
+    return [];
+}
+
+function atomicRewriteSessionMessages(sessionId: string, messages: SessionMessage[]): void {
+    const filePath = getSessionFilePath(sessionId);
+    const tempPath = `${filePath}.rewind-${process.pid}.tmp`;
+    const content = messages.map(message => JSON.stringify(message)).join('\n')
+        + (messages.length > 0 ? '\n' : '');
+    try {
+        writeFileSync(tempPath, content, 'utf-8');
+        renameSync(tempPath, filePath);
+    } catch (error) {
+        try {
+            if (existsSync(tempPath)) unlinkSync(tempPath);
+        } catch { /* best-effort temp cleanup */ }
+        throw error;
     }
 }
 
@@ -566,28 +648,22 @@ function migrateToJsonl(sessionId: string): SessionMessage[] {
         return [];
     }
 
-    try {
-        // Read legacy JSON
-        const content = readFileSync(legacyPath, 'utf-8');
-        const data = JSON.parse(content) as { messages: SessionMessage[] };
-        const messages = data.messages ?? [];
+    // Read legacy JSON. Migration failures must propagate: returning an empty
+    // snapshot would let a later append create a JSONL that masks intact legacy
+    // history. The atomic rewrite keeps the legacy file authoritative until a
+    // complete JSONL has been published.
+    const content = readFileSync(legacyPath, 'utf-8');
+    const data = JSON.parse(content) as { messages: SessionMessage[] };
+    const messages = data.messages ?? [];
 
-        if (messages.length > 0) {
-            // Write to JSONL format
-            const jsonlContent = messages.map(msg => JSON.stringify(msg)).join('\n') + '\n';
-            writeFileSync(jsonlPath, jsonlContent, 'utf-8');
-            console.log(`[SessionStore] Migrated ${messages.length} messages to JSONL: ${sessionId}`);
-        }
-
-        // Remove legacy file
-        unlinkSync(legacyPath);
-        console.log(`[SessionStore] Removed legacy JSON file: ${sessionId}`);
-
-        return messages;
-    } catch (error) {
-        console.error('[SessionStore] Migration failed:', error);
-        return [];
+    if (messages.length > 0) {
+        atomicRewriteSessionMessages(sessionId, messages);
+        console.log(`[SessionStore] Migrated ${messages.length} messages to JSONL: ${sessionId}`);
     }
+
+    unlinkSync(legacyPath);
+    console.log(`[SessionStore] Removed legacy JSON file: ${sessionId}`);
+    return messages;
 }
 
 /**
@@ -761,7 +837,7 @@ export async function deleteSession(
 ): Promise<SessionDeleteResult> {
     ensureStorageDir();
 
-    // Lock order matches saveSessionMessages: per-session file lock OUTER,
+    // Lock order matches transcript append/mutation: per-session file lock OUTER,
     // sessions lock INNER. Taking the file lock here serializes the delete
     // against an in-flight append from another writer of the same session
     // (cross-tab cron, background completion) — previously the unlink could
@@ -833,9 +909,6 @@ export async function deleteSession(
                 unlinkSync(legacyFile);
             }
 
-            // Clear line count cache
-            clearLineCountCache(sessionId);
-
             atomicWriteSessionsFile(JSON.stringify(filtered, null, 2));
 
             return { deleted: true };
@@ -847,10 +920,10 @@ export async function deleteSession(
 }
 
 export type PendingSessionIdentityMigrationResult =
-    | { migrated: true; metadata: SessionMetadata }
+    | { migrated: true; metadata: SessionMetadata; transcript: SessionTranscriptSnapshot }
     | {
         migrated: false;
-        reason: 'source-not-found' | 'source-not-pending' | 'target-exists' | 'data-conflict' | 'io-error';
+        reason: 'source-not-found' | 'source-not-pending' | 'target-exists' | 'data-conflict' | 'authority-revoked' | 'io-error';
     };
 
 function pathsReferToSameFile(firstPath: string, secondPath: string): boolean {
@@ -861,6 +934,23 @@ function pathsReferToSameFile(firstPath: string, secondPath: string): boolean {
     } catch {
         return false;
     }
+}
+
+function loadSessionTranscriptLocked(sessionId: string): SessionTranscriptSnapshot {
+    const filePath = getSessionFilePath(sessionId);
+    if (!existsSync(filePath) && existsSync(getLegacySessionFilePath(sessionId))) {
+        migrateToJsonl(sessionId);
+    }
+    const snapshot = readJsonlSnapshot(filePath);
+    return {
+        messages: snapshot.messages,
+        cursor: issueTranscriptCursor(
+            sessionId,
+            snapshot.messages.length,
+            getTranscriptFileIdentity(filePath),
+        ),
+        hasMalformedRows: snapshot.hasMalformedRows,
+    };
 }
 
 /**
@@ -874,6 +964,7 @@ export async function migratePendingSessionIdentity(
     sourceSessionId: string,
     targetSessionId: string,
     patch: Pick<SessionMetadata, 'sdkSessionId' | 'unifiedSession'>,
+    commitPrecondition?: () => boolean,
 ): Promise<PendingSessionIdentityMigrationResult> {
     ensureStorageDir();
     if (!isPendingSessionId(sourceSessionId) || sourceSessionId === targetSessionId) {
@@ -884,6 +975,9 @@ export async function migratePendingSessionIdentity(
         return await withSessionFileLocks(
             [sourceSessionId, targetSessionId],
             async () => withSessionsLock(async () => {
+                if (commitPrecondition && !commitPrecondition()) {
+                    return { migrated: false, reason: 'authority-revoked' };
+                }
                 const all = readSessionsIndexForWrite();
                 const sourceIndex = all.findIndex(session => session.id === sourceSessionId);
                 if (sourceIndex < 0) {
@@ -928,10 +1022,11 @@ export async function migratePendingSessionIdentity(
                             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
                         }
 
-                        const cachedCount = lineCountCache.get(sourceSessionId);
-                        clearLineCountCache(sourceSessionId);
-                        if (cachedCount !== undefined) lineCountCache.set(targetSessionId, cachedCount);
-                        return { migrated: true, metadata: recoveredMetadata };
+                        return {
+                            migrated: true,
+                            metadata: recoveredMetadata,
+                            transcript: loadSessionTranscriptLocked(targetSessionId),
+                        };
                     }
                     return { migrated: false, reason: 'source-not-found' };
                 }
@@ -1021,17 +1116,6 @@ export async function migratePendingSessionIdentity(
                     return { migrated: false, reason: 'io-error' };
                 }
 
-                // Transfer the process-local cache only after the source name
-                // has been retired successfully. A failed cleanup restores the
-                // source metadata identity, so moving the cache before this
-                // point would leave the authoritative source with stale count
-                // state after rollback.
-                const cachedCount = lineCountCache.get(sourceSessionId);
-                clearLineCountCache(sourceSessionId);
-                if (cachedCount !== undefined) {
-                    lineCountCache.set(targetSessionId, cachedCount);
-                }
-
                 let completedMetadata = metadata;
                 if (metadata.materializationState !== 'prepared') {
                     completedMetadata = {
@@ -1043,7 +1127,11 @@ export async function migratePendingSessionIdentity(
                 }
 
                 console.log(`[SessionStore] Migrated pending session identity source=${sourceSessionId} target=${targetSessionId} jsonl=${hasSourceJsonl} legacy=${hasSourceLegacy}`);
-                return { migrated: true, metadata: completedMetadata };
+                return {
+                    migrated: true,
+                    metadata: completedMetadata,
+                    transcript: loadSessionTranscriptLocked(targetSessionId),
+                };
             }),
         );
     } catch (error) {
@@ -1093,6 +1181,184 @@ export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionDa
 }
 
 /**
+ * Load the durable transcript and issue the only capability accepted by later
+ * append/mutation calls. Legacy JSON is migrated lazily under the same
+ * per-Session writer lock used by every transcript mutation.
+ */
+export async function loadSessionTranscript(sessionId: string): Promise<SessionTranscriptSnapshot> {
+    ensureStorageDir();
+    return withSessionFileLock(sessionId, async () => loadSessionTranscriptLocked(sessionId));
+}
+
+export type ConversationMutationResult =
+    | { success: true; metadata: SessionMetadata; messages: SessionMessage[] }
+    | {
+        success: false;
+        reason: 'precondition_failed' | 'storage_consistency_error' | 'write_error';
+        error: string;
+    };
+
+function finalizeCodexRewindMetadata(
+    current: SessionMetadata,
+    intent: PendingConversationMutation,
+    messages: SessionMessage[],
+): SessionMetadata {
+    const { preview } = resolveLastVisibleTurnPreview(messages);
+    return {
+        ...current,
+        runtimeSessionId: intent.replacementRuntimeSessionId ?? undefined,
+        pendingConversationMutation: undefined,
+        runtimeUsageTotals: undefined,
+        lastContextUsage: undefined,
+        stats: calculateSessionStats(messages),
+        lastMessagePreview: preview,
+    };
+}
+
+async function resolvePendingConversationMutationLocked(
+    sessionId: string,
+): Promise<ConversationMutationResult> {
+    const messages = readSessionMessagesForMutation(sessionId);
+    return withSessionsLock(async () => {
+        const all = readSessionsIndexForWrite();
+        const index = all.findIndex(session => session.id === sessionId);
+        if (index < 0) {
+            return { success: false, reason: 'precondition_failed', error: 'Session metadata is missing' };
+        }
+        const current = all[index];
+        const intent = current.pendingConversationMutation;
+        if (!intent) return { success: true, metadata: current, messages };
+        if (intent.schemaVersion !== 1 || intent.kind !== 'codex-rewind') {
+            return { success: false, reason: 'storage_consistency_error', error: 'Unknown conversation mutation intent' };
+        }
+        if (current.runtimeSessionId !== intent.sourceRuntimeSessionId) {
+            return {
+                success: false,
+                reason: 'storage_consistency_error',
+                error: 'Conversation mutation source binding mismatch',
+            };
+        }
+
+        if (messages.length === intent.sourceMessageCount) {
+            const restored = { ...current, pendingConversationMutation: undefined };
+            all[index] = restored;
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, metadata: restored, messages };
+        }
+        if (messages.length === intent.targetMessageCount) {
+            const completed = finalizeCodexRewindMetadata(current, intent, messages);
+            all[index] = completed;
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, metadata: completed, messages };
+        }
+        return {
+            success: false,
+            reason: 'storage_consistency_error',
+            error: `Conversation mutation count mismatch: expected ${intent.sourceMessageCount} or ${intent.targetMessageCount}, found ${messages.length}`,
+        };
+    });
+}
+
+/** Resolve the bounded Codex rewind intent before a Session may resume or send. */
+export async function resolvePendingConversationMutation(
+    sessionId: string,
+): Promise<ConversationMutationResult> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(sessionId, () => resolvePendingConversationMutationLocked(sessionId));
+    } catch (error) {
+        return {
+            success: false,
+            reason: error instanceof MalformedSessionTranscriptError
+                ? 'storage_consistency_error'
+                : 'write_error',
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
+/** Commit transcript truncation and native binding replacement under one recoverable intent. */
+export async function commitCodexConversationRewind(input: {
+    sessionId: string;
+    sourceRuntimeSessionId: string;
+    replacementRuntimeSessionId: string | null;
+    sourceMessages: SessionMessage[];
+    targetMessages: SessionMessage[];
+}): Promise<ConversationMutationResult> {
+    ensureStorageDir();
+    if (
+        input.targetMessages.length >= input.sourceMessages.length
+        || input.targetMessages.some((message, index) => message.id !== input.sourceMessages[index]?.id)
+    ) {
+        return { success: false, reason: 'precondition_failed', error: 'Rewind target is not a strict transcript prefix' };
+    }
+    const intent: PendingConversationMutation = {
+        schemaVersion: 1,
+        kind: 'codex-rewind',
+        sourceRuntimeSessionId: input.sourceRuntimeSessionId,
+        replacementRuntimeSessionId: input.replacementRuntimeSessionId,
+        sourceMessageCount: input.sourceMessages.length,
+        targetMessageCount: input.targetMessages.length,
+    };
+
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const durableMessages = readSessionMessagesForMutation(input.sessionId);
+            if (
+                durableMessages.length !== input.sourceMessages.length
+                || durableMessages.some((message, index) => message.id !== input.sourceMessages[index]?.id)
+            ) {
+                return { success: false, reason: 'precondition_failed', error: 'Session transcript changed before rewind' };
+            }
+
+            const intentWritten = await withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                if (index < 0) return false;
+                const current = all[index];
+                if (
+                    current.runtime !== 'codex'
+                    || current.runtimeSessionId !== input.sourceRuntimeSessionId
+                    || current.pendingConversationMutation
+                ) return false;
+                all[index] = { ...current, pendingConversationMutation: intent };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return true;
+            });
+            if (!intentWritten) {
+                return { success: false, reason: 'precondition_failed', error: 'Session binding changed before rewind' };
+            }
+
+            try {
+                atomicRewriteSessionMessages(input.sessionId, input.targetMessages);
+                return await resolvePendingConversationMutationLocked(input.sessionId);
+            } catch (error) {
+                const recovered = await resolvePendingConversationMutationLocked(input.sessionId);
+                if (
+                    recovered.success
+                    && recovered.messages.length === input.targetMessages.length
+                    && recovered.messages.every((message, index) => message.id === input.targetMessages[index]?.id)
+                ) return recovered;
+                if (!recovered.success && recovered.reason === 'storage_consistency_error') return recovered;
+                return {
+                    success: false,
+                    reason: 'write_error',
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
+        });
+    } catch (error) {
+        return {
+            success: false,
+            reason: error instanceof MalformedSessionTranscriptError
+                ? 'storage_consistency_error'
+                : 'write_error',
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
+/**
  * Calculate session statistics from messages
  */
 export function calculateSessionStats(messages: SessionMessage[]): SessionStats {
@@ -1122,222 +1388,270 @@ export function calculateSessionStats(messages: SessionMessage[]): SessionStats 
     };
 }
 
-/**
- * Append a single message to session (O(1) operation).
- * Serialized against `saveSessionMessages` and `rewindMessages` via the
- * per-session JSONL lock (Pattern 5 §5.3.3).
- */
-export async function appendSessionMessage(sessionId: string, message: SessionMessage): Promise<void> {
-    ensureStorageDir();
+export type AppendSessionMessagesResult =
+    | { ok: true; action: 'appended' | 'noop'; count: number; totalCount: number; cursor: TranscriptWriteCursor }
+    | { ok: false; reason: 'unindexed-create-refused' | 'write-error'; error: string; cursor: TranscriptWriteCursor }
+    | { ok: false; reason: 'stale-cursor' | 'storage-consistency-error'; error: string };
 
-    const filePath = getSessionFilePath(sessionId);
+export type TranscriptMutationIntent =
+    | { kind: 'builtin-rewind'; targetMessageId: string; targetMessageCount: number }
+    | { kind: 'sdk-retraction'; sdkUuids: readonly string[]; streamingTailMessageId?: string }
+    | { kind: 'builtin-admission-rollback'; messageId: string }
+    | { kind: 'builtin-transient-retry'; messageId: string }
+    | { kind: 'external-rejected-message'; messageId: string }
+    | { kind: 'external-retry'; userMessageId: string; targetMessageCount: number };
 
+export type MutateSessionTranscriptResult =
+    | { ok: true; action: 'replaced' | 'noop'; cursor: TranscriptWriteCursor }
+    | { ok: false; reason: 'stale-cursor' | 'precondition-failed' | 'malformed-transcript' | 'write-error'; error: string };
+
+function appendHasExpectedLineage(
+    before: TranscriptFileIdentity,
+    after: TranscriptFileIdentity,
+): boolean {
+    if (!before.exists) return after.exists;
+    if (!after.exists || before.dev !== after.dev) return false;
+    return before.ino === 0 || after.ino === 0 || before.ino === after.ino;
+}
+
+function appendedSuffixMatches(
+    filePath: string,
+    before: TranscriptFileIdentity,
+    after: TranscriptFileIdentity,
+    bytes: Buffer,
+    mode: 'exact' | 'prefix',
+): boolean {
+    if (!appendHasExpectedLineage(before, after) || after.size < before.size) return false;
+    const suffixLength = after.size - before.size;
+    if (mode === 'exact' ? suffixLength !== bytes.length : suffixLength >= bytes.length) return false;
+    const content = readFileSync(filePath);
+    const suffix = content.subarray(before.size);
+    return mode === 'exact' ? suffix.equals(bytes) : bytes.subarray(0, suffix.length).equals(suffix);
+}
+
+async function updateStatsAfterAppend(sessionId: string, messages: SessionMessage[]): Promise<void> {
+    const delta = calculateSessionStats(messages);
     try {
-        await withSessionFileLock(sessionId, async () => {
-            // Index⟺data invariant (issue #336) — same would-create refusal as
-            // saveSessionMessages: never mint a JSONL for an unindexed session.
-            if (!existsSync(filePath) && !getSessionMetadata(sessionId)) {
-                console.warn(`[SessionStore] REFUSING to create JSONL for unindexed session ${sessionId} (appendSessionMessage): no sessions.json entry.`);
+        await withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === sessionId);
+            if (index < 0) {
+                console.warn(`[SessionStore] appended ${messages.length} message(s) to unindexed session ${sessionId}; stats not updated`);
                 return;
             }
-            const line = JSON.stringify(message) + '\n';
-            const start = nowMs();
-            appendFileSync(filePath, line, 'utf-8');
+            const current = all[index];
+            const stats = current.stats ?? { messageCount: 0, totalInputTokens: 0, totalOutputTokens: 0 };
+            all[index] = {
+                ...current,
+                stats: {
+                    messageCount: stats.messageCount + delta.messageCount,
+                    totalInputTokens: stats.totalInputTokens + delta.totalInputTokens,
+                    totalOutputTokens: stats.totalOutputTokens + delta.totalOutputTokens,
+                    totalCacheReadTokens: ((stats.totalCacheReadTokens ?? 0) + (delta.totalCacheReadTokens ?? 0)) || undefined,
+                    totalCacheCreationTokens: ((stats.totalCacheCreationTokens ?? 0) + (delta.totalCacheCreationTokens ?? 0)) || undefined,
+                },
+            };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+        });
+    } catch (error) {
+        console.warn(`[SessionStore] Transcript append committed for ${sessionId}, but stats update failed:`, error);
+    }
+}
+
+async function replaceDerivedTranscriptProjection(
+    sessionId: string,
+    messages: SessionMessage[],
+): Promise<void> {
+    try {
+        await withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === sessionId);
+            if (index < 0) return;
+            const { preview } = resolveLastVisibleTurnPreview(messages);
+            all[index] = {
+                ...all[index],
+                stats: calculateSessionStats(messages),
+                lastMessagePreview: preview,
+            };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+        });
+    } catch (error) {
+        console.warn(`[SessionStore] Transcript mutation committed for ${sessionId}, but derived metadata update failed:`, error);
+    }
+}
+
+/** Append only caller-supplied tail rows when the issued durable cursor is current. */
+export async function appendSessionMessages(
+    sessionId: string,
+    cursor: TranscriptWriteCursor,
+    messages: readonly SessionMessage[],
+): Promise<AppendSessionMessagesResult> {
+    ensureStorageDir();
+    const filePath = getSessionFilePath(sessionId);
+    try {
+        return await withSessionFileLock(sessionId, async () => {
+            const before = cursor[transcriptCursorState].file;
+            const needsSeparator = before.exists && before.size > 0 && !before.endsWithNewline;
+            const serialized = `${needsSeparator ? '\n' : ''}${messages.map(message => JSON.stringify(message)).join('\n')}${messages.length > 0 ? '\n' : ''}`;
+            const bytes = Buffer.from(serialized, 'utf-8');
+            const current = getTranscriptFileIdentity(filePath);
+
+            if (!cursorMatches(sessionId, cursor, current)) {
+                if (messages.length > 0 && appendedSuffixMatches(filePath, before, current, bytes, 'exact')) {
+                    const recoveredCursor = issueTranscriptCursor(
+                        sessionId,
+                        cursor.persistedMessageCount + messages.length,
+                        current,
+                    );
+                    await replaceDerivedTranscriptProjection(sessionId, readJsonlSnapshot(filePath).messages);
+                    return { ok: true, action: 'appended', count: messages.length, totalCount: recoveredCursor.persistedMessageCount, cursor: recoveredCursor };
+                }
+                return { ok: false, reason: 'stale-cursor', error: 'Session transcript changed after the cursor was issued' };
+            }
+            if (messages.length === 0) {
+                return { ok: true, action: 'noop', count: 0, totalCount: cursor.persistedMessageCount, cursor };
+            }
+            if (!current.exists && !getSessionMetadata(sessionId)) {
+                return {
+                    ok: false,
+                    reason: 'unindexed-create-refused',
+                    error: 'Session metadata is missing; refused to create transcript',
+                    cursor,
+                };
+            }
+
+            const startedAt = nowMs();
+            try {
+                appendFileSync(filePath, bytes);
+            } catch (error) {
+                const afterFailure = getTranscriptFileIdentity(filePath);
+                if (sameTranscriptFileIdentity(before, afterFailure)) {
+                    return { ok: false, reason: 'write-error', error: error instanceof Error ? error.message : String(error), cursor };
+                }
+                if (appendedSuffixMatches(filePath, before, afterFailure, bytes, 'exact')) {
+                    const recoveredCursor = issueTranscriptCursor(sessionId, cursor.persistedMessageCount + messages.length, afterFailure);
+                    await updateStatsAfterAppend(sessionId, [...messages]);
+                    return { ok: true, action: 'appended', count: messages.length, totalCount: recoveredCursor.persistedMessageCount, cursor: recoveredCursor };
+                }
+                if (appendedSuffixMatches(filePath, before, afterFailure, bytes, 'prefix')) {
+                    try {
+                        truncateSync(filePath, before.size);
+                        const repaired = getTranscriptFileIdentity(filePath);
+                        const repairedCursor = issueTranscriptCursor(sessionId, cursor.persistedMessageCount, repaired);
+                        return { ok: false, reason: 'write-error', error: error instanceof Error ? error.message : String(error), cursor: repairedCursor };
+                    } catch (repairError) {
+                        return { ok: false, reason: 'storage-consistency-error', error: repairError instanceof Error ? repairError.message : String(repairError) };
+                    }
+                }
+                return { ok: false, reason: 'storage-consistency-error', error: error instanceof Error ? error.message : String(error) };
+            }
+
+            let after: TranscriptFileIdentity;
+            try {
+                after = getTranscriptFileIdentity(filePath);
+                if (!appendedSuffixMatches(filePath, before, after, bytes, 'exact')) {
+                    return { ok: false, reason: 'storage-consistency-error', error: 'Append completed without the expected durable suffix' };
+                }
+            } catch (error) {
+                return {
+                    ok: false,
+                    reason: 'storage-consistency-error',
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
             emitPerfTrace({
                 trace: 'storage_io',
                 phase: 'session_jsonl_append',
                 sessionId,
-                durationMs: elapsedMs(start),
-                sizeBytes: Buffer.byteLength(line, 'utf-8'),
-                count: 1,
+                durationMs: elapsedMs(startedAt),
+                sizeBytes: bytes.length,
+                count: messages.length,
                 status: 'ok',
             });
+            await updateStatsAfterAppend(sessionId, [...messages]);
+            const nextCursor = issueTranscriptCursor(sessionId, cursor.persistedMessageCount + messages.length, after);
+            return { ok: true, action: 'appended', count: messages.length, totalCount: nextCursor.persistedMessageCount, cursor: nextCursor };
         });
     } catch (error) {
-        console.error('[SessionStore] Failed to append message:', error);
+        return { ok: false, reason: 'write-error', error: error instanceof Error ? error.message : String(error), cursor };
     }
 }
 
-/**
- * Save session messages using incremental append.
- * Only appends new messages and updates stats incrementally for performance.
- *
- * The stats update is performed inside withSessionsLock to prevent TOCTOU races
- * where another process could modify sessions.json between our read and write.
- */
-/**
- * Persist the cumulative message array for a session.
- *
- * `opts.allowShrink` (default true) gates the rewind/retry shrink-rewrite: when
- * `messages.length < existingCount` the file is rewritten to the shorter array
- * (deleting the tail). That is correct for an INTENTIONAL truncation (builtin
- * rewind, external retry) but catastrophic if a caller ever passes a partial /
- * truncated array (e.g. a failed cold-load). Append-only callers MUST pass
- * `allowShrink: false` so a spurious short array refuses to delete on-disk data
- * instead of silently nuking it.
- */
-export type SaveSessionMessagesResult =
-    | { ok: true; action: 'appended' | 'rewritten' | 'noop'; count: number; totalCount: number }
-    | { ok: false; reason: 'unindexed-create-refused'; count: number }
-    | { ok: false; reason: 'shrink-refused'; count: number; existingCount: number }
-    | { ok: false; reason: 'write-error'; count: number; error: string };
-
-export async function saveSessionMessages(
-    sessionId: string,
+function deriveTranscriptMutationTarget(
     messages: SessionMessage[],
-    opts?: { allowShrink?: boolean },
-): Promise<SaveSessionMessagesResult> {
-    const allowShrink = opts?.allowShrink ?? true;
+    intent: TranscriptMutationIntent,
+): { ok: true; target: SessionMessage[] | null } | { ok: false; error: string } {
+    if (intent.kind === 'builtin-rewind' || intent.kind === 'external-retry') {
+        const targetId = intent.kind === 'builtin-rewind' ? intent.targetMessageId : intent.userMessageId;
+        const targetIndex = messages.findIndex(message => message.id === targetId && message.role === 'user');
+        if (targetIndex < 0) {
+            return intent.targetMessageCount >= messages.length
+                ? { ok: true, target: null }
+                : { ok: false, error: 'Mutation target is missing from the proven durable prefix' };
+        }
+        if (targetIndex !== intent.targetMessageCount) {
+            return { ok: false, error: 'Mutation target index does not match the durable transcript' };
+        }
+        return { ok: true, target: messages.slice(0, targetIndex) };
+    }
+    if (intent.kind === 'sdk-retraction') {
+        const sdkUuids = new Set(intent.sdkUuids);
+        const target = messages.filter(message => (
+            (!message.sdkUuid || !sdkUuids.has(message.sdkUuid))
+            && message.id !== intent.streamingTailMessageId
+        ));
+        return { ok: true, target: target.length === messages.length ? null : target };
+    }
+    const target = messages.filter(message => message.id !== intent.messageId);
+    return { ok: true, target: target.length === messages.length ? null : target };
+}
+
+/** Commit a named destructive transcript operation from a proven durable source. */
+export async function mutateSessionTranscript(
+    sessionId: string,
+    cursor: TranscriptWriteCursor,
+    intent: TranscriptMutationIntent,
+): Promise<MutateSessionTranscriptResult> {
     ensureStorageDir();
-
     const filePath = getSessionFilePath(sessionId);
-    const legacyPath = getLegacySessionFilePath(sessionId);
-
     try {
-        // Pattern 5: serialize JSONL append/rewrite against any other writer of the
-        // same session (cross-tab cron, background completion). Lock hold time is
-        // ~1ms per call (single append + sessions.json stats update).
         return await withSessionFileLock(sessionId, async () => {
-            // Index⟺data invariant (issue #336): never CREATE a JSONL for a session
-            // that has no sessions.json entry. The one real-world producer of that
-            // state is deleteSession() racing a live sidecar: the delete removes the
-            // entry + unlinks the file, then the owner sidecar's next persist (e.g.
-            // resetSession's "persist before clearing") sees existsSync=false →
-            // existingCount=0 → re-appends its ENTIRE in-memory array, resurrecting
-            // the full file as an invisible orphan (entry gone, data present — the
-            // user's session has vanished from every list while 10MB sit on disk).
-            // Refusing the would-create write makes deletion final and stops any
-            // current or future caller from minting orphans. Appends to an EXISTING
-            // unindexed file are still allowed below (legacy orphans keep their data).
-            const fileAlreadyExists = existsSync(filePath) || existsSync(legacyPath);
-            if (!fileAlreadyExists && !getSessionMetadata(sessionId)) {
-                // Include the call stack: this refusal converts a future
-                // "caller forgot to register metadata first" ordering bug from
-                // an orphan file into a silently dropped first message — the
-                // stack is the only way to identify that caller from the log.
-                console.warn(`[SessionStore] REFUSING to create JSONL for unindexed session ${sessionId} (${messages.length} in-memory messages): no sessions.json entry (deleted or never registered). Callers must persist metadata BEFORE messages.\n${new Error().stack}`);
-                return { ok: false, reason: 'unindexed-create-refused', count: messages.length };
+            const current = getTranscriptFileIdentity(filePath);
+            if (!cursorMatches(sessionId, cursor, current)) {
+                return { ok: false, reason: 'stale-cursor', error: 'Session transcript changed after the cursor was issued' };
             }
-
-            // Get existing message count (use cached line count for performance)
-            let existingCount = 0;
-
-            if (existsSync(filePath)) {
-                existingCount = getCachedLineCount(sessionId, filePath);
-            } else if (existsSync(legacyPath)) {
-                // Migrate first, then get count from new file
-                migrateToJsonl(sessionId);
-                existingCount = getCachedLineCount(sessionId, filePath);
+            if (!getSessionMetadata(sessionId)) {
+                return { ok: false, reason: 'precondition-failed', error: 'Session metadata is missing' };
             }
-
-            // Detect shrink: in-memory messages are fewer than what's on disk.
-            // Only an INTENTIONAL truncation (rewind / retry) may rewrite the file
-            // to the shorter state. An append-only caller seeing this means its
-            // in-memory array is partial (failed/truncated load) — rewriting would
-            // delete the on-disk tail, so we refuse and keep the durable copy.
-            if (messages.length < existingCount) {
-                if (!allowShrink) {
-                    console.error(`[SessionStore] REFUSING shrink-rewrite for session ${sessionId}: in-memory ${messages.length} < on-disk ${existingCount} but allowShrink=false (likely a partial/failed load). Keeping the on-disk file intact, skipping write.`);
-                    return { ok: false, reason: 'shrink-refused', count: messages.length, existingCount };
-                }
-                console.log(`[SessionStore] Intentional truncation: messages.length=${messages.length} < existingCount=${existingCount}, rewriting JSONL for session ${sessionId}`);
-                const fullContent = messages.map(msg => JSON.stringify(msg)).join('\n') + (messages.length > 0 ? '\n' : '');
-                const rewriteStart = nowMs();
-                writeFileSync(filePath, fullContent, 'utf-8');
-                emitPerfTrace({
-                    trace: 'storage_io',
-                    phase: 'session_jsonl_rewrite',
-                    sessionId,
-                    durationMs: elapsedMs(rewriteStart),
-                    sizeBytes: Buffer.byteLength(fullContent, 'utf-8'),
-                    count: messages.length,
-                    status: 'ok',
-                });
-                lineCountCache.set(sessionId, messages.length);
-
-                // Recalculate full stats after rewrite
-                const fullStats = calculateSessionStats(messages);
-                await withSessionsLock(async () => {
-                    const all = readSessionsIndexForWrite();
-                    const index = all.findIndex(s => s.id === sessionId);
-                    if (index < 0) return;
-                    const session = all[index];
-                    if (index >= 0) {
-                        all[index] = { ...session, stats: fullStats };
-                        atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-                    }
-                });
-                return { ok: true, action: 'rewritten', count: messages.length, totalCount: messages.length };
+            const source = readJsonlSnapshot(filePath);
+            if (source.hasMalformedRows) {
+                return { ok: false, reason: 'malformed-transcript', error: 'Destructive mutation requires a fully readable transcript' };
             }
-
-            // Only append new messages
-            const newMessages = messages.slice(existingCount);
-
-            if (newMessages.length > 0) {
-                // Append to JSONL file under the per-session lock acquired above.
-                const linesToAppend = newMessages.map(msg => JSON.stringify(msg)).join('\n') + '\n';
-                const appendStart = nowMs();
-                appendFileSync(filePath, linesToAppend, 'utf-8');
-                emitPerfTrace({
-                    trace: 'storage_io',
-                    phase: 'session_jsonl_append',
-                    sessionId,
-                    durationMs: elapsedMs(appendStart),
-                    sizeBytes: Buffer.byteLength(linesToAppend, 'utf-8'),
-                    count: newMessages.length,
-                    status: 'ok',
-                });
-                incrementLineCount(sessionId, newMessages.length);
-                console.log(`[SessionStore] Appended ${newMessages.length} new messages (total: ${messages.length})`);
-
-                // Update stats in sessions.json atomically (read + calculate + write under lock)
-                const incrementalStats = calculateSessionStats(newMessages);
-                await withSessionsLock(async () => {
-                    // Read metadata inside the lock to prevent TOCTOU race
-                    const all = readSessionsIndexForWrite();
-                    const index = all.findIndex(s => s.id === sessionId);
-                    if (index < 0) {
-                        // Appended to an EXISTING file whose index entry is gone
-                        // (legacy orphan / deleted mid-append). Data is preserved but
-                        // invisible to every session list — say so instead of silently
-                        // diverging (issue #336 family).
-                        console.warn(`[SessionStore] appended ${newMessages.length} message(s) to unindexed session ${sessionId} — sessions.json has no entry; stats not updated`);
-                        return;
-                    }
-                    const session = all[index];
-
-                    const existingStats = session.stats ?? {
-                        messageCount: 0,
-                        totalInputTokens: 0,
-                        totalOutputTokens: 0,
-                    };
-                    const updatedStats: SessionStats = {
-                        messageCount: existingStats.messageCount + incrementalStats.messageCount,
-                        totalInputTokens: existingStats.totalInputTokens + incrementalStats.totalInputTokens,
-                        totalOutputTokens: existingStats.totalOutputTokens + incrementalStats.totalOutputTokens,
-                        totalCacheReadTokens: ((existingStats.totalCacheReadTokens ?? 0) + (incrementalStats.totalCacheReadTokens ?? 0)) || undefined,
-                        totalCacheCreationTokens: ((existingStats.totalCacheCreationTokens ?? 0) + (incrementalStats.totalCacheCreationTokens ?? 0)) || undefined,
-                    };
-
-                    // Write directly (we already hold the lock — don't call saveSessionMetadata which would deadlock)
-                    if (index >= 0) {
-                        all[index] = { ...session, stats: updatedStats };
-                        atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-                    }
-                });
-                return { ok: true, action: 'appended', count: newMessages.length, totalCount: messages.length };
+            if (source.messages.length !== cursor.persistedMessageCount) {
+                return { ok: false, reason: 'stale-cursor', error: 'Cursor message count does not match durable transcript' };
             }
-
-            return { ok: true, action: 'noop', count: 0, totalCount: messages.length };
+            const derived = deriveTranscriptMutationTarget(source.messages, intent);
+            if (!derived.ok) {
+                return { ok: false, reason: 'precondition-failed', error: derived.error };
+            }
+            const target = derived.target;
+            if (!target) {
+                return { ok: true, action: 'noop', cursor };
+            }
+            try {
+                atomicRewriteSessionMessages(sessionId, target);
+            } catch (error) {
+                return { ok: false, reason: 'write-error', error: error instanceof Error ? error.message : String(error) };
+            }
+            await replaceDerivedTranscriptProjection(sessionId, target);
+            return {
+                ok: true,
+                action: 'replaced',
+                cursor: issueTranscriptCursor(sessionId, target.length, getTranscriptFileIdentity(filePath)),
+            };
         });
     } catch (error) {
-        console.error('[SessionStore] Failed to save session messages:', error);
-        return {
-            ok: false,
-            reason: 'write-error',
-            count: messages.length,
-            error: error instanceof Error ? error.message : String(error),
-        };
+        return { ok: false, reason: 'write-error', error: error instanceof Error ? error.message : String(error) };
     }
 }
 

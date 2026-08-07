@@ -3,7 +3,7 @@
 // Historical note: this module used to host an in-process MCP server
 // (`im-cron`) that the AI used to manage scheduled tasks. The MCP was
 // retired in v0.2.11 in favour of the universal `myagents cron …` CLI
-// commands + the system prompt's <myagents-cli-cron> guidance (see
+// compatibility commands + the system prompt's <myagents-cli-task-automation> guidance (see
 // system-prompt-cli-tools.ts). Cron CRUD now flows through admin-api.ts
 // handlers (handleCronList / handleCronCreate / handleCronExit / etc.)
 // which reach the same Rust Management API the old MCP did.

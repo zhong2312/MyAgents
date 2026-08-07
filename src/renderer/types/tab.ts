@@ -174,13 +174,6 @@ export interface Tab {
     // Sidecar lifecycle is now managed by SidecarManager's Owner model.
     // Use getSessionPort(sessionId) to get the ready port when needed.
     sidecarConfigDisposition: SidecarConfigDisposition;  // push | adopt | pending — see type doc
-    /** Runtime-only (never persisted). 'cold' = restored from a previous
-     *  session on startup but not yet activated: App renders it as lightweight
-     *  tab chrome WITHOUT mounting TabProvider — so no SSE connect, no
-     *  ensureSessionSidecar, no recovery timers fire — until the user (or the
-     *  initial active-tab activation) opens it. Cleared by
-     *  App.activateRestoredTab once its sidecar is ensured. See PRD 0.2.25. */
-    restoreState?: 'cold';
     /** Runtime-only (never persisted). Set by floating-ball path actions to
      *  ask the target Chat tab to open a workspace file in its preview surface. */
     pendingFilePreview?: FilePreviewIntent;
@@ -251,14 +244,14 @@ export function createNewTab(): Tab {
  * Build the tab patch that flips a tab into the **chat** view — the canonical
  * "open chat" shape. Adopted by the instant-nav launch flips
  * (App.handleLaunchProject); other inline `view:'chat'` flip sites
- * (handleSwitchSession / spawnTabForExistingSession / Scenario-2 attach) should
+ * (spawnTabForExistingSession / Scenario-2 attach) should
  * migrate to it. NOTE: the D1 type-guarantee below holds only where this helper
  * is used — inline flips elsewhere are not yet type-guarded.
  *
  * **D1 (instant-nav) — enforced by the type:** a chat flip MUST carry a truthy
  * `sessionId` (a real backend id, or a `pending-<tabId>` placeholder). If it
  * doesn't, TabProvider's session-aware SSE connect effect never fires →
- * `isConnected` stays false forever → autoSend / model-push / loadSession never
+ * `isConnected` stays false forever → autoSend / model-push / persisted restore never
  * run → the tab is permanently blank. `sessionId: string` (non-null) makes
  * "flip to chat without a sessionId" a compile error, not a runtime blank tab.
  */

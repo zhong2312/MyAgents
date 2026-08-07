@@ -28,7 +28,7 @@ describe('pre-React Theme bootstrap', () => {
     localStorage.setItem('myagents:theme-bootstrap', '{');
     runBootstrap();
 
-    expect(document.documentElement.dataset.themeId).toBe('default-black');
+    expect(document.documentElement.dataset.themeId).toBe('myagents-light');
     expect(document.documentElement.dataset.colorScheme).toBe('dark');
     expect(document.documentElement).toHaveClass('dark');
     expect(document.documentElement.style.colorScheme).toBe('dark');
@@ -40,7 +40,7 @@ describe('pre-React Theme bootstrap', () => {
     });
     runBootstrap();
 
-    expect(document.documentElement.dataset.themeId).toBe('default-black');
+    expect(document.documentElement.dataset.themeId).toBe('myagents-light');
     expect(document.documentElement.dataset.colorScheme).toBe('dark');
   });
 
@@ -66,7 +66,7 @@ describe('pre-React Theme bootstrap', () => {
     }));
     runBootstrap();
 
-    expect(document.documentElement.dataset.themeId).toBe('default-black');
+    expect(document.documentElement.dataset.themeId).toBe('myagents-light');
     expect(document.documentElement.dataset.colorScheme).toBe('light');
   });
 });

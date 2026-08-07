@@ -146,7 +146,6 @@ export type EventName =
   | 'app_launch'
   // 会话管理
   | 'session_new'
-  | 'session_switch'
   | 'session_rewind'
   | 'session_title_edit'
   | 'session_fork'
@@ -293,7 +292,6 @@ export interface WorkspaceOpenParams {
  * history_open 事件参数
  *
  * 用户从历史相关入口打开已有 session 时触发（带 sessionId）。
- * Chat 内切换路径会继续保留 `session_switch` 作为兼容事件。
  */
 export interface HistoryOpenParams {
   /** 用户点击的目标 session id。显式传值，不依赖 Active Context。 */
@@ -309,20 +307,6 @@ export interface HistoryOpenParams {
    * 历史入口处理，不影响历史兼容聚合。
    */
   entry_source?: HistoryEntrySource;
-}
-
-/**
- * session_switch 事件参数
- */
-export interface SessionSwitchParams {
-  /** 用户切换到的目标 session id。 */
-  session_id: string;
-  /**
-   * 新版本在 Chat 历史下拉切换时同时上报 `history_open`。这个标记让
-   * admin 兼容查询只把旧版未标记的 `session_switch` 当 history fallback，
-   * 避免新版本同一次点击被双计。
-   */
-  legacy_compat?: boolean;
 }
 
 /**
@@ -400,12 +384,10 @@ export interface TaskRunParams {
   source: Source;
   /**
    * 第几次执行 — 1 = 首次派发；>1 = 重新派发（rerun）。
-   * 取值来自任务的 `sessionIds.length + 1`，即"如果这次执行成功，将是第几次"。
-   *
-   * `null` 仅出现在 CLI 路径上，且当且仅当预读任务记录失败时（罕见 — 例如
-   * Rust Mgmt API 临时不可达）。前端永远填实数。
+   * 由 Task execution owner 在接受 run/rerun mutation 后返回；Session
+   * history 数量不参与计算，admission 失败也不会产生事件。
    */
-  run_count: number | null;
+  run_count: number;
 }
 
 /**

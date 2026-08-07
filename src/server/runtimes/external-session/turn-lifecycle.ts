@@ -3,6 +3,7 @@ import { decideSessionCompleteErrorAction } from '../external-abort-policy';
 import type { ExternalTurnUsage } from './types';
 import type { UnifiedEvent } from '../types';
 import type { ContextUsage } from '../../../shared/types/context-usage';
+import type { RuntimeTurnAnchor } from '../../types/session';
 import type {
   TurnIdentity,
   TurnOwner,
@@ -26,6 +27,7 @@ let lastTurnSucceeded = false;
 let currentTurnStartTime = 0;
 let currentTurnUsage: ExternalTurnUsage | null = null;
 let currentTurnContextUsage: ContextUsage | null = null;
+let currentRuntimeTurnAnchor: RuntimeTurnAnchor | null = null;
 let currentTurnEstimatedInputTokens = 0;
 let turnSequence = 0;
 let activeTurnSequence = 0;
@@ -276,6 +278,7 @@ export function resetExternalTurnLifecycleState(): void {
   currentTurnStartTime = 0;
   currentTurnUsage = null;
   currentTurnContextUsage = null;
+  currentRuntimeTurnAnchor = null;
   currentTurnEstimatedInputTokens = 0;
   activeTurnSequence = 0;
   turnPromotionGeneration += 1;
@@ -431,11 +434,20 @@ export function isExternalTurnPromotionInFlight(): boolean {
 export function resetExternalTurnAccumulators(): void {
   currentTurnUsage = null;
   currentTurnContextUsage = null;
+  currentRuntimeTurnAnchor = null;
   currentTurnEstimatedInputTokens = 0;
   currentTurnChannelDeliveryState = {
     assistantDisposition: 'none',
     pendingAssistantDeliveries: [],
   };
+}
+
+export function setExternalRuntimeTurnAnchor(anchor: RuntimeTurnAnchor): void {
+  currentRuntimeTurnAnchor = anchor;
+}
+
+export function getExternalRuntimeTurnAnchor(): RuntimeTurnAnchor | null {
+  return currentRuntimeTurnAnchor;
 }
 
 export function setExternalTurnCompleted(value: boolean): void {

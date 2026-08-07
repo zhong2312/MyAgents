@@ -74,9 +74,9 @@ export function TaskCategoryBadge({ mode, legacy, compact }: Props) {
   const padding = compact ? 'px-1.5' : 'px-2';
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-[var(--radius-sm)] font-medium leading-none ${style.bg} ${style.fg} ${padding} ${height} ${size}`}
+      className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-sm)] font-medium leading-none ${style.bg} ${style.fg} ${padding} ${height} ${size}`}
     >
-      <Icon className="h-3 w-3" strokeWidth={1.75} />
+      <Icon className="h-3 w-3 shrink-0" strokeWidth={1.75} />
       {legacy && mode === 'loop'
         ? t('badges.category.legacyLoop')
         : t(`badges.category.${mode}`)}

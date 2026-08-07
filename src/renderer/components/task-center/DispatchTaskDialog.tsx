@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Activity,
   Bell,
   ChevronDown,
   ChevronRight,
@@ -27,6 +28,7 @@ import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { useConfig } from '@/hooks/useConfig';
+import { useTaskCenterData } from '@/hooks/useTaskCenterData';
 import { useToast } from '@/components/Toast';
 import { isProjectActiveForUser } from '@/config/types';
 import { taskCreateDirect, taskRun, taskWriteDoc } from '@/api/taskCenter';
@@ -40,12 +42,14 @@ import type {
   Task,
   TaskExecutionMode,
   TaskRunMode,
+  TaskTrigger,
 } from '@/../shared/types/task';
 import type { RuntimeConfig, RuntimeType } from '@/../shared/types/runtime';
 import { ExecutionModeEditor } from './editors/ExecutionModeEditor';
 import { EndConditionsEditor, type EndConditionMode } from './editors/EndConditionsEditor';
 import { INPUT_CLS, toLocalDateTimeString } from './editors/controls';
 import { TaskAdvancedConfigEditor } from './editors/TaskAdvancedConfigEditor';
+import { TriggerEditor } from './editors/TriggerEditor';
 import { projectTaskExecutionOverrides } from './taskProviderProjection';
 import {
   FormSection,
@@ -73,6 +77,8 @@ interface Props {
   thought?: Thought;
   /** Optional workspace hint for the 'new' flow (e.g. Launcher selection). */
   defaultWorkspacePath?: string;
+  /** Canonical materialized Session from the Chat tab that opened Task Center. */
+  currentSessionId?: string | null;
   onClose: () => void;
   onDispatched: (task: Task) => void;
 }
@@ -80,6 +86,7 @@ interface Props {
 export function DispatchTaskDialog({
   thought,
   defaultWorkspacePath,
+  currentSessionId,
   onClose,
   onDispatched,
 }: Props) {
@@ -87,6 +94,7 @@ export function DispatchTaskDialog({
   const { t } = useTranslation('task');
   const toast = useToast();
   const { projects, providers } = useConfig();
+  const { sessions } = useTaskCenterData({ isActive: true });
   useCloseLayer(() => {
     onClose();
     return true;
@@ -128,6 +136,12 @@ export function DispatchTaskDialog({
   );
   const [executionMode, setExecutionMode] = useState<TaskExecutionMode>('once');
   const [runMode, setRunMode] = useState<TaskRunMode>('new-session');
+  const [preselectedSessionId, setPreselectedSessionId] = useState('');
+  const [trigger, setTrigger] = useState<TaskTrigger>({
+    source: { type: 'time' },
+    detector: { type: 'always' },
+  });
+  const [triggerValid, setTriggerValid] = useState(true);
   const [taskMd, setTaskMd] = useState(thought?.content ?? '');
   const [verifyMd, setVerifyMd] = useState('');
   const [verifyExpanded, setVerifyExpanded] = useState(false);
@@ -182,6 +196,26 @@ export function DispatchTaskDialog({
       })),
     [visibleProjects],
   );
+  const sessionOptions = useMemo(
+    () => {
+      const available = sessions.filter(
+        (session) => workspace && workspacePathsEqual(session.agentDir, workspace.path),
+      );
+      return available
+        .sort((left, right) => {
+          if (left.id === currentSessionId) return -1;
+          if (right.id === currentSessionId) return 1;
+          return 0;
+        })
+        .map((session) => ({
+          value: session.id,
+          label: session.id === currentSessionId
+            ? t('trigger.sessionCurrent', { title: session.title || session.id })
+            : t('trigger.sessionOther', { title: session.title || session.id }),
+        }));
+    },
+    [currentSessionId, sessions, t, workspace],
+  );
 
   const isScheduled = executionMode === 'scheduled';
   const isRecurring = executionMode === 'recurring';
@@ -194,6 +228,13 @@ export function DispatchTaskDialog({
     if (!name.trim()) errs.push(t('dispatch.validation.nameRequired'));
     if (!workspace) errs.push(t('dispatch.validation.workspaceRequired'));
     if (!taskMd.trim()) errs.push(t('dispatch.validation.taskMdRequired'));
+    if (!triggerValid) errs.push(t('trigger.validation.invalid'));
+    if (
+      runMode === 'single-session'
+      && !sessionOptions.some((option) => option.value === preselectedSessionId)
+    ) {
+      errs.push(t('trigger.validation.sessionRequired'));
+    }
     if (isScheduled) {
       const ts = Date.parse(atDateTime);
       if (Number.isNaN(ts) || ts <= Date.now()) errs.push(t('dispatch.validation.futureTimeRequired'));
@@ -208,6 +249,10 @@ export function DispatchTaskDialog({
     name,
     workspace,
     taskMd,
+    triggerValid,
+    runMode,
+    preselectedSessionId,
+    sessionOptions,
     isScheduled,
     atDateTime,
     isRecurring,
@@ -263,7 +308,9 @@ export function DispatchTaskDialog({
         workspacePath: workspace.path,
         taskMdContent: taskMd,
         executionMode,
-        runMode: isOnce ? undefined : runMode,
+        runMode,
+        preselectedSessionId: runMode === 'single-session' ? preselectedSessionId : undefined,
+        trigger: trigger.detector.type === 'command' ? trigger : undefined,
         endConditions: ec,
         dispatchAt,
         intervalMinutes: isRecurring && !advancedCron ? intervalMinutes : undefined,
@@ -335,6 +382,8 @@ export function DispatchTaskDialog({
     executionMode,
     isOnce,
     runMode,
+    preselectedSessionId,
+    trigger,
     thought,
     notification,
     providers,
@@ -482,7 +531,13 @@ export function DispatchTaskDialog({
               executionMode={executionMode}
               setExecutionMode={setExecutionMode}
               runMode={runMode}
-              setRunMode={setRunMode}
+              setRunMode={(next) => {
+                setRunMode(next);
+                if (next === 'single-session' && !preselectedSessionId) {
+                  const current = sessionOptions.find((option) => option.value === currentSessionId);
+                  setPreselectedSessionId(current?.value ?? '');
+                }
+              }}
               atDateTime={atDateTime}
               setAtDateTime={setAtDateTime}
               intervalMinutes={intervalMinutes}
@@ -491,6 +546,34 @@ export function DispatchTaskDialog({
               setCronExpression={setCronExpression}
               cronTimezone={cronTimezone}
               setCronTimezone={setCronTimezone}
+            />
+            {runMode === 'single-session' && !isLoop && (
+              <div className="mt-5">
+                <label className="mb-2 block text-sm font-medium text-[var(--ink-secondary)]">
+                  {t('trigger.targetSession')}
+                </label>
+                <CustomSelect
+                  value={preselectedSessionId}
+                  options={sessionOptions}
+                  onChange={setPreselectedSessionId}
+                  placeholder={t('trigger.targetSessionPlaceholder')}
+                  size="md"
+                />
+                <p className="mt-1.5 text-xs text-[var(--ink-muted)]">
+                  {t('trigger.targetSessionHint')}
+                </p>
+              </div>
+            )}
+          </FormSection>
+
+          <div className={SECTION_DIVIDER} />
+
+          <FormSection icon={Activity} title={t('trigger.sectionTitle')}>
+            <TriggerEditor
+              value={trigger}
+              workspacePath={workspace?.path ?? ''}
+              onChange={setTrigger}
+              onValidityChange={setTriggerValid}
             />
           </FormSection>
 

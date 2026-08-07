@@ -23,6 +23,8 @@ interface TrayEventsOptions {
   onCmdWCloseTab?: () => void;
   /** Callback when the main window regains focus. */
   onWindowFocused?: () => void;
+  /** Synchronous projection of the native main-window focus state. */
+  onWindowFocusChanged?: (focused: boolean) => void;
 }
 
 export function useTrayEvents(options: TrayEventsOptions) {
@@ -95,6 +97,7 @@ export function useTrayEvents(options: TrayEventsOptions) {
         // returned unlisten in the cleanup branch.
         unlistenFocusChanged = await window.onFocusChanged(({ payload: focused }) => {
           if (ac.signal.aborted) return;
+          optionsRef.current.onWindowFocusChanged?.(focused);
           console.debug('[useTrayEvents] Window focus changed:', focused);
           if (focused) {
             setWindowVisible(true);

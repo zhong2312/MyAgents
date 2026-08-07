@@ -100,7 +100,7 @@ describe('buildProviderSwitchSessionBirth', () => {
       targetIntent,
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
       model: 'ignored-by-runtime-backed-intent',
-      permissionMode: 'no-restrictions',
+      permissionMode: 'fullAgency',
       reasoningEffort: 'xhigh',
       mcpEnabledServers: [],
       enabledPluginIds: [],

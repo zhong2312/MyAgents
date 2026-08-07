@@ -92,7 +92,6 @@ html[data-theme-id='linear'][data-color-scheme='light'] {
   --fb-line-input: rgb(27 27 27 / 0.07);
   --fb-line-thumb: rgb(27 27 27 / 0.12);
   --fb-drag-handle: rgb(27 27 27 / 0.18);
-  --fb-scroll-thumb: rgb(111 111 120 / 0.50);
   --line: rgb(27 27 27 / 0.10);
   --line-strong: rgb(27 27 27 / 0.18);
   --line-subtle: rgb(27 27 27 / 0.06);
@@ -203,7 +202,6 @@ html[data-theme-id='linear'][data-color-scheme='dark'] {
   --fb-line-input: rgb(227 228 230 / 0.07);
   --fb-line-thumb: rgb(227 228 230 / 0.16);
   --fb-drag-handle: rgb(227 228 230 / 0.20);
-  --fb-scroll-thumb: rgb(139 140 150 / 0.55);
   --line: rgb(227 228 230 / 0.10);
   --line-strong: rgb(227 228 230 / 0.18);
   --line-subtle: rgb(227 228 230 / 0.06);

@@ -1,0 +1,47 @@
+{
+  "projects": [
+    {
+      "id": "project-current",
+      "name": "Current project",
+      "path": "/repo/current",
+      "agentId": "selected"
+    }
+  ],
+  "agents": [
+    {
+      "id": "selected",
+      "name": "Selected",
+      "enabled": true,
+      "workspacePath": "/repo/old"
+    },
+    {
+      "id": "extra",
+      "name": "Extra",
+      "enabled": true,
+      "workspacePath": "/repo/current"
+    },
+    {
+      "id": "orphan",
+      "name": "Orphan",
+      "enabled": true,
+      "workspacePath": "/repo/orphan"
+    }
+  ],
+  "expectedProjections": [
+    {
+      "agentId": "selected",
+      "workspacePath": "/repo/current",
+      "association": "project-linked"
+    },
+    {
+      "agentId": "extra",
+      "workspacePath": "/repo/current",
+      "association": "legacy-project"
+    },
+    {
+      "agentId": "orphan",
+      "workspacePath": "/repo/orphan",
+      "association": "legacy-orphan"
+    }
+  ]
+}

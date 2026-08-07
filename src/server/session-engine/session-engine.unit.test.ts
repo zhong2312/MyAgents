@@ -5,12 +5,15 @@ const mocks = vi.hoisted(() => {
     useExternal: false,
     externalActive: false,
     externalBusy: false,
+    externalConversationMutation: false,
     externalProcessAlive: false,
     builtinTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
     builtinDispatchedQueueId: null as string | null,
     externalTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
     externalCurrentQueueId: null as string | null,
     pendingExternalAsk: false,
+    providerDisabled: false,
+    sessionMetadata: new Map<string, Record<string, unknown>>(),
   };
 
   return {
@@ -98,6 +101,7 @@ const mocks = vi.hoisted(() => {
     )),
     getAgentState: vi.fn<() => Record<string, unknown>>(() => ({ sessionState: 'idle', agentDir: '/workspace' })),
     getBuiltinLiveSessionSnapshot: vi.fn<() => Record<string, unknown> | null>(() => null),
+    getCurrentMcpServers: vi.fn(() => [{ id: 'fs' }]),
     getAgents: vi.fn(() => ({ helper: { name: 'helper' } })),
     getLastBuiltinAssistantText: vi.fn(() => 'builtin latest'),
     getMcpServers: vi.fn(() => [{ id: 'fs' }]),
@@ -122,6 +126,8 @@ const mocks = vi.hoisted(() => {
     materializeCurrentSessionMetadataForPublishedReset: vi.fn(async () => undefined),
     materializePendingDesktopSession: vi.fn(async () => ({ success: true, sessionId: 'builtin-session' })),
     resetSession: vi.fn(async () => undefined),
+    resetInteractionScenario: vi.fn(),
+    requireCurrentBuiltinSkill: vi.fn(async () => undefined),
     rewindSession: vi.fn(async () => ({ success: true, content: 'rewound' })),
     setAgents: vi.fn(),
     setBackgroundAgentPermissionMode: vi.fn(),
@@ -176,6 +182,7 @@ const mocks = vi.hoisted(() => {
     getExternalQueueStatus: vi.fn(() => [{ id: 'xq1', messagePreview: 'hello' }]),
     getExternalPendingInteractiveRequests: vi.fn(() => []),
     getExternalSessionId: vi.fn(() => 'external-session'),
+    getExternalNativeSessionId: vi.fn(() => 'runtime-thread-id'),
     getExternalSessionModel: vi.fn(() => 'gpt-5'),
     getExternalSessionPermissionMode: vi.fn(() => 'no-restrictions'),
     getExternalSessionReasoningEffort: vi.fn(() => 'medium'),
@@ -187,13 +194,18 @@ const mocks = vi.hoisted(() => {
     hasPendingExternalAskUserQuestion: vi.fn((requestId: string) => Boolean(requestId) && state.pendingExternalAsk),
     isExternalSessionActive: vi.fn(() => state.externalActive),
     isExternalSessionBusy: vi.fn(() => state.externalBusy),
+    tryAcquireExternalSessionMutationLease: vi.fn(() => {
+      if (state.externalConversationMutation) return null;
+      state.externalConversationMutation = true;
+      return { release: () => { state.externalConversationMutation = false; } };
+    }),
     isExternalSessionStateRestoredFor: vi.fn(() => true),
     isExternalTurnCurrent: vi.fn((queueId: string) => state.externalCurrentQueueId === queueId),
     popLastUserMessageForRetry: vi.fn(async () => ({ success: true, content: 'retry' })),
     prewarmExternalSession: vi.fn(async () => ({ prewarmed: true })),
     respondExternalAskUserQuestion: vi.fn(async () => true),
     respondExternalPermission: vi.fn(async () => true),
-    restoreExternalSessionState: vi.fn(),
+    restoreExternalSessionState: vi.fn(async () => ({ success: true })),
     sendExternalMessage: vi.fn<(...args: unknown[]) => Promise<{
       queued: boolean;
       error?: string;
@@ -225,7 +237,12 @@ const mocks = vi.hoisted(() => {
     shouldUseExternalRuntime: vi.fn(() => state.useExternal),
     stopExternalSession: vi.fn(async () => true),
     handleExternalOfficialToolIdsChange: vi.fn(async () => ({ success: true })),
-    updateExternalRuntimeConfig: vi.fn(async () => ({ success: true })),
+    updateExternalRuntimeConfig: vi.fn(async () => ({
+      success: true,
+      runtime: 'codex' as const,
+      status: 'applied' as const,
+      warnings: [] as string[],
+    })),
     waitForExternalSessionIdle: vi.fn(async () => true),
     waitExternalTurnFinalization: vi.fn(async () => true),
     getSessionData: vi.fn((sessionId: string) => ({
@@ -237,21 +254,50 @@ const mocks = vi.hoisted(() => {
       enabledOfficialToolIds: ['image-understanding'],
       messages: [],
     })),
-    updateSessionMetadata: vi.fn(async (sessionId: string, updates: Record<string, unknown>) => ({
-      id: sessionId,
-      agentDir: '/workspace',
-      title: 'Test',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      lastActiveAt: '2026-01-01T00:00:00.000Z',
-      ...updates,
-      messages: [],
-    })),
+    getSessionMetadata: vi.fn((sessionId: string) => state.sessionMetadata.get(sessionId)),
+    saveSessionMetadata: vi.fn(async (metadata: Record<string, unknown>) => {
+      state.sessionMetadata.set(String(metadata.id), { ...metadata });
+    }),
+    deleteSession: vi.fn(async (sessionId: string) => {
+      const deleted = state.sessionMetadata.delete(sessionId);
+      return deleted ? { deleted: true as const } : { deleted: false as const, reason: 'not-found' as const };
+    }),
+    updateSessionMetadata: vi.fn(async (
+      sessionId: string,
+      updates: Record<string, unknown>,
+      predicate?: (current: Record<string, unknown>) => boolean,
+    ) => {
+      const current = state.sessionMetadata.get(sessionId);
+      if (predicate && (!current || !predicate(current))) return null;
+      const updated = {
+        id: sessionId,
+        agentDir: '/workspace',
+        title: 'Test',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastActiveAt: '2026-01-01T00:00:00.000Z',
+        ...(current ?? {}),
+        ...updates,
+      };
+      state.sessionMetadata.set(sessionId, updated);
+      return updated;
+    }),
     getEffectiveOfficialToolIdsForSession: vi.fn((_workspacePath: string, sessionMeta?: { enabledOfficialToolIds?: string[] } | null, overrideIds?: readonly string[] | null) => (
       overrideIds !== null && overrideIds !== undefined
         ? [...overrideIds]
         : (sessionMeta?.enabledOfficialToolIds ? [...sessionMeta.enabledOfficialToolIds] : [])
     )),
+    getAllMcpServers: vi.fn(() => [{ id: 'fs' }, { id: 'browser' }]),
+    getEffectiveMcpServers: vi.fn(() => [{ id: 'fs' }]),
+    getEnabledMcpServerIds: vi.fn(() => ['fs', 'browser']),
+    findProvider: vi.fn((providerId: string) => ({ id: providerId, type: 'api_key' })),
+    isProviderDisabled: vi.fn(() => state.providerDisabled),
     materializeProviderRouteEnv: vi.fn<() => unknown>(() => undefined),
+    resolveProviderEnv: vi.fn((providerId: string) => ({
+      providerId,
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'test-key',
+      apiProtocol: 'anthropic',
+    })),
     managementApi: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(
       async () => ({ ok: true }),
     ),
@@ -260,6 +306,7 @@ const mocks = vi.hoisted(() => {
     )),
     loadConfig: vi.fn(() => ({ chatQueueResponseMode: 'realtime' })),
     resolveWorkspaceConfig: vi.fn(() => ({ mcpServers: [{ id: 'snapshot-mcp' }] })),
+    findProjectAgentByWorkspacePath: vi.fn<() => { id: string } | undefined>(() => undefined),
   };
 });
 
@@ -275,6 +322,7 @@ vi.mock('../agent-session', () => ({
   getDispatchedTurnIdentity: mocks.getDispatchedTurnIdentity,
   getAgentState: mocks.getAgentState,
   getBuiltinLiveSessionSnapshot: mocks.getBuiltinLiveSessionSnapshot,
+  getCurrentMcpServers: mocks.getCurrentMcpServers,
   getAgents: mocks.getAgents,
   getLastBuiltinAssistantText: mocks.getLastBuiltinAssistantText,
   getMcpServers: mocks.getMcpServers,
@@ -299,6 +347,8 @@ vi.mock('../agent-session', () => ({
   materializeCurrentSessionMetadataForPublishedReset: mocks.materializeCurrentSessionMetadataForPublishedReset,
   materializePendingDesktopSession: mocks.materializePendingDesktopSession,
   resetSession: mocks.resetSession,
+  resetInteractionScenario: mocks.resetInteractionScenario,
+  requireCurrentBuiltinSkill: mocks.requireCurrentBuiltinSkill,
   rewindSession: mocks.rewindSession,
   setAgents: mocks.setAgents,
   setBackgroundAgentPermissionMode: mocks.setBackgroundAgentPermissionMode,
@@ -333,6 +383,7 @@ vi.mock('../runtimes/external-session', () => ({
   getExternalPendingInteractiveRequests: mocks.getExternalPendingInteractiveRequests,
   getExternalQueueStatus: mocks.getExternalQueueStatus,
   getExternalSessionId: mocks.getExternalSessionId,
+  getExternalNativeSessionId: mocks.getExternalNativeSessionId,
   getExternalSessionModel: mocks.getExternalSessionModel,
   getExternalSessionPermissionMode: mocks.getExternalSessionPermissionMode,
   getExternalSessionReasoningEffort: mocks.getExternalSessionReasoningEffort,
@@ -345,6 +396,7 @@ vi.mock('../runtimes/external-session', () => ({
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
   isExternalSessionActive: mocks.isExternalSessionActive,
   isExternalSessionBusy: mocks.isExternalSessionBusy,
+  tryAcquireExternalSessionMutationLease: mocks.tryAcquireExternalSessionMutationLease,
   isExternalSessionStateRestoredFor: mocks.isExternalSessionStateRestoredFor,
   isExternalTurnCurrent: mocks.isExternalTurnCurrent,
   popLastUserMessageForRetry: mocks.popLastUserMessageForRetry,
@@ -364,9 +416,16 @@ vi.mock('../runtimes/external-session', () => ({
 }));
 
 vi.mock('../utils/admin-config', () => ({
+  findProjectAgentByWorkspacePath: mocks.findProjectAgentByWorkspacePath,
+  getAllMcpServers: mocks.getAllMcpServers,
+  getEffectiveMcpServers: mocks.getEffectiveMcpServers,
+  getEnabledMcpServerIds: mocks.getEnabledMcpServerIds,
   getEffectiveOfficialToolIdsForSession: mocks.getEffectiveOfficialToolIdsForSession,
+  findProvider: mocks.findProvider,
+  isProviderDisabled: mocks.isProviderDisabled,
   loadConfig: mocks.loadConfig,
   materializeProviderRouteEnv: mocks.materializeProviderRouteEnv,
+  resolveProviderEnv: mocks.resolveProviderEnv,
   resolveSubscriptionAuthKind: mocks.resolveSubscriptionAuthKind,
   resolveWorkspaceConfig: mocks.resolveWorkspaceConfig,
 }));
@@ -376,7 +435,10 @@ vi.mock('../utils/management-api-client', () => ({
 }));
 
 vi.mock('../SessionStore', () => ({
+  deleteSession: mocks.deleteSession,
   getSessionData: mocks.getSessionData,
+  getSessionMetadata: mocks.getSessionMetadata,
+  saveSessionMetadata: mocks.saveSessionMetadata,
   updateSessionMetadata: mocks.updateSessionMetadata,
 }));
 
@@ -388,11 +450,19 @@ import {
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
   getSessionEngine,
+  prewarmExternalRuntimeAtSelector,
+  restoreInitialExternalSessionAtSelector,
+  retryLastExternalUserMessageAtSelector,
   stopActiveTurn,
   stopOwnedTurn,
   stopOwnedTurnByQueueId,
+  updateExternalRuntimeConfigAtSelector,
 } from './selector';
 import type { InjectedTurnRequest } from './types';
+import {
+  getCurrentProductSessionId,
+  resetProductSessionBinding,
+} from './product-session-binding';
 
 const desktopScenario = { type: 'desktop' } as const;
 
@@ -412,13 +482,34 @@ describe('session-engine selector and adapters', () => {
     mocks.state.useExternal = false;
     mocks.state.externalActive = false;
     mocks.state.externalBusy = false;
+    mocks.state.externalConversationMutation = false;
     mocks.state.externalProcessAlive = false;
     mocks.state.builtinTurnIdentity = null;
     mocks.state.builtinDispatchedQueueId = null;
     mocks.state.externalTurnIdentity = null;
     mocks.state.externalCurrentQueueId = null;
     mocks.state.pendingExternalAsk = false;
+    mocks.state.providerDisabled = false;
+    mocks.state.sessionMetadata.clear();
+    resetProductSessionBinding({ sessionId: 'external-session', workspacePath: '/workspace' });
+    mocks.state.sessionMetadata.set('external-session', {
+      id: 'external-session',
+      agentDir: '/workspace',
+      title: 'Test',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastActiveAt: '2026-01-01T00:00:00.000Z',
+    });
     mocks.isExternalSessionStateRestoredFor.mockReturnValue(true);
+    mocks.getActiveRuntimeSource.mockReturnValue('system-cli');
+    mocks.getActiveRuntimeType.mockReturnValue('codex');
+    mocks.updateExternalRuntimeConfig.mockResolvedValue({
+      success: true,
+      runtime: 'codex',
+      status: 'applied',
+      warnings: [],
+    });
+    mocks.prewarmExternalSession.mockResolvedValue({ prewarmed: true });
+    mocks.popLastUserMessageForRetry.mockResolvedValue({ success: true, content: 'retry' });
     mocks.getBuiltinLiveSessionSnapshot.mockReturnValue(null);
     mocks.getExternalLiveSessionSnapshot.mockReturnValue(null);
   });
@@ -537,7 +628,67 @@ describe('session-engine selector and adapters', () => {
           assistant: 'session-binding',
         },
       }),
+      undefined,
+      expect.any(Function),
     );
+  });
+
+  it('exposes fresh inbox dispatch acceptance through builtin and external adapters', async () => {
+    const builtinGuard = vi.fn(async () => ({ accepted: true as const }));
+    const builtinResult = await getSessionEngine().enqueueInboxMessage({
+      text: 'fresh builtin work',
+      sessionId: 'fresh-builtin',
+      workspacePath: '/workspace',
+      queueId: 'request-builtin',
+      beforeDispatch: builtinGuard,
+    });
+
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({
+      queueId: 'request-builtin',
+      beforeDispatch: builtinGuard,
+    });
+    await expect(builtinResult.dispatchAcceptance).resolves.toEqual({ accepted: true });
+
+    mocks.state.useExternal = true;
+    const externalGuard = vi.fn(async () => ({ accepted: true as const }));
+    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as { beforeDispatch?: () => Promise<{ accepted: boolean }> };
+      const onDispatchAccepted = args[6] as (() => void) | undefined;
+      const acceptance = await options.beforeDispatch?.();
+      if (acceptance?.accepted) onDispatchAccepted?.();
+      return { queued: true };
+    });
+
+    const externalResult = await getSessionEngine().enqueueInboxMessage({
+      text: 'fresh external work',
+      sessionId: 'fresh-external',
+      workspacePath: '/workspace',
+      queueId: 'request-external',
+      beforeDispatch: externalGuard,
+    });
+
+    expect(mocks.sendExternalMessage.mock.calls.at(-1)?.[4]).toMatchObject({
+      queueId: 'request-external',
+      beforeDispatch: externalGuard,
+    });
+    await expect(externalResult.dispatchAcceptance).resolves.toEqual({ accepted: true });
+
+    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as { beforeDispatch?: () => Promise<{ accepted: boolean }> };
+      const onDispatchAccepted = args[6] as (() => void) | undefined;
+      const acceptance = await options.beforeDispatch?.();
+      if (acceptance?.accepted) onDispatchAccepted?.();
+      return { queued: false, error: 'runtime failed after irreversible admission' };
+    });
+    const failedAfterAdmission = await getSessionEngine().enqueueInboxMessage({
+      text: 'fresh external work that later fails',
+      sessionId: 'fresh-external-failure',
+      workspacePath: '/workspace',
+      queueId: 'request-external-failure',
+      beforeDispatch: externalGuard,
+    });
+    expect(failedAfterAdmission.error).toBe('runtime failed after irreversible admission');
+    await expect(failedAfterAdmission.dispatchAcceptance).resolves.toEqual({ accepted: true });
   });
 
   it('materializes Grok subscription routes as managed builtin ProviderEnv', async () => {
@@ -694,7 +845,7 @@ describe('session-engine selector and adapters', () => {
     });
   });
 
-  it('exposes external read, config, and restore surfaces behind the external adapter', () => {
+  it('exposes external read, config, and restore surfaces behind the external adapter', async () => {
     mocks.state.useExternal = true;
     mocks.state.externalBusy = true;
     mocks.getCurrentBoundSessionId
@@ -775,7 +926,7 @@ describe('session-engine selector and adapters', () => {
       liveSessionState: 'idle',
     });
 
-    expect(engine.restoreInitialSession('sid-restored', '/workspace')).toBe(true);
+    await expect(restoreInitialExternalSessionAtSelector('sid-restored', '/workspace')).resolves.toBe(true);
     expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('sid-restored', '/workspace', { type: 'desktop' });
   });
 
@@ -796,6 +947,91 @@ describe('session-engine selector and adapters', () => {
     });
   });
 
+  it('rejects external-only operations at the selector seam for builtin sessions', async () => {
+    await expect(updateExternalRuntimeConfigAtSelector({
+      runtime: 'codex',
+      runtimeConfig: { model: 'gpt-5' },
+    })).resolves.toEqual({
+      httpStatus: 400,
+      body: { success: false, error: 'Runtime config endpoint is only for external runtimes' },
+    });
+    await expect(prewarmExternalRuntimeAtSelector({
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+    })).resolves.toEqual({
+      httpStatus: 400,
+      body: { success: false, error: 'Pre-warm is only for external runtimes' },
+    });
+    await expect(retryLastExternalUserMessageAtSelector('user-1')).resolves.toEqual({
+      success: false,
+      status: 400,
+      error: 'external-retry is only for external runtimes; builtin uses /chat/rewind',
+    });
+    await expect(restoreInitialExternalSessionAtSelector('sid', '/workspace')).resolves.toBe(false);
+    expect(mocks.updateExternalRuntimeConfig).not.toHaveBeenCalled();
+    expect(mocks.prewarmExternalSession).not.toHaveBeenCalled();
+    expect(mocks.popLastUserMessageForRetry).not.toHaveBeenCalled();
+  });
+
+  it('validates and delegates external-only operations through their native owner', async () => {
+    mocks.state.useExternal = true;
+    mocks.getActiveRuntimeSource.mockReturnValue('managed-provider');
+
+    await expect(updateExternalRuntimeConfigAtSelector({
+      runtime: 'gemini',
+      runtimeConfig: { model: 'gemini-2.5-pro' },
+    })).resolves.toEqual({
+      httpStatus: 400,
+      body: { success: false, error: 'Runtime mismatch: sidecar=codex, payload=gemini' },
+    });
+    await expect(updateExternalRuntimeConfigAtSelector({
+      runtime: 'codex',
+      runtimeConfig: { permissionMode: 'full-auto' },
+    })).resolves.toEqual({
+      httpStatus: 400,
+      body: { success: false, error: "Invalid permissionMode 'full-auto' for managed-provider" },
+    });
+    expect(mocks.updateExternalRuntimeConfig).not.toHaveBeenCalled();
+
+    mocks.getActiveRuntimeSource.mockReturnValue('system-cli');
+    await expect(updateExternalRuntimeConfigAtSelector({
+      runtime: 'codex',
+      runtimeConfig: {
+        model: 'gpt-5',
+        permissionMode: null,
+        reasoningEffort: 'high',
+      },
+      source: 'im-sync',
+    })).resolves.toEqual({
+      httpStatus: 200,
+      body: { success: true, runtime: 'codex', status: 'applied', warnings: [] },
+    });
+    expect(mocks.updateExternalRuntimeConfig).toHaveBeenCalledWith(
+      { model: 'gpt-5', permissionMode: '', reasoningEffort: 'high' },
+      { source: 'im-sync' },
+    );
+
+    await expect(prewarmExternalRuntimeAtSelector({
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      model: 'gpt-5',
+    })).resolves.toEqual({
+      httpStatus: 200,
+      body: { success: true, prewarmed: true },
+    });
+    expect(mocks.prewarmExternalSession).toHaveBeenCalledWith({
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      model: 'gpt-5',
+    });
+    await expect(retryLastExternalUserMessageAtSelector('user-1')).resolves.toEqual({
+      success: true,
+      content: 'retry',
+    });
+    expect(mocks.popLastUserMessageForRetry).toHaveBeenCalledWith('user-1');
+  });
+
   it('returns external desktop acceptance before dispatch finishes and broadcasts dispatch failures', async () => {
     mocks.state.useExternal = true;
     let resolveDispatch!: (result: { queued: boolean; error?: string }) => void;
@@ -811,7 +1047,7 @@ describe('session-engine selector and adapters', () => {
     const result = await getSessionEngine().sendDesktopMessage({
       text: 'hello external',
       images: [],
-      permissionMode: 'auto',
+      permissionMode: 'full-auto',
       model: 'gpt-5',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -823,7 +1059,7 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.enqueueExternalSendForDesktop).toHaveBeenCalledWith(
       'hello external',
       [],
-      'auto',
+      'full-auto',
       'gpt-5',
       {
         sessionId: 'sid',
@@ -832,7 +1068,7 @@ describe('session-engine selector and adapters', () => {
         analyticsSource: undefined,
         analyticsOrigin: undefined,
         birthOrigin: undefined,
-        permissionMode: 'auto',
+        permissionMode: 'full-auto',
         model: 'gpt-5',
         reasoningEffort: undefined,
         turnBoundaryOnly: undefined,
@@ -1521,9 +1757,18 @@ describe('session-engine selector and adapters', () => {
   it('restores Goal MCP from the session snapshot only when the active set is uninitialized', async () => {
     mocks.getMcpServers.mockReturnValueOnce(null as never);
 
-    const result = await getSessionEngine().ensureGoalSessionConfig();
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      operation: { kind: 'goal', permissionMode: 'fullAgency' },
+    });
 
-    expect(result).toEqual({ success: true });
+    expect(result).toMatchObject({
+      success: true,
+      sessionId: 'builtin-session',
+      permissionMode: 'fullAgency',
+    });
     expect(mocks.resolveWorkspaceConfig).toHaveBeenCalledWith(
       '/workspace',
       expect.objectContaining({ id: 'builtin-session' }),
@@ -1535,11 +1780,332 @@ describe('session-engine selector and adapters', () => {
   it('preserves an initialized empty Goal MCP set', async () => {
     mocks.getMcpServers.mockReturnValueOnce([]);
 
-    const result = await getSessionEngine().ensureGoalSessionConfig();
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      operation: { kind: 'goal', permissionMode: 'fullAgency' },
+    });
 
-    expect(result).toEqual({ success: true });
+    expect(result).toMatchObject({ success: true, sessionId: 'builtin-session' });
     expect(mocks.resolveWorkspaceConfig).not.toHaveBeenCalled();
     expect(mocks.applyMcpOverrideAndAwaitReady).not.toHaveBeenCalled();
+  });
+
+  it('prepares an existing builtin Task without route-level runtime branching', async () => {
+    const beforeDispatch = vi.fn(async () => ({ accepted: true }));
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-1',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession: false,
+        model: 'claude-sonnet',
+        permissionMode: 'fullAgency',
+        beforeDispatch,
+      },
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      sessionId: 'builtin-session',
+      permissionMode: 'fullAgency',
+      model: 'claude-sonnet',
+      beforeDispatch,
+    });
+    expect(mocks.switchToSession).not.toHaveBeenCalled();
+    expect(mocks.setInteractionScenario).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'cron',
+      taskId: 'task-1',
+    }));
+  });
+
+  it.each([
+    [
+      'Task override',
+      true,
+      'provider-task',
+      undefined,
+      "Task 'task-route-owner'",
+    ],
+    [
+      'Agent default',
+      true,
+      undefined,
+      { id: 'agent-route-owner' },
+      "Agent 'agent-route-owner'",
+    ],
+    [
+      'Session snapshot',
+      false,
+      undefined,
+      { id: 'agent-route-owner' },
+      "Session 'builtin-session'",
+    ],
+  ])('attributes a disabled provider inherited from %s to the real owner', async (
+    _label,
+    initializeSession,
+    operationProviderId,
+    agent,
+    expectedOwner,
+  ) => {
+    mocks.state.providerDisabled = true;
+    mocks.findProjectAgentByWorkspacePath.mockReturnValue(agent);
+    mocks.state.sessionMetadata.set('builtin-session', {
+      id: 'builtin-session',
+      providerId: operationProviderId ?? 'provider-inherited',
+      model: 'model-1',
+      providerRoute: {
+        kind: 'provider',
+        providerId: operationProviderId ?? 'provider-inherited',
+        model: 'model-1',
+      },
+    });
+
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-route-owner',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession,
+        ...(operationProviderId
+          ? { providerId: operationProviderId, model: 'model-1' }
+          : {}),
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'configuration_failed',
+      status: 400,
+    });
+    expect(result.error).toContain(expectedOwner);
+  });
+
+  it('retains owner recovery when a provider becomes unavailable at final dispatch', async () => {
+    const scenario = {
+      type: 'cron' as const,
+      taskId: 'task-route-race',
+      intervalMinutes: 15,
+      aiCanExit: false,
+    };
+    const prepared = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario,
+      operation: {
+        kind: 'task',
+        initializeSession: true,
+        providerId: 'provider-race',
+        model: 'model-1',
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(prepared).toMatchObject({
+      success: true,
+      providerRoutingRecovery: expect.stringContaining("Task 'task-route-race'"),
+    });
+
+    const result = await runInjectedTurn({
+      prompt: 'run task',
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario,
+      model: prepared.model,
+      providerEnv: prepared.providerEnv,
+      providerRoute: prepared.providerRoute,
+      providerRoutingRecovery: prepared.providerRoutingRecovery,
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toMatchObject({ success: false, enqueued: false, status: 409 });
+    expect(result.error).toContain("Task 'task-route-race'");
+    await prepared.release?.();
+  });
+
+  it('reconciles a new builtin Task Session to its exact MCP override before dispatch', async () => {
+    const beforeDispatch = vi.fn(async () => ({ accepted: true }));
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-new',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession: true,
+        mcpEnabledServers: [],
+        beforeDispatch,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.applyMcpOverrideAndAwaitReady).toHaveBeenCalledWith([]);
+  });
+
+  it('preserves the Task MCP preparation failure as HTTP 500 semantics', async () => {
+    mocks.applyMcpOverrideAndAwaitReady.mockRejectedValueOnce(new Error('MCP restart failed'));
+
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-mcp-failure',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession: true,
+        mcpEnabledServers: [],
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(result).toEqual({
+      success: false,
+      code: 'configuration_failed',
+      status: 500,
+      error: 'MCP restart failed',
+    });
+    expect(mocks.resetInteractionScenario).toHaveBeenCalledOnce();
+  });
+
+  it('binds and prepares an external Task with runtime-native config', async () => {
+    mocks.state.useExternal = true;
+    mocks.isExternalSessionStateRestoredFor.mockReturnValue(false);
+    const beforeDispatch = vi.fn(async () => ({ accepted: true }));
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'external-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-1',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession: false,
+        permissionMode: 'no-restrictions',
+        runtimeConfig: { model: 'gpt-5', permissionMode: 'no-restrictions' },
+        beforeDispatch,
+      },
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      sessionId: 'external-session',
+      permissionMode: 'no-restrictions',
+      model: 'gpt-5',
+      beforeDispatch,
+    });
+    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(
+      'external-session',
+      '/workspace',
+      expect.objectContaining({ type: 'cron', taskId: 'task-1' }),
+    );
+  });
+
+  it('does not overwrite a coherently bound external Session before a scheduled turn', async () => {
+    mocks.state.useExternal = true;
+    mocks.getCurrentBoundSessionId.mockReturnValue('external-session');
+    mocks.isExternalSessionStateRestoredFor.mockReturnValue(true);
+
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'external-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-live',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession: false,
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
+  });
+
+  it('repairs only the product binding when the external runtime already owns the target Session', async () => {
+    mocks.state.useExternal = true;
+    mocks.getCurrentBoundSessionId.mockReturnValue('external-session');
+    mocks.isExternalSessionStateRestoredFor.mockReturnValue(true);
+    resetProductSessionBinding({ sessionId: 'stale-product-session', workspacePath: '/workspace' });
+
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'external-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-binding',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession: false,
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(getCurrentProductSessionId()).toBe('external-session');
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before rebinding when an external scheduled Session is missing', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.sessionMetadata.delete('missing-external-session');
+
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'missing-external-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-missing',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession: false,
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(result).toEqual({
+      success: false,
+      code: 'session_bind_failed',
+      status: 409,
+    });
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
   });
 
   it('propagates a builtin queue item terminal error without reading stale history', async () => {
@@ -1773,21 +2339,29 @@ describe('session-engine selector and adapters', () => {
 
   it('stops an idle live external runtime process before committing desktop materialization', async () => {
     mocks.state.useExternal = true;
+    resetProductSessionBinding({ sessionId: 'pending-external-session' });
+    mocks.state.sessionMetadata.clear();
+    mocks.getExternalQueueStatus.mockReturnValueOnce([]);
+    const prepared = await getSessionEngine().materializePendingDesktopSession({
+      workspacePath: '/workspace',
+      phase: 'prepare',
+    });
+    expect(prepared).toMatchObject({ success: true, sessionId: expect.any(String) });
+
     mocks.state.externalProcessAlive = true;
-    mocks.getExternalSessionId.mockReturnValueOnce('runtime-thread-id');
 
     const result = await getSessionEngine().materializePendingDesktopSession({
       workspacePath: '/workspace',
       phase: 'commit',
-      preparedSessionId: 'builtin-session',
+      preparedSessionId: prepared.sessionId,
     });
 
-    expect(result).toEqual({ success: true, sessionId: 'builtin-session' });
+    expect(result).toMatchObject({ success: true, sessionId: prepared.sessionId });
     expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
     expect(mocks.stopExternalSession.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.materializePendingDesktopSession.mock.invocationCallOrder[0]);
-    expect(mocks.updateSessionMetadata).toHaveBeenCalledWith('builtin-session', { runtimeSessionId: 'runtime-thread-id' });
-    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('builtin-session', '/workspace', { type: 'desktop' });
+      .toBeLessThan(mocks.updateSessionMetadata.mock.invocationCallOrder[0]);
+    expect(mocks.updateSessionMetadata).toHaveBeenCalledWith(prepared.sessionId, { runtimeSessionId: 'runtime-thread-id' });
+    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(prepared.sessionId, '/workspace', { type: 'desktop' });
   });
 
   it('stops the external runtime when an injected turn times out', async () => {
@@ -1983,15 +2557,13 @@ describe('session-engine selector and adapters', () => {
 
     const result = await getSessionEngine().resetForNewDesktopSession('/workspace');
 
-    expect(result).toEqual({ success: true, sessionId: 'builtin-session' });
+    expect(result).toMatchObject({ success: true, sessionId: expect.any(String) });
     expect(mocks.awaitExternalSessionStarting).toHaveBeenCalledTimes(1);
     expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
-    expect(mocks.resetSession).toHaveBeenCalledTimes(1);
+    expect(mocks.resetSession).not.toHaveBeenCalled();
     expect(mocks.awaitExternalSessionStarting.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.stopExternalSession.mock.invocationCallOrder[0]);
-    expect(mocks.stopExternalSession.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.resetSession.mock.invocationCallOrder[0]);
-    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('builtin-session', '/workspace', { type: 'desktop' });
+    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(result.sessionId, '/workspace', { type: 'desktop' });
   });
 
   it('stops an idle live external runtime process before desktop reset mints a new session', async () => {
@@ -2000,106 +2572,21 @@ describe('session-engine selector and adapters', () => {
 
     const result = await getSessionEngine().resetForNewDesktopSession('/workspace');
 
-    expect(result).toEqual({ success: true, sessionId: 'builtin-session' });
+    expect(result).toMatchObject({ success: true, sessionId: expect.any(String) });
     expect(mocks.awaitExternalSessionStarting).toHaveBeenCalledTimes(1);
     expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
-    expect(mocks.resetSession).toHaveBeenCalledTimes(1);
-    expect(mocks.stopExternalSession.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.resetSession.mock.invocationCallOrder[0]);
-    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('builtin-session', '/workspace', { type: 'desktop' });
+    expect(mocks.resetSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(result.sessionId, '/workspace', { type: 'desktop' });
   });
 
-  it('restores external switch when lifecycle is bound but transcript state is not seeded', async () => {
+  it('rejects external desktop reset while a conversation mutation owns the Session', async () => {
     mocks.state.useExternal = true;
-    mocks.getCurrentBoundSessionId.mockReturnValueOnce('target-session');
-    mocks.isExternalSessionStateRestoredFor.mockReturnValueOnce(false);
+    mocks.state.externalConversationMutation = true;
 
-    const result = await getSessionEngine().switchToExistingSession(
-      'target-session',
-      '/workspace',
-      (sessionId) => ({
-        id: sessionId,
-        agentDir: '/workspace',
-        title: 'Target',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        lastActiveAt: '2026-01-01T00:00:00.000Z',
-        runtime: 'codex',
-      }),
-    );
-
-    expect(result).toEqual({ success: true, sessionId: 'target-session' });
-    expect(mocks.awaitExternalSessionStarting).toHaveBeenCalledTimes(1);
-    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('target-session', '/workspace', { type: 'desktop' });
-  });
-
-  it('stops an idle live external runtime process before switching external history sessions', async () => {
-    mocks.state.useExternal = true;
-    mocks.state.externalProcessAlive = true;
-
-    const result = await getSessionEngine().switchToExistingSession(
-      'target-session',
-      '/workspace',
-      (sessionId) => ({
-        id: sessionId,
-        agentDir: '/workspace',
-        title: 'Target',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        lastActiveAt: '2026-01-01T00:00:00.000Z',
-        runtime: 'codex',
-      }),
-    );
-
-    expect(result).toEqual({ success: true, sessionId: 'target-session' });
-    expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
-    expect(mocks.stopExternalSession.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.restoreExternalSessionState.mock.invocationCallOrder[0]);
-    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('target-session', '/workspace', { type: 'desktop' });
-  });
-
-  it('rejects external history switches across Codex runtime sources', async () => {
-    mocks.state.useExternal = true;
-    mocks.getActiveRuntimeSource.mockReturnValueOnce('managed-provider');
-
-    const result = await getSessionEngine().switchToExistingSession(
-      'system-codex-session',
-      '/workspace',
-      (sessionId) => ({
-        id: sessionId,
-        agentDir: '/workspace',
-        title: 'System Codex',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        lastActiveAt: '2026-01-01T00:00:00.000Z',
-        runtime: 'codex',
-        runtimeSource: 'system-cli',
-      }),
-    );
-
-    expect(result).toMatchObject({
+    await expect(getSessionEngine().resetForNewDesktopSession('/workspace')).resolves.toEqual({
       success: false,
-      status: 409,
-      error: 'Session runtime source mismatch: persisted=system-cli, current=managed-provider',
+      error: 'Wait for the current Session operation to finish',
     });
-    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
-    expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
-  });
-
-  it('does not restore an external switch once an in-flight target start finishes seeded', async () => {
-    mocks.state.useExternal = true;
-    mocks.getCurrentBoundSessionId.mockReturnValue('target-session');
-    mocks.isExternalSessionStateRestoredFor
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
-    const getMetadata = vi.fn();
-
-    const result = await getSessionEngine().switchToExistingSession(
-      'target-session',
-      '/workspace',
-      getMetadata,
-    );
-
-    expect(result).toEqual({ success: true, sessionId: 'target-session' });
-    expect(mocks.awaitExternalSessionStarting).toHaveBeenCalledTimes(1);
-    expect(getMetadata).not.toHaveBeenCalled();
     expect(mocks.stopExternalSession).not.toHaveBeenCalled();
     expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
   });
@@ -2107,7 +2594,7 @@ describe('session-engine selector and adapters', () => {
   it('freezes the current builtin IM session before resetting to a new IM session', async () => {
     const result = await getSessionEngine().resetForNewImSession('/workspace');
 
-    expect(result).toEqual({ success: true, sessionId: 'builtin-session' });
+    expect(result).toMatchObject({ success: true, sessionId: expect.any(String) });
     expect(mocks.freezeCurrentSessionMetadataForImDetach).toHaveBeenCalledTimes(1);
     expect(mocks.freezeCurrentSessionMetadataForImDetach).toHaveBeenCalledWith(undefined, {
       allowMissingMetadata: false,
@@ -2130,25 +2617,23 @@ describe('session-engine selector and adapters', () => {
 
     const result = await getSessionEngine().resetForNewImSession('/workspace');
 
-    expect(result).toEqual({ success: true, sessionId: 'builtin-session' });
+    expect(result).toMatchObject({ success: true, sessionId: expect.any(String) });
     expect(mocks.awaitExternalSessionStarting).toHaveBeenCalledTimes(1);
-    expect(mocks.freezeCurrentSessionMetadataForImDetach).toHaveBeenCalledWith(
-      {
+    expect(mocks.updateSessionMetadata).toHaveBeenCalledWith(
+      'external-session',
+      expect.objectContaining({
         runtime: 'codex',
         runtimeSource: 'system-cli',
         model: 'gpt-5',
         permissionMode: 'no-restrictions',
         reasoningEffort: 'medium',
-      },
-      {
-        allowMissingMetadata: false,
-      },
+        configSnapshotAt: expect.any(String),
+      }),
     );
-    expect(mocks.freezeCurrentSessionMetadataForImDetach.mock.invocationCallOrder[0])
+    expect(mocks.updateSessionMetadata.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.stopExternalSession.mock.invocationCallOrder[0]);
-    expect(mocks.stopExternalSession.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.resetSession.mock.invocationCallOrder[0]);
-    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('builtin-session', '/workspace', { type: 'desktop' });
+    expect(mocks.resetSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(result.sessionId, '/workspace', { type: 'desktop' });
   });
 
   it('stops an idle live external runtime process before external IM reset', async () => {
@@ -2157,12 +2642,23 @@ describe('session-engine selector and adapters', () => {
 
     const result = await getSessionEngine().resetForNewImSession('/workspace');
 
-    expect(result).toEqual({ success: true, sessionId: 'builtin-session' });
-    expect(mocks.freezeCurrentSessionMetadataForImDetach).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ success: true, sessionId: expect.any(String) });
     expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
-    expect(mocks.stopExternalSession.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.resetSession.mock.invocationCallOrder[0]);
-    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('builtin-session', '/workspace', { type: 'desktop' });
+    expect(mocks.resetSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(result.sessionId, '/workspace', { type: 'desktop' });
+  });
+
+  it('rejects external IM reset before freezing metadata while a conversation mutation owns the Session', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalConversationMutation = true;
+
+    await expect(getSessionEngine().resetForNewImSession('/workspace')).resolves.toEqual({
+      success: false,
+      error: 'Wait for the current Session operation to finish',
+    });
+    expect(mocks.updateSessionMetadata).not.toHaveBeenCalled();
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
   });
 
   it('freezes the current external IM session through the engine facade', async () => {
@@ -2173,9 +2669,10 @@ describe('session-engine selector and adapters', () => {
       metadataBirthPending: true,
     });
 
-    expect(result).toEqual({ success: true, sessionId: 'old-im-session' });
-    expect(mocks.freezeCurrentSessionMetadataForImDetach).toHaveBeenCalledWith(
-      {
+    expect(result).toEqual(expect.objectContaining({ success: true, sessionId: 'external-session' }));
+    expect(mocks.updateSessionMetadata).toHaveBeenCalledWith(
+      'external-session',
+      expect.objectContaining({
         runtime: 'codex',
         runtimeSource: 'managed-provider',
         model: 'gpt-5',
@@ -2188,10 +2685,8 @@ describe('session-engine selector and adapters', () => {
           runtimeSource: 'managed-provider',
           model: 'gpt-5',
         },
-      },
-      {
-        allowMissingMetadata: true,
-      },
+        configSnapshotAt: expect.any(String),
+      }),
     );
   });
 

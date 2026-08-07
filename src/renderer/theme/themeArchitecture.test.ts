@@ -68,7 +68,7 @@ describe('Theme architecture guardrails', () => {
 
   it('keeps every optional package scoped, side-effect free, and independent from Space', () => {
     const optionalThemeIds = [
-      'default-black', 'sage', 'absolutely', 'linear', 'proof', 'codex', 'raycast',
+      'myagents-light', 'default-black', 'sage', 'absolutely', 'linear', 'proof', 'codex', 'raycast',
     ];
     for (const themeId of optionalThemeIds) {
       const manifest = source(`src/renderer/theme/themes/${themeId}.ts`);
@@ -138,6 +138,45 @@ describe('Theme architecture guardrails', () => {
         canonicalTokens.set('--button-primary-bg-hover', '#2b2b2b');
       }
       expect(variantTokens).toEqual(canonicalTokens);
+    }
+  });
+
+  it('keeps MyAgents Light equal to Claude except its light primary button pair', () => {
+    const claudeStylesheet = parseThemeStylesheet(
+      source('src/renderer/theme/themes/absolutely.css'),
+    );
+    const lightStylesheet = parseThemeStylesheet(
+      source('src/renderer/theme/themes/myagents-light.css'),
+    );
+    const claudeRoot = "html[data-theme-id='absolutely']";
+    const lightRoot = "html[data-theme-id='myagents-light']";
+    const collect = (
+      stylesheet: ReturnType<typeof parseThemeStylesheet>,
+      selector: string,
+    ) => collectDeclaredTokens(collectContractBlocks(
+      stylesheet.topLevelBlocks,
+      selector,
+      [[selector]],
+      `MyAgents Light equality selector ${selector}`,
+    ));
+
+    expect(collect(lightStylesheet, lightRoot)).toEqual(collect(claudeStylesheet, claudeRoot));
+
+    for (const scheme of ['light', 'dark'] as const) {
+      const claudeTokens = collect(
+        claudeStylesheet,
+        `${claudeRoot}[data-color-scheme='${scheme}']`,
+      );
+      const lightTokens = collect(
+        lightStylesheet,
+        `${lightRoot}[data-color-scheme='${scheme}']`,
+      );
+
+      if (scheme === 'light') {
+        claudeTokens.set('--button-primary-bg', '#111111');
+        claudeTokens.set('--button-primary-bg-hover', '#2b2b2b');
+      }
+      expect(lightTokens).toEqual(claudeTokens);
     }
   });
 
@@ -308,7 +347,7 @@ describe('Theme architecture guardrails', () => {
     const sharedTheme = source('src/shared/theme.ts');
     const registry = source('src/renderer/theme/registry.ts');
     expect(sharedTheme).toContain("CANONICAL_THEME_ID = 'myagents-default'");
-    expect(sharedTheme).toContain("DEFAULT_THEME_ID = 'default-black'");
+    expect(sharedTheme).toContain("DEFAULT_THEME_ID = 'myagents-light'");
     expect(sharedTheme).toContain('themeSelectionExplicit');
     expect(registry).toContain('this.definitions.get(CANONICAL_THEME_ID)');
     expect(source('src/renderer/theme/bootstrap.ts')).toContain('THEME_BOOTSTRAP_VERSION = 2');

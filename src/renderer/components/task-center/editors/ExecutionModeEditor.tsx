@@ -88,7 +88,7 @@ export function ExecutionModeEditor({
   const isScheduled = executionMode === 'scheduled';
   const isRecurring = executionMode === 'recurring';
   const isLoop = executionMode === 'loop';
-  const showSessionStrategy = isRecurring || isLoop;
+  const showSessionStrategy = true;
 
   // Seed the timezone on first render if the recurring task doesn't
   // have one yet — `CronExpressionInput` picks its displayed tz from

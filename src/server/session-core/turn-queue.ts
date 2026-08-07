@@ -13,6 +13,12 @@ export type RealtimeHandoff = 'sdk-inflight' | 'local-queue';
 
 export type QueueLocation = 'message' | 'pending-mid-turn' | 'turn-boundary' | 'in-flight';
 
+export type DesktopDeliveryMode = 'realtime' | 'turn';
+
+export type QueueCancelResult =
+  | { status: 'cancelled'; cancelledText: string }
+  | { status: 'not_found' | 'not_cancelled' | 'unavailable' | 'error' };
+
 export type DispatchGuardResult = {
   accepted: boolean;
   error?: string;

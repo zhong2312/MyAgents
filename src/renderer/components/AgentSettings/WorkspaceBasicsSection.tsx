@@ -12,7 +12,7 @@ import { getAllMcpServers, getEnabledMcpServerIds } from '@/config/configService
 import { patchAgentConfig, patchAgentProjectConfig } from '@/config/services/agentConfigService';
 import { isProviderAvailable } from '@/config/services/providerService';
 import { CUSTOM_EVENTS } from '@/../shared/constants';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, PERMISSION_MODES, type Project, type McpServerDefinition } from '@/config/types';
+import { PERMISSION_MODES, type Project, type McpServerDefinition } from '@/config/types';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { reasoningEffortChoices, REASONING_EFFORT_DESCRIPTIONS } from '@/../shared/reasoningEffort';
 import { ALL_WORKSPACE_ICON_IDS, DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
@@ -20,7 +20,7 @@ import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import RuntimeSelector from '../RuntimeSelector';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig } from '../../../shared/types/runtime';
 import { buildRuntimeChangePatch } from '../../../shared/types/runtime';
-import { agentDefaultsForRuntimeBackedProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
+import { agentDefaultsForRuntimeBackedProvider, agentUsesManagedCodexProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '@/components/Toast';
 
@@ -68,10 +68,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   });
   // When multiAgentRuntime is off, treat as builtin regardless of agent config (方案 C)
   const agentRuntimeConfig = agent?.runtimeConfig as RuntimeConfig | undefined;
-  const agentUsesManagedCodexProvider =
-    agent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    || agentRuntimeConfig?.source === 'managed-provider';
-  const currentRuntime: RuntimeType = agentUsesManagedCodexProvider
+  const usesManagedCodexProvider = agentUsesManagedCodexProvider(agent);
+  const currentRuntime: RuntimeType = usesManagedCodexProvider
     ? 'builtin'
     : config.multiAgentRuntime
     ? ((agent?.runtime as RuntimeType) || 'builtin')
@@ -196,18 +194,26 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       void saveAgentConfig({
         providerId,
         model,
-        ...(agentUsesManagedCodexProvider
+        ...(usesManagedCodexProvider
           ? buildRuntimeChangePatch(agent?.runtimeConfig as RuntimeConfig | undefined, 'builtin')
           : {}),
       });
     }
     setOpenPopup(null);
-  }, [agent?.runtimeConfig, agentUsesManagedCodexProvider, availableProviders, providers, saveAgentConfig]);
+  }, [agent?.runtimeConfig, usesManagedCodexProvider, availableProviders, providers, saveAgentConfig]);
 
   const handlePermissionSelect = useCallback((mode: string) => {
-    void saveAgentConfig({ permissionMode: mode });
+    const provider = usesManagedCodexProvider
+      ? (availableProviders.find(p => p.id === agent?.providerId) ?? providers.find(p => p.id === agent?.providerId))
+      : undefined;
+    const intent = provider && agent?.model
+      ? toProviderExecutionIntent(provider, agent.model)
+      : undefined;
+    void saveAgentConfig(intent?.kind === 'runtime-backed-provider'
+      ? agentDefaultsForRuntimeBackedProvider(intent, agentRuntimeConfig, { permissionMode: mode })
+      : { permissionMode: mode });
     setOpenPopup(null);
-  }, [saveAgentConfig]);
+  }, [agent?.model, agent?.providerId, agentRuntimeConfig, availableProviders, providers, saveAgentConfig, usesManagedCodexProvider]);
 
   // #324 — agent-level 推理强度 default ('default' | level). Builtin only here
   // (external runtimes configure it via the chat toolbar → runtimeConfig).

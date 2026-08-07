@@ -46,6 +46,8 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 
 `SessionEngine` 是 Sidecar route 面向“当前会话运行时”的统一门面。Route handler 只负责 HTTP payload shaping、validation 与 response mapping；runtime 选择由 `selector.ts` 通过 `shouldUseExternalRuntime()` 统一完成。
 
+`product-session-binding.ts` 是 facade 内 Product Session identity 的唯一事务入口。当前/切换中的 Session id、待创建 Session，以及 metadata 的冻结和发布都在这里提交；Builtin/External adapter 只执行本 Runtime 的进程清理和绑定操作。SDK UUID、Codex thread id 等 Runtime 原生 identity 不进入该模块，也不能用 builtin `getSessionId()` 为 external 路径兜底。
+
 核心职责：
 
 - `sendDesktopMessage()`：保持 `/chat/send` 的 admission 语义；external runtime 继续立即返回并后台串行 dispatch，避免 Rust proxy 120s 上限。
@@ -54,7 +56,7 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 - `runInjectedTurn()`：用于 cron sync、heartbeat、memory update、Goal 等同步注入 turn；等待 turn finalization，并用各 runtime 的真成功信号判定结果。Builtin adapter 只保留 domain dispatch guard 与 turn timeout；MCP soft pre-warm 在所有 builtin entrypoint 共用的 generator dispatch seam 执行。
 - `stopOwnedTurnByQueueId()`：按 domain owner + `queueId` 精确停止 Task/Goal turn。普通 queued item 被明确移除即可成功；若已进入 promotion，则必须等其结算，`not-dispatched | terminated` 才算成功，`dispatched` 且仍是 current turn 时继续精确 stop，`termination-unconfirmed` 返回失败并保留 exact binding。停止 current external turn 使用 `preserveQueue`，不得清掉后续无关 operation。
 - read/config methods：`getRuntimeIdentity()`、`getLiveSessionState()`、`getLatestAssistantResult()`、`getStreamReplaySnapshot()`、`getSessionConfigSnapshot()`、`getLiveSessionOverlay()`、`getSessionCompletionTerminal()` 统一承接 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/api/session/config` 等读取面。
-- operation methods：`rewindToUserMessage()`、`retryLastExternalUserMessage()`、`forkAtAssistantMessage()`、`switchToExistingSession()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。
+- common operation methods：`rewindToUserMessage()`、`forkAtAssistantMessage()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把真正具有共同产品语义的会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。`updateRuntimeConfig`、`prewarm`、startup restore 与 `retryLastExternalUserMessage` 只属于 external runtime，由 selector seam 的显式 helper 校验 runtime 后调用 native owner，不能为 builtin 增加伪对称 stub，也不能让 route/bootstrap 直接 import external facade。打开既有 Session 属于 App 的 Tab 导航，不是 Runtime operation。
 - queue/config/permission methods：把 route 层从 `agent-session.ts` / `external-session.ts` 的直接分流中解耦；`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/interaction-scenario/set` 对 external runtime 显式 skip，不在 route 层静默判断。
 
 新增“注入 user 消息 / 同步 config / 等待 idle 后判定 completed”的 endpoint 必须优先接入 `SessionEngine`，不要在 `index.ts` 或新 route module 里重新手写 builtin/external 分支。
@@ -76,10 +78,20 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 | `turn.ts` | current turn usage/output/error、activity facts、completion terminal、SDK output-owner FIFO、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、message-complete/empty-result、IM/inbox/watch/analytics/title hook 顺序 |
 | `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
-| `transcript.ts` | live messages、sequence、persist cursor/cache、SDK UUID freshness sets |
-| `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
+| `transcript.ts` | live messages、sequence、SessionStore transcript cursor、SDK UUID freshness sets |
+| `transcript-persistence.ts` | SessionStore mapping、tail-only persist chain、load/cursor seeding、命名 rewind/retraction/rollback mutation |
 
-Route modules、`SessionEngine` adapters 不直接 import `builtin-session/*` 或 `runtimes/external-session/*` owner internals；新增 route-facing 能力仍先接 `SessionEngine`，再由 adapter 调 builtin/external public facade。`runtime-boundary.unit.test.ts` 对 route/session-engine/builtin-session/external-session 目录做边界扫描，并拦截 facade 重新 direct-write owner state 或重新承载已迁出的重行为。Phase8 后，external runtime 也采用 facade + owner modules，但没有抽 builtin/external 通用 lifecycle framework；两边共享的是 `session-core/*` pure policy，而不是进程模型抽象。
+Route modules 和 `SessionEngine` adapters 不直接 import `builtin-session/*` 或 `runtimes/external-session/*` 内部模块；新增 route-facing 能力仍先接入 `SessionEngine`，再由 adapter 调用 builtin/external public facade。`runtime-boundary.unit.test.ts` 扫描 route、session-engine、builtin-session 和 external-session 目录，防止 facade 再次直接修改内部状态，或重新实现已经迁出的终态与持久化逻辑。External Runtime 同样采用 facade + owner modules，但没有抽象出 builtin/external 共用的生命周期框架；两边只共享 `session-core/*` 的纯策略。
+
+#### 中性边界类型
+
+跨 Runtime、跨进程或同时被 Renderer/Server 使用的类型放在最窄的中性模块中，而不是借用某个实现模块：
+
+- `ProviderEnv` 由 `src/server/provider-types.ts` 定义，属于 Server provider domain，不依赖 builtin facade。
+- queue admission、cancel 和 turn owner 结果由 `src/server/session-core/turn-queue.ts` 定义。Builtin/External 共用同一语义，但各自保留自己的队列状态。
+- `ToolInput` 由 `src/shared/types/tool-input.ts` 定义。Renderer 可以通过本地 barrel 做 type-only re-export；Server 不得 import Renderer 类型。
+
+这些文件只拥有数据合同，不拥有 Runtime 状态，也不建立新的共享生命周期。
 
 #### Builtin 公共 MCP soft pre-warm 契约
 
@@ -190,15 +202,14 @@ Turn 1: claude -p --session-id abc → 执行 → 退出
 Turn 2: claude -p --resume abc     → 恢复上下文 → 执行 → 退出
 ```
 
-### 权限模式映射
+### 权限模式
 
-| MyAgents | CC CLI |
-|----------|--------|
-| `auto` | `acceptEdits` |
-| `plan` | `plan` |
-| `fullAgency` | `bypassPermissions` |
+System Claude Code 配置直接使用当前 CLI 的 native vocabulary：
+`manual | auto | acceptEdits | dontAsk | plan | bypassPermissions`。未指定时使用
+`manual`。旧的产品级调用仍可在执行边界将 `fullAgency` 投影为
+`bypassPermissions`；`plan` 同名传递。
 
-**IM native-card 例外**：当 `InteractionScenario` 是 IM / Agent Channel 且 `hostInteraction.askUserQuestion === 'native-card'` 时，`fullAgency` 不能直接传给 Claude Code 的 `bypassPermissions`。`AskUserQuestion` 通过 CC `control_request/can_use_tool` + `--permission-prompt-tool stdio` 回到 MyAgents；bypass 会跳过这条交互通道。`external-session.ts` 在 runtime 边界把启动态权限降为 `auto/acceptEdits`，同时对非 `AskUserQuestion` 的 permission request 做 fullAgency fast-path 自动允许，保持“普通工具自治、结构化提问可交互”的语义。
+**IM native-card 例外**：当 `InteractionScenario` 是 IM / Agent Channel 且 `hostInteraction.askUserQuestion === 'native-card'` 时，`fullAgency` 不能直接传给 Claude Code 的 `bypassPermissions`。`AskUserQuestion` 通过 CC `control_request/can_use_tool` + `--permission-prompt-tool stdio` 回到 MyAgents；bypass 会跳过这条交互通道。`external-session.ts` 在 runtime 边界把启动态权限降为 `acceptEdits`，同时对非 `AskUserQuestion` 的 permission request 做 fullAgency fast-path 自动允许，保持“普通工具自治、结构化提问可交互”的语义。
 
 ### SessionStart Hook
 
@@ -223,9 +234,25 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `initialize` | 握手，交换 capability |
 | `thread/start` | 创建新 thread |
 | `thread/resume` | 恢复已有 thread |
+| `thread/read` | 读取完整、有序的 native turns；仅 Rewind 的 before-turn 边界使用 |
+| `thread/fork` | 通过 `lastTurnId` 创建独立 native branch |
+| `thread/unsubscribe` | 解除 source app-server 对刚创建 branch 的临时订阅 |
 | `turn/start` | 发送用户消息到 thread |
 | `turn/steer` | 追加用户输入到当前 in-flight turn（Codex 实时响应路径） |
 | `turn/interrupt` | 中断当前 turn |
+
+### 对话 Rewind / Fork（0.4.5）
+
+Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；System CLI 仅在官方稳定版本 `>= 0.143.0` 开启，Managed Codex 由锁定版本保证。Claude Code / Gemini 不共享这项 capability。
+
+- 每次 root `turn/start` 都传入 MyAgents user message id 作为 `clientUserMessageId`。响应的 native turn id 与该 product id 在本次 admission 内核对；只有成功 terminal assistant 持久化 `runtimeTurnAnchor:{turnId,rootUserMessageId}`。通知和 RPC response 可任意先后，terminal 必须等 admission id 确认后再落盘。
+- External transcript persistence 同时创建 assistant 的 canonical product message id；成功落盘后的 `chat:message-complete` 必须回传同一个 `assistant_message_id`，让普通 live stream 与 reconnect live snapshot 在暴露 transcript action 前归一到 SessionStore identity。Renderer 的 provisional streaming id 只属于展示生命周期，不能用于 Rewind/Fork 等持久化操作寻址。
+- Fork assistant 使用 `thread/fork({threadId,lastTurnId:anchor.turnId})`。Rewind user 先用 `thread/read({threadId,includeTurns:true})` 精确找到对应 turn：有前一 turn 时 fork through previous；目标是第一 turn 时返回 `fresh-thread`，不预建不可跨进程恢复的空 thread。
+- `thread/fork` 会让当前 app-server 临时订阅新 thread，因此交回 product 层前必须 `thread/unsubscribe`。失败则停止 connection；无法确认终止时不提交产品状态。
+- native branch 成功后，产品 transcript 仍以 SessionStore 为 authority，不从 Codex rollout 反向重建富消息。Rewind 只截断对话且保留同一个 product Session id；Fork 复制截止目标 assistant 的 transcript prefix 到新的 product Session。若来源是尚未带 `configSnapshotAt` 的 legacy Session，新分支在创建时以来源当下有效的 Agent/runtime 配置冻结 owned snapshot，来源 Session 本身保持不变。
+- 一个 Session Sidecar 操作结束时仍只持有一个 root thread。Rewind 提交后停止旧 process 并按 replacement binding restore；有 native replacement 时在 mutation lease 释放后异步复用 `prewarmExternalSession()` resume，新进程启动失败不回滚 durable Rewind，下一条消息仍走既有 resume。首 turn rewind 清除 binding且不预热不可恢复的空 thread，让下一条消息走既有 fresh-start。旧 process 无法确认停止时重启该 1:1 Sidecar，不能继续向 source thread 发送。
+
+不得使用 experimental `thread/rollback`、本地 previous-turn mirror、`beforeTurnId` 猜测或 Renderer 直连 app-server。`CodexRuntime` 是 native RPC/subscription owner，`external-session` 是操作编排 owner，SessionStore 是 transcript/metadata owner。
 
 ### `thread/start` 参数 Schema（Codex v0.111.0）
 
@@ -236,14 +263,14 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `approvalPolicy` | enum? | ✅ mapped from permissionMode | `untrusted`/`on-failure`/`on-request`/`never` |
 | `sandbox` | enum? | ✅ mapped from permissionMode | `read-only`/`workspace-write`/`danger-full-access` |
 | `developerInstructions` | string? | ✅ `systemPromptAppend` | MyAgents 三层系统提示词 |
-| `ephemeral` | boolean? | ✅ `false` | 是否临时线程 |
+| `ephemeral` | boolean? | ✅ 默认 `false`；Managed Codex 标题任务为 `true` | 是否临时线程 |
 | `modelProvider` | string? | ✅ Managed Codex | 新 thread 固定为 MyAgents 持有的 HTTP-only 官方 OpenAI provider；system-cli 不覆盖 |
 | `serviceTier` | enum? | ❌ 未对接 | `fast`/`flex` |
 | `personality` | enum? | ❌ 未对接 | `none`/`friendly`/`pragmatic` |
 | `baseInstructions` | string? | ❌ 未对接 | 基础系统指令（区别于 developerInstructions） |
 | `config` | object? | ❌ 未对接 | 通用配置对象（additionalProperties） |
 | `serviceName` | string? | ❌ 未对接 | 服务名称标识 |
-| `experimentalRawEvents` | boolean | ✅ 仅 Managed Codex 新 thread | 开启官方 raw response-item 通知，仅用于恢复 v2 `interacted` 丢失的 `send_message` / `followup_task` 语义；raw payload 不进入 UnifiedEvent / SSE / 持久化 |
+| `experimentalRawEvents` | boolean | ✅ 仅 Managed Codex 新 thread | 开启官方 raw 通知：`rawResponseItem/completed` 仅恢复 v2 `interacted` 丢失的 `send_message` / `followup_task` 语义；Codex 0.146+ 的 `rawResponse/completed` 仅投影为 turn 级精确 usage。raw payload 本身不进入 UnifiedEvent / SSE / 持久化 |
 
 ### `thread/resume` 参数 Schema
 
@@ -266,7 +293,11 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 
 **Managed transport owner 边界**：Managed Codex 的 app-server launch config 注册 MyAgents 私有 provider id；该 provider 保持 `name:'OpenAI'`、`wire_api:'responses'` 与 `requires_openai_auth:true`，不设置 `base_url` / `env_key`，因此 Codex 仍按现有 ChatGPT 登录态解析官方 Codex endpoint、订阅模型与 entitlement。唯一 transport 差异是 `supports_websockets:false`，让 Responses 从首包开始直接走 HTTPS，不再先做五轮 WebSocket reconnect。新 thread 显式传同一 `modelProvider`；resume 只有在 Session metadata 提供权威 model 时才把 model/provider 成对覆盖，model 未知的 legacy thread 则两者都交给 Codex 持久化 metadata 恢复。Pre-warm 同理优先使用 Session metadata 的 model，而不是 renderer 可能尚未同步完成的 payload。`runtimeSource:'system-cli'` 完全不注入或覆盖 provider。
 
-**Pinned Codex 0.144.1 models refresh 已知问题**：`codex_models_manager ... timeout waiting for child process to exit` 不是 MyAgents 子进程退出超时。Codex 的 models endpoint 把 transport build + `/models` 请求包在固定 5 秒 timeout 中，而通用 `CodexErr::Timeout` 沿用了 command 场景的错误文案。每个 app-server 的周期 refresh worker 启动即请求、完成后等待 180 秒，因此这一路连续失败时约每 185 秒出现一次；response 携带的新 ETag 还会即时触发 refresh，所以 turn / transport retry 附近也可能出现多条 5 秒 timeout 成簇爆发，不能用 185 秒间隔反推是否为同一问题。MyAgents 不用静态 `model_catalog_json`、cache touch、日志过滤或绕开 provider proxy 来掩盖它：这些方案会分别冻结 entitlement、伪造 freshness、隐藏真实失败或破坏用户代理策略。HTTP-only provider 会移除 WebSocket 失败，并避免重复 WebSocket attempt 带来的 ETag refresh 放大；慢代理下的周期 refresh 与正常 response ETag refresh 仍需等待 Codex 上游提供独立 timeout / 修正文案。
+**标题 utility turn**：自动标题必须从 Session metadata 保留完整 Runtime identity，不能只传 `runtime:'codex'` 后让 `startSession()` 回落到 `system-cli`。Managed Codex 标题使用同一 managed binary / `CODEX_HOME` / auth owner，但显式传空 `mcpServers`，不注入 workspace MCP；同时固定 `suggest`、低 reasoning effort、`maxTurns:1` 和 ephemeral thread。普通 Session 的 MCP 与权限配置不受影响，system-cli Codex 继续由用户自己的原生配置持有。
+
+**Codex usage owner**：`thread/tokenUsage/updated` 始终保留：其 `last.inputTokens` 是实时 context 占用，`total` 是旧 runtime / 缺失 raw usage 时的 turn 累计 fallback。Codex 0.146+ 在开启 raw events 后还会为每个上游 Responses API completion 发 `rawResponse/completed {threadId, turnId, responseId, usage}`；adapter 在 root turn 内按 `responseId` 去重，累加 provider 回传的 input/output/cached/cache-write，最后在 root terminal 之前只发一个 `semantics:'delta'` usage，交给 `external-session` 既有的 SessionStore / analytics owner。任一 response 的 `usage:null` 或必需 token 字段非法会使整轮 raw 聚合失效并回退 `thread/tokenUsage/updated`，禁止把部分和伪装成精确统计。child thread 的 raw/thread usage 都经过 `isChildThreadGatedMethod()` 丢弃，不污染主 Session；raw payload 与 response id 不跨 adapter 边界。
+
+**Codex 0.144.1 models refresh 历史已知问题**：`codex_models_manager ... timeout waiting for child process to exit` 不是 MyAgents 子进程退出超时。Codex 的 models endpoint 把 transport build + `/models` 请求包在固定 5 秒 timeout 中，而通用 `CodexErr::Timeout` 沿用了 command 场景的错误文案。每个 app-server 的周期 refresh worker 启动即请求、完成后等待 180 秒，因此这一路连续失败时约每 185 秒出现一次；response 携带的新 ETag 还会即时触发 refresh，所以 turn / transport retry 附近也可能出现多条 5 秒 timeout 成簇爆发，不能用 185 秒间隔反推是否为同一问题。MyAgents 不用静态 `model_catalog_json`、cache touch、日志过滤或绕开 provider proxy 来掩盖它：这些方案会分别冻结 entitlement、伪造 freshness、隐藏真实失败或破坏用户代理策略。HTTP-only provider 会移除 WebSocket 失败，并避免重复 WebSocket attempt 带来的 ETag refresh 放大；慢代理下的周期 refresh 与正常 response ETag refresh 仍需等待 Codex 上游提供独立 timeout / 修正文案。
 
 ### Skills 加载
 
@@ -289,9 +320,10 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `item/completed` (`subAgentActivity`) | `CollabAgent` 容器/控制 trace + thread 关联（Codex multi-agent v2） |
 | `turn/started` | `[status_change(running), agent_plan_update([])]` |
 | `turn/plan/updated` | `agent_plan_update` |
-| `turn/completed` | `[turn_complete, agent_plan_update([])]` |
+| `turn/completed` | raw usage 完整时先发 `usage(delta)`，再发 `[turn_complete, agent_plan_update([])]` |
 | `thread/status/changed` | `active` / `idle` 不映射（thread liveness 不是 turn activity）；仅 `systemError` → `status_change(error)` |
-| `thread/tokenUsage/updated` | `usage` |
+| `thread/tokenUsage/updated` | `usage(running_total)` + 实时 context；无完整 raw usage 时 fallback |
+| `rawResponse/completed` | adapter 内按 `turnId/responseId` 去重聚合；不透传 raw payload |
 
 ### Codex Server Request / 权限协议
 
@@ -360,10 +392,10 @@ Codex 主 agent 可派生 sub-agent。**sub-agent 是独立的 Codex thread**，
 
 **关联与打标（`codex.ts`）**：`CodexProcess` 持 `subThreadToCard`（child → 本 turn 容器）、`subThreadToParent` / `subThreadMeta`（祖先链与装饰信息）、`collabControlToolParents`（v1 控制动作锁存）、`subAgentThreadsAwaitingActivity`（已开始 child turn 的 activity 因果栅栏）、`subAgentActivitySeenBeforeTurnStart`（activity 早于 turn 的瞬时标记）以及 `deferredSubAgentEvents`（activity 晚到窗口内的 child item）。activity 栅栏只有在进程已确认观察到 v2 协议后才启用；v1 child 因此不会等待一个永远不存在的 `subAgentActivity`。v1 与 v2 只负责把各自 wire shape 投影进这套既有 turn-local 关联，不向 session/renderer 暴露协议版本。child→child 的 activity 即使先于 sender 的祖先关联到达，也要先记录 edge，待祖先出现后整体解析。
 
-- **子线程事件闸门**:`isChildThreadGatedMethod(method)`(`turn/started`/`turn/completed`/`thread/status/changed`/`thread/closed`/`thread/tokenUsage/updated`)+ `threadId !== mainThreadId` → 子生命周期绝不作为主 session lifecycle 上抛；其中 child `turn/started` / `turn/completed` 更新内部 ownership，`thread/closed` 与 `systemError` 也会 settle child ownership，并可能在最后一个 child settle 时释放已暂存的 root terminal；其它 child status/token usage 事件忽略。`thread/tokenUsage/updated`(PRD 0.2.32)放行会让子 agent 的占用污染主 context 指示器 + 持久化 `lastContextUsage`。item 通知**不**闸(要的就是子工具)。
+- **子线程事件闸门**:`isChildThreadGatedMethod(method)`(`turn/started`/`turn/completed`/`thread/status/changed`/`thread/closed`/`thread/tokenUsage/updated`/`rawResponse/completed`)+ `threadId !== mainThreadId` → 子生命周期绝不作为主 session lifecycle 上抛；其中 child `turn/started` / `turn/completed` 更新内部 ownership，`thread/closed` 与 `systemError` 也会 settle child ownership，并可能在最后一个 child settle 时释放已暂存的 root terminal；其它 child status/token usage 事件忽略。`thread/tokenUsage/updated`(PRD 0.2.32)放行会让子 agent 的占用污染主 context 指示器 + 持久化 `lastContextUsage`；`rawResponse/completed` 放行则会把子 Agent 的 provider usage 计入主 Session。item 通知**不**闸(要的就是子工具)。
 - `computeCodexItemEventRoute()` 把 item 明确分成 `main` / `subagent` / `defer`；`computeSubAgentScope()` → `resolveTopLevelSpawnCard()` 沿父链上溯，深层 sub-sub-agent 归并到第一层容器（UI 只一层）。**foreign thread 未关联时只能 defer，禁止退化为 main**。
 - `deferredSubAgentEvents` 只属于当前 main turn：任何 ancestor 关联建立且对应 activity 栅栏解除后，按 ancestor depth（父先于后代）释放；最终仍无法关联则丢弃并告警。它解决的是 Codex 源码中“先启动/唤醒 child、后 emit activity”的因果窗口，不是 retry/cache。
-- `experimentalApi` handshake 与 `experimentalRawEvents` request 只在 Managed Codex **新 thread** 同时开启；`thread/resume` 的 0.144.1 schema 没有 raw-events 参数，System CLI 也必须兼容旧版本。缺少 raw discriminator 时，adapter 不把模糊 `interacted` 猜成 active turn（否则 queue-only 会让 root 永久不完成）。若 root terminal 到达时仍没有 child `turn/started` 给出确定 ownership，adapter 释放该 root terminal 后结束当前 app-server，由既有 session resume 路径重建干净 runtime；不维护跨 turn quarantine，也不允许旧进程的迟到 child 串入下一 turn。
+- `experimentalApi` handshake 与 `experimentalRawEvents` request 只在 Managed Codex **新 thread** 同时开启；截至 0.146.0，`thread/resume` schema 仍没有 raw-events 参数，System CLI 也必须兼容旧版本。缺少 raw discriminator 时，adapter 不把模糊 `interacted` 猜成 active turn（否则 queue-only 会让 root 永久不完成）。若 root terminal 到达时仍没有 child `turn/started` 给出确定 ownership，adapter 释放该 root terminal 后结束当前 app-server，由既有 session resume 路径重建干净 runtime；不维护跨 turn quarantine，也不允许旧进程的迟到 child 串入下一 turn。
 - root terminal 到达时若 child 仍处于 `subAgentThreadsAwaitingActivity`，说明本 turn 的 parent correlation 不完整；与上述模糊 `interacted` 共用同一个进程边界降级：暂存 root terminal、结束 app-server、在 exit 依次发出 root terminal 与 `session_complete`。没有 quarantine、timer、retry 或跨 turn 猜测。
 - Codex child turn 是独立执行单元，可能晚于 root model 的 terminal。adapter 观察 foreign `turn/started` / `turn/completed`（不把它们上抛为主生命周期），保留 active child 的精确 `(threadId, turnId)`；仍有 child 时暂存 root terminal，最后一个 child settle 后才把既有 `turn_complete` 交给 external-session。成功 terminal 自然等待；中断/失败 terminal 会请求 interrupt 所有 active child 后等待其 terminal。若 force-send 命中已完成 root、尚未完成 child 的窗口，`interruptTurn()` 同样改为中断 child turn；尚未拿到 turnId 的 child 在 `turn/started` 到达时立即执行 pending interrupt。相同 `(threadId, turnId)` 的并发中断 single-flight；RPC 失败后先重验 root/child ownership，只有仍悬挂时才终止 app-server，并在 exit boundary 恰好一次释放原 root terminal。这样完整 nested trace 在同一 assistant turn 持久化，且不破坏 Stop/force-send。
 - 异步 `tool_attachment_update` 的最终 owner 是 external-session 的内容状态：若 placeholder/tool 仍在 Codex 因果缓冲中，attachment update 与它一起等待；一旦 tool 已跨过 runtime boundary，后续事件不再依赖 thread map。sub-agent 同时识别 live child-tool latch 与 settled attachment latch；sub-agent 或 top-level update 若早于异步 tool-result normalization，均由 content owner 暂存并在 placeholder 建立时原子应用。完全无 owner 的迟到 update fail-closed，禁止制造 top-level SSE。
@@ -509,26 +541,30 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 
 ## External Session Handler (`src/server/runtimes/external-session.ts`)
 
-`src/server/runtimes/external-session.ts` 是三种外部 Runtime 的 public facade 和高层 orchestration shell。Phase8 后，它不再直接拥有核心 state bags；真实 owner 在 `src/server/runtimes/external-session/`：
+`src/server/runtimes/external-session.ts` 是三种外部 Runtime 的 public facade 和高层编排入口。它不直接拥有核心可变状态；这些状态位于 `src/server/runtimes/external-session/`：
 
 | Owner module | 职责 |
 |---|---|
 | `types.ts` | facade/owner 共享类型：`PersistContentBlock`、`ExternalSendContext`、config result、queue operation、turn snapshot 等 |
 | `lifecycle.ts` | active process/runtime、`startingPromise` guard、session binding、runtimeSessionId、prewarm/system-init、user-stop flag |
 | `runtime-config.ts` | desired/live model、permission mode、reasoning effort；config coercion 与 snapshot/source guard integration |
-| `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
+| `operation-queue.ts` | direct/queued message operation及其 user-message projection、turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、success-gated batch commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
-| `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
+| `transcript-persistence.ts` | in-memory `SessionMessage[]`、SessionStore transcript cursor、persisted runtime usage totals、user/assistant tail append、命名 retry/removal mutation、last assistant read、metadata preview/context update |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
-Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification，以及本 turn 的 channel-delivery admission/order；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
+Facade 仍负责跨模块编排：调用 Runtime 进程、广播 SSE、执行 analytics/title hook，并根据各模块返回的结果依次完成持久化、交互清理和队列 drain。Queue 模块不直接调用 Runtime；lifecycle 模块不接管 stop cleanup；content 的内部引用和 Map 不暴露给 facade，工具、子 Agent 和附件更新都通过命名 API 完成。Turn lifecycle 负责终态分类和本轮 channel delivery 的接纳与顺序；transcript 模块负责用户/assistant 消息、retry truncate、last assistant read 和 SessionStore 写入；interactive 模块负责 IM event bus、registry cleanup 以及 inbox/watch 错误投递，持久化 JSON 结构不变。
+
+External transcript owner 与 builtin 共用 SessionStore cursor 契约，但不共享 runtime lifecycle 抽象：只能追加 cursor 之后的 exact tail；live projection 短于 durable prefix 时先 rehydrate 再拒绝当前操作，不能把短数组当成删除指令。retry/removal 走命名 mutation，fork target 必须为空；冲突向调用方返回可操作错误，不做 blind retry 或历史合并。
+
+每个 direct/queued message operation 保存自己的用户消息，并记录该消息是否已经展示、写入内存 transcript、持久化或撤回。Desktop、IM、Inbox、Background、Injected 与 realtime fallback 复用既有 direct-send tail 和 queue generation，facade 不保存进程级的第二份“首条消息”状态。`external-session.ts` 只保留 watchdog、trace、待创建 Session 等确实属于编排过程的状态。
 
 ### 测试护栏
 
 External runtime 的维护入口是 `SessionEngine`，测试也必须沿这条边界验证。`src/server/runtimes/external-session-mock.integration.test.ts` 通过 Vitest mock `runtimes/factory.ts` 注入 test-only fake runtime，fake runtime 的 `type` 使用真实 `RuntimeType`（当前为 `codex`），不在生产 `RuntimeType`、config 或 UI 中新增 `mock` 分支。
 
-这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、同时 idle 的 IM 原子 admission、busy IM 连续 admission + FIFO drain + running/queued requestId 精确取消、permission response 成功后清 pending、permission delivery 失败时保留 pending；渠道投递还覆盖 fresh/queued/realtime Desktop、Session Inbox 隐藏输入只投 assistant、已关闭 text block 后失败/停止仍不投递、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序、user mirror 失败不抑制 assistant、Builtin result-only 回退与 per-yield owner 隔离，以及 IM-origin / caller-owned turn 保持单路回复。
+这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、同时 idle 的 IM 原子 admission、Desktop/IM 并发 operation 的消息 identity 隔离、pre-accept reject 与持久化失败的精确 bubble retraction、busy IM 连续 admission + FIFO drain + running/queued requestId 精确取消、permission response 成功后清 pending、permission delivery 失败时保留 pending；渠道投递还覆盖 fresh/queued/realtime Desktop、Session Inbox 隐藏输入只投 assistant、已关闭 text block 后失败/停止仍不投递、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序、user mirror 失败不抑制 assistant、Builtin result-only 回退与 per-yield owner 隔离，以及 IM-origin / caller-owned turn 保持单路回复。
 
 ### 三路消息发送
 
@@ -542,24 +578,13 @@ sendExternalMessage(text, images?, permissionMode?, model?, context?)
 | 2 | 进程已退出（CC -p 模式） | `--resume` 恢复 |
 | 3 | 进程存活（Codex 持久模式） | `sendMessage()` 到 stdin |
 
-### 历史 Session 切换
+### 打开历史 Session
 
-桌面 History 切换遵循完整 runtime identity（`runtime + runtimeSource`）边界：
+桌面 History 不再执行 Runtime 内的 real→real hot-swap。Global Sidebar、Search、通知 / Task deep-link 与开发者 Chat History 都进入 App 的 canonical new / jump / revive 导航：目标已在 Tab 中就跳转，Tab 存在但 Sidecar 已停就复用该 Tab 并由 Rust revive，否则新建从首帧即绑定目标 Session 的 Tab。`codex/system-cli` 与 `codex/managed-provider` 等完整 runtime identity 由目标 Session 自己的 Sidecar 冻结，不需要在当前 Tab 上做兼容性比较。
 
-- 目标 session 已在其它 Tab 打开：不切换当前 sidecar，直接跳到已打开 Tab。
-- 切换前后完整 identity 不同：新开 Tab。`codex/system-cli` 与
-  `codex/managed-provider` 是两种 runtime identity，不可互相复用。
-- 完整 identity 相同且当前 turn idle：允许在当前 Tab 热切换。
+因此 Renderer 的 persisted restore 只读 `GET /sessions/:id`，不会调用 Node binding mutation；`POST /sessions/switch` 与 `SessionEngine.switchToExistingSession()` 已删除。`cmd_upgrade_session_id(old,new)` 只服务 pending→real、desktop reset 或已确认 surface migration 等同一 Sidecar identity upgrade，不能扩展为 History navigation。
 
-热切换必须同时完成两件事：Rust 层的 Sidecar key handover，以及 Node runtime owner
-state 的 session switch。`cmd_upgrade_session_id(old,new)` 只做 Rust `HashMap`
-key rename，不会调用 Node `/sessions/switch`；因此它只能作为 TabProvider
-随后执行 `/sessions/switch` 的代理/owner handover 前半步。external adapter 不能只凭
-`getCurrentBoundSessionId()===target` no-op；还必须确认 transcript owner 已 seed 到目标
-磁盘历史长度，否则继续 `restoreExternalSessionState(target, ...)`。否则会出现 Rust
-已经指向目标 session，但 Node external transcript 仍属于旧 session 的错位。
-
-所有 session boundary（桌面「新对话」、pending materialization commit、历史切换、
+所有实际 session identity boundary（桌面「新对话」、pending materialization commit、
 pre-warm、IM reset、external config boundary）必须按 runtime process 存活性清理，
 而不是只看 active turn。Codex app-server 这类 persistent runtime 在 turn 结束后会进入
 idle，但进程仍持有 stdin/thread owner；在 `restoreExternalSessionState(target, ...)`
@@ -642,6 +667,8 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 **触发链路**:前端 `Chat.tsx` 在 Tab ready(`isActive && isConnected && sessionId`)的瞬间 POST `/api/runtime/prewarm` → `prewarmExternalSession()` → `startExternalSession({ ...options, initialMessage: undefined })`。**不**等待 `/api/runtime/models` — 该接口自身也 spawn 一个 `gemini --acp` 子进程查模型,会付同样的 ~14s 冷启动。两件事并行进行:prewarm 在用户打字时暖 session,models-fetch 在后台填充模型下拉。首次 prewarm 用 `effectiveModel`(可能 `undefined` → runtime 用自带默认),用户随后在 UI 里切模型时走 `setExternalModel()` → in-place `runtime.setModel()` 路径(见「配置变更」)。
 
+Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer 的 mount key 不会重新触发上述 POST。因此 durable replacement binding restore 后由 external-session 编排 owner异步复用同一个 `prewarmExternalSession()`；调用发生在 conversation mutation lease 释放后，并在执行前核对当前 lifecycle Session 与 replacement binding，避免迟到预热覆盖后继 Session。第一 Turn Rewind 不走这条优化，因为 fresh prewarm 会产生尚未 materialize、不可跨 app-server resume 的空 thread id；它保持无 binding，等待下一次真实 send fresh-start。
+
 **Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 只用于只读 UI 投影（诊断与工具目录），不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
 
 **IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
@@ -661,7 +688,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 **守卫**:
 - **双层重复守卫**:`isExternalSessionActive() || isRunning || startingPromise` 任一成立即视为已暖,直接返回。
 - **后端 cross-runtime 校验**:读 `getSessionMetadata(sessionId)?.runtime`,若与当前 Sidecar 的 runtime 不匹配则拒绝。前端 `Chat.tsx` 也有对应校验,但 `sessionRuntime` 状态异步注入,后端检查关掉 race-window 漏洞。
-- **Resume ID 守卫**:`lastSessionId === options.sessionId && lastRuntimeSessionId` 同时成立才传 `resumeSessionId`,防止 Handover 场景 4 遗留的 runtime session id 误 resume 到新 session → "No conversation found" CLI 错误。
+- **Resume ID 守卫**:`lastSessionId === options.sessionId && lastRuntimeSessionId` 同时成立才传 `resumeSessionId`,防止 reset / surface migration 后遗留的 runtime session id 误 resume 到新 session → "No conversation found" CLI 错误。
 
 **首条消息路径**:
 - 预热成功且进程仍活着 → `sendExternalMessage` 命中 Case 3(进程活着),`ensureExternalSessionMetadataForRealUserTurn({ turnPath:'active-process' })` 在此处写 metadata + 启动看门狗。
@@ -672,6 +699,8 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 **Session Complete 特判**: terminal 分类归 `external-session/turn-lifecycle.ts::markExternalSessionComplete()`。`!turnCompleted && currentTurnStartTime === 0` 判为 pre-warm exit(进程 spawn 后、首轮 turn 开始前崩溃),静默吞掉错误 — 下一条用户消息会走正常启动路径重试；idle death、intentional user stop、success finalization 也由该 owner 返回 plan，`external-session.ts` facade 只落地 broadcast / persistence / cleanup。
 
 ### 并发与序列化
+
+所有 external ingress 在进入 Case 1/2/3 前先形成一个 message operation。operation 自己持有 user `SessionMessage` 与其 projection state；direct send 通过既有 promise tail 串行 claim，turn-boundary queue 继续由同一 generation/drain reservation 管理，realtime steer 也携带同一 operation 直到 runtime user echo。未持久化的 loser 只撤回自己的 message id；已经持久化或 transport termination 未确认的 turn 不做猜测性撤回。该结构保留原有 optimistic bubble、`queue:added` / `queue:started` 时序、queue generation 与 exact Stop 语义。
 
 `sendExternalMessage` 在分派 Case 1/2/3 之前有四道 gate:
 
@@ -690,8 +719,8 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 | **Process/turn 分离** | `sessionState`/`isBusy`/`waitIdle` 只表达 turn；`hasExternalRuntimeProcess` 单独表达 persistent process liveness，pre-warm idle 不阻塞自动回合 |
 | **看门狗** | **Per-turn**(不是 per-process):pre-warm idle 不计时,turn 启动才启动计时器。10 分钟无活动 → kill |
 | **Stale text 防护** | `lastTurnSucceeded` 标志,cron/heartbeat 路径检查,防止崩溃后返回上一轮旧回复 |
-| **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 写入 SessionStore,崩溃不丢用户消息;owner 检查 `saveSessionMessages()` 返回值,`unindexed-create-refused` 视为发送失败而不是 log-only |
-| **Token 用量** | 存储 Codex `usage` 事件(running total,replace 而非 accumulate),附加到 assistant message |
+| **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 携带 SessionStore cursor 追加 exact tail，崩溃不丢用户消息；stale cursor 先 rehydrate，`unindexed-create-refused` 视为发送失败而不是 log-only |
+| **Token 用量** | `thread/tokenUsage/updated` 作为 running-total fallback，与持久化 baseline 做 diff；0.146+ 完整 raw usage 作为 turn delta 累加入同一 baseline。旧 baseline 无法分离历史 cache，fallback 不记 cache 细分，避免把历史量误记到当前 turn |
 | **Cross-runtime 守卫** | pre-warm / restore / send 路径均用 `SessionMetadata.runtime` 校验,阻止跨 runtime 污染 |
 
 ## Runtime 诊断 + envPolicy（PRD 0.2.16）
@@ -795,7 +824,7 @@ config.multiAgentRuntime (磁盘/React state)
 
 1. **服务端** (`agent-session.ts:initializeAgent`)：检测 `meta.runtime !== 'builtin'` → 设 `sessionRegistered=false` → 跳过 SDK resume（避免 "No conversation found" 崩溃）
 2. **前端** (`Chat.tsx`)：检测 `isCrossRuntimeSession` → 发消息时弹 ConfirmDialog → 用户可选择新开会话或留在当前页浏览历史
-3. **Fork/Rewind**：外部 Runtime session 不支持（前端隐藏按钮 + 服务端 400 守卫）
+3. **Fork/Rewind**：Codex 在能力版本满足且消息持有精确 root-turn anchor 时支持；Claude Code / Gemini 仍由前端隐藏并在服务端返回 unsupported
 
 ## Context 用量归一化（PRD 0.2.32）
 
@@ -804,7 +833,7 @@ config.multiAgentRuntime (磁盘/React state)
 **核心不变量**
 - **占用 = 最近一次 API 调用的 input 系 token，不是整 turn 聚合**。带工具的一轮发多次 API、每次重发上下文，聚合会严重高估（圆环钉死在 ~100%）。
 - **两系 cache 语义相反**：Anthropic 系（builtin / Claude Code）`input` 不含 cache → `input + cacheRead + cacheCreation`；OpenAI 系（Codex）`inputTokens` 已含 cached → 直接用，不再加。
-- **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值（= auto-compact 有效窗口，约「窗口 − 13K」触发压缩）。
+- **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值，表示模型的有效完整窗口；builtin 会在该窗口的 90% 处自动压缩，external runtime 保留自己的压缩策略。
 
 **每 runtime 占用来源**
 
@@ -817,7 +846,7 @@ config.multiAgentRuntime (磁盘/React state)
 
 **统一通道**：每个 external adapter 在 `kind:'usage'` UnifiedEvent 上显式带 `contextOccupiedTokens` + `runtimeContextWindow`（`types.ts`）。`external-session.ts` 的 `usage` 分支**只用显式 `contextOccupiedTokens`**（缺失则不发——宁可不显示也不显错，避免把 Codex running_total / CC 累计当占用），过 `computeContextUsage` 归一化后 `broadcast('chat:context-usage', ...)`。builtin 走 `agent-session.ts` 旁挂 `chat:message-complete` 广播。前端 `TabProvider.contextUsage`（tab-scoped，session 切换由 `currentSessionId` effect 重置，见下）→ `<ContextUsageIndicator>`（自取数，不穿 SimpleChatInput props）。
 
-**持久化 + 重开恢复**：turn 末算的同一快照既 broadcast、也写进 `SessionMetadata.lastContextUsage`（builtin 在 `updateSessionMetadata`；external 在 `persistTurnResult` 末——turn-scoped 快照须在**同步函数入口**捕获，否则背靠背 `sendExternalMessage` 会在 await 窗口被 `resetTurnAccumulators` 清空而丢盘）。重开会话 `loadSession` 从后端 seed，前端规则即「进入会话 `display = lastContextUsage ?? null`」（reset/adopt 才 clear，不再无脑清 null）；seed **仅当 `lastContextUsage.source === session.runtime`** 生效，防 stale builtin 快照把压缩按钮显示到 external 会话。
+**持久化 + 重开恢复**：turn 末算的同一快照既 broadcast、也写进 `SessionMetadata.lastContextUsage`（builtin 在 `updateSessionMetadata`；external 在 `persistTurnResult` 末——turn-scoped 快照须在**同步函数入口**捕获，否则背靠背 `sendExternalMessage` 会在 await 窗口被 `resetTurnAccumulators` 清空而丢盘）。重开会话由 `restorePersistedSession` 从后端 seed，前端规则即「进入会话 `display = lastContextUsage ?? null`」（reset/adopt 才 clear，不再无脑清 null）；seed **仅当 `lastContextUsage.source === session.runtime`** 生效，防 stale builtin 快照把压缩按钮显示到 external 会话。
 
 **智能压缩入口**：卡片内按钮，仅 builtin（`source==='builtin'`）显示；复用 `Chat.tsx` 正常发送链路发 `/compact`（`effectiveModel`/`effectivePermissionMode`/`providerEnv` 同参，turn 中 `disabled`）。external runtime 隐藏（无可靠程序化压缩入口）。纯函数 `computeContextUsage` 见 `src/shared/contextUsage.ts`，单测 `contextUsage.test.ts` + `codex-token-usage.unit.test.ts`。
 
@@ -827,7 +856,7 @@ config.multiAgentRuntime (磁盘/React state)
 |------|------|
 | `src/server/runtimes/types.ts` | AgentRuntime 接口 + UnifiedEvent 类型（含 PRD 0.2.32 `contextOccupiedTokens`/`runtimeContextWindow`）|
 | `src/shared/contextUsage.ts` | `computeContextUsage` 归一化纯函数（PRD 0.2.32）|
-| `src/server/runtimes/codex-token-usage.ts` | `mapCodexTokenUsage` Codex token schema 解析纯函数（PRD 0.2.32）|
+| `src/server/runtimes/codex-token-usage.ts` | Codex running-total/context schema 解析 + 0.146+ 逐 response 精确 usage 聚合纯函数 |
 | `src/renderer/components/ContextUsageIndicator.tsx` | Context 用量环 + hover 卡片 + 智能压缩入口（PRD 0.2.32）|
 | `src/server/runtimes/factory.ts` | Runtime 工厂 + 检测 |
 | `src/server/runtimes/claude-code.ts` | CC Runtime 实现(NDJSON 协议) |
@@ -835,11 +864,13 @@ config.multiAgentRuntime (磁盘/React state)
 | `src/server/runtimes/gemini.ts` | Gemini Runtime 实现(ACP JSON-RPC 2.0 + `GEMINI_SYSTEM_MD` 合并注入) |
 | `src/server/runtimes/external-session.ts` | 外部 Runtime public facade + high-level orchestration |
 | `src/server/runtimes/external-session/*` | 外部 Runtime lifecycle / config / queue / turn / content / transcript / interactive owners |
+| `src/server/provider-types.ts` | Runtime-neutral `ProviderEnv` 类型 |
+| `src/shared/types/tool-input.ts` | Sidecar 与 Renderer 共用的 `ToolInput` wire 类型 |
 | `src/server/session-core/runtime-config-policy.ts` | builtin/external runtime config snapshot/source guard + external runtime config patch policy |
 | `src/server/session-core/turn-result-policy.ts` | terminal / injected turn 成败判定：builtin SDK 仅 `completed`（及旧 payload 缺失 reason）成功，abort 映射 stopped，其余未知 reason fail closed；external 同样只以真 turn 成功为 success |
 | `src/server/session-core/session-activity-policy.ts` | admission/terminal meaningful activity 判定；human/visible classifier 不拥有 recency |
 | `src/server/session-core/heartbeat-ack.ts` | Heartbeat terminal ack remainder 解析纯函数 |
-| `src/server/session-core/turn-queue.ts` | desktop realtime / turn-boundary queue admission、取消、force-start 纯规则 |
+| `src/server/session-core/turn-queue.ts` | desktop realtime / turn-boundary queue admission、取消、turn owner 结果与 force-start 纯规则 |
 | `src/server/session-core/mcp-sync-policy.ts` | MCP authority、稳定 fingerprint、snapshot restart 决策 |
 | `src/server/runtimes/env-utils.ts` | 环境变量增强：`augmentedProcessEnv(policy)` 三档 proxy 策略 + `resolveAgentEnvPolicy(workspacePath)` 共享校验入口（PRD 0.2.16） |
 | `src/server/utils/shell.ts` | 用户 interactive shell PATH + 8 proxy var warmup（PRD 0.2.16，供 `'terminal'` 模式回写） |

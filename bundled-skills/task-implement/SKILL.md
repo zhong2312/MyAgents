@@ -1,7 +1,8 @@
 ---
 name: task-implement
-description: "Autonomous task execution driven by task documents from /task-alignment (living under `~/.myagents/tasks/<taskId>/`). Reads task.md as the goal, decomposes work, delegates to subagents when appropriate, runs independent verification, and delivers results. Acts as a UserProxy Agent — the human's representative during autonomous execution. Use when the user dispatches a task from the 任务 panel or explicitly wants to start execution. Trigger phrases include '/task-implement', 'start the task', 'go ahead and implement', 'execute the plan', or when the user confirms alignment documents and says something like 'looks good, go'."
-author: MyAgents
+description: "Autonomous task execution driven by task documents from /task-alignment (living under `~/.myagents/tasks/{taskId}/`). Reads task.md as the goal, decomposes work, delegates to subagents when appropriate, runs independent verification, and delivers results. Acts as a UserProxy Agent — the human's representative during autonomous execution. Use when the user dispatches a task from the 任务 panel or explicitly wants to start execution. Trigger phrases include '/task-implement', 'start the task', 'go ahead and implement', 'execute the plan', or when the user confirms alignment documents and says something like 'looks good, go'."
+metadata:
+  author: MyAgents
 ---
 
 # Task Implement

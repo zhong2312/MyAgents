@@ -253,14 +253,14 @@ pub async fn cmd_get_global_server_url(state: State<'_, ManagedSidecar>) -> Resu
     get_tab_server_url(&state, GLOBAL_SIDECAR_ID)
 }
 
-/// Command: Stop all sidecar instances (for app exit)
+/// Command: Explicit IPC/debug stop; application lifecycle cleanup is owned by ExitRequested.
 #[tauri::command]
 pub async fn cmd_stop_all_sidecars(
     app_handle: AppHandle,
     state: State<'_, ManagedSidecar>,
 ) -> Result<(), String> {
     logger::info(&app_handle, "[sidecar] Stopping all instances".to_string());
-    stop_all_sidecars(&state)
+    stop_all_sidecars(&state, "ipc-command")
 }
 
 /// Command: Shutdown for update — blocks until all child processes are fully terminated.
@@ -1045,7 +1045,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "43";
+const CLI_VERSION: &str = "50";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1207,7 +1207,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "40";
+const SYSTEM_SKILLS_VERSION: &str = "47";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1241,6 +1241,10 @@ const SYSTEM_SKILLS: &[&str] = &[
     // skills, Cloud Space, widgets) through the CLI. SKILL.md changes track CLI surface
     // changes, so it must force-overwrite on version bumps.
     "myagents-cli",
+    // v44: one Agent workflow owns scheduled, future and conditional Task
+    // automation. Command Detector protocol is a progressive reference, not
+    // a competing Sensor product entry.
+    "myagents-task-automation",
     // v35: product-use knowledge shared by every MyAgents session. It owns
     // stable user-facing concepts, feature relationships, prerequisites and
     // expected behaviour; live state/actions stay in myagents-cli and the
@@ -1266,6 +1270,11 @@ const SYSTEM_SKILLS: &[&str] = &[
     // every version bump) for keeping the methodology current.
     "prompt-writer",
 ];
+
+/// Product-owned system skills whose former independent workflow must not
+/// survive an upgrade. These directories were force-overwritten by MyAgents,
+/// so removing the exact retired names cannot delete a user-owned skill.
+const RETIRED_SYSTEM_SKILLS: &[&str] = &["myagents-sensor"];
 
 /// Skills unavailable on certain platforms due to upstream bugs.
 /// MUST stay in sync with `src/server/utils/platform.ts::PLATFORM_BLOCKED_SKILLS`.
@@ -1346,6 +1355,12 @@ fn ensure_system_skills_installation_current_at(myagents_dir: &Path) -> Result<(
             skills_dir.display()
         ));
     }
+    if !retired_system_skills_absent(&skills_dir) {
+        return Err(format!(
+            "system skills are not ready: retired product skills remain under {}",
+            skills_dir.display()
+        ));
+    }
     Ok(())
 }
 
@@ -1367,7 +1382,9 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     let ver_file = myagents_dir.join(".system-skills-version");
     if ver_file.exists() {
         let ver = fs::read_to_string(&ver_file).unwrap_or_default();
-        if ver.trim() == SYSTEM_SKILLS_VERSION && all_installed_system_skills_complete(&skills_dir)
+        if ver.trim() == SYSTEM_SKILLS_VERSION
+            && all_installed_system_skills_complete(&skills_dir)
+            && retired_system_skills_absent(&skills_dir)
         {
             return Ok(false);
         }
@@ -1431,6 +1448,16 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
         }
     }
 
+    // Do not retire the old product entry until its unified replacement is
+    // actually installed. This preserves the existing non-destructive sync
+    // guarantee when a bundle is incomplete, while still removing the exact
+    // obsolete workflow before the new version stamp is committed.
+    let retired = if skill_dir_is_complete(&skills_dir.join("myagents-task-automation")) {
+        remove_retired_system_skills(&skills_dir)?
+    } else {
+        Vec::new()
+    };
+
     // Only advance the version gate when every system skill actually landed.
     // A missing/incomplete bundled source is a packaging defect; freezing the
     // version on a partial sweep would make the broken state permanent (the
@@ -1438,17 +1465,19 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     // Windows — issue #321). Leaving the version unwritten retries next launch
     // and keeps the warnings above visible. Platform-skipped skills are
     // intentional, not defects, so they don't block the advance.
-    let complete = missing.is_empty() && incomplete.is_empty();
+    let complete =
+        missing.is_empty() && incomplete.is_empty() && retired_system_skills_absent(&skills_dir);
     if complete {
         fs::write(&ver_file, SYSTEM_SKILLS_VERSION)
             .map_err(|e| format!("version write failed: {}", e))?;
     }
 
     ulog_info!(
-        "[system-skills] Synced v{} (complete={}) — ok: {:?}, missing: {:?}, incomplete: {:?}, platform-skipped: {:?}",
+        "[system-skills] Synced v{} (complete={}) — ok: {:?}, retired: {:?}, missing: {:?}, incomplete: {:?}, platform-skipped: {:?}",
         SYSTEM_SKILLS_VERSION,
         complete,
         synced,
+        retired,
         missing,
         incomplete,
         platform_skipped
@@ -1486,6 +1515,45 @@ fn all_installed_system_skills_complete(skills_dir: &Path) -> bool {
     SYSTEM_SKILLS.iter().all(|name| {
         is_skill_blocked_on_platform(name) || skill_dir_is_complete(&skills_dir.join(name))
     })
+}
+
+fn retired_system_skills_absent(skills_dir: &Path) -> bool {
+    RETIRED_SYSTEM_SKILLS.iter().all(|name| {
+        fs::symlink_metadata(skills_dir.join(name))
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+fn remove_retired_system_skills(skills_dir: &Path) -> Result<Vec<&'static str>, String> {
+    let mut removed = Vec::new();
+    for name in RETIRED_SYSTEM_SKILLS {
+        let path = skills_dir.join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect retired system skill {}: {}",
+                    path.display(),
+                    error
+                ));
+            }
+        };
+        let result = if metadata.file_type().is_symlink() || metadata.is_file() {
+            fs::remove_file(&path)
+        } else {
+            fs::remove_dir_all(&path)
+        };
+        result.map_err(|error| {
+            format!(
+                "failed to remove retired system skill {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+        removed.push(*name);
+    }
+    Ok(removed)
 }
 
 /// Sync one system skill `src` → `dst`. Refuses to clear an existing good
@@ -1605,8 +1673,9 @@ fn merge_dir_recursive_validated_with_home(
 mod system_skills_tests {
     use super::{
         all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
-        is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
-        SystemSkillSync, ADMIN_AGENT_VERSION, CLI_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
+        is_skill_blocked_on_platform, remove_retired_system_skills, retired_system_skills_absent,
+        skill_dir_is_complete, sync_one_system_skill, SystemSkillSync, ADMIN_AGENT_VERSION,
+        CLI_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
     use crate::workspace_files::skills_config::REQUIRED_SYSTEM_SKILLS;
     use std::fs;
@@ -1629,9 +1698,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v40_updates_system_skill_metadata_and_preserves_existing_contracts() {
-        assert_eq!(CLI_VERSION, "43");
-        assert_eq!(SYSTEM_SKILLS_VERSION, "40");
+    fn v47_keeps_task_cli_and_automation_skills_aligned() {
+        assert_eq!(CLI_VERSION, "50");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "47");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1643,9 +1712,23 @@ mod system_skills_tests {
         assert!(bundled.contains("myagents goal create --objective-file goal-objective.txt"));
         assert!(bundled.contains("workspace 或系统 temp 均可"));
         assert!(bundled.contains("--max-executions <正整数>"));
-        assert!(bundled.contains(
-            "myagents cron update <taskId> [--name X] [--prompt X | --prompt-file path]"
-        ));
+        assert!(bundled.contains("myagents-task-automation"));
+        assert!(bundled.contains("myagents task start <taskId>"));
+        assert!(bundled.contains("myagents agent current --json"));
+        assert!(bundled.contains("enabled/runtime/runtimeConfig/providerId/model/permissionMode"));
+        assert!(bundled.contains("--providerId X --model X"));
+        assert!(bundled.contains("--query X --limit N"));
+        assert!(bundled.contains("没有 30 天恢复或 undelete 承诺"));
+        assert!(!bundled.contains("myagents-sensor"));
+
+        let automation = include_str!("../../bundled-skills/myagents-task-automation/SKILL.md");
+        assert!(automation.contains("references/command-detector.md"));
+        assert!(automation.contains("--startAt"));
+        assert!(automation.contains("默认在 `run` 后约 2 秒"));
+        assert!(automation.contains("没有 30 天恢复承诺"));
+        assert!(automation.contains("myagents task readme"));
+        assert!(automation.contains("--maxExecutions 1"));
+        assert!(SYSTEM_SKILLS.contains(&"myagents-task-automation"));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
         assert!(memory_update.contains("author: MyAgents"));
@@ -1683,6 +1766,99 @@ mod system_skills_tests {
             assert!(
                 SYSTEM_SKILLS.contains(name),
                 "required system skill {name} must use the versioned bundle sync path"
+            );
+        }
+    }
+
+    #[test]
+    fn system_skill_sync_removes_only_the_retired_product_owned_sensor_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        let retired = skills.join("myagents-sensor");
+        let user = skills.join("user-sensor-helper");
+        fs::create_dir_all(&retired).unwrap();
+        fs::create_dir_all(&user).unwrap();
+        fs::write(retired.join("SKILL.md"), "old product skill").unwrap();
+        fs::write(user.join("SKILL.md"), "user skill").unwrap();
+
+        assert!(!retired_system_skills_absent(&skills));
+        assert_eq!(
+            remove_retired_system_skills(&skills).unwrap(),
+            vec!["myagents-sensor"]
+        );
+        assert!(retired_system_skills_absent(&skills));
+        assert!(!retired.exists());
+        assert!(user.join("SKILL.md").is_file());
+    }
+
+    #[test]
+    fn myagents_authored_bundle_frontmatter_uses_standard_metadata_map() {
+        for (name, content) in [
+            (
+                "download-anything",
+                include_str!("../../bundled-skills/download-anything/SKILL.md"),
+            ),
+            (
+                "myagents-cli",
+                include_str!("../../bundled-skills/myagents-cli/SKILL.md"),
+            ),
+            (
+                "myagents-docs",
+                include_str!("../../bundled-skills/myagents-docs/SKILL.md"),
+            ),
+            (
+                "myagents-memory-gardener",
+                include_str!("../../bundled-skills/myagents-memory-gardener/SKILL.md"),
+            ),
+            (
+                "myagents-memory-molt",
+                include_str!("../../bundled-skills/myagents-memory-molt/SKILL.md"),
+            ),
+            (
+                "myagents-memory-update",
+                include_str!("../../bundled-skills/myagents-memory-update/SKILL.md"),
+            ),
+            (
+                "myagents-task-automation",
+                include_str!("../../bundled-skills/myagents-task-automation/SKILL.md"),
+            ),
+            (
+                "prompt-writer",
+                include_str!("../../bundled-skills/prompt-writer/SKILL.md"),
+            ),
+            (
+                "task-alignment",
+                include_str!("../../bundled-skills/task-alignment/SKILL.md"),
+            ),
+            (
+                "task-implement",
+                include_str!("../../bundled-skills/task-implement/SKILL.md"),
+            ),
+        ] {
+            let yaml = content
+                .strip_prefix("---\n")
+                .and_then(|rest| rest.split_once("\n---"))
+                .map(|(frontmatter, _)| frontmatter)
+                .unwrap_or_else(|| panic!("{name} must have YAML frontmatter"));
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml)
+                .unwrap_or_else(|error| panic!("{name} frontmatter must be valid YAML: {error}"));
+            let mapping = value
+                .as_mapping()
+                .unwrap_or_else(|| panic!("{name} frontmatter must be a mapping"));
+            assert!(
+                !mapping.contains_key(&serde_yaml::Value::String("author".into())),
+                "{name} must not use legacy top-level author"
+            );
+            let metadata = mapping
+                .get(&serde_yaml::Value::String("metadata".into()))
+                .and_then(serde_yaml::Value::as_mapping)
+                .unwrap_or_else(|| panic!("{name} must have a metadata map"));
+            assert_eq!(
+                metadata
+                    .get(&serde_yaml::Value::String("author".into()))
+                    .and_then(serde_yaml::Value::as_str),
+                Some("MyAgents"),
+                "{name} must publish metadata.author"
             );
         }
     }
@@ -1741,6 +1917,7 @@ mod system_skills_tests {
         }
 
         assert_reference_closure("bundled-skills/myagents-docs");
+        assert_reference_closure("bundled-skills/myagents-task-automation");
         assert_reference_closure("bundled-agents/myagents_helper/.claude/skills/support");
 
         let redactor = include_str!(

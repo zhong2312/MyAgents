@@ -1,10 +1,7 @@
-// Behavior test for Issue #232 cold-tab restore — codex flagged "a cold
-// restored tab must NOT mount TabProvider (which is what connects SSE / calls
-// ensureSessionSidecar / starts recovery timers) until first activation" as the
-// main regression risk. We render the real MemoizedTabContent with TabProvider
-// (and the heavy page components) mocked, and assert the cold tab renders a
-// placeholder while a live chat tab mounts TabProvider.
-import { fireEvent, render, screen } from '@testing-library/react';
+// Focused behavior tests for App's content slots. Restored persisted Sessions
+// are normal live Chat Tabs: active and inactive slots both mount TabProvider,
+// while only visibility/focus projection changes when the user switches tabs.
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -21,7 +18,13 @@ vi.mock('@/context/TabProvider', () => ({
 }));
 
 // Stub the heavy page subtrees so importing App stays cheap and side-effect free.
-vi.mock('@/pages/Chat', () => ({ default: () => <div data-testid="chat" /> }));
+const chatRenderSpy = vi.hoisted(() => vi.fn());
+vi.mock('@/pages/Chat', () => ({
+  default: ({ isWindowFocused }: { isWindowFocused: boolean }) => {
+    chatRenderSpy(isWindowFocused);
+    return <div data-testid="chat" />;
+  },
+}));
 vi.mock('@/pages/Launcher', () => ({ default: () => <div data-testid="launcher" /> }));
 vi.mock('@/pages/Settings', () => ({
   default: function MockSettings({ mode = 'settings' }: { mode?: 'settings' | 'capabilities' }) {
@@ -36,23 +39,26 @@ vi.mock('@/pages/Settings', () => ({
   },
 }));
 vi.mock('@/pages/TaskCenter', () => ({ default: () => <div data-testid="taskcenter" /> }));
+vi.mock('@/components/ChatBootOverlay', () => ({
+  default: () => <div data-testid="chat-boot-overlay" />,
+}));
 
 import { MemoizedTabContent } from '@/App';
 
-function coldTab(over: Partial<Tab> = {}): Tab {
+function restoredTab(over: Partial<Tab> = {}): Tab {
   return {
     id: 'restored-1',
     agentDir: '/ws/a',
     sessionId: '11111111-2222-3333-4444-555555555555',
     view: 'chat',
     title: 'Restored',
-    restoreState: 'cold',
     sidecarConfigDisposition: 'pending',
     ...over,
   };
 }
 
 const noopProps = {
+  isWindowFocused: true,
   isLoading: false,
   error: null,
   isDeferredMount: false,
@@ -64,8 +70,8 @@ const noopProps = {
   capabilityInitialSelect: undefined,
   onLauncherWorkspaceSelectionChange: vi.fn(),
   onLaunchProject: vi.fn(),
-  onSwitchSession: vi.fn(async () => {}),
-  onOpenSessionInNewTab: vi.fn(async () => {}),
+  onOpenTargetSession: vi.fn(async () => true),
+  onOpenHistorySession: vi.fn(async () => {}),
   onNewSession: vi.fn(async () => true),
   onUpdateGenerating: vi.fn(),
   onUpdateTitle: vi.fn(),
@@ -88,24 +94,51 @@ const noopProps = {
   taskCenterPendingIntent: null,
 };
 
-describe('cold restored tab', () => {
-  it('does NOT mount TabProvider before activation', () => {
+describe('restored live chat tab', () => {
+  it('mounts TabProvider immediately for the active restored tab', async () => {
     tabProviderSpy.mockClear();
-    render(<MemoizedTabContent tab={coldTab()} isActive {...noopProps} />);
-    expect(tabProviderSpy).not.toHaveBeenCalled();
-    expect(screen.queryByTestId('tab-provider')).toBeNull();
-    expect(screen.queryByTestId('chat')).toBeNull();
+    render(<MemoizedTabContent tab={restoredTab()} isActive {...noopProps} />);
+    expect(tabProviderSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+    expect(await screen.findByTestId('chat')).toBeInTheDocument();
   });
 
-  it('mounts TabProvider once restoreState is cleared (activated)', async () => {
+  it('mounts TabProvider immediately for an inactive restored tab too', async () => {
     tabProviderSpy.mockClear();
-    render(<MemoizedTabContent tab={coldTab({ restoreState: undefined })} isActive {...noopProps} />);
-    // TabProvider (not lazy) mounts synchronously — it's the SSE/sidecar side-effect gate.
+    render(<MemoizedTabContent tab={restoredTab()} isActive={false} {...noopProps} />);
     expect(tabProviderSpy).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId('tab-provider')).not.toBeNull();
-    // Chat is route-split (React.lazy + Suspense, P1), so it resolves one
-    // microtask after mount — await it rather than asserting synchronously.
-    expect(await screen.findByTestId('chat')).not.toBeNull();
+    expect(await screen.findByTestId('chat')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-provider').parentElement).toHaveClass('invisible');
+  });
+
+  it('projects desktop focus only through the active Chat slot', async () => {
+    chatRenderSpy.mockClear();
+    const liveTab = restoredTab();
+    const view = render(
+      <MemoizedTabContent tab={liveTab} isActive={false} {...noopProps} />,
+    );
+    await screen.findByTestId('chat');
+    const inactiveRenderCount = chatRenderSpy.mock.calls.length;
+
+    view.rerender(
+      <MemoizedTabContent
+        tab={liveTab}
+        isActive={false}
+        {...noopProps}
+        isWindowFocused={false}
+      />,
+    );
+    expect(chatRenderSpy).toHaveBeenCalledTimes(inactiveRenderCount);
+
+    view.rerender(
+      <MemoizedTabContent
+        tab={liveTab}
+        isActive
+        {...noopProps}
+        isWindowFocused={false}
+      />,
+    );
+    await waitFor(() => expect(chatRenderSpy).toHaveBeenLastCalledWith(false));
   });
 
   it('keeps Settings and Capabilities UI state in their own mounted Tab slots', async () => {

@@ -23,6 +23,7 @@ const simpleInputHandle = vi.hoisted(() => ({
   focus: vi.fn(),
   clearWorkspaceBoundDraft: vi.fn(() => ({ strippedReferences: 0, clearedImages: 0 })),
   getCurrentValue: vi.fn(() => ''),
+  getImages: vi.fn(() => []),
 }));
 
 const nativeFileDrop = vi.hoisted(() => ({

@@ -1,8 +1,10 @@
 ---
 name: prompt-writer
-description: Methodology for writing or improving prompts and system prompts that drive any LLM. Use when authoring or revising a prompt for a model task — grouping, classification, extraction, generation, copywriting, labeling, agent instructions, prompt templates, skill instructions — to decide how much to constrain the model based on the task type (open-ended vs single-correct-answer) and write the most fitting instructions. Triggers: "write a prompt", "help me write or improve a prompt", "how should I change this prompt", "this prompt isn't working", "write instructions for the model", "prompt-writer". Not for: answering the user's question directly, or writing articles and documents meant for human readers (those are not prompts that drive a model).
-author: MyAgents
-version: 20260707
+description: >-
+  Methodology for writing or improving prompts and system prompts that drive any LLM. Use when authoring or revising a prompt for a model task — grouping, classification, extraction, generation, copywriting, labeling, agent instructions, prompt templates, skill instructions — to decide how much to constrain the model based on the task type (open-ended vs single-correct-answer) and write the most fitting instructions. Triggers: "write a prompt", "help me write or improve a prompt", "how should I change this prompt", "this prompt isn't working", "write instructions for the model", "prompt-writer". Not for: answering the user's question directly, or writing articles and documents meant for human readers (those are not prompts that drive a model).
+metadata:
+  author: MyAgents
+  version: "20260707"
 ---
 
 # Prompt Writer

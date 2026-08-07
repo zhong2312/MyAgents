@@ -41,7 +41,7 @@ MyAgents 支持统一的应用代理配置，并按请求 owner 分成两个独�
 - `generalRequests` 控制更新、Space、Analytics、IM、Plugin Bridge、MCP/工具下载等既有 generic owner 是否使用 MyAgents 应用代理；
 - `providerIds` 控制 MyAgents 是否主动给对应模型 Provider-owned 请求/子进程应用代理；
 - 未选择的 owner 都是“继承系统网络”，不是强制直连；系统代理、VPN 或 TUN 仍可自然生效；
-- localhost 永远由 `local_http` / `NO_PROXY` 绕过代理。
+- localhost 永远由 `local_http` / `NO_PROXY` 绕过代理；IPv6 loopback 的合法环境变量 token 是 `::1`，不要写 URL authority 形式的 `[::1]`，部分客户端会把后者当成非法 CIDR/host 并拒绝整份列表。合并继承值或单 MCP override 时会丢弃精确的遗留 `[::1]` token，再补入合法 `::1`。
 
 旧 custom 配置缺少 `generalRequests` 时按 `true` 解释，保持升级前“通用请求固定使用应用代理”的行为。显式带新字段的 custom 允许空 `providerIds`，也允许 `generalRequests=false + providerIds=[]` 的零范围；不得回退成 `all`。
 

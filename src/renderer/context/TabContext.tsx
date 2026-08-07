@@ -57,6 +57,11 @@ export interface LoadOlderMessagesOptions {
     beforePrepend?: (visibleFreshCount: number) => void;
 }
 
+export interface CurrentSessionRestoreResult {
+    restored: boolean;
+    targetMessagePresent: boolean | null;
+}
+
 /**
  * Tab state - all the state that belongs to a single Tab
  */
@@ -74,7 +79,16 @@ export interface TabState {
     firstItemIndex: number;        // Absolute index of the first visible chat row in Virtuoso
     hasMoreBefore: boolean;        // True if there are older messages available on disk
     isLoading: boolean;
-    isSessionLoading: boolean;  // true while loadSession REST API is in-flight
+    /**
+     * True while a persisted Session is covered by its authoritative restore
+     * shell. It starts before REST/SSE effects run and intentionally remains
+     * true after failure until that target is recovered or abandoned.
+     */
+    isSessionLoading: boolean;
+    /** Target-scoped persisted-restore failure; never reused for turn errors. */
+    sessionRestoreError: string | null;
+    /** Initial restore blocks first reveal; live recovery preserves the trusted projection. */
+    sessionRestoreMode: 'initial' | 'live-recovery';
     sessionState: SessionState;
     sessionRuntime: string | null;  // Runtime that created this session (null = builtin)
     sessionRuntimeSource: RuntimeSource | null;
@@ -82,7 +96,7 @@ export interface TabState {
      * Full session metadata — includes v0.1.69 snapshot fields (model / permissionMode /
      * mcpEnabledServers / providerId / configSnapshotAt). Derivation source for Chat.tsx
      * `session ?? agent` precedence. Null while session is not loaded; populated after
-     * loadSession and refreshed after PATCH /sessions/:id.
+     * persisted restore and refreshed after PATCH /sessions/:id.
      */
     sessionMeta: SessionMetadata | null;
 
@@ -192,7 +206,7 @@ export interface TabContextValue extends TabState {
     // Chat actions
     sendMessage: (text: string, images?: ImageAttachment[], permissionMode?: PermissionMode, model?: string, providerEnv?: ChatProviderEnv, isCron?: boolean, reasoningEffort?: string, providerRoute?: ProviderRoute) => Promise<boolean>;
     stopResponse: () => Promise<{ success: boolean; alreadyStopped: boolean }>;
-    loadSession: (sessionId: string, options?: { skipLoadingReset?: boolean }) => Promise<boolean>;
+    retryCurrentSessionRestore: (targetMessageId?: string) => Promise<CurrentSessionRestoreResult>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
     loadOlderMessages: (options?: LoadOlderMessagesOptions) => Promise<void>;
     resetSession: () => Promise<boolean>;
@@ -256,6 +270,8 @@ const defaultContextValue: TabContextValue = {
     hasMoreBefore: false,
     isLoading: false,
     isSessionLoading: false,
+    sessionRestoreError: null,
+    sessionRestoreMode: 'initial',
     sessionState: 'idle',
     sessionRuntime: null,
     sessionRuntimeSource: null,
@@ -291,7 +307,7 @@ const defaultContextValue: TabContextValue = {
     setSessionMeta: () => { },
     sendMessage: async () => false,
     stopResponse: async () => ({ success: false, alreadyStopped: true }),
-    loadSession: async () => false,
+    retryCurrentSessionRestore: async () => ({ restored: false, targetMessagePresent: null }),
     loadOlderMessages: async () => { },
     resetSession: async () => false,
     adoptMigratedSession: async () => false,

@@ -93,6 +93,18 @@ describe('proxy-state provider scope', () => {
     );
   });
 
+  it('drops an inherited bracketed IPv6 URL token before publishing NO_PROXY', async () => {
+    process.env.no_proxy = '.corp.local,[::1]';
+
+    const proxyState = await loadProxyState();
+    await proxyState.setProcessProxyConfig(scopedProxySettings);
+
+    expect(process.env.NO_PROXY?.split(',')).not.toContain('[::1]');
+    expect(process.env.no_proxy?.split(',')).not.toContain('[::1]');
+    expect(process.env.no_proxy?.split(',')).toContain('::1');
+    expect(process.env.no_proxy?.split(',')).toContain('.corp.local');
+  });
+
   it.each([
     { generalRequests: true, providerId: 'included-provider', generalUsesApp: true, providerUsesApp: true },
     { generalRequests: true, providerId: 'excluded-provider', generalUsesApp: true, providerUsesApp: false },

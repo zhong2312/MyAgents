@@ -22,7 +22,7 @@
  */
 
 import type { RuntimeType } from '../shared/types/runtime';
-import type { ProviderEnv } from './agent-session';
+import type { ProviderEnv } from './provider-types';
 
 export type PostTurnTitleHook = (
   sessionId: string,

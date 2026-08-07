@@ -64,6 +64,13 @@ export interface FileActionContextValue {
     displayPath?: string,
     options?: { scope?: FileActionScope; initialLineNumber?: number },
   ) => void;
+  /** Execute the target's primary action. Previewable files open internally,
+   *  workspace directories reveal in the tree, and unsupported targets report
+   *  a non-destructive hint instead of launching an OS application. */
+  openFileTarget: (
+    target: FileActionTarget,
+    options?: { displayPath?: string; forceExternal?: boolean },
+  ) => void;
   /** Workspace root, for resolving workspace-relative paths to absolute (e.g. the
    *  inline audio play button, whose player needs an absolute path). May be null
    *  outside a workspace. */
@@ -72,7 +79,7 @@ export interface FileActionContextValue {
 
 export interface FileLinkActionContextValue {
   /** Claims and previews/opens a Markdown link when it targets a local file. */
-  openFileLink: (href: string) => boolean;
+  openFileLink: (href: string, options?: { forceExternal?: boolean }) => boolean;
   /** Claims and opens the shared file context menu for a Markdown local-file link. */
   openFileLinkMenu: (x: number, y: number, href: string) => boolean;
 }
@@ -179,7 +186,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
 
   // Guard against setState after unmount
   const isMountedRef = useRef(true);
-  useEffect(() => () => { isMountedRef.current = false; }, []);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   // ---------- Path cache ----------
   const pathCacheRef = useRef<Map<string, PathInfo>>(new Map());
@@ -363,32 +373,19 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
 
     if (isImageFile(fileName)) {
       void (async () => {
-        let handle: { blobUrl: string; revoke: () => void } | null = null;
         try {
-          handle = scope === 'local'
-            ? await svc.readLocalFileAsBlobUrl({ fullPath: path, workspace: workspaceForLocal })
-            : await svc.readFileAsBlobUrl({ path });
-          if (!isMountedRef.current) {
-            handle.revoke();
-            return;
-          }
-          // Convert blob URL → data URL for the image preview overlay.
-          // The preview component caches the data URL, so we can release
-          // the blob URL immediately afterwards.
-          const resp = await fetch(handle.blobUrl);
-          const blob = await resp.blob();
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(new Error('FileReader failed'));
-            reader.readAsDataURL(blob);
-          });
+          // Rust already returns the file as base64. Building the data URL
+          // directly matches DirectoryPanel and avoids treating an img-src-only
+          // blob URL as a fetch/connect-src target in WKWebView.
+          const resp = scope === 'local'
+            ? await svc.downloadLocalFile({ fullPath: path, workspace: workspaceForLocal })
+            : await svc.downloadFile({ path });
           if (!isMountedRef.current) return;
-          openImagePreview(dataUrl, fileName);
+          openImagePreview(`data:${resp.mimeType};base64,${resp.data}`, resp.name || fileName);
         } catch (err) {
+          if (!isMountedRef.current) return;
           console.error('[FileAction] Failed to load image:', err);
-        } finally {
-          if (handle) handle.revoke();
+          toastRef.current?.error(t('fileActions.imageLoadFailed'));
         }
       })();
       return true;
@@ -417,6 +414,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
         } catch (err) {
           if (!isMountedRef.current) return;
           console.error('[FileAction] Failed to load preview:', err);
+          toastRef.current?.error(t('fileActions.previewLoadFailed'));
           setPreviewFile({
             name: fileName,
             content: '',
@@ -454,14 +452,22 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
           ? await svc.readLocalPreview({ fullPath: path, workspace: workspaceForLocal })
           : await svc.readPreview({ path });
         if (!isMountedRef.current) return;
-        setPreviewFile(prev => prev ? { ...prev, content: resp.content, size: resp.size, name: resp.name, isLoading: false } : null);
+        setPreviewFile(prev => (
+          prev?.path === path && prev.sourceScope === scope
+            ? { ...prev, content: resp.content, size: resp.size, name: resp.name, isLoading: false }
+            : prev
+        ));
       } catch (err) {
         if (!isMountedRef.current) return;
-        setPreviewFile(prev => prev ? { ...prev, isLoading: false, error: err instanceof Error ? err.message : 'Failed to load file' } : null);
+        setPreviewFile(prev => (
+          prev?.path === path && prev.sourceScope === scope
+            ? { ...prev, isLoading: false, error: err instanceof Error ? err.message : 'Failed to load file' }
+            : prev
+        ));
       }
     })();
     return true;
-  }, [createFocusTarget, openImagePreview, workspacePath]);
+  }, [createFocusTarget, openImagePreview, t, workspacePath]);
 
   const getTargetPathInfo = useCallback(async (target: FileActionTarget): Promise<PathInfo | null> => {
     try {
@@ -486,48 +492,73 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
         fullPath: target.path,
         workspace: workspacePath,
       }).catch((err) => {
+        if (!isMountedRef.current) return;
         console.error('[FileAction] Failed to open local target with default app:', err);
+        toastRef.current?.error(t('fileActions.openFailed'));
       });
       return;
     }
     void fileServiceRef.current.openWithDefault({ path: target.path }).catch((err) => {
+      if (!isMountedRef.current) return;
       console.error('[FileAction] Failed to open workspace target with default app:', err);
+      toastRef.current?.error(t('fileActions.openFailed'));
     });
-  }, [workspacePath]);
+  }, [t, workspacePath]);
 
-  const openFileLink = useCallback((href: string): boolean => {
-    const target = resolveFileLinkTarget(href, workspacePath);
-    if (!target) return false;
-
+  const openFileTarget = useCallback((
+    target: FileActionTarget,
+    options?: { displayPath?: string; forceExternal?: boolean },
+  ): void => {
     void (async () => {
       const pathInfo = await getTargetPathInfo(target);
-      if (!pathInfo?.exists) return;
+      if (!isMountedRef.current) return;
+      if (!pathInfo?.exists) {
+        toastRef.current?.error(t('fileActions.targetUnavailable'));
+        return;
+      }
+
+      if (options?.forceExternal) {
+        openTargetWithDefault(target);
+        return;
+      }
+
+      if (pathInfo.type === 'dir') {
+        if (target.scope === 'workspace' && onRevealInTreeRef.current) {
+          onRevealInTreeRef.current(target.path);
+        } else {
+          toastRef.current?.info(t('fileActions.directoryNotInWorkspace'));
+        }
+        return;
+      }
 
       if (menuProfile === 'floatingBall' && target.scope === 'workspace' && onOpenMyAgentsPreviewRef.current) {
         const fileName = targetFileName(target.path);
-        if (pathInfo.type === 'file' && (isPreviewable(fileName) || !!getRichDocKind(fileName))) {
-          onOpenMyAgentsPreviewRef.current(target.path, {
-            displayPath: href,
-            initialLineNumber: target.initialLineNumber,
-          });
+        if (isPreviewable(fileName) || !!getRichDocKind(fileName)) {
+          const displayPath = options?.displayPath ?? target.path;
+          onOpenMyAgentsPreviewRef.current(target.path, target.initialLineNumber
+            ? { displayPath, initialLineNumber: target.initialLineNumber }
+            : { displayPath });
           return;
         }
       }
 
-      if (
-        pathInfo.type === 'file' &&
-        handlePreview(target.path, {
-          initialLineNumber: target.initialLineNumber,
-          scope: target.scope,
-        })
-      ) {
+      if (handlePreview(target.path, {
+        initialLineNumber: target.initialLineNumber,
+        scope: target.scope,
+      })) {
         return;
       }
-      openTargetWithDefault(target);
-    })();
 
+      toastRef.current?.info(t('fileActions.previewUnsupported'));
+    })();
+  }, [getTargetPathInfo, handlePreview, menuProfile, openTargetWithDefault, t]);
+
+  const openFileLink = useCallback((href: string, options?: { forceExternal?: boolean }): boolean => {
+    const target = resolveFileLinkTarget(href, workspacePath);
+    if (!target) return false;
+    openFileTarget(target, { displayPath: href, forceExternal: options?.forceExternal });
     return true;
-  }, [getTargetPathInfo, handlePreview, menuProfile, openTargetWithDefault, workspacePath]);
+  }, [openFileTarget, workspacePath]);
 
   const openFileLinkMenu = useCallback((x: number, y: number, href: string): boolean => {
     const target = resolveFileLinkTarget(href, workspacePath);
@@ -535,8 +566,11 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
 
     void (async () => {
       const pathInfo = await getTargetPathInfo(target);
-      if (!pathInfo?.exists) return;
       if (!isMountedRef.current) return;
+      if (!pathInfo?.exists) {
+        toastRef.current?.error(t('fileActions.targetUnavailable'));
+        return;
+      }
       openFileMenu(x, y, target.path, pathInfo.type, href, {
         scope: target.scope,
         initialLineNumber: target.initialLineNumber,
@@ -544,7 +578,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     })();
 
     return true;
-  }, [getTargetPathInfo, openFileMenu, workspacePath]);
+  }, [getTargetPathInfo, openFileMenu, t, workspacePath]);
 
   const handleReference = useCallback((path: string) => {
     onInsertReferenceRef.current?.([path]);
@@ -555,26 +589,42 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
   // normalized action form; copy uses the separate `displayPath` instead.
   const handleCopyPath = useCallback((displayPath: string) => {
     void copyPlainText(displayPath).then(
-      () => toastRef.current?.success(t('fileActions.copied')),
-      () => toastRef.current?.error(t('fileActions.copyFailed')),
+      () => { if (isMountedRef.current) toastRef.current?.success(t('fileActions.copied')); },
+      () => { if (isMountedRef.current) toastRef.current?.error(t('fileActions.copyFailed')); },
     );
   }, [t]);
 
   const handleOpenWithDefault = useCallback((path: string, scope: FileActionScope) => {
     if (scope === 'local') {
-      void fileServiceRef.current.openPathWithDefault({ fullPath: path, workspace: workspacePath }).catch(() => {});
+      void fileServiceRef.current.openPathWithDefault({ fullPath: path, workspace: workspacePath }).catch((err) => {
+        if (!isMountedRef.current) return;
+        console.error('[FileAction] Failed to open local target with default app:', err);
+        toastRef.current?.error(t('fileActions.openFailed'));
+      });
       return;
     }
-    void fileServiceRef.current.openWithDefault({ path }).catch(() => {});
-  }, [workspacePath]);
+    void fileServiceRef.current.openWithDefault({ path }).catch((err) => {
+      if (!isMountedRef.current) return;
+      console.error('[FileAction] Failed to open workspace target with default app:', err);
+      toastRef.current?.error(t('fileActions.openFailed'));
+    });
+  }, [t, workspacePath]);
 
   const handleOpenInFinder = useCallback((path: string, scope: FileActionScope) => {
     if (scope === 'local') {
-      void fileServiceRef.current.openPathExternal({ fullPath: path, workspace: workspacePath }).catch(() => {});
+      void fileServiceRef.current.openPathExternal({ fullPath: path, workspace: workspacePath }).catch((err) => {
+        if (!isMountedRef.current) return;
+        console.error('[FileAction] Failed to reveal local target:', err);
+        toastRef.current?.error(t('fileActions.openFailed'));
+      });
       return;
     }
-    void fileServiceRef.current.openInFinder({ path }).catch(() => {});
-  }, [workspacePath]);
+    void fileServiceRef.current.openInFinder({ path }).catch((err) => {
+      if (!isMountedRef.current) return;
+      console.error('[FileAction] Failed to reveal workspace target:', err);
+      toastRef.current?.error(t('fileActions.openFailed'));
+    });
+  }, [t, workspacePath]);
 
   const handleRevealInTree = useCallback((path: string) => {
     onRevealInTreeRef.current?.(path);
@@ -678,8 +728,9 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     checkFileTarget,
     cacheVersion,
     openFileMenu,
+    openFileTarget,
     workspacePath,
-  }), [checkPath, checkFileTarget, cacheVersion, openFileMenu, workspacePath]);
+  }), [checkPath, checkFileTarget, cacheVersion, openFileMenu, openFileTarget, workspacePath]);
 
   const linkActionValue = useMemo<FileLinkActionContextValue>(() => ({
     openFileLink,

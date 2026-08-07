@@ -68,6 +68,21 @@ describe('SimpleChatInput send paths', () => {
     workspaceMocks.service.listSlashCommands.mockResolvedValue([]);
   });
 
+  it('keeps keyboard and button send disabled while Session restore owns admission', async () => {
+    const onSend = renderInput({ sendBlocked: true, providerAvailable: true });
+    const textbox = screen.getByRole('textbox');
+
+    fireEvent.change(textbox, { target: { value: 'do not send yet' } });
+    fireEvent.keyDown(textbox, { key: 'Enter', code: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+
+    const sendButton = screen.getAllByRole('button').at(-1);
+    expect(sendButton).toBeDefined();
+    expect(sendButton).toBeDisabled();
+    fireEvent.click(sendButton!);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it('uses stable line icons for the three builtin permission modes', async () => {
     await i18n.changeLanguage('zh-CN');
     const user = userEvent.setup();
@@ -93,7 +108,7 @@ describe('SimpleChatInput send paths', () => {
       name: 'Claude Code',
       runtime: 'claude-code' as const,
       modes: CC_PERMISSION_MODES,
-      expectedIcons: ['shield-question-mark', 'eye', 'file-pen-line', 'lock-open'],
+      expectedIcons: ['shield-question-mark', 'shield-check', 'eye', 'file-pen-line', 'lock-open', 'ban'],
     },
     {
       name: 'Gemini',

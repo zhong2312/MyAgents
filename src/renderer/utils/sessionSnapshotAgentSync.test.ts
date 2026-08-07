@@ -30,12 +30,13 @@ describe('buildAgentPatchFromSessionSnapshot', () => {
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
       model: 'gpt-5.5-codex',
       runtime: 'builtin',
+      permissionMode: 'auto',
       runtimeConfig: {
         envPolicy: { proxy: 'terminal' },
-        permissionMode: 'full-auto',
         reasoningEffort: 'high',
       },
       mcpEnabledServers: ['filesystem'],
+      enabledOfficialToolIds: undefined,
     });
   });
 
@@ -54,10 +55,10 @@ describe('buildAgentPatchFromSessionSnapshot', () => {
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
       model: 'gpt-5.4-codex',
       runtime: 'builtin',
-      runtimeConfig: {
-        permissionMode: 'auto-edit',
-      },
+      permissionMode: 'auto',
+      runtimeConfig: undefined,
       mcpEnabledServers: undefined,
+      enabledOfficialToolIds: undefined,
     });
   });
 

@@ -1,5 +1,4 @@
-import { getSessionMetadata } from '../SessionStore';
-import { getSessionEngine } from '../session-engine';
+import { getSessionEngine, retryLastExternalUserMessageAtSelector } from '../session-engine';
 import type { CapabilityOperationResult } from '../session-engine/types';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -56,7 +55,7 @@ export async function handleSessionOperationRoute(
     if (!userMessageId) {
       return jsonResponse({ success: false, error: 'Missing userMessageId' }, 400);
     }
-    const result = await getSessionEngine().retryLastExternalUserMessage(userMessageId);
+    const result = await retryLastExternalUserMessageAtSelector(userMessageId);
     return operationResponse(result);
   }
 
@@ -68,29 +67,6 @@ export async function handleSessionOperationRoute(
     }
     const result = await getSessionEngine().forkAtAssistantMessage(messageId);
     return operationResponse(result);
-  }
-
-  if (pathname === '/sessions/switch' && request.method === 'POST') {
-    let payload: { sessionId?: string };
-    try {
-      payload = (await request.json()) as { sessionId?: string };
-    } catch {
-      return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
-    }
-
-    if (!payload.sessionId) {
-      return jsonResponse({ success: false, error: 'sessionId is required.' }, 400);
-    }
-
-    const result = await getSessionEngine().switchToExistingSession(
-      payload.sessionId,
-      deps.workspacePath,
-      getSessionMetadata,
-    );
-    return jsonResponse(
-      result.success ? { success: true, sessionId: result.sessionId ?? payload.sessionId } : { success: false, error: result.error },
-      result.success ? 200 : result.status ?? 500,
-    );
   }
 
   if (pathname === '/api/im/session/new' && request.method === 'POST') {

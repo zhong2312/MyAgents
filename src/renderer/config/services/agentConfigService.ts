@@ -1,25 +1,50 @@
 // Agent config service — CRUD helpers, migration from ImBotConfigs
-import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplate, WorkspaceTemplateAgentDefaults } from '../types';
-import { getEffectiveModelAliases, isProjectArchived, PRESET_TEMPLATES } from '../types';
-import type { AgentConfig, ChannelConfig, ChannelOverrides } from '../../../shared/types/agent';
+import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplateAgentDefaults } from '../types';
+import { getEffectiveModelAliases, isProjectArchived } from '../types';
+import {
+  agentChannelUsesManagedCodexProvider,
+  resolveAgentChannelRuntime,
+  type AgentConfig,
+  type ChannelConfig,
+  type ChannelOverrides,
+} from '../../../shared/types/agent';
 import type { ImBotConfig } from '../../../shared/types/im';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../../shared/config-types';
 import {
+  agentUsesManagedCodexProvider,
   createRuntimeBackedProviderIdentity,
-  runtimeBackedProviderPermissionMode,
+  projectManagedCodexPermissionToRuntime,
   runtimeConfigForRuntimeBackedProvider,
 } from '../../../shared/providerExecution';
-import type { RuntimeConfig, RuntimeType } from '../../../shared/types/runtime';
+import { isRuntimePermissionMode, type RuntimeConfig, type RuntimeType } from '../../../shared/types/runtime';
 import {
   atomicModifyConfig,
   loadAppConfig,
   notifyConfigChanged,
   type ConfigChangeNotification,
 } from './appConfigService';
-import { loadProjects, patchProject } from './projectService';
-import { withAgentConfigIntentLock } from './configStore';
+import {
+  loadProjects,
+  patchProject,
+  saveProjects,
+} from './projectService';
+import { withAgentConfigIntentLock, withProjectsLock } from './configStore';
 import { getAllMcpServersFromConfig } from './mcpService';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../../shared/workspacePath';
+import {
+  buildAgentForProject,
+  reconcileAgentWorkspaceIdentities,
+  resolveAgentWorkspaceProjections,
+  type AgentWorkspaceIdentityDiagnostic,
+  type ResolvedAgentWorkspaceProjection,
+} from '../../../shared/agentWorkspaceIdentity';
+import { readLegacyAgentWorkspacePath, readLegacyImBotWorkspacePath } from '../../../shared/legacyAgentWorkspace';
+
+export {
+  buildAgentForProject,
+  resolveAgentDefaultsForProject,
+  type BuildAgentForProjectOptions,
+} from '../../../shared/agentWorkspaceIdentity';
 
 // ============= Query Helpers =============
 
@@ -60,132 +85,104 @@ export function channelHasCredentials(ch: ChannelConfig): boolean {
   return Boolean(ch.botToken);
 }
 
-export function getAgentByWorkspacePath(config: AppConfig, workspacePath: string): AgentConfig | undefined {
-  // Canonical identity (#320): Agent.workspacePath and the queried path can
-  // diverge in separator/case form across stores — match the same way Rust does.
-  return config.agents?.find(a => workspacePathsEqual(a.workspacePath, workspacePath));
+export function getProjectAgent(
+  config: AppConfig,
+  projects: readonly Project[],
+  workspacePath: string,
+): AgentConfig | undefined {
+  const matches = projects.filter(project => workspacePathsEqual(project.path, workspacePath));
+  if (matches.length !== 1 || !matches[0].agentId) return undefined;
+  return getAgentById(config, matches[0].agentId);
 }
 
-async function findArchivedProjectForAgent(
-  agent: Pick<AgentConfig, 'id' | 'workspacePath'>,
-): Promise<Project | undefined> {
-  const projects = await loadProjects();
-  return projects.find(project =>
-    isProjectArchived(project)
-    && (
-      project.agentId === agent.id
-      || workspacePathsEqual(project.path, agent.workspacePath)
-    ),
-  );
+async function resolvePersistedAgentWorkspace(
+  agentId: string,
+): Promise<ResolvedAgentWorkspaceProjection<Project, AgentConfig>> {
+  const [config, projects] = await Promise.all([loadAppConfig(), loadProjects()]);
+  const result = resolveAgentWorkspaceProjections(projects, config.agents ?? []);
+  const diagnostic = result.diagnostics.find(item => item.agentIds.includes(agentId));
+  if (diagnostic) throw new Error(diagnostic.message);
+  const projection = result.agentProjections.find(item => item.agentId === agentId);
+  if (!projection) throw new Error(`Agent '${agentId}' has no resolvable workspace.`);
+  return projection;
 }
 
 export async function assertAgentWorkspaceNotArchived(
-  agent: Pick<AgentConfig, 'id' | 'workspacePath'>,
-): Promise<void> {
-  const archivedProject = await findArchivedProjectForAgent(agent);
-  if (!archivedProject) return;
+  agentId: string,
+): Promise<ResolvedAgentWorkspaceProjection<Project, AgentConfig>> {
+  const projection = await resolvePersistedAgentWorkspace(agentId);
+  const archivedProject = projection.project && isProjectArchived(projection.project)
+    ? projection.project
+    : undefined;
+  if (!archivedProject) return projection;
   const name = archivedProject.displayName || archivedProject.name || archivedProject.path;
   throw new Error(`Agent workspace "${name}" is archived. Unarchive it before enabling proactive Agent channels.`);
 }
 
 // ============= Agent Creation Helpers =============
 
-export interface BuildAgentForProjectOptions {
-  agentId?: string;
-  defaultPermissionMode?: string;
-  agentDefaults?: WorkspaceTemplateAgentDefaults;
-  templates?: readonly WorkspaceTemplate[];
-}
-
-function cloneHeartbeatConfig(defaults: WorkspaceTemplateAgentDefaults['heartbeat']) {
-  if (!defaults) return undefined;
-  return {
-    ...defaults,
-    activeHours: defaults.activeHours ? { ...defaults.activeHours } : undefined,
-  };
-}
-
-function cloneMemoryAutoUpdateConfig(defaults: WorkspaceTemplateAgentDefaults['memoryAutoUpdate']) {
-  if (!defaults) return undefined;
-  return { ...defaults };
-}
-
-function cloneMemoryEvolutionConfig(defaults: WorkspaceTemplateAgentDefaults['memoryEvolution']) {
-  if (!defaults) return undefined;
-  return { ...defaults };
-}
-
-export function resolveAgentDefaultsForProject(
-  project: Project,
-  templates: readonly WorkspaceTemplate[] = PRESET_TEMPLATES,
-): WorkspaceTemplateAgentDefaults | undefined {
-  if (project.templateSource !== 'builtin' || !project.templateId) return undefined;
-  return templates.find(t => t.isBuiltin && t.id === project.templateId)?.agentDefaults;
-}
-
-export function buildAgentForProject(
-  project: Project,
-  options: BuildAgentForProjectOptions = {},
-): AgentConfig {
-  const agentDefaults = options.agentDefaults ?? resolveAgentDefaultsForProject(project, options.templates);
-  return {
-    id: options.agentId ?? crypto.randomUUID(),
-    name: project.displayName || project.name,
-    icon: project.icon,
-    workspacePath: project.path,
-    enabled: agentDefaults?.enabled ?? false,
-    channels: [],
-    providerId: project.providerId ?? undefined,
-    model: project.model ?? undefined,
-    permissionMode: project.permissionMode || options.defaultPermissionMode || 'plan',
-    mcpEnabledServers: project.mcpEnabledServers,
-    heartbeat: cloneHeartbeatConfig(agentDefaults?.heartbeat),
-    memoryAutoUpdate: cloneMemoryAutoUpdateConfig(agentDefaults?.memoryAutoUpdate),
-    memoryEvolution: cloneMemoryEvolutionConfig(agentDefaults?.memoryEvolution),
-  };
-}
-
 // ============= Migration: ImBotConfigs → Agents =============
-
-let _agentMigrationDone = false;
 
 /**
  * Migrate legacy imBotConfigs[] to agents[].
- * Trigger: imBotConfigs has entries AND agents is empty/absent.
- * Groups bots by defaultWorkspacePath → same workspace bots become channels of one agent.
+ * Only Project-backed groups migrate. Groups without a canonical Project stay
+ * in imBotConfigs so credentials and legacy auto-start behavior remain intact.
  */
 export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project[]): AppConfig {
-  if (_agentMigrationDone) return config;
-
   const bots = config.imBotConfigs;
   if (!bots || bots.length === 0) return config;
-  if (config.agents && config.agents.length > 0) return config;
 
-  _agentMigrationDone = true;
-  console.log(`[agentConfigService] Migrating ${bots.length} ImBotConfig(s) to Agent architecture`);
-
-  // Group bots by canonical workspace identity, but keep the primary bot's raw
-  // path as the persisted Agent.workspacePath. The identity must collapse
-  // Windows slash/case variants; persisted paths should remain user-native.
   const groups = new Map<string, ImBotConfig[]>();
   for (const bot of bots) {
-    const key = bot.defaultWorkspacePath
-      ? normalizeWorkspacePathIdentity(bot.defaultWorkspacePath)
-      : '__default__';
+    const rawPath = readLegacyImBotWorkspacePath(bot) ?? config.defaultWorkspacePath;
+    const key = normalizeWorkspacePathIdentity(rawPath ?? '');
     const group = groups.get(key) || [];
     group.push(bot);
     groups.set(key, group);
   }
 
-  const agents: AgentConfig[] = [];
+  const agents = [...(config.agents ?? [])];
+  const remainingBots: ImBotConfig[] = [];
+  const claimedChannelIds = new Set(agents.flatMap(agent => (agent.channels ?? []).map(channel => channel.id)));
+  let migratedCount = 0;
 
   for (const [workspaceKey, groupBots] of groups) {
     const primary = groupBots[0];
-    const agentId = crypto.randomUUID();
-    const resolvedPath = workspaceKey === '__default__' ? '' : (primary.defaultWorkspacePath ?? '');
+    const matchingProjects = workspaceKey
+      ? projects.filter(project => normalizeWorkspacePathIdentity(project.path || '') === workspaceKey)
+      : [];
+    if (matchingProjects.length !== 1) {
+      remainingBots.push(...groupBots);
+      continue;
+    }
+    const project = matchingProjects[0];
+    let agent = project.agentId ? agents.find(candidate => candidate.id === project.agentId) : undefined;
+    if (!agent) {
+      agent = agents.find(candidate => (
+        normalizeWorkspacePathIdentity(readLegacyAgentWorkspacePath(candidate) ?? '') === workspaceKey
+      ));
+    }
+    if (!agent) {
+      agent = {
+        id: project.agentId || crypto.randomUUID(),
+        name: primary.name || project.displayName || project.name,
+        enabled: groupBots.some(bot => bot.enabled),
+        providerId: primary.providerId,
+        model: primary.model,
+        providerEnvJson: primary.providerEnvJson,
+        permissionMode: primary.permissionMode,
+        mcpEnabledServers: primary.mcpEnabledServers,
+        heartbeat: primary.heartbeat,
+        channels: [],
+        setupCompleted: primary.setupCompleted,
+      };
+      agents.push(agent);
+    }
+    project.agentId = agent.id;
+    if (agent.enabled) project.isAgent = true;
 
     // Build channels from each bot
-    const channels: ChannelConfig[] = groupBots.map(bot => {
+    const channels: ChannelConfig[] = groupBots.filter(bot => !claimedChannelIds.has(bot.id)).map(bot => {
       // Detect overrides: if bot's AI config differs from primary, store in overrides
       const overrides: ChannelOverrides = {};
       let hasOverrides = false;
@@ -235,39 +232,24 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
         setupCompleted: bot.setupCompleted,
       } satisfies ChannelConfig;
     });
-
-    const agent: AgentConfig = {
-      id: agentId,
-      name: primary.name || `Agent (${resolvedPath.split(/[\\/]/).filter(Boolean).pop() || 'default'})`,
-      enabled: groupBots.some(b => b.enabled),
-      workspacePath: resolvedPath,
-      providerId: primary.providerId,
-      model: primary.model,
-      providerEnvJson: primary.providerEnvJson,
-      permissionMode: primary.permissionMode,
-      mcpEnabledServers: primary.mcpEnabledServers,
-      heartbeat: primary.heartbeat,
-      channels,
-      setupCompleted: primary.setupCompleted,
-    };
-
-    agents.push(agent);
-
-    // Mark corresponding project as agent
-    const project = resolvedPath
-      ? projects.find(p => workspacePathsEqual(p.path, resolvedPath))
-      : undefined;
-    if (project) {
-      project.isAgent = true;
-      project.agentId = agentId;
+    if (channels.length > 0) {
+      const index = agents.findIndex(candidate => candidate.id === agent!.id);
+      agents[index] = {
+        ...agent,
+        enabled: agent.enabled || groupBots.some(bot => bot.enabled),
+        channels: [...(agent.channels ?? []), ...channels],
+      };
+      channels.forEach(channel => claimedChannelIds.add(channel.id));
     }
+    migratedCount += groupBots.length;
   }
 
   config.agents = agents;
-  // Keep imBotConfigs as empty array to prevent re-migration
-  config.imBotConfigs = [];
+  config.imBotConfigs = remainingBots;
 
-  console.log(`[agentConfigService] Migration complete: ${agents.length} agent(s) with ${bots.length} channel(s) total`);
+  if (migratedCount > 0) {
+    console.log(`[agentConfigService] Migrated ${migratedCount} Project-backed ImBotConfig(s); preserved ${remainingBots.length} legacy config(s)`);
+  }
   return config;
 }
 
@@ -288,48 +270,123 @@ export function ensureAllProjectsHaveAgent(
   projects: Project[],
   defaultPermissionMode?: string,
 ): { changed: boolean } {
-  const agents = config.agents ?? [];
-  const agentMap = new Map(agents.map(a => [a.id, a]));
-  let changed = false;
-  let createdCount = 0;
+  const result = reconcileAgentWorkspaceIdentities(projects, config.agents ?? [], {
+    buildAgent: (project, requestedAgentId) => buildAgentForProject(project, {
+      agentId: requestedAgentId,
+      defaultPermissionMode,
+    }),
+  });
+  if (!result.changed) return { changed: false };
 
-  for (const project of projects) {
-    // Skip if already linked to a valid agent
-    if (project.agentId && agentMap.has(project.agentId)) {
-      continue;
-    }
+  config.agents = result.agents;
+  projects.splice(0, projects.length, ...result.projects);
+  console.log(
+    `[agentConfigService] ensureAllProjectsHaveAgent: created ${result.createdAgentIds.length} basicAgent(s), total agents: ${result.agents.length}`,
+  );
+  return { changed: true };
+}
 
-    // Also check by workspacePath (agent exists but project.agentId is stale/missing)
-    const existingByPath = agents.find(a => workspacePathsEqual(a.workspacePath, project.path));
-    if (existingByPath) {
-      // Fix orphaned reference
-      project.agentId = existingByPath.id;
-      if (existingByPath.enabled) {
-        project.isAgent = true;
+export interface PersistedAgentWorkspaceIdentityResult {
+  config: AppConfig;
+  projects: Project[];
+  changed: boolean;
+  repairDeferred?: boolean;
+  createdAgents: AgentConfig[];
+  agentProjections: Array<ResolvedAgentWorkspaceProjection<Project, AgentConfig>>;
+  diagnostics: AgentWorkspaceIdentityDiagnostic[];
+}
+
+interface PersistedAgentWorkspaceIdentityOptions {
+  agentDefaultsByProjectId?: ReadonlyMap<string, WorkspaceTemplateAgentDefaults>;
+}
+
+/**
+ * Renderer I/O adapter for the shared Project↔Agent resolver. The caller must
+ * already hold agent-config-intent.lock so Project birth/repair shares the
+ * same persistence boundary as Agent-facing discovery.
+ */
+export async function reconcilePersistedAgentWorkspaceIdentitiesLocked(
+  options: PersistedAgentWorkspaceIdentityOptions = {},
+): Promise<PersistedAgentWorkspaceIdentityResult> {
+  return withProjectsLock(async () => {
+    const projects = await loadProjects();
+    const initialConfig = await loadAppConfig();
+    const projectResolution = reconcileAgentWorkspaceIdentities(projects, initialConfig.agents ?? [], {
+      buildAgent: (project, requestedAgentId) => buildAgentForProject(project, {
+        agentId: requestedAgentId,
+        defaultPermissionMode: initialConfig.defaultPermissionMode,
+        agentDefaults: options.agentDefaultsByProjectId?.get(project.id),
+      }),
+    });
+    if (projectResolution.relinkedProjectIds.length > 0) {
+      try {
+        await saveProjects(projectResolution.projects);
+      } catch (error) {
+        if (projectResolution.createdAgentIds.length > 0) throw error;
+        console.warn(
+          '[agentConfigService] Project identity repair deferred; using resolved in-memory links:',
+          error,
+        );
+        const created = new Set<string>();
+        return {
+          config: initialConfig,
+          projects: projectResolution.projects,
+          changed: false,
+          repairDeferred: true,
+          createdAgents: projectResolution.agents.filter(agent => created.has(agent.id)),
+          agentProjections: projectResolution.agentProjections,
+          diagnostics: projectResolution.diagnostics,
+        };
       }
-      changed = true;
-      continue;
     }
 
-    // Create basicAgent — AI fields from Project (fallback to defaults)
-    const basicAgent = buildAgentForProject(project, { defaultPermissionMode });
-
-    agents.push(basicAgent);
-    agentMap.set(basicAgent.id, basicAgent);
-    project.agentId = basicAgent.id;
-    if (basicAgent.enabled) {
-      project.isAgent = true;
+    if (projectResolution.createdAgentIds.length === 0) {
+      if (projectResolution.relinkedProjectIds.length > 0) {
+        notifyConfigChanged('reconcilePersistedAgentWorkspaceIdentities');
+      }
+      return {
+        config: initialConfig,
+        projects: projectResolution.projects,
+        changed: projectResolution.relinkedProjectIds.length > 0,
+        repairDeferred: false,
+        createdAgents: [],
+        agentProjections: projectResolution.agentProjections,
+        diagnostics: projectResolution.diagnostics,
+      };
     }
-    changed = true;
-    createdCount++;
-  }
 
-  if (changed) {
-    config.agents = agents;
-    console.log(`[agentConfigService] ensureAllProjectsHaveAgent: created ${createdCount} basicAgent(s), total agents: ${agents.length}`);
-  }
+    let resolution: ReturnType<typeof reconcileAgentWorkspaceIdentities<Project, AgentConfig>> | undefined;
+    const config = await atomicModifyConfig(current => {
+      resolution = reconcileAgentWorkspaceIdentities(projectResolution.projects, current.agents ?? [], {
+        buildAgent: (project, requestedAgentId) => buildAgentForProject(project, {
+          agentId: requestedAgentId,
+          defaultPermissionMode: current.defaultPermissionMode,
+          agentDefaults: options.agentDefaultsByProjectId?.get(project.id),
+        }),
+      });
+      return resolution.createdAgentIds.length > 0 ? { ...current, agents: resolution.agents } : current;
+    }, { notification: 'deferred' });
 
-  return { changed };
+    if (!resolution) throw new Error('Agent identity reconciliation did not produce a result.');
+    const changed = projectResolution.relinkedProjectIds.length > 0 || resolution.createdAgentIds.length > 0;
+    if (changed) notifyConfigChanged('reconcilePersistedAgentWorkspaceIdentities');
+    const created = new Set(resolution.createdAgentIds);
+    return {
+      config,
+      projects: resolution.projects,
+      changed,
+      repairDeferred: false,
+      createdAgents: resolution.agents.filter(agent => created.has(agent.id)),
+      agentProjections: resolution.agentProjections,
+      diagnostics: resolution.diagnostics,
+    };
+  });
+}
+
+export async function reconcilePersistedAgentWorkspaceIdentities(
+  options: PersistedAgentWorkspaceIdentityOptions = {},
+): Promise<PersistedAgentWorkspaceIdentityResult> {
+  return withAgentConfigIntentLock(() => reconcilePersistedAgentWorkspaceIdentitiesLocked(options));
 }
 
 // ============= Persistence Helpers =============
@@ -485,7 +542,7 @@ async function persistAgentConfigPatch(
     const currentConfig = await loadAppConfig();
     const currentAgent = getAgentById(currentConfig, agentId);
     if (currentAgent) {
-      await assertAgentWorkspaceNotArchived(currentAgent);
+      await assertAgentWorkspaceNotArchived(currentAgent.id);
     }
   }
 
@@ -611,9 +668,10 @@ async function projectLiveAgentConfigPatch(
     // Live projection deliberately happens after every disk-intent lock has
     // been released. Runtime rotation/network waits are not persistence work.
     await syncAgentRuntime(agentId, result.effectivePatch, result.resolvedMcpJson);
-    if ('memoryAutoUpdate' in patch) {
+    if ('memoryAutoUpdate' in patch || 'enabled' in patch) {
       try {
-        await configureMemoryAutoUpdateTaskForAgent(result.updated);
+        const projection = await resolvePersistedAgentWorkspace(result.updated.id);
+        await configureMemoryAutoUpdateTaskForAgent(result.updated, projection.workspacePath);
       } catch (error) {
         if (options.memoryAutoUpdateReconcileFailure === 'throw') {
           throw error;
@@ -728,10 +786,7 @@ export async function patchAgentConfig(
       const [config, projects] = await Promise.all([loadAppConfig(), loadProjects()]);
       const agent = getAgentById(config, agentId);
       if (!agent) return undefined;
-      const project = projects.find(candidate => candidate.agentId === agentId)
-        ?? projects.find(candidate => (
-          !candidate.agentId && workspacePathsEqual(candidate.path, agent.workspacePath)
-        ));
+      const project = projects.find(candidate => candidate.agentId === agentId);
       if (!project) return undefined;
       return {
         projectId: project.id,
@@ -781,7 +836,25 @@ async function modifyAgentChannelConfig(
     const channelIndex = channels.findIndex(channel => channel.id === channelId);
     if (channelIndex < 0) return config;
 
-    updatedChannel = modify(channels[channelIndex]);
+    const currentChannel = channels[channelIndex];
+    updatedChannel = modify(currentChannel);
+    const currentPermission = currentChannel.overrides?.permissionMode;
+    const updatedPermission = updatedChannel.overrides?.permissionMode;
+    const identityChanged = resolveAgentChannelRuntime(agents[agentIndex], currentChannel)
+      !== resolveAgentChannelRuntime(agents[agentIndex], updatedChannel)
+      || agentChannelUsesManagedCodexProvider(agents[agentIndex], currentChannel)
+        !== agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel);
+    if (updatedPermission !== undefined && (updatedPermission !== currentPermission || identityChanged)) {
+      const valid = agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel)
+        ? updatedPermission === 'auto' || updatedPermission === 'plan' || updatedPermission === 'fullAgency'
+        : isRuntimePermissionMode(
+          updatedPermission,
+          resolveAgentChannelRuntime(agents[agentIndex], updatedChannel),
+        );
+      if (!valid) {
+        throw new Error(`Invalid Channel permissionMode '${updatedPermission}' for its Runtime identity.`);
+      }
+    }
     channels[channelIndex] = updatedChannel;
     authoritativeChannels = channels;
     agents[agentIndex] = { ...agents[agentIndex], channels };
@@ -958,30 +1031,9 @@ async function syncAgentRuntime(
   }
 }
 
-/**
- * Add a new agent config to disk.
- */
-export async function addAgentConfig(agent: AgentConfig): Promise<void> {
-  await atomicModifyConfig(config => {
-    const agents = [...(config.agents || []), agent];
-    return {
-      ...config,
-      agents,
-    };
-  });
-  if (agent.memoryAutoUpdate?.enabled) {
-    try {
-      await configureMemoryAutoUpdateTaskForAgent(agent);
-    } catch (error) {
-      // Agent creation is already durable. Startup reconciliation owns
-      // convergence; throwing here would make callers create a duplicate Agent.
-      console.warn('[agentConfigService] Memory auto-update task provisioning deferred:', error);
-    }
-  }
-}
-
 export async function configureMemoryAutoUpdateTaskForAgent(
   agent: AgentConfig,
+  workspacePath: string,
 ): Promise<void> {
   const { isTauriEnvironment } = await import('@/utils/browserMock');
   if (!isTauriEnvironment()) return;
@@ -990,25 +1042,8 @@ export async function configureMemoryAutoUpdateTaskForAgent(
   await invoke('cmd_configure_memory_auto_update_task', {
     request: {
       agentId: agent.id,
-      workspacePath: agent.workspacePath,
+      workspacePath,
       memoryAutoUpdate: agent.memoryAutoUpdate,
-      heartbeat: agent.heartbeat,
-    },
-  });
-}
-
-async function disableMemoryAutoUpdateTaskForAgent(
-  agent: Pick<AgentConfig, 'id' | 'workspacePath' | 'heartbeat'>,
-): Promise<void> {
-  const { isTauriEnvironment } = await import('@/utils/browserMock');
-  if (!isTauriEnvironment()) return;
-
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('cmd_configure_memory_auto_update_task', {
-    request: {
-      agentId: agent.id,
-      workspacePath: agent.workspacePath,
-      memoryAutoUpdate: undefined,
       heartbeat: agent.heartbeat,
     },
   });
@@ -1018,14 +1053,15 @@ export function projectMemoryEvolutionTaskRuntimeForAgent(
   agent: Pick<AgentConfig, 'providerId' | 'model' | 'permissionMode' | 'runtime' | 'runtimeConfig'>,
 ): { runtime?: RuntimeType; runtimeConfig?: RuntimeConfig } {
   const model = typeof agent.model === 'string' ? agent.model.trim() : '';
-  if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && model) {
+  if (agentUsesManagedCodexProvider(agent) && model) {
     const identity = createRuntimeBackedProviderIdentity({
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
       model,
     });
     const runtimeConfig = runtimeConfigForRuntimeBackedProvider(identity, agent.runtimeConfig);
-    const permissionMode = agent.runtimeConfig?.permissionMode
-      ?? runtimeBackedProviderPermissionMode(identity, agent.permissionMode);
+    const permissionMode = projectManagedCodexPermissionToRuntime(
+      agent.permissionMode ?? agent.runtimeConfig?.permissionMode,
+    ) ?? 'auto-edit';
     return {
       runtime: identity.runtime,
       runtimeConfig: {
@@ -1045,6 +1081,7 @@ export function projectMemoryEvolutionTaskRuntimeForAgent(
 export async function configureMemoryEvolutionTasksForAgent(
   agent: AgentConfig,
   workspaceId: string,
+  workspacePath: string,
   enabled: boolean,
 ): Promise<void> {
   const { isTauriEnvironment } = await import('@/utils/browserMock');
@@ -1056,7 +1093,7 @@ export async function configureMemoryEvolutionTasksForAgent(
     request: {
       agentId: agent.id,
       workspaceId,
-      workspacePath: agent.workspacePath,
+      workspacePath,
       runtime: runtimeProjection.runtime,
       runtimeConfig: runtimeProjection.runtimeConfig,
       mcpEnabledServers: agent.mcpEnabledServers,
@@ -1065,30 +1102,6 @@ export async function configureMemoryEvolutionTasksForAgent(
       enabled,
     },
   });
-}
-
-/**
- * Remove an agent config from disk.
- */
-export async function removeAgentConfig(agentId: string): Promise<void> {
-  let removedAgent: AgentConfig | undefined;
-  await atomicModifyConfig(config => {
-    removedAgent = (config.agents || []).find(a => a.id === agentId);
-    const agents = (config.agents || []).filter(a => a.id !== agentId);
-    return {
-      ...config,
-      agents,
-    };
-  });
-  if (removedAgent?.workspacePath) {
-    try {
-      await disableMemoryAutoUpdateTaskForAgent(removedAgent);
-    } catch (error) {
-      // Agent removal is already durable. Startup reconciliation removes the
-      // now-orphaned managed Task without turning removal into partial failure.
-      console.warn('[agentConfigService] Memory auto-update task cleanup deferred:', error);
-    }
-  }
 }
 
 // ============= Runtime Helpers =============
@@ -1101,7 +1114,7 @@ export async function invokeStartAgentChannel(
   agent: AgentConfig,
   channel: ChannelConfig,
 ): Promise<void> {
-  await assertAgentWorkspaceNotArchived(agent);
+  const projection = await assertAgentWorkspaceNotArchived(agent.id);
 
   const { isTauriEnvironment } = await import('@/utils/browserMock');
   if (!isTauriEnvironment()) return;
@@ -1122,11 +1135,11 @@ export async function invokeStartAgentChannel(
   await invoke('cmd_start_agent_channel', {
     agentId: agent.id,
     channelId: channel.id,
+    workspacePath: projection.workspacePath,
     agentConfig: {
       id: agent.id,
       name: agent.name,
       enabled: agent.enabled,
-      workspacePath: agent.workspacePath,
       providerId: effective.providerId,
       model: effective.model,
       providerEnvJson: effective.providerEnvJson,
@@ -1259,7 +1272,7 @@ export async function startAndEnableAgentChannel(
   const currentConfig = await loadAppConfig();
   const currentAgent = getAgentById(currentConfig, agentId);
   if (currentAgent) {
-    await assertAgentWorkspaceNotArchived(currentAgent);
+    await assertAgentWorkspaceNotArchived(currentAgent.id);
   }
 
   const { atomicModifyConfig } = await import('@/config/services/appConfigService');

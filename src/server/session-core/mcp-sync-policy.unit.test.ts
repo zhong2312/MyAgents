@@ -58,24 +58,37 @@ describe('mcp-sync-policy', () => {
     expect(mcpConfigFingerprint(a)).toBe(mcpConfigFingerprint(b));
   });
 
-  it('skips restart for snapshotted sessions and schedules one for live sessions', () => {
+  it('restarts an active session for any owner-resolved MCP fingerprint change', () => {
     const previousServers = [server({ id: 'old' })];
     const nextServers = [server({ id: 'new' })];
     expect(decideMcpSync({
       previousServers,
       nextServers,
       hasQuerySession: true,
-      isSnapshotted: true,
     })).toEqual({
       changed: true,
-      shouldRestart: false,
-      reason: 'snapshot-authoritative',
+      shouldRestart: true,
+      reason: 'fingerprint-changed',
     });
     expect(decideMcpSync({
       previousServers,
       nextServers,
+      hasQuerySession: false,
+    })).toEqual({
+      changed: true,
+      shouldRestart: false,
+      reason: 'no-active-session',
+    });
+  });
+
+  it('restarts for same-id definition updates', () => {
+    const previousServers = [server({ id: 'same', command: 'old-command', env: { TOKEN: 'old' } })];
+    const nextServers = [server({ id: 'same', command: 'new-command', env: { TOKEN: 'new' } })];
+
+    expect(decideMcpSync({
+      previousServers,
+      nextServers,
       hasQuerySession: true,
-      isSnapshotted: false,
     })).toEqual({
       changed: true,
       shouldRestart: true,

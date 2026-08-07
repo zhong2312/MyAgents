@@ -25,7 +25,6 @@ describe('resetTabToLauncher', () => {
             sessionId: 'sess-1',
             view: 'chat',
             title: 'X',
-            restoreState: 'cold',
             sidecarConfigDisposition: 'adopt',
             initialMessage: { text: 'hi' } as Tab['initialMessage'],
         });
@@ -37,7 +36,6 @@ describe('resetTabToLauncher', () => {
         expect(next.title).toBe('New Tab');
         // Stale 'adopt' must reset to the benign launcher default, not carry over.
         expect(next.sidecarConfigDisposition).toBe('push');
-        expect(next.restoreState).toBeUndefined();
         expect(next.initialMessage).toBeUndefined();
     });
 

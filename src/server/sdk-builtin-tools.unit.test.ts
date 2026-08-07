@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { SDK_BUILTIN_TOOLS, SDK_EXCLUDED_BUILTIN_TOOLS } from './sdk-builtin-tools';
 
 describe('Claude Agent SDK builtin catalog', () => {
-  it('keeps the product-owned 23-tool catalog exact and duplicate-free', () => {
+  it('keeps the product-owned 27-tool catalog exact and duplicate-free', () => {
     expect(SDK_BUILTIN_TOOLS).toEqual([
       'Read',
       'Write',
@@ -29,12 +29,16 @@ describe('Claude Agent SDK builtin catalog', () => {
       'TaskUpdate',
       'Monitor',
       'ReportFindings',
+      'Workflow',
+      'ScheduleWakeup',
+      'EnterWorktree',
+      'ExitWorktree',
     ]);
-    expect(new Set(SDK_BUILTIN_TOOLS).size).toBe(23);
+    expect(new Set(SDK_BUILTIN_TOOLS).size).toBe(27);
   });
 
   it('does not expose any product-excluded builtin', () => {
-    expect(SDK_EXCLUDED_BUILTIN_TOOLS).toHaveLength(9);
+    expect(SDK_EXCLUDED_BUILTIN_TOOLS).toHaveLength(5);
     for (const tool of SDK_EXCLUDED_BUILTIN_TOOLS) {
       expect(SDK_BUILTIN_TOOLS).not.toContain(tool);
     }

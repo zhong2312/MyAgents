@@ -60,47 +60,96 @@ impl RuntimeIdentity {
 pub(crate) fn resolve_agent_runtime_identity_from_config(
     workspace_path: &std::path::Path,
 ) -> Option<RuntimeIdentity> {
-    let config_path = dirs::home_dir()?.join(".myagents").join("config.json");
+    let config_dir = dirs::home_dir()?.join(".myagents");
+    let config_path = config_dir.join("config.json");
     let content = std::fs::read_to_string(&config_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(strip_bom(&content)).ok()?;
+    let projects_content = std::fs::read_to_string(config_dir.join("projects.json")).ok()?;
+    let projects: serde_json::Value = serde_json::from_str(strip_bom(&projects_content)).ok()?;
+    resolve_agent_runtime_identity_from_values(&cfg, &projects, workspace_path)
+}
 
-    let agents = cfg.get("agents")?.as_array()?;
-    for agent in agents {
-        let agent_path = agent.get("workspacePath")?.as_str()?;
-        if workspace_paths_match(agent_path, workspace_path) {
-            if agent.get("providerId").and_then(|v| v.as_str())
-                == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
-                && managed_codex_provider_ready(&cfg)
-            {
-                return Some(RuntimeIdentity::new(
-                    Some("codex"),
-                    Some("managed-provider"),
-                ));
-            }
-            // Gate: multi-agent runtime feature must be explicitly enabled
-            // for user-managed external runtimes. Managed Codex provider
-            // is gated above by its own provider readiness flags instead.
-            if !cfg
-                .get("multiAgentRuntime")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                return None;
-            }
-            if let Some(runtime) = agent.get("runtime").and_then(|v| v.as_str()) {
-                if runtime != "builtin" {
-                    let runtime_source = agent
-                        .get("runtimeConfig")
-                        .and_then(|v| v.as_object())
-                        .and_then(|o| o.get("source"))
-                        .and_then(|v| v.as_str());
-                    return Some(RuntimeIdentity::new(Some(runtime), runtime_source));
-                }
-            }
-            return None;
+pub(crate) fn resolve_agent_runtime_identity_by_id_from_config(
+    agent_id: &str,
+) -> Option<RuntimeIdentity> {
+    let config_path = dirs::home_dir()?.join(".myagents").join("config.json");
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let cfg: serde_json::Value = serde_json::from_str(strip_bom(&content)).ok()?;
+    resolve_agent_runtime_identity_by_id_from_value(&cfg, agent_id)
+}
+
+fn resolve_agent_runtime_identity_from_values(
+    cfg: &serde_json::Value,
+    projects: &serde_json::Value,
+    workspace_path: &std::path::Path,
+) -> Option<RuntimeIdentity> {
+    let matching_projects = projects
+        .as_array()?
+        .iter()
+        .filter(|project| {
+            project
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|path| workspace_paths_match(path, workspace_path))
+        })
+        .collect::<Vec<_>>();
+    if matching_projects.len() != 1 {
+        return None;
+    }
+    let agent_id = matching_projects[0].get("agentId")?.as_str()?;
+    let claim_count = projects
+        .as_array()?
+        .iter()
+        .filter(|project| {
+            project.get("agentId").and_then(serde_json::Value::as_str) == Some(agent_id)
+        })
+        .count();
+    if claim_count != 1 {
+        return None;
+    }
+
+    resolve_agent_runtime_identity_by_id_from_value(cfg, agent_id)
+        .filter(|identity| identity.runtime != "builtin")
+}
+
+fn resolve_agent_runtime_identity_by_id_from_value(
+    cfg: &serde_json::Value,
+    agent_id: &str,
+) -> Option<RuntimeIdentity> {
+    let agent = cfg
+        .get("agents")?
+        .as_array()?
+        .iter()
+        .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))?;
+    if agent.get("providerId").and_then(|v| v.as_str()) == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
+        && managed_codex_provider_ready(cfg)
+    {
+        return Some(RuntimeIdentity::new(
+            Some("codex"),
+            Some("managed-provider"),
+        ));
+    }
+    // Gate: multi-agent runtime feature must be explicitly enabled
+    // for user-managed external runtimes. Managed Codex provider
+    // is gated above by its own provider readiness flags instead.
+    if !cfg
+        .get("multiAgentRuntime")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Some(RuntimeIdentity::new(Some("builtin"), None));
+    }
+    if let Some(runtime) = agent.get("runtime").and_then(|v| v.as_str()) {
+        if runtime != "builtin" {
+            let runtime_source = agent
+                .get("runtimeConfig")
+                .and_then(|v| v.as_object())
+                .and_then(|o| o.get("source"))
+                .and_then(|v| v.as_str());
+            return Some(RuntimeIdentity::new(Some(runtime), runtime_source));
         }
     }
-    None
+    Some(RuntimeIdentity::new(Some("builtin"), None))
 }
 
 pub(super) fn resolve_agent_runtime_from_config(
@@ -381,5 +430,85 @@ mod tests {
             r"/tmp/a\b",
             std::path::Path::new("/tmp/a/b")
         ));
+    }
+
+    #[test]
+    fn project_agent_id_selects_runtime_even_when_legacy_agent_path_disagrees() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": true,
+            "agents": [
+                { "id": "extra", "workspacePath": "/repo/current", "runtime": "gemini" },
+                { "id": "selected", "workspacePath": "/repo/old", "runtime": "codex" }
+            ]
+        });
+        let projects = serde_json::json!([
+            { "id": "project", "path": "/repo/current", "agentId": "selected" }
+        ]);
+        let identity = resolve_agent_runtime_identity_from_values(
+            &config,
+            &projects,
+            std::path::Path::new("/repo/current"),
+        )
+        .expect("Project.agentId should select the Agent config");
+        assert_eq!(identity.runtime, "codex");
+    }
+
+    #[test]
+    fn exact_agent_id_selects_extra_or_orphan_runtime_without_project_guessing() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": true,
+            "agents": [
+                { "id": "project-agent", "runtime": "gemini" },
+                { "id": "extra", "workspacePath": "/repo/current", "runtime": "codex" },
+                { "id": "orphan", "workspacePath": "/repo/orphan", "runtime": "claude-code" }
+            ]
+        });
+
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "extra")
+                .expect("extra Agent runtime")
+                .runtime,
+            "codex"
+        );
+        assert_eq!(
+            resolve_agent_runtime_identity_by_id_from_value(&config, "orphan")
+                .expect("orphan Agent runtime")
+                .runtime,
+            "claude-code"
+        );
+    }
+
+    #[test]
+    fn exact_builtin_agent_id_overrides_another_agents_external_workspace_runtime() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": true,
+            "agents": [
+                { "id": "project-agent", "runtime": "codex" },
+                { "id": "extra-builtin", "workspacePath": "/repo/current", "runtime": "builtin" }
+            ]
+        });
+
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "extra-builtin")
+            .expect("exact builtin identity must remain explicit");
+        assert_eq!(identity.runtime, "builtin");
+        assert_eq!(identity.runtime_source, None);
+    }
+
+    #[test]
+    fn duplicate_project_claim_is_target_local_failure() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": true,
+            "agents": [{ "id": "selected", "runtime": "codex" }]
+        });
+        let projects = serde_json::json!([
+            { "id": "a", "path": "/repo/a", "agentId": "selected" },
+            { "id": "b", "path": "/repo/b", "agentId": "selected" }
+        ]);
+        assert!(resolve_agent_runtime_identity_from_values(
+            &config,
+            &projects,
+            std::path::Path::new("/repo/a"),
+        )
+        .is_none());
     }
 }

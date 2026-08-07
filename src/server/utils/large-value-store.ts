@@ -17,16 +17,15 @@
  *   <id>            — the actual bytes (Uint8Array | utf-8 text)
  *   <id>.meta.json  — `{ id, sizeBytes, mimetype, preview, expiresAt, sessionId? }`
  *
- * Concurrency: each ref is created with a unique uuid so writers never race;
- * Pattern 5's `withFileLock` is reserved for files that need cross-writer
- * serialization (which a single-writer ref does not).
+ * Concurrency: writers claim `<id>.part` exclusively, then expose body/meta
+ * through no-clobber same-directory hard links. No global ref lock is needed.
  */
 
-import { promises as fsp } from 'fs';
-import { existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
-import { randomUUID } from 'crypto';
+import { promises as fsp } from "fs";
+import { existsSync, mkdirSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+import { randomUUID } from "crypto";
 
 /**
  * Reference placeholder for a large value. Replaces inline bytes in SSE / IPC
@@ -36,8 +35,8 @@ import { randomUUID } from 'crypto';
  * Stable shape — clients (renderer, Rust proxy) discriminate on `kind === 'ref'`.
  */
 export interface LargeValueRef {
-  kind: 'ref';
-  /** Short id (10-char uuid suffix). Stable for the ref's lifetime. */
+  kind: "ref";
+  /** 128-bit UUID encoded as 32 lowercase hex characters. */
   id: string;
   /** Total byte size of the full payload on disk. */
   sizeBytes: number;
@@ -74,6 +73,12 @@ export interface MaybeSpillOptions {
 const DEFAULT_INLINE_MAX_BYTES = 256 * 1024; // 256 KiB
 const DEFAULT_PREVIEW_BYTES = 8 * 1024; // 8 KiB
 const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
+const REF_COMMIT_MAX_ATTEMPTS = 8;
+
+/** New writers emit 32 hex; readers keep the legacy 8–32 window. */
+const REF_ID_RE = /^[a-f0-9]{8,32}$/;
+const BODY_PART_RE = /^[a-f0-9]{8,32}\.part$/;
+const META_PART_RE = /^[a-f0-9]{8,32}\.meta\.json\.part$/;
 
 /**
  * Root directory for spilled ref bodies. Created lazily on first spill so
@@ -85,7 +90,7 @@ const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
 function getRefsDir(): string {
   const override = process.env.MYAGENTS_REFS_DIR;
   if (override && override.length > 0) return override;
-  return join(homedir(), '.myagents', 'refs');
+  return join(homedir(), ".myagents", "refs");
 }
 
 function ensureRefsDir(): string {
@@ -100,25 +105,29 @@ function ensureRefsDir(): string {
   return dir;
 }
 
-function shortId(): string {
-  // uuid is 36 chars w/ hyphens; first segment (8 hex) is unique enough at
-  // O(1)/sec ref creation rates and short enough for log lines.
-  return randomUUID().split('-')[0];
+function newRefId(): string {
+  return randomUUID().replaceAll("-", "");
 }
 
 function isTextMimetype(mimetype: string): boolean {
   const lower = mimetype.toLowerCase();
-  return lower.startsWith('text/')
-    || lower.includes('json')
-    || lower.includes('xml')
-    || lower.includes('javascript')
-    || lower.includes('yaml')
-    || lower.includes('csv')
-    || lower.includes('html');
+  return (
+    lower.startsWith("text/") ||
+    lower.includes("json") ||
+    lower.includes("xml") ||
+    lower.includes("javascript") ||
+    lower.includes("yaml") ||
+    lower.includes("csv") ||
+    lower.includes("html")
+  );
 }
 
-function buildPreview(value: string | Uint8Array, mimetype: string, previewBytes: number): string {
-  if (typeof value === 'string') {
+function buildPreview(
+  value: string | Uint8Array,
+  mimetype: string,
+  previewBytes: number,
+): string {
+  if (typeof value === "string") {
     if (value.length <= previewBytes) return value;
     return value.slice(0, previewBytes);
   }
@@ -126,14 +135,14 @@ function buildPreview(value: string | Uint8Array, mimetype: string, previewBytes
   const head = value.subarray(0, previewBytes);
   if (isTextMimetype(mimetype)) {
     try {
-      return new TextDecoder('utf-8', { fatal: false }).decode(head);
+      return new TextDecoder("utf-8", { fatal: false }).decode(head);
     } catch {
       // Fall through to base64.
     }
   }
   // Binary preview — base64 of head bytes. Renderers can show it as a thumbnail
   // or simply as a "head" indicator in tooling.
-  return Buffer.from(head).toString('base64');
+  return Buffer.from(head).toString("base64");
 }
 
 function metaPath(dir: string, id: string): string {
@@ -142,6 +151,115 @@ function metaPath(dir: string, id: string): string {
 
 function bodyPath(dir: string, id: string): string {
   return join(dir, id);
+}
+
+function bodyPartPath(dir: string, id: string): string {
+  return join(dir, `${id}.part`);
+}
+
+function metaPartPath(dir: string, id: string): string {
+  return join(dir, `${id}.meta.json.part`);
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await fsp.lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT")
+      return false;
+    throw error;
+  }
+}
+
+async function removeOwned(paths: string[]): Promise<void> {
+  await Promise.all(
+    paths.map((path) => fsp.rm(path, { force: true }).catch(() => undefined)),
+  );
+}
+
+/**
+ * Commit one ref without ever truncating an existing namespace entry.
+ *
+ * `.part` is the cross-process claim. Body/meta become visible through
+ * same-directory hard links, which are atomic and fail when the target exists;
+ * readers continue to gate on the final meta name.
+ */
+async function commitRef(
+  dir: string,
+  value: string | Uint8Array,
+  buildMeta: (id: string) => RefMeta,
+): Promise<RefMeta> {
+  for (let attempt = 0; attempt < REF_COMMIT_MAX_ATTEMPTS; attempt += 1) {
+    const id = newRefId();
+    const body = bodyPath(dir, id);
+    const bodyPart = bodyPartPath(dir, id);
+    const meta = metaPath(dir, id);
+    const metaPart = metaPartPath(dir, id);
+    const owned: string[] = [];
+    let bodyHandle: Awaited<ReturnType<typeof fsp.open>> | undefined;
+    let metaHandle: Awaited<ReturnType<typeof fsp.open>> | undefined;
+
+    try {
+      bodyHandle = await fsp.open(bodyPart, "wx");
+      owned.push(bodyPart);
+
+      // The exclusive part claims this id against upgraded writers. Reject
+      // historical body/meta/temp residue before writing any payload bytes.
+      if (
+        (await pathExists(body)) ||
+        (await pathExists(meta)) ||
+        (await pathExists(metaPart))
+      ) {
+        await bodyHandle.close();
+        bodyHandle = undefined;
+        await removeOwned(owned);
+        continue;
+      }
+
+      if (typeof value === "string") {
+        await bodyHandle.writeFile(value, "utf-8");
+      } else {
+        await bodyHandle.writeFile(value);
+      }
+      await bodyHandle.datasync();
+      await bodyHandle.close();
+      bodyHandle = undefined;
+
+      await fsp.link(bodyPart, body);
+      owned.push(body);
+
+      const metadata = buildMeta(id);
+      metaHandle = await fsp.open(metaPart, "wx");
+      owned.push(metaPart);
+      await metaHandle.writeFile(JSON.stringify(metadata), "utf-8");
+      await metaHandle.datasync();
+      await metaHandle.close();
+      metaHandle = undefined;
+
+      await fsp.link(metaPart, meta);
+      owned.push(meta);
+
+      // The final pair is committed. Leftover hard-link aliases are harmless
+      // and the existing stale-part GC will remove them if unlink is blocked.
+      await removeOwned([bodyPart, metaPart]);
+      return metadata;
+    } catch (error) {
+      await bodyHandle?.close().catch(() => undefined);
+      await metaHandle?.close().catch(() => undefined);
+      await removeOwned(owned.reverse());
+      if (isAlreadyExists(error)) continue;
+      throw error;
+    }
+  }
+
+  throw new Error(
+    `large-value-store: ref commit collided ${REF_COMMIT_MAX_ATTEMPTS} times`,
+  );
 }
 
 /**
@@ -159,59 +277,32 @@ export async function maybeSpill(
   const previewBytes = opts.previewBytes ?? DEFAULT_PREVIEW_BYTES;
   const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
 
-  const sizeBytes = typeof value === 'string'
-    ? Buffer.byteLength(value, 'utf-8')
-    : value.byteLength;
+  const sizeBytes =
+    typeof value === "string"
+      ? Buffer.byteLength(value, "utf-8")
+      : value.byteLength;
 
   if (sizeBytes <= inlineMaxBytes) {
     return { inline: value };
   }
 
   const dir = ensureRefsDir();
-  const id = shortId();
   const expiresAt = Date.now() + ttlMs;
   const preview = buildPreview(value, opts.mimetype, previewBytes);
 
-  const ref: LargeValueRef = {
-    kind: 'ref',
-    id,
-    sizeBytes,
-    mimetype: opts.mimetype,
-    preview,
-    expiresAt,
-  };
-
-  const meta: RefMeta = { ...ref };
-  if (opts.sessionId) meta.sessionId = opts.sessionId;
-
-  // Write body first, then meta — readers gate on meta.json existing, so a
-  // partial write looks like "no such ref" rather than "incomplete ref".
-  // Pattern 2 fix #5A: if meta-write fails, the body file is otherwise
-  // orphaned forever (GC filters by `.meta.json`). Catch + clean up.
   try {
-    // Open + write + fdatasync + close so a crash between body and meta can't
-    // leave a partially-written body that the eventual GC sweeps miss.
-    const handle = typeof value === 'string'
-      ? await fsp.open(bodyPath(dir, id), 'w')
-      : await fsp.open(bodyPath(dir, id), 'w');
-    try {
-      if (typeof value === 'string') {
-        await handle.writeFile(value, 'utf-8');
-      } else {
-        await handle.writeFile(value);
-      }
-      // fdatasync — flush data, skip metadata (faster than sync()).
-      await handle.datasync().catch(() => undefined);
-    } finally {
-      await handle.close().catch(() => undefined);
-    }
-    try {
-      await fsp.writeFile(metaPath(dir, id), JSON.stringify(meta), 'utf-8');
-    } catch (metaErr) {
-      // Meta failed → body is now orphaned. Remove it before surfacing.
-      await fsp.rm(bodyPath(dir, id), { force: true }).catch(() => undefined);
-      throw metaErr;
-    }
+    return await commitRef(dir, value, (id) => {
+      const ref: RefMeta = {
+        kind: "ref",
+        id,
+        sizeBytes,
+        mimetype: opts.mimetype,
+        preview,
+        expiresAt,
+      };
+      if (opts.sessionId) ref.sessionId = opts.sessionId;
+      return ref;
+    });
   } catch (err) {
     // Pattern 2 contract: oversize values MUST NOT travel inline through
     // SSE / IPC. The previous `return { inline: value }` fallback defeated
@@ -220,12 +311,11 @@ export async function maybeSpill(
     // wedge a slow client. Fail closed: surface the spill failure so the
     // caller's try/catch turns it into a tool-error instead.
     const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[refs] spill failed id=${id} sizeBytes=${sizeBytes}: ${reason}`);
+    console.warn(`[refs] spill failed sizeBytes=${sizeBytes}: ${reason}`);
     throw new Error(
-      `large-value-store: failed to spill ${sizeBytes} bytes (id=${id}): ${reason}`,
+      `large-value-store: failed to spill ${sizeBytes} bytes: ${reason}`,
     );
   }
-  return ref;
 }
 
 /**
@@ -235,16 +325,44 @@ export async function maybeSpill(
  * which corrupted meta could exploit to keep refs alive forever.
  */
 function isExpired(expiresAt: unknown): boolean {
-  if (typeof expiresAt !== 'number') return true; // corrupt → treat as expired
+  if (typeof expiresAt !== "number") return true; // corrupt → treat as expired
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) return true;
   return expiresAt < Date.now();
 }
 
-/** Tightened path-traversal guard. Generator emits 8 lowercase hex chars
- *  (uuid first segment is always lowercase); cap at 32 to bound input
- *  length and reject upper-case to prevent path-traversal probes that
- *  vary case to bypass the original `/^[a-f0-9]+$/i` regex. */
-const REF_ID_RE = /^[a-f0-9]{8,32}$/;
+async function readCommittedMeta(
+  dir: string,
+  id: string,
+): Promise<RefMeta | null> {
+  if (!REF_ID_RE.test(id)) return null;
+  let meta: RefMeta;
+  try {
+    meta = JSON.parse(
+      await fsp.readFile(metaPath(dir, id), "utf-8"),
+    ) as RefMeta;
+  } catch {
+    return null;
+  }
+  if (isExpired(meta.expiresAt)) {
+    void deleteRef(dir, id);
+    return null;
+  }
+  if (
+    meta.kind !== "ref" ||
+    meta.id !== id ||
+    !Number.isSafeInteger(meta.sizeBytes) ||
+    meta.sizeBytes < 0 ||
+    typeof meta.mimetype !== "string"
+  )
+    return null;
+  try {
+    const body = await fsp.stat(bodyPath(dir, id));
+    if (!body.isFile() || body.size !== meta.sizeBytes) return null;
+  } catch {
+    return null;
+  }
+  return meta;
+}
 
 /**
  * Fetch a previously-spilled ref. Returns `null` if the ref doesn't exist or
@@ -253,23 +371,15 @@ const REF_ID_RE = /^[a-f0-9]{8,32}$/;
  * The body is loaded into memory — this matches what the consumer would have
  * seen pre-spill. For very large bodies, prefer streaming via the HTTP route.
  */
-export async function fetchRef(id: string): Promise<{ data: Uint8Array; mimetype: string } | null> {
-  if (!REF_ID_RE.test(id)) return null; // path-traversal guard (lowercase hex 8–32)
+export async function fetchRef(
+  id: string,
+): Promise<{ data: Uint8Array; mimetype: string } | null> {
   const dir = getRefsDir();
-  let meta: RefMeta;
-  try {
-    const raw = await fsp.readFile(metaPath(dir, id), 'utf-8');
-    meta = JSON.parse(raw) as RefMeta;
-  } catch {
-    return null;
-  }
-  if (isExpired(meta.expiresAt)) {
-    // Expired or corrupt expiresAt — best-effort cleanup.
-    void deleteRef(dir, id);
-    return null;
-  }
+  const meta = await readCommittedMeta(dir, id);
+  if (!meta) return null;
   try {
     const body = await fsp.readFile(bodyPath(dir, id));
+    if (body.byteLength !== meta.sizeBytes) return null;
     return { data: body, mimetype: meta.mimetype };
   } catch {
     return null;
@@ -282,21 +392,17 @@ export async function fetchRef(id: string): Promise<{ data: Uint8Array; mimetype
  *
  * Returns `null` if missing or expired (TTL).
  */
-export async function getRefStreamPath(id: string): Promise<{ path: string; mimetype: string; sizeBytes: number } | null> {
-  if (!REF_ID_RE.test(id)) return null;
+export async function getRefStreamPath(
+  id: string,
+): Promise<{ path: string; mimetype: string; sizeBytes: number } | null> {
   const dir = getRefsDir();
-  let meta: RefMeta;
-  try {
-    const raw = await fsp.readFile(metaPath(dir, id), 'utf-8');
-    meta = JSON.parse(raw) as RefMeta;
-  } catch {
-    return null;
-  }
-  if (isExpired(meta.expiresAt)) {
-    void deleteRef(dir, id);
-    return null;
-  }
-  return { path: bodyPath(dir, id), mimetype: meta.mimetype, sizeBytes: meta.sizeBytes };
+  const meta = await readCommittedMeta(dir, id);
+  if (!meta) return null;
+  return {
+    path: bodyPath(dir, id),
+    mimetype: meta.mimetype,
+    sizeBytes: meta.sizeBytes,
+  };
 }
 
 async function deleteRef(dir: string, id: string): Promise<void> {
@@ -318,46 +424,48 @@ export async function clearExpiredRefs(): Promise<void> {
     return;
   }
   const metaNames = new Set<string>();
-  await Promise.all(entries
-    .filter((name) => name.endsWith('.meta.json'))
-    .map(async (name) => {
-      metaNames.add(name);
-      const id = name.slice(0, -'.meta.json'.length);
-      try {
-        const raw = await fsp.readFile(join(dir, name), 'utf-8');
-        const meta = JSON.parse(raw) as RefMeta;
-        if (isExpired(meta.expiresAt)) {
+  await Promise.all(
+    entries
+      .filter((name) => name.endsWith(".meta.json"))
+      .map(async (name) => {
+        metaNames.add(name);
+        const id = name.slice(0, -".meta.json".length);
+        try {
+          const raw = await fsp.readFile(join(dir, name), "utf-8");
+          const meta = JSON.parse(raw) as RefMeta;
+          if (isExpired(meta.expiresAt)) {
+            await deleteRef(dir, id);
+          }
+        } catch {
+          // Corrupt meta — drop it.
           await deleteRef(dir, id);
         }
-      } catch {
-        // Corrupt meta — drop it.
-        await deleteRef(dir, id);
-      }
-    }));
+      }),
+  );
 
-  // Pattern 2 fix #5D — orphan body sweep. A meta-write failure (or crash
-  // between body write and meta write) used to leave the body file forever
-  // (the legacy GC only iterated `.meta.json` files). Sweep any non-meta
-  // file with no matching `<name>.meta.json` companion AND mtime > 1h.
-  await Promise.all(entries
-    .filter((name) => !name.endsWith('.meta.json'))
-    .map(async (name) => {
-      // Skip if a paired meta exists.
-      if (metaNames.has(`${name}.meta.json`)) return;
-      // Only sweep ids that match the new shape — protects renamed files /
-      // unrelated artifacts that may share the directory.
-      if (!REF_ID_RE.test(name)) return;
-      const fullPath = join(dir, name);
-      try {
-        const st = await fsp.stat(fullPath);
-        const ageMs = Date.now() - st.mtimeMs;
-        if (ageMs > 60 * 60 * 1000) {
-          await fsp.rm(fullPath, { force: true }).catch(() => undefined);
+  // Sweep stale body-without-meta and commit temp files. Young files survive
+  // because another Sidecar may currently own the exclusive `.part` claim.
+  await Promise.all(
+    entries
+      .filter((name) => !name.endsWith(".meta.json"))
+      .map(async (name) => {
+        const isBodyOrphan =
+          REF_ID_RE.test(name) && !metaNames.has(`${name}.meta.json`);
+        const isBodyPart = BODY_PART_RE.test(name);
+        const isMetaPart = META_PART_RE.test(name);
+        if (!isBodyOrphan && !isBodyPart && !isMetaPart) return;
+        const fullPath = join(dir, name);
+        try {
+          const st = await fsp.stat(fullPath);
+          const ageMs = Date.now() - st.mtimeMs;
+          if (ageMs > 60 * 60 * 1000) {
+            await fsp.rm(fullPath, { force: true }).catch(() => undefined);
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
-      }
-    }));
+      }),
+  );
 }
 
 /**
@@ -374,20 +482,22 @@ export async function clearSessionRefs(sessionId: string): Promise<void> {
   } catch {
     return;
   }
-  await Promise.all(entries
-    .filter((name) => name.endsWith('.meta.json'))
-    .map(async (name) => {
-      const id = name.slice(0, -'.meta.json'.length);
-      try {
-        const raw = await fsp.readFile(join(dir, name), 'utf-8');
-        const meta = JSON.parse(raw) as RefMeta;
-        if (meta.sessionId === sessionId) {
-          await deleteRef(dir, id);
+  await Promise.all(
+    entries
+      .filter((name) => name.endsWith(".meta.json"))
+      .map(async (name) => {
+        const id = name.slice(0, -".meta.json".length);
+        try {
+          const raw = await fsp.readFile(join(dir, name), "utf-8");
+          const meta = JSON.parse(raw) as RefMeta;
+          if (meta.sessionId === sessionId) {
+            await deleteRef(dir, id);
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
-      }
-    }));
+      }),
+  );
 }
 
 /**

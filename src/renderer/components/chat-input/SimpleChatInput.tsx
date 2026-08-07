@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   AtSign,
+  Ban,
   ChevronRight,
   ChevronUp,
   Eye,
@@ -97,6 +98,8 @@ const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
   plan: Eye,
   fullAgency: LockOpen,
   default: ShieldQuestion,
+  manual: ShieldQuestion,
+  dontAsk: Ban,
   acceptEdits: FilePenLine,
   bypassPermissions: LockOpen,
   autoEdit: FilePenLine,
@@ -177,6 +180,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onChange: _externalOnChange,
   onSend,
   onStop,
+  sendBlocked = false,
   isLoading,
   sessionState,
   systemStatus,
@@ -333,7 +337,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // Ref for current provider availability — used in handleKeyDown without adding deps
   const isCurrentProviderAvailable = providerAvailable ?? (provider ? isProviderAvailable(provider, apiKeys, providerVerifyStatus) : false);
   // External runtimes (Claude Code / Codex) authenticate via their own CLI — no MyAgents provider required.
-  const canSendMessage = isExternalRuntime || isCurrentProviderAvailable;
+  const canSendMessage = !sendBlocked && (isExternalRuntime || isCurrentProviderAvailable);
   const canSendMessageRef = useRef(canSendMessage);
   canSendMessageRef.current = canSendMessage;
   const availableProviderIdSet = useMemo(
@@ -797,6 +801,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     setImages,
     focus: () => textareaRef.current?.focus(),
     getCurrentValue: () => inputValueRef.current,
+    getImages: () => [...images],
     clearWorkspaceBoundDraft: () => {
       // Match `@<path>` tokens that target the workspace-managed `myagents_files/`
       // upload directory. Plain typed `@something` (not workspace-tied) survives.

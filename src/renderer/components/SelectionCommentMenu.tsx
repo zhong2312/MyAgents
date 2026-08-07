@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Quote, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { expandAssistantParagraphSelection } from '@/utils/assistantTextSelection';
 
 /**
  * Floating menu that appears when user selects text within assistant messages.
@@ -52,6 +53,7 @@ const SelectionCommentMenu = memo(function SelectionCommentMenu({
   const [above, setAbove] = useState(true); // true = show above selection, false = below
   const selectedTextRef = useRef('');
   const menuRef = useRef<HTMLDivElement>(null);
+  const pendingMouseUpFrameRef = useRef<number | null>(null);
 
   const hideMenu = useCallback(() => {
     setVisible(false);
@@ -68,11 +70,20 @@ const SelectionCommentMenu = memo(function SelectionCommentMenu({
 
   useEffect(() => {
     const handleMouseUp = (e: MouseEvent) => {
+      // A secondary-button mouseup is context-menu intent, not a new text
+      // selection completion. Treating it like the primary button can reopen
+      // this menu after the competing context menu already dismissed it.
+      if (e.button !== 0) return;
+
       // Ignore clicks on the menu itself
       if (menuRef.current?.contains(e.target as Node)) return;
 
       // Small delay to let browser finalize selection
-      requestAnimationFrame(() => {
+      if (pendingMouseUpFrameRef.current !== null) {
+        cancelAnimationFrame(pendingMouseUpFrameRef.current);
+      }
+      pendingMouseUpFrameRef.current = requestAnimationFrame(() => {
+        pendingMouseUpFrameRef.current = null;
         const selection = window.getSelection();
         if (!selection || selection.isCollapsed || !selection.rangeCount) {
           hideMenu();
@@ -122,11 +133,34 @@ const SelectionCommentMenu = memo(function SelectionCommentMenu({
       }
     };
 
+    const handleClick = (event: MouseEvent) => {
+      expandAssistantParagraphSelection(event);
+    };
+
+    // Observe at Window capture so even the external-link provider's
+    // document-level stopImmediatePropagation cannot leave two transient menus
+    // visible. Preserve the native selection itself; only its action menu yields.
+    const handleContextMenuIntent = () => {
+      if (pendingMouseUpFrameRef.current !== null) {
+        cancelAnimationFrame(pendingMouseUpFrameRef.current);
+        pendingMouseUpFrameRef.current = null;
+      }
+      hideMenu();
+    };
+
     document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('click', handleClick);
     document.addEventListener('selectionchange', handleSelectionChange);
+    window.addEventListener('contextmenu', handleContextMenuIntent, true);
     return () => {
       document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('click', handleClick);
       document.removeEventListener('selectionchange', handleSelectionChange);
+      window.removeEventListener('contextmenu', handleContextMenuIntent, true);
+      if (pendingMouseUpFrameRef.current !== null) {
+        cancelAnimationFrame(pendingMouseUpFrameRef.current);
+        pendingMouseUpFrameRef.current = null;
+      }
     };
   }, [hideMenu]);
 

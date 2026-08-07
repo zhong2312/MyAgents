@@ -32,12 +32,125 @@ struct ArchivedAgentWorkspaces {
     paths: std::collections::HashSet<String>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialProjectEntry {
     agent_id: Option<String>,
     path: Option<String>,
     archived_at: Option<String>,
+}
+
+fn read_projects_for_agent_projection() -> Vec<PartialProjectEntry> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let path = home.join(".myagents").join("projects.json");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<Vec<PartialProjectEntry>>(strip_bom(&content)) {
+        Ok(projects) => projects,
+        Err(error) => {
+            ulog_warn!(
+                "[agent] projects.json parse failed while resolving Agent workspaces: {}",
+                error
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// The only Rust compatibility reader for historical agents[].workspacePath.
+fn read_legacy_agent_workspace_paths(
+    value: &serde_json::Value,
+) -> std::collections::HashMap<String, String> {
+    value
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|agent| {
+            let id = agent.get("id")?.as_str()?.trim();
+            let path = agent.get("workspacePath")?.as_str()?.trim();
+            (!id.is_empty() && !path.is_empty()).then(|| (id.to_string(), path.to_string()))
+        })
+        .collect()
+}
+
+fn project_agent_workspaces(
+    value: &serde_json::Value,
+    agents: Vec<AgentConfigRust>,
+) -> Vec<AgentConfigRust> {
+    let projects = read_projects_for_agent_projection();
+    project_agent_workspaces_with(value, &projects, agents)
+}
+
+fn project_agent_workspaces_with(
+    value: &serde_json::Value,
+    projects: &[PartialProjectEntry],
+    agents: Vec<AgentConfigRust>,
+) -> Vec<AgentConfigRust> {
+    let legacy_paths = read_legacy_agent_workspace_paths(value);
+
+    let mut claims = std::collections::HashMap::<String, Vec<usize>>::new();
+    let mut projects_by_path = std::collections::HashMap::<String, Option<usize>>::new();
+    let mut conflicted_project_indices = std::collections::HashSet::<usize>::new();
+    for (index, project) in projects.iter().enumerate() {
+        if let Some(agent_id) = project.agent_id.as_deref().filter(|id| !id.is_empty()) {
+            claims.entry(agent_id.to_string()).or_default().push(index);
+        }
+        if let Some(path) = project.path.as_deref().filter(|path| !path.is_empty()) {
+            let identity = crate::cron_task::normalize_path(path);
+            if let Some(existing) = projects_by_path.get(&identity) {
+                if let Some(existing_index) = existing {
+                    conflicted_project_indices.insert(*existing_index);
+                }
+                conflicted_project_indices.insert(index);
+                projects_by_path.insert(identity, None);
+            } else {
+                projects_by_path.insert(identity, Some(index));
+            }
+        }
+    }
+
+    agents
+        .into_iter()
+        .filter_map(|mut agent| {
+            if let Some(project_claims) = claims.get(&agent.id) {
+                if project_claims.len() > 1 {
+                    ulog_warn!(
+                        "[agent] Agent {} is claimed by multiple Projects; skipping this target",
+                        agent.id
+                    );
+                    return None;
+                }
+                if conflicted_project_indices.contains(&project_claims[0]) {
+                    ulog_warn!(
+                        "[agent] Agent {} belongs to a duplicate Project workspace; skipping this target",
+                        agent.id
+                    );
+                    return None;
+                }
+                if let Some(path) = projects[project_claims[0]]
+                    .path
+                    .as_deref()
+                    .filter(|path| !path.is_empty())
+                {
+                    agent.resolved_workspace_path = path.to_string();
+                    return Some(agent);
+                }
+            }
+
+            let legacy_path = legacy_paths.get(&agent.id)?;
+            let identity = crate::cron_task::normalize_path(legacy_path);
+            agent.resolved_workspace_path = projects_by_path
+                .get(&identity)
+                .and_then(|index| index.map(|index| projects[index].path.clone()))
+                .flatten()
+                .unwrap_or_else(|| legacy_path.clone());
+            Some(agent)
+        })
+        .collect()
 }
 
 fn read_archived_agent_workspaces_from_disk() -> ArchivedAgentWorkspaces {
@@ -83,9 +196,9 @@ fn is_agent_workspace_archived_with(
     archived: &ArchivedAgentWorkspaces,
 ) -> bool {
     archived.agent_ids.contains(&agent_cfg.id)
-        || archived
-            .paths
-            .contains(&crate::cron_task::normalize_path(&agent_cfg.workspace_path))
+        || archived.paths.contains(&crate::cron_task::normalize_path(
+            &agent_cfg.resolved_workspace_path,
+        ))
 }
 
 pub(crate) fn is_agent_workspace_archived(agent_cfg: &types::AgentConfigRust) -> bool {
@@ -463,8 +576,203 @@ fn find_missing_startable_agent_channels(
 }
 
 #[cfg(test)]
+mod workspace_projection_tests {
+    use super::*;
+
+    fn agents_from(value: &serde_json::Value) -> Vec<AgentConfigRust> {
+        salvage_agents_from_value(value, &std::collections::HashMap::new())
+            .expect("valid Agent fixture")
+    }
+
+    #[test]
+    fn matches_the_cross_language_compatibility_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../src/shared/fixtures/agent-workspace-compatibility.json"
+        ))
+        .expect("valid shared compatibility fixture");
+        let projects = fixture["projects"]
+            .as_array()
+            .expect("projects array")
+            .iter()
+            .map(|project| PartialProjectEntry {
+                agent_id: project["agentId"].as_str().map(str::to_owned),
+                path: project["path"].as_str().map(str::to_owned),
+                archived_at: None,
+            })
+            .collect::<Vec<_>>();
+        let projected = project_agent_workspaces_with(&fixture, &projects, agents_from(&fixture));
+        let actual = projected
+            .iter()
+            .map(|agent| {
+                serde_json::json!({
+                    "agentId": agent.id,
+                    "workspacePath": agent.resolved_workspace_path,
+                })
+            })
+            .collect::<Vec<_>>();
+        let expected = fixture["expectedProjections"]
+            .as_array()
+            .expect("expected projections")
+            .iter()
+            .map(|projection| {
+                serde_json::json!({
+                    "agentId": projection["agentId"],
+                    "workspacePath": projection["workspacePath"],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn exact_project_link_uses_project_path_and_keeps_legacy_extra_accessible() {
+        let value = serde_json::json!({
+            "agents": [
+                { "id": "selected", "name": "Selected", "enabled": true, "workspacePath": "/repo/old" },
+                { "id": "extra", "name": "Extra", "enabled": true, "workspacePath": "/repo/current" }
+            ]
+        });
+        let projects = vec![PartialProjectEntry {
+            agent_id: Some("selected".to_string()),
+            path: Some("/repo/current".to_string()),
+            archived_at: None,
+        }];
+
+        let projected = project_agent_workspaces_with(&value, &projects, agents_from(&value));
+
+        assert_eq!(projected[0].resolved_workspace_path, "/repo/current");
+        assert_eq!(projected[1].resolved_workspace_path, "/repo/current");
+        assert!(serde_json::to_value(&projected[0])
+            .unwrap()
+            .get("workspacePath")
+            .is_none());
+    }
+
+    #[test]
+    fn orphan_keeps_legacy_path_and_duplicate_claim_only_skips_that_target() {
+        let value = serde_json::json!({
+            "agents": [
+                { "id": "conflict", "name": "Conflict", "enabled": true, "workspacePath": "/repo/old" },
+                { "id": "orphan", "name": "Orphan", "enabled": true, "workspacePath": "/repo/orphan" }
+            ]
+        });
+        let projects = vec![
+            PartialProjectEntry {
+                agent_id: Some("conflict".to_string()),
+                path: Some("/repo/a".to_string()),
+                archived_at: None,
+            },
+            PartialProjectEntry {
+                agent_id: Some("conflict".to_string()),
+                path: Some("/repo/b".to_string()),
+                archived_at: None,
+            },
+        ];
+
+        let projected = project_agent_workspaces_with(&value, &projects, agents_from(&value));
+
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].id, "orphan");
+        assert_eq!(projected[0].resolved_workspace_path, "/repo/orphan");
+    }
+
+    #[test]
+    fn duplicate_project_workspace_skips_exact_claims_but_keeps_healthy_targets() {
+        let value = serde_json::json!({
+            "agents": [
+                { "id": "conflict-a", "name": "A", "enabled": true },
+                { "id": "conflict-b", "name": "B", "enabled": true },
+                { "id": "healthy", "name": "Healthy", "enabled": true }
+            ]
+        });
+        let projects = vec![
+            PartialProjectEntry {
+                agent_id: Some("conflict-a".to_string()),
+                path: Some("C:\\Repo".to_string()),
+                archived_at: None,
+            },
+            PartialProjectEntry {
+                agent_id: Some("conflict-b".to_string()),
+                path: Some("c:/repo/".to_string()),
+                archived_at: None,
+            },
+            PartialProjectEntry {
+                agent_id: Some("healthy".to_string()),
+                path: Some("/repo/healthy".to_string()),
+                archived_at: None,
+            },
+        ];
+
+        let projected = project_agent_workspaces_with(&value, &projects, agents_from(&value));
+
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].id, "healthy");
+        assert_eq!(projected[0].resolved_workspace_path, "/repo/healthy");
+    }
+
+    #[test]
+    fn pathless_new_agent_runs_from_its_exact_project() {
+        let value = serde_json::json!({
+            "agents": [{ "id": "new", "name": "New", "enabled": true }]
+        });
+        let projects = vec![PartialProjectEntry {
+            agent_id: Some("new".to_string()),
+            path: Some("/repo/new".to_string()),
+            archived_at: None,
+        }];
+
+        let projected = project_agent_workspaces_with(&value, &projects, agents_from(&value));
+        assert_eq!(projected[0].resolved_workspace_path, "/repo/new");
+    }
+}
+
+#[cfg(test)]
 mod agent_monitor_tests {
     use super::*;
+
+    #[test]
+    fn model_command_updates_the_existing_channel_override_owner() {
+        let mut config = serde_json::json!({
+            "agents": [{
+                "id": "agent-1",
+                "model": "agent-model",
+                "channels": [{
+                    "id": "channel-1",
+                    "overrides": { "model": "channel-model" }
+                }]
+            }]
+        });
+
+        let channel_owned =
+            update_agent_channel_model_value(&mut config, "agent-1", "channel-1", "next-model")
+                .unwrap();
+
+        assert!(channel_owned);
+        assert_eq!(config["agents"][0]["model"], "agent-model");
+        assert_eq!(
+            config["agents"][0]["channels"][0]["overrides"]["model"],
+            "next-model",
+        );
+    }
+
+    #[test]
+    fn model_command_updates_agent_owner_when_channel_inherits() {
+        let mut config = serde_json::json!({
+            "agents": [{
+                "id": "agent-1",
+                "model": "agent-model",
+                "channels": [{ "id": "channel-1" }]
+            }]
+        });
+
+        let channel_owned =
+            update_agent_channel_model_value(&mut config, "agent-1", "channel-1", "next-model")
+                .unwrap();
+
+        assert!(!channel_owned);
+        assert_eq!(config["agents"][0]["model"], "next-model");
+    }
 
     #[tokio::test]
     async fn proxy_restart_waiter_closes_admission_only_at_idle_boundary() {
@@ -2099,6 +2407,7 @@ pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
 
         match salvage_agents_from_value(&value, &api_keys) {
             Some(agents) => {
+                let agents = project_agent_workspaces(&value, agents);
                 if i == 0
                     && (normalized
                         || migrated_provider_env
@@ -2208,6 +2517,98 @@ pub(super) fn persist_agent_config_patch(
 
     ulog_info!("[agent] Persisted config patch for agent {}", agent_id);
     Ok(())
+}
+
+pub(super) fn persist_agent_channel_model(
+    agent_id: &str,
+    channel_id: &str,
+    model: &str,
+) -> Result<AgentConfigPatch, String> {
+    let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
+    let config_path = home.join(".myagents").join("config.json");
+    let mut channel_owned = false;
+    let updated = with_config_lock(&config_path, true, |config| {
+        channel_owned = update_agent_channel_model_value(config, agent_id, channel_id, model)?;
+        Ok(())
+    })?;
+
+    if !channel_owned {
+        return Ok(AgentConfigPatch {
+            model: Some(model.to_string()),
+            ..Default::default()
+        });
+    }
+
+    let channels = updated
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
+        })
+        .and_then(|agent| agent.get("channels"))
+        .cloned()
+        .ok_or_else(|| format!("[agent] Agent {} has no channels[]", agent_id))?;
+    let channels = serde_json::from_value(channels)
+        .map_err(|error| format!("[agent] Invalid channels after model update: {}", error))?;
+    Ok(AgentConfigPatch {
+        channels: Some(channels),
+        ..Default::default()
+    })
+}
+
+fn update_agent_channel_model_value(
+    config: &mut serde_json::Value,
+    agent_id: &str,
+    channel_id: &str,
+    model: &str,
+) -> Result<bool, String> {
+    let agents = config
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| "[agent] No agents[] in config.json".to_string())?;
+    let agent = agents
+        .iter_mut()
+        .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
+        .ok_or_else(|| format!("[agent] Agent {} not found in config.json", agent_id))?;
+    let channel_owned = {
+        let channel = agent
+            .get_mut("channels")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|channels| {
+                channels.iter_mut().find(|channel| {
+                    channel.get("id").and_then(serde_json::Value::as_str) == Some(channel_id)
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "[agent] Channel {} not found for Agent {}",
+                    channel_id, agent_id,
+                )
+            })?;
+        let override_owned = channel
+            .get("overrides")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|overrides| overrides.get("model"))
+            .is_some_and(serde_json::Value::is_string);
+        if override_owned {
+            channel["overrides"]["model"] = serde_json::Value::String(model.to_string());
+            true
+        } else if channel
+            .get("model")
+            .is_some_and(serde_json::Value::is_string)
+        {
+            channel["model"] = serde_json::Value::String(model.to_string());
+            true
+        } else {
+            false
+        }
+    };
+    if !channel_owned {
+        agent["model"] = serde_json::Value::String(model.to_string());
+    }
+    Ok(channel_owned)
 }
 
 #[derive(Debug, Clone)]
@@ -2534,12 +2935,24 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                     agent_config.id
                 );
                 // Create bot instance directly (no transit through ManagedImBots)
+                let creation_permit = match crate::sidecar::begin_lifecycle_spawn_permit() {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        ulog_warn!(
+                            "[agent] Auto-start admission closed for channel {}: {}",
+                            bot_id,
+                            error
+                        );
+                        continue;
+                    }
+                };
                 match create_bot_instance(
                     &app_handle,
                     &sidecar_manager,
                     bot_id.clone(),
                     im_config,
                     Some(agent_config.id.clone()),
+                    &creation_permit,
                 )
                 .await
                 {
@@ -3047,12 +3460,24 @@ pub async fn monitor_agent_channels(
                 );
             }
 
+            let creation_permit = match crate::sidecar::begin_lifecycle_spawn_permit() {
+                Ok(permit) => permit,
+                Err(error) => {
+                    ulog_warn!(
+                        "[agent-monitor] Restart admission closed for channel {}: {}",
+                        channel_id,
+                        error
+                    );
+                    continue;
+                }
+            };
             match create_bot_instance(
                 &app_handle,
                 &sidecar_manager,
                 channel_id.clone(),
                 im_config,
                 Some(agent_id.clone()),
+                &creation_permit,
             )
             .await
             {

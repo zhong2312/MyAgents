@@ -77,6 +77,8 @@ export interface SessionMetadata {
     /** Runtime's own session/thread ID (Codex: threadId, CC: session_id from hook).
      *  Different from our session `id` — used for resume across Sidecar restarts. */
     runtimeSessionId?: string;
+    /** Crash-recoverable, single-purpose commit intent for Codex conversation rewind. */
+    pendingConversationMutation?: PendingConversationMutation;
     /** Runtime-level cumulative usage totals for restore-safe delta calculation. */
     runtimeUsageTotals?: MessageUsage;
     /**
@@ -218,6 +220,8 @@ export interface SessionMessage {
     content: string;
     timestamp: string;
     sdkUuid?: string;  // SDK 分配的 UUID，用于 resumeSessionAt / rewindFiles
+    /** Exact runtime-native root Turn represented by this terminal assistant row. */
+    runtimeTurnAnchor?: RuntimeTurnAnchor;
     attachments?: MessageAttachment[];
     /** Usage info (only for assistant messages) */
     usage?: MessageUsage;
@@ -227,6 +231,21 @@ export interface SessionMessage {
     durationMs?: number;
     /** Message source metadata (IM integration) */
     metadata?: MessageSourceMetadata;
+}
+
+export interface RuntimeTurnAnchor {
+    turnId: string;
+    rootUserMessageId: string;
+}
+
+export interface PendingConversationMutation {
+    schemaVersion: 1;
+    kind: 'codex-rewind';
+    sourceRuntimeSessionId: string;
+    /** null means the replacement starts fresh on the next materialization. */
+    replacementRuntimeSessionId: string | null;
+    sourceMessageCount: number;
+    targetMessageCount: number;
 }
 
 /**

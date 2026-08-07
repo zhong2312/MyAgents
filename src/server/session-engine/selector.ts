@@ -1,19 +1,156 @@
 import { interruptCurrentResponse } from '../agent-session';
 import {
+  getActiveRuntimeSource,
   getActiveRuntimeType,
   hasPendingExternalAskUserQuestion,
   isExternalSessionActive,
+  popLastUserMessageForRetry,
+  prewarmExternalSession,
+  restoreExternalSessionState,
   shouldUseExternalRuntime,
+  updateExternalRuntimeConfig,
 } from '../runtimes/external-session';
 import { createBuiltinSessionEngine } from './builtin-adapter';
 import { createExternalSessionEngine } from './external-adapter';
-import type { SessionEngine, SessionEngineKind } from './types';
+import type { ExternalRuntimeConfigPatch } from '../runtimes/types';
+import type {
+  ExternalConfigSource,
+  ExternalConfigUpdateResult,
+} from '../runtimes/external-session';
+import { isPermissionModeForRuntimeIdentity } from '../../shared/providerExecution';
+import type { CapabilityOperationResult, SessionEngine, SessionEngineKind } from './types';
 import type { TurnOwner } from '../session-core/turn-queue';
 import { managementApi } from '../utils/management-api-client';
 import { cancelTaskSessionBirth } from './task-session-birth';
 
 const builtinEngine = createBuiltinSessionEngine();
 const externalEngine = createExternalSessionEngine();
+
+const EXTERNAL_CONFIG_SOURCES = new Set<ExternalConfigSource>([
+  'runtime-config',
+  'message-snapshot',
+  'desktop',
+  'im-sync',
+  'cron-sync',
+  'adopt-sync',
+]);
+
+function parseExternalConfigSource(value: unknown): ExternalConfigSource {
+  return typeof value === 'string' && EXTERNAL_CONFIG_SOURCES.has(value as ExternalConfigSource)
+    ? value as ExternalConfigSource
+    : 'runtime-config';
+}
+
+type ExternalRuntimeConfigBody = {
+  model?: string | null;
+  permissionMode?: unknown;
+  reasoningEffort?: string | null;
+};
+
+export async function updateExternalRuntimeConfigAtSelector(request: {
+  runtime?: unknown;
+  runtimeConfig: ExternalRuntimeConfigBody;
+  source?: unknown;
+}): Promise<{
+  httpStatus: number;
+  body: ExternalConfigUpdateResult | { success: false; error: string };
+}> {
+  if (!shouldUseExternalRuntime()) {
+    return {
+      httpStatus: 400,
+      body: { success: false, error: 'Runtime config endpoint is only for external runtimes' },
+    };
+  }
+
+  const activeRuntime = getActiveRuntimeType();
+  if (request.runtime && request.runtime !== activeRuntime) {
+    return {
+      httpStatus: 400,
+      body: { success: false, error: `Runtime mismatch: sidecar=${activeRuntime}, payload=${request.runtime}` },
+    };
+  }
+
+  const requestedPermissionMode = request.runtimeConfig.permissionMode;
+  if (requestedPermissionMode !== undefined && requestedPermissionMode !== null
+      && typeof requestedPermissionMode !== 'string') {
+    return {
+      httpStatus: 400,
+      body: { success: false, error: 'permissionMode must be a string or null' },
+    };
+  }
+  if (typeof requestedPermissionMode === 'string' && requestedPermissionMode.trim()) {
+    const runtimeSource = getActiveRuntimeSource();
+    if (!isPermissionModeForRuntimeIdentity(requestedPermissionMode, activeRuntime, runtimeSource)) {
+      return {
+        httpStatus: 400,
+        body: {
+          success: false,
+          error: `Invalid permissionMode '${requestedPermissionMode}' for ${runtimeSource ?? activeRuntime}`,
+        },
+      };
+    }
+  }
+
+  const patch: ExternalRuntimeConfigPatch = {
+    ...('model' in request.runtimeConfig ? { model: request.runtimeConfig.model ?? '' } : {}),
+    ...('permissionMode' in request.runtimeConfig
+      ? { permissionMode: (request.runtimeConfig.permissionMode as string | null) ?? '' }
+      : {}),
+    ...('reasoningEffort' in request.runtimeConfig
+      ? { reasoningEffort: request.runtimeConfig.reasoningEffort ?? '' }
+      : {}),
+  };
+  const result = await updateExternalRuntimeConfig(patch, {
+    source: parseExternalConfigSource(request.source),
+  });
+  return { httpStatus: result.success ? 200 : 500, body: result };
+}
+
+export async function prewarmExternalRuntimeAtSelector(options: {
+  sessionId: string;
+  workspacePath: string;
+  model?: string;
+}): Promise<{ httpStatus: number; body: Record<string, unknown> }> {
+  if (!shouldUseExternalRuntime()) {
+    return {
+      httpStatus: 400,
+      body: { success: false, error: 'Pre-warm is only for external runtimes' },
+    };
+  }
+  if (!options.sessionId) {
+    return {
+      httpStatus: 400,
+      body: { success: false, error: 'No sessionId available' },
+    };
+  }
+  const result = await prewarmExternalSession({
+    sessionId: options.sessionId,
+    workspacePath: options.workspacePath,
+    scenario: { type: 'desktop' },
+    model: options.model,
+  });
+  return { httpStatus: 200, body: { success: true, ...result } };
+}
+
+export async function restoreInitialExternalSessionAtSelector(sessionId: string, workspacePath: string): Promise<boolean> {
+  if (!shouldUseExternalRuntime()) return false;
+  const restored = await restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
+  if (!restored.success) throw new Error(restored.error ?? 'External Session restore failed');
+  return true;
+}
+
+export function retryLastExternalUserMessageAtSelector(
+  userMessageId: string,
+): Promise<CapabilityOperationResult> {
+  if (!shouldUseExternalRuntime()) {
+    return Promise.resolve({
+      success: false,
+      status: 400,
+      error: 'external-retry is only for external runtimes; builtin uses /chat/rewind',
+    });
+  }
+  return popLastUserMessageForRetry(userMessageId);
+}
 
 export function getSessionEngine(): SessionEngine {
   return shouldUseExternalRuntime() ? externalEngine : builtinEngine;

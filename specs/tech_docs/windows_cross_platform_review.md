@@ -3,6 +3,7 @@
 > **日期**：2026-06-06 · **分支**：`dev/0.2.31`
 > **用途**：在 **Windows 真机**上实测确认本文列出的跨端兼容问题。Windows 跑 **WebView2（Chromium/Edge，Evergreen）**；本仓库长期只在 **macOS（WKWebView/WebKit）** 开发与度量，二者在 CSP 继承、滚动条布局、原生子 webview 合成、DPR 等处系统性发散。
 > **重要**：以下结论是 macOS 主机上的**静态源码分析 + WebKit-vs-Chromium 行为推理**得出的，**未在 Windows 实跑过**。标 `需实测` 的项，请按本文「验证步骤」在真机 WebView2 build 上先确认现象，再决定修复。
+> **2026-08-02 更新**：W3 已按原生输入感知滚动条 PRD 完成代码与确定性测试：所有共享默认 data directory 的 WebView builder 统一走 `src-tauri/src/webview_policy.rs`，Windows 选择 Fluent Overlay，Renderer 的全局 6px / 透明 thumb / scroll activity 模拟已删除。Windows 真机矩阵仍未执行，因此状态是 `implemented-needs-verify`，不是可发布结论。
 
 普通文本复制统一走 `src/renderer/utils/clipboard.ts::copyPlainText`：WebView2 的 Async Clipboard 即使存在也可能因焦点/权限 reject，helper 会在同一用户动作内退回隐藏 textarea selection copy，并且两路都失败时 reject，调用方不得显示“已复制”。Windows 真机回归必须覆盖“Async Clipboard reject + fallback 成功”和“双路径失败不误报”两种场景。
 > **配套**：完整 PRD 在 `specs/prd/prd_0.2.31_windows_cross_platform_review.md`（注意 `specs/prd/` 被 `.gitignore`，**不会同步到 Windows 机器** —— 故本 tech_doc 自包含全部信息）。相关 memory：见 `project_windows_cross_platform_review.md`。
@@ -19,7 +20,7 @@
 |---|---|---|---|
 | **W1** | 🔴 would-break | 工具生成图片用 `http://127.0.0.1:PORT` 当 `<img src>`，不在 CSP `img-src` → Codex/gemini 产图在 Windows 大概率全裂 | **是**（先确认） |
 | **W2** | 🔴 would-break（限 D3/Lucide/Mermaid 等 widget） | srcdoc widget 在 Chromium 继承父 CSP，CDN `<script>` 被拦；Chart.js 已修，其余 CDN 库 widget 空白 | 否（代码注释自证；实测作确认） |
-| **W3** | 🟠 would-degrade | Windows 经典滚动条占 17px 布局宽 → 打乱 Mac 标定的 Virtuoso 高度模型，流式滚动抖 | **是** |
+| **W3** | 🟠 implemented-needs-verify | Windows 改由 WebView2 Fluent Overlay；主滚动面保留 stable gutter 作为旧 Runtime / classic fallback 的布局保护 | **是（发布硬门槛）** |
 | **W4** | 🟠 would-degrade | 分栏浏览器是 OS 级 WebView2 子控件，`transition-[width]` 期间每帧 resize → 撕裂 + IPC 风暴 | **是** |
 | **W5** | 🟡 latent/minor | `macFunctionKeyGuard` 未按平台门控 → Windows 上几乎每次 Ctrl+键都全 DOM 扫描（永远 no-op） | 否 |
 
@@ -71,17 +72,19 @@
 
 ---
 
-### W3 — Windows 滚动条占布局宽，打乱 Virtuoso 高度模型 🟠 `needs-verify`
+### W3 — 原生输入感知滚动条与 Virtuoso 宽度稳定性 🟠 `implemented-needs-verify`
 
-- **v0.2.37 补充（视觉显隐）**：renderer 全局已在 Windows 上把滚动条 thumb 改为“默认透明、滚动中短暂显色”，以匹配 macOS overlay scrollbar 的静止观感；实现位于 `src/renderer/utils/overlayScrollbarActivity.ts` + `src/renderer/index.css`。这只解决可见 thumb 常驻的问题，仍保留 6px scrollbar 几何，所以下面的布局宽 / gutter 稳定性分析仍成立。
-- **现象（预期）**：长会话流式输出时，消息列表滚动**抖动/跳动**比 Mac 明显；正文列（居中的 `max-w-3xl`）相对窗口**略偏左**；滚动条出现/消失瞬间整列重排。
-- **根因**：`src/renderer/components/MessageList.tsx` 滚动模型按 macOS **overlay 滚动条（0px 布局宽）** 标定。Windows/WebView2 是**经典非 overlay 滚动条**，占布局宽（`index.css:532-554` 的 `::-webkit-scrollbar{width:6px}` 在 Chromium 下仍占宽、只是渲染细）。后果：① 居中列在 scroller client 宽里居中 → Windows 上左移、且 item 按不同于 Mac 标定的宽度重测 → `defaultItemHeight=480`（`:601`）更不准 → 更多挂载后高度修正/滚动抖；② 滚动条出现（内容越过 overflow 阈值）瞬间收窄内容盒 → 重排每行 → 正好在流式 reveal 想保持 pin 时打断 `atBottom`。
-- **验证步骤**：
-  1. Windows build，开一个**长会话**，触发一次较长的流式输出。
-  2. 观察滚动是否抖动/跳动、正文列是否偏左、滚动条出现时是否整体重排。
-  3. 对照 Mac 上同会话（应更稳/居中）。
-- **确认后的修法（复用仓库惯例）**：给 Virtuoso scroller（及包裹 `max-w-3xl` 的内层 overflow 容器）加 **`scrollbar-gutter: stable`** —— 无条件预留 gutter，内容盒宽不再随滚动条出现/消失振荡，宽度确定后 `defaultItemHeight` 标定两端都成立。仓库已有惯例：`TaskCenterOverlay.tsx:391`、`FileSearchResults.tsx:78` 已用 `scrollbarGutter:'stable'`。
-- **D 不变量**：Mac 滚动/居中/虚拟化逐像素不回退；流式 follow/pin、phantom-row 防护不变。
+- **旧根因**：Renderer 曾对所有元素强制 6px scrollbar，并在 Windows 用 scroll capture + 850ms activity class 把 thumb 在静止时设为透明。它只有“滚动中”状态，没有鼠标寻找、hover 或拖拽状态；同时 classic scrollbar 仍占布局宽，overflow 阈值变化会让消息列与文件树重排。
+- **现行 owner**：`src-tauri/src/webview_policy.rs` 是 native style 的唯一解析入口。Windows 返回 `ScrollBarStyle::FluentOverlay`，macOS / Linux 返回 `Default`；主窗口、Browser child、macOS / Windows 浮球、Shield 与 Companion 的全部 builder 都调用同一 policy。这个一致性是 WebView2 共享 data directory 的硬约束，由 Rust 测试枚举 builder 防止后续漏配。
+- **Renderer 边界**：全局 6px / `scrollbar-width: thin` / transparent thumb / `.myagents-scrollbar-active` 已删除，浮球对 conversation scrollbar 的局部 WebKit override 也已删除。Theme 只保留根 `color-scheme`。MessageList、WorkspaceTreeViewport、GlobalSidebar 与能力列表保留 `scrollbar-gutter: stable`，用于旧 Runtime 不支持 Fluent Overlay 或其它 classic fallback 时稳定内容盒；它不创建新的滚动层，也不改变 Virtuoso owner。
+- **Runtime 边界**：Fluent Overlay 需要 WebView2 Runtime ≥ 125.0.2535.41；旧 Runtime 对该选项不生效并保持浏览器 Default。不得用透明 thumb 或 pointer proximity 监听为旧 Runtime 再造模拟 fallback。
+- **Windows 发布验证（尚未执行）**：
+  1. 记录 Windows 10 / 11 与 WebView2 Runtime 版本；确认主窗口、Companion、embedded Browser child 都能创建，没有 data-directory style 冲突。
+  2. mouse 与 precision touchpad 分别验证静止、滚动、指针进入 scrollbar 区、thumb drag；显隐过程不能改变内容宽度。
+  3. 覆盖 light / dark、100% / 125% / 150% DPI、“始终显示 scrollbar”开关、High Contrast / forced colors。
+  4. 长会话流式输出验证 follow / pin、历史反向加载与正文居中；文件树验证 sticky ancestors、拖放、定位文件与 scroll restore。
+- **macOS 发布验证（尚未完整执行）**：系统 scrollbar“自动 / 滚动时 / 始终”偏好、mouse / trackpad、light / dark；确认没有 MyAgents 6px / 颜色残留，且 App 级 overlay 合成关系不回退。
+- **D 不变量**：scroll container / Virtuoso 继续拥有内容滚动；WebView / OS 唯一拥有 scrollbar 外观与输入态；不能因 W3 再引入 Renderer 可见性状态。
 
 ---
 
@@ -122,4 +125,4 @@
 
 ## 5. 推荐顺序
 
-先 Windows 烟测证实/排除 W1/W3/W4 → **W1（产图全裂，最高价值）→ W2（widget 库补全）→ W3（scrollbar-gutter）→ W4（webview 过渡隐藏）→ W5（守卫门控）**。每项独立成 commit、可单独回滚、复用既有原语、零新概念，且 MUST 保持 Mac 逐像素不回退。
+先 Windows 烟测证实/排除 W1/W3/W4 → **W1（产图全裂，最高价值）→ W2（widget 库补全）→ W3（代码已实现，完成真机发布矩阵）→ W4（webview 过渡隐藏）→ W5（守卫门控）**。每项独立成 commit、可单独回滚、复用既有原语、零新概念，且 MUST 保持 Mac 逐像素不回退。

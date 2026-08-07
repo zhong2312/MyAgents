@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.45
-> **Last Updated**: 2026-07-29
+> **Version**: 2.8.47
+> **Last Updated**: 2026-08-04
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -32,30 +32,32 @@ MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设
 
 MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `AppearanceMode`，不是三套 Theme。一套 Theme 必须同时交付并验收 light 与 dark，system 只跟随 OS 解析其中一套。
 
-Production catalog 当前包含八套完整 Theme：MyAgents Default、Default Black、Sage、Claude、
-Linear、Proof、Codex、Raycast。`myagents-default` 仍是 canonical
+Production catalog 当前包含九套完整 Theme：MyAgents Light、MyAgents Classic、MyAgents Classic2、
+Sage、Claude、Linear、Proof、Codex、Raycast。`myagents-default`（用户可见名 MyAgents Classic）仍是 canonical
 fallback；它的物理 owner 是：
 
 - `src/renderer/theme/themes/myagents-default.css`：通用首帧 fallback + 精确 Theme root / light / dark root 下的字体角色、颜色、材质、圆角、阴影、动画和 Floating Ball 运行时 Token；同一文件既静态保护 canonical 首帧，也由 manifest 提供实际 source 给注册校验与 runtime 激活；
 - `src/renderer/theme/themes/myagents-default.ts`：Launcher Hero 与 xterm / Monaco / Mermaid / Prism / Widget adapters；
-- `src/renderer/theme/themes/<preset>.css + <preset>.ts`：六套 palette Theme 的共置 package；CSS
+- `src/renderer/theme/themes/<preset>.css + <preset>.ts`：七套 preset-built palette Theme 的共置 package；CSS
   显式拥有完整 visual Token，manifest 只用 `?inline` 读取同一份源码，adapter 从这份 CSS 的语义
   色板派生，不复制 canonical 值；构造与 Registry 校验共享语义解析器，不依赖 production minifier
   是否保留属性引号、空白或末尾分号；
-- `default-black` 是当前产品默认，也是受控的 Baseline A/B：完整复制 canonical host Token，只将 light
-  `button-primary-bg/hover` 改为中性黑；dark、Hero 与五类 embedded adapter 与 Default 保持同源，
-  并由测试锁定除此配对外不得漂移；
+- `myagents-light` 是当前产品默认：完整复制 Claude host Token，只将 light
+  `button-primary-bg/hover` 改为中性黑；dark 与五类 embedded adapter 与 Claude 保持一致；
+- `default-black`（用户可见名 MyAgents Classic2）保留为 canonical 的受控 Baseline A/B：同样只将 light
+  主按钮改为中性黑，dark、Hero 与五类 embedded adapter 与 MyAgents Classic 保持同源；两组差异都由测试锁定；
 - `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale，以及不携带视觉值的 Tailwind runtime Token 编译桥。
 
 组件只消费语义 Token 或 `useResolvedTheme()` adapter，不持有 light/dark palette，不观察 `.dark` 反推状态。Widget adapter 必须提供 iframe 可直接使用的 literal，不能引用宿主 `var(...)`。完整 Theme 不允许让用户混搭颜色、字体、背景等零件；某 Theme 缺项时整套回退 canonical default。
 
 可主题化：宿主与 Space 的色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 不维护第二套 palette；其 paper、文字、圆角、阴影、动作色与业务状态色直接继承当前全局 Theme。
 
-八套 Theme 的产品顺序和动作语义：
+九套 Theme 的产品顺序和动作语义：
 
 | Theme | 主要视觉角色 |
 |---|---|
-| MyAgents Default / Default Black | 暖纸张、陶土橙；Default Black 是当前产品默认，仅将 light 主按钮改为中性黑，本章色值表仍只描述 canonical Theme |
+| MyAgents Light | Claude 的柔和中性色表面与陶土强调色；当前产品默认，light 主按钮使用中性黑 |
+| MyAgents Classic / MyAgents Classic2 | 暖纸张、陶土橙；Classic2 仅将 Classic 的 light 主按钮改为中性黑，本章色值表仍只描述 canonical Theme |
 | Sage | PR #441 的鼠尾草绿与自然纸面 |
 | Claude / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
 
@@ -532,6 +534,8 @@ Item 选中: 文字 var(--accent-warm)
 
 所有新 Overlay 必须复用 `src/renderer/components/OverlayBackdrop.tsx`，不要手写裸 backdrop。组件封装了正确的 pointer dismissal 语义；`className` 只补 z-index、padding、overflow 等布局差异，图片预览用 `variant="dark"`。可关闭 Overlay 还必须用 `useCloseLayer(handler, zIndex)` 注册关闭层，且 z-index 与视觉层级一致，避免 Cmd+W 跳过 Overlay 直接关闭 Tab。
 
+内嵌 `BrowserPanel` 是全表面例外：它承载浮于 React DOM 之上的原生 child Webview，窄布局时必须让同一个 Chat / Tab-owned host 原位铺满 Chat，不能通过 `OverlayBackdrop` 重挂载或重建 Webview。其全屏关闭层 z-index 必须与视觉层级一致，并与分屏、工具栏、Browser Tab × 复用同一个关闭 callback；只有当前 active Browser view 可以消费该关闭层。
+
 全局历史搜索由 DOM 顺序早于 Tab 工作区的 `GlobalSidebar` 声明，因此 `HistorySearchOverlayFrame` 的稳定外壳必须 portal 到 `document.body`。这里不能只提高 `z-index`：macOS WKWebView 的 overflow scrollbar 使用独立合成层，后续 Tab 滚动面仍可能穿透较早的 backdrop。未来新增或重构同类 App 级 Overlay 时应先核对 owner 与 DOM 绘制顺序；页面内部、天然位于自身滚动面之后的局部 Overlay不受此约束。
 
 **适用范围**：
@@ -543,6 +547,8 @@ Item 选中: 文字 var(--accent-warm)
 
 **例外**：
 - 图片预览（ImagePreview）使用 `bg-black/80 backdrop-blur-sm`，深色背景便于查看图片内容
+- 图片预览的双击、触摸板捏合、双指平移、鼠标拖拽和工具栏必须共享一个 viewport transform owner；双击在适应窗口与 200% 间切换，缩放锚定手势位置，放大后平移受图片边界约束，重置同时清除缩放、位移与旋转
+- PDF / DOCX / PPTX 文档预览的各自 zoom owner 也必须消费统一的跨 WebView 捏合协议：WebView2 使用 Ctrl+wheel，WKWebView 使用 gesturestart/change；它们只复用缩放手势归一化，不继承 ImagePreview 的平移、拖拽或 transform state
 
 **点击遮罩关闭**：
 - 支持点击遮罩层区域触发关闭（等同于取消操作）
@@ -848,6 +854,13 @@ transition: opacity var(--duration-slow),
 对齐: 右侧（或左侧皆可，但需与 AI 区分）
 ```
 
+#### 对话 Rewind / Fork 操作
+
+- Builtin 沿用 SDK anchor 行为；Codex 仅在当前版本支持且消息已持久化 exact root-turn anchor 时显示入口，不能给 legacy/失败/进行中消息提供看似可用的按钮。
+- Rewind 入口位于 user bubble，确认弹窗必须明确“只回溯对话，工作区文件不变”；输入区已有草稿或图片时还要明确目标消息会替换草稿。确认后立即乐观截断并把目标文本/图片放回输入区，失败则完整恢复操作前的消息和 composer。
+- Fork 入口位于成功 assistant action row，成功沿用新 Tab 打开体验，不额外弹成功 toast。请求期间禁用重复提交。
+- Codex Rewind 成功使用轻量成功反馈；native restore 暂时失败时说明回溯已生效、可重开继续，不能误报为回溯失败。分类错误用用户可理解的 `busy / anchor unavailable / update required / native fork / persistence / restore` 文案。
+
 ### 10.3 工具调用块 (Tool Call Blocks)
 
 工具调用是 AI Agent 的核心交互，需要清晰但不喧宾夺主。
@@ -1040,6 +1053,18 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 滚动: 自动滚动到底部（用户手动滚动时暂停）
 ```
 
+- 切到其他桌面应用不暂停 AI、SSE、消息保存或当前 active Chat 的可见刷新；窗口仍在双屏/分屏中展示时，即使失焦也继续实时渲染。只有 MyAgents 内部未展示、由 host 设为 `content-visibility:hidden` 的 inactive Tab 冻结虚拟列表输入。
+- 若切走前仍在自动跟随，失焦期间继续显示当前最新输出并自动跟随；回到 MyAgents 时只允许一次无动画位置校正。
+- 若切走前已主动上滑阅读历史，回到 MyAgents 时应保持同一消息及其相对视口位置；新输出只续在下方，不抢回底部。
+
+#### 已有 Session 恢复
+
+- 从 active cold Tab 尚未挂载 `TabProvider` 开始，到 REST 历史完成采用同一个稳定的 `ChatBootOverlay`；inactive cold Tab 仍保持廉价 paper placeholder。遮罩允许在同一 Chat 挂载周期内即时重新启用，只在退出时做轻量淡出。
+- 历史内容只揭示一次：不得先显示 SSE cold replay、原始 Markdown / stringified ContentBlock 或旧 Session 内容，再用 REST 结果替换。
+- REST 内容提交后直接显示最终排版；禁止在下一帧把已可见 MessageList 的 opacity 重置为 0 后再次淡入。
+- `ChatBootOverlay` 是恢复期唯一的可见状态与旋转动画 owner，MessageList 不在其下重复挂载 loading。恢复失败时同一壳层原位显示失败态，并继续覆盖不可信的旧内容，直到用户重开、切换或新建对话。
+- 恢复失败文案属于当前目标 Session 的 restore token，不与普通对话错误共用；后续实时快照成功修复时，最终内容与壳层退出同次提交。恢复壳存在期间发送按钮与 action boundary 都不可提交消息。
+
 ---
 
 ## 11. CSS 变量完整定义
@@ -1146,7 +1171,7 @@ Shadow 运行时值是 Theme scheme 下的 `--theme-shadow-*`，Tailwind 只通�
 |------|-------|---------|---------|
 | 字体渲染 | 更平滑 | 更锐利 | 使用系统字体，信任系统渲染 |
 | 窗口控制 | 左上角红绿灯 | 右上角三按钮 | 使用系统原生控件；macOS Overlay inset 由 `NSWindow` 几何通知维护（见 §15），其余交给 Tauri |
-| 滚动条 | 自动隐藏 | WebView2 经典滚动条 | 全局活动态控制：稳定 6px 几何，thumb 仅滚动中显色 |
+| 滚动条 | 系统 Default，服从“自动 / 滚动时 / 始终显示”偏好 | WebView2 Fluent Overlay（Runtime ≥ 125；旧 Runtime 原生回退） | WebView / OS 负责显隐、hover 与拖拽；Renderer 不自绘 |
 | 圆角 | 系统级大圆角 | 小圆角/直角 | 使用自定义圆角，两端一致 |
 
 ### 12.2 字体渲染优化
@@ -1162,39 +1187,15 @@ body {
 
 ### 12.3 滚动条样式
 
-```css
-/* 跨平台细滚动条 */
-* {
-  scrollbar-width: thin;  /* Firefox */
-  scrollbar-color: var(--ink-subtle) transparent;
-}
+滚动条统一的是产品语义，不是跨平台硬编码同一组像素：静止时不抢注意力，滚动时反馈当前位置，鼠标或笔直接操作时提供平台原生的明确 hover / thumb / track 与拖拽能力。
 
-/* Webkit (Chrome/Safari/Edge) */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--ink-subtle);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+- Windows：Tauri WebView creation policy 为所有共享默认 data directory 的 WebView 设置 `ScrollBarStyle::FluentOverlay`。受支持的 WebView2 Runtime 负责从轻量滚动指示器切换到鼠标 / 笔可直接操作的 Fluent scrollbar，显隐不能引起内容宽度变化；Runtime 低于 125.0.2535.41 时能力不生效并保留原生 Default，不用透明 thumb 伪装 overlay。
+- macOS / Linux：保持 WebView `Default`，服从系统偏好、桌面环境与原生手势。应用不能用全局 6px 宽度、颜色或计时 class 覆盖系统行为。
+- Theme：`ThemeRuntime` 继续把当前 scheme 投影到根节点 `color-scheme`；这只提供原生控件的 light / dark 语义，不接管 scrollbar 的交互状态。
+- 标准位置：左侧全局侧栏、中央 AI 对话、右侧文件工作区必须保持各自独立的既有 scroll owner；能力列表等应用内常规滚动面遵循同一 native policy。MessageList、WorkspaceTreeViewport、GlobalSidebar 与能力列表使用 `scrollbar-gutter: stable` 保护 classic fallback 下的内容宽度，不新增平行 DOM scroller。
+- 局部例外：仅允许组件职责明确的隐藏轨道（例如横向 Tab rail、设置导航）或组件自带实现（例如 Monaco）。局部规则必须作用域隔离，不能覆盖三个标准滚动面；embedded Browser 的第三方页面可由页面自身 CSS 改写外观，不承诺 MyAgents 视觉一致性。
 
-/* Windows: renderer 全局 scroll capture 给正在滚动的元素加
-   .myagents-scrollbar-active。默认 thumb 透明，滚动停止后恢复透明，
-   保留 6px 几何以避免内容列重排。 */
-html.platform-windows.platform-windows,
-html.platform-windows.platform-windows * {
-  scrollbar-color: transparent transparent;
-}
-
-html.platform-windows.platform-windows.myagents-scrollbar-active,
-html.platform-windows.platform-windows .myagents-scrollbar-active {
-  scrollbar-color: var(--ink-subtle) transparent;
-}
-```
+禁止通过全局 `::-webkit-scrollbar`、`scrollbar-width: thin`、透明 thumb、scroll timer、pointer proximity 监听或第三方 ScrollArea 模拟原生输入感知行为。所有新增 Tauri WebView builder 必须复用 `src-tauri/src/webview_policy.rs`，避免同 data directory 的 WebView2 style 冲突。
 
 ---
 
@@ -1289,7 +1290,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 
 开启后的展开态从上到下依次为：原生窗口 chrome 与 rail/展开控制、独立产品身份行、新对话/搜索/任务/团队/技能与工具的连续主导航、Agent 工作区树、底部小助理/设置；其中团队入口仅在 Team Space 实验室开关开启且当前构建能力可用时出现，关闭后展开态与 rail 均不保留失效入口。主导航项与底部入口使用 36px 命中高度且不添加行间距；从主导航到 Agent 工作区、再到底部入口均不使用横分割线，主要层级只依靠 8–12px 组间留白、工作区标题和选中面，不将每组包成卡片。
 
-全局侧栏根面与顶部 Tab 标题栏共同消费 Theme-owned `--global-sidebar-bg`。八套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使两块 App Shell chrome 同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区；该色差独立承担分区，不再叠加侧栏右侧竖线或标题栏底部横线。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片与弹层继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
+全局侧栏根面与顶部 Tab 标题栏共同消费 Theme-owned `--global-sidebar-bg`。九套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使两块 App Shell chrome 同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区；该色差独立承担分区，不再叠加侧栏右侧竖线或标题栏底部横线。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片与弹层继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
 
 ```
 展开态 256px:
@@ -1331,8 +1332,8 @@ rail 64px:
 - 顶层工作区按连续资源树排布，工作区 wrapper 之间不添加额外 gap；工作区行与 Session 行都使用 `h-9`。普通工作区的展开箭头固定 14px：工作区列表使用 8px 左 inset，按钮再保留 4px 左 padding，避免箭头笔画贴住 hover 圆角面；箭头到工作区 icon 的间距同步由 8px 收到 4px，因此 icon 的绝对位置不变。工作区名称额外保留 4px 左 margin，使 icon 到名称仍为 8px，名称位置也不变。展开分支边线相对列表内容使用 10px 左缩进，使 1px 线的中心继续与箭头中心落在同一视觉轴；分支左 padding 由 8px 收到 4px，因此 Session 内容位置不变。工作区名称与 Session 标题都是主要可点击资源名，统一使用 `text-sm` 14px；层级由缩进、图标、颜色和字重表达。来源 tag 与日期保留 `text-xs` 12px meta 档，不能与主标题等权。工作区名称默认 `font-normal`，仅在 hover、focus、菜单打开、Launcher 关联或包含当前 Session 时升至 `font-medium`，避免静态资源列表持续争夺注意力。
 - 资源树始终只有一个持久选中面：Launcher 选择工作区时，工作区行与普通 hover 统一使用 `var(--hover-bg)`；Chat 已进入具体 Session 时，只由 Session active 行使用 `var(--hover-bg)`，父工作区不同时涂底或声明 `aria-current`，仅以中等字重保留路径上下文。两者均不增加 `paper-elevated` 或阴影；小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、静默加载占位和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。rail 工作区 flyout 与侧栏消费同一个 `--global-sidebar-bg`，避免白色浮层从侧栏材质中突兀跳出。
-- Chat 顶栏不再提供“返回启动页”：全局侧栏负责跨资源导航，用户通过关闭当前 Tab 或“新对话”建立下一条动线。Chat 顶栏与全局侧栏的“新对话”动作共用 `MessageSquarePlus` 语义图标，避免同一动作在两个入口分别显示通用加号与对话图标。工作区内历史浮层标题明确为“工作区历史记录”，避免被误解成跨工作区全局历史。
-- Chat 顶栏默认不展示工作区历史入口，既有按钮、下拉内容与切换逻辑继续保留；`AppConfig.showChatHistoryEntry` 缺省为 `false`，并由“设置 → 关于 → 开发者”中紧跟“开发者模式”的开关控制，切换后即时生效。全局侧栏中的跨工作区搜索与 Session 树不受影响。
+- Chat 顶栏不再提供“返回启动页”：全局侧栏负责跨资源导航。侧栏普通“新对话”优先聚焦 Tab 顺序中最左侧的现有 Launcher，只有不存在 Launcher 时才新建；顶部 Tab 栏“+”继续明确承担强制新建，避免重复点击侧栏堆积空启动页。Chat 顶栏与全局侧栏的“新对话”动作共用 `MessageSquarePlus` 语义图标，避免同一动作在两个入口分别显示通用加号与对话图标。侧栏 Session 标题仅在真实截断且持续 hover 1 秒后，以逃逸滚动裁切的 Tooltip 展示完整标题；未截断或提前离开时不显示。工作区内历史浮层标题明确为“工作区历史记录”，避免被误解成跨工作区全局历史。
+- Chat 顶栏默认不展示工作区历史入口，既有按钮、下拉内容与打开 / 聚焦逻辑继续保留；`AppConfig.showChatHistoryEntry` 缺省为 `false`，并由“设置 → 关于 → 开发者”中紧跟“开发者模式”的开关控制，切换后即时生效。全局侧栏中的跨工作区搜索与 Session 树不受影响。
 - Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。工作区面板标题栏不再显示冗余的“工作区”文字，只保留左侧工具与右侧动作；Chat 与面板之间不使用通顶边框，只保留上下各 16px 留白的 1px 内部短分隔线。面板以 200ms 横向滑入/滑出，对话区在一次提交最终宽度后从旧视觉中心同步归位；窄屏 overlay 只移动面板、不扰动对话区。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示；`prefers-reduced-motion` 下立即切换。
 - Chat 右侧工作区头部只展示工作区图标、名称、分支与路径，不展示文件/文件夹聚合计数，避免易过期的扫描结果与资源导航争夺注意力。底部 `Agent 能力` 初始收起，仅保留标题与总数；用户显式展开后再分配内容高度并渲染能力列表。
 - 从全局侧栏点击 Session 时，顶部立即新增并激活目标 Tab，Chat 子树同时挂载并由自身 `ChatBootOverlay` 覆盖启动过程；Sidecar ensure/activation 在其后完成。失败时撤销临时 Tab 并恢复仍存在的前一 Tab，不能让点击后数秒无反馈，也不能在 ready 后把主动切走的用户强拉回来。rail flyout 以 active Tab identity 的真实切换作为导航已发生的反馈，同 Tab 成功由当前资源表面交互周期的动作结果兜底；工作区 flyout 与搜索 overlay 每次重新开关都推进该周期。激活前拒绝或异常保留列表供重试，已完成乐观切换后的启动失败只回滚 Tab、不强行复活旧资源面。任何工作区或 Session 旧请求完成都不能关闭用户后来重新打开的 flyout / 搜索 overlay。
@@ -1413,6 +1414,8 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | 2.8.46 | 2026-07-29 | **全局侧边栏可见性开关**：全局侧边栏改为默认关闭且关闭时不挂载；标题栏右上角、Windows 最小化按钮左侧新增 44 × 24px 持久化滑动开关。该开关只控制侧边栏是否存在，既有 rail/展开控制继续负责开启后的侧栏宽度模式。 |
+| 2.8.47 | 2026-08-04 | **MyAgents Light 默认主题**：新增基于 Claude 完整 light/dark package 的 MyAgents Light，仅将 light Primary CTA 改为中性黑，并置于主题列表第一项成为未显式选择用户的新默认；MyAgents Default / Default Black 的用户可见名分别调整为 MyAgents Classic / MyAgents Classic2，稳定 ID 与显式选择兼容不变；Registry 产品顺序与 canonical fallback 注册顺序解耦，两组受控按钮差异由逐 Token 测试锁定 |
+| 2.8.46 | 2026-07-29 | **Session 恢复单次揭示**：已有 Session 从 active cold Tab 首帧起即由同一 Chat shell 覆盖，REST history restore 前不投影 SSE cold replay，消除 raw Markdown 中间态；最终历史同帧提交，移除 MessageList 的 600ms 二次淡入与重复 spinner；恢复失败继续隔离旧内容和迟到 replay，revision/generation 修复成功后一次释放，target 变更会取消旧 REST/timer；恢复期间发送 fail closed，同 Tab UI intent、renderer 已确认 Node binding 与服务端全部 binding mutation 分层串行，并以有限 predecessor 候选做 CAS，保证快速切换/reset 的最终 identity |
 | 2.8.45 | 2026-07-29 | **Markdown 代码横滑归属修复**：非换行代码正文显式声明 `overflow-x-auto`，让 user/query、assistant、文档等共享代码块及 Mermaid 源码视图恢复原生横向滚动，并在到达边缘时继续持有手势；普通正文的双指左右切 Tab 保持不变 |
 | 2.8.44 | 2026-07-29 | **macOS 红绿灯留白校准**：顶部 Tab 与侧栏同色后，主窗口红绿灯左侧 inset 从 5px 调至 15px，使左缘留白接近顶部留白，并与右侧固定 toggle 槽形成更均衡的间隔；继续由原生布局 owner 保证 zoom、resize 与全屏切换稳定，Windows 不受影响 |
 | 2.8.43 | 2026-07-29 | **Markdown 列表与代码面层级校准**：默认有序/无序列表整体缩进从 20px 调至 32px，让 marker 与正文左边界形成轻量区隔；compact 使用 24px，嵌套与 task list 保持文字列对齐。代码正文改与 Chat tool/process 组共用 `paper-inset / 30%` 浅表面，标题行接手原正文 `--code-bg`，Mermaid code view 同步，不新增颜色 Token |

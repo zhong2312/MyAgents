@@ -52,6 +52,8 @@ export interface SessionStartOptions {
   sessionId: string;
   workspacePath: string;
   initialMessage?: string;
+  /** Product message identity for the root turn started by initialMessage. */
+  initialClientUserMessageId?: string;
   initialImages?: ResolvedImagePayload[];
   systemPromptAppend?: string;
   model?: string;
@@ -76,6 +78,12 @@ export interface SessionStartOptions {
    * external CLI runtimes use the user's system CLI and native home directory.
    */
   runtimeSource?: RuntimeSource;
+  /**
+   * Do not persist the runtime-native thread/session. Used by short-lived
+   * utility turns such as auto-title generation. Runtime adapters that do not
+   * expose an ephemeral-session primitive may ignore this option.
+   */
+  ephemeral?: boolean;
   /**
    * Effective MyAgents MCP servers for runtimes that accept MCP at process
    * startup. The builtin SDK path owns live setMcpServers; managed Codex
@@ -218,6 +226,7 @@ export type UnifiedEvent =
 
   // === Turn lifecycle ===
   | { kind: 'turn_started' }
+  | { kind: 'root_turn_admitted'; runtimeTurnId: string; clientUserMessageId: string }
 
   // === Permission delegation ===
   | {
@@ -303,6 +312,30 @@ export type UnifiedEvent =
  */
 export type UnifiedEventCallback = (event: UnifiedEvent) => void;
 
+export type ConversationBranchBoundary =
+  | { kind: 'through-turn'; runtimeTurnId: string }
+  | { kind: 'before-turn'; runtimeTurnId: string };
+
+export type ConversationBranchResult =
+  | { kind: 'native-thread'; runtimeSessionId: string }
+  | { kind: 'fresh-thread' };
+
+export type RuntimeConversationBranchErrorCode =
+  | 'capability_unavailable'
+  | 'anchor_unavailable'
+  | 'native_fork_failed'
+  | 'unsubscribe_failed';
+
+export class RuntimeConversationBranchError extends Error {
+  constructor(
+    readonly code: RuntimeConversationBranchErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RuntimeConversationBranchError';
+  }
+}
+
 /**
  * AgentRuntime interface — one implementation per CLI type
  */
@@ -334,7 +367,18 @@ export interface AgentRuntime {
   ): Promise<RuntimeProcess>;
 
   /** Send a follow-up user message to an active session */
-  sendMessage(process: RuntimeProcess, message: string, images?: ResolvedImagePayload[]): Promise<void>;
+  sendMessage(
+    process: RuntimeProcess,
+    message: string,
+    images?: ResolvedImagePayload[],
+    options?: { clientUserMessageId?: string },
+  ): Promise<void>;
+
+  /** Create a runtime-native conversation branch at a stable root-turn boundary. */
+  branchConversation?(
+    process: RuntimeProcess,
+    boundary: ConversationBranchBoundary,
+  ): Promise<ConversationBranchResult>;
 
   /**
    * Append a user message to the currently active turn instead of starting a

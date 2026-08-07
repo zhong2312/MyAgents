@@ -332,10 +332,16 @@ export interface RuntimeInfo {
 
 export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
   {
-    value: 'default',
-    label: 'Default',
+    value: 'manual',
+    label: 'Manual',
     icon: '\u{1F6E1}',  // 🛡
     description: '每次工具调用都需要确认',
+  },
+  {
+    value: 'auto',
+    label: 'Auto',
+    icon: '\u2728',      // ✨
+    description: '由 Claude Code 自动判断工具权限',
   },
   {
     value: 'plan',
@@ -354,6 +360,12 @@ export const CC_PERMISSION_MODES: RuntimePermissionMode[] = [
     label: 'Bypass Permissions',
     icon: '\u26A1',      // ⚡
     description: '跳过所有权限确认',
+  },
+  {
+    value: 'dontAsk',
+    label: "Don't Ask",
+    icon: '\u{1F6AB}',  // 🚫
+    description: '不弹出权限确认，未授权操作直接拒绝',
   },
 ];
 
@@ -474,6 +486,26 @@ export function getRuntimePermissionModes(runtime: RuntimeType): RuntimePermissi
   }
 }
 
+/** Exact write-boundary validator. */
+export function isRuntimePermissionMode(
+  mode: string | null | undefined,
+  runtime: RuntimeType,
+): boolean {
+  const trimmed = typeof mode === 'string' ? mode.trim() : '';
+  return Boolean(trimmed)
+    && getRuntimePermissionModes(runtime).some(candidate => candidate.value === trimmed);
+}
+
+/** Read-only historical projection. Unknown or foreign values are invalid and
+ * let the caller fall back to the runtime's interactive default. */
+export function projectPermissionModeForRuntime(
+  mode: string | null | undefined,
+  runtime: RuntimeType,
+): string | undefined {
+  const trimmed = typeof mode === 'string' ? mode.trim() : '';
+  return isRuntimePermissionMode(trimmed, runtime) ? trimmed : undefined;
+}
+
 /**
  * Conservative runtime-family matcher for permission modes.
  *
@@ -529,7 +561,7 @@ export const CC_MODELS: RuntimeModelInfo[] = [
  */
 export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
   switch (runtime) {
-    case 'claude-code': return 'default';
+    case 'claude-code': return 'manual';
     case 'codex': return 'full-auto';
     case 'gemini': return 'autoEdit';  // D5: desktop default = Auto Edit
     case 'builtin': return 'auto';

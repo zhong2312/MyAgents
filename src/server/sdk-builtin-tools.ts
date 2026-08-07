@@ -29,16 +29,16 @@ export const SDK_BUILTIN_TOOLS = [
   'TaskUpdate',
   'Monitor',
   'ReportFindings',
+  'Workflow',
+  'ScheduleWakeup',
+  'EnterWorktree',
+  'ExitWorktree',
 ] as const;
 
 export const SDK_EXCLUDED_BUILTIN_TOOLS = [
   'CronCreate',
   'CronDelete',
   'CronList',
-  'ScheduleWakeup',
-  'EnterWorktree',
-  'ExitWorktree',
-  'Workflow',
   'PushNotification',
   'DesignSync',
 ] as const;

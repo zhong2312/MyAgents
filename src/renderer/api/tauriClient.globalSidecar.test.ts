@@ -1,16 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-    invoke: vi.fn(),
-}));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-    invoke: mocks.invoke,
-}));
-
-vi.mock('@/utils/browserMock', () => ({
-    isTauriEnvironment: () => true,
-}));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
+vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => true }));
 
 async function loadClient() {
     vi.resetModules();
@@ -18,16 +11,13 @@ async function loadClient() {
 }
 
 describe('tauriClient global sidecar readiness', () => {
-    beforeEach(() => {
-        mocks.invoke.mockReset();
-    });
+    beforeEach(() => mocks.invoke.mockReset());
 
-    it('uses Rust sidecar state instead of a same-webview ready promise', async () => {
+    it('probes Rust readiness without exposing or caching the physical URL', async () => {
         mocks.invoke.mockResolvedValue('http://127.0.0.1:31415');
-        const { getGlobalServerUrlWithWait } = await loadClient();
+        const { waitForGlobalSidecar } = await loadClient();
 
-        await expect(getGlobalServerUrlWithWait()).resolves.toBe('http://127.0.0.1:31415');
-
+        await expect(waitForGlobalSidecar()).resolves.toBeUndefined();
         expect(mocks.invoke).toHaveBeenCalledWith('cmd_get_global_server_url');
     });
 
@@ -39,28 +29,18 @@ describe('tauriClient global sidecar readiness', () => {
             if (attempts < 3) throw new Error('No running sidecar for tab __global__');
             return 'http://127.0.0.1:31416';
         });
-        const { getGlobalServerUrlWithWait } = await loadClient();
+        const { waitForGlobalSidecar } = await loadClient();
 
-        await expect(getGlobalServerUrlWithWait()).resolves.toBe('http://127.0.0.1:31416');
+        await expect(waitForGlobalSidecar()).resolves.toBeUndefined();
         expect(attempts).toBe(3);
     });
 
-    it('times out with the last Rust-side failure in the error message', async () => {
-        mocks.invoke.mockRejectedValue(new Error('No running sidecar for tab __global__'));
-        const { waitForGlobalSidecar } = await loadClient();
-
-        await expect(waitForGlobalSidecar(20)).rejects.toThrow(
-            /Global sidecar startup timeout after 20ms .*No running sidecar for tab __global__/,
-        );
-    });
 });
 
-describe('tauriClient renderer correlation', () => {
-    beforeEach(() => {
-        mocks.invoke.mockReset();
-    });
+describe('tauriClient owner-addressed control dispatch', () => {
+    beforeEach(() => mocks.invoke.mockReset());
 
-    it('uses the App active launcher tab instead of the previously mounted chat tab', async () => {
+    it('sends Session requests with logical owner and path, never a renderer-selected URL', async () => {
         mocks.invoke.mockResolvedValue({
             status: 200,
             body: '{}',
@@ -69,7 +49,7 @@ describe('tauriClient renderer correlation', () => {
         });
         const {
             getActiveTabId,
-            proxyFetch,
+            sessionSidecarFetch,
             setActiveCorrelation,
             setAppActiveCorrelation,
             setFocusedCorrelationTabId,
@@ -85,43 +65,32 @@ describe('tauriClient renderer correlation', () => {
             ],
         });
 
-        await proxyFetch('http://127.0.0.1:31415/api/test');
+        await sessionSidecarFetch('target-session', { type: 'tab', id: 'target-tab' }, '/api/test');
 
         expect(getActiveTabId()).toBe('new-launcher-tab');
-        expect(mocks.invoke).toHaveBeenCalledWith('proxy_http_request', {
+        expect(mocks.invoke).toHaveBeenCalledWith('session_sidecar_http_request', {
+            sessionIdHint: 'target-session',
+            sidecarOwnerType: 'tab',
+            sidecarOwnerId: 'target-tab',
             request: {
-                url: 'http://127.0.0.1:31415/api/test',
+                path: '/api/test',
                 method: 'GET',
                 body: undefined,
-                headers: {
-                    'X-MyAgents-Tab-Id': 'new-launcher-tab',
-                },
+                headers: { 'X-MyAgents-Tab-Id': 'new-launcher-tab' },
             },
         });
     });
 
-    it('keeps explicit tab-scoped correlation headers from the caller', async () => {
+    it('keeps explicit correlation headers on global owner-addressed requests', async () => {
         mocks.invoke.mockResolvedValue({
             status: 200,
             body: '{}',
             headers: { 'content-type': 'application/json' },
             is_base64: false,
         });
-        const {
-            proxyFetch,
-            setAppActiveCorrelation,
-        } = await loadClient();
+        const { globalSidecarFetch } = await loadClient();
 
-        setAppActiveCorrelation({
-            tabId: 'old-active-tab',
-            sessionId: 'old-active-session',
-            tabs: [
-                { id: 'old-active-tab', sessionId: 'old-active-session' },
-                { id: 'target-tab', sessionId: 'target-session' },
-            ],
-        });
-
-        await proxyFetch('http://127.0.0.1:31415/chat/send', {
+        await globalSidecarFetch('/chat/send', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -131,9 +100,9 @@ describe('tauriClient renderer correlation', () => {
             body: '{}',
         });
 
-        expect(mocks.invoke).toHaveBeenCalledWith('proxy_http_request', {
+        expect(mocks.invoke).toHaveBeenCalledWith('global_sidecar_http_request', {
             request: {
-                url: 'http://127.0.0.1:31415/chat/send',
+                path: '/chat/send',
                 method: 'POST',
                 body: '{}',
                 headers: {

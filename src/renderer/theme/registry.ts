@@ -28,6 +28,7 @@ import { absolutelyThemeManifest } from './themes/absolutely';
 import { codexThemeManifest } from './themes/codex';
 import { defaultBlackThemeManifest } from './themes/default-black';
 import { linearThemeManifest } from './themes/linear';
+import { myAgentsLightThemeManifest } from './themes/myagents-light';
 import { myAgentsDefaultTheme } from './themes/myagents-default';
 import { createPresetTheme, type PresetThemeManifest } from './themes/preset-theme';
 import { proofThemeManifest } from './themes/proof';
@@ -608,10 +609,12 @@ export class ThemeRegistry {
   private readonly definitions = new Map<string, ThemeDefinition>();
   private readonly previewSwatches = new Map<string, ThemePreviewSwatches>();
   private readonly warnedUnknownIds = new Set<string>();
+  private readonly presentationOrder: readonly string[];
 
   constructor(
     definitions: readonly ThemeDefinition[],
     optionalFactories: readonly OptionalThemeFactory[] = [],
+    presentationOrder?: readonly string[],
   ) {
     const seenIds = new Set<string>();
     for (const definition of definitions) {
@@ -649,6 +652,22 @@ export class ThemeRegistry {
     if (!this.definitions.has(CANONICAL_THEME_ID)) {
       throw new Error(`[theme] Registry must include canonical Theme ${CANONICAL_THEME_ID}`);
     }
+    if (presentationOrder) {
+      const orderedIds = new Set(presentationOrder);
+      if (orderedIds.size !== presentationOrder.length) {
+        throw new Error('[theme] Product order must not contain duplicate Theme IDs');
+      }
+      const unknownIds = presentationOrder.filter(id => !seenIds.has(id));
+      const omittedIds = [...seenIds].filter(id => !orderedIds.has(id));
+      if (unknownIds.length > 0 || omittedIds.length > 0) {
+        throw new Error(`[theme] Product order must cover every declared Theme ID (unknown: ${unknownIds.join(', ') || 'none'}; omitted: ${omittedIds.join(', ') || 'none'})`);
+      }
+      // A rejected optional package stays absent without disturbing the order
+      // of the remaining accepted packages.
+      this.presentationOrder = presentationOrder.filter(id => this.definitions.has(id));
+    } else {
+      this.presentationOrder = [...this.definitions.keys()];
+    }
   }
 
   register(definition: ThemeDefinition): void {
@@ -659,12 +678,12 @@ export class ThemeRegistry {
   }
 
   getProductionIds(): readonly string[] {
-    return [...this.definitions.keys()];
+    return [...this.presentationOrder];
   }
 
   /** Accepted, validated packages in product order. */
   getAcceptedDefinitions(): readonly ThemeDefinition[] {
-    return [...this.definitions.values()];
+    return this.presentationOrder.map(id => this.definitions.get(id)!);
   }
 
   getPreviewSwatches(themeId: string): ThemePreviewSwatches {
@@ -720,6 +739,7 @@ export const themeRegistry = new ThemeRegistry(
   [
     defaultBlackFactory,
     ...[
+      myAgentsLightThemeManifest,
       sageThemeManifest,
       absolutelyThemeManifest,
       linearThemeManifest,
@@ -727,5 +747,16 @@ export const themeRegistry = new ThemeRegistry(
       codexThemeManifest,
       raycastThemeManifest,
     ].map(presetFactory),
+  ],
+  [
+    myAgentsLightThemeManifest.id,
+    myAgentsDefaultTheme.id,
+    defaultBlackThemeManifest.id,
+    sageThemeManifest.id,
+    absolutelyThemeManifest.id,
+    linearThemeManifest.id,
+    proofThemeManifest.id,
+    codexThemeManifest.id,
+    raycastThemeManifest.id,
   ],
 );

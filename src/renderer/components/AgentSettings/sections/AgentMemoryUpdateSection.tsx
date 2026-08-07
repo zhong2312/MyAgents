@@ -12,12 +12,13 @@ const FilePreviewModal = lazy(() => import('../../FilePreviewModal'));
 
 interface AgentMemoryUpdateSectionProps {
   agent: AgentConfig;
+  workspacePath: string;
   onAgentChanged: () => void | Promise<void>;
 }
 
 const INTERVAL_OPTIONS = [24, 48, 72] as const;
 
-export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: AgentMemoryUpdateSectionProps) {
+export default function AgentMemoryUpdateSection({ agent, workspacePath, onAgentChanged }: AgentMemoryUpdateSectionProps) {
   const { t } = useTranslation('settings');
   const config = agent.memoryAutoUpdate;
 
@@ -46,13 +47,13 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
   }, [agent.id, agent.memoryAutoUpdate, onAgentChanged, t]);
 
   // Resolve file path (cross-platform separator)
-  const filePath = `${agent.workspacePath}${agent.workspacePath.includes('\\') ? '\\' : '/'}UPDATE_MEMORY.md`;
+  const filePath = `${workspacePath}${workspacePath.includes('\\') ? '\\' : '/'}UPDATE_MEMORY.md`;
 
   const ensureRuleSubstrate = useCallback(async (): Promise<boolean> => {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('cmd_ensure_memory_rule_substrate', {
-        workspacePath: agent.workspacePath,
+        workspacePath,
       });
       return true;
     } catch (e) {
@@ -60,14 +61,14 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
       toastRef.current.error(t('agentSettings.memory.fileError'));
       return false;
     }
-  }, [agent.workspacePath, t]);
+  }, [workspacePath, t]);
 
   // Read or create file via Rust invoke (bypasses Tauri fs plugin scope)
   const ensureFile = useCallback(async (): Promise<{ ok: boolean; content: string }> => {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<{ content: string; created: boolean }>('cmd_ensure_update_memory_file', {
-        workspacePath: agent.workspacePath,
+        workspacePath,
       });
       if (result.created) {
         toastRef.current.success(t('agentSettings.memory.createdFile'));
@@ -78,7 +79,7 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
       toastRef.current.error(t('agentSettings.memory.fileError'));
       return { ok: false, content: '' };
     }
-  }, [agent.workspacePath, t]);
+  }, [workspacePath, t]);
 
   const handleToggle = useCallback(async () => {
     const newEnabled = !(config?.enabled ?? false);

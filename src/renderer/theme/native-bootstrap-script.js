@@ -48,7 +48,7 @@
       return;
     }
 
-    let themeId = 'default-black';
+    let themeId = 'myagents-light';
     let themeSelectionExplicit = false;
     const raw = localStorage.getItem(key);
 

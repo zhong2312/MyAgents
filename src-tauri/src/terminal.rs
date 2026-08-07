@@ -65,13 +65,14 @@ impl TerminalManager {
 pub async fn cmd_terminal_create(
     app: AppHandle,
     state: tauri::State<'_, Arc<TerminalManager>>,
+    sidecars: tauri::State<'_, crate::sidecar::ManagedSidecarManager>,
     workspace_path: String,
     rows: u16,
     cols: u16,
-    sidecar_port: Option<u16>,
+    session_id: Option<String>,
     terminal_id: Option<String>,
 ) -> Result<String, String> {
-    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
+    let _lifecycle_spawn_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     // Use frontend-provided ID if given (allows pre-registering listeners before creation),
     // otherwise generate one server-side.
     let id = terminal_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -101,7 +102,14 @@ pub async fn cmd_terminal_create(
     cmd.args(&["-l"]);
     cmd.cwd(&workspace_path);
 
-    // Inject environment: bundled runtimes PATH + proxy config + sidecar port
+    let sidecar_port = session_id.as_deref().and_then(|session_id| {
+        sidecars
+            .lock()
+            .ok()
+            .and_then(|mut manager| manager.get_session_port(session_id))
+    });
+
+    // Inject environment: bundled runtimes PATH + proxy config + manager-owned sidecar port
     inject_terminal_env(&mut cmd, &app, sidecar_port);
 
     // Spawn shell on the slave end

@@ -1,5 +1,166 @@
 use super::*;
 
+const RECOVERY_FAST_RETRY_LIMIT: u32 = 5;
+const RECOVERY_FAST_RETRY_DELAY: Duration = Duration::from_secs(15);
+const RECOVERY_SLOW_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(60);
+const RECOVERY_SLOW_RETRY_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
+
+/// Manager-owned recovery authority for one logical Session.
+///
+/// The retained Sidecar remains the sole owner-token source while candidate
+/// processes come and go. `epoch` identifies the logical recovery job;
+/// `candidate_generation` identifies only the current process attempt and may
+/// change many times without settling that job.
+pub(super) struct RecoveringSessionSidecar {
+    sidecar: SessionSidecar,
+    pub(super) epoch: u64,
+    pub(super) dead_generation: u64,
+    pub(super) candidate_generation: Option<u64>,
+    pub(super) failed_attempts: u32,
+    pub(super) next_retry_at: std::time::Instant,
+}
+
+impl std::ops::Deref for RecoveringSessionSidecar {
+    type Target = SessionSidecar;
+
+    fn deref(&self) -> &Self::Target {
+        &self.sidecar
+    }
+}
+
+impl std::ops::DerefMut for RecoveringSessionSidecar {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.sidecar
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RecoveryRestartIdentity {
+    pub(super) epoch: u64,
+    pub(super) dead_generation: u64,
+    pub(super) attempt: u32,
+    pub(super) prior_candidate_generation: Option<u64>,
+    pub(super) owner: SidecarOwner,
+    pub(super) workspace_path: PathBuf,
+    pub(super) runtime: Option<String>,
+    pub(super) runtime_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RecoveryFailure {
+    pub(super) epoch: u64,
+    pub(super) dead_generation: u64,
+    pub(super) candidate_generation: Option<u64>,
+    pub(super) failed_attempts: u32,
+    pub(super) retry_after: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ReadySidecarCommit {
+    pub(super) port: u16,
+    pub(super) generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BackgroundPollBinding {
+    pub(super) port: u16,
+    pub(super) generation: u64,
+}
+
+/// Exact process identity selected for one renderer SSE transport attempt.
+/// The logical Session ID comes from manager ownership resolution rather than
+/// the caller's potentially stale hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrontendSidecarBinding {
+    management_id: String,
+    port: u16,
+    generation: u64,
+}
+
+impl FrontendSidecarBinding {
+    pub(crate) fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn detached_test_value() -> Self {
+        Self {
+            management_id: "detached-test-session".to_string(),
+            port: 1,
+            generation: 1,
+        }
+    }
+}
+
+/// An admitted control request for one exact process generation. Holding this
+/// value keeps replacement from terminating that process until the response
+/// body has been consumed.
+pub(crate) struct SidecarHttpDispatch {
+    base_url: String,
+    _lease: DispatchLease,
+}
+
+impl SidecarHttpDispatch {
+    pub(crate) fn url_for_path(&self, path: &str) -> Result<String, String> {
+        if !path.starts_with('/') || path.starts_with("//") {
+            return Err(format!(
+                "Sidecar request path must start with one '/': {path}"
+            ));
+        }
+        Ok(format!("{}{}", self.base_url, path))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BackgroundPollTarget {
+    Current(BackgroundPollBinding),
+    Recovering,
+    Gone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BackgroundOwnerAttach {
+    Attached(BackgroundPollBinding),
+    Recovering,
+    AlreadyOwned,
+    Stale,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum BackgroundOwnerRelease {
+    Released {
+        sidecar_stopped: bool,
+        completion_claim: Option<SessionCompletionClaim>,
+    },
+    Stale,
+    Gone,
+}
+
+/// Process-local standing demand for the canonical Global Sidecar.
+///
+/// This is deliberately independent from `instances`: a failed process
+/// candidate may disappear while the application still requires the Global
+/// service to be restored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum GlobalSidecarIntent {
+    #[default]
+    Stopped,
+    DesiredRunning,
+}
+
+/// Atomic manager snapshot consumed by the single Global health monitor.
+/// `DesiredMissing` is recoverable work, not an idle/never-started state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GlobalMonitorSnapshot {
+    Stopped,
+    DesiredMissing,
+    Present {
+        port: u16,
+        process_alive: bool,
+        created_at: std::time::Instant,
+    },
+}
+
 /// Multi-instance Sidecar Manager
 /// Manages multiple Sidecar processes with Session singleton support
 ///
@@ -18,13 +179,14 @@ pub struct SidecarManager {
     /// Dead process objects retained while the health monitor starts their
     /// replacement. Keeping the object manager-owned lets ordinary release
     /// calls mutate the same owner set during the restart wait.
-    pub(super) recovering_sidecars: HashMap<String, SessionSidecar>,
+    pub(super) recovering_sidecars: HashMap<String, RecoveringSessionSidecar>,
 
     // ===== Legacy Storage (kept for backward compatibility) =====
     /// Tab ID -> Sidecar Instance (legacy, used for Global Sidecar)
     pub(super) instances: HashMap<String, SidecarInstance>,
-    /// Session ID -> Session Activation (tracks which session is active for Session singleton)
-    pub(super) session_activations: HashMap<String, SessionActivation>,
+    /// Standing lifecycle demand for the canonical Global Sidecar. Candidate
+    /// insertion/removal must not mutate this authority.
+    global_sidecar_intent: GlobalSidecarIntent,
     /// Port counter for allocation (starts from BASE_PORT)
     pub(super) port_counter: AtomicU16,
     /// Session ID -> generation counter. The generation is the unique instance
@@ -46,6 +208,9 @@ pub struct SidecarManager {
     /// would falsely match. With this, IDs are unique for the lifetime of
     /// the process and reuse is impossible.
     pub(super) instance_counter: AtomicU64,
+    /// Process-global monotonic identifier for logical recovery jobs. Unlike a
+    /// process generation, an epoch survives reserve/spawn/readiness failures.
+    pub(super) recovery_counter: AtomicU64,
     /// Broadcast sender — emits `(session_id, generation)` whenever a
     /// SessionSidecar is removed (last owner released, runtime drift kill,
     /// explicit stop, app shutdown). The generation is critical: a remove +
@@ -88,13 +253,14 @@ impl SidecarManager {
             sidecars: HashMap::new(),
             recovering_sidecars: HashMap::new(),
             instances: HashMap::new(),
-            session_activations: HashMap::new(),
+            global_sidecar_intent: GlobalSidecarIntent::Stopped,
             port_counter: AtomicU16::new(BASE_PORT),
             sidecar_generations: HashMap::new(),
             // Start at 1 so callers using `0` as an "unknown / not present"
             // placeholder (see IM `sidecar_generation_initial.unwrap_or(0)`)
             // never collide with a real allocated generation.
             instance_counter: AtomicU64::new(1),
+            recovery_counter: AtomicU64::new(1),
             stop_events,
             terminal_events,
         }
@@ -159,8 +325,14 @@ impl SidecarManager {
     /// the canonical Global Sidecar. Both process types consume the management
     /// API, while only Session Sidecars live in `sidecars`.
     pub fn is_live_process(&self, sidecar_id: &str, generation: u64) -> bool {
-        (self.sidecars.contains_key(sidecar_id) || self.instances.contains_key(sidecar_id))
-            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation)
+        let session_process_is_live = self.sidecars.iter().any(|(session_id, sidecar)| {
+            sidecar.management_id == sidecar_id
+                && self.sidecar_generations.get(session_id).copied() == Some(generation)
+        });
+        let global_process_is_live = self.instances.contains_key(sidecar_id)
+            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation);
+
+        session_process_is_live || global_process_is_live
     }
 
     /// Allocate the next instance ID and stash it as this session's current
@@ -171,6 +343,17 @@ impl SidecarManager {
     pub(super) fn next_generation(&mut self, session_id: &str) -> u64 {
         let id = self.instance_counter.fetch_add(1, Ordering::SeqCst);
         self.sidecar_generations.insert(session_id.to_string(), id);
+        if let Some(recovery) = self.recovering_sidecars.get_mut(session_id) {
+            recovery.candidate_generation = Some(id);
+            ulog_info!(
+                "[sidecar-recovery] action=reserve session={} epoch={} dead_generation={} candidate_generation={} attempt={}",
+                session_id,
+                recovery.epoch,
+                recovery.dead_generation,
+                id,
+                recovery.failed_attempts.saturating_add(1)
+            );
+        }
         id
     }
 
@@ -181,6 +364,22 @@ impl SidecarManager {
             .get(session_id)
             .copied()
             .unwrap_or(0)
+    }
+
+    fn next_recovery_epoch(&self) -> u64 {
+        self.recovery_counter.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn recovery_retry_delay(failed_attempts: u32) -> Duration {
+        if failed_attempts < RECOVERY_FAST_RETRY_LIMIT {
+            return RECOVERY_FAST_RETRY_DELAY;
+        }
+
+        let slow_step = failed_attempts.saturating_sub(RECOVERY_FAST_RETRY_LIMIT);
+        let multiplier = 1_u32.checked_shl(slow_step.min(3)).unwrap_or(u32::MAX);
+        RECOVERY_SLOW_RETRY_INITIAL_DELAY
+            .saturating_mul(multiplier)
+            .min(RECOVERY_SLOW_RETRY_MAX_DELAY)
     }
 
     /// Get the next available port with max attempts to prevent infinite loop
@@ -225,6 +424,50 @@ impl SidecarManager {
     /// Insert a new instance
     pub fn insert_instance(&mut self, tab_id: String, instance: SidecarInstance) {
         self.instances.insert(tab_id, instance);
+    }
+
+    /// Express application demand for the canonical Global Sidecar. Callers
+    /// must acquire lifecycle birth admission before invoking this method.
+    pub(super) fn request_global_sidecar_running(&mut self, source: &str) {
+        let previous = self.global_sidecar_intent;
+        self.global_sidecar_intent = GlobalSidecarIntent::DesiredRunning;
+        ulog_info!(
+            "[sidecar-global] action=intent-running source={} previous={:?}",
+            source,
+            previous
+        );
+    }
+
+    /// End standing Global demand at an explicit lifecycle stop boundary.
+    pub(super) fn request_global_sidecar_stopped(&mut self, reason: &str) {
+        let previous = self.global_sidecar_intent;
+        self.global_sidecar_intent = GlobalSidecarIntent::Stopped;
+        ulog_info!(
+            "[sidecar-global] action=intent-stopped reason={} previous={:?}",
+            reason,
+            previous
+        );
+    }
+
+    pub(super) fn global_sidecar_is_desired(&self) -> bool {
+        self.global_sidecar_intent == GlobalSidecarIntent::DesiredRunning
+    }
+
+    /// Read standing demand and the current process candidate under one
+    /// manager lock, so the monitor never infers intent from `Option` alone.
+    pub(super) fn global_monitor_snapshot(&mut self) -> GlobalMonitorSnapshot {
+        if !self.global_sidecar_is_desired() {
+            return GlobalMonitorSnapshot::Stopped;
+        }
+
+        match self.instances.get_mut(GLOBAL_SIDECAR_ID) {
+            Some(instance) => GlobalMonitorSnapshot::Present {
+                port: instance.port,
+                process_alive: instance.is_running(),
+                created_at: instance.created_at,
+            },
+            None => GlobalMonitorSnapshot::DesiredMissing,
+        }
     }
 
     /// Remove and return an instance (will be dropped, killing the process)
@@ -306,147 +549,30 @@ impl SidecarManager {
             // mid-session is a real path and the listener is alive there.)
             let _ = self.terminal_events.send(ev.clone());
         }
+        self.request_global_sidecar_stopped("stop-all");
         self.sidecars.clear(); // Session-centric Sidecars (Drop kills processes)
         self.recovering_sidecars.clear();
         self.instances.clear(); // Global Sidecar (Drop kills process)
-        self.session_activations.clear();
         self.sidecar_generations.clear();
         // Remove port file so CLI knows the sidecar is down
         remove_global_port_file();
     }
 
-    // ============= Session Activation Methods =============
-
-    /// Get session activation by session ID
-    pub fn get_session_activation(&self, session_id: &str) -> Option<&SessionActivation> {
-        self.session_activations.get(session_id)
-    }
-
-    /// (v0.2.12 — issue #169 fix) Enforce tab_id uniqueness across
-    /// `session_activations`: at most one activation may have a given
-    /// `tab_id == Some(T)` at any time. Called from `activate_session`
-    /// and `update_session_tab` BEFORE writing the new tab_id.
-    ///
-    /// Why: `get_tab_server_url`'s priority-2 fallback iterates
-    /// `session_activations.values().find(|a| a.tab_id == Some(tab_id))`
-    /// and returns the first match. HashMap iteration order is non-
-    /// deterministic, so two activations with the same tab_id mean a
-    /// stop / queue-force / any other tab-keyed lookup may resolve to
-    /// the wrong session's port → wrong Sidecar gets the request →
-    /// wrong session aborted. Issue #169 reported 4 such cross-tab
-    /// stop incidents in one day.
-    ///
-    /// The window where two activations briefly share a tab_id opens
-    /// during tab→session switches: the renderer sequence is
-    /// `update_session_tab(new_session, T)` → ... → `deactivate_session
-    /// (old_session)`. Between those two awaits, both `new_session` and
-    /// `old_session` carry `tab_id == Some(T)`. By proactively clearing
-    /// the old binding here, we close that window unconditionally —
-    /// regardless of whether the renderer remembers to call
-    /// `deactivate_session` afterwards.
-    ///
-    /// Skips the entry whose key matches `keeper_session_id` (the
-    /// caller's own session_id) so we don't clobber the write we're
-    /// about to make.
-    pub(super) fn clear_tab_id_from_other_activations(
-        &mut self,
-        keeper_session_id: &str,
-        tab_id: &str,
-    ) {
-        let stale_session_ids: Vec<String> = self
-            .session_activations
-            .iter()
-            .filter(|(sid, a)| {
-                sid.as_str() != keeper_session_id && a.tab_id.as_deref() == Some(tab_id)
-            })
-            .map(|(sid, _)| sid.clone())
-            .collect();
-        for sid in stale_session_ids {
-            if let Some(activation) = self.session_activations.get_mut(&sid) {
-                ulog_info!(
-                    "[sidecar] Clearing stale tab_id {:?} from session {} (now claimed by session {})",
-                    tab_id, sid, keeper_session_id
-                );
-                activation.tab_id = None;
-            }
+    /// Verify that an already-ensured Tab owns the current Session generation
+    /// and retire the temporary BackgroundCompletion handoff owner.
+    pub fn reconcile_session_tab_activation(&mut self, session_id: &str, tab_id: &str) -> bool {
+        let tab_owner = SidecarOwner::Tab(tab_id.to_string());
+        let owned = self
+            .sidecars
+            .get(session_id)
+            .is_some_and(|sidecar| sidecar.is_reusable() && sidecar.owners.contains(&tab_owner));
+        if !owned {
+            return false;
         }
-    }
 
-    /// Activate a session (associate it with a Sidecar)
-    pub fn activate_session(
-        &mut self,
-        session_id: String,
-        tab_id: Option<String>,
-        task_id: Option<String>,
-        port: u16,
-        workspace_path: String,
-        is_cron_task: bool,
-    ) {
-        ulog_info!(
-            "[sidecar] Activating session {} on port {}, tab: {:?}, task: {:?}, cron: {}",
-            session_id,
-            port,
-            tab_id,
-            task_id,
-            is_cron_task
-        );
-        // (v0.2.12 — issue #169 fix) Enforce tab_id uniqueness BEFORE
-        // inserting the new activation, so the new entry's tab_id is the
-        // only match for `find(|a| a.tab_id == Some(tab_id))`.
-        if let Some(ref tid) = tab_id {
-            self.clear_tab_id_from_other_activations(&session_id, tid);
-        }
-        self.session_activations.insert(
-            session_id.clone(),
-            SessionActivation {
-                session_id,
-                tab_id,
-                task_id,
-                port,
-                workspace_path,
-                is_cron_task,
-            },
-        );
-    }
-
-    /// Deactivate a session
-    pub fn deactivate_session(&mut self, session_id: &str) -> Option<SessionActivation> {
-        ulog_info!("[sidecar] Deactivating session {}", session_id);
-        self.session_activations.remove(session_id)
-    }
-
-    /// Update session activation's tab_id (e.g., when a Tab connects to headless Sidecar)
-    pub fn update_session_tab(&mut self, session_id: &str, tab_id: Option<String>) {
-        // (v0.2.12 — issue #169 fix) Enforce tab_id uniqueness BEFORE
-        // mutating the target entry, so by the time the read below
-        // finalizes, no other activation carries the same tab_id.
-        // (Skipped when clearing — `tab_id == None` can't collide.)
-        if let Some(ref tid) = tab_id {
-            self.clear_tab_id_from_other_activations(session_id, tid);
-        }
-        if let Some(activation) = self.session_activations.get_mut(session_id) {
-            ulog_info!(
-                "[sidecar] Updating session {} tab: {:?} -> {:?}",
-                session_id,
-                activation.tab_id,
-                tab_id
-            );
-            activation.tab_id = tab_id;
-            // If a tab connects, it's no longer a pure cron task session
-            if activation.tab_id.is_some() {
-                activation.is_cron_task = false;
-            }
-        }
-    }
-
-    /// Get all active sessions for a workspace
-    /// Reserved for future use (e.g., debugging, admin UI)
-    #[allow(dead_code)]
-    pub fn get_workspace_sessions(&self, workspace_path: &str) -> Vec<&SessionActivation> {
-        self.session_activations
-            .values()
-            .filter(|a| a.workspace_path == workspace_path)
-            .collect()
+        let background_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
+        self.remove_session_owner(session_id, &background_owner);
+        true
     }
 
     // ============= Session-Centric Sidecar API (v0.1.11) =============
@@ -466,16 +592,17 @@ impl SidecarManager {
         })
     }
 
-    /// Resolve the current ready Sidecar URL for a renderer-owned long-lived
-    /// subscription. The Session hint gives an exact match during normal
+    /// Resolve the current ready Sidecar process for a renderer-owned
+    /// long-lived subscription. The Session hint gives an exact match during normal
     /// operation; the stable owner is the fallback after pending -> real key
     /// migration. Both reads stay inside the SidecarManager authority so SSE
     /// retry never caches or reconstructs a second owner -> port map.
-    pub fn resolve_session_sidecar_url_for_frontend_owner(
+    pub(crate) fn resolve_session_sidecar_for_frontend_owner(
         &mut self,
         session_id_hint: &str,
         owner: &SidecarOwner,
-    ) -> Result<String, String> {
+    ) -> Result<FrontendSidecarBinding, String> {
+        let hinted_generation = self.generation_for(session_id_hint);
         if let Some(sidecar) = self.sidecars.get_mut(session_id_hint) {
             if !sidecar.owners.contains(owner) {
                 return Err(format!(
@@ -484,7 +611,13 @@ impl SidecarManager {
                 ));
             }
             return if sidecar.is_ready_for_requests() {
-                Ok(format!("http://127.0.0.1:{}", sidecar.port))
+                hinted_generation
+                    .map(|generation| FrontendSidecarBinding {
+                        management_id: sidecar.management_id.clone(),
+                        port: sidecar.port,
+                        generation,
+                    })
+                    .ok_or_else(|| format!("session hint {} has no generation", session_id_hint))
             } else {
                 Err(format!(
                     "session hint {} sidecar is not ready",
@@ -506,11 +639,23 @@ impl SidecarManager {
             ));
         }
 
-        let mut matches: Vec<(String, Option<u16>)> = Vec::new();
+        let generations = &self.sidecar_generations;
+        let mut matches: Vec<(String, Option<FrontendSidecarBinding>)> = Vec::new();
         for (session_id, sidecar) in &mut self.sidecars {
             if sidecar.owners.contains(owner) {
-                let ready_port = sidecar.is_ready_for_requests().then_some(sidecar.port);
-                matches.push((session_id.clone(), ready_port));
+                let ready_process = if sidecar.is_ready_for_requests() {
+                    generations
+                        .get(session_id)
+                        .copied()
+                        .map(|generation| FrontendSidecarBinding {
+                            management_id: sidecar.management_id.clone(),
+                            port: sidecar.port,
+                            generation,
+                        })
+                } else {
+                    None
+                };
+                matches.push((session_id.clone(), ready_process));
             }
         }
         for (session_id, sidecar) in &self.recovering_sidecars {
@@ -520,7 +665,7 @@ impl SidecarManager {
         }
 
         match matches.as_slice() {
-            [(_session_id, Some(port))] => Ok(format!("http://127.0.0.1:{}", port)),
+            [(_session_id, Some(binding))] => Ok(binding.clone()),
             [(session_id, None)] => Err(format!(
                 "owner {:?} sidecar {} is not ready",
                 owner, session_id
@@ -542,6 +687,101 @@ impl SidecarManager {
                 ))
             }
         }
+    }
+
+    /// Consume one completion identity only while the exact renderer-selected
+    /// process generation remains authoritative.
+    pub(crate) fn claim_frontend_session_completion(
+        &mut self,
+        expected: &FrontendSidecarBinding,
+        completion_session_id: &str,
+        turn_id: &str,
+    ) -> Option<SessionCompletionClaim> {
+        let generations = &self.sidecar_generations;
+        let (session_id, sidecar) = self.sidecars.iter_mut().find(|(session_id, sidecar)| {
+            sidecar.management_id == expected.management_id
+                && sidecar.port == expected.port
+                && generations.get(*session_id).copied() == Some(expected.generation)
+        })?;
+        if session_id.as_str() != completion_session_id
+            || !sidecar
+                .completion_claims
+                .insert((completion_session_id.to_string(), turn_id.to_string()))
+        {
+            return None;
+        }
+        Some(SessionCompletionClaim::new())
+    }
+
+    pub(crate) fn acquire_frontend_session_dispatch(
+        &mut self,
+        session_id_hint: &str,
+        owner: &SidecarOwner,
+    ) -> Result<SidecarHttpDispatch, String> {
+        let binding = self.resolve_session_sidecar_for_frontend_owner(session_id_hint, owner)?;
+        let generations = &self.sidecar_generations;
+        let sidecar = self
+            .sidecars
+            .iter_mut()
+            .find(|(session_id, sidecar)| {
+                sidecar.management_id == binding.management_id
+                    && sidecar.port == binding.port
+                    && generations.get(*session_id).copied() == Some(binding.generation)
+            })
+            .map(|(_, sidecar)| sidecar)
+            .ok_or_else(|| {
+                "Resolved Session Sidecar generation is no longer current".to_string()
+            })?;
+        let lease = DispatchGate::try_acquire(&sidecar.dispatch_gate)
+            .ok_or_else(|| "Resolved Session Sidecar generation is draining".to_string())?;
+        Ok(SidecarHttpDispatch {
+            base_url: binding.base_url(),
+            _lease: lease,
+        })
+    }
+
+    pub(crate) fn acquire_global_dispatch(&mut self) -> Result<SidecarHttpDispatch, String> {
+        let generation = self.current_generation(GLOBAL_SIDECAR_ID);
+        if generation == 0 {
+            return Err("Global Sidecar has no current generation".to_string());
+        }
+        let instance = self
+            .instances
+            .get_mut(GLOBAL_SIDECAR_ID)
+            .ok_or_else(|| "Global Sidecar is not running".to_string())?;
+        if !instance.is_running() {
+            return Err("Global Sidecar is not ready".to_string());
+        }
+        let lease = DispatchGate::try_acquire(&instance.dispatch_gate)
+            .ok_or_else(|| "Global Sidecar generation is draining".to_string())?;
+        Ok(SidecarHttpDispatch {
+            base_url: format!("http://127.0.0.1:{}", instance.port),
+            _lease: lease,
+        })
+    }
+
+    fn claim_session_completion_if_current(
+        &mut self,
+        session_id: &str,
+        port: u16,
+        generation: u64,
+        completion_session_id: &str,
+        turn_id: &str,
+    ) -> Option<SessionCompletionClaim> {
+        if session_id != completion_session_id
+            || self.generation_for(session_id) != Some(generation)
+        {
+            return None;
+        }
+        let sidecar = self.sidecars.get_mut(session_id)?;
+        if sidecar.port != port
+            || !sidecar
+                .completion_claims
+                .insert((completion_session_id.to_string(), turn_id.to_string()))
+        {
+            return None;
+        }
+        Some(SessionCompletionClaim::new())
     }
 
     #[cfg(test)]
@@ -568,15 +808,21 @@ impl SidecarManager {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
 
+        let process =
+            crate::process_cmd::spawn_tree(&mut process).expect("spawn test sidecar process tree");
+
         self.insert_sidecar(
             session_id,
             SessionSidecar {
-                process: process.spawn().expect("spawn test sidecar process"),
+                process,
                 port,
                 session_id: session_id.to_string(),
+                management_id: session_id.to_string(),
                 workspace_path: PathBuf::from("/tmp/sse-supervisor-test"),
                 state: SidecarState::Healthy,
                 owners: std::iter::once(owner).collect(),
+                completion_claims: HashSet::new(),
+                dispatch_gate: DispatchGate::new(),
                 created_at: std::time::Instant::now(),
                 runtime: None,
                 runtime_source: None,
@@ -662,24 +908,205 @@ impl SidecarManager {
         let removed = self.sidecars.remove(session_id);
         if let Some(ref sidecar) = removed {
             let event_policy = sidecar_removal_event_policy(&sidecar.owners);
+            let retained_recovery_has_owners = self
+                .recovering_sidecars
+                .get(session_id)
+                .is_some_and(|recovery| !recovery.owners.is_empty());
             // send() returns Err only when there are no subscribers — fine, we
             // don't require anyone listening for sidecar removal to be valid.
             if event_policy.emit_stop {
                 let _ = self.stop_events.send((session_id.to_string(), gen));
             }
 
-            // Terminal = no owners remained. Health monitor only auto-restarts
-            // when `is_dead() && !owners.is_empty()` (see `monitor_session_sidecars`
-            // line 2356), so empty-owners ⇒ no restart attempt ⇒ any frontend
-            // Tab binding to this session is now dangling and must be cleared.
+            // Terminal = no owners remain across both the candidate and the
+            // retained recovery authority. A candidate can have an empty local
+            // set after its selected owner releases while another retained
+            // owner still keeps the logical Session recoverable.
             // Crash-with-owners stays silent here: the bound Tab keeps its
             // sessionId, and the existing `session-sidecar:restarted` Tauri
             // event drives transparent reconnection in TabProvider.
-            if event_policy.emit_terminal {
+            if event_policy.emit_terminal && !retained_recovery_has_owners {
                 let _ = self.terminal_events.send((session_id.to_string(), gen));
             }
         }
         removed
+    }
+
+    /// Move a displaced process into manager-owned recovery state so every
+    /// existing owner remains authoritative while its replacement starts.
+    /// Owner releases update both active and recovering entries, so the final
+    /// transfer cannot resurrect an owner that left during readiness waits.
+    pub(super) fn begin_session_sidecar_replacement(&mut self, session_id: &str) {
+        let dead_generation = self.current_generation(session_id);
+        let Some(mut displaced) = self.remove_sidecar(session_id) else {
+            return;
+        };
+        displaced.dispatch_gate.close_and_wait();
+        if let Some(recovering) = self.recovering_sidecars.get_mut(session_id) {
+            recovering
+                .owners
+                .extend(std::mem::take(&mut displaced.owners));
+        } else {
+            let epoch = self.next_recovery_epoch();
+            ulog_info!(
+                "[sidecar-recovery] action=begin session={} epoch={} dead_generation={} candidate_generation=none attempt=0 next_retry_ms=0",
+                session_id,
+                epoch,
+                dead_generation
+            );
+            self.recovering_sidecars.insert(
+                session_id.to_string(),
+                RecoveringSessionSidecar {
+                    sidecar: displaced,
+                    epoch,
+                    dead_generation,
+                    candidate_generation: None,
+                    failed_attempts: 0,
+                    next_retry_at: std::time::Instant::now(),
+                },
+            );
+        }
+    }
+
+    /// Atomically commit a ready candidate. If another independently ensured
+    /// candidate already became authoritative, return that current process as
+    /// the equivalent winner instead of reviving the caller's stale result.
+    pub(super) fn commit_ready_session_sidecar(
+        &mut self,
+        session_id: &str,
+    ) -> Option<ReadySidecarCommit> {
+        let current_generation = self.current_generation(session_id);
+        let replacement = self.sidecars.get(session_id)?;
+        if !matches!(replacement.state, SidecarState::Healthy) {
+            return None;
+        }
+
+        if let Some(recovery) = self.recovering_sidecars.get(session_id) {
+            if recovery.candidate_generation != Some(current_generation) {
+                return None;
+            }
+        }
+
+        let retained = self.recovering_sidecars.remove(session_id);
+        let replacement = self.sidecars.get_mut(session_id)?;
+        if let Some(mut retained) = retained {
+            replacement
+                .owners
+                .extend(std::mem::take(&mut retained.owners));
+            ulog_info!(
+                "[sidecar-recovery] action=commit session={} epoch={} dead_generation={} candidate_generation={} attempt={} port={}",
+                session_id,
+                retained.epoch,
+                retained.dead_generation,
+                current_generation,
+                retained.failed_attempts.saturating_add(1),
+                replacement.port
+            );
+        }
+        Some(ReadySidecarCommit {
+            port: replacement.port,
+            generation: current_generation,
+        })
+    }
+
+    /// Discover due recovery work from both active and already-recovering
+    /// entries. The monitor owns no queue; skipping this method during update
+    /// quiesce therefore pauses dispatch without dropping logical work.
+    pub(super) fn due_session_recoveries(&mut self, now: std::time::Instant) -> Vec<String> {
+        let newly_dead = self
+            .sidecars
+            .iter_mut()
+            .filter_map(|(session_id, sidecar)| {
+                (sidecar.is_dead() && !sidecar.owners.is_empty()).then(|| session_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for session_id in newly_dead {
+            self.begin_session_sidecar_replacement(&session_id);
+        }
+        // `begin_session_sidecar_replacement` timestamps newly discovered work
+        // during this scan, so compare against a post-discovery instant as well
+        // as the caller's injected clock.
+        let due_now = now.max(std::time::Instant::now());
+
+        let mut session_ids = self
+            .recovering_sidecars
+            .iter()
+            .filter_map(|(session_id, recovery)| {
+                (!recovery.owners.is_empty() && recovery.next_retry_at <= due_now)
+                    .then(|| session_id.clone())
+            })
+            .collect::<Vec<_>>();
+        session_ids.sort();
+        session_ids
+    }
+
+    pub(super) fn recovery_restart_identity(
+        &self,
+        session_id: &str,
+        now: std::time::Instant,
+    ) -> Option<RecoveryRestartIdentity> {
+        let recovery = self.recovering_sidecars.get(session_id)?;
+        if recovery.owners.is_empty() || recovery.next_retry_at > now {
+            return None;
+        }
+        let owner = recovery.owners.iter().next()?.clone();
+        Some(RecoveryRestartIdentity {
+            epoch: recovery.epoch,
+            dead_generation: recovery.dead_generation,
+            attempt: recovery.failed_attempts.saturating_add(1),
+            prior_candidate_generation: recovery.candidate_generation,
+            owner,
+            workspace_path: recovery.workspace_path.clone(),
+            runtime: recovery.runtime.clone(),
+            runtime_source: recovery.runtime_source.clone(),
+        })
+    }
+
+    pub(super) fn has_session_recovery(&self, session_id: &str) -> bool {
+        self.recovering_sidecars.contains_key(session_id)
+    }
+
+    pub(super) fn recovery_attempt_is_authorized(
+        &self,
+        session_id: &str,
+        expected_epoch: u64,
+        owner: &SidecarOwner,
+    ) -> bool {
+        if let Some(recovery) = self.recovering_sidecars.get(session_id) {
+            return recovery.epoch == expected_epoch && recovery.owners.contains(owner);
+        }
+
+        // An independent ensure may already have committed the same logical
+        // recovery. Reusing that winner is valid only when it retained the
+        // exact owner selected by this dispatch.
+        self.sidecars
+            .get(session_id)
+            .is_some_and(|sidecar| sidecar.owners.contains(owner))
+    }
+
+    /// Record an unsuccessful ensure against the recovery epoch that still
+    /// owns the Session. Candidate generation is diagnostic identity only and
+    /// is deliberately not used as the recovery work key.
+    pub(super) fn record_session_recovery_failure(
+        &mut self,
+        session_id: &str,
+        expected_epoch: Option<u64>,
+        now: std::time::Instant,
+    ) -> Option<RecoveryFailure> {
+        let recovery = self.recovering_sidecars.get_mut(session_id)?;
+        if expected_epoch.is_some_and(|epoch| epoch != recovery.epoch) {
+            return None;
+        }
+        recovery.failed_attempts = recovery.failed_attempts.saturating_add(1);
+        let retry_after = Self::recovery_retry_delay(recovery.failed_attempts);
+        recovery.next_retry_at = now + retry_after;
+        Some(RecoveryFailure {
+            epoch: recovery.epoch,
+            dead_generation: recovery.dead_generation,
+            candidate_generation: recovery.candidate_generation,
+            failed_attempts: recovery.failed_attempts,
+            retry_after,
+        })
     }
 
     /// Runtime drift helper for the IM router (v0.1.66).
@@ -743,6 +1170,7 @@ impl SidecarManager {
             return decision;
         }
         if let Some(sidecar) = self.sidecars.get_mut(session_id) {
+            sidecar.dispatch_gate.close_and_wait();
             let _ = sidecar.process.kill();
         }
         // Go through remove_sidecar() so stop_events is broadcast — a runtime
@@ -781,6 +1209,168 @@ impl SidecarManager {
             found = true;
         }
         found
+    }
+
+    pub(super) fn reusable_session_binding(
+        &mut self,
+        session_id: &str,
+    ) -> Option<BackgroundPollBinding> {
+        let generation = self.generation_for(session_id)?;
+        let sidecar = self.sidecars.get_mut(session_id)?;
+        if sidecar.is_dead() || !sidecar.is_reusable() {
+            return None;
+        }
+        Some(BackgroundPollBinding {
+            port: sidecar.port,
+            generation,
+        })
+    }
+
+    /// Attach BackgroundCompletion only if the exact process observed before
+    /// the lock-free activity probe is still authoritative.
+    pub(super) fn attach_background_owner_if_current(
+        &mut self,
+        session_id: &str,
+        owner: SidecarOwner,
+        expected: BackgroundPollBinding,
+    ) -> BackgroundOwnerAttach {
+        if self.generation_for(session_id) != Some(expected.generation) {
+            return BackgroundOwnerAttach::Stale;
+        }
+        let Some(sidecar) = self.sidecars.get_mut(session_id) else {
+            return BackgroundOwnerAttach::Stale;
+        };
+        if sidecar.port != expected.port || sidecar.is_dead() || !sidecar.is_reusable() {
+            return BackgroundOwnerAttach::Stale;
+        }
+        if sidecar.owners.contains(&owner) {
+            return BackgroundOwnerAttach::AlreadyOwned;
+        }
+
+        sidecar.add_owner(owner.clone());
+        if let Some(recovering) = self.recovering_sidecars.get_mut(session_id) {
+            recovering.add_owner(owner);
+        }
+        BackgroundOwnerAttach::Attached(expected)
+    }
+
+    /// Attach a BackgroundCompletion owner to the logical Session after a
+    /// lock-free activity probe raced with replacement. The manager lock is
+    /// the authority boundary: attach to the current reusable process, or
+    /// retain the owner on the in-flight recovery epoch until it commits.
+    pub(super) fn attach_background_owner_to_logical_session(
+        &mut self,
+        session_id: &str,
+        owner: SidecarOwner,
+    ) -> Option<BackgroundOwnerAttach> {
+        if self.session_has_exact_owner(session_id, &owner) {
+            return Some(BackgroundOwnerAttach::AlreadyOwned);
+        }
+
+        if let Some(binding) = self.reusable_session_binding(session_id) {
+            return Some(self.attach_background_owner_if_current(session_id, owner, binding));
+        }
+
+        // The activity probe can observe busy immediately before the current
+        // process exits. Do not wait for the periodic health monitor to move
+        // that dead entry into recovery: the Tab/Agent owner may be released
+        // first. This manager lock is the logical Session authority, so make
+        // the dead -> recovering transition here and retain Background work
+        // on the same recovery epoch.
+        if !self.recovering_sidecars.contains_key(session_id)
+            && self
+                .sidecars
+                .get_mut(session_id)
+                .is_some_and(SessionSidecar::is_dead)
+        {
+            self.begin_session_sidecar_replacement(session_id);
+        }
+
+        let recovering = self.recovering_sidecars.get_mut(session_id)?;
+        recovering.add_owner(owner);
+        Some(BackgroundOwnerAttach::Recovering)
+    }
+
+    /// Resolve a logical BackgroundCompletion owner to the current process.
+    /// A retained owner with no committed active process is an explicit wait
+    /// state, not a missing Session.
+    pub(super) fn background_poll_target(
+        &mut self,
+        session_id: &str,
+        owner: &SidecarOwner,
+    ) -> BackgroundPollTarget {
+        if self
+            .recovering_sidecars
+            .get(session_id)
+            .is_some_and(|recovery| recovery.owners.contains(owner))
+        {
+            // Even if a candidate is present in `sidecars`, it is not the
+            // Session authority until readiness commit transfers retained
+            // owners and settles the recovery epoch.
+            return BackgroundPollTarget::Recovering;
+        }
+        let generation = self.generation_for(session_id);
+        if let Some(sidecar) = self.sidecars.get_mut(session_id) {
+            if sidecar.owners.contains(owner) {
+                if sidecar.is_dead() {
+                    return BackgroundPollTarget::Recovering;
+                }
+                if let Some(generation) = generation {
+                    return BackgroundPollTarget::Current(BackgroundPollBinding {
+                        port: sidecar.port,
+                        generation,
+                    });
+                }
+            }
+        }
+        BackgroundPollTarget::Gone
+    }
+
+    pub(super) fn background_binding_is_current(
+        &mut self,
+        session_id: &str,
+        owner: &SidecarOwner,
+        expected: BackgroundPollBinding,
+    ) -> bool {
+        if self.generation_for(session_id) != Some(expected.generation) {
+            return false;
+        }
+        self.sidecars.get_mut(session_id).is_some_and(|sidecar| {
+            sidecar.port == expected.port && sidecar.owners.contains(owner) && !sidecar.is_dead()
+        })
+    }
+
+    /// Release only when the response-authorizing process is still current.
+    /// This closes the response/replacement lock gap without holding the
+    /// manager mutex across HTTP.
+    pub(super) fn release_background_owner_if_current(
+        &mut self,
+        session_id: &str,
+        owner: &SidecarOwner,
+        expected: BackgroundPollBinding,
+        completion_identity: Option<(&str, &str)>,
+    ) -> BackgroundOwnerRelease {
+        if !self.background_binding_is_current(session_id, owner, expected) {
+            return if self.session_has_exact_owner(session_id, owner) {
+                BackgroundOwnerRelease::Stale
+            } else {
+                BackgroundOwnerRelease::Gone
+            };
+        }
+        let completion_claim = completion_identity.and_then(|(completion_session_id, turn_id)| {
+            self.claim_session_completion_if_current(
+                session_id,
+                expected.port,
+                expected.generation,
+                completion_session_id,
+                turn_id,
+            )
+        });
+        let (_, sidecar_stopped) = self.remove_session_owner(session_id, owner);
+        BackgroundOwnerRelease::Released {
+            sidecar_stopped,
+            completion_claim,
+        }
     }
 
     /// Atomically attach an owner to an already-healthy Session Sidecar and
@@ -829,8 +1419,16 @@ impl SidecarManager {
                 session_id
             );
             self.remove_sidecar(session_id);
-            self.recovering_sidecars.remove(session_id);
-            self.deactivate_session(session_id);
+            if let Some(recovery) = self.recovering_sidecars.remove(session_id) {
+                ulog_info!(
+                    "[sidecar-recovery] action=cancel session={} epoch={} dead_generation={} candidate_generation={:?} attempt={} reason=owners-zero",
+                    session_id,
+                    recovery.epoch,
+                    recovery.dead_generation,
+                    recovery.candidate_generation,
+                    recovery.failed_attempts.saturating_add(1)
+                );
+            }
             self.clear_generation(session_id);
             (true, true)
         } else {
@@ -842,25 +1440,16 @@ impl SidecarManager {
         &mut self,
         session_id: &str,
         tab_id: &str,
-        has_persisted_scheduler_owner: bool,
+        _has_persisted_scheduler_owner: bool,
     ) -> bool {
         let (owner_removed, sidecar_stopped) =
             self.remove_session_owner(session_id, &SidecarOwner::Tab(tab_id.to_string()));
-        if !owner_removed {
-            return false;
-        }
-
-        if self.session_has_persistent_owners(session_id) || has_persisted_scheduler_owner {
-            self.update_session_tab(session_id, None);
-        } else if !sidecar_stopped {
-            self.deactivate_session(session_id);
-        }
-        sidecar_stopped
+        owner_removed && sidecar_stopped
     }
 
     /// Upgrade a session ID (e.g., from "pending-xxx" to real session ID)
-    /// This updates the key in both sidecars and session_activations HashMaps
-    /// without stopping the Sidecar.
+    /// This updates the manager-owned Session identity without stopping the
+    /// Sidecar.
     ///
     /// Returns true if the upgrade was successful.
     pub fn upgrade_session_id(&mut self, old_session_id: &str, new_session_id: &str) -> bool {
@@ -872,13 +1461,13 @@ impl SidecarManager {
 
         if old_session_id == new_session_id {
             return self.sidecars.contains_key(new_session_id)
-                || self.session_activations.contains_key(new_session_id);
+                || self.recovering_sidecars.contains_key(new_session_id);
         }
 
         let old_exists = self.sidecars.contains_key(old_session_id)
-            || self.session_activations.contains_key(old_session_id);
+            || self.recovering_sidecars.contains_key(old_session_id);
         let new_exists = self.sidecars.contains_key(new_session_id)
-            || self.session_activations.contains_key(new_session_id);
+            || self.recovering_sidecars.contains_key(new_session_id);
         match (old_exists, new_exists) {
             (false, true) => {
                 ulog_debug!(
@@ -902,7 +1491,10 @@ impl SidecarManager {
 
         let mut upgraded = false;
 
-        // 1. Upgrade in sidecars HashMap
+        // 1. Upgrade the mutable logical Session binding in sidecars HashMap.
+        // `management_id` remains the immutable process-birth identity sent in
+        // MYAGENTS_SIDECAR_ID, so management requests from this live process
+        // remain valid across the rekey.
         // NOTE: Direct HashMap access (not insert_sidecar/remove_sidecar) because this is
         // a key rename, not a creation. Generation is migrated separately in step 2.
         if let Some(mut sidecar) = self.sidecars.remove(old_session_id) {
@@ -941,14 +1533,14 @@ impl SidecarManager {
         // the old router. After all slots terminate, the next ensure_im_consumer
         // call replaces the entry. No leak, no premature cancellation.
 
-        // 3. Upgrade in session_activations HashMap
-        if let Some(mut activation) = self.session_activations.remove(old_session_id) {
-            // Update the session_id field in the activation itself
-            activation.session_id = new_session_id.to_string();
-            self.session_activations
-                .insert(new_session_id.to_string(), activation);
+        // 3. Rekey retained recovery authority when this lower-level helper is
+        // used outside the renderer's stricter healthy-source adoption path.
+        if let Some(mut recovering) = self.recovering_sidecars.remove(old_session_id) {
+            recovering.session_id = new_session_id.to_string();
+            self.recovering_sidecars
+                .insert(new_session_id.to_string(), recovering);
             ulog_info!(
-                "[sidecar] Upgraded session_activations HashMap: {} -> {}",
+                "[sidecar] Upgraded recovering sidecar identity: {} -> {}",
                 old_session_id,
                 new_session_id
             );
@@ -963,6 +1555,50 @@ impl SidecarManager {
         }
 
         upgraded
+    }
+
+    /// Renderer adoption is idempotent only when the exact Tab owns the source
+    /// identity or the already-migrated target identity.
+    pub fn upgrade_session_id_for_tab(
+        &mut self,
+        old_session_id: &str,
+        new_session_id: &str,
+        tab_id: &str,
+    ) -> bool {
+        let owner = SidecarOwner::Tab(tab_id.to_string());
+        let old_recovering = self.recovering_sidecars.contains_key(old_session_id);
+        let old_exists = self.sidecars.contains_key(old_session_id) || old_recovering;
+        let new_exists = self.sidecars.contains_key(new_session_id)
+            || self.recovering_sidecars.contains_key(new_session_id);
+
+        if old_session_id == new_session_id {
+            return new_exists && self.session_has_exact_owner(new_session_id, &owner);
+        }
+        if !old_exists && new_exists {
+            return self.session_has_exact_owner(new_session_id, &owner);
+        }
+        if old_recovering {
+            return false;
+        }
+        if !old_exists || !self.session_has_exact_owner(old_session_id, &owner) {
+            return false;
+        }
+        self.upgrade_session_id(old_session_id, new_session_id)
+    }
+
+    pub fn session_id_upgrade_is_already_applied_for_tab(
+        &self,
+        old_session_id: &str,
+        new_session_id: &str,
+        tab_id: &str,
+    ) -> bool {
+        let old_exists = self.sidecars.contains_key(old_session_id)
+            || self.recovering_sidecars.contains_key(old_session_id);
+        let new_exists = self.sidecars.contains_key(new_session_id)
+            || self.recovering_sidecars.contains_key(new_session_id);
+        !old_exists
+            && new_exists
+            && self.session_has_exact_owner(new_session_id, &SidecarOwner::Tab(tab_id.to_string()))
     }
 
     /// Check if a session's Sidecar has an owner whose work remains bound to
@@ -1037,6 +1673,11 @@ impl SidecarManager {
                     .flat_map(|sidecar| sidecar.owners.iter()),
             )
     }
+
+    pub(super) fn session_has_exact_owner(&self, session_id: &str, owner: &SidecarOwner) -> bool {
+        self.session_owners(session_id)
+            .any(|candidate| candidate == owner)
+    }
 }
 
 impl Default for SidecarManager {
@@ -1090,37 +1731,133 @@ pub fn create_sidecar_state() -> ManagedSidecar {
 }
 
 #[cfg(test)]
-mod session_identity_upgrade_tests {
+mod completion_claim_tests {
     use super::*;
 
     #[test]
-    fn session_identity_upgrade_is_idempotent_and_conflict_safe() {
+    fn frontend_and_background_paths_consume_one_generation_claim() {
         let mut manager = SidecarManager::new();
-        manager.activate_session(
-            "pending-1".to_string(),
-            Some("tab-1".to_string()),
-            Some("goal-1".to_string()),
-            31001,
-            "/tmp/workspace".to_string(),
-            true,
-        );
+        let frontend_owner = SidecarOwner::Tab("tab-a".to_string());
+        let background_owner = SidecarOwner::BackgroundCompletion("session-a".to_string());
+        manager.insert_test_ready_frontend_sidecar("session-a", 32001, frontend_owner.clone());
+        assert!(manager.add_session_owner("session-a", background_owner.clone()));
 
-        assert!(manager.upgrade_session_id("pending-1", "session-real"));
-        assert!(manager.upgrade_session_id("pending-1", "session-real"));
-        assert!(manager.session_activations.contains_key("session-real"));
-        assert!(!manager.session_activations.contains_key("pending-1"));
+        let frontend_binding = manager
+            .resolve_session_sidecar_for_frontend_owner("session-a", &frontend_owner)
+            .expect("frontend binding");
+        let background_binding = manager
+            .reusable_session_binding("session-a")
+            .expect("background binding");
 
-        manager.activate_session(
-            "pending-1".to_string(),
-            Some("tab-2".to_string()),
-            Some("goal-2".to_string()),
-            31002,
-            "/tmp/workspace".to_string(),
-            true,
+        assert!(manager
+            .claim_frontend_session_completion(&frontend_binding, "session-a", "turn-1")
+            .is_some());
+        assert_eq!(
+            manager.release_background_owner_if_current(
+                "session-a",
+                &background_owner,
+                background_binding,
+                Some(("session-a", "turn-1")),
+            ),
+            BackgroundOwnerRelease::Released {
+                sidecar_stopped: false,
+                completion_claim: None,
+            }
         );
-        assert!(!manager.upgrade_session_id("pending-1", "session-real"));
-        assert!(manager.session_activations.contains_key("session-real"));
-        assert!(manager.session_activations.contains_key("pending-1"));
+        assert_eq!(
+            manager
+                .sidecars
+                .get("session-a")
+                .expect("live generation")
+                .completion_claims,
+            HashSet::from([("session-a".to_string(), "turn-1".to_string())])
+        );
+    }
+
+    #[test]
+    fn replacement_rejects_a_late_old_generation_claim() {
+        let mut manager = SidecarManager::new();
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+        manager.insert_test_ready_frontend_sidecar("session-a", 32001, owner.clone());
+        let old_binding = manager
+            .resolve_session_sidecar_for_frontend_owner("session-a", &owner)
+            .expect("old binding");
+        assert!(manager
+            .claim_frontend_session_completion(&old_binding, "session-a", "turn-1")
+            .is_some());
+
+        manager.begin_session_sidecar_replacement("session-a");
+        assert_eq!(
+            manager
+                .recovering_sidecars
+                .get("session-a")
+                .expect("retained old generation")
+                .completion_claims
+                .len(),
+            1
+        );
+        manager.insert_test_ready_frontend_sidecar("session-a", 32002, owner.clone());
+        manager
+            .commit_ready_session_sidecar("session-a")
+            .expect("replacement commit");
+
+        assert!(manager
+            .claim_frontend_session_completion(&old_binding, "session-a", "late-old-turn")
+            .is_none());
+        let new_binding = manager
+            .resolve_session_sidecar_for_frontend_owner("session-a", &owner)
+            .expect("new binding");
+        assert!(manager
+            .claim_frontend_session_completion(&new_binding, "session-a", "turn-1")
+            .is_some());
+    }
+
+    #[test]
+    fn pending_to_real_rekey_preserves_the_same_process_claim_authority() {
+        let mut manager = SidecarManager::new();
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+        manager.insert_test_ready_frontend_sidecar("pending-tab-a", 32001, owner.clone());
+        let binding = manager
+            .resolve_session_sidecar_for_frontend_owner("pending-tab-a", &owner)
+            .expect("pending binding");
+
+        assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
+        assert!(manager
+            .claim_frontend_session_completion(&binding, "pending-tab-a", "turn-1")
+            .is_none());
+        assert!(manager
+            .claim_frontend_session_completion(&binding, "session-real", "turn-1")
+            .is_some());
+    }
+
+    #[test]
+    fn reclaimed_generations_leave_no_manager_owned_claims() {
+        let mut manager = SidecarManager::new();
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+
+        for index in 0..12 {
+            let port = 32000 + index;
+            manager.insert_test_ready_frontend_sidecar("session-a", port, owner.clone());
+            let binding = manager
+                .resolve_session_sidecar_for_frontend_owner("session-a", &owner)
+                .expect("current binding");
+            assert!(manager
+                .claim_frontend_session_completion(&binding, "session-a", &format!("turn-{index}"),)
+                .is_some());
+            assert_eq!(
+                manager
+                    .sidecars
+                    .values()
+                    .map(|sidecar| sidecar.completion_claims.len())
+                    .sum::<usize>(),
+                1
+            );
+
+            drop(manager.remove_sidecar("session-a"));
+            manager.clear_generation("session-a");
+            assert!(manager.sidecars.is_empty());
+            assert!(manager.recovering_sidecars.is_empty());
+        }
     }
 }
 

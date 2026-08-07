@@ -28,10 +28,12 @@ import {
     type OpenClawPluginConfigMutation,
 } from '@/config/services/agentConfigService';
 import {
+    agentChannelUsesManagedCodexProvider,
     resolveAgentChannelDefaultPermissionMode,
+    resolveAgentChannelRuntime,
     resolveEffectiveConfig,
 } from '../../../../shared/types/agent';
-import type { RuntimeConfig } from '../../../../shared/types/runtime';
+import { getRuntimePermissionModes, type RuntimeConfig } from '../../../../shared/types/runtime';
 import { runtimeConfigForRuntimeBackedProviderDefault, toProviderExecutionIntent } from '../../../../shared/providerExecution';
 import BotTokenInput from '../../ImSettings/components/BotTokenInput';
 import FeishuCredentialInput from '../../ImSettings/components/FeishuCredentialInput';
@@ -540,6 +542,17 @@ export default function ChannelDetailView({
         () => channel ? resolveAgentChannelDefaultPermissionMode(agent, channel) : 'fullAgency',
         [agent, channel],
     );
+    const channelPermissionModes = useMemo(() => {
+        if (!channel || agentChannelUsesManagedCodexProvider(agent, channel)) return undefined;
+        const runtime = resolveAgentChannelRuntime(agent, channel);
+        return runtime === 'builtin' ? undefined : getRuntimePermissionModes(runtime);
+    }, [agent, channel]);
+    const productPermissionOverride = channel?.overrides?.permissionMode;
+    const legalProductPermissionOverride = productPermissionOverride === 'auto'
+        || productPermissionOverride === 'plan'
+        || productPermissionOverride === 'fullAgency'
+        ? productPermissionOverride
+        : undefined;
 
     // Derived values that depend on channel (safe with optional chaining before early return)
     const isRunning = botStatus?.status === 'online' || botStatus?.status === 'connecting';
@@ -1288,6 +1301,7 @@ export default function ChannelDetailView({
                                         model: undefined,
                                         runtime: undefined,
                                         runtimeConfig: undefined,
+                                        permissionMode: undefined,
                                     });
                                     return;
                                 }
@@ -1300,10 +1314,11 @@ export default function ChannelDetailView({
                                             providerId,
                                             providerEnvJson: undefined,
                                             model: newModel,
-                                            runtime: undefined,
+                                            runtime: 'builtin',
                                             runtimeConfig: runtimeConfigForRuntimeBackedProviderDefault(
                                                 channel?.overrides?.runtimeConfig as RuntimeConfig | undefined,
                                             ),
+                                            permissionMode: legalProductPermissionOverride,
                                         });
                                         return;
                                     }
@@ -1327,8 +1342,9 @@ export default function ChannelDetailView({
                                     providerId,
                                     providerEnvJson,
                                     model: newModel,
-                                    runtime: undefined,
+                                    runtime: 'builtin',
                                     runtimeConfig: undefined,
+                                    permissionMode: legalProductPermissionOverride,
                                 });
                             }}
                             onModelChange={async (model) => {
@@ -1343,7 +1359,7 @@ export default function ChannelDetailView({
                                     if (intent?.kind === 'runtime-backed-provider') {
                                         await patchOverrides({
                                             model: model || undefined,
-                                            runtime: undefined,
+                                            runtime: 'builtin',
                                             runtimeConfig: runtimeConfigForRuntimeBackedProviderDefault(
                                                 channel?.overrides?.runtimeConfig as RuntimeConfig | undefined,
                                             ),
@@ -1369,7 +1385,8 @@ export default function ChannelDetailView({
                                 )}
                             </div>
                             <PermissionModeSelect
-                                value={channel?.overrides?.permissionMode ?? defaultChannelPermissionMode}
+                                value={effective?.permissionMode ?? defaultChannelPermissionMode}
+                                modes={channelPermissionModes}
                                 onChange={async (mode) => {
                                     // If same as the IM Channel default, clear override.
                                     if (mode === defaultChannelPermissionMode) {

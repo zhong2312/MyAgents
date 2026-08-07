@@ -17,7 +17,6 @@ import type React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-import { getTabServerUrl, getSessionPort } from './tauriClient';
 import { isTauriEnvironment } from '../utils/browserMock';
 import { isLiveRevisionEnvelope } from '../../shared/liveRevision';
 
@@ -575,16 +574,7 @@ export class SseConnection {
      * Session-centric: first try a ready session port, then fallback to the tab URL waiter.
      */
     private async getServerUrl(): Promise<string> {
-        // Session-centric: try to get a ready port from sessionId first.
-        const sessionId = this.sessionIdRef?.current;
-        if (sessionId) {
-            const port = await getSessionPort(sessionId);
-            if (port !== null) {
-                return `http://127.0.0.1:${port}`;
-            }
-        }
-        // Fallback to Tab-based lookup (legacy compatibility)
-        return getTabServerUrl(this.connectionId);
+        return this.sessionIdRef?.current ? 'http://127.0.0.1:3000' : '';
     }
 }
 

@@ -1,5 +1,5 @@
 import { coerceReasoningEffortForRuntime, normalizeReasoningEffort } from '../../../shared/reasoningEffort';
-import { coerceModelForRuntime, coercePermissionModeForRuntime, type RuntimeType } from '../../../shared/types/runtime';
+import { coerceModelForRuntime, projectPermissionModeForRuntime, type RuntimeType } from '../../../shared/types/runtime';
 import type { ExternalRuntimeConfigPatch } from '../types';
 import { getSessionMetadata } from '../../SessionStore';
 import {
@@ -77,7 +77,7 @@ export function coerceExternalRuntimePermissionMode(
 ): string | undefined {
   const trimmed = typeof mode === 'string' ? mode.trim() : '';
   if (!trimmed) return undefined;
-  const coerced = coercePermissionModeForRuntime(trimmed, runtime);
+  const coerced = projectPermissionModeForRuntime(trimmed, runtime);
   if (coerced === undefined) {
     console.warn(
       `[runtime-coerce] dropping stale external runtime permissionMode='${trimmed}' on runtime='${runtime}' source=${source}; falling back to runtime default. sessionId=${sessionId || '(none)'}`,

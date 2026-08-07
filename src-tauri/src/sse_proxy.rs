@@ -9,7 +9,8 @@ use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
-use crate::sidecar::{ManagedSidecarManager, SidecarOwner};
+use crate::proxy_spill::{stream_response_body, ProxySpillManager, ResponsePolicy, StreamOutcome};
+use crate::sidecar::{FrontendSidecarBinding, ManagedSidecarManager, SidecarOwner};
 use crate::{ulog_debug, ulog_info, ulog_warn};
 
 /// Monotonically increasing connection id used to distinguish a "stale" task
@@ -49,8 +50,16 @@ fn next_transport_generation() -> u64 {
 const SSE_READ_TIMEOUT_SECS: u64 = 60;
 const SSE_RETRY_BASE_DELAY_MS: u64 = 250;
 const SSE_RETRY_MAX_DELAY_MS: u64 = 5_000;
+/// A legal SSE stream may run indefinitely, but one event must remain bounded.
+/// Normal tool/result payloads spill to `/refs` far below this threshold, so
+/// this is a protocol boundary rather than a product payload limit.
+const SSE_EVENT_MAX_BYTES: usize = 8 * 1024 * 1024;
+const SSE_EVENT_SEPARATOR_MAX_BYTES: usize = 4;
 const HTTP_PROXY_TIMEOUT_SECS: u64 = 120;
 const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 = 360;
+const CONTROL_DISPATCH_RETRY_DELAYS_MS: &[u64] = &[
+    50, 100, 200, 400, 800, 1_500, 2_000, 3_000, 5_000, 5_000, 5_000, 5_000, 5_000,
+];
 
 // Renderer API traffic is high-frequency. Rebuilding reqwest::Client for every
 // loopback request discards its connection pool and can exhaust Windows'
@@ -84,55 +93,6 @@ fn proxy_timeout_for(url_path: &str) -> u64 {
     } else {
         HTTP_PROXY_TIMEOUT_SECS
     }
-}
-
-/// Classify whether an absolute URL targets the local loopback (the sidecar) or
-/// an external host.
-///
-/// `proxy_http_request` is the single Rust entry point for **all** renderer HTTP:
-/// the overwhelming majority is `http://127.0.0.1:<port>/...` to the owning
-/// Sidecar (which MUST bypass any system proxy via `local_http`, or Clash/V2Ray
-/// returns 502), but the renderer analytics queue also POSTs to an **external**
-/// endpoint (`https://analytics.myagents.io/api/track`) through this same path.
-///
-/// Routing the external case through the localhost-only `.no_proxy()` client
-/// silently bypasses the user's configured proxy AND reqwest's system-proxy
-/// discovery — so a China/Windows user whose only egress is a Clash/V2Ray HTTP
-/// proxy makes a forced-direct connection that fails, and telemetry is dropped
-/// after 5 silent retries. That biases the platform dashboard toward whoever
-/// happens to have working direct egress. External hosts MUST therefore use the
-/// proxy-aware client (`proxy_config::build_client_with_proxy`), exactly like the
-/// updater / LiteLLM cache. See CLAUDE.md `local_http` red-line + proxy_config.md.
-///
-/// Parse with the SAME parser reqwest uses to actually connect (`reqwest::Url`,
-/// i.e. the WHATWG `url` crate), so the proxy decision can never disagree with
-/// the real destination host. A hand-rolled parser would: e.g. a backslash +
-/// userinfo trick like `http://evil.com\@127.0.0.1/` parses to host `evil.com`
-/// (backslash is a path separator), but a naive "take the last `@`" reader would
-/// see `127.0.0.1` and wrongly bypass the proxy. The parse cost is negligible
-/// next to building a `reqwest::Client` + an HTTP round trip. Anything that does
-/// not parse, or is not a loopback host, is treated as external (fail toward
-/// honoring the proxy; relative URLs are already rejected upstream).
-fn request_target_is_loopback(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    // host_str() brackets IPv6 literals (`[::1]`); strip them before IP parse.
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    // `is_loopback()` covers 127.0.0.0/8 and ::1 exactly — a substring check like
-    // `starts_with("127.")` would wrongly match a host such as `127.0.0.1.evil.com`.
-    host.parse::<std::net::IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(false)
 }
 
 /// One long-lived SSE subscription for a renderer surface.
@@ -397,6 +357,11 @@ enum SseAttemptOutcome {
         transport_generation: Option<u64>,
         reason: String,
     },
+    ProtocolBudgetBreach {
+        transport_generation: u64,
+        observed_event_bytes: usize,
+        limit_bytes: usize,
+    },
 }
 
 fn retry_delay_ms(consecutive_failures: u32) -> u64 {
@@ -414,6 +379,19 @@ fn next_retry_failure_count(previous: u32, made_progress: bool) -> u32 {
     }
 }
 
+fn next_retry_failure_count_for_outcome(previous: u32, outcome: &SseAttemptOutcome) -> u32 {
+    match outcome {
+        SseAttemptOutcome::Disconnected { made_progress, .. } => {
+            next_retry_failure_count(previous, *made_progress)
+        }
+        // Receiving bytes is not progress when the peer never produces a
+        // protocol-valid bounded event. Otherwise the same broken Sidecar can
+        // force a reconnect/allocation loop at the 250 ms base delay.
+        SseAttemptOutcome::ProtocolBudgetBreach { .. } => previous.saturating_add(1),
+        SseAttemptOutcome::Stopped => previous,
+    }
+}
+
 async fn run_sse_supervisor<R: tauri::Runtime>(
     app: &AppHandle<R>,
     sidecar_manager: &ManagedSidecarManager,
@@ -425,21 +403,21 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
     owner: &SidecarOwner,
 ) {
     let mut consecutive_failures = 0_u32;
-    let mut last_base_url: Option<String> = None;
+    let mut last_binding: Option<FrontendSidecarBinding> = None;
 
     while running.load(Ordering::SeqCst) {
         // Hold the std::sync::Mutex only for the authoritative lookup. Never
         // carry it into an HTTP await or retry sleep.
-        let base_url = {
+        let binding = {
             let mut manager = match sidecar_manager.lock() {
                 Ok(manager) => manager,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            manager.resolve_session_sidecar_url_for_frontend_owner(session_id_hint, owner)
+            manager.resolve_session_sidecar_for_frontend_owner(session_id_hint, owner)
         };
 
-        let base_url = match base_url {
-            Ok(base_url) => base_url,
+        let binding = match binding {
+            Ok(binding) => binding,
             Err(reason) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let delay_ms = retry_delay_ms(consecutive_failures);
@@ -457,34 +435,36 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
             }
         };
 
-        if last_base_url.as_deref() != Some(base_url.as_str()) {
+        let base_url = binding.base_url();
+        if last_binding.as_ref() != Some(&binding) {
             ulog_info!(
                 "[sse-proxy] Subscription {} resolved Sidecar endpoint {}",
                 connection_key,
                 base_url
             );
-            last_base_url = Some(base_url.clone());
+            last_binding = Some(binding.clone());
         }
 
         let stream_url = format!("{}/chat/stream", base_url.trim_end_matches('/'));
-        match connect_sse_attempt(
+        let outcome = connect_sse_attempt(
             app,
+            sidecar_manager,
+            &binding,
             state,
             subscription_generation,
             &stream_url,
             running,
             connection_key,
         )
-        .await
-        {
+        .await;
+        consecutive_failures = next_retry_failure_count_for_outcome(consecutive_failures, &outcome);
+        match outcome {
             SseAttemptOutcome::Stopped => break,
             SseAttemptOutcome::Disconnected {
-                made_progress,
                 transport_generation,
                 reason,
+                ..
             } => {
-                consecutive_failures =
-                    next_retry_failure_count(consecutive_failures, made_progress);
                 let delay_ms = retry_delay_ms(consecutive_failures);
                 if consecutive_failures == 1 || consecutive_failures % 10 == 0 {
                     ulog_warn!(
@@ -494,6 +474,28 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
                         consecutive_failures,
                         delay_ms,
                         reason
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach {
+                transport_generation,
+                observed_event_bytes,
+                limit_bytes,
+            } => {
+                let delay_ms = retry_delay_ms(consecutive_failures);
+                // Log only bounded diagnostics, never the offending payload.
+                // The same first/every-tenth cadence as other disconnects
+                // prevents a broken generation from flooding unified logs.
+                if consecutive_failures == 1 || consecutive_failures % 10 == 0 {
+                    ulog_warn!(
+                        "[sse-proxy] Subscription {} protocol event budget exceeded (transport_generation={}, observed_bytes={}, limit_bytes={}, attempt={}, retry_delay_ms={})",
+                        connection_key,
+                        transport_generation,
+                        observed_event_bytes,
+                        limit_bytes,
+                        consecutive_failures,
+                        delay_ms
                     );
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -529,6 +531,8 @@ fn log_sse_error<R: tauri::Runtime>(app: &AppHandle<R>, message: String) {
 /// supervisor can no longer publish into listeners installed for the same key.
 async fn emit_sse_event_if_current<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    sidecar_binding: &FrontendSidecarBinding,
     state: &SseProxyState,
     connection_key: &str,
     subscription_generation: u64,
@@ -556,10 +560,30 @@ async fn emit_sse_event_if_current<R: tauri::Runtime>(
             ),
         );
         if let Some(terminal) = crate::notification::completion_terminal_from_sse_data(&data) {
-            let notification_app = app.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                crate::notification::submit_session_completion(&notification_app, terminal);
-            });
+            let claim = sidecar_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .claim_frontend_session_completion(
+                    sidecar_binding,
+                    &terminal.session_id,
+                    &terminal.turn_id,
+                );
+            if let Some(claim) = claim {
+                let notification_app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::notification::submit_session_completion(
+                        &notification_app,
+                        terminal,
+                        claim,
+                    );
+                });
+            } else {
+                ulog_debug!(
+                    "[sse-proxy] Completion ignored after generation fence or duplicate claim: session={} turn={}",
+                    terminal.session_id,
+                    terminal.turn_id,
+                );
+            }
         }
     }
 
@@ -582,6 +606,8 @@ async fn emit_sse_event_if_current<R: tauri::Runtime>(
 
 async fn connect_sse_attempt<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    sidecar_binding: &FrontendSidecarBinding,
     state: &SseProxyState,
     subscription_generation: u64,
     url: &str,
@@ -590,24 +616,66 @@ async fn connect_sse_attempt<R: tauri::Runtime>(
 ) -> SseAttemptOutcome {
     connect_sse_attempt_with_read_timeout(
         app,
+        sidecar_manager,
+        sidecar_binding,
         state,
         subscription_generation,
         url,
         running,
         connection_key,
         std::time::Duration::from_secs(SSE_READ_TIMEOUT_SECS),
+        SSE_EVENT_MAX_BYTES,
     )
     .await
 }
 
+fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    // Returns (position_of_event_end, separator_length). Prefer the earliest
+    // boundary so another event is never swallowed into the current one.
+    let lf = buf.windows(2).position(|window| window == b"\n\n");
+    let crlf = buf.windows(4).position(|window| window == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(lf), Some(crlf)) if lf <= crlf => Some((lf, 2)),
+        (Some(_), Some(crlf)) => Some((crlf, 4)),
+        (Some(lf), None) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
+}
+
+/// Drain at most one complete event while enforcing a budget on the bytes
+/// before its delimiter. At exactly the limit, the delimiter may arrive in a
+/// later network chunk without turning a legal frame into a false breach.
+fn take_next_sse_event(
+    buffer: &mut Vec<u8>,
+    max_event_bytes: usize,
+) -> Result<Option<String>, usize> {
+    if let Some((position, separator_len)) = find_event_boundary(buffer) {
+        if position > max_event_bytes {
+            return Err(position);
+        }
+        let event = String::from_utf8_lossy(&buffer[..position]).to_string();
+        buffer.drain(..position + separator_len);
+        return Ok(Some(event));
+    }
+
+    if buffer.len() > max_event_bytes {
+        return Err(buffer.len());
+    }
+    Ok(None)
+}
+
 async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    sidecar_binding: &FrontendSidecarBinding,
     state: &SseProxyState,
     subscription_generation: u64,
     url: &str,
     running: &AtomicBool,
     connection_key: &str,
     read_timeout: std::time::Duration,
+    max_event_bytes: usize,
 ) -> SseAttemptOutcome {
     use futures_util::StreamExt;
 
@@ -695,61 +763,66 @@ async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk_count: u64 = 0;
 
-    fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
-        // Returns (position_of_event_end, separator_length).
-        // Prefer the EARLIEST boundary so we don't accidentally swallow
-        // another event into the current one if both kinds appear.
-        let lf = buf.windows(2).position(|w| w == b"\n\n");
-        let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n");
-        match (lf, crlf) {
-            (Some(l), Some(c)) => {
-                if l <= c {
-                    Some((l, 2))
-                } else {
-                    Some((c, 4))
-                }
-            }
-            (Some(l), None) => Some((l, 2)),
-            (None, Some(c)) => Some((c, 4)),
-            (None, None) => None,
-        }
-    }
-
     while running.load(Ordering::SeqCst) {
         match stream.next().await {
             Some(Ok(chunk)) => {
                 chunk_count += 1;
-                buffer.extend_from_slice(&chunk);
-
-                // Process complete SSE events (end with \n\n or \r\n\r\n)
-                while let Some((pos, sep_len)) = find_event_boundary(&buffer) {
-                    // Decode the complete event region as UTF-8 (lossy is
-                    // fine HERE — by the time we have a full event boundary,
-                    // any multi-byte sequence has its final byte present).
-                    let event_str = String::from_utf8_lossy(&buffer[..pos]).to_string();
-                    // O(1) amortised drain.
-                    buffer.drain(..pos + sep_len);
-
-                    // Fast local cancellation check before the authoritative
-                    // generation fence below.
-                    if !running.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    // Parse and emit with the renderer-surface prefix.
-                    if let Some((event_name, data)) = parse_sse_event(&event_str) {
-                        if !emit_sse_event_if_current(
-                            app,
-                            state,
-                            connection_key,
-                            subscription_generation,
+                let mut chunk_offset = 0;
+                while chunk_offset < chunk.len() {
+                    // Never copy an arbitrarily large network chunk into the
+                    // parser buffer. Four bytes beyond the event budget are
+                    // sufficient to recognize either legal SSE delimiter.
+                    let buffer_limit =
+                        max_event_bytes.saturating_add(SSE_EVENT_SEPARATOR_MAX_BYTES);
+                    let available = buffer_limit.saturating_sub(buffer.len());
+                    if available == 0 {
+                        return SseAttemptOutcome::ProtocolBudgetBreach {
                             transport_generation,
-                            event_name,
-                            data,
-                        )
-                        .await
-                        {
+                            observed_event_bytes: buffer.len(),
+                            limit_bytes: max_event_bytes,
+                        };
+                    }
+                    let append_len = available.min(chunk.len() - chunk_offset);
+                    buffer.extend_from_slice(&chunk[chunk_offset..chunk_offset + append_len]);
+                    chunk_offset += append_len;
+
+                    // Process complete SSE events (end with \n\n or \r\n\r\n)
+                    loop {
+                        let event_str = match take_next_sse_event(&mut buffer, max_event_bytes) {
+                            Ok(Some(event)) => event,
+                            Ok(None) => break,
+                            Err(observed_event_bytes) => {
+                                return SseAttemptOutcome::ProtocolBudgetBreach {
+                                    transport_generation,
+                                    observed_event_bytes,
+                                    limit_bytes: max_event_bytes,
+                                };
+                            }
+                        };
+
+                        // Fast local cancellation check before the authoritative
+                        // generation fence below.
+                        if !running.load(Ordering::SeqCst) {
                             return SseAttemptOutcome::Stopped;
+                        }
+
+                        // Parse and emit with the renderer-surface prefix.
+                        if let Some((event_name, data)) = parse_sse_event(&event_str) {
+                            if !emit_sse_event_if_current(
+                                app,
+                                sidecar_manager,
+                                sidecar_binding,
+                                state,
+                                connection_key,
+                                subscription_generation,
+                                transport_generation,
+                                event_name,
+                                data,
+                            )
+                            .await
+                            {
+                                return SseAttemptOutcome::Stopped;
+                            }
                         }
                     }
                 }
@@ -812,6 +885,29 @@ pub struct HttpRequest {
     pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarHttpRequest {
+    pub path: String,
+    pub method: String,
+    pub body: Option<String>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+}
+
+impl SidecarHttpRequest {
+    fn resolve(
+        self,
+        dispatch: &crate::sidecar::manager::SidecarHttpDispatch,
+    ) -> Result<HttpRequest, String> {
+        Ok(HttpRequest {
+            url: dispatch.url_for_path(&self.path)?,
+            method: self.method,
+            body: self.body,
+            headers: self.headers,
+        })
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct HttpResponse {
     pub status: u16,
@@ -819,9 +915,8 @@ pub struct HttpResponse {
     pub headers: std::collections::HashMap<String, String>,
     /// True if body is base64 encoded (for binary responses)
     pub is_base64: bool,
-    /// Pattern 2 §2.3.4: when set, the response body was spilled to disk by the
-    /// sidecar's large-value-store and the renderer should fetch it from this
-    /// URL (a `/refs/<id>` endpoint on the same sidecar) instead of decoding
+    /// When set, the loopback response body was spilled to the shared ref store
+    /// and the renderer should fetch it from this URL instead of decoding
     /// `body`. `body` is empty in that case; `is_base64` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ref_url: Option<String>,
@@ -834,13 +929,6 @@ pub struct HttpResponse {
     pub ref_size_bytes: Option<u64>,
 }
 
-/// Pattern 2 §2.3.4: stream-to-disk threshold. Bodies larger than this are
-/// written to `~/.myagents/refs/<id>` instead of being base64-encoded /
-/// returned inline. 1 MiB matches the sidecar-side `inlineMaxBytes` default
-/// but is intentionally a separate constant — Rust proxy and sidecar can
-/// drift independently without breaking the protocol.
-const PROXY_STREAM_THRESHOLD_BYTES: u64 = 1024 * 1024;
-
 /// Check if content type indicates binary data
 fn is_binary_content_type(content_type: &str) -> bool {
     let ct = content_type.to_lowercase();
@@ -851,11 +939,108 @@ fn is_binary_content_type(content_type: &str) -> bool {
         || ct.starts_with("application/pdf")
 }
 
-/// Proxy an HTTP request through Rust - completely bypasses WebView CORS
+async fn acquire_session_dispatch_with_wait(
+    manager: &ManagedSidecarManager,
+    session_id_hint: &str,
+    owner: &SidecarOwner,
+) -> Result<crate::sidecar::manager::SidecarHttpDispatch, String> {
+    let total_attempts = CONTROL_DISPATCH_RETRY_DELAYS_MS.len() + 1;
+    for (attempt, delay_ms) in std::iter::once(&0)
+        .chain(CONTROL_DISPATCH_RETRY_DELAYS_MS.iter())
+        .enumerate()
+    {
+        if *delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+        }
+        let result = manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .acquire_frontend_session_dispatch(session_id_hint, owner);
+        match result {
+            Ok(dispatch) => return Ok(dispatch),
+            Err(error) if attempt + 1 == total_attempts => {
+                return Err(format!(
+                    "Session Sidecar was not ready for owner {:?}: {}",
+                    owner, error
+                ));
+            }
+            Err(_) => {}
+        }
+    }
+    unreachable!("dispatch retry iterator always contains its final attempt")
+}
+
+async fn acquire_global_dispatch_with_wait(
+    manager: &ManagedSidecarManager,
+) -> Result<crate::sidecar::manager::SidecarHttpDispatch, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut delay_index = 0_usize;
+    loop {
+        let result = manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .acquire_global_dispatch();
+        let last_error = match result {
+            Ok(dispatch) => return Ok(dispatch),
+            Err(error) => error,
+        };
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("Global Sidecar was not ready: {last_error}"));
+        }
+        let delay_ms = CONTROL_DISPATCH_RETRY_DELAYS_MS
+            [delay_index.min(CONTROL_DISPATCH_RETRY_DELAYS_MS.len() - 1)];
+        delay_index += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+}
+
 #[tauri::command]
-pub async fn proxy_http_request(
+pub async fn session_sidecar_http_request(
     app: AppHandle,
+    sidecar_manager: tauri::State<'_, ManagedSidecarManager>,
+    spill_manager: tauri::State<'_, Arc<ProxySpillManager>>,
+    session_id_hint: String,
+    sidecar_owner_type: String,
+    sidecar_owner_id: String,
+    request: SidecarHttpRequest,
+) -> Result<HttpResponse, String> {
+    let owner = frontend_sidecar_owner(&sidecar_owner_type, sidecar_owner_id)?;
+    let dispatch =
+        acquire_session_dispatch_with_wait(sidecar_manager.inner(), &session_id_hint, &owner)
+            .await?;
+    let request = request.resolve(&dispatch)?;
+    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+}
+
+#[tauri::command]
+pub async fn global_sidecar_http_request(
+    app: AppHandle,
+    sidecar_manager: tauri::State<'_, ManagedSidecarManager>,
+    spill_manager: tauri::State<'_, Arc<ProxySpillManager>>,
+    request: SidecarHttpRequest,
+) -> Result<HttpResponse, String> {
+    let dispatch = acquire_global_dispatch_with_wait(sidecar_manager.inner()).await?;
+    let request = request.resolve(&dispatch)?;
+    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+}
+
+#[tauri::command]
+pub async fn proxy_analytics_http_request(
+    app: AppHandle,
+    spill_manager: tauri::State<'_, Arc<ProxySpillManager>>,
     request: HttpRequest,
+) -> Result<HttpResponse, String> {
+    if !request.method.eq_ignore_ascii_case("POST") {
+        return Err("Analytics proxy only accepts POST requests".to_string());
+    }
+    execute_http_request(app, spill_manager.inner().clone(), request, false).await
+}
+
+async fn execute_http_request(
+    app: AppHandle,
+    spill_manager: Arc<ProxySpillManager>,
+    request: HttpRequest,
+    target_is_loopback: bool,
 ) -> Result<HttpResponse, String> {
     use crate::logger;
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -898,11 +1083,10 @@ pub async fn proxy_http_request(
             .pool_idle_timeout(std::time::Duration::from_secs(30))
             .pool_max_idle_per_host(2)
     };
-    // Loopback (the Sidecar) MUST bypass the system proxy — Clash/V2Ray would
-    // 502 it. External hosts (the analytics endpoint) MUST honor the user's
-    // proxy config / system-proxy discovery — otherwise telemetry is silently
-    // dropped for proxy-dependent users. See `request_target_is_loopback`.
-    let client = if request_target_is_loopback(&request.url) {
+    // Control-plane commands select loopback explicitly and MUST bypass the
+    // system proxy. Reuse the loopback client so requests share a connection
+    // pool without exposing a generic renderer URL proxy.
+    let client = if target_is_loopback {
         loopback_http_client().map_err(|err| {
             logger::error(&app, &err);
             err
@@ -1013,36 +1197,25 @@ pub async fn proxy_http_request(
 
     let is_binary = is_binary_content_type(content_type);
 
-    // Pattern 2 §2.3.4: stream-to-disk path for large responses.
-    //
-    // Strategy: always read upstream as a stream and decide while reading.
-    // - Buffer in memory up to PROXY_STREAM_THRESHOLD_BYTES (1 MiB). If the
-    //   response completes inside that, fall through to the in-memory
-    //   base64/text path (no fs hit, no extra RTT).
-    // - If the buffer would exceed the threshold, switch to spill: open
-    //   ~/.myagents/refs/<id>, dump the buffered bytes, then continue
-    //   piping incoming chunks straight to disk.
-    //
-    // This catches chunked responses (no Content-Length header) — exactly
-    // the case where the old header-only check fell back to a fully-buffered
-    // `response.bytes()` / `response.text()`.
-    //
-    // Content-Length is still useful as an early-decision fast path: if
-    // the upstream advertises >threshold up front, we go straight to spill
-    // without a wasted memory buffer.
     let content_length_hint: Option<u64> = resp_headers
         .get("content-length")
         .and_then(|s| s.parse::<u64>().ok());
+    let response_policy = ResponsePolicy::for_target(target_is_loopback);
+    if let Err(error) = response_policy.check_content_length(content_length_hint) {
+        logger::warn(&app, &error);
+        return Err(error);
+    }
     let header_says_spill = content_length_hint
-        .map(|len| len > PROXY_STREAM_THRESHOLD_BYTES)
+        .map(|len| response_policy.allow_spill && len > response_policy.spill_threshold_bytes)
         .unwrap_or(false);
 
-    let stream_outcome = stream_or_spill_response_body(
-        &app,
+    let stream_outcome = stream_response_body(
         response,
         content_type,
         &request.url,
+        response_policy,
         header_says_spill,
+        spill_manager,
     )
     .await;
 
@@ -1087,13 +1260,7 @@ pub async fn proxy_http_request(
             }
         }
         StreamOutcome::Failed(err) => {
-            // Don't re-log here — `stream_or_spill_response_body` already
-            // emitted the fine-grained `[proxy] upstream stream error: …`
-            // at the appropriate level (warn for transient stream tear-down
-            // when the Sidecar is killed mid-response, which is the common
-            // case during Tab close / cron task end). A duplicate log line
-            // at ERROR was creating "WARN+ERROR same event" pairs that
-            // ate space and made real issues harder to find.
+            logger::warn(&app, &err);
             return Err(err);
         }
     };
@@ -1139,249 +1306,6 @@ pub async fn proxy_http_request(
     })
 }
 
-struct SpilledBody {
-    ref_url: String,
-    mimetype: String,
-    size_bytes: u64,
-}
-
-enum StreamOutcome {
-    /// Body fit inside PROXY_STREAM_THRESHOLD_BYTES — caller handles encoding.
-    Buffered(Vec<u8>),
-    /// Body exceeded the threshold; written to ~/.myagents/refs/<id>.
-    Spilled(SpilledBody),
-    /// Upstream stream error or fs error after partial read. Caller surfaces
-    /// to the renderer; partial spill files are cleaned up before returning.
-    Failed(String),
-}
-
-/// Read the response body as a stream. Buffer up to PROXY_STREAM_THRESHOLD_BYTES
-/// in memory; if the threshold is exceeded, transparently switch to spill mode
-/// and write the buffered bytes plus all subsequent chunks to disk.
-///
-/// `force_spill` short-circuits the buffering phase when Content-Length already
-/// said the body is large — we open the spill file immediately rather than
-/// buffer 1 MiB just to throw it on disk.
-async fn stream_or_spill_response_body(
-    app: &AppHandle,
-    response: reqwest::Response,
-    content_type: &str,
-    request_url: &str,
-    force_spill: bool,
-) -> StreamOutcome {
-    use crate::logger;
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-    use futures_util::StreamExt;
-    use std::path::PathBuf;
-    use tokio::fs::{create_dir_all, File};
-    use tokio::io::AsyncWriteExt;
-
-    let threshold = PROXY_STREAM_THRESHOLD_BYTES as usize;
-    let preview_cap: usize = 8 * 1024; // matches sidecar default previewBytes
-
-    // Lazy-initialised spill state. None until we either decide to spill
-    // (force_spill) or the in-memory buffer crosses the threshold.
-    struct SpillState {
-        file: File,
-        body_path: PathBuf,
-        meta_path: PathBuf,
-        id: String,
-        refs_dir: PathBuf,
-    }
-    let mut spill: Option<SpillState> = None;
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut size_bytes: u64 = 0;
-    let mut preview_buf: Vec<u8> = Vec::new();
-
-    // Helper: open the spill file lazily. Returns Err string on fs failure.
-    async fn init_spill(app: &AppHandle) -> Result<SpillState, String> {
-        let home = match dirs::home_dir() {
-            Some(h) => h,
-            None => {
-                let err = "[proxy] dirs::home_dir() returned None — cannot spill".to_string();
-                logger::warn(app, &err);
-                return Err(err);
-            }
-        };
-        let refs_dir: PathBuf = home.join(".myagents").join("refs");
-        if let Err(e) = create_dir_all(&refs_dir).await {
-            let err = format!("[proxy] failed to mkdir refs dir: {}", e);
-            logger::warn(app, &err);
-            return Err(err);
-        }
-        let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-        let body_path = refs_dir.join(&id);
-        let meta_path = refs_dir.join(format!("{}.meta.json", id));
-        let file = match File::create(&body_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                let err = format!("[proxy] failed to create ref body file: {}", e);
-                logger::warn(app, &err);
-                return Err(err);
-            }
-        };
-        Ok(SpillState {
-            file,
-            body_path,
-            meta_path,
-            id,
-            refs_dir,
-        })
-    }
-
-    if force_spill {
-        match init_spill(app).await {
-            Ok(s) => spill = Some(s),
-            Err(e) => return StreamOutcome::Failed(e),
-        }
-    }
-
-    let mut stream = response.bytes_stream();
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = match chunk_res {
-            Ok(c) => c,
-            Err(e) => {
-                let err = format!("[proxy] upstream stream error: {}", e);
-                logger::warn(app, &err);
-                if let Some(s) = &spill {
-                    let _ = tokio::fs::remove_file(&s.body_path).await;
-                }
-                return StreamOutcome::Failed(err);
-            }
-        };
-
-        size_bytes += chunk.len() as u64;
-        if preview_buf.len() < preview_cap {
-            let take = preview_cap
-                .saturating_sub(preview_buf.len())
-                .min(chunk.len());
-            preview_buf.extend_from_slice(&chunk[..take]);
-        }
-
-        if let Some(s) = &mut spill {
-            // Already spilling — write straight to disk.
-            if let Err(e) = s.file.write_all(&chunk).await {
-                let err = format!("[proxy] failed to write spill chunk: {}", e);
-                logger::warn(app, &err);
-                let _ = tokio::fs::remove_file(&s.body_path).await;
-                return StreamOutcome::Failed(err);
-            }
-        } else if buffer.len() + chunk.len() > threshold {
-            // Crossing the threshold for the first time — open the spill
-            // file, dump what we've buffered so far, then continue with the
-            // current chunk.
-            let mut s = match init_spill(app).await {
-                Ok(s) => s,
-                Err(e) => return StreamOutcome::Failed(e),
-            };
-            if !buffer.is_empty() {
-                if let Err(e) = s.file.write_all(&buffer).await {
-                    let err = format!("[proxy] failed to flush buffer to spill: {}", e);
-                    logger::warn(app, &err);
-                    let _ = tokio::fs::remove_file(&s.body_path).await;
-                    return StreamOutcome::Failed(err);
-                }
-                buffer.clear();
-                buffer.shrink_to_fit();
-            }
-            if let Err(e) = s.file.write_all(&chunk).await {
-                let err = format!("[proxy] failed to write spill chunk: {}", e);
-                logger::warn(app, &err);
-                let _ = tokio::fs::remove_file(&s.body_path).await;
-                return StreamOutcome::Failed(err);
-            }
-            spill = Some(s);
-        } else {
-            buffer.extend_from_slice(&chunk);
-        }
-    }
-
-    let Some(mut s) = spill else {
-        // Stayed under the threshold — return the in-memory buffer.
-        return StreamOutcome::Buffered(buffer);
-    };
-
-    // Spill path: finalise file and write meta.json.
-    if let Err(e) = s.file.flush().await {
-        let err = format!("[proxy] failed to flush spill body: {}", e);
-        logger::warn(app, &err);
-        let _ = tokio::fs::remove_file(&s.body_path).await;
-        return StreamOutcome::Failed(err);
-    }
-    drop(s.file);
-
-    // Build preview as base64 of head bytes — the sidecar treats binary
-    // mimetypes as base64 previews, and base64 is safe to embed in JSON for
-    // text mimetypes too. The renderer doesn't currently consume preview;
-    // this is purely for log / SSE diagnostics.
-    let preview = BASE64.encode(&preview_buf);
-
-    let mimetype = if content_type.is_empty() {
-        "application/octet-stream".to_string()
-    } else {
-        content_type.to_string()
-    };
-
-    // TTL = 1 hour, matching sidecar default.
-    let expires_at_ms = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0))
-    .saturating_add(60 * 60 * 1000);
-
-    let meta_json = serde_json::json!({
-        "kind": "ref",
-        "id": s.id,
-        "sizeBytes": size_bytes,
-        "mimetype": mimetype,
-        "preview": preview,
-        "expiresAt": expires_at_ms,
-    });
-    if let Err(e) = tokio::fs::write(
-        &s.meta_path,
-        serde_json::to_vec(&meta_json).unwrap_or_default(),
-    )
-    .await
-    {
-        let err = format!("[proxy] failed to write ref meta: {}", e);
-        logger::warn(app, &err);
-        let _ = tokio::fs::remove_file(&s.body_path).await;
-        return StreamOutcome::Failed(err);
-    }
-    // refs_dir kept on the struct so future cleanup paths can reach it; not
-    // used here.
-    let _ = &s.refs_dir;
-
-    // Compose ref URL on the same origin as the original request — that's
-    // the sidecar that owns this ref's filesystem (refs dir is shared, but
-    // each sidecar exposes /refs/:id on its own port). For the typical
-    // `http://127.0.0.1:<port>/...` case we just substitute the path-and-query
-    // tail with `/refs/<id>`. Avoids a `url` crate dep (transitive only).
-    let ref_url = origin_of(request_url)
-        .map(|origin| format!("{}/refs/{}", origin, s.id))
-        .unwrap_or_else(|| format!("http://127.0.0.1/refs/{}", s.id));
-
-    StreamOutcome::Spilled(SpilledBody {
-        ref_url,
-        mimetype,
-        size_bytes,
-    })
-}
-
-/// Extract the `scheme://host[:port]` portion of an absolute http(s) URL.
-/// Returns None on parse failure. Manual parser to avoid pulling the `url`
-/// crate into the direct dependency list.
-fn origin_of(absolute_url: &str) -> Option<String> {
-    let scheme_end = absolute_url.find("://")?;
-    let after = &absolute_url[scheme_end + 3..];
-    // Authority ends at the first '/', '?' or '#'.
-    let auth_end = after
-        .find(|c: char| c == '/' || c == '?' || c == '#')
-        .unwrap_or(after.len());
-    let authority = &after[..auth_end];
-    Some(format!("{}://{}", &absolute_url[..scheme_end], authority))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1401,6 +1325,24 @@ mod tests {
             let _ = socket.read(&mut request).await;
             socket
                 .write_all(raw_response)
+                .await
+                .expect("write test response");
+            let _ = socket.shutdown().await;
+        });
+        format!("http://{}/chat/stream", address)
+    }
+
+    async fn loopback_owned_response(raw_response: Vec<u8>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback server");
+        let address = listener.local_addr().expect("loopback address");
+        tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(&raw_response)
                 .await
                 .expect("write test response");
             let _ = socket.shutdown().await;
@@ -1466,6 +1408,13 @@ mod tests {
         state
     }
 
+    fn detached_test_completion_authority() -> (ManagedSidecarManager, FrontendSidecarBinding) {
+        (
+            Arc::new(std::sync::Mutex::new(crate::sidecar::SidecarManager::new())),
+            FrontendSidecarBinding::detached_test_value(),
+        )
+    }
+
     #[test]
     fn frontend_sse_owner_contract_reuses_existing_owner_variants() {
         assert_eq!(
@@ -1498,6 +1447,48 @@ mod tests {
     }
 
     #[test]
+    fn protocol_budget_breach_never_resets_retry_backoff() {
+        let breach = SseAttemptOutcome::ProtocolBudgetBreach {
+            transport_generation: 4,
+            observed_event_bytes: 33,
+            limit_bytes: 32,
+        };
+        let after_first = next_retry_failure_count_for_outcome(7, &breach);
+        let after_second = next_retry_failure_count_for_outcome(after_first, &breach);
+
+        assert_eq!(after_first, 8);
+        assert_eq!(after_second, 9);
+        assert_eq!(retry_delay_ms(after_second), SSE_RETRY_MAX_DELAY_MS);
+    }
+
+    #[test]
+    fn event_budget_is_per_frame_and_accepts_a_split_delimiter_at_the_limit() {
+        let mut buffer = vec![b'x'; 16];
+        assert_eq!(take_next_sse_event(&mut buffer, 16), Ok(None));
+
+        buffer.extend_from_slice(b"\n\nsmall\n\n");
+        assert_eq!(
+            take_next_sse_event(&mut buffer, 16),
+            Ok(Some("x".repeat(16)))
+        );
+        assert_eq!(
+            take_next_sse_event(&mut buffer, 16),
+            Ok(Some("small".to_string()))
+        );
+        assert_eq!(take_next_sse_event(&mut buffer, 16), Ok(None));
+    }
+
+    #[test]
+    fn event_budget_rejects_terminated_and_unterminated_frames_over_the_limit() {
+        let mut unterminated = vec![b'x'; 17];
+        assert_eq!(take_next_sse_event(&mut unterminated, 16), Err(17));
+
+        let mut terminated = vec![b'x'; 17];
+        terminated.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(take_next_sse_event(&mut terminated, 16), Err(17));
+    }
+
+    #[test]
     fn tauri_sse_envelope_exposes_transport_generation_without_changing_data() {
         let envelope = TauriSseEnvelope {
             transport_generation: 42,
@@ -1521,6 +1512,7 @@ mod tests {
         let app = tauri::test::mock_app();
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
         let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1530,10 +1522,23 @@ mod tests {
             unavailable.local_addr().expect("unavailable address")
         );
         drop(unavailable);
-        match connect_sse_attempt(app.handle(), &state, 1, &unavailable_url, &running, "test").await
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &unavailable_url,
+            &running,
+            "test",
+        )
+        .await
         {
             SseAttemptOutcome::Disconnected { made_progress, .. } => {
                 assert!(!made_progress)
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("connect failure is not a protocol breach")
             }
             SseAttemptOutcome::Stopped => panic!("connect failure must be retryable"),
         }
@@ -1542,7 +1547,18 @@ mod tests {
             b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         )
         .await;
-        match connect_sse_attempt(app.handle(), &state, 1, &status_url, &running, "test").await {
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &status_url,
+            &running,
+            "test",
+        )
+        .await
+        {
             SseAttemptOutcome::Disconnected {
                 made_progress,
                 reason,
@@ -1550,6 +1566,9 @@ mod tests {
             } => {
                 assert!(!made_progress);
                 assert!(reason.contains("503"));
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("HTTP status is not a protocol breach")
             }
             SseAttemptOutcome::Stopped => panic!("HTTP status must be retryable"),
         }
@@ -1572,8 +1591,20 @@ mod tests {
         .await;
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
-        match connect_sse_attempt(app.handle(), &state, 1, &url, &running, "test").await {
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &url,
+            &running,
+            "test",
+        )
+        .await
+        {
             SseAttemptOutcome::Disconnected {
                 made_progress,
                 reason,
@@ -1581,6 +1612,9 @@ mod tests {
             } => {
                 assert!(made_progress);
                 assert!(reason.contains("stream ended"));
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("bounded events must not breach")
             }
             SseAttemptOutcome::Stopped => panic!("EOF must be retryable"),
         }
@@ -1604,8 +1638,20 @@ mod tests {
         .await;
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
-        match connect_sse_attempt(app.handle(), &state, 1, &url, &running, "test").await {
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &url,
+            &running,
+            "test",
+        )
+        .await
+        {
             SseAttemptOutcome::Disconnected {
                 made_progress,
                 reason,
@@ -1613,6 +1659,9 @@ mod tests {
             } => {
                 assert!(made_progress);
                 assert!(reason.contains("stream error"));
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("bounded event must not breach")
             }
             SseAttemptOutcome::Stopped => panic!("body error must be retryable"),
         }
@@ -1624,15 +1673,19 @@ mod tests {
         let url = stalled_loopback_stream().await;
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
         match connect_sse_attempt_with_read_timeout(
             app.handle(),
+            &manager,
+            &binding,
             &state,
             1,
             &url,
             &running,
             "test",
             std::time::Duration::from_millis(25),
+            SSE_EVENT_MAX_BYTES,
         )
         .await
         {
@@ -1644,7 +1697,78 @@ mod tests {
                 assert!(!made_progress);
                 assert!(reason.contains("stream error"));
             }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("read timeout is not a protocol breach")
+            }
             SseAttemptOutcome::Stopped => panic!("read timeout must be retryable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_budget_breach_is_attempt_local_and_next_transport_recovers() {
+        let app = tauri::test::mock_app();
+        let running = AtomicBool::new(true);
+        let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
+        let mut oversized_response =
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                .to_vec();
+        oversized_response.extend_from_slice(&vec![b'x'; 33]);
+        let oversized_url = loopback_owned_response(oversized_response).await;
+
+        let breached_generation = match connect_sse_attempt_with_read_timeout(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &oversized_url,
+            &running,
+            "test",
+            std::time::Duration::from_secs(1),
+            32,
+        )
+        .await
+        {
+            SseAttemptOutcome::ProtocolBudgetBreach {
+                transport_generation,
+                observed_event_bytes,
+                limit_bytes,
+            } => {
+                assert_eq!(observed_event_bytes, 33);
+                assert_eq!(limit_bytes, 32);
+                transport_generation
+            }
+            _ => panic!("unterminated oversized event must be a protocol breach"),
+        };
+
+        let recovered_url = loopback_response(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: recovered\n\n",
+        )
+        .await;
+        match connect_sse_attempt_with_read_timeout(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &recovered_url,
+            &running,
+            "test",
+            std::time::Duration::from_secs(1),
+            32,
+        )
+        .await
+        {
+            SseAttemptOutcome::Disconnected {
+                made_progress,
+                transport_generation: Some(recovered_generation),
+                ..
+            } => {
+                assert!(made_progress);
+                assert!(recovered_generation > breached_generation);
+            }
+            _ => panic!("the next bounded transport must recover normally"),
         }
     }
 
@@ -1660,9 +1784,12 @@ mod tests {
                 .push(event.payload().to_string());
         });
         let state = active_test_state("fb", 2).await;
+        let (manager, binding) = detached_test_completion_authority();
 
         let emitted = emit_sse_event_if_current(
             app.handle(),
+            &manager,
+            &binding,
             &state,
             "fb",
             1,
@@ -1736,65 +1863,5 @@ mod tests {
             .await
             .expect("supervisor stop timeout")
             .expect("supervisor task");
-    }
-
-    #[test]
-    fn loopback_sidecar_urls_bypass_proxy() {
-        // The sidecar is always http://127.0.0.1:<port>/... — these MUST stay on
-        // the no_proxy client or a system proxy 502s every UI request.
-        assert!(request_target_is_loopback(
-            "http://127.0.0.1:31415/api/agents/set"
-        ));
-        assert!(request_target_is_loopback(
-            "http://127.0.0.1:31900/health/ready"
-        ));
-        assert!(request_target_is_loopback(
-            "http://localhost:31415/chat/stream"
-        ));
-        assert!(request_target_is_loopback("http://127.0.0.5:8080/x")); // whole 127.0.0.0/8
-        assert!(request_target_is_loopback("http://[::1]:31415/refs/abc"));
-        assert!(request_target_is_loopback(
-            "http://[0:0:0:0:0:0:0:1]:31415/x"
-        ));
-        // Case-insensitive host.
-        assert!(request_target_is_loopback("http://LOCALHOST:31415/x"));
-        // userinfo prefix on a genuine loopback host is still loopback.
-        assert!(request_target_is_loopback(
-            "http://user:pass@127.0.0.1:31415/x"
-        ));
-        // No path, only query/fragment.
-        assert!(request_target_is_loopback("http://127.0.0.1:31415?x=1"));
-        assert!(request_target_is_loopback("http://127.0.0.1:31415#f"));
-    }
-
-    #[test]
-    fn external_urls_are_not_loopback() {
-        // The analytics endpoint (and any future external POST) MUST route
-        // through the proxy-aware client, so it must NOT classify as loopback.
-        assert!(!request_target_is_loopback(
-            "https://analytics.myagents.io/api/track"
-        ));
-        assert!(!request_target_is_loopback(
-            "https://download.myagents.io/update/x.json"
-        ));
-        // Look-alikes that are NOT loopback hosts.
-        assert!(!request_target_is_loopback("http://127.0.0.1.evil.com/x"));
-        assert!(!request_target_is_loopback("http://localhost.evil.com/x"));
-        assert!(!request_target_is_loopback(
-            "https://user:pass@analytics.myagents.io/track"
-        ));
-        // Parser-disagreement guard: a backslash is a path separator to the real
-        // URL parser, so the true host is `evil.com`, NOT `127.0.0.1`. Must be
-        // external (else a hostile URL would bypass the proxy). This is the case
-        // a hand-rolled "last @ wins" parser gets wrong.
-        assert!(!request_target_is_loopback(
-            "http://evil.com\\@127.0.0.1/path"
-        ));
-        // IPv4-mapped IPv6 is not ::1 loopback.
-        assert!(!request_target_is_loopback(
-            "http://[::ffff:127.0.0.1]:80/x"
-        ));
-        // Not an absolute URL → not loopback (caller already guards relative URLs).
-        assert!(!request_target_is_loopback("/api/something"));
     }
 }

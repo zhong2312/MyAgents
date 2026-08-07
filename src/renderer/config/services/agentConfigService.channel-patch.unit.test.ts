@@ -30,7 +30,6 @@ function initialConfig(): AppConfig {
     agents: [{
       id: 'agent-1',
       name: 'Agent',
-      workspacePath: '/tmp/agent',
       enabled: true,
       permissionMode: 'auto',
       channels: [{
@@ -65,6 +64,48 @@ describe('disk-latest Agent channel patches', () => {
     expect((configState.current as AppConfig).agents?.[0].channels?.[0]).toMatchObject({
       groupActivation: 'always',
       openclawPluginConfig: { streaming: true },
+    });
+  });
+
+  it('accepts only the native permission vocabulary for a system Runtime channel', async () => {
+    (configState.current as AppConfig).agents![0].runtime = 'codex';
+
+    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+      overrides: { permissionMode: 'fullAgency' },
+    })).rejects.toThrow("Invalid Channel permissionMode 'fullAgency'");
+
+    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+      overrides: { permissionMode: '' },
+    })).rejects.toThrow("Invalid Channel permissionMode ''");
+
+    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+      overrides: { permissionMode: 'full-auto' },
+    })).resolves.toMatchObject({ overrides: { permissionMode: 'full-auto' } });
+  });
+
+  it('keeps managed Channel writes in the product permission vocabulary', async () => {
+    (configState.current as AppConfig).agents![0].providerId = 'codex-sub';
+
+    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+      overrides: { permissionMode: 'full-auto' },
+    })).rejects.toThrow("Invalid Channel permissionMode 'full-auto'");
+
+    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+      overrides: { permissionMode: 'fullAgency' },
+    })).resolves.toMatchObject({ overrides: { permissionMode: 'fullAgency' } });
+  });
+
+  it('preserves a historical managed native permission during a model-only edit', async () => {
+    (configState.current as AppConfig).agents![0].providerId = 'codex-sub';
+    (configState.current as AppConfig).agents![0].channels![0].overrides = {
+      permissionMode: 'suggest',
+      model: 'gpt-old',
+    };
+
+    await expect(patchAgentChannelConfig('agent-1', 'channel-1', {
+      overrides: { permissionMode: 'suggest', model: 'gpt-new' },
+    })).resolves.toMatchObject({
+      overrides: { permissionMode: 'suggest', model: 'gpt-new' },
     });
   });
 });

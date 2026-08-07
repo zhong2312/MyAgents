@@ -6,6 +6,7 @@ import { absolutelyThemeManifest } from './absolutely';
 import { codexThemeManifest } from './codex';
 import { defaultBlackThemeManifest } from './default-black';
 import { linearThemeManifest } from './linear';
+import { myAgentsLightThemeManifest } from './myagents-light';
 import { myAgentsDefaultTheme } from './myagents-default';
 import { createPresetTheme } from './preset-theme';
 import { proofThemeManifest } from './proof';
@@ -13,6 +14,7 @@ import { raycastThemeManifest } from './raycast';
 import { sageThemeManifest } from './sage';
 
 const manifests = [
+  myAgentsLightThemeManifest,
   sageThemeManifest,
   absolutelyThemeManifest,
   linearThemeManifest,
@@ -61,12 +63,19 @@ describe('production-minified preset Theme Registry', () => {
           },
           ...factories,
         ],
+        [
+          myAgentsLightThemeManifest.id,
+          myAgentsDefaultTheme.id,
+          defaultBlackThemeManifest.id,
+          ...manifests.slice(1).map(manifest => manifest.id),
+        ],
       );
 
       expect(registry.getProductionIds()).toEqual([
+        'myagents-light',
         'myagents-default',
         'default-black',
-        ...manifests.map(manifest => manifest.id),
+        ...manifests.slice(1).map(manifest => manifest.id),
       ]);
       expect(registry.resolve('default-black', 'light', false).themeId).toBe('default-black');
       for (const manifest of manifests) {

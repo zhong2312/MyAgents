@@ -10,12 +10,10 @@ import type {
   ToolUse
 } from '@/types/stream';
 
-import type { SendMessagePayload, SendMessageResponse } from '../../shared/types/ipc';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import type { SystemInitInfo } from '../../shared/types/system';
 import type { SessionState } from '@/context/TabContext';
 import { onEvent } from './eventBus';
-import { getServerUrl, proxyFetch } from './tauriClient';
 
 export type ChatInitPayload = {
   agentDir: string;
@@ -58,33 +56,7 @@ export type ChatSystemInitPayload = {
   runtimeSource?: RuntimeSource;
 };
 
-/**
- * @deprecated chatClient uses global sidecar URL. Prefer TabContext's sendMessage/stopResponse.
- * Get the full URL for an API endpoint using global sidecar
- */
-async function getApiUrl(path: string): Promise<string> {
-  const baseUrl = await getServerUrl();
-  return `${baseUrl}${path}`;
-}
-
-/**
- * @deprecated chatClient uses global sidecar URL. Prefer TabContext API.
- * POST JSON using proxyFetch to bypass CORS in Tauri
- */
-async function postJson<T>(path: string, body?: unknown): Promise<T> {
-  const url = await getApiUrl(path);
-  const response = await proxyFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  return (await response.json()) as T;
-}
-
 export const chatClient = {
-  sendMessage: (payload: SendMessagePayload): Promise<SendMessageResponse> =>
-    postJson('/chat/send', payload),
-  stopMessage: (): Promise<{ success: boolean; error?: string }> => postJson('/chat/stop'),
   onInit: (callback: (payload: ChatInitPayload) => void) => onEvent('chat:init', callback),
   onMessageReplay: (callback: (payload: ChatMessageReplayPayload) => void) =>
     onEvent('chat:message-replay', callback),

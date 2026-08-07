@@ -1,21 +1,21 @@
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   BackgroundAgentPermissionMode,
-  ManagedProviderCredential,
   PermissionMode as SharedPermissionMode,
 } from '../../shared/config-types';
 import type { ToolDisplayPayload } from '../../shared/toolDisplay/filePatch';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
-import type { ToolInput } from '../../renderer/types/chat';
+import type { ToolInput } from '../../shared/types/tool-input';
 import type { SystemInitInfo } from '../../shared/types/system';
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { InboxTurnMeta } from '../inbox/types';
 import type { ImagePayload } from '../runtimes/types';
 import type { MessageUsage, SessionSource, TurnAnalyticsSource } from '../types/session';
 import type { MirrorImage } from '../utils/im-mirror';
-import type { ModelAliases } from '../utils/model-aliases';
+import type { ProviderEnv } from '../provider-types';
 import type {
   DispatchGuard,
+  DesktopDeliveryMode,
   TurnOwner,
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
@@ -26,24 +26,6 @@ import type { TurnChannelDelivery } from '../session-core/channel-delivery';
 export type BuiltinSessionState = 'idle' | 'starting' | 'running' | 'error';
 
 export type PermissionMode = SharedPermissionMode | 'custom';
-
-export type ProviderEnv = {
-  /** Provider registry id. Metadata only: not forwarded as an SDK env var. */
-  providerId?: string;
-  /** Provider display name. Analytics metadata only: not forwarded as an SDK env var. */
-  providerName?: string;
-  baseUrl?: string;
-  apiKey?: string;
-  authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
-  apiProtocol?: 'anthropic' | 'openai';
-  maxOutputTokens?: number;
-  maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
-  upstreamFormat?: 'chat_completions' | 'responses';
-  /** Model alias mapping: SDK sub-agents use "fable"/"sonnet"/"opus"/"haiku" -> actual provider model IDs */
-  modelAliases?: ModelAliases;
-  /** Non-secret owner reference. Bearers are resolved by the Bridge per request. */
-  credentialSource?: ManagedProviderCredential;
-};
 
 export type ToolUseState = {
   id: string;
@@ -142,8 +124,6 @@ export type BuiltinRestartReason =
   | 'plugins'
   | 'reasoning-effort';
 
-export type QueueDeliveryMode = 'realtime' | 'turn';
-
 export type TurnProviderAnalytics = {
   provider_id?: string | null;
   provider_name: string | null;
@@ -157,7 +137,7 @@ export type MessageQueueItem = {
   message: SDKUserMessage['message'];
   messageText: string;
   wasQueued: boolean;
-  deliveryMode?: QueueDeliveryMode;
+  deliveryMode?: DesktopDeliveryMode;
   resolve: () => void;
   attachments?: MessageWire['attachments'];
   requestId?: string;

@@ -51,6 +51,37 @@ pub enum DeliverOutcome {
     Rejected { reason: String },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreshSessionStartRequest {
+    pub agent_id: String,
+    pub workspace_path: String,
+    pub from_session_id: String,
+    pub from_label: String,
+    pub prompt: String,
+    pub reply_back: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreshSessionStartOutcome {
+    pub status: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub message_id: String,
+    pub reply_back: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FreshStartTargetResponse {
+    accepted: Option<bool>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 /// Tauri command 接收 inbox message 并投递到 target sidecar。
 ///
 /// 命名 snake_case 是因为 Tauri 自动会把命令名按 generate_handler! 时的写法
@@ -119,6 +150,144 @@ async fn http_post_drain(port: u16, message: &PendingInboxMessage) -> DeliverOut
             DeliverOutcome::DeliveryFailed { reason }
         }
     }
+}
+
+async fn http_post_fresh_start(
+    port: u16,
+    agent_id: &str,
+    message: &PendingInboxMessage,
+) -> Result<FreshStartTargetResponse, String> {
+    let url = format!("http://127.0.0.1:{}/api/inbox/start", port);
+    let client = crate::local_http::json_client(Duration::from_secs(30));
+    let response = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "agentId": agent_id,
+            "message": message
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("admission acknowledgement was not confirmed: {error}"))?;
+    let status = response.status();
+    let parsed = response
+        .json::<FreshStartTargetResponse>()
+        .await
+        .map_err(|error| {
+            format!(
+                "admission acknowledgement was not confirmed (HTTP {}): {error}",
+                status.as_u16()
+            )
+        })?;
+    Ok(parsed)
+}
+
+/// Start a new Session under one Agent and wait only for target dispatch
+/// acceptance. The lifecycle fence spans ID birth, ensure, admission,
+/// BackgroundCompletion handoff, and transient-owner release.
+pub async fn start_fresh_session(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+    request: FreshSessionStartRequest,
+) -> FreshSessionStartOutcome {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let message = PendingInboxMessage::new_request(
+        request.from_session_id,
+        request.from_label,
+        session_id.clone(),
+        request.prompt,
+        request.reply_back,
+    );
+    let message_id = message.message_id.clone();
+    let owner_id = format!("inbox-start-{}", uuid::Uuid::new_v4());
+    let transient_owner = SidecarOwner::Agent(owner_id);
+    let lifecycle =
+        std::sync::Arc::new(crate::sidecar::acquire_session_lifecycle(&[&session_id]).await);
+
+    let outcome = |status: &str, reason: Option<String>| FreshSessionStartOutcome {
+        status: status.to_string(),
+        agent_id: request.agent_id.clone(),
+        session_id: session_id.clone(),
+        message_id: message_id.clone(),
+        reply_back: request.reply_back,
+        reason,
+    };
+
+    let runtime_identity =
+        crate::sidecar::resolve_agent_runtime_identity_by_id_from_config(&request.agent_id);
+    let runtime_override = runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.clone());
+    let runtime_source_override = runtime_identity
+        .as_ref()
+        .and_then(|identity| identity.runtime_source.clone());
+    let ensure =
+        crate::sidecar::ensure_session_sidecar_with_runtime_identity_override_lifecycle_held(
+            lifecycle.clone(),
+            app_handle.clone(),
+            manager.clone(),
+            session_id.clone(),
+            std::path::PathBuf::from(&request.workspace_path),
+            transient_owner.clone(),
+            runtime_override,
+            runtime_source_override,
+        )
+        .await;
+    let port = match ensure {
+        Ok(result) => result.port,
+        Err(error) => {
+            release_transient_owner(manager, &session_id, &transient_owner);
+            return outcome(
+                "delivery_failed",
+                Some(format!("sidecar start failed: {error}")),
+            );
+        }
+    };
+
+    let target = http_post_fresh_start(port, &request.agent_id, &message).await;
+    let result = match target {
+        Ok(response) if response.accepted == Some(true) => {
+            if start_headless_completion(app_handle, manager, &session_id) {
+                outcome("accepted", None)
+            } else {
+                outcome(
+                    "unconfirmed",
+                    Some(
+                        "dispatch was accepted but background completion ownership was not confirmed"
+                            .to_string(),
+                    ),
+                )
+            }
+        }
+        Ok(response) if response.accepted == Some(false) => outcome(
+            "rejected",
+            Some(
+                response
+                    .reason
+                    .unwrap_or_else(|| "target rejected admission".to_string()),
+            ),
+        ),
+        Ok(response) => {
+            // ACK ambiguity deliberately has no durable retry protocol. Reuse
+            // the existing headless completion owner when possible, return the
+            // allocated IDs, and let callers inspect history without resending.
+            let _ = start_headless_completion(app_handle, manager, &session_id);
+            outcome(
+                "unconfirmed",
+                Some(response.reason.unwrap_or_else(|| {
+                    "target could not confirm Runtime dispatch acceptance".to_string()
+                })),
+            )
+        }
+        Err(reason) => {
+            let _ = start_headless_completion(app_handle, manager, &session_id);
+            outcome("unconfirmed", Some(reason))
+        }
+    };
+    // BackgroundCompletion, when attached, now owns the ordinary lifecycle.
+    // No fresh-start-specific durable token or recovery state is introduced.
+    release_transient_owner(manager, &session_id, &transient_owner);
+    drop(lifecycle);
+    result
 }
 
 /// Helper for the admin handler: ensure target sidecar exists (resume if dead),
@@ -213,6 +382,14 @@ fn start_headless_completion_if_delivered(
     if !matches!(outcome, DeliverOutcome::Delivered { .. }) {
         return;
     }
+    start_headless_completion(app_handle, manager, session_id);
+}
+
+fn start_headless_completion(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+    session_id: &str,
+) -> bool {
     match crate::sidecar::start_headless_background_completion(app_handle, manager, session_id) {
         Ok(result) => {
             ulog_info!(
@@ -220,6 +397,7 @@ fn start_headless_completion_if_delivered(
                 session_id,
                 result.started
             );
+            result.started
         }
         Err(e) => {
             ulog_error!(
@@ -227,6 +405,7 @@ fn start_headless_completion_if_delivered(
                 session_id,
                 e
             );
+            false
         }
     }
 }
@@ -253,5 +432,82 @@ fn release_transient_owner(
                 e
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_start_request_uses_the_camel_case_management_contract() {
+        let request = FreshSessionStartRequest {
+            agent_id: "agent-1".to_string(),
+            workspace_path: "/workspace".to_string(),
+            from_session_id: "source-session".to_string(),
+            from_label: "Source Agent".to_string(),
+            prompt: "Review this".to_string(),
+            reply_back: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "agentId": "agent-1",
+                "workspacePath": "/workspace",
+                "fromSessionId": "source-session",
+                "fromLabel": "Source Agent",
+                "prompt": "Review this",
+                "replyBack": true,
+            })
+        );
+    }
+
+    #[test]
+    fn fresh_start_outcome_keeps_receipt_ids_for_unconfirmed_admission() {
+        let outcome = FreshSessionStartOutcome {
+            status: "unconfirmed".to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: "fresh-session".to_string(),
+            message_id: "message-1".to_string(),
+            reply_back: true,
+            reason: Some("ACK lost".to_string()),
+        };
+
+        let value = serde_json::to_value(outcome).unwrap();
+        assert_eq!(value["status"], "unconfirmed");
+        assert_eq!(value["agentId"], "agent-1");
+        assert_eq!(value["sessionId"], "fresh-session");
+        assert_eq!(value["messageId"], "message-1");
+        assert_eq!(value["replyBack"], true);
+        assert_eq!(value["reason"], "ACK lost");
+    }
+
+    #[test]
+    fn explicit_target_rejection_is_distinct_from_ack_loss() {
+        let parsed: FreshStartTargetResponse = serde_json::from_value(serde_json::json!({
+            "accepted": false,
+            "reason": "runtime rejected dispatch"
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.accepted, Some(false));
+        assert_eq!(parsed.reason.as_deref(), Some("runtime rejected dispatch"));
+    }
+
+    #[test]
+    fn target_can_return_unconfirmed_admission_as_json_null() {
+        let parsed: FreshStartTargetResponse = serde_json::from_value(serde_json::json!({
+            "accepted": null,
+            "unconfirmed": true,
+            "reason": "termination could not be confirmed"
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.accepted, None);
+        assert_eq!(
+            parsed.reason.as_deref(),
+            Some("termination could not be confirmed")
+        );
     }
 }

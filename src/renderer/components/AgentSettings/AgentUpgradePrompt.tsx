@@ -3,18 +3,16 @@ import { useCallback, useEffect, useRef } from 'react';
 import { HeartPulse } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useConfig } from '@/hooks/useConfig';
-import type { AgentConfig } from '../../../shared/types/agent';
-import { addAgentConfig } from '@/config/services/agentConfigService';
+import { enableAgentAndStartChannels, reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
 
 interface AgentUpgradePromptProps {
   projectId: string;
-  workspacePath: string;
   onUpgraded?: (agentId: string) => void;
 }
 
-export default function AgentUpgradePrompt({ projectId, workspacePath, onUpgraded }: AgentUpgradePromptProps) {
+export default function AgentUpgradePrompt({ projectId, onUpgraded }: AgentUpgradePromptProps) {
   const { t } = useTranslation('settings');
-  const { config, projects, patchProject, refreshConfig } = useConfig();
+  const { projects, patchProject, refreshConfig } = useConfig();
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -25,30 +23,19 @@ export default function AgentUpgradePrompt({ projectId, workspacePath, onUpgrade
   const handleUpgrade = useCallback(async () => {
     try {
       const project = projects.find(p => p.id === projectId);
-      const agentConfig: AgentConfig = {
-        id: crypto.randomUUID(),
-        name: project?.displayName || project?.name || workspacePath.split('/').pop() || 'Agent',
-        enabled: true,
-        workspacePath,
-        providerId: project?.providerId ?? undefined,
-        model: project?.model ?? undefined,
-        permissionMode: project?.permissionMode || config.defaultPermissionMode || 'plan',
-        mcpEnabledServers: project?.mcpEnabledServers,
-        channels: [],
-      };
-
-      // Persist agent config via TypeScript service (maintains imBotConfigs shim)
-      await addAgentConfig(agentConfig);
-
-      // Mark project as agent
-      await patchProject(projectId, { isAgent: true, agentId: agentConfig.id });
+      if (!project) throw new Error(`Project '${projectId}' not found.`);
+      const identity = await reconcilePersistedAgentWorkspaceIdentities();
+      const agent = identity.agentProjections.find(item => item.projectId === projectId)?.agent;
+      if (!agent) throw new Error(`Could not resolve Agent for Project '${projectId}'.`);
+      await enableAgentAndStartChannels(agent.id);
+      await patchProject(projectId, { isAgent: true });
       await refreshConfig();
 
-      if (isMountedRef.current) onUpgraded?.(agentConfig.id);
+      if (isMountedRef.current) onUpgraded?.(agent.id);
     } catch (e) {
       console.error('[AgentUpgradePrompt] Upgrade failed:', e);
     }
-  }, [projectId, workspacePath, config, projects, patchProject, refreshConfig, onUpgraded]);
+  }, [projectId, projects, patchProject, refreshConfig, onUpgraded]);
 
   return (
     <div className="flex flex-col items-center justify-center gap-6 py-12">

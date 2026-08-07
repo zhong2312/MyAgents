@@ -2,7 +2,8 @@
  * InlineCode - Styled inline code snippets
  *
  * When rendered inside a Chat (FileActionContext available), automatically
- * detects file/folder paths and makes them interactive (dashed underline + click menu).
+ * detects file/folder paths and makes them interactive. Primary click delegates
+ * to FileActionContext; right-click opens the shared file menu.
  * Audio file paths get an inline play/stop button.
  */
 import { useFileAction } from '@/context/FileActionContext';
@@ -75,21 +76,22 @@ export default function InlineCode({ children }: InlineCodeProps) {
     // Ask context for cached result (may trigger a batched backend request)
     const pathInfo = fileAction.checkFileTarget(actionTarget);
 
-    if (!pathInfo?.exists) {
-        // Not yet resolved or does not exist → plain code
+    if (!pathInfo) {
+        // Keep the first paint quiet while the batched existence check resolves.
         return <code className={BASE_CLASS}>{children}</code>;
     }
 
-    // Check audio after existence confirmed (avoid wasted computation on non-existent paths)
-    const isAudio = isAudioPath(text);
+    // A recognized but unavailable target remains actionable: primary click
+    // re-checks and explains the failure, while right-click preserves the
+    // product menu (copy/reference/folder actions can still be useful).
+    const isAudio = pathInfo.exists && isAudioPath(text);
 
-    // Path exists — render interactive
     const handleClick = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        const rect = (e.target as HTMLElement).getBoundingClientRect();
-        fileAction.openFileMenu(rect.left, rect.bottom + 4, actionTarget.path, pathInfo.type, text, {
-            scope: actionTarget.scope,
+        fileAction.openFileTarget(actionTarget, {
+            displayPath: text,
+            forceExternal: e.metaKey || e.ctrlKey,
         });
     };
 

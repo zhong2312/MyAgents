@@ -69,7 +69,12 @@ import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { CrashDiagnostics } from './crash-diagnostics';
 import { fetchWithGeneralProxy } from './utils/cancellation';
 import { startOAuthMaintenanceForSidecarRole } from './mcp-oauth';
-import { parseSidecarRole, type SidecarRole } from './sidecar-role';
+import {
+  composeSidecarRequestHandler,
+  resolveSidecarComposition,
+  runSidecarBootstrap,
+  type SidecarComposition,
+} from './sidecar-composition';
 import {
   aggregateGlobalUsageStats,
   buildSessionDetailedUsageStats,
@@ -239,24 +244,21 @@ import { isPendingSessionId } from '../shared/constants';
 import { parseAgentFrontmatter, parseFullAgentContent, serializeAgentContent } from '../shared/agentCommands';
 import { scanAgents, readWorkspaceConfig, writeWorkspaceConfig, loadEnabledAgents, readAgentMeta, writeAgentMeta, findAgent } from './agents/agent-loader';
 import type { AgentFrontmatter, AgentMeta, AgentWorkspaceConfig } from '../shared/agentTypes';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, type McpServerDefinition, type BackgroundAgentPermissionMode } from '../shared/config-types';
-import { ensureDirSync, ensureDir, isDirEntry } from './utils/fs-utils';
 import {
-  setCronTaskContext,
-  clearCronTaskContext,
-  consumeCronTaskExitRequest,
-  CRON_TASK_COMPLETE_PATTERN,
-  CRON_TASK_EXIT_TEXT,
-  CRON_TASK_EXIT_REASON_PATTERN,
-} from './tools/cron-tools';
-import { buildCronTaskReminder, type CronScheduleKind } from './utils/cron-reminder';
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+  isProjectArchived,
+  isProjectVisibleToUser,
+  type McpServerDefinition,
+  type BackgroundAgentPermissionMode,
+} from '../shared/config-types';
+import { workspacePathsEqual } from '../shared/workspacePath';
+import { ensureDirSync, ensureDir, isDirEntry } from './utils/fs-utils';
 import {
   buildMemoryUpdateReminder,
   MEMORY_UPDATE_COMPLETION_MARKER,
 } from './utils/memory-update-reminder';
 import { assertOfficialSystemSkillExposed } from './utils/system-skill-readiness';
-import { managementApi } from './utils/management-api-client';
-import { buildGoalContinuationReminder } from '../shared/systemReminder';
 import { setImCronContext } from './tools/im-cron-tool';
 // admin-api module (~2900 lines, depends on zod + full config/session/cron surface)
 // is lazy-loaded on first /api/admin/* hit to shave ~150ms off sidecar cold
@@ -420,14 +422,9 @@ import {
   getMessages,
   getSessionId,
   initializeAgent,
-  switchToSession,
   getMcpServers,
-  getCurrentMcpServers,
-  applyMcpOverrideAndAwaitReady,
-  withScheduledTurnDispatchLock,
   setGroupToolsDeny,
   setInteractionScenario,
-  resetInteractionScenario,
   setSidecarPort,
   hasActiveBridge,
   getSessionModel,
@@ -440,8 +437,8 @@ import {
   getCurrentImBridgeTurnContext,
   isCurrentImBridgeToolSurfaceInstalled,
   setBackgroundAgentPermissionMode,
-  type ProviderEnv,
 } from './agent-session';
+import type { ProviderEnv } from './provider-types';
 import { getHomeDirOrNull, isSkillBlockedOnPlatform } from './utils/platform';
 import { getScriptDir } from './utils/runtime';
 import {
@@ -456,15 +453,13 @@ import {
   updateSessionMetadata,
   getAttachmentPath,
 } from './SessionStore';
-import { decodeProviderEnvSnapshot, findAgentByWorkspacePath, findProvider, getAllMcpServers, getEffectiveMcpServers, getEnabledMcpServerIds, isProviderDisabled, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkbenchAiProviderSelection, resolveWorkspaceConfig } from './utils/admin-config';
+import { decodeProviderEnvSnapshot, findAgentByWorkspacePath, findProjectAgentByWorkspacePath, findProvider, getAllMcpServers, getEffectiveMcpServers, getEnabledMcpServerIds, isProviderDisabled, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkbenchAiProviderSelection, resolveWorkspaceConfig } from './utils/admin-config';
 import { snapshotForOwnedSession } from './utils/session-snapshot';
-import { bindOwnedSnapshotToRuntimeIdentity } from './utils/session-materialization';
 import {
   isManagedCodexProviderReady,
   managedCodexNotReadyMessage,
 } from './utils/managed-codex-readiness';
 import { buildSessionSnapshotPatchUpdates } from './utils/session-snapshot-patch';
-import { resolveSessionConfig } from './utils/resolve-session-config';
 import {
   resolveLastVisibleTurnPreview,
   shrinkSessionMessagesForClient,
@@ -511,45 +506,49 @@ import {
   getActiveRuntimeType,
 } from './runtimes/external-session';
 import {
-  beginTaskSessionBirth,
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
   getSessionEngine,
-  runTaskSessionBirthAdmission,
+  restoreInitialExternalSessionAtSelector,
   stopActiveTurn,
   stopOwnedTurn,
   stopOwnedTurnByQueueId,
 } from './session-engine';
 import { goalOrchestrator } from './session-engine';
+import { createTaskDispatchGuard } from './session-engine/task-turn-orchestrator';
 import { handleSessionEngineQueueRoute } from './routes/session-engine-queue';
 import { handleSessionEngineRuntimeRoute } from './routes/session-engine-runtime';
 import { handleSessionReadRoute } from './routes/session-read';
 import { handleChatStreamRoute } from './routes/chat-stream';
 import { handleSessionConfigRoute } from './routes/session-config';
 import { handleSessionOperationRoute } from './routes/session-operations';
+import {
+  handleGoalExecuteSyncRoute,
+  handleTaskExecuteSyncRoute,
+} from './routes/scheduled-turns';
 import { installAutoTitleHook } from './session-title-service';
 import type { ImagePayload } from './runtimes/types';
 import { rehomeImagePayloadsForSession } from './runtimes/image-payload';
 import {
   VALID_RUNTIMES,
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
-  resolveScheduledTurnPermissionMode,
+  projectPermissionModeForRuntime,
   getMaxPermissionForRuntime,
 } from '../shared/types/runtime';
 import { coerceReasoningEffortForRuntime } from '../shared/reasoningEffort';
 import {
-  coerceRuntimeBirthPermissionMode,
   coerceRuntimeBirthReasoningEffort,
 } from '../shared/runtimeBirthFields';
 import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../shared/types/runtime';
-import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution';
+import {
+  isPermissionModeForRuntimeIdentity,
+  projectManagedCodexPermissionToRuntime,
+  type RuntimeBackedProviderIdentity,
+} from '../shared/providerExecution';
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
 import {
   isSystemMaintenanceSession,
-  normalizeSystemMaintenanceKind,
-  type SystemMaintenanceSessionKind,
 } from '../shared/managedScheduledJob';
 import type { InteractionScenario } from './system-prompt';
 import { buildCronEventRelayMessage, neutralizeSystemReminderStructuralTags } from './utils/cron-event-relay';
@@ -597,7 +596,7 @@ type SendMessagePayload = {
   text?: string;
   images?: ImagePayload[];
   sessionId?: string;
-  permissionMode?: PermissionMode;
+  permissionMode?: string;
   // Background-agent permission policy (#264). Global app-config value the
   // renderer echoes per-send (idempotent setter); controls the builtin
   // PermissionRequest hook for run_in_background sub-agents.
@@ -637,25 +636,6 @@ function desktopScenarioForAnalyticsSource(
     : { type: 'desktop' };
 }
 
-function goalContinuationScenarioForSession(
-  meta: SessionMetadata | null | undefined,
-): InteractionScenario {
-  const origin = normalizeSessionOrigin(meta?.origin);
-  if (origin?.kind === 'agent-channel') {
-    const source = typeof meta?.source === 'string' ? meta.source : '';
-    const parts = source.split('_').filter(Boolean);
-    const tail = parts[parts.length - 1];
-    const sourceType: 'private' | 'group' = tail === 'group' ? 'group' : 'private';
-    const platform = parts.length > 1 ? parts.slice(0, -1).join('_') : (parts[0] || 'unknown');
-    return {
-      type: 'agent-channel',
-      platform,
-      sourceType,
-    };
-  }
-  return { type: 'desktop' };
-}
-
 function getRuntimeConfigModel(
   runtimeConfig?: RuntimeConfig | null,
   runtime: RuntimeType = getActiveRuntimeType(),
@@ -684,30 +664,7 @@ function getRuntimeConfigPermissionMode(
   runtime: RuntimeType = getActiveRuntimeType(),
 ): string | undefined {
   const permissionMode = runtimeConfig?.permissionMode?.trim();
-  return permissionMode ? coercePermissionModeForRuntime(permissionMode, runtime) : undefined;
-}
-
-function getRuntimeConfigSource(
-  runtimeConfig?: RuntimeConfig | null,
-): RuntimeSource | undefined {
-  const source = runtimeConfig?.source;
-  return source === 'managed-provider' || source === 'system-cli' ? source : undefined;
-}
-
-function runtimeBackedProviderIdentityFromCronRuntime(
-  runtime: RuntimeType,
-  runtimeSource: RuntimeSource | undefined,
-  modelValue: string | null | undefined,
-): RuntimeBackedProviderIdentity | undefined {
-  const model = modelValue?.trim();
-  if (runtime !== 'codex' || runtimeSource !== 'managed-provider' || !model) return undefined;
-  return {
-    kind: 'runtime-backed-provider',
-    providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
-    runtime: 'codex',
-    runtimeSource: 'managed-provider',
-    model,
-  };
+  return permissionMode ? projectPermissionModeForRuntime(permissionMode, runtime) : undefined;
 }
 
 function runtimeBackedProviderIdentityFromSnapshot(
@@ -794,128 +751,6 @@ function applyBackgroundAgentPermissionModeFromDisk(): void {
  * `undefined` means "keep current provider", which is the bug PRD 0.2.9 R1
  * was tracking.
  */
-function resolveCronProviderRouting(
-  providerId: string,
-): ProviderEnv | 'subscription' {
-  const provider = findProvider(providerId);
-  if (!provider) {
-    throw new Error(
-      `Provider '${providerId}' not found in config — task references a provider that has been deleted. Re-select a provider in 任务编辑 → 高级配置.`,
-    );
-  }
-  if (isProviderDisabled(providerId)) {
-    throw new Error(
-      `Provider '${providerId}' is disabled — re-enable it in 设置 → 模型供应商 → 启用和排序, or re-select a provider in 任务编辑 → 高级配置.`,
-    );
-  }
-  if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
-    throw new Error(
-      `Provider '${providerId}' is runtime-backed — re-select it so the task can run through its managed runtime identity.`,
-    );
-  }
-  if (provider.type === 'subscription') {
-    return (resolveProviderEnv(providerId) as ProviderEnv | undefined) ?? 'subscription';
-  }
-  const env = resolveProviderEnv(providerId);
-  if (!env) {
-    // Provider exists but has no apiKey configured.
-    throw new Error(
-      `Provider '${providerId}' has no API Key — open 设置 → 模型供应商 to configure it, or re-select a provider in 任务编辑 → 高级配置.`,
-    );
-  }
-  return env;
-}
-
-// Cron task execution payload
-type CronExecutePayload = {
-  taskId: string;
-  /** Ordinary SessionEngine queue identity for this concrete Task turn. */
-  queueId: string;
-  prompt: string;
-  /** Product-owned hidden maintenance marker mirrored from CronTask. */
-  managedKind?: string;
-  /** Apply Task defaults only while creating its execution Session. */
-  initializeSession?: boolean;
-  /** Session ID for single_session mode (reuse existing session) */
-  sessionId?: string;
-  aiCanExit?: boolean;
-  permissionMode?: PermissionMode;
-  runtime?: RuntimeType;
-  runtimeConfig?: RuntimeConfig;
-  model?: string;
-  /**
-   * PRD 0.2.9: per-task provider id. When set, sidecar live-resolves the
-   * provider env via `resolveProviderEnv(providerId)` at each tick — this
-   * keeps API key rotation / subscription switches in sync without
-   * persisting credentials in TaskStore.
-   *
-   * Resolution outcomes:
-   *   - provider not found / api-type with no apiKey → 400 (refuse to run,
-   *     caller marks Task as Blocked)
-   *   - subscription provider → effectiveProviderEnv = 'subscription'
-   *     (sentinel cleared on session)
-   *   - api provider → effectiveProviderEnv = ResolvedProviderEnv object
-   */
-  providerId?: string;
-  /**
-   * Per-task MCP enable list override.
-   * `undefined` = follow workspace MCP (`config.agents[].mcpEnabledServers`).
-   * `[]` = explicitly run with no MCP servers.
-   * `[id, id, ...]` = enable only these MCP server ids for this task.
-   * Sidecar applies via `setMcpServers()` before `enqueueUserMessage`.
-   */
-  mcpEnabledServers?: string[];
-  /** Run mode: "single_session" (keep context) or "new_session" (fresh each time) */
-  runMode?: 'single_session' | 'new_session';
-  /** Task execution interval in minutes (for System Prompt context) */
-  intervalMinutes?: number;
-  /** Current execution number, 1-based (for System Prompt context) */
-  executionNumber?: number;
-  /** Schedule kind from Rust CronSchedule when available. */
-  scheduleKind?: CronScheduleKind;
-};
-
-function createTaskDispatchGuard(
-  taskId: string,
-  queueId: string,
-  sessionId: string,
-): import('./session-core/turn-queue').DispatchGuard {
-  let canceled = false;
-  const guard: import('./session-core/turn-queue').DispatchGuard = async () => {
-    if (canceled) {
-      return { accepted: false, code: 'task_dispatch_canceled', error: 'Task execution was canceled before dispatch' };
-    }
-    const response = await managementApi('/api/task/turn/authorize', 'POST', {
-      taskId,
-      queueId,
-      sessionId,
-    });
-    if (canceled) {
-      return { accepted: false, code: 'task_dispatch_canceled', error: 'Task execution was canceled before dispatch' };
-    }
-    return response.ok === true
-      ? { accepted: true }
-      : {
-          accepted: false,
-          code: typeof response.code === 'string' ? response.code : 'task_dispatch_rejected',
-          error: String(response.error ?? 'Task execution is no longer authorized'),
-        };
-  };
-  guard.cancel = () => {
-    canceled = true;
-  };
-  return guard;
-}
-
-function requiredMemorySystemSkill(managedKind: string | undefined): RequiredSystemSkill | undefined {
-  switch (managedKind) {
-    case 'memory_auto_update_batch': return 'myagents-memory-update';
-    case 'memory_gardener': return 'myagents-memory-gardener';
-    case 'memory_molt': return 'myagents-memory-molt';
-    default: return undefined;
-  }
-}
-
 /**
  * Compose task authorization with the actual Runtime-exposure prerequisite.
  * This runs at the turn-queue dispatch boundary, after earlier work drains
@@ -962,28 +797,13 @@ function createRequiredSystemSkillDispatchGuard(
   return guard;
 }
 
-type GoalExecutePayload = {
-  goalId: string;
-  objective: string;
-  sessionId: string;
-  turnNumber: number;
-  aiCanExit: boolean;
-  permissionMode: PermissionMode | '';
-  queueId: string;
-  expectedControlRevision: number;
-};
-
-function systemMaintenanceKindFromCronPayload(payload: CronExecutePayload): SystemMaintenanceSessionKind | undefined {
-  return normalizeSystemMaintenanceKind(payload.managedKind);
-}
-
 function parseArgs(argv: string[]): {
   agentDir: string;
   initialPrompt?: string;
   port: number;
   sessionId?: string;
   noPreWarm?: boolean;
-  sidecarRole: SidecarRole;
+  sidecarComposition: SidecarComposition;
 } {
   const args = argv.slice(2);
   const getArgValue = (flag: string) => {
@@ -999,7 +819,10 @@ function parseArgs(argv: string[]): {
   const port = Number(getArgValue('--port') ?? 3000);
   const sessionId = getArgValue('--session-id') ?? undefined;
   const noPreWarm = args.includes('--no-pre-warm');
-  const sidecarRole = parseSidecarRole(getArgValue('--sidecar-role'));
+  const sidecarComposition = resolveSidecarComposition(
+    getArgValue('--sidecar-role'),
+    args.includes('--dev-union'),
+  );
 
   if (!agentDir) {
     throw new Error('Missing required argument: --agent-dir <path>');
@@ -1011,7 +834,7 @@ function parseArgs(argv: string[]): {
     port: Number.isNaN(port) ? 3000 : port,
     sessionId,
     noPreWarm,
-    sidecarRole,
+    sidecarComposition,
   };
 }
 
@@ -1164,6 +987,9 @@ const SYSTEM_SKILLS: readonly string[] = [
   // plugin / widget / im / config) to every AI session in the product.
   // Force-synced because SKILL.md must track CLI changes in lockstep.
   'myagents-cli',
+  // v44: one Agent workflow for scheduled, future and conditional Task
+  // automation; command Detector protocol is progressively disclosed inside.
+  'myagents-task-automation',
   // v35: stable product-use knowledge and expected-behaviour contract for
   // every MyAgents session. Live operations remain in myagents-cli.
   'myagents-docs',
@@ -1461,131 +1287,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 async function handleGoalExecuteSync(request: Request): Promise<Response> {
-  let payload: GoalExecutePayload;
-  try {
-    payload = (await request.json()) as GoalExecutePayload;
-  } catch (error) {
-    console.error('[goal] execute-sync: JSON parse error', error);
-    return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
-  }
-  if (!payload.goalId?.trim()
-    || !payload.objective?.trim()
-    || !payload.sessionId?.trim()
-    || !payload.queueId?.trim()
-    || !Number.isInteger(payload.turnNumber)
-    || payload.turnNumber < 1
-    || !Number.isInteger(payload.expectedControlRevision)
-    || payload.expectedControlRevision < 1) {
-    return jsonResponse({ success: false, error: 'Invalid Goal execution payload.' }, 400);
-  }
-
-  return withScheduledTurnDispatchLock(async () => {
-    const failure = (error: string, status: number, code?: string): Response => {
-      const currentSessionId = getSessionId();
-      return jsonResponse({
-        success: false,
-        error,
-        ...(code ? { code } : {}),
-        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
-      }, status);
-    };
-    const { agentDir } = getAgentState();
-    clearCronTaskContext();
-
-    try {
-      if (getSessionId() !== payload.sessionId) {
-        const switched = await switchToSession(payload.sessionId);
-        if (!switched || getSessionId() !== payload.sessionId) {
-          return failure(
-            `Goal Sidecar is not bound to its owning session ${payload.sessionId}.`,
-            409,
-          );
-        }
-      }
-
-      const sessionMeta = getSessionMetadata(payload.sessionId);
-      const scenario = goalContinuationScenarioForSession(sessionMeta);
-      const turnOrigin = normalizeSessionOrigin(sessionMeta?.origin)
-        ?? { kind: 'desktop' as const, surface: 'unknown' as const };
-      await setInteractionScenario(scenario);
-
-      const engine = getSessionEngine();
-      const ensured = await engine.ensureGoalSessionConfig();
-      if (!ensured.success) {
-        return failure(
-          ensured.error ?? 'Failed to restore Goal session configuration',
-          503,
-        );
-      }
-      const runtime: RuntimeType = engine.kind === 'external'
-        ? getActiveRuntimeType()
-        : 'builtin';
-      const permissionMode = resolveScheduledTurnPermissionMode(
-        'goal',
-        payload.permissionMode,
-        undefined,
-        runtime,
-      );
-      const channelDeliveryExpected = turnOrigin.kind === 'agent-channel';
-      const result = await goalOrchestrator.runScheduledTurn(engine, {
-        goal: {
-          id: payload.goalId,
-          objective: payload.objective,
-          status: 'active',
-          turnCount: payload.turnNumber - 1,
-          revision: 0,
-          controlRevision: payload.expectedControlRevision,
-          sessionId: payload.sessionId,
-          workspacePath: agentDir,
-          endConditions: { aiCanExit: payload.aiCanExit },
-        },
-        queueId: payload.queueId,
-        expectedControlRevision: payload.expectedControlRevision,
-        channelDeliveryExpected,
-        turn: {
-          prompt: buildGoalContinuationReminder({
-            objective: payload.objective,
-            goalId: payload.goalId,
-            goalStatus: 'active',
-            turnNumber: payload.turnNumber,
-            aiCanExit: payload.aiCanExit,
-          }),
-          sessionId: getRuntimeSessionIdForRequest(),
-          workspacePath: agentDir,
-          scenario,
-          permissionMode,
-          runtimeConfig: null,
-          analyticsOrigin: turnOrigin,
-          timeoutMs: 3_600_000,
-          pollMs: 1_000,
-        },
-      });
-      if (!result.success) {
-        if (result.terminationUnconfirmed) {
-          return jsonResponse({
-            success: false,
-            error: result.error ?? 'Goal execution termination was not confirmed',
-            terminationUnconfirmed: true,
-            sessionId: getSessionId(),
-          }, result.status ?? 503);
-        }
-        return failure(result.error ?? 'Goal execution failed', result.status ?? 503);
-      }
-
-      return jsonResponse({
-        success: true,
-        aiRequestedExit: false,
-        outputText: result.text || undefined,
-        sessionId: getSessionId(),
-        goalChannelDeliveryExpected: channelDeliveryExpected,
-      });
-    } catch (error) {
-      console.error(`[goal] execute-sync goalId=${payload.goalId} failed:`, error);
-      return failure(error instanceof Error ? error.message : 'Unknown error', 500);
-    } finally {
-      clearCronTaskContext();
-      resetInteractionScenario();
-    }
+  return handleGoalExecuteSyncRoute(request, {
+    getEngine: getSessionEngine,
+    getWorkspacePath: () => getAgentState().agentDir,
   });
 }
 
@@ -1664,8 +1368,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'model/verify') return await api.handleModelVerify(payload as Parameters<typeof api.handleModelVerify>[0]);
 
   // Agent commands
-  if (route === 'agent/list') return api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
-  if (route === 'agent/show') return api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
+  if (route === 'agent/list') return await api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
+  if (route === 'agent/current') return await api.handleAgentCurrent();
+  if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
   if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);
   if (route === 'agent/archive') return api.handleAgentArchive(payload as Parameters<typeof api.handleAgentArchive>[0]);
@@ -1709,7 +1414,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'im/channels') return await api.handleImChannels();
 
   // Tool readme — progressive-disclosure helpers for external runtimes
-  if (route === 'readme/cron' || route === 'readme/im' || route === 'readme/widget' || route === 'readme/thought') {
+  if (route === 'readme/task' || route === 'readme/cron' || route === 'readme/im' || route === 'readme/widget' || route === 'readme/thought') {
     const topic = route.split('/')[1];
     return api.handleReadme({
       topic,
@@ -1760,7 +1465,12 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'task/create-from-alignment') return await api.handleTaskCreateFromAlignment(payload);
   if (route === 'task/create-attached') return await api.handleTaskCreateAttached(payload);
   if (route === 'task/run') return await api.handleTaskRun(payload as Parameters<typeof api.handleTaskRun>[0]);
+  if (route === 'task/run-now') return await api.handleTaskRunNow(payload as Parameters<typeof api.handleTaskRunNow>[0]);
   if (route === 'task/rerun') return await api.handleTaskRerun(payload as Parameters<typeof api.handleTaskRerun>[0]);
+  if (route === 'task/trigger/validate') return await api.handleTaskTriggerValidate(payload as Parameters<typeof api.handleTaskTriggerValidate>[0]);
+  if (route === 'task/trigger/test') return await api.handleTaskTriggerTest(payload);
+  if (route === 'task/check-now') return await api.handleTaskCheckNow(payload as Parameters<typeof api.handleTaskCheckNow>[0]);
+  if (route === 'task/reset-checkpoint') return await api.handleTaskResetCheckpoint(payload as Parameters<typeof api.handleTaskResetCheckpoint>[0]);
   if (route === 'task/update') return await api.handleTaskUpdate(payload);
   if (route === 'task/update-status') return await api.handleTaskUpdateStatus(payload);
   if (route === 'task/append-session') return await api.handleTaskAppendSession(payload as Parameters<typeof api.handleTaskAppendSession>[0]);
@@ -1794,6 +1504,21 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/attachment-inspect') return await api.handleSpaceAttachmentInspect(payload as Parameters<typeof api.handleSpaceAttachmentInspect>[0]);
 
   // Session Inbox (PRD 0.2.18) — `myagents session send`
+  if (route === 'session/list') {
+    return await api.handleSessionList(payload as Parameters<typeof api.handleSessionList>[0]);
+  }
+  if (route === 'session/start') {
+    const { handleAdminSessionStart } = await import('./inbox/start-admin-handler');
+    const result = await handleAdminSessionStart(getRuntimeSessionIdForRequest(), payload);
+    return result.status >= 200 && result.status < 300
+      ? { success: true, ...(result.response as Record<string, unknown>) }
+      : {
+          ...(result.response as Record<string, unknown>),
+          success: false,
+          error: result.response.error?.message ?? 'fresh Session admission failed',
+          code: result.response.error?.code,
+        };
+  }
   if (route === 'session/send') {
     const { handleAdminInbox } = await import('./inbox/admin-handler');
     const sessionRequest = {
@@ -1970,11 +1695,15 @@ async function main() {
     port,
     sessionId: initialSessionId,
     noPreWarm,
-    sidecarRole,
+    sidecarComposition,
   } = parseArgs(process.argv);
-  process.env.MYAGENTS_SIDECAR_ROLE = sidecarRole;
+  const sidecarRole = sidecarComposition.role;
+  const sidecarRoleLabel = sidecarComposition.mode === 'development-union'
+    ? 'development-union'
+    : sidecarRole;
+  process.env.MYAGENTS_SIDECAR_ROLE = sidecarRoleLabel;
   const dirDisplay = agentDir.length > 50 ? agentDir.slice(0, 3) + '...' + agentDir.slice(-44) : agentDir;
-  startupBeacon(`args parsed, port=${port}, role=${sidecarRole}, agentDir=${dirDisplay}`);
+  startupBeacon(`args parsed, port=${port}, role=${sidecarRoleLabel}, agentDir=${dirDisplay}`);
 
   let currentAgentDir = await ensureAgentDir(agentDir);
   startupBeacon('ensureAgentDir done');
@@ -2121,6 +1850,8 @@ async function main() {
 
   console.log(`[startup] HTTP server binding to 127.0.0.1:${port}...`);
 
+  const dispatchRequest = composeSidecarRequestHandler(sidecarComposition, handleRequest);
+
   honoServe({
     // Explicit 127.0.0.1 for Rust proxy compatibility (IPv4).
     port,
@@ -2136,7 +1867,7 @@ async function main() {
       const requestId = incomingRequestId ?? randomUUIDv4Short();
       const sessionId = request.headers.get('x-myagents-session-id') ?? undefined;
       const tabId = request.headers.get('x-myagents-tab-id') ?? undefined;
-      return withLogContext({ requestId, sessionId, tabId }, () => handleRequest(request));
+      return withLogContext({ requestId, sessionId, tabId }, () => dispatchRequest(request));
     },
   } as Parameters<typeof honoServe>[0]);
 
@@ -2472,7 +2203,33 @@ async function main() {
         let images = payload?.images ?? [];
         const clientSessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : undefined;
         const runtimeSessionId = getRuntimeSessionIdForRequest();
-        const permissionMode = payload?.permissionMode ?? 'auto';
+        if (payload.permissionMode !== undefined && typeof payload.permissionMode !== 'string') {
+          return jsonResponse({ success: false, error: 'permissionMode must be a string.' }, 400);
+        }
+        const requestedPermissionMode = payload.permissionMode?.trim();
+        const permissionMeta = getSessionMetadata(runtimeSessionId);
+        const engine = getSessionEngine();
+        const resolvedPermissionMode = resolveWorkspaceConfig(
+          agentDir,
+          permissionMeta,
+          { includeMcp: false },
+        ).permissionMode;
+        let permissionMode = resolvedPermissionMode;
+        if (!permissionMeta && payload.permissionMode !== undefined) {
+          const birthPermissionMode = payload.permissionMode.trim();
+          const runtimeIdentity = engine.getRuntimeIdentity();
+          if (!isPermissionModeForRuntimeIdentity(
+            birthPermissionMode,
+            runtimeIdentity.runtime,
+            runtimeIdentity.runtimeSource,
+          )) {
+            return jsonResponse({
+              success: false,
+              error: `Invalid permissionMode '${payload.permissionMode}' for ${runtimeIdentity.runtimeSource ?? runtimeIdentity.runtime}.`,
+            }, 400);
+          }
+          permissionMode = birthPermissionMode;
+        }
         const model = payload?.model;
         const providerRoute = payload?.providerRoute;
         const providerEnv = payload?.providerEnv;
@@ -2504,10 +2261,9 @@ async function main() {
         }
 
         try {
-          const engine = getSessionEngine();
           const providerLabel = typeof providerEnv === 'object' ? providerEnv?.baseUrl ?? 'anthropic' : (providerEnv ?? 'anthropic');
           const runtimeLabel = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
-          console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode} model=${model ?? 'default'} baseUrl=${providerLabel}`);
+          console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`);
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
             text,
             images,
@@ -2813,527 +2569,10 @@ async function main() {
 
       // POST /cron/execute-sync - Execute a scheduled task synchronously.
       if (pathname === '/cron/execute-sync' && request.method === 'POST') {
-        console.log('[cron] execute-sync: endpoint matched');
-
-        let payload: CronExecutePayload;
-        try {
-          payload = (await request.json()) as CronExecutePayload;
-          console.log('[cron] execute-sync: payload parsed', {
-            executionId: payload.taskId,
-            hasPrompt: !!payload.prompt,
-            runMode: payload.runMode,
-          });
-        } catch (e) {
-          console.error('[cron] execute-sync: JSON parse error', e);
-          return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
-        }
-
-        const { taskId, queueId, prompt, sessionId, aiCanExit, model, runMode, intervalMinutes, executionNumber } = payload;
-        const cronTurnOrigin: SessionOrigin = {
-          kind: 'automation',
-          surface: 'task_run',
-        };
-
-        if (!taskId || !queueId || !prompt || !sessionId) {
-          return jsonResponse({ success: false, error: 'Task id, queue id, session id, and prompt are required.' }, 400);
-        }
-
-        const taskDispatchGuard = createTaskDispatchGuard(taskId, queueId, sessionId);
-        const sessionBirthLease = payload.initializeSession
-          ? beginTaskSessionBirth(
-              taskId,
-              queueId,
-              () => { void taskDispatchGuard.cancel?.(); },
-            )
-          : null;
-        if (payload.initializeSession && !sessionBirthLease) {
-          return jsonResponse({
-            success: false,
-            error: `Task Session creation is already registered for queue ${queueId}`,
-          }, 409);
-        }
-
-        // Serialize scheduled turns so two background dispatches
-        // concurrent ticks within a single sidecar can't interleave on
-        // shared global state — `currentMcpServers`, the active session,
-        // `cronTaskContext`, `interactionScenario`. Without this, request
-        // A's session switch / scenario could be silently overwritten by
-        // request B before A reaches `enqueueUserMessage`. PRD 0.2.4 §3.6
-        // (cross-review B7).
-        try {
-          return await withScheduledTurnDispatchLock(async () => {
-        // Handle session setup based on runMode
-        const effectiveRunMode = runMode ?? 'single_session';
-        const { agentDir } = getAgentState();
-        const managedCodexReady = isManagedCodexProviderReady(loadConfig());
-
-        // Clear any existing cron context before switching sessions
-        // This prevents context pollution when sessions change
-        clearCronTaskContext();
-
-        let effectiveSessionId = sessionId;
-
-        // Rust chooses the concrete Session id and owns metadata birth under
-        // the per-Session lifecycle. `initializeSession` therefore describes
-        // SessionStore identity, not whether this Node Sidecar process happened
-        // to be created for the current request. A Tab may already keep the
-        // Sidecar alive while this Task still legitimately creates metadata.
-        if (payload.initializeSession) {
-          // Create a fresh session for each execution (no memory of previous runs).
-          // v0.1.69: Cron new_task ticks are structurally 'owned' — every tick reads the
-          // current Agent and freezes a snapshot into the new SessionMetadata. Per-tick
-          // freshness keeps "live-follow" semantics for cron without inventing a third
-          // owner kind in resolveSessionConfig (PRD D4 footnote).
-          const taskAgent = findAgentByWorkspacePath(agentDir) as AgentConfig | undefined;
-          const engine = getSessionEngine();
-          const liveRuntimeIdentity = engine.getRuntimeIdentity();
-          const liveConfigSnapshot = engine.getSessionConfigSnapshot();
-          const overrideRuntimeType = liveRuntimeIdentity.runtime;
-          const overrideRuntimeSource = overrideRuntimeType === 'builtin'
-            ? undefined
-            : (liveRuntimeIdentity.runtimeSource ?? 'system-cli');
-          const agentSnapshot: Partial<SessionMetadata> = taskAgent
-            ? snapshotForOwnedSession(taskAgent, {
-                runtimeOverride: overrideRuntimeType,
-                ...(overrideRuntimeSource ? { runtimeSourceOverride: overrideRuntimeSource } : {}),
-                managedCodexProviderReady: overrideRuntimeSource === 'managed-provider'
-                  ? true
-                  : managedCodexReady,
-              })
-            : {};
-          const taskSnapshot = bindOwnedSnapshotToRuntimeIdentity(agentSnapshot, liveRuntimeIdentity);
-          taskSnapshot.origin = cronTurnOrigin;
-          // `cronTaskId` is the existing SessionMetadata wire key. Its value is
-          // now the Task id; TaskStore remains the only scheduling authority.
-          taskSnapshot.cronTaskId = taskId;
-          const systemMaintenanceKind = systemMaintenanceKindFromCronPayload(payload);
-          if (systemMaintenanceKind) {
-            taskSnapshot.systemMaintenanceKind = systemMaintenanceKind;
-          }
-          const runtimeBackedIdentity = runtimeBackedProviderIdentityFromCronRuntime(
-            overrideRuntimeType,
-            overrideRuntimeSource,
-            payload.runtimeConfig?.model ?? liveConfigSnapshot.model,
-          );
-          if (runtimeBackedIdentity) {
-            taskSnapshot.providerExecutionIdentity = runtimeBackedIdentity;
-            taskSnapshot.providerId = runtimeBackedIdentity.providerId;
-            taskSnapshot.providerRoute = undefined;
-            taskSnapshot.providerEnvJson = undefined;
-            taskSnapshot.model = runtimeBackedIdentity.model;
-          }
-          // Task overrides initialize a new execution Session once. Future
-          // ticks read this Session snapshot instead of reapplying Task config.
-          if (payload.providerId && !runtimeBackedIdentity) {
-            taskSnapshot.providerId = payload.providerId;
-            taskSnapshot.providerEnvJson = undefined;
-            if (payload.model) {
-              taskSnapshot.model = payload.model;
-              taskSnapshot.providerRoute = createConcreteProviderRoute(payload.providerId, payload.model);
-            } else {
-              taskSnapshot.model = undefined;
-              taskSnapshot.providerRoute = undefined;
-            }
-          } else if (payload.model && !runtimeBackedIdentity) {
-            taskSnapshot.model = payload.model;
-            if (taskSnapshot.providerId) {
-              taskSnapshot.providerRoute = createConcreteProviderRoute(
-                taskSnapshot.providerId,
-                payload.model,
-              );
-            }
-          }
-          // PRD 0.2.4 §需求 4 — stamp per-task MCP override into the new
-          // session's metadata BEFORE creation, so the session is born with
-          // the right MCP set. The setMcpServers() call further down still
-          // runs for safety, but for new_session mode it's typically a
-          // no-op because the snapshot already matches the override.
-          if (payload.mcpEnabledServers !== undefined) {
-            taskSnapshot.mcpEnabledServers = payload.mcpEnabledServers;
-          }
-          // Rust chooses the execution Session id and passes it as
-          // payload.sessionId. Honor that id here; generating another id
-          // would split Sidecar ownership from Session metadata.
-          //
-          // The fallback only supports older callers that omitted sessionId.
-          if (sessionId) {
-            taskSnapshot.id = sessionId;
-          }
-          const birthAdmission = await runTaskSessionBirthAdmission(
-            sessionBirthLease!,
-            taskDispatchGuard,
-            () => createSession(agentDir, taskSnapshot),
-          );
-          if (!birthAdmission.accepted) {
-            return jsonResponse({
-              success: false,
-              error: birthAdmission.error,
-              ...(birthAdmission.code ? { code: birthAdmission.code } : {}),
-            }, 409);
-          }
-          const newSession = birthAdmission.value;
-          const switched = await switchToSession(newSession.id);
-          if (!switched) {
-            console.error(`[cron] execute-sync taskId=${taskId} failed to switch to new session ${newSession.id}`);
-            return jsonResponse({ success: false, error: 'Failed to create new session for execution.' }, 500);
-          }
-          effectiveSessionId = newSession.id;
-          console.log(`[cron] execute-sync taskId=${taskId} new_session mode: created fresh session ${newSession.id} (from=${sessionId ? 'rust-payload' : 'bun-fallback'})`);
-        } else if (sessionId) {
-          // single_session mode: switch to the task's stored session (keeps context)
-          // If already in the target session, skip switchToSession to avoid aborting
-          // an active AI response and clearing the message queue.
-          const currentSessionId = getSessionId();
-          if (currentSessionId === sessionId) {
-            console.log(`[cron] execute-sync taskId=${taskId} existing session: already in ${sessionId}, skipping switch`);
-          } else {
-            console.log(`[cron] execute-sync taskId=${taskId} attempting to switch to session ${sessionId}`);
-            const switched = await switchToSession(sessionId);
-            if (!switched) {
-              console.error(`[cron] execute-sync taskId=${taskId} failed to switch to required session ${sessionId}`);
-              return jsonResponse({
-                success: false,
-                error: `Failed to switch to required Task session ${sessionId}`,
-              }, 409);
-            } else {
-              console.log(`[cron] execute-sync taskId=${taskId} existing session: switched to ${sessionId}`);
-            }
-          }
-          const existing = getSessionMetadata(sessionId);
-          await updateSessionMetadata(sessionId, {
-            ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
-            cronTaskId: taskId,
-          });
-        } else {
-          console.log(`[cron] execute-sync taskId=${taskId} no sessionId provided, using current session`);
-        }
-
-        // Task config initializes a new execution Session once. Existing
-        // Sessions resolve their own immutable provider/runtime snapshot.
-        let effectiveModel = model;
-        let effectiveProviderEnv: ProviderEnv | 'subscription' | undefined;
-        let effectiveProviderRoute: ProviderRoute | undefined;
-        let effectiveRuntimeConfig = payload.runtimeConfig;
-
-        if (payload.providerId) {
-          try {
-            effectiveProviderEnv = resolveCronProviderRouting(payload.providerId);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            clearCronTaskContext(effectiveSessionId);
-            resetInteractionScenario();
-            return jsonResponse({ success: false, error: message }, 400);
-          }
-          if (payload.model) {
-            effectiveProviderRoute = createConcreteProviderRoute(
-              payload.providerId,
-              payload.model,
-            );
-          }
-        } else {
-          const snapshotSessionId = effectiveSessionId ?? getSessionId();
-          const sessionMeta = snapshotSessionId
-            ? getSessionMetadata(snapshotSessionId)
-            : undefined;
-          const agent = findAgentByWorkspacePath(agentDir) as AgentConfig | undefined;
-          if (sessionMeta && agent) {
-            const resolved = resolveSessionConfig(sessionMeta, agent, undefined, 'owned', {
-              managedCodexProviderReady: managedCodexReady,
-            });
-            effectiveModel = resolved.model;
-
-            if (isConcreteProviderRoute(resolved.providerRoute)) {
-              effectiveProviderRoute = resolved.providerRoute;
-              effectiveModel = resolved.providerRoute.model;
-              try {
-                effectiveProviderEnv = resolveCronProviderRouting(
-                  resolved.providerRoute.providerId,
-                );
-              } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                clearCronTaskContext(effectiveSessionId);
-                resetInteractionScenario();
-                return jsonResponse({ success: false, error: message }, 400);
-              }
-            } else if (resolved.providerEnvJson) {
-              const decoded = decodeProviderEnvSnapshot(
-                resolved.providerEnvJson,
-                resolved.providerId,
-              );
-              if (!decoded) {
-                const message = resolved.providerId && isProviderDisabled(resolved.providerId)
-                  ? `Provider '${resolved.providerId}' is disabled`
-                  : 'Session provider snapshot is invalid';
-                clearCronTaskContext(effectiveSessionId);
-                resetInteractionScenario();
-                return jsonResponse({ success: false, error: message }, 400);
-              }
-              effectiveProviderEnv = decoded as ProviderEnv;
-            } else if (resolved.providerId) {
-              try {
-                effectiveProviderEnv = resolveCronProviderRouting(resolved.providerId);
-              } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                clearCronTaskContext(effectiveSessionId);
-                resetInteractionScenario();
-                return jsonResponse({ success: false, error: message }, 400);
-              }
-              if (effectiveModel) {
-                effectiveProviderRoute = createConcreteProviderRoute(
-                  resolved.providerId,
-                  effectiveModel,
-                );
-              }
-            }
-
-            if (resolved.runtime !== 'builtin') {
-              effectiveRuntimeConfig = {
-                ...(payload.runtimeConfig ?? {}),
-                source: payload.runtimeConfig?.source
-                  ?? resolved.runtimeSource
-                  ?? effectiveRuntimeConfig?.source,
-                model: payload.runtimeConfig?.model
-                  ?? resolved.model,
-                permissionMode: payload.runtimeConfig?.permissionMode
-                  ?? payload.permissionMode
-                  ?? resolved.permissionMode,
-              };
-            }
-          }
-        }
-
-        // Permission remains a per-turn Task policy; other runtime settings
-        // belong to the execution Session snapshot.
-        if (payload.permissionMode) {
-          effectiveRuntimeConfig = {
-            ...(effectiveRuntimeConfig ?? {}),
-            permissionMode: payload.permissionMode,
-          };
-        }
-
-        if (getRuntimeConfigSource(effectiveRuntimeConfig ?? null) === 'managed-provider' && !managedCodexReady) {
-          const errMsg = managedCodexNotReadyMessage('cron task execution');
-          console.error(`[cron] execute-sync managed Codex runtimeConfig rejected: ${errMsg}`);
-          clearCronTaskContext(effectiveSessionId);
-          resetInteractionScenario();
-          return jsonResponse({ success: false, error: errMsg }, 400);
-        }
-
-        setCronTaskContext(taskId, aiCanExit ?? false, effectiveSessionId);
-        console.log(`[cron] execute-sync: cron context set for taskId=${taskId}`);
-
-        const turnScenario: InteractionScenario = {
-          type: 'cron',
-          taskId,
-          intervalMinutes: intervalMinutes ?? 15,
-          aiCanExit: aiCanExit ?? false,
-        };
-        const turnOrigin = cronTurnOrigin;
-
-        // Set System Prompt append for this turn. Goal Loop is a session
-        // working mode, so it keeps the session's desktop/channel scenario;
-        // ordinary cron keeps the automation scenario.
-        try {
-          await setInteractionScenario(turnScenario);
-          console.log('[cron] execute-sync: interaction scenario set');
-        } catch (e) {
-          console.error('[cron] execute-sync: error setting interaction scenario', e);
-          clearCronTaskContext(effectiveSessionId);
-          return jsonResponse({ success: false, error: `System prompt error: ${e}` }, 500);
-        }
-
-        try {
-          console.log(`[cron] execute-sync taskId=${taskId} runMode=${effectiveRunMode} interval=${intervalMinutes}min exec#${executionNumber} aiCanExit=${aiCanExit ?? false} prompt="${prompt.slice(0, 100)}..."`);
-
-          // Enqueue the message (this starts the async execution).
-          // Mixed reminder + visible prompt keeps cron operations hidden from the UI
-          // while preserving the task text as the visible user bubble.
-          const wrappedPrompt = buildCronTaskReminder({
-            prompt,
-            taskId,
-            aiCanExit: aiCanExit ?? false,
-            scheduleKind: payload.scheduleKind,
-            runMode: effectiveRunMode,
-            intervalMinutes: intervalMinutes ?? 15,
-            executionNumber,
-          });
-          console.log('[cron] execute-sync: about to enqueue user message');
-
-          let textContent = '';
-
-          // PRD 0.2.5 R2 — unified "user didn't pick → runtime max" resolver.
-          // Sentinels for "didn't pick" are undefined and empty string.
-          // Concrete values (auto/plan/fullAgency/default/etc.) are respected
-          // literally. See src/shared/types/runtime.ts::resolveCronPermissionMode.
-          const engine = getSessionEngine();
-          const cronRuntimeType: RuntimeType = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
-          const effectivePermissionMode = resolveScheduledTurnPermissionMode(
-            'cron',
-            payload.permissionMode,
-            effectiveRuntimeConfig?.permissionMode,
-            cronRuntimeType,
-          );
-
-          if (engine.kind === 'builtin' && payload.initializeSession) {
-            // PRD 0.2.4 §需求 4 — reconcile MCP set + run the turn under
-            // a single locked critical section so two concurrent cron
-            // ticks never interleave their abort/restart with each
-            // other's in-flight turn (cross-review B5).
-            //
-            // Target MCP set:
-            //   1. Task carries an override → apply that exact list.
-            //   2. Task has no override ("follow Agent") → reconcile to
-            //      the workspace's effective MCP. This is critical because
-            //      `currentMcpServers` is module-global state that the
-            //      previous task's override may have mutated. Without an
-            //      explicit reset, "follow Agent" silently inherits the
-            //      previous task's override (cross-review B1).
-            //
-            // The helper is fingerprint-gated, so when the desired set
-            // already matches `currentMcpServers` it's a cheap no-op.
-            let target: McpServerDefinition[];
-            if (payload.mcpEnabledServers !== undefined) {
-              const globalEnabledIds = new Set(getEnabledMcpServerIds());
-              const overrideIds = new Set(
-                payload.mcpEnabledServers.filter((id) => globalEnabledIds.has(id)),
-              );
-              // Prefer `currentMcpServers` (set by frontend's /api/mcp/set)
-              // when its IDs cover all override IDs. Sidecar's
-              // `getAllMcpServers()` and the renderer's mcpService produce
-              // McpServerDefinition objects with subtly different env/args
-              // shapes, and feeding sidecar-shaped definitions back through
-              // `applyMcpOverrideAndAwaitReady` triggers a fingerprint
-              // mismatch → abort+restart that wastes ~5s on the launcher
-              // cron handoff. When the frontend already pushed shapes that
-              // cover the override set, reusing those keeps the fingerprint
-              // stable and the call becomes a cheap no-op.
-              const fromCurrent = (getCurrentMcpServers() ?? []).filter(
-                (s) => overrideIds.has(s.id),
-              );
-              if (fromCurrent.length === overrideIds.size) {
-                target = fromCurrent;
-              } else {
-                const allServers = getAllMcpServers();
-                target = allServers.filter((s) => overrideIds.has(s.id));
-              }
-              console.log(
-                `[cron] execute-sync taskId=${taskId} applying task MCP override: [${
-                  target.map((s) => s.id).join(',') || '(empty)'
-                }]`,
-              );
-            } else {
-              // No override → reconcile to workspace effective MCP so a
-              // previous task's override doesn't leak into this run.
-              target = getEffectiveMcpServers(agentDir);
-            }
-
-            // Apply MCP set first (this may abort + restart the session;
-            // the outer scheduled-turn lock keeps two concurrent ticks
-            // from interleaving across the abort/restart window).
-            await applyMcpOverrideAndAwaitReady(target);
-          }
-
-          // PRD 0.2.5 R2: effectivePermissionMode resolved above via
-          // resolveCronPermissionMode. `runInjectedTurn` owns the runtime
-          // dispatch, finalization wait, and success gate for builtin/external.
-          const injectedTurn = {
-            prompt: wrappedPrompt,
-            sessionId: getRuntimeSessionIdForRequest(),
-            workspacePath: agentDir,
-            scenario: turnScenario,
-            permissionMode: effectivePermissionMode,
-            model: engine.kind === 'external'
-              ? getRuntimeConfigModel(effectiveRuntimeConfig ?? null)
-              : effectiveModel,
-            providerRoute: engine.kind === 'builtin' ? effectiveProviderRoute : undefined,
-            providerEnv: engine.kind === 'builtin' ? effectiveProviderEnv : undefined,
-            runtimeConfig: effectiveRuntimeConfig ?? null,
-            analyticsOrigin: turnOrigin,
-            assistantChannelDelivery: 'caller-owned',
-            timeoutMs: 3_600_000,
-            pollMs: 1000,
-          } satisfies import('./session-engine').InjectedTurnRequest;
-          const requiredSkill = requiredMemorySystemSkill(payload.managedKind);
-          const turnResult = await engine.runInjectedTurn({
-            ...injectedTurn,
-            queueId,
-            turnOwner: { kind: 'task', id: taskId },
-            beforeDispatch: requiredSkill
-              ? createRequiredSystemSkillDispatchGuard(requiredSkill, agentDir, taskDispatchGuard)
-              : taskDispatchGuard,
-          });
-          if (!turnResult.success) {
-            console.warn(`[cron] execute-sync taskId=${taskId} failed via ${engine.kind}: ${turnResult.error ?? 'Unknown error'}`);
-            clearCronTaskContext(effectiveSessionId);
-            resetInteractionScenario();
-            return jsonResponse({
-              success: false,
-              error: turnResult.error ?? 'Execution failed',
-              ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
-            }, turnResult.status ?? 503);
-          }
-
-          textContent = turnResult.text ?? '';
-
-          // Check if AI requested exit (works for both runtimes — checks text patterns)
-          let aiRequestedExit = false;
-          let exitReason: string | undefined;
-
-          if (textContent) {
-            const completionMatch = textContent.match(CRON_TASK_COMPLETE_PATTERN);
-            if (completionMatch) {
-              aiRequestedExit = true;
-              exitReason = completionMatch[1].trim();
-            }
-            if (textContent.includes(CRON_TASK_EXIT_TEXT)) {
-              aiRequestedExit = true;
-              const reasonMatch = textContent.match(CRON_TASK_EXIT_REASON_PATTERN);
-              if (reasonMatch) {
-                exitReason = reasonMatch[1].trim();
-              }
-            }
-          }
-
-          const exitRequest = consumeCronTaskExitRequest(effectiveSessionId);
-          if (exitRequest) {
-            aiRequestedExit = true;
-            exitReason = exitRequest.reason;
-          }
-
-          // Clear cron task context after execution
-          clearCronTaskContext(effectiveSessionId);
-          // Reset scenario — already consumed by startStreamingSession() at session creation
-          resetInteractionScenario();
-
-          console.log(`[cron] execute-sync taskId=${taskId} completed, aiRequestedExit=${aiRequestedExit}, exitReason=${exitReason}`);
-
-          // Return the Sidecar session ID (our internal storage key) so Rust can
-          // pass it to frontend for loading conversation data from our message store.
-          const actualSessionId = getSessionId();
-
-          const response = {
-            success: true,
-            aiRequestedExit,
-            exitReason,
-            outputText: textContent || undefined,
-            sessionId: actualSessionId,
-          };
-          console.log(`[cron] execute-sync taskId=${taskId} returning response:`, JSON.stringify(response));
-          return jsonResponse(response);
-        } catch (error) {
-          // Clear context on error
-          clearCronTaskContext(effectiveSessionId);
-          resetInteractionScenario();
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          console.error(`[cron] execute-sync taskId=${taskId} error:`, error);
-          const errorResponse = { success: false, error: errorMessage };
-          console.log(`[cron] execute-sync taskId=${taskId} returning error response:`, JSON.stringify(errorResponse));
-          return jsonResponse(errorResponse, 500);
-        }
-          }); // end scheduled-turn dispatch lock
-        } finally {
-          sessionBirthLease?.settle();
-        }
+        return handleTaskExecuteSyncRoute(request, {
+          getEngine: getSessionEngine,
+          getWorkspacePath: () => getAgentState().agentDir,
+        });
       }
 
       // ============= GLOBAL STATS API =============
@@ -3470,7 +2709,7 @@ async function main() {
         // from AgentConfig so the session is self-contained from creation onward.
         // The frontend's runtime override (payload.runtime) wins over agent.runtime — Tab UI
         // can pin a session to a specific runtime independent of the Agent's default.
-        const agent = findAgentByWorkspacePath(agentDirValue) as AgentConfig | undefined;
+        const agent = findProjectAgentByWorkspacePath(agentDirValue) as AgentConfig | undefined;
         const baseSnapshot: Partial<SessionMetadata> = agent
           ? snapshotForOwnedSession(agent, {
               runtimeOverride: runtimeValue,
@@ -3492,6 +2731,8 @@ async function main() {
           baseSnapshot.runtimeSource = runtimeSourceValue;
         }
         if (payloadProviderExecutionIdentity) {
+          baseSnapshot.runtime = payloadProviderExecutionIdentity.runtime;
+          baseSnapshot.runtimeSource = payloadProviderExecutionIdentity.runtimeSource;
           baseSnapshot.providerExecutionIdentity = payloadProviderExecutionIdentity;
           baseSnapshot.providerId = payloadProviderExecutionIdentity.providerId;
           baseSnapshot.model = payloadProviderExecutionIdentity.model;
@@ -3521,11 +2762,26 @@ async function main() {
           }
         }
         const snapshotRuntime = (baseSnapshot.runtime ?? runtimeValue ?? 'builtin') as RuntimeType;
-        const payloadPermissionMode = coerceRuntimeBirthPermissionMode(
-          payload.permissionMode,
-          snapshotRuntime,
-        );
-        if (payloadPermissionMode !== undefined) baseSnapshot.permissionMode = payloadPermissionMode;
+        if (payload.permissionMode !== undefined) {
+          if (typeof payload.permissionMode !== 'string') {
+            return jsonResponse({ success: false, error: 'permissionMode must be a string.' }, 400);
+          }
+          const payloadPermissionMode = payload.permissionMode.trim();
+          const snapshotRuntimeSource = baseSnapshot.runtimeSource
+            ?? payloadProviderExecutionIdentity?.runtimeSource
+            ?? runtimeSourceValue;
+          if (!isPermissionModeForRuntimeIdentity(
+            payloadPermissionMode,
+            snapshotRuntime,
+            snapshotRuntimeSource,
+          )) {
+            return jsonResponse({
+              success: false,
+              error: `Invalid permissionMode '${payload.permissionMode}' for ${snapshotRuntimeSource ?? snapshotRuntime}.`,
+            }, 400);
+          }
+          baseSnapshot.permissionMode = payloadPermissionMode;
+        }
         const payloadReasoningEffort = coerceRuntimeBirthReasoningEffort(
           payload.reasoningEffort,
           snapshotRuntime,
@@ -3679,6 +2935,10 @@ async function main() {
         } catch {
           return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
         }
+        if (payload.permissionMode !== undefined && payload.permissionMode !== null
+            && typeof payload.permissionMode !== 'string') {
+          return jsonResponse({ success: false, error: 'permissionMode must be a string or null.' }, 400);
+        }
 
         // `lastActiveAt` is the recency signal that drives history sort
         // order. Bumping it on EVERY PATCH means a pure-UI flag change
@@ -3753,7 +3013,7 @@ async function main() {
           const baseSnapshot = existingMeta.configSnapshotAt
             ? undefined
             : (() => {
-              const agent = findAgentByWorkspacePath(existingMeta.agentDir) as AgentConfig | undefined;
+              const agent = findProjectAgentByWorkspacePath(existingMeta.agentDir) as AgentConfig | undefined;
               return agent
                 ? snapshotForOwnedSession(agent, {
                     runtimeOverride: existingMeta.runtime as RuntimeType | undefined,
@@ -3761,6 +3021,24 @@ async function main() {
                   })
                 : undefined;
             })();
+          if (typeof payload.permissionMode === 'string') {
+            const requestedPermissionMode = payload.permissionMode.trim();
+            const permissionRuntime = (existingMeta.runtime ?? baseSnapshot?.runtime ?? 'builtin') as RuntimeType;
+            const permissionRuntimeSource = existingMeta.runtimeSource
+              ?? existingMeta.providerExecutionIdentity?.runtimeSource
+              ?? baseSnapshot?.runtimeSource;
+            if (!isPermissionModeForRuntimeIdentity(
+              requestedPermissionMode,
+              permissionRuntime,
+              permissionRuntimeSource,
+            )) {
+              return jsonResponse({
+                success: false,
+                error: `Invalid permissionMode '${payload.permissionMode}' for ${permissionRuntimeSource ?? permissionRuntime}.`,
+              }, 400);
+            }
+            payload.permissionMode = requestedPermissionMode;
+          }
           Object.assign(updates, buildSessionSnapshotPatchUpdates({
             existing: existingMeta,
             payload,
@@ -8142,6 +7420,12 @@ async function main() {
             ? snapshotMetaForConfig.runtime as RuntimeType
             : payloadRuntime;
           const activeRuntime = getActiveRuntimeType();
+          const activeRuntimeSource = engine.getRuntimeIdentity().runtimeSource;
+          const payloadExternalPermissionMode = typeof payload.permissionMode === 'string'
+            ? (activeRuntime === 'codex' && activeRuntimeSource === 'managed-provider'
+              ? projectManagedCodexPermissionToRuntime(payload.permissionMode)
+              : projectPermissionModeForRuntime(payload.permissionMode, activeRuntime))
+            : undefined;
           if (snapshotOwnsConfig && effectiveRuntime !== activeRuntime) {
             imRequestRegistry.unregister(payload.requestId);
             return jsonResponse(
@@ -8167,7 +7451,7 @@ async function main() {
             // the IM cron tool can create live-resolve crons. Only meaningful
             // for builtin runtime (external runtimes manage their own provider).
             const imAgentForProvider = effectiveRuntime === 'builtin' && !snapshotOwnsConfig
-              ? findAgentByWorkspacePath(agentDir)
+              ? findProjectAgentByWorkspacePath(agentDir)
               : null;
             const imProviderId = snapshotOwnsConfig
               ? (snapshotMetaForConfig?.providerId ?? snapshotResolvedConfig?.providerEnv?.providerId)
@@ -8183,6 +7467,7 @@ async function main() {
                 : (effectiveRuntime === 'builtin'
                   ? (heldImConfig?.permissionMode ?? payload.permissionMode)
                   : (heldImConfig?.permissionMode
+                    ?? payloadExternalPermissionMode
                     ?? getRuntimeConfigPermissionMode(payloadRuntimeConfig, effectiveRuntime)
                     ?? getMaxPermissionForRuntime(effectiveRuntime))),
               // Legacy frozen env (kept for back-compat); sidecar prefers
@@ -8363,6 +7648,7 @@ async function main() {
             }
             const resolvedExternalPermissionMode = snapshotResolvedConfig?.permissionMode
               ?? heldImConfig?.permissionMode
+              ?? payloadExternalPermissionMode
               ?? getRuntimeConfigPermissionMode(runtimeConfig, effectiveRuntime)
               ?? getMaxPermissionForRuntime(effectiveRuntime);
             const resolvedExternalModel = snapshotResolvedConfig
@@ -9235,6 +8521,80 @@ description: >
       // /api/inbox/drain remains as the internal sidecar-to-sidecar endpoint
       // that Rust `cmd_inbox_deliver` POSTs to.
 
+      // POST /api/inbox/start — Fresh Session admission. Unlike ordinary
+      // drain, this waits only for Runtime dispatch acceptance so prepared
+      // metadata can commit/rollback atomically without waiting for terminal.
+      if (pathname === '/api/inbox/start' && request.method === 'POST') {
+        try {
+          const body = (await request.json().catch(() => null)) as {
+            agentId?: unknown;
+            message?: unknown;
+          } | null;
+          const agentId = typeof body?.agentId === 'string' ? body.agentId : '';
+          const message = body?.message as import('./inbox/types').PendingInboxMessage | undefined;
+          if (!agentId || !message) {
+            return jsonResponse({ accepted: false, reason: 'invalid body' }, 400);
+          }
+
+          // The target is the authority after Rust starts its Sidecar. Resolve
+          // the Agent once here and verify this process owns that workspace.
+          const { resolvePersistedAgentWorkspaceRegistry } = await import('./utils/agent-workspace-identity');
+          const registry = await resolvePersistedAgentWorkspaceRegistry();
+          const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(agentId));
+          const identity = registry.agentProjections.find(item => item.agentId === agentId);
+          if (
+            diagnostic
+            || !identity
+            || (identity.project && !isProjectVisibleToUser(identity.project))
+            || (identity.project && isProjectArchived(identity.project))
+          ) {
+            return jsonResponse({ accepted: false, reason: 'target Agent is unavailable' }, 409);
+          }
+          const engine = getSessionEngine();
+          const runtimeIdentity = engine.getRuntimeIdentity();
+          const currentSessionContext = engine.getCurrentSessionContext();
+          const currentWorkspacePath = currentSessionContext.workspacePath ?? currentAgentDir;
+          if (
+            currentSessionContext.sessionId !== message.toSessionId
+            || !currentWorkspacePath
+            || !workspacePathsEqual(currentWorkspacePath, identity.workspacePath)
+          ) {
+            return jsonResponse({ accepted: false, reason: 'target Sidecar identity mismatch' }, 409);
+          }
+
+          const { handleFreshSessionStart } = await import('./inbox/start-handler');
+          const result = await handleFreshSessionStart(
+            message,
+            {
+              sessionId: message.toSessionId,
+              workspacePath: identity.workspacePath,
+              agent: identity.agent as unknown as AgentConfig,
+              runtime: runtimeIdentity.runtime,
+              runtimeSource: runtimeIdentity.runtimeSource,
+              managedCodexProviderReady: isManagedCodexProviderReady(registry.config),
+            },
+            (text, options) => engine.enqueueInboxMessage({
+              text,
+              sessionId: message.toSessionId,
+              workspacePath: identity.workspacePath,
+              scenario: { type: 'desktop' },
+              inboxMeta: options.inboxMeta,
+              analyticsOrigin: { kind: 'session-inbox', surface: 'session_send' },
+              birthOrigin: { kind: 'session-inbox', surface: 'session_send' },
+              queueId: options.queueId,
+              beforeDispatch: options.beforeDispatch,
+            }),
+          );
+          return jsonResponse(result, result.accepted === false ? 409 : 200);
+        } catch (error) {
+          console.error('[inbox/start] Error:', error);
+          return jsonResponse(
+            { accepted: false, reason: error instanceof Error ? error.message : String(error) },
+            500,
+          );
+        }
+      }
+
       // POST /api/inbox/drain — Internal endpoint: Rust pushes
       // PendingInboxMessage[] here after queuing in target sidecar's vec.
       // We unwrap, format the prompt, and enqueue via the appropriate runtime.
@@ -9418,105 +8778,113 @@ description: >
   });
   (async () => {
     try {
-      currentInitPhase = 'cleanup';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      // Unified retention sweep (#121) — replaces v0.2.7's split between
-      // cleanupOldLogs (per-session) + cleanupOldUnifiedLogs (unified). One
-      // policy module covers age cutoff, byte budget, and the recent-data
-      // floor across all sources. Per-session logs gained a byte budget
-      // here for the first time.
-      //
-      // The active-file set protects BOTH the unified log we're appending
-      // to AND the per-session log file (if AgentLogger has one open) from
-      // budget eviction — without this, a long-lived session log past the
-      // 7-day floor could be unlinked while the WriteStream is still open.
-      const collectActivePaths = (): ReadonlySet<string> => {
-        const paths = new Set<string>();
-        const u = getActiveUnifiedLogPath();
-        if (u) paths.add(u);
-        const s = getActiveSessionLogPath();
-        if (s) paths.add(s);
-        return paths;
-      };
-      runLogRetentionSweep({ activeFilePaths: collectActivePaths() });
-      // Hourly background sweep — bounds gradual growth without waiting
-      // for the next 50MB rotation event. Active-file getter is invoked
-      // at each sweep so day-rollovers are reflected.
-      startPeriodicSweep(collectActivePaths);
-      cleanupStalePlaywrightProfile();
+      await runSidecarBootstrap(sidecarComposition, [
+        {
+          capability: 'global',
+          run: async () => {
+            currentInitPhase = 'cleanup';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            // Retention, stale-profile cleanup and the one-time config scrub
+            // are app-wide maintenance. Running them in every Session process
+            // multiplied I/O and timers without adding authority.
+            const collectActivePaths = (): ReadonlySet<string> => {
+              const paths = new Set<string>();
+              const u = getActiveUnifiedLogPath();
+              if (u) paths.add(u);
+              const s = getActiveSessionLogPath();
+              if (s) paths.add(s);
+              return paths;
+            };
+            runLogRetentionSweep({ activeFilePaths: collectActivePaths() });
+            startPeriodicSweep(collectActivePaths);
+            cleanupStalePlaywrightProfile();
 
-      // Issue #194 follow-up — one-time scrub for stale agent.runtimeConfig
-      // fields from before buildRuntimeChangePatch existed. Idempotent via
-      // per-agent `_runtimeConfigScrubV1` marker; subsequent boots short-
-      // circuit per agent. See doc comment in the migration module.
-      try {
-        const { scrubStaleRuntimeConfig } = await import('./migrations/scrub-stale-runtime-config');
-        const result = await scrubStaleRuntimeConfig();
-        if (result.scannedAgents > 0) {
-          console.log(`[migration] runtimeConfig scrub: scanned=${result.scannedAgents} scrubbed=${result.scrubbedAgents}`);
-          for (const d of result.details) {
-            console.log(`[migration] runtimeConfig scrub: agent=${d.agentId} runtime=${d.runtime} dropped=${JSON.stringify(d.dropped)}`);
-          }
-        }
-      } catch (err) {
-        console.warn('[migration] runtimeConfig scrub failed (non-fatal):', err instanceof Error ? err.message : String(err));
-      }
-      emitDeferredPhaseDone('cleanup');
+            try {
+              const { scrubStaleRuntimeConfig } = await import('./migrations/scrub-stale-runtime-config');
+              const result = await scrubStaleRuntimeConfig();
+              if (result.scannedAgents > 0) {
+                console.log(`[migration] runtimeConfig scrub: scanned=${result.scannedAgents} scrubbed=${result.scrubbedAgents}`);
+                for (const d of result.details) {
+                  console.log(`[migration] runtimeConfig scrub: agent=${d.agentId} runtime=${d.runtime} dropped=${JSON.stringify(d.dropped)}`);
+                }
+              }
+            } catch (err) {
+              console.warn('[migration] runtimeConfig scrub failed (non-fatal):', err instanceof Error ? err.message : String(err));
+            }
+            emitDeferredPhaseDone('cleanup');
+          },
+        },
+        {
+          capability: 'common',
+          run: () => {
+            currentInitPhase = 'skill-seed';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            // Keep seed/dir setup common: a Session may be the first process
+            // after an app update and must see required bundled skills before
+            // accepting a turn. These operations are idempotent initialization,
+            // not recurring singleton maintenance.
+            seedBundledSkills();
+            console.log('[startup] seedBundledSkills done');
+            ensurePluginsDirs();
+            emitDeferredPhaseDone('skill-seed');
+          },
+        },
+        {
+          capability: 'common',
+          run: async () => {
+            currentInitPhase = 'socks-bridge';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            await initSocksBridgeFromEnv();
+            emitDeferredPhaseDone('socks-bridge');
+          },
+        },
+        {
+          capability: 'global',
+          run: () => {
+            startOAuthMaintenanceForSidecarRole('global');
+          },
+        },
+        {
+          capability: 'session',
+          run: async () => {
+            // Session processes observe app-global OAuth revisions but never
+            // run the proactive singleton refresh scheduler.
+            startOAuthMaintenanceForSidecarRole('session');
 
-      currentInitPhase = 'skill-seed';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      seedBundledSkills();
-      console.log('[startup] seedBundledSkills done');
+            // Install the title hook immediately before the only boot path
+            // capable of completing a turn.
+            installAutoTitleHook();
 
-      // #296 — install the backend auto-title trigger into the turn-hooks slot
-      // BEFORE any turn can complete (initializeAgent / pre-warm run below).
-      installAutoTitleHook();
+            currentInitPhase = 'sdk-init';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
+            console.log('[startup] initializeAgent done');
+            emitDeferredPhaseDone('sdk-init');
 
-      ensurePluginsDirs();
-      emitDeferredPhaseDone('skill-seed');
+            if (initialSessionId) {
+              if (await restoreInitialExternalSessionAtSelector(initialSessionId, currentAgentDir)) {
+                currentInitPhase = 'external-runtime-restore';
+                setDeferredInitPhase(currentInitPhase);
+                initPhaseStarted = nowMs();
+                emitDeferredPhaseDone('external-runtime-restore');
+              }
+            }
 
-      currentInitPhase = 'socks-bridge';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      await initSocksBridgeFromEnv();
-      emitDeferredPhaseDone('socks-bridge');
-
-      startOAuthMaintenanceForSidecarRole(sidecarRole);
-
-      currentInitPhase = 'sdk-init';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
-      console.log('[startup] initializeAgent done');
-      emitDeferredPhaseDone('sdk-init');
-
-      if (initialSessionId) {
-        const startupEngine = getSessionEngine();
-        if (startupEngine.kind === 'external') {
-          currentInitPhase = 'external-runtime-restore';
-          setDeferredInitPhase(currentInitPhase);
-          initPhaseStarted = nowMs();
-          startupEngine.restoreInitialSession(initialSessionId, currentAgentDir);
-          emitDeferredPhaseDone('external-runtime-restore');
-        }
-      }
-
-      // ── Sidecar Boot Banner: single-line for AI grep ──
-      {
-        const model = getSessionModel() || '?';
-        const mcpList = getMcpServers();
-        const mcpNames = mcpList ? Object.keys(mcpList).join(',') || 'none' : 'none';
-        const bridge = hasActiveBridge() ? 'yes' : 'no';
-        // Health signal: confirm builtin-mcp-meta.ts's side-effect registration
-        // actually fired. An empty list here is a red flag — the META file was
-        // not imported by agent-session.ts, which means lazy MCP lookup will
-        // return undefined for every builtin.
-        const { listBuiltinMcpIds } = await import('./tools/builtin-mcp-registry');
-        const builtinMcpMeta = listBuiltinMcpIds().join(',') || 'none';
-        console.log(`[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} mcp=${mcpNames} builtin-mcp-meta=${builtinMcpMeta}`);
-      }
+            // ── Sidecar Boot Banner: single-line for AI grep ──
+            const model = getSessionModel() || '?';
+            const mcpList = getMcpServers();
+            const mcpNames = mcpList ? Object.keys(mcpList).join(',') || 'none' : 'none';
+            const bridge = hasActiveBridge() ? 'yes' : 'no';
+            const { listBuiltinMcpIds } = await import('./tools/builtin-mcp-registry');
+            const builtinMcpMeta = listBuiltinMcpIds().join(',') || 'none';
+            console.log(`[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} mcp=${mcpNames} builtin-mcp-meta=${builtinMcpMeta}`);
+          },
+        },
+      ]);
 
       markDeferredInitReady();
       resolveDeferredInit();

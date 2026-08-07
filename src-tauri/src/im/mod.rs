@@ -53,10 +53,10 @@ pub(crate) use commands::reload_agent_config_from_disk;
 #[allow(unused_imports, deprecated)]
 pub use commands::{
     cmd_add_im_bot_config, cmd_agent_channel_status, cmd_agent_status, cmd_all_agents_status,
-    cmd_approve_group, cmd_create_agent, cmd_delete_agent, cmd_get_im_bot_runtime_config,
-    cmd_im_all_bots_status, cmd_im_bot_status, cmd_im_conversations, cmd_install_openclaw_plugin,
-    cmd_list_openclaw_plugins, cmd_plugin_qr_login_start, cmd_plugin_qr_login_wait,
-    cmd_plugin_restart_gateway, cmd_reject_group, cmd_remove_group, cmd_remove_im_bot_config,
+    cmd_approve_group, cmd_get_im_bot_runtime_config, cmd_im_all_bots_status, cmd_im_bot_status,
+    cmd_im_conversations, cmd_install_openclaw_plugin, cmd_list_openclaw_plugins,
+    cmd_plugin_qr_login_start, cmd_plugin_qr_login_wait, cmd_plugin_restart_gateway,
+    cmd_reject_group, cmd_remove_group, cmd_remove_im_bot_config,
     cmd_restart_channels_using_plugin, cmd_start_agent_channel, cmd_start_im_bot,
     cmd_stop_agent_channel, cmd_stop_im_bot, cmd_uninstall_openclaw_plugin,
     cmd_update_agent_config, cmd_update_im_bot_config,
@@ -64,8 +64,9 @@ pub use commands::{
 use commands::{persist_bot_config_patch, read_available_providers_from_disk};
 pub(crate) use config_store::read_agent_configs_from_disk;
 use config_store::{
-    missing_configured_channel_status, persist_agent_config_patch, read_im_configs_from_disk,
-    route_agent_heartbeat_once, should_report_missing_configured_channel,
+    missing_configured_channel_status, persist_agent_channel_model, persist_agent_config_patch,
+    read_im_configs_from_disk, route_agent_heartbeat_once,
+    should_report_missing_configured_channel,
 };
 pub use config_store::{monitor_agent_channels, schedule_agent_auto_start, schedule_auto_start};
 pub(crate) use config_store::{resolve_agent_heartbeat_route, AgentHeartbeatRouteResolution};

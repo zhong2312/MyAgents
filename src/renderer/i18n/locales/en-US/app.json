@@ -98,7 +98,9 @@
     "hiddenSystemMessage": "System message",
     "sendFailed": "Send failed",
     "networkError": "Network error",
-    "networkDisconnected": "Network connection interrupted. Try again."
+    "networkDisconnected": "Network connection interrupted. Try again.",
+    "sessionRestoreFailed": "This chat could not be restored",
+    "sessionAlreadyOpen": "This chat is already open in another tab"
   },
   "floatingSession": {
     "sidecarUnavailable": "Sidecar is unavailable",
@@ -207,7 +209,7 @@
     "rotate": "Rotate",
     "reset": "Reset",
     "closeEsc": "Close (Esc)",
-    "hint": "Double-click image to zoom · Press Esc to close"
+    "hint": "Double-click to zoom · Pinch to scale · Two-finger scroll or drag to move · Press Esc to close"
   },
   "errorBoundary": {
     "title": "Interface render error",
@@ -261,7 +263,13 @@
     "openMyAgentsPreview": "Open MyAgents preview",
     "preview": "Preview",
     "open": "Open",
-    "revealInTree": "Reveal in file tree"
+    "revealInTree": "Reveal in file tree",
+    "previewUnsupported": "Preview isn't supported yet. Use the right-click menu to open it.",
+    "targetUnavailable": "The file doesn't exist or can't be accessed",
+    "directoryNotInWorkspace": "This folder can't be revealed in the current workspace. Use the right-click menu to open it.",
+    "imageLoadFailed": "Failed to load the image preview",
+    "previewLoadFailed": "Failed to load the file preview",
+    "openFailed": "Couldn't open with the system application"
   },
   "markdown": {
     "copyCode": "Copy code",

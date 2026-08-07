@@ -3191,14 +3191,14 @@ const DirectoryPanel = memo(
                 </span>
                 <div className="min-w-0 flex-1">
                   {/* First row: name and git branch */}
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium text-[var(--ink)]">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink)]">
                       {projectDisplayName || folderName}
                     </span>
                     {gitBranch && (
-                      <span className="flex items-center gap-0.5 rounded-md bg-[var(--accent-warm-subtle)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
-                        <GitBranch className="h-3 w-3" />
-                        {gitBranch}
+                      <span className="flex max-w-[45%] shrink-0 items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-md bg-[var(--accent-warm-subtle)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
+                        <GitBranch className="h-3 w-3 shrink-0" />
+                        <span className="min-w-0 truncate">{gitBranch}</span>
                       </span>
                     )}
                   </div>

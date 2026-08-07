@@ -2,112 +2,179 @@ use super::*;
 
 static UPDATE_SHUTDOWN_IN_PROGRESS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-static UPDATE_QUIESCE: std::sync::LazyLock<UpdateQuiesce> =
-    std::sync::LazyLock::new(UpdateQuiesce::default);
+static LIFECYCLE_QUIESCE: std::sync::LazyLock<Arc<LifecycleQuiesce>> =
+    std::sync::LazyLock::new(|| Arc::new(LifecycleQuiesce::default()));
 
 #[derive(Default)]
-struct UpdateQuiesce {
-    state: std::sync::Mutex<UpdateQuiesceState>,
+struct LifecycleQuiesce {
+    state: std::sync::Mutex<LifecycleQuiesceState>,
     idle: std::sync::Condvar,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum CreationAdmission {
+    #[default]
+    Open,
+    UpdateShutdown,
+    AppExit,
+}
+
 #[derive(Default)]
-struct UpdateQuiesceState {
-    update_requested: bool,
+struct LifecycleQuiesceState {
+    admission: CreationAdmission,
     active_creations: usize,
 }
 
 pub struct UpdateShutdownGuard {
+    gate: Arc<LifecycleQuiesce>,
     active: bool,
 }
 
-pub struct UpdateSpawnPermit {
+pub struct LifecycleSpawnPermit {
+    gate: Arc<LifecycleQuiesce>,
     active: bool,
 }
 
 impl Drop for UpdateShutdownGuard {
     fn drop(&mut self) {
         if self.active {
-            if let Ok(mut state) = UPDATE_QUIESCE.state.lock() {
-                state.update_requested = false;
-                UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
-                UPDATE_QUIESCE.idle.notify_all();
-            } else {
-                UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(mut state) = self.gate.state.lock() {
+                // App exit is terminal. An update guard that happens to drop
+                // after ExitRequested must not reopen process/resource birth.
+                if state.admission == CreationAdmission::UpdateShutdown {
+                    state.admission = CreationAdmission::Open;
+                    UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+                    self.gate.idle.notify_all();
+                    ulog_info!("[sidecar] Update shutdown gate released");
+                }
             }
-            ulog_info!("[sidecar] Update shutdown gate released");
         }
     }
 }
 
-impl Drop for UpdateSpawnPermit {
+impl Drop for LifecycleSpawnPermit {
     fn drop(&mut self) {
         if !self.active {
             return;
         }
-        if let Ok(mut state) = UPDATE_QUIESCE.state.lock() {
+        if let Ok(mut state) = self.gate.state.lock() {
             state.active_creations = state.active_creations.saturating_sub(1);
             if state.active_creations == 0 {
-                UPDATE_QUIESCE.idle.notify_all();
+                self.gate.idle.notify_all();
             }
         }
     }
 }
 
-pub fn begin_update_spawn_permit() -> Result<UpdateSpawnPermit, String> {
-    let mut state = UPDATE_QUIESCE.state.lock().map_err(|e| e.to_string())?;
-    if state.update_requested {
-        return Err("UPDATE_SHUTDOWN_IN_PROGRESS".to_string());
+impl LifecycleQuiesce {
+    fn begin_spawn(self: &Arc<Self>) -> Result<LifecycleSpawnPermit, String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        if state.admission != CreationAdmission::Open {
+            return Err("UPDATE_SHUTDOWN_IN_PROGRESS".to_string());
+        }
+        state.active_creations += 1;
+        Ok(LifecycleSpawnPermit {
+            gate: Arc::clone(self),
+            active: true,
+        })
     }
-    state.active_creations += 1;
-    Ok(UpdateSpawnPermit { active: true })
+
+    fn begin_update(self: &Arc<Self>) -> Result<UpdateShutdownGuard, String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        if state.admission != CreationAdmission::Open {
+            return Err("UPDATE_SHUTDOWN_ALREADY_IN_PROGRESS".to_string());
+        }
+        state.admission = CreationAdmission::UpdateShutdown;
+        UPDATE_SHUTDOWN_IN_PROGRESS.store(true, std::sync::atomic::Ordering::SeqCst);
+        while state.active_creations > 0 {
+            ulog_info!(
+                "[sidecar] Waiting for {} owner creation(s) before update shutdown",
+                state.active_creations
+            );
+            state = match self.idle.wait(state) {
+                Ok(state) => state,
+                Err(error) => {
+                    let mut state = error.into_inner();
+                    state.admission = CreationAdmission::Open;
+                    UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+                    self.idle.notify_all();
+                    return Err("UPDATE_SHUTDOWN_GATE_POISONED".to_string());
+                }
+            };
+        }
+        ulog_info!("[sidecar] Update shutdown gate acquired");
+        Ok(UpdateShutdownGuard {
+            gate: Arc::clone(self),
+            active: true,
+        })
+    }
+
+    fn begin_app_exit(&self) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        state.admission = CreationAdmission::AppExit;
+        UPDATE_SHUTDOWN_IN_PROGRESS.store(true, std::sync::atomic::Ordering::SeqCst);
+        while state.active_creations > 0 {
+            ulog_info!(
+                "[sidecar] Waiting for {} owner creation(s) before app exit",
+                state.active_creations
+            );
+            state = self
+                .idle
+                .wait(state)
+                .map_err(|_| "APP_EXIT_CREATION_GATE_POISONED".to_string())?;
+        }
+        ulog_info!("[sidecar] App-exit creation gate acquired");
+        Ok(())
+    }
+}
+
+pub fn begin_lifecycle_spawn_permit() -> Result<LifecycleSpawnPermit, String> {
+    LIFECYCLE_QUIESCE.begin_spawn()
 }
 
 pub fn begin_update_shutdown() -> Result<UpdateShutdownGuard, String> {
-    let mut state = UPDATE_QUIESCE.state.lock().map_err(|e| e.to_string())?;
-    if state.update_requested {
-        return Err("UPDATE_SHUTDOWN_ALREADY_IN_PROGRESS".to_string());
-    }
-    state.update_requested = true;
-    UPDATE_SHUTDOWN_IN_PROGRESS.store(true, std::sync::atomic::Ordering::SeqCst);
-    while state.active_creations > 0 {
-        ulog_info!(
-            "[sidecar] Waiting for {} owner creation(s) before update shutdown",
-            state.active_creations
-        );
-        state = match UPDATE_QUIESCE.idle.wait(state) {
-            Ok(state) => state,
-            Err(err) => {
-                let mut state = err.into_inner();
-                state.update_requested = false;
-                UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
-                UPDATE_QUIESCE.idle.notify_all();
-                return Err("UPDATE_SHUTDOWN_GATE_POISONED".to_string());
-            }
-        };
-    }
-    ulog_info!("[sidecar] Update shutdown gate acquired");
-    Ok(UpdateShutdownGuard { active: true })
+    LIFECYCLE_QUIESCE.begin_update()
+}
+
+/// Permanently close process/resource birth for this app instance and wait
+/// until every already-admitted creation has either registered its owner or
+/// dropped the newly created resource. Unlike update quiesce, this gate never
+/// reopens because Tauri's exit path terminates the Rust process.
+pub fn begin_app_exit_shutdown() -> Result<(), String> {
+    LIFECYCLE_QUIESCE.begin_app_exit()
 }
 
 pub fn is_update_shutdown_in_progress() -> bool {
     UPDATE_SHUTDOWN_IN_PROGRESS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Stop all sidecar instances and clean up child processes
-/// This should be called when the app is closing
-pub fn stop_all_sidecars(manager: &ManagedSidecarManager) -> Result<(), String> {
-    ulog_info!("[sidecar] Stopping all sidecars and cleaning up child processes...");
+/// Stop all Sidecar instances through their exact birth-time process-tree authority.
+///
+/// `reason` is required because this is an application-wide destructive
+/// boundary. Callers must make the owning lifecycle explicit in diagnostics.
+pub fn stop_all_sidecars(manager: &ManagedSidecarManager, reason: &str) -> Result<(), String> {
+    ulog_info!(
+        "[sidecar] stop_all action=begin reason={} scope=application",
+        reason
+    );
 
     // 1. Stop all managed sidecar instances (kills bun sidecars via Drop)
-    let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+    let mut manager_guard = manager.lock().map_err(|error| {
+        let error = error.to_string();
+        ulog_error!(
+            "[sidecar] stop_all action=error reason={} scope=application error={}",
+            reason,
+            error
+        );
+        error
+    })?;
     manager_guard.stop_all();
     drop(manager_guard);
 
-    // 2. Clean up any orphaned child processes (SDK and MCP)
-    // This is necessary because SDK spawns child processes that don't die
-    // when the parent bun sidecar is killed
-    cleanup_child_processes();
+    ulog_info!(
+        "[sidecar] stop_all action=complete reason={} scope=application",
+        reason
+    );
 
     Ok(())
 }
@@ -131,15 +198,12 @@ fn shutdown_for_update_inner(
 ) -> Result<(), String> {
     ulog_info!("[sidecar] Shutdown for update: stopping all processes...");
 
-    // 1. Stop all sidecar instances (via Drop → kill_process → taskkill /T /F)
-    stop_all_sidecars(manager)?;
+    // 1. Stop all Sidecar instances via their retained process-group / Job authority.
+    stop_all_sidecars(manager, "update")?;
 
-    // 2. Actively kill orphan processes that may survive sidecar tree-kill
-    //    (e.g., node.exe from bundled npx — cmd.exe intermediate layers break process tree)
-    #[cfg(windows)]
-    {
-        cleanup_child_processes();
-    }
+    // 2. Preserve the updater's existing residual-recovery pass. This is a
+    //    verified update boundary, not the normal live-owner shutdown path.
+    cleanup_update_residual_processes();
 
     // 3. Wait for all related processes to truly exit. Uses the same
     //    sysinfo-backed process scan as startup cleanup — no PowerShell
@@ -236,28 +300,26 @@ fn shutdown_for_update_inner(
     Ok(())
 }
 
-/// Clean up SDK and MCP child processes at app shutdown.
+/// Clean up SDK and MCP residual processes only for verified update shutdown.
 ///
-/// On Windows, SDK-spawned node/bun processes often survive a direct
-/// parent kill because `cmd.exe` intermediates (npx.cmd / bun.exe wrapper)
-/// break the process-tree linkage that `taskkill /T /F` relies on. This
-/// shutdown cleanup walks descendants by PPID via sysinfo and kills
-/// them all — orphans included — in one pass.
+/// SDK-spawned node/bun processes from a previous containment implementation
+/// may survive until the updater boundary (especially through Windows
+/// `cmd.exe` / `npx.cmd` wrappers). This updater-only cleanup walks descendants
+/// by PPID via sysinfo and kills them all — orphans included — in one pass.
 ///
-/// Uses [`CHILD_CLEANUP_PATTERNS`] (no `SIDECAR_MARKER`) because our own
-/// sidecars are already killed through their `Child` handles in
-/// [`stop_all_sidecars`]. Sweeping by marker here would risk killing a
-/// concurrent MyAgents instance's sidecars during any overlap window.
-fn cleanup_child_processes() {
+/// Normal app exit and debug stop MUST NOT call this function: those paths own
+/// only the live [`ChildTree`] values retained by Sidecar/Bridge owners and may
+/// not infer process ownership from argv.
+fn cleanup_update_residual_processes() {
     let report = crate::process_cleanup::kill_stale_processes(CHILD_CLEANUP_PATTERNS);
     if report.total_targets() == 0 {
         ulog_info!(
-            "[sidecar] Shutdown cleanup: nothing to kill ({:?})",
+            "[sidecar] Update residual cleanup: nothing to kill ({:?})",
             report.elapsed
         );
     } else {
         ulog_info!(
-            "[sidecar] Shutdown cleanup: killed {} (roots={}, descendants={}, residual={}) in {:?}",
+            "[sidecar] Update residual cleanup: killed {} (roots={}, descendants={}, residual={}) in {:?}",
             report.killed,
             report.matched_roots,
             report.descendants,
@@ -295,6 +357,52 @@ fn describe_process_matches(matches: &[crate::process_cleanup::ProcessMatch]) ->
         })
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+#[cfg(test)]
+mod lifecycle_quiesce_tests {
+    use super::*;
+
+    #[test]
+    fn app_exit_closes_admission_and_waits_for_inflight_creation() {
+        let gate = Arc::new(LifecycleQuiesce::default());
+        let permit = gate.begin_spawn().expect("admit creation");
+        let exit_gate = Arc::clone(&gate);
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed_after_wait = Arc::clone(&completed);
+        let waiter = std::thread::spawn(move || {
+            exit_gate.begin_app_exit().expect("app exit gate");
+            completed_after_wait.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while gate.state.lock().expect("gate state").admission != CreationAdmission::AppExit {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "exit did not close admission"
+            );
+            std::thread::yield_now();
+        }
+        assert!(gate.begin_spawn().is_err());
+        assert!(!completed.load(std::sync::atomic::Ordering::SeqCst));
+
+        drop(permit);
+        waiter.join().expect("join app exit waiter");
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            gate.begin_spawn().is_err(),
+            "app-exit admission is terminal"
+        );
+    }
+
+    #[test]
+    fn app_exit_cannot_be_reopened_by_a_late_update_guard_drop() {
+        let gate = Arc::new(LifecycleQuiesce::default());
+        let update = gate.begin_update().expect("update gate");
+        gate.begin_app_exit().expect("upgrade to app exit");
+        drop(update);
+        assert!(gate.begin_spawn().is_err());
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -468,4 +576,79 @@ fn is_windows_file_lock_error(err: &std::io::Error) -> bool {
         // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, ERROR_USER_MAPPED_FILE.
         Some(32 | 33 | 1224)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ExternalMatchingProcess {
+        child: std::process::Child,
+    }
+
+    impl ExternalMatchingProcess {
+        fn spawn() -> Self {
+            #[cfg(unix)]
+            let mut command = {
+                use std::os::unix::process::CommandExt;
+                let mut command = crate::process_cmd::new("sh");
+                command.args(["-c", "sleep 60; : # independent @playwright/mcp process"]);
+                command.process_group(0);
+                command
+            };
+
+            #[cfg(target_os = "windows")]
+            let mut command = {
+                let mut command = crate::process_cmd::new("powershell");
+                command.args([
+                    "-NoProfile",
+                    "-Command",
+                    "Start-Sleep -Seconds 60 # independent @playwright/mcp process",
+                ]);
+                command
+            };
+
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = command.spawn().expect("spawn independent matching process");
+            Self { child }
+        }
+
+        fn is_alive(&mut self) -> bool {
+            matches!(self.child.try_wait(), Ok(None))
+        }
+    }
+
+    impl Drop for ExternalMatchingProcess {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+        }
+    }
+
+    #[test]
+    fn normal_shutdown_leaves_unowned_matching_process_alive() {
+        let mut external = ExternalMatchingProcess::spawn();
+        assert!(
+            external.is_alive(),
+            "test setup must start an external process"
+        );
+
+        let manager = create_sidecar_state();
+        stop_all_sidecars(&manager, "test-normal-shutdown").expect("normal shutdown");
+
+        assert!(
+            external.is_alive(),
+            "normal shutdown must never infer ownership from a matching argv substring"
+        );
+    }
 }

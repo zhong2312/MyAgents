@@ -1,6 +1,6 @@
 [package]
 name = "myagents"
-version = "0.4.1"
+version = "0.4.5"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
 license = "AGPL-3.0-only"
@@ -72,6 +72,7 @@ tantivy = "0.22"
 tantivy-jieba = "0.11"
 notify-debouncer-full = "0.6"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+same-file = "1.0"
 trash = "5.2.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
@@ -124,7 +125,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

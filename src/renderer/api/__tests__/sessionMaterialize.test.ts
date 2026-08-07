@@ -32,6 +32,7 @@ describe('materializePendingSessionConfig', () => {
 
     const result = await materializePendingSessionConfig({
       pendingSessionId: 'pending-tab-1',
+      tabId: 'tab-1',
       workspacePath: '/tmp/workspace',
       snapshotPatch: { permissionMode: 'fullAgency' },
       transport,
@@ -43,7 +44,7 @@ describe('materializePendingSessionConfig', () => {
       phase: 'prepare',
       snapshotPatch: { permissionMode: 'fullAgency' },
     });
-    expect(transport.upgradeSessionId).toHaveBeenNthCalledWith(1, 'pending-tab-1', 'real-session');
+    expect(transport.upgradeSessionId).toHaveBeenNthCalledWith(1, 'pending-tab-1', 'real-session', 'tab-1');
     expect(transport.postForSession).toHaveBeenCalledWith('real-session', {
       workspacePath: '/tmp/workspace',
       phase: 'commit',
@@ -57,6 +58,7 @@ describe('materializePendingSessionConfig', () => {
 
     await expect(materializePendingSessionConfig({
       pendingSessionId: 'pending-tab-1',
+      tabId: 'tab-1',
       workspacePath: '/tmp/workspace',
       snapshotPatch: { model: 'model-a' },
       transport,
@@ -76,6 +78,7 @@ describe('materializePendingSessionConfig', () => {
 
     await expect(materializePendingSessionConfig({
       pendingSessionId: 'pending-tab-1',
+      tabId: 'tab-1',
       workspacePath: '/tmp/workspace',
       snapshotPatch: { model: 'model-a' },
       transport,
@@ -86,6 +89,6 @@ describe('materializePendingSessionConfig', () => {
       phase: 'rollback',
       preparedSessionId: 'real-session',
     });
-    expect(transport.upgradeSessionId).toHaveBeenNthCalledWith(2, 'real-session', 'pending-tab-1');
+    expect(transport.upgradeSessionId).toHaveBeenNthCalledWith(2, 'real-session', 'pending-tab-1', 'tab-1');
   });
 });

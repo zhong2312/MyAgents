@@ -16,6 +16,7 @@ describe('mcp-env-policy', () => {
     expect(env.HTTPS_PROXY).toBe('http://proxy.local:7890');
     expect(env.NO_PROXY).toBe(MCP_LOCALHOST_NO_PROXY_VAL);
     expect(env.no_proxy).toBe(MCP_LOCALHOST_NO_PROXY_VAL);
+    expect(env.NO_PROXY?.split(',')).not.toContain('[::1]');
   });
 
   it('merges per-server NO_PROXY with mandatory localhost protection and mirrors the other casing', () => {
@@ -45,6 +46,15 @@ describe('mcp-env-policy', () => {
   it('mirrors a lowercase-only per-server no_proxy override to uppercase', () => {
     const env = buildMcpSubprocessEnv({}, {
       no_proxy: '.corp.local',
+    });
+
+    expect(env.NO_PROXY).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);
+    expect(env.no_proxy).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);
+  });
+
+  it('drops the invalid bracketed IPv6 URL form from an explicit server override', () => {
+    const env = buildMcpSubprocessEnv({}, {
+      NO_PROXY: '[::1],.corp.local',
     });
 
     expect(env.NO_PROXY).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);

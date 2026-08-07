@@ -253,6 +253,7 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       subAgentThreadsAwaitingActivity: new Set<string>(),
       codexV2SubAgentActivityObserved: false,
       codexV2InteractionDeliveryByCallId: new Map<string, 'queue-only' | 'trigger-turn'>(),
+      exactUsageByTurn: new Map(),
       subAgentActivitySeenBeforeTurnStart: new Set<string>(),
       subAgentInterruptsInFlight: new Map<string, Promise<void>>(),
       pendingMainTurnCompletion: null as UnifiedEvent[] | null,
@@ -884,6 +885,135 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       status: 'completed',
     });
     expect(correlation.pendingMainTurnCompletion).toBeNull();
+  });
+
+  it('emits one exact main-turn usage delta from unique raw Responses completions', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    const first = {
+      threadId: 'main',
+      turnId: 'root-turn',
+      responseId: 'response-1',
+      usage: {
+        totalTokens: 150,
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        cacheWriteInputTokens: 10,
+        outputTokens: 50,
+        reasoningOutputTokens: 20,
+      },
+    };
+    parseNotification(correlation, 'rawResponse/completed', first, () => {});
+    parseNotification(correlation, 'rawResponse/completed', {
+      threadId: 'main',
+      turnId: 'root-turn',
+      responseId: 'response-2',
+      usage: {
+        totalTokens: 110,
+        inputTokens: 80,
+        cachedInputTokens: 20,
+        cacheWriteInputTokens: 5,
+        outputTokens: 30,
+        reasoningOutputTokens: 10,
+      },
+    }, () => {});
+    parseNotification(correlation, 'rawResponse/completed', first, () => {}); // replayed duplicate
+    parseNotification(correlation, 'rawResponse/completed', {
+      threadId: 'child',
+      turnId: 'child-turn',
+      responseId: 'child-response',
+      usage: { inputTokens: 999, outputTokens: 999 },
+    }, () => {});
+
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {});
+
+    expect(terminal).toEqual([
+      {
+        kind: 'usage',
+        inputTokens: 180,
+        outputTokens: 80,
+        cacheReadTokens: 60,
+        cacheCreationTokens: 15,
+        semantics: 'delta',
+      },
+      { kind: 'turn_complete', status: 'completed' },
+      { kind: 'agent_plan_update', todos: [] },
+    ]);
+  });
+
+  it('falls back to thread totals when any raw response omits provider usage', () => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parseNotification = (runtime as unknown as {
+      parseNotification: (
+        proc: typeof correlation,
+        method: string,
+        params: unknown,
+        emit: (event: UnifiedEvent) => void,
+      ) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+
+    const runningTotal = parseNotification(correlation, 'thread/tokenUsage/updated', {
+      threadId: 'main',
+      turnId: 'root-turn',
+      tokenUsage: {
+        total: {
+          inputTokens: 1_100,
+          outputTokens: 110,
+          cachedInputTokens: 900,
+          cacheWriteInputTokens: 50,
+        },
+        last: { inputTokens: 100, outputTokens: 10, cachedInputTokens: 80 },
+        modelContextWindow: 272_000,
+      },
+    }, () => {});
+    expect(runningTotal).toEqual({
+      kind: 'usage',
+      inputTokens: 1_100,
+      outputTokens: 110,
+      semantics: 'running_total',
+      contextOccupiedTokens: 100,
+      runtimeContextWindow: 272_000,
+    });
+
+    parseNotification(correlation, 'rawResponse/completed', {
+      threadId: 'main',
+      turnId: 'root-turn',
+      responseId: 'with-usage',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cachedInputTokens: 40,
+        cacheWriteInputTokens: 0,
+      },
+    }, () => {});
+    parseNotification(correlation, 'rawResponse/completed', {
+      threadId: 'main',
+      turnId: 'root-turn',
+      responseId: 'missing-usage',
+      usage: null,
+    }, () => {});
+
+    const terminal = parseNotification(correlation, 'turn/completed', {
+      threadId: 'main',
+      turn: { id: 'root-turn', status: 'completed' },
+    }, () => {});
+    expect(Array.isArray(terminal) ? terminal.map((event) => event.kind) : []).toEqual([
+      'turn_complete',
+      'agent_plan_update',
+    ]);
   });
 
   it('reserves a child turn for raw-discriminated followup_task before turn/started', () => {
@@ -1577,6 +1707,7 @@ describe('isChildThreadGatedMethod', () => {
   // It must now be gated like lifecycle so the foreign-thread guard drops it.
   it('gates thread/tokenUsage/updated (child usage must not drive main context)', () => {
     expect(isChildThreadGatedMethod('thread/tokenUsage/updated')).toBe(true);
+    expect(isChildThreadGatedMethod('rawResponse/completed')).toBe(true);
   });
   it('does NOT gate item notifications (sub-agent tools must surface)', () => {
     expect(isChildThreadGatedMethod('item/started')).toBe(false);

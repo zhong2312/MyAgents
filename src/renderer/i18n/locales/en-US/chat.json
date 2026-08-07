@@ -839,7 +839,9 @@
       "subtitle": "Non-image files will be copied to myagents_files and referenced automatically."
     },
     "boot": {
-      "loading": "Starting AI"
+      "loading": "Starting AI",
+      "restoreFailed": "Couldn't load this chat. Reopen it or switch chats to try again.",
+      "retry": "Try again"
     },
     "agentError": {
       "title": "AI call failed: ",
@@ -918,6 +920,12 @@
         "message": "Your chat history and file modification state will both rewind to before this turn.",
         "confirm": "Rewind"
       },
+      "codexRewind": {
+        "title": "Time rewind",
+        "message": "The conversation will return to before this message. Workspace files will not be restored; current file changes will remain.",
+        "messageWithDraft": "The conversation will return to before this message. Workspace files will not be restored; current file changes will remain. Your current unsent draft and images will be replaced by this message.",
+        "confirm": "Rewind conversation only"
+      },
       "fork": {
         "title": "Create branch",
         "message": "A new chat branch will be created from this point and opened in a new tab. The original chat will not be changed.",
@@ -960,6 +968,19 @@
       "unknownError": "Unknown error",
       "rewindFailedWithError": "Time rewind failed: {{error}}",
       "rewindFailedRetry": "Time rewind failed. Please try again.",
+      "codexRewindSuccess": "Conversation rewound. Workspace files remain unchanged.",
+      "codexRestoreFailed": "Conversation rewound, but Codex must restart before you continue.",
+      "codexRewindReconciled": "The connection was interrupted. The conversation was resynced from local history; review it before continuing.",
+      "conversationError": {
+        "session_busy": "This chat still has an operation in progress. Try again shortly.",
+        "anchor_unavailable": "This history point has no usable Codex anchor, or the native history has changed.",
+        "codex_update_required": "Update Codex CLI to version 0.143.0 or later.",
+        "native_fork_failed": "Codex could not create the native conversation branch. Try again.",
+        "persistence_failed": "The native branch was created, but MyAgents could not safely save the local chat.",
+        "storage_consistency_error": "The chat storage is inconsistent. Restart MyAgents before trying again.",
+        "restore_failed": "The operation took effect, but Codex must restart before you continue.",
+        "unsupported_runtime": "The current Runtime does not support this operation."
+      },
       "rewindPartialLinks": "Conversation rewound, but {{count}} linked file(s) were left unchanged for safety.",
       "rewindFilesFailed": "Conversation rewound, but workspace files could not be restored and remain unchanged.",
       "rewindFilesNotAttempted": "Conversation rewound without a usable file checkpoint; workspace files remain unchanged.",

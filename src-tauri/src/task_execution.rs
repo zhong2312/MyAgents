@@ -15,6 +15,7 @@ use crate::{ulog_error, ulog_warn};
 #[derive(Debug)]
 pub struct TaskExecutionOutcome {
     pub success: bool,
+    pub turn_dispatched: bool,
     pub termination_unconfirmed: bool,
     pub error: Option<String>,
     pub ai_exit_reason: Option<String>,
@@ -93,6 +94,7 @@ pub(crate) async fn execute_managed_task(
     let batch = crate::memory_auto_update::run_managed_task_batch(handle, task, queue_id).await?;
     Ok(TaskExecutionOutcome {
         success: batch.success,
+        turn_dispatched: true,
         termination_unconfirmed: batch.termination_unconfirmed,
         error: batch
             .termination_unconfirmed
@@ -111,6 +113,7 @@ pub(crate) async fn execute_task(
     session_id: String,
     initialize_session: bool,
     session_lifecycle: Arc<SessionLifecycleGuard>,
+    activation: Option<crate::task_trigger::TaskActivationPayload>,
 ) -> Result<TaskExecutionOutcome, String> {
     let started = Instant::now();
 
@@ -163,6 +166,7 @@ pub(crate) async fn execute_task(
         interval_minutes: task.interval_minutes,
         execution_number: Some(task.execution_count.saturating_add(1)),
         schedule_kind: schedule_kind(task),
+        activation_event: activation,
     };
 
     let result = execute_cron_task(
@@ -211,6 +215,7 @@ pub(crate) async fn execute_task(
     })?;
     Ok(TaskExecutionOutcome {
         success: response.success,
+        turn_dispatched: response.turn_dispatched,
         termination_unconfirmed: response.termination_unconfirmed,
         error: response.error,
         ai_exit_reason: response

@@ -37,7 +37,8 @@ describe('SessionStore bulk-read path', () => {
       content: 'usage stats',
       timestamp: '2026-07-17T00:00:00.000Z',
     };
-    expect((await store.saveSessionMessages(metadata.id, [message])).ok).toBe(true);
+    const snapshot = await store.loadSessionTranscript(metadata.id);
+    expect((await store.appendSessionMessages(metadata.id, snapshot.cursor, [message])).ok).toBe(true);
 
     const sessionsPath = join(home, '.myagents', 'sessions.json');
     const persistedIndex = readFileSync(sessionsPath, 'utf-8');

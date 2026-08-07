@@ -21,6 +21,13 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => true }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => {}) }));
 vi.mock('@/api/apiFetch', () => ({ apiGetJson: vi.fn(async () => ({ models: [] })) }));
+vi.mock('./services/configStore', () => ({
+    isLockBusyError: (error: unknown) => (
+        !!error && typeof error === 'object' && 'code' in error && String(error.code).endsWith('BUSY')
+    ),
+    withAgentConfigIntentLock: vi.fn(async <T,>(run: () => Promise<T>) => run()),
+    withProjectsLock: vi.fn(async <T,>(run: () => Promise<T>) => run()),
+}));
 
 vi.mock('./services/appConfigService', () => ({
     loadAppConfig: mocks.loadAppConfig,
@@ -53,13 +60,14 @@ vi.mock('./services/projectService', () => ({
 }));
 
 vi.mock('./services/agentConfigService', () => ({
-    addAgentConfig: vi.fn(),
-    buildAgentForProject: vi.fn(),
     configureMemoryAutoUpdateTaskForAgent: vi.fn(),
     configureMemoryEvolutionTasksForAgent: vi.fn(),
-    ensureAllProjectsHaveAgent: vi.fn(() => ({ changed: false })),
     migrateImBotConfigsToAgents: vi.fn((config: object) => config),
     persistAgents: vi.fn(async () => {}),
+    reconcilePersistedAgentWorkspaceIdentities: vi.fn(async () => ({
+        config: {}, projects: [], changed: false, createdAgents: [],
+    })),
+    reconcilePersistedAgentWorkspaceIdentitiesLocked: vi.fn(),
 }));
 
 describe('ConfigProvider Managed Codex startup update lifecycle', () => {

@@ -9,7 +9,12 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { useToast } from '@/components/Toast';
-import { type RewindResponse, warnRewindFileOutcome as showRewindFileOutcomeWarning } from '@/utils/rewindFileOutcome';
+import {
+  classifyCodexRewindTransportOutcome,
+  projectCodexRewindRecovery,
+  type RewindResponse,
+  warnRewindFileOutcome as showRewindFileOutcomeWarning,
+} from '@/utils/rewindFileOutcome';
 import Tip from '@/components/Tip';
 import DirectoryPanel, { type DirectoryPanelHandle, type WorkspaceTreePersistedState } from '@/components/DirectoryPanel';
 import DropZoneOverlay from '@/components/DropZoneOverlay';
@@ -68,6 +73,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { isDebugMode } from '@/utils/debug';
 import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
+import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
@@ -90,14 +96,16 @@ import {
 } from '../../shared/official-tools';
 import { isSupportedLocale } from '../../shared/i18n';
 import { workspacePathsEqual } from '../../shared/workspacePath';
+import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
 import { coerceReasoningEffortForRuntime, reasoningEffortChoices } from '../../shared/reasoningEffort';
 import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import {
+  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
-  managedCodexProviderPermissionToRuntimePermission,
   managedCodexRuntimePermissionToProviderPermission,
+  projectManagedCodexPermissionToRuntime,
   runtimeBackedProviderPermissionMode,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -111,9 +119,9 @@ import {
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
   GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
+  projectPermissionModeForRuntime,
 } from '../../shared/types/runtime';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, SidecarConfigDisposition } from '@/types/tab';
@@ -134,7 +142,12 @@ import {
   projectInputChromeRuntime,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
-import { DEFAULT_WORKSPACE_LAYOUT_METRICS, resolveWorkspacePanelMode } from '@/utils/chatWorkspaceLayout';
+import {
+  DEFAULT_WORKSPACE_LAYOUT_METRICS,
+  nextSplitViewAfterBrowserClose,
+  resolveWorkspacePanelMode,
+  shouldPresentBrowserFullscreen,
+} from '@/utils/chatWorkspaceLayout';
 import {
   isManagedProviderSessionSnapshot,
   managedProviderSnapshotModel,
@@ -318,7 +331,7 @@ function coerceExternalRuntimeModelForUi(model: string | undefined, runtime: Run
 }
 
 function coerceExternalRuntimePermissionForUi(mode: string | undefined, runtime: RuntimeType): string | undefined {
-  return runtime === 'builtin' ? mode : coercePermissionModeForRuntime(mode, runtime);
+  return runtime === 'builtin' ? mode : projectPermissionModeForRuntime(mode, runtime);
 }
 
 function coerceInitialMessageRuntimePermission(
@@ -417,11 +430,13 @@ const SessionTitleEditor = forwardRef<
 interface ChatProps {
   /** Host surface mode: keep the real session while hiding duplicate chrome. */
   compactAgentSurface?: boolean;
+  /** Native desktop-window focus projection; independent from internal Tab activity. */
+  isWindowFocused: boolean;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
-  /** Called when user selects a different session from history - uses Session singleton logic */
-  onSwitchSession?: (sessionId: string, historyEntrySource?: HistoryEntrySource) => void;
-  /** Called when user opens a history session in a NEW tab (vs. switching the current one) */
+  /** Opens a persisted Session through App's canonical new/jump/revive path. */
+  onOpenSession?: (sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => void;
+  /** Explicit per-row new-tab action; it shares the same canonical App path. */
   onOpenSessionInNewTab?: (sessionId: string, title: string) => void;
   /** Initial message from Launcher for auto-send on workspace open */
   initialMessage?: InitialMessage;
@@ -450,7 +465,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ compactAgentSurface = false, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ compactAgentSurface = false, isWindowFocused, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -464,6 +479,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     loadOlderMessages,
     isLoading,
     isSessionLoading,
+    sessionRestoreError,
     sessionState,
     sessionRuntime,
     sessionRuntimeSource,
@@ -490,7 +506,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     setSystemNotice,
     sendMessage,
     stopResponse,
-    loadSession,
+    retryCurrentSessionRestore,
     resetSession,
     adoptMigratedSession,
     clearUnifiedLogs,
@@ -762,6 +778,29 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     setBrowserCurrentUrl(u);
   }, []);
 
+  // Browser resource cleanup has one owner. Every close entry point delegates
+  // here so a surviving terminal/file view always takes over consistently.
+  const handleBrowserClose = useCallback(() => {
+    setBrowserUrl(null);
+    setBrowserAlive(false);
+    setBrowserSourceFile(null);
+    setBrowserCurrentUrl('');
+    const nextView = nextSplitViewAfterBrowserClose({
+      terminalVisible: terminalPinned && terminalAlive,
+      fileVisible: splitFile !== null,
+    });
+    if (nextView) setSplitActiveView(nextView);
+  }, [terminalPinned, terminalAlive, splitFile]);
+
+  // Browser links stay inside MyAgents even when the split layout has no room.
+  // In that case the same BrowserPanel owner fills the Chat surface instead of
+  // falling back to a system browser.
+  const browserUsesFullscreen = shouldPresentBrowserFullscreen({
+    browserPresented: browserUrl !== null && splitActiveView === 'browser',
+    splitViewEnabled: isSplitViewEnabled,
+    narrowLayout: isNarrowLayout,
+  });
+
   // Derived: is the right split panel visible?
   const splitPanelVisible = splitFile !== null
     || (terminalPinned && (terminalAlive || splitActiveView === 'terminal'))
@@ -792,7 +831,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
 
   const workspacePanelMode = resolveWorkspacePanelMode({
     viewportWidthPx: workspaceLayoutMetrics.viewportWidthPx,
-    splitPanelVisible: isSplitViewEnabled && splitPanelVisible,
+    splitPanelVisible: isSplitViewEnabled && splitPanelVisible && !browserUsesFullscreen,
     splitRatio,
     contentMinWidthPx: workspaceLayoutMetrics.contentMinWidthPx,
     sidebarMinWidthPx: workspaceLayoutMetrics.sidebarMinWidthPx,
@@ -817,16 +856,18 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       return true;
     }
     if (splitActiveView === 'browser' && browserUrl) {
-      setBrowserUrl(null);
-      setBrowserAlive(false);
-      setBrowserSourceFile(null);
-      setBrowserCurrentUrl('');
-      if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-      else if (splitFile) setSplitActiveView('file');
+      handleBrowserClose();
       return true;
     }
     return false;
   }, 0);
+
+  // Fullscreen BrowserPanel is an overlay-like surface above Chat chrome.
+  useCloseLayer(() => {
+    if (!isActive || !browserUsesFullscreen || splitActiveView !== 'browser' || !browserUrl) return false;
+    handleBrowserClose();
+    return true;
+  }, 30);
 
   // Fullscreen preview triggered from split panel's "全屏预览" button
   const [fullscreenPreviewFile, setFullscreenPreviewFile] = useState<SplitPreviewFile | null>(null);
@@ -933,10 +974,10 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
 
   // Open a URL in the embedded browser panel
   const handleOpenInBrowserPanel = useCallback((url: string) => {
-    startBrowserSplitTransitionIfNeeded();
+    if (isSplitViewEnabled && !isNarrowLayout) startBrowserSplitTransitionIfNeeded();
     setBrowserUrl(url);
     setSplitActiveView('browser');
-  }, [startBrowserSplitTransitionIfNeeded]);
+  }, [isNarrowLayout, isSplitViewEnabled, startBrowserSplitTransitionIfNeeded]);
 
   // Open empty browser from toolbar button.
   // First click → create blank webview (BROWSER_BLANK_URL is a data: URL, not
@@ -950,19 +991,8 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
 
   const handleBrowserCreated = useCallback(() => setBrowserAlive(true), []);
   const handleBrowserCreateFailed = useCallback(() => {
-    setBrowserAlive(false);
-    setBrowserUrl(null);
-    setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-  }, []);
-  const handleBrowserClose = useCallback(() => {
-    setBrowserUrl(null);
-    setBrowserAlive(false);
-    setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-    if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-    else if (splitFile) setSplitActiveView('file');
-  }, [terminalPinned, terminalAlive, splitFile]);
+    handleBrowserClose();
+  }, [handleBrowserClose]);
 
   // Switch from browser preview to editor for a local HTML file.
   // Re-reads from disk to ensure editor shows the latest saved content
@@ -1000,17 +1030,16 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     }, 300);
   }, [browserUrl, tabId]);
 
-  // Stable context value for BrowserPanelContext (only provided when split view is available)
+  // Stable context value for the Chat-owned browser. Presentation (split vs.
+  // fullscreen) is decided here, not by individual link renderers.
   const browserPanelCtx = useMemo(
-    () => (isSplitViewEnabled && !isNarrowLayout ? { openUrl: handleOpenInBrowserPanel } : null),
-    [isSplitViewEnabled, isNarrowLayout, handleOpenInBrowserPanel],
+    () => ({ openUrl: handleOpenInBrowserPanel }),
+    [handleOpenInBrowserPanel],
   );
 
   // Listen for the global LinkContextMenuProvider's "预览（内置浏览器）" intent.
-  // Only the active Chat tab with an available BrowserPanel claims the action
-  // (preventDefault → dispatcher skips the system-browser fallback). Inactive
-  // Chats or non-split layouts deliberately don't claim, so the dispatcher
-  // falls back to openExternal — the menu item never feels dead.
+  // Only the active Chat tab claims the global context-menu action. Wide layouts
+  // use the split panel; narrow/disabled split layouts use fullscreen BrowserPanel.
   useEffect(() => {
     if (!isActive || !browserPanelCtx) return;
     const handler = (e: Event) => {
@@ -1154,11 +1183,14 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     messageId: string;
     content: string;
     attachments?: import('@/types/chat').MessageAttachment[];
+    replacesDraft: boolean;
   } | null>(null);
   const [rewindStatus, setRewindStatus] = useState<string | null>(null);
 
   // Fork state
   const [forkTarget, setForkTarget] = useState<string | null>(null); // assistant message ID
+  const [forkPending, setForkPending] = useState(false);
+  const conversationOperationPendingRef = useRef(false);
 
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -1280,11 +1312,8 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
-  const currentAgentRuntimeConfig = currentAgent?.runtimeConfig as RuntimeConfig | undefined;
-  const agentUsesManagedCodexProvider =
-    currentAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    || currentAgentRuntimeConfig?.source === 'managed-provider';
-  const agentRuntime: RuntimeType = agentUsesManagedCodexProvider
+  const agentUsesManagedProvider = agentUsesManagedCodexProvider(currentAgent);
+  const agentRuntime: RuntimeType = agentUsesManagedProvider
     ? 'builtin'
     : multiAgentRuntimeEnabled
     ? ((currentAgent?.runtime as RuntimeType) || 'builtin')
@@ -1297,6 +1326,8 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   // spawned with its frozen runtime and the backend routes by sessionId.
   const currentRuntime: RuntimeType = (sessionRuntime as RuntimeType | null) ?? agentRuntime;
   const isExternalRuntime = currentRuntime !== 'builtin';
+  const codexConversationBranchSupported = currentRuntime === 'codex'
+    && supportsCodexConversationBranch(currentRuntimeSource, runtimeDetections.codex.version);
   const handleDiagnoseAgentError = useCallback((message: string) => {
     launchSupportDiagnostics({
       source: 'agent_error',
@@ -1378,9 +1409,13 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   useEffect(() => {
     if (!isExternalRuntime) return;
     const cfg = currentAgent?.runtimeConfig as { permissionMode?: string; model?: string } | undefined;
-    const saved = cfg?.permissionMode;
-    const effective = coerceExternalRuntimePermissionForUi(saved, currentRuntime)
-      ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default');
+    const saved = managedProviderRuntimeActive
+      ? currentAgent?.permissionMode
+      : cfg?.permissionMode;
+    const effective = managedProviderRuntimeActive
+      ? (projectManagedCodexPermissionToRuntime(saved) ?? 'auto-edit')
+      : (coerceExternalRuntimePermissionForUi(saved, currentRuntime)
+        ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default'));
     setRuntimePermissionMode(effective);
     setRuntimeModel(coerceExternalRuntimeModelForUi(cfg?.model, currentRuntime));
     // #324 — re-seed effort on runtime transition. RUNTIME_CONFIG_PER_RUNTIME_FIELDS
@@ -1388,7 +1423,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     // different runtime can't be read here; absent = 'default'.
     setReasoningEffort(coerceReasoningEffortForUi((cfg as { reasoningEffort?: string } | undefined)?.reasoningEffort, currentRuntime) ?? 'default');
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only re-sync on runtime transitions, not on every currentAgent.runtimeConfig edit
-  }, [currentRuntime, isExternalRuntime]);
+  }, [currentRuntime, isExternalRuntime, managedProviderRuntimeActive]);
 
   // Runtime-specific models and permission modes
   const runtimePermissionModes = currentRuntime === 'claude-code' ? CC_PERMISSION_MODES
@@ -1400,7 +1435,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
   const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
-    if ((!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) || currentRuntime !== 'codex') return;
+    if (!multiAgentRuntimeEnabled || managedProviderRuntimeActive || currentRuntime !== 'codex') return;
     let cancelled = false;
     // AbortController so a tab-close (effect cleanup) silences the
     // proxyFetch "Sidecar gone" warning that would otherwise fire when
@@ -1409,7 +1444,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     // post-hoc filter in proxyFetch turns the rejection into a silent
     // AbortError instead of a noisy lifecycle log line.
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=codex', { signal: controller.signal }).then((res: unknown) => {
+    apiGet(runtimeModelCatalogPath('codex', 'system-cli'), { signal: controller.signal }).then((res: unknown) => {
       const data = res as { models?: typeof CC_MODELS } | undefined;
       if (!cancelled && data?.models?.length) setCodexModels(data.models);
     }).catch(() => {});
@@ -1419,7 +1454,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     if (!multiAgentRuntimeEnabled || currentRuntime !== 'gemini') return;
     let cancelled = false;
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=gemini', { signal: controller.signal }).then((res: unknown) => {
+    apiGet(runtimeModelCatalogPath('gemini'), { signal: controller.signal }).then((res: unknown) => {
       const data = res as { models?: typeof CC_MODELS } | undefined;
       if (!cancelled && data?.models?.length) setGeminiModels(data.models);
     }).catch(() => {});
@@ -1481,7 +1516,6 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     apiPost('/api/runtime/prewarm', {
       sessionId,
       model: effectiveModel,  // may be undefined — runtime falls back to its default
-      permissionMode: effectivePermissionMode,
     }, { signal: controller.signal }).then((res) => {
       // Backend returns { success: true, prewarmed: false, reason: '...' } when
       // the endpoint short-circuits (already-active/starting, runtime mismatch,
@@ -1504,7 +1538,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       prewarmedKeyRef.current = null; // allow a later retry
     });
     return () => { controller.abort(); };
-    // Intentionally omit effectiveModel/effectivePermissionMode from deps —
+    // Intentionally omit effectiveModel from deps —
     // config changes kill the pre-warmed process via setExternalModel/
     // setExternalPermissionMode, and the next user message will resume with
     // the new settings. Re-firing pre-warm on every keystroke-driven option
@@ -1513,7 +1547,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, isActive, isConnected, sessionId, sessionRuntime, apiPost, configPending]);
 
   const runtimeModels = currentRuntime === 'claude-code' ? CC_MODELS
-    : currentRuntime === 'codex' ? codexModels
+    : currentRuntime === 'codex' ? (managedProviderRuntimeActive ? [] : codexModels)
     : currentRuntime === 'gemini' ? geminiModels
     : undefined;
 
@@ -1960,11 +1994,11 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       // chat is "ready" the moment the session connects (SSE up). The
       // initialMessage path keeps waiting for the turn (conditions above) so the
       // overlay doesn't flash an empty chat before the auto-sent message lands.
-      || (isConnected && !hadInitialMessage.current)
+      || (isConnected && !hadInitialMessage.current && !isSessionLoading)
     ) {
       setShowStartupOverlay(false);
     }
-  }, [showStartupOverlay, sessionState, streamingMessage, agentError, isConnected]);
+  }, [showStartupOverlay, sessionState, streamingMessage, agentError, isConnected, isSessionLoading]);
 
   // Safety timeout (30s) — covers prewarm failures / unresponsive backend.
   // Prevents the overlay from sticking forever if neither sessionState nor
@@ -1974,6 +2008,26 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     const t = setTimeout(() => setShowStartupOverlay(false), 30000);
     return () => clearTimeout(t);
   }, [showStartupOverlay]);
+
+  const materializeScheduledOwner = useCallback(async () => {
+    if (!sessionId) throw new Error('Goal requires a session identity.');
+    if (!isPendingSessionId(sessionId)) return { sessionId, workspacePath: agentDir };
+    if (!agentDir) throw new Error('Cannot materialize Goal without workspace path.');
+
+    const result = await materializePendingSessionConfig({
+      pendingSessionId: sessionId,
+      tabId,
+      workspacePath: agentDir,
+      snapshotPatch: {},
+      transport: {
+        postCurrent: (body) => apiPost('/api/session/materialize', body),
+      },
+    });
+    const adopted = await adoptMigratedSession(result.sessionId, { sidecarAlreadyMigrated: true });
+    if (!adopted) throw new Error(`Failed to adopt Goal session ${result.sessionId}.`);
+    setSessionMeta(result.metadata);
+    return { sessionId: result.sessionId, workspacePath: agentDir };
+  }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
 
   // Cron task management hook
   const {
@@ -1986,48 +2040,21 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     startTask: startCronTask,
     stop: stopCronTask,
     restoreFromTask: restoreCronTask,
-    updateSessionId: updateCronTaskSessionId,
   } = useCronTask({
     workspacePath: agentDir,
     sessionId: sessionId ?? '',
+    materializeOwner: materializeScheduledOwner,
     onComplete: (task, reason) => {
       console.log('[Chat] Cron task completed:', task.id, reason);
     },
-    onExecutionComplete: async (task, success) => {
-      // Called when a single execution completes (task may still be running)
-      // Refresh the session to show the latest messages
-      // Use internalSessionId when available, falling back to sessionId.
-      // Both point to our internal message storage key (Sidecar session ID).
+    onExecutionComplete: (task, success) => {
+      // TabProvider owns exact-Session refresh from the same Tauri completion
+      // event. Chat only clears its local execution projection here.
       const effectiveSessionId = task.internalSessionId || task.sessionId;
-      console.log('[Chat] Cron execution complete, refreshing session:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
+      console.log('[Chat] Cron execution complete:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
       setIsLoading(false);
-      // Only refresh session on successful execution.
-      // On timeout (success=false), the original streaming task may still be running
-      // and calling loadSession would abort it (via switchToSession) and lose data.
-      if (success && effectiveSessionId) {
-        await loadSession(effectiveSessionId);
-      }
     },
   });
-
-  const materializeGoalOwner = useCallback(async () => {
-    if (!sessionId) throw new Error('Goal requires a session identity.');
-    if (!isPendingSessionId(sessionId)) return { sessionId, workspacePath: agentDir };
-    if (!agentDir) throw new Error('Cannot materialize Goal without workspace path.');
-
-    const result = await materializePendingSessionConfig({
-      pendingSessionId: sessionId,
-      workspacePath: agentDir,
-      snapshotPatch: {},
-      transport: {
-        postCurrent: (body) => apiPost('/api/session/materialize', body),
-      },
-    });
-    const adopted = await adoptMigratedSession(result.sessionId, { sidecarAlreadyMigrated: true });
-    if (!adopted) throw new Error(`Failed to adopt Goal session ${result.sessionId}.`);
-    setSessionMeta(result.metadata);
-    return { sessionId: result.sessionId, workspacePath: agentDir };
-  }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
   const {
     state: sessionGoalState,
     start: startGoal,
@@ -2039,7 +2066,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   } = useSessionGoal({
     workspacePath: agentDir,
     sessionId: sessionId ?? '',
-    materializeOwner: materializeGoalOwner,
+    materializeOwner: materializeScheduledOwner,
   });
 
   // PERFORMANCE: Ref-stabilize cronState for handleSendMessage
@@ -2120,28 +2147,6 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     setGoalCancelConfirmOpen(false);
     setGoalDraftConfig(null);
   }, [sessionId]);
-
-  // Sync cron task's sessionId when session is created after task creation
-  // This handles two cases:
-  // 1. Task has empty sessionId (legacy) - needs to be updated
-  // 2. Task has pending sessionId (pending-xxx) and real sessionId is now available
-  const sessionIdSyncedRef = useRef<string | null>(null);
-  useEffect(() => {
-    const task = cronState.task;
-    if (!task || !sessionId) return;
-
-    // Skip if sessionId is still pending (no real session ID yet)
-    if (isPendingSessionId(sessionId)) return;
-
-    // If task has empty or pending sessionId but we now have a real sessionId, update the task
-    // Use ref to prevent duplicate updates for the same sessionId
-    const taskNeedsUpdate = task.sessionId === '' || isPendingSessionId(task.sessionId);
-    if (taskNeedsUpdate && sessionIdSyncedRef.current !== sessionId) {
-      sessionIdSyncedRef.current = sessionId;
-      console.log(`[Chat] Syncing cron task sessionId: taskId=${task.id}, oldSessionId=${task.sessionId}, newSessionId=${sessionId}`);
-      void updateCronTaskSessionId(sessionId);
-    }
-  }, [cronState.task, sessionId, updateCronTaskSessionId]);
 
   // File drop zone for chat area (HTML5 drag-drop for non-Tauri/development)
   const handleFileDrop = useCallback((files: File[]) => {
@@ -2597,6 +2602,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
 
       const result = await materializePendingSessionConfig({
         pendingSessionId: sessionId,
+        tabId,
         workspacePath: agentDir,
         snapshotPatch: patch,
         transport: {
@@ -2615,7 +2621,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       throw new Error(`Session ${sessionId} not found.`);
     }
     setSessionMeta(updated);
-  }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+  }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
 
   // Persist a Tab-UI config change to session snapshot (owned) + project + agent.
   // See PRD v0.1.69 §4.3 rule 2. Toasts on persistence failure without rolling
@@ -2880,11 +2886,13 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     const providerModelValue = snapshotIsManagedProvider
       ? managedProviderSnapshotModel(sessionMeta, rawModel)
       : rawModel;
-    const fallbackMode = snapshotIsExternal
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.permissionMode
-      : (currentAgent?.permissionMode as string | undefined);
-    const rawMode = snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode);
-    const runtimePermissionValue = snapshotIsExternal
+    const fallbackMode = currentAgent?.permissionMode as string | undefined;
+    const rawMode = snapshotIsExternal
+      ? sessionMeta.permissionMode
+      : (snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode));
+    const runtimePermissionValue = snapshotIsManagedProvider
+      ? (projectManagedCodexPermissionToRuntime(rawMode) ?? 'auto-edit')
+      : snapshotIsExternal
       ? coerceExternalRuntimePermissionForUi(rawMode, snapshotRuntime)
       : rawMode;
     const providerPermissionValue = snapshotIsManagedProvider
@@ -3188,9 +3196,19 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     firstItemIndex,
     sessionId,
   });
+  const rewindableUserMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const message of historyMessages) {
+      const rootUserMessageId = message.runtimeTurnAnchor?.rootUserMessageId;
+      if (message.role === 'assistant' && rootUserMessageId) ids.add(rootUserMessageId);
+    }
+    return ids;
+  }, [historyMessages]);
   const chatScrollController = useChatScrollController({
     messages: chatScrollModel.data,
     isActive,
+    isWindowFocused,
+    sessionId,
     rootRef: chatContentRef,
   });
   const {
@@ -3650,10 +3668,15 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       return;
     }
 
-    const runtimeMode = managedCodexProviderPermissionToRuntimePermission(mode)
-      ?? coerceRuntimeBirthPermissionMode(mode, currentRuntime)
-      ?? getDefaultRuntimePermissionMode(currentRuntime);
-    const persisted = await persistTabConfigChange({ permissionMode: runtimeMode });
+    if (currentProviderExecutionIntent?.kind !== 'runtime-backed-provider') return;
+    const runtimeMode = runtimeBackedProviderPermissionMode(
+      currentProviderExecutionIntent,
+      mode,
+    ) ?? 'auto-edit';
+    const persisted = await persistTabConfigChange({
+      runtimeBackedProviderSelection: currentProviderExecutionIntent,
+      permissionMode: mode,
+    });
     if (!persisted) return;
     projectSyncedRef.current = true;
     setPermissionMode(mode);
@@ -3661,7 +3684,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   }, [
     managedProviderRuntimeActive,
     handlePermissionModeChange,
-    currentRuntime,
+    currentProviderExecutionIntent,
     persistTabConfigChange,
     guardCronConfigMutation,
   ]);
@@ -3697,7 +3720,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   // Returns false to signal SimpleChatInput NOT to clear the input (e.g., on rejection).
   const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[]): Promise<boolean | void> => {
     // Must have content and not be in stopping state
-    if ((!text && (!images || images.length === 0)) || sessionState === 'stopping') {
+    if (isSessionLoading || (!text && (!images || images.length === 0)) || sessionState === 'stopping') {
       return false;
     }
 
@@ -3842,7 +3865,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
-  }, [sessionState, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
+  }, [sessionState, isSessionLoading, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
 
   // Ref-stabilize handleSendMessage for handleRetry (avoids frequent re-creation)
   const handleSendMessageRef = useRef(handleSendMessage);
@@ -3974,12 +3997,14 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
     }
   }, [agentDir, t]);
 
-  const deleteUnopenedForkSession = useCallback(async (targetSessionId: string) => {
+  const deleteUnopenedForkSession = useCallback(async (targetSessionId: string): Promise<boolean> => {
     try {
       const { deleteSession } = await import('@/api/sessionClient');
-      await deleteSession(targetSessionId);
+      const result = await deleteSession(targetSessionId);
+      return result.deleted || result.reason === 'not-found';
     } catch (err) {
       console.warn('[chat] Failed to delete unopened fork session:', err);
+      return false;
     }
   }, []);
 
@@ -4149,9 +4174,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
             ...(targetIntent.kind === 'runtime-backed-provider'
               ? { runtimeBackedProviderSelection: targetIntent }
               : { builtinSelection: { providerId: pending.providerId, model: targetModel } }),
-            permissionMode: targetIntent.kind === 'runtime-backed-provider'
-              ? runtimeBackedProviderPermissionMode(targetIntent, inputChromePermissionMode)
-              : inputChromePermissionMode,
+            permissionMode: inputChromePermissionMode,
           },
           snapshotWriteMode: 'disabled',
           patchProject,
@@ -4554,15 +4577,26 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       messageId,
       content: typeof msg.content === 'string' ? msg.content : '',
       attachments: msg.attachments,
+      replacesDraft: Boolean(
+        chatInputRef.current?.getCurrentValue().trim()
+        || chatInputRef.current?.getImages().length
+      ),
     });
   }, []); // [] — 通过 ref 读取 messages，引用永远稳定
 
   const handleRewindConfirm = useCallback(() => {
-    if (!rewindTarget) return;
+    if (!rewindTarget || conversationOperationPendingRef.current) return;
+    conversationOperationPendingRef.current = true;
     const { messageId, content, attachments } = rewindTarget;
 
     // 快照：保存当前 messages 以便后端失败时回滚
     const snapshot = messagesRef.current.slice();
+    const composerSnapshot = {
+      value: chatInputRef.current?.getCurrentValue() ?? '',
+      images: chatInputRef.current?.getImages() ?? [],
+    };
+    const rewindSessionId = sessionIdRef.current;
+    const isCodexRewind = currentRuntime === 'codex';
 
     // 1. 乐观更新 UI（瞬时反馈）
     // Pause auto-scroll to prevent animated scrolling during rewind's DOM changes.
@@ -4574,14 +4608,11 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       const idx = prev.findIndex(m => m.id === messageId);
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
-    if (content) {
-      chatInputRef.current?.setValue(content);
-    }
+    chatInputRef.current?.setValue(content);
     const imageAttachments = attachments?.filter(a =>
       a.isImage || a.mimeType?.startsWith('image/')
     );
-    if (imageAttachments?.length) {
-      const restoredImages: ImageAttachment[] = imageAttachments.map(a => ({
+    const restoredImages: ImageAttachment[] = imageAttachments?.map(a => ({
         id: a.id,
         file: new File([], a.name, { type: a.mimeType }),
         preview: a.previewUrl || '',
@@ -4590,54 +4621,101 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
         mimeType: a.mimeType,
         sizeBytes: a.size,
         relativePath: a.relativePath || a.savedPath,
-      }));
-      chatInputRef.current?.setImages(restoredImages);
-    }
+      })) ?? [];
+    chatInputRef.current?.setImages(restoredImages);
 
     // 2. 后端回溯（rewindPromise 会阻塞 enqueueUserMessage 防止竞态）
     //    成功：丢弃快照；失败：从快照回滚 UI
-    track('session_rewind', {});
     setIsLoading(true);
     setRewindStatus('rewinding');
     apiPost('/chat/rewind', { userMessageId: messageId })
       .then(res => {
+        if (sessionIdRef.current !== rewindSessionId) return;
         const r = res as RewindResponse | undefined;
+        track('session_rewind', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: r?.errorCode ?? (r?.success === false ? 'failed' : 'success'),
+        });
         if (r && !r.success) {
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
-          chatInputRef.current?.setValue('');
-          chatInputRef.current?.setImages([]);
-          toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
+          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setImages(composerSnapshot.images);
+          const error = r.errorCode
+            ? t(`shell.toasts.conversationError.${r.errorCode}`)
+            : r.error || t('shell.toasts.unknownError');
+          toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error }));
         } else {
-          warnRewindFileOutcome(r);
+          if (isCodexRewind || r?.rewindScope === 'conversation-only') {
+            if (r?.errorCode === 'restore_failed') {
+              toastRef.current.warning(t('shell.toasts.codexRestoreFailed'));
+            } else {
+              toastRef.current.success(t('shell.toasts.codexRewindSuccess'));
+            }
+          } else {
+            warnRewindFileOutcome(r);
+          }
         }
       })
-      .catch(err => {
-        // 网络错误或异常 → 回滚 UI
+      .catch(async err => {
+        if (sessionIdRef.current !== rewindSessionId) return;
         console.error('[Chat] Rewind failed:', err);
-        setMessages(snapshot);
-        chatInputRef.current?.setValue('');
-        chatInputRef.current?.setImages([]);
-        toastRef.current.error(t('shell.toasts.rewindFailedRetry'));
+        const structured = err && typeof err === 'object'
+          ? err as { status?: unknown; errorCode?: unknown }
+          : null;
+        const errorCode = typeof structured?.errorCode === 'string' ? structured.errorCode : undefined;
+        track('session_rewind', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: errorCode ?? (typeof structured?.status === 'number' ? 'failed' : 'transport_error'),
+        });
+
+        // A structured HTTP rejection proves the server did not commit. A
+        // transport failure is ambiguous, so Codex reloads SessionStore
+        // authority instead of restoring a possibly stale pre-rewind tail.
+        const reconciliation = isCodexRewind
+          && typeof structured?.status !== 'number'
+          ? await retryCurrentSessionRestore(messageId)
+          : null;
+        if (sessionIdRef.current !== rewindSessionId) return;
+        const transportOutcome = classifyCodexRewindTransportOutcome(reconciliation);
+        const recovery = projectCodexRewindRecovery(transportOutcome);
+        if (recovery.restoreMessageSnapshot) {
+          setMessages(snapshot);
+        }
+        if (recovery.restoreComposerSnapshot) {
+          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setImages(composerSnapshot.images);
+        }
+        if (transportOutcome === 'committed') {
+          toastRef.current.warning(t('shell.toasts.codexRewindReconciled'));
+        } else if (errorCode) {
+          toastRef.current.error(t('shell.toasts.rewindFailedWithError', {
+            error: t(`shell.toasts.conversationError.${errorCode}`),
+          }));
+        } else {
+          toastRef.current.error(t('shell.toasts.rewindFailedRetry'));
+        }
       })
       .finally(() => {
-        setRewindStatus(null);
-        setIsLoading(false);
+        conversationOperationPendingRef.current = false;
+        if (sessionIdRef.current === rewindSessionId) {
+          setRewindStatus(null);
+          setIsLoading(false);
+        }
       });
-  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome]);
+  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, currentRuntime, currentRuntimeSource, retryCurrentSessionRestore]);
 
   // Retry = rewind to before user message + auto-resend
   // Rewind to before the given user message and re-send its content.
   // Shared by per-assistant retry (handleRetry) and banner-level retry
   // (handleRetryLastUserMessage). Uses refs throughout so deps stay stable.
   //
-  // For external runtimes (Codex / Claude Code / Gemini), /chat/rewind is
-  // unsupported — there's no SDK resume anchor or file checkpoint to roll
-  // back. Issue #192 used to surface "Rewind is not supported for external
-  // runtimes" as a 400 here, turning a recoverable upstream capacity error
-  // into an additional app error. Instead we POST /chat/external-retry which
-  // truncates the failed user turn from allSessionMessages and persists the
-  // truncation; the auto-resend below then becomes the new user turn.
+  // Retry remains a separate operation from Codex historical Rewind. Every
+  // external runtime uses /chat/external-retry here: it removes only the
+  // failed tail user turn from allSessionMessages, persists that truncation,
+  // and lets the auto-resend below become the replacement user turn.
   const performRetryFromUserMessage = useCallback((userMsg: typeof messagesRef.current[number]) => {
     const content = typeof userMsg.content === 'string' ? userMsg.content : '';
     const attachments = userMsg.attachments;
@@ -4733,53 +4811,85 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
   }, []);
 
   const handleForkConfirm = useCallback(() => {
-    if (!forkTarget) return;
+    if (!forkTarget || forkPending || conversationOperationPendingRef.current) return;
+    conversationOperationPendingRef.current = true;
     const messageId = forkTarget;
     setForkTarget(null);
+    setForkPending(true);
 
-    track('session_fork', {});
     apiPost('/sessions/fork', { messageId })
       .then(async res => {
-        const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string } | undefined;
+        const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string; errorCode?: string } | undefined;
+        track('session_fork', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: r?.errorCode ?? (r?.success ? 'success' : 'failed'),
+        });
         if (r?.success && r.newSessionId && r.agentDir) {
+          const forkSessionId = r.newSessionId;
+          const discardUnopenedFork = async () => {
+            const removed = await deleteUnopenedForkSession(forkSessionId);
+            if (removed && currentRuntime === 'codex') {
+              console.error(
+                `[chat] Codex conversation branch orphan sessionId=${forkSessionId}`
+                  + ` runtimeSource=${currentRuntimeSource ?? 'system-cli'}`
+                  + ' reason=fork_tab_open_failed orphan=true',
+              );
+            }
+          };
           if (!onForkSession) {
-            await deleteUnopenedForkSession(r.newSessionId);
+            await discardUnopenedFork();
             toastRef.current.error(t('shell.toasts.forkOpenFailed'));
             return;
           }
-          const opened = await onForkSession(r.newSessionId, r.agentDir, r.title || 'Fork');
+          const opened = await onForkSession(forkSessionId, r.agentDir, r.title || 'Fork');
           if (!opened) {
-            await deleteUnopenedForkSession(r.newSessionId);
+            await discardUnopenedFork();
             toastRef.current.error(t('shell.toasts.forkOpenFailed'));
           }
         } else {
-          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error: r?.error || t('shell.toasts.unknownError') }));
+          const error = r?.errorCode
+            ? t(`shell.toasts.conversationError.${r.errorCode}`)
+            : r?.error || t('shell.toasts.unknownError');
+          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error }));
         }
       })
       .catch(err => {
         console.error('[Chat] Fork failed:', err);
-        toastRef.current.error(t('shell.toasts.forkFailed'));
+        const errorCode = err && typeof err === 'object' && 'errorCode' in err
+          && typeof err.errorCode === 'string'
+          ? err.errorCode
+          : undefined;
+        track('session_fork', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: errorCode ?? 'transport_error',
+        });
+        if (errorCode) {
+          toastRef.current.error(t('shell.toasts.forkFailedWithError', {
+            error: t(`shell.toasts.conversationError.${errorCode}`),
+          }));
+        } else {
+          toastRef.current.error(t('shell.toasts.forkFailed'));
+        }
+      })
+      .finally(() => {
+        conversationOperationPendingRef.current = false;
+        setForkPending(false);
       });
-  }, [forkTarget, apiPost, onForkSession, deleteUnopenedForkSession, t]);
+  }, [forkTarget, forkPending, apiPost, onForkSession, deleteUnopenedForkSession, t, currentRuntime, currentRuntimeSource]);
 
-  // Handler for selecting a session from history dropdown
-  const handleSelectSession = useCallback((id: string, historyEntrySource: HistoryEntrySource = 'chat_dropdown') => {
-    // PRD 0.2.19 cross-review fix (B3): explicitly stamp session_switch with the
-    // TARGET session id, not the source. Without this, Active Context auto-inject
-    // attaches the pre-switch session id (still the "source") because the switch
-    // hasn't completed yet, making the event semantics "from→to" backwards.
-    track('session_switch', { session_id: id, legacy_compat: true });
-    if (onSwitchSession) {
-      onSwitchSession(id, historyEntrySource);
-    } else {
-      if (cronStateRef.current.task?.status === 'running'
-        || (sessionGoalStateRef.current.goal && !isTerminalGoalStatus(sessionGoalStateRef.current.goal.status))) {
-        console.log('[Chat] Cannot switch session while a scheduled session surface is running (no onSwitchSession handler)');
-        return;
-      }
-      void loadSession(id);
+  const handleSelectSession = useCallback((
+    id: string,
+    title: string,
+    historyEntrySource: HistoryEntrySource = 'chat_dropdown',
+  ) => {
+    if (!onOpenSession) {
+      console.error('[Chat] Cannot open history Session without the App navigation owner');
+      return;
     }
-  }, [onSwitchSession, loadSession]);
+    onOpenSession(id, title, historyEntrySource);
+  }, [onOpenSession]);
 
   // Handover-button visibility predicate (Q10 lockdown):
   //   - session is currently NOT bound to any channel
@@ -4894,7 +5004,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
         className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? 'transition-[width] duration-300 ease-in-out' : ''}`}
-        style={{ width: splitPanelVisible ? `${splitRatio * 100}%` : '100%' }}
+        style={{ width: splitPanelVisible && !browserUsesFullscreen ? `${splitRatio * 100}%` : '100%' }}
         data-chat-workspace-motion={shouldUseWorkspaceOverlay ? undefined : (workspacePanelMotion ?? undefined)}
       >
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-chat-conversation>
@@ -4980,7 +5090,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
                 <SessionHistoryDropdown
                   agentDir={agentDir}
                   currentSessionId={sessionId}
-                  onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
+                  onSelectSession={(id, title) => handleSelectSession(id, title, 'chat_dropdown')}
                   onOpenInNewTab={onOpenSessionInNewTab}
                   isOpen={showHistory}
                   onClose={() => setShowHistory(false)}
@@ -5040,9 +5150,15 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
           {/* Unified boot overlay — same component App renders as the lazy-Chat
               Suspense fallback, so the chunk-load → mount handoff is seamless: ONE
               continuous "AI 启动中" state from the Launcher→Chat flip through the
-              sidecar boot. Pass `show` (not a conditional render) so the overlay
-              self-manages a soft fade-out on dismiss, revealing the chat underneath. */}
-          <ChatBootOverlay show={showStartupOverlay} />
+              sidecar boot. Persisted history keeps the same shell until its REST
+              projection commits, so cold SSE replay is never a visible phase. */}
+          <ChatBootOverlay
+            show={showStartupOverlay || isSessionLoading}
+            error={sessionRestoreError}
+            onRetry={sessionRestoreError && sessionId
+              ? () => { void retryCurrentSessionRestore(); }
+              : undefined}
+          />
 
           {/* SDK 0.2.91+ terminal_reason banner. For error-severity reasons that
               already surface via agentError (image_error / model_error), suppress
@@ -5181,9 +5297,9 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
               layoutByMessageId={chatScrollModel.layoutByMessageId}
               onLoadOlder={handleLoadOlderMessages}
               isLoading={isLoading}
-              isSessionLoading={isSessionLoading}
               sessionId={sessionId}
               isActive={isActive}
+              isWindowFocused={isWindowFocused}
               virtuosoRef={virtuosoRef}
               onScrollerRef={attachScroller}
               followEnabledRef={followEnabledRef}
@@ -5204,9 +5320,29 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
               isStreaming={isLoading || sessionState === 'running' || sessionState === 'starting'}
               sessionState={sessionState}
               executionMode={compactAgentSurface}
-              onRewind={isExternalRuntime ? undefined : handleRewind}
+              onRewind={isExternalRuntime
+                ? (codexConversationBranchSupported
+                  && !isLoading
+                  && sessionState === 'idle'
+                  && queuedMessages.length === 0
+                  && !forkPending
+                  && !rewindStatus
+                    ? handleRewind
+                    : undefined)
+                  : handleRewind}
               onRetry={handleRetry}
-              onFork={isExternalRuntime ? undefined : handleFork}
+              onFork={isExternalRuntime
+                ? (codexConversationBranchSupported
+                  && !isLoading
+                  && sessionState === 'idle'
+                  && queuedMessages.length === 0
+                  && !forkPending
+                  && !rewindStatus
+                    ? handleFork
+                    : undefined)
+                : handleFork}
+              conversationOperations={currentRuntime === 'codex' ? 'codex' : 'builtin'}
+              rewindableUserMessageIds={rewindableUserMessageIds}
               bottomSpacerPx={inputOverlayHeight}
             />
 
@@ -5252,6 +5388,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
             onSend={handleSendMessage}
             onStop={handleStop}
             active={isActive}
+            sendBlocked={isSessionLoading}
             isLoading={isLoading || sessionState === 'running' || sessionState === 'starting'}
             sessionState={sessionState}
             systemStatus={systemStatus}
@@ -5410,14 +5547,17 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
         <>
           {/* Draggable divider — hidden when panel is not visible */}
           <div
-            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible ? 'hidden' : ''}`}
+            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible || browserUsesFullscreen ? 'hidden' : ''}`}
             onMouseDown={handleSplitDividerMouseDown}
           >
             <div className="h-8 w-0.5 rounded-full bg-[var(--ink-subtle)]" />
           </div>
           {/* Right panel — single flex-1 container for tab bar + file + terminal.
               Uses `hidden` when panel is not visible but terminal is alive in background. */}
-          <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? 'hidden' : ''}`}>
+          <div className={browserUsesFullscreen
+            ? 'absolute inset-0 z-30 flex min-w-0 flex-col overflow-hidden bg-[var(--paper)]'
+            : `flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? 'hidden' : ''}`}
+          >
             {/* Tab switcher — only when 2+ views are active */}
             {(() => {
               const activeViews = [splitFile, terminalPinned && terminalAlive, browserUrl].filter(Boolean).length;
@@ -5516,12 +5656,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setBrowserUrl(null);
-                        setBrowserAlive(false);
-                        setBrowserSourceFile(null);
-                        setBrowserCurrentUrl('');
-                        if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-                        else if (splitFile) setSplitActiveView('file');
+                        handleBrowserClose();
                       }}
                       className="ml-0.5 flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--paper-inset)] group-hover:opacity-100"
                       title={t('shell.split.closeBrowser')}
@@ -5765,9 +5900,11 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
       {/* Time Rewind Confirm Dialog */}
       {rewindTarget && (
         <ConfirmDialog
-          title={t('shell.dialogs.rewind.title')}
-          message={t('shell.dialogs.rewind.message')}
-          confirmText={t('shell.dialogs.rewind.confirm')}
+          title={t(currentRuntime === 'codex' ? 'shell.dialogs.codexRewind.title' : 'shell.dialogs.rewind.title')}
+          message={t(currentRuntime === 'codex'
+            ? (rewindTarget.replacesDraft ? 'shell.dialogs.codexRewind.messageWithDraft' : 'shell.dialogs.codexRewind.message')
+            : 'shell.dialogs.rewind.message')}
+          confirmText={t(currentRuntime === 'codex' ? 'shell.dialogs.codexRewind.confirm' : 'shell.dialogs.rewind.confirm')}
           cancelText={t('shell.common.cancel')}
           confirmVariant="danger"
           onConfirm={handleRewindConfirm}
@@ -5947,7 +6084,7 @@ export default function Chat({ compactAgentSurface = false, onNewSession, onSwit
             setCronDetailTask(updated);
             toastRef.current?.success(t('shell.toasts.taskStopped'));
           }}
-          onOpenSession={(id) => handleSelectSession(id, 'task_run_history')}
+          onOpenSession={(id) => handleSelectSession(id, '', 'task_run_history')}
         />
       )}
     </div>

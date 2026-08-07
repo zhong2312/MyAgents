@@ -24,7 +24,106 @@ export type TaskStatus =
   | 'deleted';
 
 /** Transient state of one concrete scheduler turn; never persisted. */
-export type TaskExecutionState = 'running' | 'stopping' | 'stop_failed';
+export type TaskExecutionState = 'checking' | 'running' | 'stopping' | 'stop_failed';
+
+export interface TaskTrigger {
+  source: { type: 'time' };
+  detector:
+    | { type: 'always' }
+    | {
+      type: 'command';
+      command: { executable: string; args: string[]; cwd?: string };
+      timeoutMs?: number;
+    };
+}
+
+export interface TaskTriggerReason {
+  code: string;
+  message: string;
+}
+
+export interface TaskActivationEvent {
+  id: string;
+  kind: string;
+  occurredAt: string;
+}
+
+export interface TaskActivationHandoff {
+  summary: string;
+  text?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface PendingTaskActivation {
+  event: TaskActivationEvent;
+  handoff: TaskActivationHandoff;
+  reason: TaskTriggerReason;
+  invocationCause: 'scheduled' | 'check-now';
+  detectedAt: number;
+  taskUpdatedAt: number;
+  deliveryState: 'pending' | 'dispatching';
+  queueId?: string;
+}
+
+/** Activation evidence forwarded across Rust → SessionEngine → reminder. */
+export type TaskActivationPayload = Pick<
+  PendingTaskActivation,
+  'event' | 'handoff' | 'reason' | 'detectedAt'
+>;
+
+export interface TaskTriggerError {
+  code: string;
+  message: string;
+  occurredAt: number;
+  exitCode?: number;
+  signal?: string;
+  timedOut?: boolean;
+  stderrTail?: string;
+}
+
+export interface TaskTriggerRuntimeState {
+  protocolVersion: 1;
+  checkpoint: Record<string, unknown> | null;
+  checkpointRevision: number;
+  checkpointUpdatedAt?: number;
+  checkCount: number;
+  lastCheckedAt?: number;
+  lastOutcome?: 'quiet' | 'activate' | 'deduplicated' | 'error';
+  lastReason?: TaskTriggerReason;
+  lastActivatedAt?: number;
+  consecutiveFailures: number;
+  backoffUntil?: number;
+  lastError?: TaskTriggerError;
+  pendingActivation?: PendingTaskActivation;
+  recentEventIds: Array<{ id: string; settledAt: number }>;
+}
+
+export interface TaskTriggerTestSuccess {
+  invocationId: string;
+  decision: 'quiet' | 'activate';
+  reason: TaskTriggerReason;
+  event?: TaskActivationEvent;
+  handoff?: TaskActivationHandoff;
+  nextCheckpoint: Record<string, unknown> | null | undefined;
+  durationMs: number;
+  exitCode: number;
+  stderrTail?: string;
+}
+
+export interface TaskTriggerTestFailure {
+  error: TaskTriggerError;
+  durationMs: number;
+  stdout?: string;
+}
+
+export type TaskTriggerTestResponse =
+  | { ok: true; result: TaskTriggerTestSuccess }
+  | { ok: false; failure: TaskTriggerTestFailure };
+
+export interface TaskTriggerCheckNowResult {
+  state: TaskTriggerRuntimeState;
+  outcome?: TaskTriggerRuntimeState['lastOutcome'];
+}
 
 /** Statuses accepted by the CLI `task update-status`. `archived` is user-only (see §9.1). */
 export type CliSettableStatus = 'running' | 'verifying' | 'done' | 'blocked' | 'stopped';
@@ -110,6 +209,15 @@ export interface NotificationConfig {
   events?: Array<'done' | 'blocked' | 'stopped' | 'verifying' | 'endCondition'>;
 }
 
+/** Field-level Task notification mutation. Omitted values stay unchanged;
+ * `null` restores that field's default/absence. */
+export interface TaskNotificationPatch {
+  desktop?: boolean | null;
+  botChannelId?: string | null;
+  botThread?: string | null;
+  events?: NotificationConfig['events'] | null;
+}
+
 /** Runtime-scoped config snapshot captured at dispatch. */
 export interface RuntimeConfigSnapshot {
   model?: string;
@@ -153,6 +261,8 @@ export interface Task {
   recurringWindow?: RecurringWindow;
   /** Dedicated "when to fire" timestamp (ms) for `scheduled` mode. Decouples from `endConditions.deadline`. */
   dispatchAt?: number;
+  /** Missing in legacy rows means effective time/always. */
+  trigger?: TaskTrigger;
   /** Per-task model override. When absent, the Agent's default model is used.
    *
    *  PRD 0.2.9 pairing rule (asymmetric, by design): setting `providerId`
@@ -197,6 +307,8 @@ export interface Task {
   /** Timer anchor; manual run-now must not move the recurring schedule. */
   lastScheduledAt?: number;
   executionCount?: number;
+  /** Internal durable receipt for the last admitted command-trigger event. */
+  lastActivationEventId?: string;
   /** Append-only audit log of status changes. See PRD §3.2 / §10.2.1. */
   statusHistory: StatusTransition[];
   notification?: NotificationConfig;
@@ -212,6 +324,8 @@ export interface Task {
   executionState?: TaskExecutionState;
   /** Stop confirmation failure for the current concrete turn. */
   executionError?: string;
+  /** Read-time projection owned by Rust TaskStore; not persisted in tasks.jsonl. */
+  triggerState?: TaskTriggerRuntimeState;
   /** Absolute paths to the four task markdown docs. Populated by
    *  `cmd_task_get` / `/api/task/get` at read time (not persisted) — the
    *  consumer (CLI, AI, UI) reads the files directly via Read/Edit/Write
@@ -261,6 +375,7 @@ export interface TaskCreateDirectInput {
   recurringWindow?: RecurringWindow;
   /** Fire time for `scheduled` mode (ms epoch). */
   dispatchAt?: number;
+  trigger?: TaskTrigger;
   /** Per-task model override. */
   model?: string;
   /** PRD 0.2.9 — Per-task provider id override. MUST be paired with `model`. */
@@ -294,12 +409,15 @@ export interface TaskCreateFromAlignmentInput {
   executionMode: TaskExecutionMode;
   runMode?: TaskRunMode;
   endConditions?: EndConditions;
+  trigger?: TaskTrigger;
   /** Per-task model override. Omit to inherit the Agent workspace default. */
   model?: string;
   /** PRD 0.2.9 — Per-task provider id override. MUST be paired with `model`. */
   providerId?: string;
   /** Per-task permission mode override. Runtime-specific values — see `myagents runtime describe <runtime>`. */
   permissionMode?: string;
+  /** Required materialized Session identity when `runMode` is `single-session`. */
+  preselectedSessionId?: string;
   runtime?: RuntimeType;
   runtimeConfig?: RuntimeConfigSnapshot;
   /** Per-task MCP enable list override (PRD 0.2.4 §需求 4). */
@@ -347,6 +465,9 @@ export interface TaskUpdateInput {
   recurringWindow?: RecurringWindow;
   /** Dedicated dispatch time for `scheduled` mode (ms epoch). */
   dispatchAt?: number;
+  trigger?: TaskTrigger;
+  /** Clear persisted trigger configuration back to effective always. */
+  clearTrigger?: boolean;
   /** Per-task model override. Empty string clears. */
   model?: string;
   /** PRD 0.2.9 — Per-task provider id override. Empty string clears. */
@@ -376,6 +497,7 @@ export interface TaskUpdateInput {
   clearMcpOverride?: boolean;
   tags?: string[];
   notification?: NotificationConfig;
+  notificationPatch?: TaskNotificationPatch;
   /**
    * When provided, the new markdown body is atomically written to
    * `.task/<id>/task.md` under the same write lock that persists the JSONL

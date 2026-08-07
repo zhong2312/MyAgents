@@ -49,7 +49,7 @@ import {
   getRecentLogLines,
 } from '../UnifiedLogger';
 import { localTimestamp } from '../../shared/logTime';
-import type { LogEntry } from '../../renderer/types/log';
+import type { LogEntry } from '../../shared/types/log';
 
 interface DirSnapshot {
   files: Map<string, number>; // filename → size

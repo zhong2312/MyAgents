@@ -102,9 +102,8 @@ export default function SettingsHelperInbox({
 
     const handleSelectHistorySession = useCallback((sessionId: string) => {
         setShowHistory(false);
-        // Empty description + resumeSessionId → handler skips auto-send and
-        // routes to handleLaunchProject(project, sessionId). New helper Tab
-        // opens (or jumps to existing owner per Session:Tab=1:1).
+        // Empty description + resumeSessionId routes through the canonical
+        // existing-Session new/jump/revive owner and skips auto-send.
         dispatchHelperRequest({ description: '', appVersion, resumeSessionId: sessionId });
     }, [appVersion]);
 

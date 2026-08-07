@@ -67,7 +67,7 @@ export default function LinkContextMenuProvider({ children }: { children: React.
 
     const items: ContextMenuItem[] = menu
         ? [
-              {
+              ...(/^https?:\/\//i.test(menu.href) ? [{
                   label: t('linkContext.previewInternal'),
                   onClick: () => {
                       const url = menu.href;
@@ -82,7 +82,7 @@ export default function LinkContextMenuProvider({ children }: { children: React.
                           void openExternal(url);
                       }
                   },
-              },
+              } satisfies ContextMenuItem] : []),
               {
                   label: t('linkContext.copyLink'),
                   onClick: () => {

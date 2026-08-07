@@ -13,7 +13,8 @@ import {
   type RuntimeConfigPolicySource,
   type SnapshotConfigField,
 } from '../session-core/runtime-config-policy';
-import type { BuiltinConfigSnapshot, BuiltinRestartReason, PermissionMode, ProviderEnv } from './types';
+import type { ProviderEnv } from '../provider-types';
+import type { BuiltinConfigSnapshot, BuiltinRestartReason, PermissionMode } from './types';
 
 const pendingConfigRestart = new Set<BuiltinRestartReason>();
 let currentMcpServers: McpServerDefinition[] | null = null;
@@ -143,18 +144,13 @@ export function applyMcpServersUpdate(
   servers: McpServerDefinition[],
   params: {
     hasQuerySession: boolean;
-    isSnapshotted: boolean;
   },
 ): ReturnType<typeof decideMcpSync> & { applied: boolean } {
   const decision = decideMcpSync({
     previousServers: currentMcpServers ?? [],
     nextServers: servers,
     hasQuerySession: params.hasQuerySession,
-    isSnapshotted: params.isSnapshotted,
   });
-  if (decision.changed && decision.reason === 'snapshot-authoritative') {
-    return { ...decision, applied: false };
-  }
   currentMcpServers = servers;
   return { ...decision, applied: true };
 }

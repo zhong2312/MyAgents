@@ -45,9 +45,8 @@ describe('Moonshot Provider Tests', () => {
       expect(result.sessionId).toBeTruthy();
     }, TEST_TIMEOUT + TIMEOUT_BUFFER);
 
-    it.skipIf(!isAvailable)('should use kimi-k2.5 model', async () => {
-      // Verify we're using the K2.5 model
-      expect(provider.config.model).toBe('kimi-k2.5');
+    it.skipIf(!isAvailable)('should use kimi-k3 model', async () => {
+      expect(provider.config.model).toBe('kimi-k3');
 
       const result = await runTestQuery({
         provider: provider.config,

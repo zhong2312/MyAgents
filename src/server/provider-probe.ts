@@ -25,7 +25,7 @@
 
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici';
 import { withAbortSignal } from './utils/cancellation';
-import type { ProviderEnv } from './agent-session';
+import type { ProviderEnv } from './provider-types';
 
 const PROBE_TIMEOUT_MS = 15000;
 const PROBE_BODY_MAX = 500;

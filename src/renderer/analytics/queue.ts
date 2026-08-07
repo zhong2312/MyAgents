@@ -3,7 +3,7 @@
  * 事件队列和批量发送
  */
 
-import { proxyFetch } from '@/api/tauriClient';
+import { proxyAnalyticsFetch } from '@/api/tauriClient';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { isAnalyticsEnabled, getApiKey, getEndpoint } from './config';
 import type { TrackEvent, TrackResponse } from './types';
@@ -240,7 +240,7 @@ async function sendEvents(events: TrackEvent[]): Promise<TrackResponse> {
 
   if (isTauriEnvironment()) {
     // Tauri 环境：通过 Rust 代理发送（绕过 CORS）
-    response = await proxyFetch(endpoint, requestInit);
+    response = await proxyAnalyticsFetch(endpoint, requestInit);
   } else {
     // 浏览器开发模式：直接 fetch
     response = await fetch(endpoint, requestInit);

@@ -8,7 +8,6 @@ import {
   stopCronTask,
   deleteCronTask,
   getCronTask,
-  updateCronTaskSession,
 } from '@/api/cronTaskClient';
 import { track } from '@/analytics';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -16,6 +15,7 @@ import { isDebugMode } from '@/utils/debug';
 import { createSyncStateRef } from '@/utils/syncStateRef';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { coerceRuntimeBirthPermissionMode } from '@/../shared/runtimeBirthFields';
+import { isPendingSessionId } from '@/../shared/constants';
 
 export interface CronTaskState {
   /** Whether cron mode is enabled (before task is created) */
@@ -85,6 +85,8 @@ function stateWithTaskSnapshot(
 export interface UseCronTaskOptions {
   workspacePath: string;
   sessionId: string;
+  /** Resolve the owning Tab to a durable Session before single-session Task creation. */
+  materializeOwner: () => Promise<{ sessionId: string; workspacePath: string }>;
   /** Callback when task completes (stops) */
   onComplete?: (task: CronTask, reason?: string) => void;
   /** Callback when a single execution completes (task may continue running) */
@@ -252,13 +254,29 @@ export function useCronTask(options: UseCronTaskOptions) {
 
     let createdTaskId: string | null = null;
     try {
+      const owner = currentConfig.runMode === 'single_session'
+        ? await optionsRef.current.materializeOwner()
+        : { sessionId, workspacePath };
+
+      // Closing the Tab or canceling Cron mode while pending materialization
+      // wins before any durable Task row is created.
+      if (!mountedRef.current || !stateRef.current.isEnabled) return;
+      if (
+        currentConfig.runMode === 'single_session'
+        && (!owner.sessionId.trim() || isPendingSessionId(owner.sessionId))
+      ) {
+        throw new Error(
+          '[useCronTask] single-session task requires a materialized session identity'
+        );
+      }
+
       const permissionMode = coerceRuntimeBirthPermissionMode(
         currentConfig.permissionMode,
         currentConfig.runtime ?? 'builtin',
       );
       const taskConfig: CronTaskConfig = {
-        workspacePath,
-        sessionId,
+        workspacePath: owner.workspacePath,
+        sessionId: owner.sessionId,
         prompt: effectivePrompt,
         intervalMinutes: currentConfig.intervalMinutes,
         endConditions: currentConfig.endConditions,
@@ -572,13 +590,19 @@ export function useCronTask(options: UseCronTaskOptions) {
   handleExecutionErrorRef.current = handleExecutionError;
   handleTaskStoppedRef.current = handleTaskStopped;
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   // Listen for presentation events emitted by the Task scheduler through the
   // legacy cron UI adapter.
   // Note: We use refs for handlers so this effect only runs once (on mount) and doesn't need
   // to re-subscribe when tab state changes
   useEffect(() => {
     if (!isTauriEnvironment()) return;
-    mountedRef.current = true;
     const ac = new AbortController();
 
     Promise.all([
@@ -630,7 +654,6 @@ export function useCronTask(options: UseCronTaskOptions) {
     });
 
     return () => {
-      mountedRef.current = false;
       ac.abort();
     };
   }, []);
@@ -706,20 +729,6 @@ export function useCronTask(options: UseCronTaskOptions) {
     });
   }, [setState]);
 
-  // Update task's sessionId (called when session is created after task creation)
-  const updateSessionId = useCallback(async (newSessionId: string) => {
-    const currentTask = stateRef.current.task;
-    if (!currentTask) return;
-
-    try {
-      const updatedTask = await updateCronTaskSession(currentTask.id, newSessionId);
-      setState(prev => stateWithTaskSnapshot(prev, updatedTask));
-      console.log('[useCronTask] Updated sessionId:', updatedTask.id, updatedTask.sessionId);
-    } catch (error) {
-      console.error('[useCronTask] Failed to update sessionId:', error);
-    }
-  }, [setState, stateRef]);
-
   return {
     state,
     enableCronMode,
@@ -731,6 +740,5 @@ export function useCronTask(options: UseCronTaskOptions) {
     stop,
     refresh,
     restoreFromTask,
-    updateSessionId,
   };
 }

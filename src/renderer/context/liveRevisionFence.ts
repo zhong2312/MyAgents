@@ -24,13 +24,6 @@ export const EMPTY_LIVE_REVISION_FENCE: LiveRevisionFence = {
   buffered: [],
 };
 
-export function ownsLiveRevisionRestore(
-  fence: LiveRevisionFence,
-  restoreToken: number,
-): boolean {
-  return fence.restoreToken === restoreToken;
-}
-
 export function beginLiveRevisionRestore(
   previous: LiveRevisionFence,
   sessionId: string,
@@ -58,6 +51,24 @@ export function ingestLiveRevisionEvent(
     return { fence, action: 'drop' };
   }
   if (fence.connectionGeneration !== event.connectionGeneration) {
+    if (!fence.restoring && fence.lastAppliedRevision !== null) {
+      if (event.liveRevision <= fence.lastAppliedRevision) {
+        return {
+          fence: { ...fence, connectionGeneration: event.connectionGeneration },
+          action: 'drop',
+        };
+      }
+      if (event.liveRevision === fence.lastAppliedRevision + 1) {
+        return {
+          fence: {
+            ...fence,
+            connectionGeneration: event.connectionGeneration,
+            lastAppliedRevision: event.liveRevision,
+          },
+          action: 'apply',
+        };
+      }
+    }
     return {
       fence: beginLiveRevisionRestore(fence, event.sessionId, event.connectionGeneration, [event]),
       action: 'resync',

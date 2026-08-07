@@ -4,6 +4,8 @@ import {
   coerceModelForRuntime,
   coercePermissionModeForRuntime,
   getMaxPermissionForRuntime,
+  isRuntimePermissionMode,
+  projectPermissionModeForRuntime,
   modelLooksLikeRuntime,
   permissionModeLooksLikeRuntime,
   normalizeRuntime,
@@ -116,8 +118,19 @@ describe('permission mode runtime family coercion', () => {
   test('shared labels stay valid for runtimes that own them', () => {
     expect(coercePermissionModeForRuntime('plan', 'builtin')).toBe('plan');
     expect(coercePermissionModeForRuntime('plan', 'gemini')).toBe('plan');
-    expect(coercePermissionModeForRuntime('default', 'claude-code')).toBe('default');
+    expect(coercePermissionModeForRuntime('manual', 'claude-code')).toBe('manual');
     expect(coercePermissionModeForRuntime('default', 'gemini')).toBe('default');
+  });
+
+  test('write validation and historical projection use the exact runtime vocabulary', () => {
+    expect(isRuntimePermissionMode('full-auto', 'codex')).toBe(true);
+    expect(isRuntimePermissionMode('future-mode', 'codex')).toBe(false);
+    expect(isRuntimePermissionMode('dontAsk', 'claude-code')).toBe(true);
+    expect(isRuntimePermissionMode('auto', 'claude-code')).toBe(true);
+    expect(isRuntimePermissionMode('manual', 'claude-code')).toBe(true);
+    expect(isRuntimePermissionMode('default', 'claude-code')).toBe(false);
+    expect(projectPermissionModeForRuntime('no-restrictions', 'codex')).toBe('no-restrictions');
+    expect(projectPermissionModeForRuntime('future-mode', 'codex')).toBeUndefined();
   });
 });
 

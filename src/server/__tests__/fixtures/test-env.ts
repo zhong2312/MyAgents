@@ -98,7 +98,7 @@ export const MOONSHOT_CONFIG: ProviderConfig = {
   baseUrl: 'https://api.moonshot.cn/anthropic',
   apiKey: loadMoonshotApiKey(),
   authType: 'auth_token', // Moonshot uses AUTH_TOKEN header
-  model: 'kimi-k2.5',
+  model: 'kimi-k3',
   isSubscription: false,
 };
 

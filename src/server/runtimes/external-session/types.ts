@@ -5,7 +5,7 @@ import type { LargeValueRef } from '../../utils/large-value-store';
 import type { AskUserQuestionInput } from '../../../shared/types/askUserQuestion';
 import type { RuntimeType } from '../../../shared/types/runtime';
 import type { ExternalRuntimeConfigPatch, ExternalRuntimeConfigSnapshot } from '../types';
-import type { MessageUsage, TurnAnalyticsSource } from '../../types/session';
+import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../../types/session';
 import type { SystemInitInfo } from '../../../shared/types/system';
 import type { ToolDisplayPayload } from '../../../shared/toolDisplay/filePatch';
 import type { SessionOrigin } from '../../../shared/session-origin';
@@ -115,13 +115,26 @@ export type ExternalSendResult = {
   terminationUnconfirmed?: boolean;
 };
 
-export interface ExternalQueuedMessageOperation {
+export interface ExternalUserMessageProjectionState {
+  message: SessionMessage;
+  surfaceMode: 'chat-replay' | 'queue-started';
+  surfaced: boolean;
+  inTranscript: boolean;
+  persisted: boolean;
+  retracted: boolean;
+}
+
+export interface ExternalMessageOperation {
   kind: 'message';
   queueId: string;
   text: string;
   images?: ImagePayload[];
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
+  userProjection: ExternalUserMessageProjectionState;
+}
+
+export interface ExternalQueuedMessageOperation extends ExternalMessageOperation {
   dispatchAcceptance: Promise<ExternalSendResult>;
   settleDispatchAcceptance: (result: ExternalSendResult) => void;
 }

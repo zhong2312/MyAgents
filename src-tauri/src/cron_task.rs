@@ -27,7 +27,7 @@ pub use commands::{
     cmd_create_cron_task, cmd_delete_cron_task, cmd_get_cron_runs, cmd_get_cron_task,
     cmd_get_cron_tasks, cmd_get_session_cron_task, cmd_get_unmigrated_legacy_cron_tasks,
     cmd_get_workspace_cron_tasks, cmd_is_task_executing, cmd_start_cron_task, cmd_stop_cron_task,
-    cmd_update_cron_task_fields, cmd_update_cron_task_session,
+    cmd_update_cron_task_fields,
 };
 pub(crate) use delivery::deliver_cron_result_to_bot;
 pub use delivery::{deliver_task_notification_to_bot, deliver_task_notification_to_bot_checked};

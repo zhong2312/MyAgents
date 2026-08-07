@@ -23,6 +23,7 @@ Task 是任务身份、状态、调度和执行审计的统一权威。一个 Ta
 - 当前状态与状态历史
 - Runtime/Model/Permission/MCP 的可选任务级覆盖
 - 一次性、At、Every 或 Cron schedule
+- 可选的触发前检测：始终执行，或先运行本地命令、命中后才唤醒 AI
 - 运行次数、Session 关联、执行与验收文档
 - 通知与结果投递
 
@@ -54,6 +55,22 @@ Task 的具体状态转换由产品约束；不要用直接改文件跳过状态
 - Stop 应停止未来调度，并在有活跃执行时精确停止当前回合。
 - 执行历史属于 Task/Cron 投影，可用于查看上次是否成功。
 - 旧 At/Every/Cron 会在升级时迁移；旧 Loop 不自动转 Goal。
+
+### 条件激活：命中后才唤醒 AI
+
+当任务需要频繁检查、但绝大多数时候没有变化时，可以在同一个 Task 上选择“本地命令检测”。到点后 MyAgents 先用当前桌面用户权限运行结构化本地命令；命令只回答 `quiet`（不唤醒）或 `activate`（携带事件证据唤醒）。进程、超时或协议错误是可见的 Detector 故障，不会再叫醒 AI 做二次判断。
+
+适合：等待构建结束、轮询本地/远端 API 状态、监测一个可由代码稳定判断的条件。不适合：条件本身必须靠模型理解，或需要退出 App 后仍常驻运行。条件激活仍属于同一个时间型 Task，只在 MyAgents App 在线时检查；最小化/后台驻留不影响，完全退出或系统休眠期间不执行，也不会注册系统 daemon。
+
+Task Center 可以创建、编辑和查看同一个条件激活 Task：
+
+- Test Detector：真实运行脚本，但不提交平台 checkpoint/健康/事件，也不唤醒 AI；脚本自己的外部副作用不会回滚。
+- Check now：立即做一次真实判断，提交 checkpoint，命中时唤醒 AI；即使 Task 当前 Stopped/Blocked，这次一次性投送也能在 App 重启后恢复，但不会顺带启用定时器或改变暂停状态。
+- Run now：绕过 Detector，直接强制执行一次 AI；已有待投送 Activation Event 时不可抢占，需等待结算或先停止 Task。
+- Reset checkpoint：只清 MyAgents 托管的少量检测进度，不删除脚本自己的文件或数据库。
+- Pause/Stop/Delete：停止后续检查；删除 Task 不删除它引用的用户脚本。
+
+每个 Task 只有一个时间 Source 和一个 Detector；复杂条件应在一个 command Detector 内组合。连续对话可以绑定当前或任意已有 Session；Session 正忙时事件进入原有队列，不打断当前回合。检查次数与 AI 执行次数分开显示，所以大量 quiet 检查不会虚增模型执行统计。
 
 持续、开放式、多轮推进不应创建 Loop Cron；使用 Goal Mode。
 
@@ -96,6 +113,8 @@ Goal 是当前 Session 的长程工作状态。用户在 Chat/Launcher 使用 `/
 
 - “Cron list 空就是系统没有任务”：列表通常有 Workspace scope，应确认作用域。
 - “Stopped Task 不能 run-now”：可以手动执行，但 schedule 仍保持停止。
+- “Test Detector 完全无副作用”：只是不提交 MyAgents 状态；脚本自己的文件、网络和数据库副作用仍会发生。
+- “退出 App 后条件检测仍会运行”：不会；它属于 App 内 Task harness，不是系统服务。
 - “Goal complete 等于用户取消”：不是。模型完成、模型阻塞、用户取消是不同终态。
 - “关闭 Goal 所在 Tab 就一定停止 Goal”：Goal 属于 Session；如果 Goal 仍在运行，或后台 Task/Channel 仍使用该 Session，它不一定随 Tab 一起停止。
 - “Task done 后可以随便 rerun”：普通 Task可按状态机 rerun；已关联 Space Issue 的 Task 还受云端 claim/reopen 流程约束。

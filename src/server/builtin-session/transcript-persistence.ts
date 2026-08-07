@@ -1,7 +1,10 @@
 import {
-  saveSessionMessages,
+  appendSessionMessages,
+  loadSessionTranscript,
+  mutateSessionTranscript,
   updateSessionMetadata,
-  type SaveSessionMessagesResult,
+  type TranscriptMutationIntent,
+  type TranscriptWriteCursor,
 } from '../SessionStore';
 import type { SessionMessage } from '../types/session';
 import { resolveLastVisibleTurnPreview } from '../utils/session-message-preview';
@@ -11,28 +14,19 @@ import { seedBridgeThoughtSignatures } from '../bridge-cache';
 import type { BuiltinTurnUsage, ContentBlock, MessageWire } from './types';
 import {
   addCurrentSessionUuid,
-  appendMessage,
-  appendPersistedSessionMessage,
-  clearPersistedSessionMessageCache,
   deletePersistChain,
   getMessages,
+  invalidateTranscriptCursor,
   removeMessageAt,
-  removePersistedSessionMessageAt,
-  replacePersistedSessionMessageCache,
-  setLastPersistedIndex,
+  replaceMessages,
+  setTranscriptCursor,
   setMessageSequence,
   setPendingReloadAnchor,
   transcriptState,
-  truncatePersistedSessionMessageCache,
 } from './transcript';
 
 /** Sentinel value for stripped Playwright tool results (truthy, so ProcessRow sees tool as complete). */
 export const PLAYWRIGHT_RESULT_SENTINEL = '[playwright_result_stripped]';
-
-export type TranscriptPersistenceSnapshot = {
-  lastPersistedIndex: number;
-  persistedSessionMessageCache: SessionMessage[];
-};
 
 export type ScheduleTranscriptPersistOptions = {
   sessionId: string;
@@ -143,17 +137,20 @@ export async function persistTranscriptNow(options: {
   lastActiveAt?: string;
   metadataDisposition?: 'update' | 'skip';
 }): Promise<void> {
-  if (transcriptState.lastPersistedIndex > transcriptState.messages.length) {
-    console.warn(`[agent-session] persist cursor (${transcriptState.lastPersistedIndex}) exceeds transcriptState.messages.length (${transcriptState.messages.length}); resetting`);
-    resetTranscriptPersistenceCursor();
-  }
-  if (transcriptState.persistedSessionMessageCache.length > transcriptState.messages.length) {
-    truncatePersistedSessionMessageCache(transcriptState.messages.length);
-  }
-
   const targetMessageCount = options.targetMessageCount ?? transcriptState.messages.length;
+  const hadCursor = transcriptState.transcriptCursor !== null;
+  const cursor = await ensureTranscriptCursor(options.sessionId);
   const boundedTargetCount = Math.min(targetMessageCount, transcriptState.messages.length);
-  if (transcriptState.lastPersistedIndex >= boundedTargetCount) {
+  if (cursor.persistedMessageCount > boundedTargetCount) {
+    if (hadCursor) {
+      invalidateTranscriptCursor();
+      await ensureTranscriptCursor(options.sessionId, true);
+    }
+    throw new Error(
+      `[agent-session] transcript projection invariant failed for ${options.sessionId}: live target ${boundedTargetCount} is shorter than durable cursor ${cursor.persistedMessageCount}; rehydrated from SessionStore`,
+    );
+  }
+  if (cursor.persistedMessageCount >= boundedTargetCount) {
     if (options.lastActiveAt && options.metadataDisposition !== 'skip') {
       try {
         await updateSessionMetadata(options.sessionId, { lastActiveAt: options.lastActiveAt });
@@ -164,26 +161,25 @@ export async function persistTranscriptNow(options: {
     return;
   }
 
-  const tail = transcriptState.messages.slice(transcriptState.lastPersistedIndex, boundedTargetCount);
+  const tail = transcriptState.messages.slice(cursor.persistedMessageCount, boundedTargetCount);
   const tailMapped = tail.map(messageWireToSessionMessage);
-  const sessionMessages = transcriptState.persistedSessionMessageCache
-    .slice(0, transcriptState.lastPersistedIndex)
-    .concat(tailMapped);
-
-  assertSaveSessionMessagesOk(
-    await saveSessionMessages(options.sessionId, sessionMessages),
-    options.sessionId,
-  );
-
-  truncatePersistedSessionMessageCache(transcriptState.lastPersistedIndex);
-  for (const message of tailMapped) {
-    appendPersistedSessionMessage(message);
+  const result = await appendSessionMessages(options.sessionId, cursor, tailMapped);
+  if (!result.ok) {
+    if ('cursor' in result) {
+      setTranscriptCursor(result.cursor);
+    } else {
+      invalidateTranscriptCursor();
+      await ensureTranscriptCursor(options.sessionId, true);
+    }
+    throw new Error(`[agent-session] failed to append transcript for ${options.sessionId}: ${result.reason}: ${result.error}`);
   }
-  setLastPersistedIndex(boundedTargetCount);
+  setTranscriptCursor(result.cursor);
 
   if (options.metadataDisposition === 'skip') return;
   const { preview: lastMessagePreview } =
-    resolveLastVisibleTurnPreview(sessionMessages);
+    resolveLastVisibleTurnPreview(
+      transcriptState.messages.slice(0, result.cursor.persistedMessageCount).map(messageWireToSessionMessage),
+    );
   try {
     await updateSessionMetadata(options.sessionId, {
       ...(options.lastActiveAt ? { lastActiveAt: options.lastActiveAt } : {}),
@@ -195,21 +191,22 @@ export async function persistTranscriptNow(options: {
 }
 
 export async function saveForkTranscript(sessionId: string, messages: SessionMessage[]): Promise<void> {
-  assertSaveSessionMessagesOk(
-    await saveSessionMessages(sessionId, messages),
-    sessionId,
-  );
+  const snapshot = await loadSessionTranscript(sessionId);
+  if (snapshot.cursor.persistedMessageCount !== 0 || snapshot.hasMalformedRows) {
+    throw new Error(`[agent-session] refused fork transcript persist for non-empty target ${sessionId}`);
+  }
+  const result = await appendSessionMessages(sessionId, snapshot.cursor, messages);
+  if (!result.ok) {
+    throw new Error(`[agent-session] failed to persist fork transcript for ${sessionId}: ${result.reason}: ${result.error}`);
+  }
 }
 
-export function loadTranscriptFromSessionMessages(storedMessages: SessionMessage[]): void {
-  for (const storedMsg of storedMessages) {
-    appendMessage(sessionMessageToMessageWire(storedMsg));
-  }
-  setLastPersistedIndex(transcriptState.messages.length);
-  clearPersistedSessionMessageCache();
-  for (const storedMsg of storedMessages) {
-    appendPersistedSessionMessage(storedMsg);
-  }
+export function loadTranscriptFromSessionMessages(
+  storedMessages: SessionMessage[],
+  cursor: TranscriptWriteCursor,
+): void {
+  replaceMessages(storedMessages.map(sessionMessageToMessageWire));
+  setTranscriptCursor(cursor);
   if (storedMessages.length > 0) {
     const lastMsgId = storedMessages[storedMessages.length - 1].id;
     const parsedId = parseInt(lastMsgId, 10);
@@ -236,7 +233,7 @@ export function stampTurnUsageOnPendingAssistant(options: {
 }): void {
   const usageStampIndex = findTurnUsageStampIndex(
     transcriptState.messages,
-    transcriptState.lastPersistedIndex,
+    transcriptState.transcriptCursor?.persistedMessageCount ?? 0,
   );
   if (usageStampIndex < 0) return;
   const completedAssistant = transcriptState.messages[usageStampIndex];
@@ -254,63 +251,72 @@ export function stampTurnUsageOnPendingAssistant(options: {
 }
 
 export function resetTranscriptPersistenceForSession(sessionId: string): void {
-  setLastPersistedIndex(0);
-  clearPersistedSessionMessageCache();
+  invalidateTranscriptCursor();
   deletePersistChain(sessionId);
 }
 
-export function resetTranscriptPersistenceCursor(): void {
-  setLastPersistedIndex(0);
-  clearPersistedSessionMessageCache();
+export async function truncateTranscriptPersistenceForRewind(
+  sessionId: string,
+  targetMessageId: string,
+  targetMessageCount: number,
+): Promise<void> {
+  await commitTranscriptMutation(sessionId, {
+    kind: 'builtin-rewind',
+    targetMessageId,
+    targetMessageCount,
+  });
 }
 
-export function truncateTranscriptPersistenceForRewind(): void {
-  resetTranscriptPersistenceCursor();
-}
-
-export function snapshotTranscriptPersistenceState(): TranscriptPersistenceSnapshot {
-  return {
-    lastPersistedIndex: transcriptState.lastPersistedIndex,
-    persistedSessionMessageCache: transcriptState.persistedSessionMessageCache.slice(),
-  };
-}
-
-export function restoreTranscriptPersistenceState(snapshot: TranscriptPersistenceSnapshot): void {
-  if (transcriptState.lastPersistedIndex !== snapshot.lastPersistedIndex) {
-    console.warn(`[agent] forkSession: parent persist cursor drifted (${snapshot.lastPersistedIndex} -> ${transcriptState.lastPersistedIndex}); restoring`);
-    setLastPersistedIndex(snapshot.lastPersistedIndex);
-  }
-  if (transcriptState.persistedSessionMessageCache.length !== snapshot.persistedSessionMessageCache.length) {
-    replacePersistedSessionMessageCache(snapshot.persistedSessionMessageCache);
-  }
-}
-
-export function applyTranscriptRetractionToPersistence(removedMessageIds: ReadonlySet<string>): {
-  removedBelowCursor: number;
-} {
-  let removedBelowCursor = 0;
+export async function applyTranscriptRetractionToPersistence(
+  sessionId: string,
+  removedMessageIds: ReadonlySet<string>,
+  request:
+    | { kind: 'sdk-retraction'; sdkUuids: readonly string[]; streamingTailMessageId?: string }
+    | { kind: 'builtin-admission-rollback' | 'builtin-transient-retry' },
+): Promise<void> {
+  const ids = [...removedMessageIds];
+  const intent: TranscriptMutationIntent = request.kind === 'sdk-retraction'
+    ? request
+    : { kind: request.kind, messageId: ids[0] ?? '' };
+  await commitTranscriptMutation(sessionId, intent);
   for (let i = transcriptState.messages.length - 1; i >= 0; i--) {
     if (!removedMessageIds.has(transcriptState.messages[i].id)) continue;
-    if (i < transcriptState.lastPersistedIndex) removedBelowCursor += 1;
-    if (i < transcriptState.persistedSessionMessageCache.length) {
-      removePersistedSessionMessageAt(i);
-    }
     removeMessageAt(i);
   }
-  if (removedBelowCursor > 0) {
-    setLastPersistedIndex(transcriptState.lastPersistedIndex - removedBelowCursor);
-  }
-  return { removedBelowCursor };
 }
 
-function assertSaveSessionMessagesOk(result: SaveSessionMessagesResult, sessionId: string): void {
-  if (result.ok) return;
-  const details = result.reason === 'write-error'
-    ? `${result.reason}: ${result.error}`
-    : result.reason === 'shrink-refused'
-      ? `${result.reason}: in-memory ${result.count} < on-disk ${result.existingCount}`
-      : `${result.reason}: count=${result.count}`;
-  throw new Error(`[agent-session] failed to persist transcript for ${sessionId}: ${details}`);
+async function ensureTranscriptCursor(
+  sessionId: string,
+  forceReload = false,
+): Promise<TranscriptWriteCursor> {
+  if (!forceReload && transcriptState.transcriptCursor) {
+    return transcriptState.transcriptCursor;
+  }
+  const snapshot = await loadSessionTranscript(sessionId);
+  const durablePrefixMatches = snapshot.messages.every(
+    (message, index) => transcriptState.messages[index]?.id === message.id,
+  );
+  if (transcriptState.messages.length < snapshot.messages.length || !durablePrefixMatches) {
+    replaceMessages(snapshot.messages.map(sessionMessageToMessageWire));
+  }
+  setTranscriptCursor(snapshot.cursor);
+  return snapshot.cursor;
+}
+
+async function commitTranscriptMutation(
+  sessionId: string,
+  intent: TranscriptMutationIntent,
+): Promise<void> {
+  const cursor = await ensureTranscriptCursor(sessionId);
+  const result = await mutateSessionTranscript(sessionId, cursor, intent);
+  if (!result.ok) {
+    if (result.reason === 'stale-cursor') {
+      invalidateTranscriptCursor();
+      await ensureTranscriptCursor(sessionId, true);
+    }
+    throw new Error(`[agent-session] failed transcript mutation for ${sessionId}: ${result.reason}: ${result.error}`);
+  }
+  setTranscriptCursor(result.cursor);
 }
 
 function seedThoughtSignatureCacheFromTranscript(): void {

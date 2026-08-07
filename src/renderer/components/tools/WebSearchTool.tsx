@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Globe, ExternalLink, ChevronDown } from 'lucide-react';
+import { Globe, ExternalLink as ExternalLinkIcon, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ToolUseSimple, WebSearchInput } from '@/types/chat';
-import { openExternal } from '@/utils/openExternal';
+import ExternalLink from '@/components/ExternalLink';
 import { ExpandableResult } from './utils';
 
 const COLLAPSED_COUNT = 5;
@@ -102,21 +102,15 @@ export default function WebSearchTool({ tool }: WebSearchToolProps) {
   const visibleResults = expanded ? results : results.slice(0, COLLAPSED_COUNT);
   const hiddenCount = results.length - COLLAPSED_COUNT;
 
-  const handleResultClick = (url: string) => (e: React.MouseEvent) => {
-    e.preventDefault();
-    openExternal(url);
-  };
-
   return (
     <div className="flex flex-col gap-3 font-sans text-sm">
       {/* Search Results */}
       {results.length > 0 && (
         <div className="flex flex-col">
           {visibleResults.map((item) => (
-            <a
+            <ExternalLink
               key={item.url}
               href={item.url}
-              onClick={handleResultClick(item.url)}
               className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--paper-inset)] [&:hover_.result-title]:text-[var(--accent)] [&:hover_.result-icon]:opacity-100"
             >
               {/* Globe icon */}
@@ -128,8 +122,8 @@ export default function WebSearchTool({ tool }: WebSearchToolProps) {
               </span>
 
               {/* External link indicator */}
-              <ExternalLink className="result-icon size-3 shrink-0 text-[var(--ink-muted)] opacity-0 transition-opacity" />
-            </a>
+              <ExternalLinkIcon className="result-icon size-3 shrink-0 text-[var(--ink-muted)] opacity-0 transition-opacity" />
+            </ExternalLink>
           ))}
 
           {/* Expand button */}

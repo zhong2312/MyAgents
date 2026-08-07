@@ -13,7 +13,7 @@
 export const CANONICAL_THEME_ID = 'myagents-default';
 
 /** Product default for users who have never explicitly selected a Theme. */
-export const DEFAULT_THEME_ID = 'default-black';
+export const DEFAULT_THEME_ID = 'myagents-light';
 export const DEFAULT_APPEARANCE_MODE = 'system';
 
 export type AppearanceMode = 'system' | 'light' | 'dark';

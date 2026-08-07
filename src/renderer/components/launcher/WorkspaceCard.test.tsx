@@ -24,7 +24,6 @@ function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
         id: 'agent-1',
         name: 'Mino5',
         enabled: true,
-        workspacePath: project.path,
         permissionMode: 'auto',
         channels: [],
         ...overrides,

@@ -16,8 +16,8 @@ import {
   buildClaudeSessionEnv,
   resolveClaudeCodeCli,
   startOneShotBridge,
-  type ProviderEnv,
 } from '../agent-session';
+import type { ProviderEnv } from '../provider-types';
 import {
   findEffectiveProvider,
   getAllEffectiveProviders,
@@ -28,7 +28,7 @@ import {
   type AdminAppConfig,
 } from '../utils/admin-config';
 import { processImage } from '../utils/imageResize';
-import { applyProviderContextWindowSuffix } from '../utils/model-capabilities';
+import { applyContextWindowSuffixForContextLength } from '../utils/model-capabilities';
 import { createGuardedSdkQuery } from '../utils/sdk-child-launch-guard';
 import { sdkSubprocessUserMessage } from '../utils/sdk-subprocess-diagnostics';
 import type { ResolvedImagePayload } from '../runtimes/types';
@@ -436,6 +436,10 @@ async function runVisionQueryInner(args: {
     bridgeToken: args.bridgeToken,
     providerId: args.providerId,
   });
+  const launchModel = applyContextWindowSuffixForContextLength(
+    args.model,
+    Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW),
+  );
   const cliPath = resolveClaudeCodeCli();
   const contentBlocks: Array<
     | { type: 'text'; text: string }
@@ -489,7 +493,7 @@ async function runVisionQueryInner(args: {
       persistSession: false,
       mcpServers: {},
       tools: [],
-      model: applyProviderContextWindowSuffix(args.model, args.providerId),
+      model: launchModel,
       abortController,
     },
   }));

@@ -153,17 +153,6 @@ pub async fn cmd_get_session_cron_task(sessionId: String) -> Result<Option<CronT
         .filter(|task| !is_managed_cron_task(task)))
 }
 
-/// Update task's session ID (called when session is created after task creation)
-#[tauri::command]
-pub async fn cmd_update_cron_task_session(
-    task_id: String,
-    session_id: String,
-) -> Result<CronTask, String> {
-    let manager = get_cron_task_manager();
-    get_ordinary_cron_task(manager, &task_id).await?;
-    manager.update_task_session(&task_id, session_id).await
-}
-
 /// Check if a task is currently executing
 #[tauri::command]
 pub async fn cmd_is_task_executing(task_id: String) -> Result<bool, String> {

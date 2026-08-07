@@ -1165,6 +1165,7 @@ pub async fn cmd_start_agent_channel(
     sidecarManager: tauri::State<'_, ManagedSidecarManager>,
     agentId: String,
     channelId: String,
+    workspacePath: String,
     agentConfig: AgentConfigRust,
     channelConfig: ChannelConfigRust,
 ) -> Result<ChannelStatus, String> {
@@ -1182,6 +1183,15 @@ pub async fn cmd_start_agent_channel(
             channelId
         ));
     };
+    if crate::workspace_path::normalize_workspace_path_identity(
+        &agentConfig.resolved_workspace_path,
+    ) != crate::workspace_path::normalize_workspace_path_identity(&workspacePath)
+    {
+        return Err(format!(
+            "Agent '{}' workspace changed before channel start; refresh and retry",
+            agentId
+        ));
+    }
 
     // Dedup: check if channel is already running in agent state.
     // If channel exists but is in Error/Stopped state, remove it to allow restart.
@@ -1246,12 +1256,14 @@ pub async fn cmd_start_agent_channel(
     });
 
     // Create bot instance directly (no transit through ManagedImBots)
+    let creation_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let (bot_instance, bot_status) = create_bot_instance(
         &app_handle,
         &sidecarManager,
         channelId.clone(),
         im_config,
         Some(agentId.clone()),
+        &creation_permit,
     )
     .await?;
 
@@ -1769,8 +1781,8 @@ pub async fn cmd_update_agent_config(
 /// Re-read the authoritative Agent record from disk and project the selected
 /// fields into running Agent/IM instances. Shared by the Tauri command and the
 /// loopback Management API used by `myagents agent set`.
-pub(crate) async fn reload_agent_config_from_disk(
-    app_handle: &AppHandle,
+pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
+    app_handle: &AppHandle<R>,
     agent_state: &ManagedAgents,
     sidecar_manager: &ManagedSidecarManager,
     agent_id: String,
@@ -1950,11 +1962,27 @@ pub(crate) async fn reload_agent_config_from_disk(
                 .and_then(|value| serde_json::from_str(value).ok());
         }
         if should_refresh_channel_permission {
-            let agent_permission = types::project_permission_for_provider(
+            let (_, projected_runtime_config) = types::project_runtime_for_provider(
                 updated_agent.provider_id.as_deref(),
+                updated_agent.model.as_deref(),
+                updated_agent.runtime.clone(),
+                updated_agent.runtime_config.clone(),
+            );
+            let permission_provider_id = if projected_runtime_config
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(|value| value.as_str())
+                == Some("managed-provider")
+            {
+                updated_agent.provider_id.as_deref()
+            } else {
+                None
+            };
+            let agent_permission = types::project_permission_for_provider(
+                permission_provider_id,
                 updated_agent.permission_mode.clone(),
             );
-            agent.config.permission_mode = agent_permission.clone();
+            agent.config.permission_mode = updated_agent.permission_mode.clone();
             *agent.permission_mode.write().await = agent_permission;
         }
         if let Some(ref mcp) = patch.mcp_servers_json {
@@ -2207,125 +2235,6 @@ pub(crate) async fn reload_agent_config_from_disk(
         }
     }
     drop(agents_guard);
-
-    let _ = app_handle.emit("agent:config-changed", json!({}));
-    Ok(())
-}
-
-/// Create a new agent config (persist to disk, no channels started).
-#[tauri::command]
-#[allow(non_snake_case)]
-pub async fn cmd_create_agent(
-    app_handle: AppHandle,
-    config: AgentConfigRust,
-) -> Result<String, String> {
-    let agent_id = config.id.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
-        let config_path = home.join(".myagents").join("config.json");
-
-        with_config_lock(&config_path, true, |app_config| {
-            let agents = app_config.get_mut("agents").and_then(|v| v.as_array_mut());
-            let agent_value = serde_json::to_value(&config)
-                .map_err(|e| format!("[agent] Failed to serialize agent: {}", e))?;
-            if let Some(arr) = agents {
-                arr.push(agent_value);
-            } else {
-                app_config["agents"] = serde_json::json!([agent_value]);
-            }
-            Ok(())
-        })?;
-
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
-
-    let _ = app_handle.emit("agent:config-changed", json!({}));
-    Ok(agent_id)
-}
-
-/// Delete an agent config from disk and stop all its channels.
-#[tauri::command]
-#[allow(non_snake_case)]
-pub async fn cmd_delete_agent(
-    app_handle: AppHandle,
-    agentState: tauri::State<'_, ManagedAgents>,
-    sidecarManager: tauri::State<'_, ManagedSidecarManager>,
-    agentId: String,
-) -> Result<(), String> {
-    let mut channel_ids = {
-        let agents_guard = agentState.lock().await;
-        agents_guard
-            .get(&agentId)
-            .map(|agent| {
-                agent
-                    .config
-                    .channels
-                    .iter()
-                    .map(|channel| channel.id.clone())
-                    .chain(agent.channels.keys().cloned())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
-    channel_ids.sort();
-    channel_ids.dedup();
-    let lifecycle_locks = channel_ids
-        .iter()
-        .map(|channel_id| agent_channel_lifecycle_lock(&agentId, channel_id))
-        .collect::<Vec<_>>();
-    let mut _lifecycle_guards = Vec::with_capacity(lifecycle_locks.len());
-    for lock in &lifecycle_locks {
-        _lifecycle_guards.push(lock.lock().await);
-    }
-
-    // Stop all running channels directly via shutdown_bot_instance
-    let channels = {
-        let mut agents_guard = agentState.lock().await;
-        if let Some(agent) = agents_guard.remove(&agentId) {
-            agent.channels
-        } else {
-            HashMap::new()
-        }
-    }; // agents_guard dropped
-
-    for (ch_id, ch_inst) in channels {
-        let _ = shutdown_bot_instance(ch_inst.bot_instance, &sidecarManager, &ch_id).await;
-    }
-
-    // Remove from disk (config.json entry + agent data directory)
-    let aid = agentId.clone();
-    tokio::task::spawn_blocking(move || {
-        let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
-        let config_path = home.join(".myagents").join("config.json");
-
-        with_config_lock(&config_path, true, |app_config| {
-            if let Some(agents) = app_config.get_mut("agents").and_then(|v| v.as_array_mut()) {
-                agents.retain(|a| a.get("id").and_then(|v| v.as_str()) != Some(&aid));
-            }
-            Ok(())
-        })?;
-
-        // Clean up agent data directory (~/.myagents/agents/{agentId}/)
-        let agent_data_dir = home.join(".myagents").join("agents").join(&aid);
-        if agent_data_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&agent_data_dir) {
-                ulog_warn!(
-                    "[agent] Failed to remove agent data dir {:?}: {}",
-                    agent_data_dir,
-                    e
-                );
-            } else {
-                ulog_info!("[agent] Removed agent data dir {:?}", agent_data_dir);
-            }
-        }
-
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
 
     let _ = app_handle.emit("agent:config-changed", json!({}));
     Ok(())

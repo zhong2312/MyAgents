@@ -38,6 +38,7 @@
 - [legacy Cron startup migration](#legacy-cron-migration) — 后端启动期幂等迁移
 - [workspace_files 路径解析双轨](#workspace-files) — 写侧 lexical / 读侧 canonical
 - [`workspacePath` 工作区路径标识比较](#workspace-path-identity) — 跨存储路径相等判定（防 Win 斜杠/盘符误判）
+- [Project / Agent workspace authority](#project-agent-workspace-authority) — ID 选配置、Project 选路径、旧字段仅兼容读取
 - [Client-action 斜杠命令](#client-action-slash) — 渲染层 UI 动作命令，名字保留、勿进文本插入 builtin 清单
 - [Theme package 与 Tailwind bridge](#theme-tailwind-bridge) — runtime Theme 值与编译期 utility 映射分离
 - [System-skill 同步完整性门控](#system-skill-sync) — 验源完整再清目标 + 全落地才写版本戳
@@ -100,19 +101,19 @@
 <a id="process_cmd"></a>
 ## `process_cmd` (`src-tauri/src/process_cmd.rs`)
 
-**Problem.** Windows 上 GUI 应用（Tauri）启动子进程（node.exe Sidecar / Plugin Bridge / npm install）默认会弹出黑色控制台窗口。每个 spawn 点都需要加 `CREATE_NO_WINDOW` 标志，集中维护成本高。
+**Problem.** Windows 上 GUI 应用（Tauri）直接启动子进程（node.exe Sidecar / Plugin Bridge / npm install）会弹出黑色控制台窗口。长生命周期 Node 进程还会创建 SDK / MCP 后代；如果所有者只保存直接 `Child`，正常退出时只能按 argv 猜测哪些后代属于 MyAgents，既可能漏掉后代，也可能误杀同机的外部进程。在 Windows 上先启动再调用 `taskkill /T`，还会留下 wrapper 提前退出、Job Object 尚未绑定的竞态窗口。
 
-**Surface.** `crate::process_cmd::new(program)` — 返回 `std::process::Command`，已注入 Windows `CREATE_NO_WINDOW` 标志。
+**Surface.** `crate::process_cmd::new(program)` 返回已注入 Windows `CREATE_NO_WINDOW` 的 `Command`；`crate::process_cmd::spawn_tree(&mut command)` 为会创建后代的长生命周期进程返回 `ChildTree`。
 
-**Invariants enforced.** 与 `local_http` 相同 pit-of-success 模式：默认安全。
+**Invariants enforced.** `ChildTree` 在子进程执行用户代码前建立进程树边界：Unix child 进入独立 process group；Windows child 以 suspended 状态创建，绑定 kill-on-close Job Object 后再恢复运行。所有者必须保留 `ChildTree`，显式 stop 与 Drop 只终止这棵精确进程树。应用退出先禁止新的资源创建，等待已经获准的创建流程完成登记或释放，再释放 Sidecar / Plugin Bridge owner；Unix 还要等待有上限的 SIGTERM→SIGKILL 清理任务结束。Windows GUI child 没有可靠的 console signal，stop 直接终止已保留的 Job Object。Task command Detector 同样属于受管进程树：timeout、stdout 超限、Stop、delete 与 App shutdown 都必须通过 retained `ChildTree` 收敛，读取 stdout/stderr 的线程也要 join 后再判断最终上限状态。进程树边界建立失败时必须终止 child 并返回错误，不能降级为未受管理的进程。
 
-**Don't.** 裸 `std::process::Command::new()`。
+**Don't.** 不要直接使用 `std::process::Command::new()`；Sidecar / Plugin Bridge 也不能直接 `.spawn()`。正常 shutdown 不能通过进程名、安装路径或 argv 子串扫描整机来弥补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于确认前一实例已经退出后的启动恢复，以及更新器的残留进程检查（Windows 更新器另有受保护目录和文件锁验证）；它不是正常生命周期 API。
 
 **例外（已内联处理或不适用）：**
 - `#[cfg(windows)]` 守卫内的系统工具命令（taskkill / powershell）
 - `commands.rs` / `workspace_files/system_open.rs` 的 OS opener（open / explorer / xdg-open）——用户可见的系统命令，无需隐藏
 - `terminal.rs` 的 PTY 进程由 `portable-pty` 的 `CommandBuilder` + `slave.spawn_command()` 管理，不走 `std::process::Command`
-- `cli.rs` 的 Node CLI spawn——CLI 模式 NEEDS 控制台显示 stdout/stderr
+- `cli.rs` 的 Node CLI spawn——CLI 模式需要在控制台显示 stdout/stderr
 
 ---
 
@@ -187,15 +188,15 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 ---
 
 <a id="session-watcher"></a>
-## Session watcher (`src-tauri/src/search/session_watcher.rs`)
+## Session watchers (`src-tauri/src/search/watcher.rs` + `src-tauri/src/session_metadata.rs`)
 
-**Problem.** Session 索引需要在每个写者（Sidecar / CLI / 迁移）都通知索引层。新写者忘记调用通知 → 索引漂移。
+**Problem.** Session 搜索索引与 App 级导航投影都需要感知每个写者（Sidecar / IM / Cron / CLI / 迁移）的结果。新写者忘记调用来源专属通知 → 索引漂移或 GlobalSidebar 长期停留在旧 snapshot。
 
-**Surface.** `notify-debouncer-full` 5s 滑动去抖观察 `~/.myagents/sessions/`，**任何**写入者的变更都自动流入索引。
+**Surface.** 两个不同延迟/生命周期的 `notify-debouncer-full` observer 读取同一权威文件：搜索 watcher 用 5s 滑动去抖更新 Tantivy；App 级 metadata watcher 用 300ms 去抖投影 history-visible metadata，并发出携带受影响 workspace 的 `session:metadata-changed`。后者独立于可选 SearchEngine，Renderer 只定向重读当前需要的 workspace slice。
 
-**Invariants enforced.** 索引一致性由"观察结果目录"保证，与写入路径解耦。
+**Invariants enforced.** 搜索与导航 freshness 都由“观察权威结果目录”保证，与写入路径、Runtime、Channel 和 mounted Tab 解耦；两个 watcher 因成本和可用性目标不同而不共享生命周期。Tauri event 与 OS watcher 都不提供注册前 replay：Rust observer 在 watches + baseline 建立后发一次 broad ready invalidation，OS watch 初始化/通道异常退出则由同一 app-lifetime thread 重建；Renderer listener 每次注册成功后再从持久化 authority 对账一次，以覆盖两侧异步注册窗口和零 subscriber 间隔。注册失败时只要仍有 subscriber 就重试；启动 baseline 不可读必须保留为 unknown，首次恢复即使为空也 broad invalidate。
 
-**Don't.** 在写入路径里硬编码"通知索引"调用——这种约束无法在编译期保证。
+**Don't.** 在写入路径里硬编码“通知索引/侧栏”调用，也不要让 GlobalSidebar 靠打开搜索、临时 Task Center subscriber 或来源事件碰巧刷新——这种约束无法在编译期保证。
 
 完整搜索架构详见 `search_architecture.md`。
 
@@ -311,11 +312,13 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Problem.** 大 payload（图片、长 tool result、巨型 HTTP 响应）直接走 SSE/IPC JSON channel，OOM、UI 线程被 base64 阻塞、慢 client 无界排队拖死 sidecar。
 
 **Surface.**
-- Node `maybeSpill(value, { mimetype, sessionId, ownerTag })` (`src/server/utils/large-value-store.ts`) —— ≤256KB 返 inline，超阈值写到 `~/.myagents/refs/<id>` 返 `LargeValueRef { id, preview, mimetype, sizeBytes, ttlMs }`（1h TTL，8KB head preview）
+- Node `maybeSpill(value, { mimetype, sessionId })` (`src/server/utils/large-value-store.ts`) —— ≤256KiB 返 inline，超阈值写到 `~/.myagents/refs/<id>` 返 `LargeValueRef { id, preview, mimetype, sizeBytes, expiresAt }`（1h TTL，8KiB head preview）
 - `fetchRef(id)` / `getRefStreamPath(id)` —— 消费方拉回
-- `/refs/:id` HTTP 路由 —— 流式 `createReadStream`，绕过 deferred-init gate，id 限 `^[a-f0-9]{8,32}$`
-- `clearExpiredRefs` / `clearSessionRefs` + 60s `startRefsGc` 后台清理；session reset 联动
-- Rust `sse_proxy.rs` 的 `should_stream_spill`：边读边决定（>1MiB 或 explicit Content-Length 超阈值即 spill 到 ref），不再依赖 Content-Length 必填
+- `/refs/:id` HTTP 路由 —— 使用 `createReadStream` 流式返回，绕过 deferred-init gate；新 writer 生成 32 个小写十六进制字符，reader 保留 `^[a-f0-9]{8,32}$` 的历史读取范围
+- Node / Rust writer 共用不可覆盖的提交协议：独占创建 `<id>.part` → flush/sync body → 用 hard link 发布 body → 独占创建 `<id>.meta.json.part` → flush/sync meta → 用 hard link 发布 meta；reader 只读取完整的 body + meta 组合
+- `clearExpiredRefs` / `clearSessionRefs` + 60s `startRefsGc` 后台清理；session reset 联动；GC 同时回收陈旧 `.part`、`.meta.json.part` 与 body-without-meta
+- Rust `proxy_spill.rs` 边读边决定：loopback >1MiB spill、单响应最多 512MiB；external 单响应最多 8MiB、只在内存中返回，不创建本地 ref
+- Rust `ProxySpillManager` 只统计 proxy 的在途写入与删除失败残留（合计 1GiB）；提交成功后，文件回到既有 ref TTL 管理。启动清点必须等前一实例的 writer 确认停止后执行一次；若残留清理、panic 恢复或清点失败，本次运行拒绝新的 Rust spill，不能在运行期间重扫共享目录。残留大小按物理文件 identity 统计，hard-link alias 不重复计费；只有新的 spill 请求到达且重试时间已到时，才有上限地重试已知残留，不运行长期后台配额任务
 - SSE 三档优先级（`src/server/sse.ts`）：
   - **critical**（errors / status / message-stopped 等）
   - **coalescible**（chunk / delta，同类合并替换）
@@ -323,15 +326,18 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
   - per-client 软上限 1000、硬上限 10×；critical 突破硬上限强制断开慢 client
 
 **Invariants enforced.**
-- 大 payload 不进 SSE / IPC base64，全部走 ref
+- Node tool/result 超过 256KiB、loopback proxy response 超过 1MiB 时不进入 SSE / IPC base64，改走 ref 数据面
+- ref writer 不能截断或覆盖已有 body、meta 或临时文件；发生碰撞时更换 128-bit id，并按固定次数重试
+- `Content-Length` 只做提前拒绝，实际 chunk 累计仍必须执行同一响应上限；external origin 永远不能收到本地 `/refs/<id>` URL
 - 用户从文件系统拖入 / 桌面文件选择的图片不走 `/chat/send` inline base64：≤10MB 由 `cmd_prepare_user_image_attachments` staged 到 `~/.myagents/attachments/<session>/` 后发送 `attachment_ref`，>10MB 走 `cmd_workspace_copy_paths` 进入 `myagents_files/` 并插入 `@path`。无绝对路径的剪贴板 / 浏览器 `File` 超过 10MB 必须拒绝并提示用户用文件路径入口，禁止为了“自动转文件”把它 base64 塞进 IPC。
 - Bridge tool result 经 `maybeSpill` 再交给 SDK，超阈值替换为 `@ref:<id>` marker
 - OpenAI bridge / `/chat/stream` 用 pull-driven `ReadableStream`，consumer pace 决定 pull 节奏（避免 controller 内部 queue 无界增长）
 - Renderer 检到 `ref_url` 直接 fetch ref 跳过 `atob`
 
 **Don't.**
-- 任何超 256KB 的值直接 `JSON.stringify` 进 SSE / IPC
+- 把应经过 Node `maybeSpill` 的超 256KiB 值直接 `JSON.stringify` 进 SSE / IPC
 - 自己手写 base64 round-trip
+- 为 proxy spill 再建持久化预留日志、全局 attachment/ref 配额或长期后台清理器；当前 owner 只覆盖在途写入与已知清理残留
 - 新加 `controller.enqueue` 不过 priority gate
 - 新增 SSE 事件只注册一处。两处都要：renderer `SseConnection.ts::JSON_EVENTS`（否则前端静默丢弃）+ server `sse.ts::SSE_EVENT_PRIORITIES`（否则回落 `critical` → 永不 coalesce + 每进程一次性 `[sse] missing from SSE_EVENT_PRIORITIES` warn）。latest-wins 快照类（如 `chat:context-usage`）选 `coalescible`
 
@@ -442,12 +448,13 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 <a id="context-window-suffix"></a>
 ## Context-window suffix helpers (`src/server/utils/model-capabilities.ts`)
 
-**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-8 / claude-opus-4-7 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 ~187K 就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
+**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-8 / claude-opus-4-7 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 90%（约 180K）就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
 
-**Surface.** wrap 策略统一为 contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值（有效压缩窗口 = min(1M, registry) − ~33K）。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
+**Surface.** wrap 策略统一为 contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值；builtin 的自动压缩阈值统一为 `90% × min(1M, registry)`。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
 
-- `applyProviderContextWindowSuffix(model, providerId)`：调用点已知 active provider 时的首选入口。裸 model id 先查该 provider 自己的 model row，没有对应 row 时再 fallback flat registry；调用方显式传入的 `[1m]` 原样保留。
+- `applyProviderContextWindowSuffix(model, providerId)`：调用点已知 active provider 时的首选入口。裸 model id 先查该 provider 自己的 model row；没有对应 row 时再 fallback flat registry，已有 row 但 capability 字段缺失时保持 unknown，不能跨 Provider 补字段；调用方显式传入的 `[1m]` 原样保留。
 - `applyContextWindowSuffix(model)`：只有调用点确实不知道 provider 时才用的 flat fallback。
+- 创建包含主模型、alias 与 sub-agent model 的持久 SDK Query 时，必须先通过 `snapshotProviderModelContextLengths` 固定同一份 capability 视图；`buildClaudeSessionEnv()` 与所有 `options.model` 再用 `applyContextWindowSuffixForContextLength` 消费它。单模型 one-shot（title / verify / vision）可以先构建 env，再用该 env 的 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 生成自己的 query model。两种路径都禁止在异步启动间隔后重新读 Provider 文件，否则 env cap 与 model unlock 可能来自两版配置。
 
 **Invariants enforced.**
 - 所有 SDK ingress 必须过 wrap：`query({ model })`、`query({ agents: { ...{ model } } })`、`querySession.setModel()`、`ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL` env；已知 provider 的入口必须走 provider-scoped helper。
@@ -456,6 +463,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Don't.**
 - 别给 `claude-sonnet-4-6` 开 1M：Anthropic Sonnet 4.6 wire-default 200K，1M 需要 `context-1m-2025-08-07` beta header + Tier-4 配额或 "extra usage" 付费开关，订阅默认开 1M 会报 `Extra usage is required for 1M context`（v0.2.11 修复，预设 contextLength 已降回 200K）。
 - registry key 永远存**裸 id**：`[1m]` / 手填空格形 ` 1m` 必须在 ingest + lookup 两侧 strip（#338 双成因之一，只修一侧会残留）；不完整 capability 条目（有 modalities 无 contextLength）要 per-FIELD merge（`mergeCapabilityInto`），per-entry first-wins 会遮蔽预设的真实窗口。
+- LiteLLM 的 `provider/model` 只能生成安全的 tail fallback：有不带 provider 的 literal 时按 literal（大小写归一后）裁决；没有 literal 时只暴露候选一致的字段。禁止按目录顺序或取 max 选一个——相同 tail 在不同 Provider 上可能是 8K 与 10M，取 max 会让真实小窗口端点在自动压缩前先溢出（#516）。
 
 ---
 
@@ -593,6 +601,19 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Invariants enforced.** 是 Rust `normalize_path` 的逐行 TS 端口：Windows 式路径分隔符归一 + 去尾斜杠（保留根）+ Windows 盘符/UNC 小写；POSIX 大小写敏感、反斜杠当字面字符。于是渲染层"哪个 Project 拥有这个路径"与 Rust 对 cron 的分组**按构造一致**，不靠各调用点记得归一。
 
 **Don't.** 比较工作区路径（`Project.path` ↔ `CronTask`/`Task`.workspacePath / session `agentDir` / config `defaultWorkspacePath`）禁止 raw `===` 或 inline `.replace(/\\/g,'/')`。需要分组时用 `normalizeWorkspacePathIdentity` 作为 Map/Set key；若分组结果要写回配置，仍保留用户原始路径作为 persisted value。已知**有意留白**：同源 within-tree 的 `node.path` 比较；React.memo prop 相等。
+
+---
+
+<a id="project-agent-workspace-authority"></a>
+## Project / Agent workspace authority (`src/shared/agentWorkspaceIdentity.ts`)
+
+**Problem.** 历史 `Agent.workspacePath` 与 `Project.path` 会因移动目录、旧版本重复 Agent 或跨平台路径形态而分叉。用 path 同时选择 AgentConfig 和工作目录会形成双 authority：严格检查会卡住旧用户，宽松 `.find()` 又会静默选错数组中的 Agent。
+
+**Surface.** Project-backed 调用方先定位唯一 Project，再用 `Project.agentId` exact lookup AgentConfig；工作目录始终取 `Project.path`。Renderer/Node 的修复与 historical extra/orphan 投影统一走 shared policy。Rust 只做等价的只读 runtime projection。旧 `Agent.workspacePath` 只能由 `src/shared/legacyAgentWorkspace.ts` 与 Rust `im/config_store.rs` 的 raw adapter 读取。
+
+**Invariants enforced.** 有效 ID 优先于任何旧 path；缺失/失效 ID 才按 canonical path 选择持久化顺序中的第一个旧 Agent。新 birth 在 `agent-config-intent.lock` 内先写 Project ID、再创建同 ID 的 pathless Agent，重试复用 stale ID。已有 Session 不参与 live 修复。历史 extra/orphan 保留 exact-ID addressability 与 Rust auto-start；legacy Project association 没有 Project lifecycle mutation 权限。
+
+**Don't.** 不要恢复 `getAgentByWorkspacePath` / `findAgentByWorkspacePath`，不要在正常 `AgentConfig`、Tauri command payload 或 UI props 中重新加入 workspace 字段，不要把旧 path mismatch 当权限检查，也不要从 Agent 删除反推或级联删除 Project。源码护栏 `agentWorkspaceAuthority.guard.unit.test.ts` 固化这些边界。
 
 ---
 

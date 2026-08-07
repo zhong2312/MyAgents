@@ -20,6 +20,15 @@ function assistantMsg(overrides: Partial<MessageType> = {}): MessageType {
   };
 }
 
+function userMsg(): MessageType {
+  return {
+    id: 'user-rewind-anchor',
+    role: 'user',
+    content: '回到这里',
+    timestamp: TIMESTAMP,
+  };
+}
+
 describe('Message — assistant turn meta footer', () => {
   it('renders duration and total tokens in the hover-only action row', () => {
     render(
@@ -62,5 +71,40 @@ describe('Message — assistant turn meta footer', () => {
     );
 
     expect(screen.getByText('本轮耗时 1.5s · 520 tokens')).toBeInTheDocument();
+  });
+
+  it('offers fork for a Codex assistant anchor without a builtin SDK uuid', () => {
+    render(
+      <Message
+        message={assistantMsg({
+          runtimeTurnAnchor: { turnId: 'turn-1', rootUserMessageId: 'user-1' },
+        })}
+        onFork={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: '分支' })).toBeInTheDocument();
+  });
+
+  it('re-renders the same user row when rewind becomes available', () => {
+    const message = userMsg();
+    const { rerender } = render(<Message message={message} />);
+    expect(screen.queryByRole('button', { name: '时间回溯' })).not.toBeInTheDocument();
+
+    rerender(<Message message={message} onRewind={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: '时间回溯' })).toBeInTheDocument();
+  });
+
+  it('re-renders the same anchored assistant row when fork becomes unavailable', () => {
+    const message = assistantMsg({
+      runtimeTurnAnchor: { turnId: 'turn-stable', rootUserMessageId: 'user-stable' },
+    });
+    const { rerender } = render(<Message message={message} onFork={vi.fn()} />);
+    expect(screen.getByRole('button', { name: '分支' })).toBeInTheDocument();
+
+    rerender(<Message message={message} />);
+
+    expect(screen.queryByRole('button', { name: '分支' })).not.toBeInTheDocument();
   });
 });

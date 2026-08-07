@@ -1,10 +1,19 @@
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import { resolveEffectiveConfig } from '../../shared/types/agent';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import type { SessionMetadata } from '../types/session';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
-import { coerceModelForRuntime, coercePermissionModeForRuntime } from '../../shared/types/runtime';
+import {
+  coerceModelForRuntime,
+  getDefaultRuntimePermissionMode,
+  getMaxPermissionForRuntime,
+  projectPermissionModeForRuntime,
+} from '../../shared/types/runtime';
 import type { ProviderRoute } from '../../shared/providerRoute';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
+import {
+  agentUsesManagedCodexProvider,
+  projectManagedCodexPermissionToRuntime,
+} from '../../shared/providerExecution';
 
 /**
  * Effective runtime config for a single query (v0.1.69).
@@ -57,48 +66,46 @@ export interface ResolveSessionConfigOptions {
  */
 export function resolveSessionConfig(
   meta: SessionMetadata | null | undefined,
-  agent: AgentConfig,
+  agent: AgentConfig | undefined,
   channel: ChannelConfig | undefined,
   ownerKind: SessionOwnerKind,
   options: ResolveSessionConfigOptions = {},
 ): ResolvedSessionConfig {
   const managedCodexProviderReady = options.managedCodexProviderReady === true;
   if (ownerKind === 'im') {
-    if (!channel) {
-      // Defensive: IM path without a channel shouldn't happen at runtime, but
-      // degrade to agent-only rather than throw (keeps /health and startup
-      // probes from face-planting on a half-initialized peer).
-      return {
-        runtime: agent.runtime ?? 'builtin',
-        runtimeSource: agent.runtime && agent.runtime !== 'builtin'
-          ? (agent.runtimeConfig?.source ?? 'system-cli')
-          : undefined,
-        model: agent.model,
-        permissionMode: agent.permissionMode,
-        mcpEnabledServers: agent.mcpEnabledServers,
-        providerId: agent.providerId,
-        providerRoute: undefined,
-        providerEnvJson: agent.providerEnvJson,
-      };
-    }
-    const eff = resolveEffectiveConfig(agent, channel);
-    if (managedCodexProviderReady && eff.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && eff.model) {
+    if (!agent) throw new Error('IM session config requires an Agent.');
+    // A missing channel is only a startup/health fallback; use the same identity
+    // projection instead of maintaining a second permission path.
+    const eff = channel ? resolveEffectiveConfig(agent, channel) : agent;
+    const effectiveRuntime = eff.runtime ?? 'builtin';
+    const managedCodexSelected = agentUsesManagedCodexProvider({
+      providerId: eff.providerId,
+      runtime: channel?.overrides?.runtime ?? agent.runtime,
+      runtimeConfig: channel?.overrides?.runtimeConfig ?? agent.runtimeConfig,
+    });
+    if (managedCodexProviderReady && managedCodexSelected
+        && eff.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && eff.model) {
       return {
         runtime: 'codex',
         runtimeSource: 'managed-provider',
         model: eff.model,
-        permissionMode: eff.permissionMode,
+        permissionMode: projectManagedCodexPermissionToRuntime(eff.permissionMode)
+          ?? 'auto-edit',
         mcpEnabledServers: eff.mcpEnabledServers,
         providerId: undefined,
         providerRoute: undefined,
         providerEnvJson: undefined,
       };
     }
+    const permissionMode = effectiveRuntime === 'builtin'
+      ? eff.permissionMode
+      : (projectPermissionModeForRuntime(eff.permissionMode, effectiveRuntime)
+        ?? getMaxPermissionForRuntime(effectiveRuntime));
     return {
-      runtime: eff.runtime,
-      runtimeSource: eff.runtime !== 'builtin' ? (eff.runtimeConfig?.source ?? 'system-cli') : undefined,
+      runtime: effectiveRuntime,
+      runtimeSource: effectiveRuntime !== 'builtin' ? 'system-cli' : undefined,
       model: eff.model,
-      permissionMode: eff.permissionMode,
+      permissionMode,
       mcpEnabledServers: eff.mcpEnabledServers,
       providerId: eff.providerId,
       providerRoute: undefined,
@@ -112,16 +119,19 @@ export function resolveSessionConfig(
   // Agent defaults (#395/#396), because that makes old conversations drift when
   // the Agent template changes.
   const snapshotOwnsConfig = Boolean(meta?.configSnapshotAt);
-  const agentUsesManagedCodexProvider = agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+  const agentUsesManagedProvider = Boolean(agent && agentUsesManagedCodexProvider(agent))
     && managedCodexProviderReady
-    && typeof agent.model === 'string'
+    && typeof agent?.model === 'string'
     && agent.model.trim().length > 0;
-  const runtime = meta?.runtime ?? (agentUsesManagedCodexProvider ? 'codex' : agent.runtime) ?? 'builtin';
+  const runtime = meta?.runtime ?? (agentUsesManagedProvider ? 'codex' : agent?.runtime) ?? 'builtin';
   const runtimeSource = runtime === 'builtin'
     ? undefined
-    : (meta?.runtimeSource
-      ?? (agentUsesManagedCodexProvider ? 'managed-provider' : agent.runtimeConfig?.source)
-      ?? 'system-cli');
+    : (meta?.runtime !== undefined
+      ? (meta.runtimeSource
+        ?? meta.providerExecutionIdentity?.runtimeSource
+        ?? 'system-cli')
+      : (agentUsesManagedProvider ? 'managed-provider' : agent?.runtimeConfig?.source ?? 'system-cli'));
+  const managedCodexSession = runtime === 'codex' && runtimeSource === 'managed-provider';
   // Snapshot vs agent-fallback for model. For external runtimes the snapshot
   // and agent fallback target different fields — snapshot holds the runtime
   // model (set by interactive writes + the runtime-aware snapshot helper),
@@ -130,10 +140,10 @@ export function resolveSessionConfig(
   // unsnapshotted external session would read `agent.model` (Claude) and
   // hand it to Codex → 400 (issue #224).
   const rawModel = runtime === 'builtin'
-    ? (snapshotOwnsConfig ? meta?.model : (meta?.model ?? agent.model))
+    ? (snapshotOwnsConfig ? meta?.model : (meta?.model ?? agent?.model))
     : (snapshotOwnsConfig
       ? meta?.model
-      : (meta?.model ?? (agentUsesManagedCodexProvider ? agent.model : agent.runtimeConfig?.model)));
+      : (meta?.model ?? (agentUsesManagedProvider ? agent?.model : agent?.runtimeConfig?.model)));
   // Coerce obviously-foreign models out before they reach the runtime CLI.
   // Heals existing stale snapshots written by the pre-fix snapshot helper
   // (e.g. cron tasks created on App ≤ 0.2.19 with runtime=codex but
@@ -146,22 +156,28 @@ export function resolveSessionConfig(
       && typeof model === 'string' && model.trim().length > 0
       && coercedModel === undefined) {
     console.warn(
-      `[runtime-coerce] dropping stale session model='${model}' on runtime='${runtime}' (issue #224); falling back to runtime default. sessionId=${meta?.id ?? '<none>'} agentDir=${meta?.agentDir ?? agent.workspacePath ?? '<unknown>'}`,
+      `[runtime-coerce] dropping stale session model='${model}' on runtime='${runtime}' (issue #224); falling back to runtime default. sessionId=${meta?.id ?? '<none>'} agentDir=${meta?.agentDir ?? '<unknown>'}`,
     );
     model = coercedModel;
   } else if (typeof model === 'string') {
     model = coercedModel;
   }
 
-  const rawPermissionMode = snapshotOwnsConfig
-    ? meta?.permissionMode
-    : (meta?.permissionMode ?? (runtime === 'builtin' ? agent.permissionMode : agent.runtimeConfig?.permissionMode));
-  const permissionMode = coercePermissionModeForRuntime(rawPermissionMode, runtime);
+  const rawPermissionMode = runtime === 'builtin'
+    ? (snapshotOwnsConfig ? meta?.permissionMode : (meta?.permissionMode ?? agent?.permissionMode))
+    : (meta ? meta.permissionMode : (managedCodexSession
+      ? agent?.permissionMode
+      : agent?.runtimeConfig?.permissionMode));
+  const projectedPermissionMode = managedCodexSession
+    ? (projectManagedCodexPermissionToRuntime(rawPermissionMode) ?? 'auto-edit')
+    : projectPermissionModeForRuntime(rawPermissionMode, runtime);
+  const permissionMode = projectedPermissionMode
+    ?? (runtime !== 'builtin' ? getDefaultRuntimePermissionMode(runtime) : undefined);
   if (typeof rawPermissionMode === 'string'
       && rawPermissionMode.trim().length > 0
-      && permissionMode === undefined) {
+      && projectedPermissionMode === undefined) {
     console.warn(
-      `[runtime-coerce] dropping stale session permissionMode='${rawPermissionMode}' on runtime='${runtime}'; falling back to runtime default. sessionId=${meta?.id ?? '<none>'} agentDir=${meta?.agentDir ?? agent.workspacePath ?? '<unknown>'}`,
+      `[runtime-coerce] dropping stale session permissionMode='${rawPermissionMode}' on runtime='${runtime}'; falling back to runtime default. sessionId=${meta?.id ?? '<none>'} agentDir=${meta?.agentDir ?? '<unknown>'}`,
     );
   }
 
@@ -170,13 +186,13 @@ export function resolveSessionConfig(
     runtimeSource,
     model,
     permissionMode,
-    mcpEnabledServers: snapshotOwnsConfig ? meta?.mcpEnabledServers : (meta?.mcpEnabledServers ?? agent.mcpEnabledServers),
+    mcpEnabledServers: snapshotOwnsConfig ? meta?.mcpEnabledServers : (meta?.mcpEnabledServers ?? agent?.mcpEnabledServers),
     providerId: runtime === 'builtin'
-      ? (snapshotOwnsConfig ? meta?.providerId : (meta?.providerId ?? agent.providerId))
+      ? (snapshotOwnsConfig ? meta?.providerId : (meta?.providerId ?? agent?.providerId))
       : undefined,
     providerRoute: runtime === 'builtin' && snapshotOwnsConfig ? meta?.providerRoute : undefined,
     providerEnvJson: runtime === 'builtin'
-      ? (snapshotOwnsConfig ? meta?.providerEnvJson : (meta?.providerEnvJson ?? agent.providerEnvJson))
+      ? (snapshotOwnsConfig ? meta?.providerEnvJson : (meta?.providerEnvJson ?? agent?.providerEnvJson))
       : undefined,
   };
 }

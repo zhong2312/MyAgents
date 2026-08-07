@@ -166,6 +166,12 @@ Session 文件由 Node.js Sidecar 写入，索引在 Rust。两个显而易见�
 - `sessions_dir`（非递归）— 捕获 JSONL 写入/删除
 - `data_dir`（非递归）— 捕获 `sessions.json` 变更（大多数平台不允许监听单个文件）
 
+### 与 Session 导航投影 watcher 的边界
+
+`src-tauri/src/session_metadata.rs` 另有一个 300ms 去抖的 App 级 watcher，观察同一权威文件并在 history-visible metadata 投影发生变化时发出 `session:metadata-changed { agentDirs }`。GlobalSidebar 的 app-global store 用它定向失效已加载的工作区 Session slice；因此桌面、IM、Cron、Floating Ball、CLI/迁移等写入者无需各自通知 Renderer，也不需要先打开历史搜索才能刷新侧栏。由于 OS watcher 和 Tauri event 都没有注册前 replay，Rust 在 observer ready 后发 broad invalidation，Renderer listener 注册成功后也必须权威对账；任一侧先 ready 都能关闭另一侧的启动窗口。
+
+这两个 watcher 不得合并生命周期：搜索 watcher 的 5s 窗口服务于较重的 Tantivy 内容索引，且依赖派生 SearchEngine 成功初始化；导航投影需要更短延迟，并且即使搜索索引损坏或不可用也必须继续响应。二者只共享 `sessions.json` / JSONL 这份权威输入，不互为 owner。
+
 ## 工作区文件索引策略
 
 ### 懒加载 + 持久 manifest

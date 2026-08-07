@@ -8,6 +8,8 @@ import {
   resolveSpawnInvocation,
 } from '../../../scripts/package-managed-codex-spawn.js';
 import {
+  managedCodexMacHelperSigningCandidates,
+  managedCodexSignerEnv,
   resolveManagedCodexPackageIdentity,
   shouldSignManagedCodexPackage,
 } from '../../../scripts/package-managed-codex-policy.js';
@@ -32,6 +34,39 @@ describe('managed Codex package command spawning', () => {
   it('never emits MyAgents signatures for unsigned probe packages', () => {
     expect(shouldSignManagedCodexPackage({ allowUnsigned: true })).toBe(false);
     expect(shouldSignManagedCodexPackage({ allowUnsigned: false })).toBe(true);
+  });
+
+  it('accepts official OpenAI helper signatures before the legacy ad-hoc shape', () => {
+    expect(managedCodexMacHelperSigningCandidates({
+      teamId: '2DC432GLL2',
+      signingIdentity: 'Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)',
+    })).toEqual([
+      {
+        action: 'preserved-upstream-openai-signature',
+        signing: {
+          type: 'codesign',
+          teamId: '2DC432GLL2',
+          signingIdentity: 'Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)',
+        },
+      },
+      {
+        action: 'preserved-upstream-ad-hoc-signature',
+        signing: { type: 'codesign', teamId: 'not set' },
+      },
+    ]);
+  });
+
+  it('passes signer key material through exactly one authority', () => {
+    expect(managedCodexSignerEnv({
+      TAURI_SIGNING_PRIVATE_KEY: 'inline-key',
+      TAURI_PRIVATE_KEY: 'legacy-inline-key',
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 'password',
+      PATH: '/usr/bin',
+    })).toEqual({
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 'password',
+      TAURI_PRIVATE_KEY_PASSWORD: 'password',
+      PATH: '/usr/bin',
+    });
   });
 
   it('does not expose runtime version overrides from official publish entrypoints', () => {

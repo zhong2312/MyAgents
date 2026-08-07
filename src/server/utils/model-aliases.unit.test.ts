@@ -5,13 +5,13 @@ import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './mode
 describe('resolveSessionModelAliases', () => {
   it('rebases collapsed aliases to the active session model', () => {
     expect(resolveSessionModelAliases(
-      { sonnet: 'MiniMax-M2.7', opus: 'MiniMax-M2.7', haiku: 'MiniMax-M2.7' },
-      'MiniMax-M2.5',
+      { sonnet: 'MiniMax-M3', opus: 'MiniMax-M3', haiku: 'MiniMax-M3' },
+      'MiniMax-M2.7',
     )).toEqual({
-      fable: 'MiniMax-M2.5',
-      sonnet: 'MiniMax-M2.5',
-      opus: 'MiniMax-M2.5',
-      haiku: 'MiniMax-M2.5',
+      fable: 'MiniMax-M2.7',
+      sonnet: 'MiniMax-M2.7',
+      opus: 'MiniMax-M2.7',
+      haiku: 'MiniMax-M2.7',
     });
   });
 
@@ -51,9 +51,9 @@ describe('resolveSessionModelAliases', () => {
 describe('modelAliasEnvChangesForModel', () => {
   it('detects when a collapsed alias table needs subprocess env reinjection', () => {
     expect(modelAliasEnvChangesForModel(
-      { sonnet: 'MiniMax-M2.7', opus: 'MiniMax-M2.7', haiku: 'MiniMax-M2.7' },
+      { sonnet: 'MiniMax-M3', opus: 'MiniMax-M3', haiku: 'MiniMax-M3' },
+      'MiniMax-M3',
       'MiniMax-M2.7',
-      'MiniMax-M2.5',
     )).toBe(true);
   });
 

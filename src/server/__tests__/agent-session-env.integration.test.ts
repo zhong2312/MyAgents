@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { applyWindowsUtf8SubprocessEnv, buildClaudeSessionEnv } from '../agent-session';
+import {
+  applyContextWindowSuffixForContextLength,
+  lookupSnapshotModelContextLength,
+  snapshotProviderModelContextLengths,
+} from '../utils/model-capabilities';
 
 describe('buildClaudeSessionEnv npm prefix isolation', () => {
   afterEach(() => {
@@ -144,22 +149,22 @@ describe('session model alias resolution', () => {
         baseUrl: 'https://api.minimax.example',
         apiKey: 'test-key',
         modelAliases: {
-          sonnet: 'MiniMax-M2.7',
-          opus: 'MiniMax-M2.7',
-          haiku: 'MiniMax-M2.7',
+          sonnet: 'MiniMax-M3',
+          opus: 'MiniMax-M3',
+          haiku: 'MiniMax-M3',
         },
       },
-      'MiniMax-M2.5',
+      'MiniMax-M2.7',
     );
 
-    // #335 — MiniMax-M2.5's preset contextLength is 204_800 (> the SDK 200K
+    // #335 — MiniMax-M2.7's preset contextLength is 204_800 (> the SDK 200K
     // default), so the SDK-ingress `_MODEL` envs carry the `[1m]` unlock; the
     // display-label `_MODEL_NAME` env stays raw (applyContextWindowSuffix
     // contract: wrapped values flow ONLY into SDK ingress points).
-    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.5[1m]');
-    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('MiniMax-M2.5[1m]');
-    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('MiniMax-M2.5[1m]');
-    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe('MiniMax-M2.5');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.7[1m]');
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('MiniMax-M2.7[1m]');
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('MiniMax-M2.7[1m]');
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe('MiniMax-M2.7');
   });
 
   it('keeps split subagent alias env unchanged', () => {
@@ -219,6 +224,14 @@ describe('Claude SDK context window env', () => {
     vi.unstubAllEnvs();
   });
 
+  it('pins auto-compaction at 90% instead of inheriting the host value (#508)', () => {
+    vi.stubEnv('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', '55');
+
+    const env = buildClaudeSessionEnv(undefined, 'claude-opus-4-8');
+
+    expect(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('90');
+  });
+
   it('keeps Claude 4.6 defaults at 200K without forcing SDK 1M disable flags (#392)', () => {
     vi.stubEnv('CLAUDE_CODE_DISABLE_1M_CONTEXT', '');
     vi.stubEnv('CLAUDE_CODE_ENABLE_1M_CONTEXT', '1');
@@ -265,6 +278,96 @@ describe('Claude SDK context window env', () => {
     }
   });
 
+  it('uses only the active provider row for context and adopts its later discovery metadata (#516)', () => {
+    const prevHome = process.env.HOME;
+    const tempHome = mkdtempSync(join(tmpdir(), 'myagents-env-home-'));
+    const providerDir = join(tempHome, '.myagents', 'providers');
+    const cacheDir = join(tempHome, '.myagents', 'cache');
+    const providerPath = join(providerDir, 'amd.json');
+    try {
+      mkdirSync(providerDir, { recursive: true });
+      mkdirSync(cacheDir, { recursive: true });
+      writeFileSync(
+        providerPath,
+        JSON.stringify({
+          id: 'amd',
+          models: [{ model: 'DeepSeek-V4-Flash', modelName: 'DeepSeek V4 Flash' }],
+        }),
+      );
+      writeFileSync(
+        join(cacheDir, 'litellm_model_prices.json'),
+        JSON.stringify({
+          'deepseek-v4-flash': { max_input_tokens: 1_000_000, mode: 'chat' },
+          'tensormesh/deepseek-ai/DeepSeek-V4-Flash': { max_input_tokens: 32_768, mode: 'chat' },
+        }),
+      );
+      vi.stubEnv('HOME', tempHome);
+      const providerEnv = {
+        providerId: 'amd',
+        baseUrl: 'https://amd.example/v1',
+        apiKey: 'test-key',
+        apiProtocol: 'openai' as const,
+        modelAliases: {
+          sonnet: 'DeepSeek-V4-Flash',
+          opus: 'DeepSeek-V4-Flash',
+          haiku: 'DeepSeek-V4-Flash',
+        },
+      };
+
+      const launchContextWindowSnapshot = snapshotProviderModelContextLengths(
+        ['DeepSeek-V4-Flash'],
+        'amd',
+      );
+      const beforeDiscovery = buildClaudeSessionEnv(
+        providerEnv,
+        'DeepSeek-V4-Flash',
+        { providerId: 'amd', contextWindowSnapshot: launchContextWindowSnapshot },
+      );
+      expect(beforeDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+      expect(beforeDiscovery.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('DeepSeek-V4-Flash');
+      const beforeDiscoveryLaunchModel = applyContextWindowSuffixForContextLength(
+        'DeepSeek-V4-Flash',
+        lookupSnapshotModelContextLength(launchContextWindowSnapshot, 'DeepSeek-V4-Flash'),
+      );
+
+      writeFileSync(
+        providerPath,
+        JSON.stringify({
+          id: 'amd',
+          models: [{
+            model: 'DeepSeek-V4-Flash',
+            modelName: 'DeepSeek V4 Flash',
+            contextLength: 1_048_576,
+            source: 'discovered',
+          }],
+        }),
+      );
+      const afterDiscovery = buildClaudeSessionEnv(
+        providerEnv,
+        'DeepSeek-V4-Flash',
+        { providerId: 'amd' },
+      );
+      const heldLaunchAfterDiscovery = buildClaudeSessionEnv(
+        providerEnv,
+        'DeepSeek-V4-Flash',
+        { providerId: 'amd', contextWindowSnapshot: launchContextWindowSnapshot },
+      );
+      expect(afterDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1048576');
+      expect(afterDiscovery.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('DeepSeek-V4-Flash[1m]');
+      expect(heldLaunchAfterDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+      expect(heldLaunchAfterDiscovery.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('DeepSeek-V4-Flash');
+      expect(beforeDiscoveryLaunchModel).toBe('DeepSeek-V4-Flash');
+      expect(applyContextWindowSuffixForContextLength(
+        'DeepSeek-V4-Flash',
+        Number(afterDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW),
+      )).toBe('DeepSeek-V4-Flash[1m]');
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it('keeps Opus 4.7 / 4.8 on the default 1M window', () => {
     expect(buildClaudeSessionEnv(undefined, 'claude-opus-4-7').CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000');
     expect(buildClaudeSessionEnv(undefined, 'claude-opus-4-8').CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000');
@@ -277,16 +380,16 @@ describe('Claude SDK context window env', () => {
         baseUrl: 'https://api.minimax.example',
         apiKey: 'test-key',
         modelAliases: {
-          sonnet: 'MiniMax-M2.7',
-          opus: 'MiniMax-M2.7',
-          haiku: 'MiniMax-M2.7',
+          sonnet: 'MiniMax-M3',
+          opus: 'MiniMax-M3',
+          haiku: 'MiniMax-M3',
         },
       },
-      'MiniMax-M2.5',
+      'MiniMax-M2.7',
     );
 
     expect(env.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBeUndefined();
     expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('204800');
-    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.5[1m]');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.7[1m]');
   });
 });

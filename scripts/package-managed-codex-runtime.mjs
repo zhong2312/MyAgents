@@ -25,6 +25,8 @@ import {
 } from './package-managed-codex-spawn.js';
 import {
   isCanonicalCodexVersion,
+  managedCodexMacHelperSigningCandidates,
+  managedCodexSignerEnv,
   resolveManagedCodexPackageIdentity,
   shouldSignManagedCodexPackage,
 } from './package-managed-codex-policy.js';
@@ -330,9 +332,7 @@ function signFile(filePath, allowUnsigned, label) {
   writeFileSync(keyPath, key);
   chmodSync(keyPath, 0o600);
   try {
-    const env = { ...process.env };
-    const password = env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? env.TAURI_PRIVATE_KEY_PASSWORD;
-    if (password) env.TAURI_PRIVATE_KEY_PASSWORD = password;
+    const env = managedCodexSignerEnv(process.env);
     const args = ['tauri', 'signer', 'sign', '-f', keyPath, filePath];
     run('npx', args, { stdio: 'inherit', env });
   } finally {
@@ -560,6 +560,8 @@ function prepareMacHelperSigning(platform, packageDir, allowUnsigned) {
   }
 
   const { helperPaths } = macNativePathPolicy(platform);
+  const upstreamSigning = signingSpecForPlatform(platform, allowUnsigned);
+  const signingCandidates = managedCodexMacHelperSigningCandidates(upstreamSigning);
   const helperSigningByPath = new Map();
   const preparations = [];
   for (const relativePath of helperPaths) {
@@ -568,21 +570,30 @@ function prepareMacHelperSigning(platform, packageDir, allowUnsigned) {
       throw new Error(`Managed Codex ${platform} missing pinned native helper: ${relativePath}`);
     }
 
-    try {
-      const verification = verifyMacSigning(helperPath, { type: 'codesign', teamId: 'not set' });
-      helperSigningByPath.set(relativePath, { type: 'codesign', teamId: 'not set' });
-      preparations.push({
-        relativePath,
-        action: 'preserved-upstream-ad-hoc-signature',
-        teamId: verification.teamId,
-      });
-      continue;
-    } catch (verificationError) {
-      const details = tryRun('/usr/bin/codesign', ['-dv', '--verbose=4', helperPath]);
-      const detailOutput = `${details.stdout}\n${details.stderr}`;
-      if (!detailOutput.includes('code object is not signed at all')) {
-        throw verificationError;
+    let signedVerificationError;
+    let preservedSignedHelper = false;
+    for (const candidate of signingCandidates) {
+      try {
+        const verification = verifyMacSigning(helperPath, candidate.signing);
+        helperSigningByPath.set(relativePath, candidate.signing);
+        preparations.push({
+          relativePath,
+          action: candidate.action,
+          teamId: verification.teamId,
+          signingIdentity: verification.signingIdentity,
+        });
+        preservedSignedHelper = true;
+        break;
+      } catch (verificationError) {
+        signedVerificationError ??= verificationError;
       }
+    }
+    if (preservedSignedHelper) continue;
+
+    const details = tryRun('/usr/bin/codesign', ['-dv', '--verbose=4', helperPath]);
+    const detailOutput = `${details.stdout}\n${details.stderr}`;
+    if (!detailOutput.includes('code object is not signed at all')) {
+      throw signedVerificationError;
     }
 
     const identity = allowUnsigned

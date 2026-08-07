@@ -390,9 +390,6 @@ html.fb-transparent #root {
 .fbw-convo.boot-state .fbw-error {
   margin: 0;
 }
-.fbw-convo::-webkit-scrollbar { width: 5px; }
-.fbw-convo::-webkit-scrollbar-thumb { background: var(--fb-scroll-thumb); border-radius: 3px; }
-
 .fbw-msg { margin-bottom: 16px; }
 .fbw-msg.ai { color: var(--ink); } /* Markdown 默认变体承载 16px/1.625，与主聊天同一 prose 节奏 */
 .fbw-msg.user { display: flex; justify-content: flex-end; }

@@ -5,6 +5,7 @@ import { join } from 'path';
 
 import {
   applyContextWindowSuffix,
+  applyContextWindowSuffixForContextLength,
   applyProviderContextWindowSuffix,
   parseLiteLLMCatalog,
   lookupModelContextLength,
@@ -37,6 +38,13 @@ describe('applyContextWindowSuffix — registry-independent guards', () => {
 
   it('leaves an unregistered model unchanged (no entry → no suffix)', () => {
     expect(applyContextWindowSuffix('totally-made-up-model-xyz')).toBe('totally-made-up-model-xyz');
+  });
+
+  it('can decorate from a launch-local context snapshot without re-reading the registry', () => {
+    expect(applyContextWindowSuffixForContextLength('Model-X', undefined)).toBe('Model-X');
+    expect(applyContextWindowSuffixForContextLength('Model-X', 200_000)).toBe('Model-X');
+    expect(applyContextWindowSuffixForContextLength('Model-X', 262_144)).toBe('Model-X[1m]');
+    expect(applyContextWindowSuffixForContextLength('Model-X[1m]', undefined)).toBe('Model-X[1m]');
   });
 
 });
@@ -132,6 +140,32 @@ describe('parseLiteLLMCatalog', () => {
     expect(b.get('gpt-4')?.contextLength).toBe(8192); // still the literal
   });
 
+  it('uses a case-variant canonical literal instead of an unrelated provider tail (#516)', () => {
+    const m = parseLiteLLMCatalog({
+      'azure_ai/deepseek-v4-flash': { max_input_tokens: 1_000_000, mode: 'chat' },
+      'tensormesh/deepseek-ai/DeepSeek-V4-Flash': { max_input_tokens: 32_768, mode: 'chat' },
+      'deepseek-v4-flash': { max_input_tokens: 1_000_000, mode: 'chat' },
+    });
+
+    expect(m.get('deepseek-v4-flash')?.contextLength).toBe(1_000_000);
+    expect(m.get('DeepSeek-V4-Flash')?.contextLength).toBe(1_000_000);
+    expect(m.get('tensormesh/deepseek-ai/DeepSeek-V4-Flash')?.contextLength).toBe(32_768);
+  });
+
+  it('does not invent a bare context alias when provider-qualified candidates disagree and no literal exists', () => {
+    const m = parseLiteLLMCatalog({
+      'provider-a/Model-X': { max_input_tokens: 32_768, max_output_tokens: 8_192, mode: 'chat' },
+      'provider-b/model-x': { max_input_tokens: 1_000_000, max_output_tokens: 8_192, mode: 'chat' },
+    });
+
+    expect(m.get('Model-X')?.contextLength).toBeUndefined();
+    expect(m.get('model-x')?.contextLength).toBeUndefined();
+    expect(m.get('Model-X')?.maxOutputTokens).toBe(8_192);
+    expect(m.get('model-x')?.maxOutputTokens).toBe(8_192);
+    expect(m.get('provider-a/Model-X')?.contextLength).toBe(32_768);
+    expect(m.get('provider-b/model-x')?.contextLength).toBe(1_000_000);
+  });
+
   it('skips entries with neither a context window nor an output limit', () => {
     const m = parseLiteLLMCatalog({ 'pricing-only': { input_cost_per_token: 0.0001, mode: 'chat' } });
     expect(m.has('pricing-only')).toBe(false);
@@ -194,10 +228,10 @@ describe('capability-suffix tolerance + per-field merge (#338)', () => {
   it('an incomplete discovered entry does NOT shadow the preset contextLength', () => {
     writeFileSync(
       join(tmpHome, '.myagents', 'config.json'),
-      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5.1', inputModalities: ['text'] }] } }),
+      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5-turbo', inputModalities: ['text'] }] } }),
     );
     __resetModelCapabilityCacheForTests();
-    expect(lookupModelContextLength('glm-5.1')).toBe(204_800); // filled from preset, not shadowed
+    expect(lookupModelContextLength('glm-5-turbo')).toBe(202_752); // filled from preset, not shadowed
   });
 
   // A reseller reusing the bundled id claude-sonnet-4-6 at a 1M window, stored
@@ -240,6 +274,32 @@ describe('capability-suffix tolerance + per-field merge (#338)', () => {
     expect(lookupProviderModelContextLength('claude-sonnet-4-6[1m]', 'dragon-a')).toBe(1_000_000);
   });
 
+  it('does not borrow contextLength when the active provider owns a context-less model row (#516)', () => {
+    const providersDir = join(tmpHome, '.myagents', 'providers');
+    const cacheDir = join(tmpHome, '.myagents', 'cache');
+    mkdirSync(providersDir, { recursive: true });
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      join(providersDir, 'amd.json'),
+      JSON.stringify({
+        id: 'amd',
+        models: [{ model: 'DeepSeek-V4-Flash', modelName: 'DeepSeek V4 Flash' }],
+      }),
+    );
+    writeFileSync(
+      join(cacheDir, 'litellm_model_prices.json'),
+      JSON.stringify({
+        'deepseek-v4-flash': { max_input_tokens: 1_000_000, mode: 'chat' },
+        'tensormesh/deepseek-ai/DeepSeek-V4-Flash': { max_input_tokens: 32_768, mode: 'chat' },
+      }),
+    );
+    __resetModelCapabilityCacheForTests();
+
+    expect(lookupModelContextLength('DeepSeek-V4-Flash')).toBe(1_000_000);
+    expect(lookupProviderModelContextLength('DeepSeek-V4-Flash', 'amd')).toBeUndefined();
+    expect(applyProviderContextWindowSuffix('DeepSeek-V4-Flash', 'amd')).toBe('DeepSeek-V4-Flash');
+  });
+
   it('wraps SDK model ids with the active provider window, not a global duplicate model id', () => {
     writeFileSync(
       join(tmpHome, '.myagents', 'config.json'),
@@ -264,12 +324,12 @@ describe('capability-suffix tolerance + per-field merge (#338)', () => {
   it('per-field merge: explicit modalities win, missing contextLength fills from preset', () => {
     writeFileSync(
       join(tmpHome, '.myagents', 'config.json'),
-      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5.1', inputModalities: ['text'] }] } }),
+      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5-turbo', inputModalities: ['text'] }] } }),
     );
     __resetModelCapabilityCacheForTests();
-    const cap = lookupModelCapability('glm-5.1');
+    const cap = lookupModelCapability('glm-5-turbo');
     expect(cap?.inputModalities).toEqual(['text']); // explicit override preserved
-    expect(cap?.contextLength).toBe(204_800);        // gap filled from the bundled preset
+    expect(cap?.contextLength).toBe(202_752);        // gap filled from the bundled preset
   });
 
   // applyContextWindowSuffix must not feed the SDK a garbage model option built

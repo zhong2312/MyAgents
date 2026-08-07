@@ -460,6 +460,10 @@ export function peekPendingOutputOwner(): PendingOutputOwner | null {
   return pendingOutputOwners[0] ?? null;
 }
 
+export function hasPendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
+  return Boolean(queueId && pendingOutputOwners.some(owner => owner.queueId === queueId));
+}
+
 export function stageCurrentOutputOwnerAssistantChannelBlock(text: string): boolean {
   const owner = pendingOutputOwners[0];
   if (!owner || owner.assistantChannelDelivery !== 'session-binding' || !text) return false;

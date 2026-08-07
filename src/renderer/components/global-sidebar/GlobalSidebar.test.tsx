@@ -401,7 +401,7 @@ describe('GlobalSidebar rail flyout', () => {
     }
   });
 
-  it('uses instant custom tooltips for workspace header and row actions', () => {
+  it('uses instant portaled tooltips for workspace header and row actions', () => {
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
     renderSidebar();
     fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
@@ -415,17 +415,21 @@ describe('GlobalSidebar rail flyout', () => {
     expect(Boolean(viewOptionsButton.compareDocumentPosition(addButton) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
     expect(Boolean(moreButton.compareDocumentPosition(newChatButton) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
-    for (const button of [addButton, viewOptionsButton, newChatButton, moreButton]) {
+    for (const [button, label] of [
+      [addButton, String(i18n.t('launcher:addWorkspaceMenu.add'))],
+      [viewOptionsButton, '更多'],
+      [newChatButton, '新对话'],
+      [moreButton, '更多'],
+    ] as const) {
       expect(button).not.toHaveAttribute('title');
-      const tip = button.parentElement?.querySelector('[role="tooltip"]');
+      fireEvent.mouseEnter(button.parentElement!);
+      const tip = screen.getByRole('tooltip', { name: label });
       expect(tip).toHaveClass('bg-[var(--button-dark-bg)]/90');
       expect(tip).not.toHaveClass('delay-500', 'transition-opacity');
+      expect(button.parentElement).not.toContainElement(tip);
+      fireEvent.mouseLeave(button.parentElement!);
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
     }
-    expect(viewOptionsButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
-    expect(moreButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
-    expect(newChatButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('新对话');
-    expect(moreButton.parentElement?.querySelector('[role="tooltip"]')).toHaveClass('top-full');
-    expect(newChatButton.parentElement?.querySelector('[role="tooltip"]')).toHaveClass('top-full');
   });
 
   it('opens a workspace context menu without allowing right-click text selection', () => {
@@ -485,6 +489,40 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent(sessionRow, contextMenu);
     expect(contextMenu.defaultPrevented).toBe(true);
     expect(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.copySessionId')) })).toBeInTheDocument();
+  });
+
+  it('shows a truncated Session title only after a one-second hover', () => {
+    const title = 'A very long historical conversation title that cannot fit in the sidebar';
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'session-1',
+      agentDir: '/work/project-one',
+      title,
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const trigger = document.querySelector<HTMLElement>('[data-global-sidebar-session-title]')!;
+    expect(trigger).not.toHaveTextContent(title);
+    expect(trigger.textContent).toMatch(/\.\.\.$/);
+    Object.defineProperty(trigger, 'clientWidth', { configurable: true, value: 360 });
+    Object.defineProperty(trigger, 'scrollWidth', { configurable: true, value: 200 });
+    fireEvent.pointerEnter(trigger);
+    act(() => vi.advanceTimersByTime(999));
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole('tooltip')).toHaveTextContent(title);
   });
 
   it('routes sidebar Session deletion through the App-owned lifecycle capability', async () => {
@@ -597,10 +635,13 @@ describe('GlobalSidebar rail flyout', () => {
     renderSidebar();
 
     expect(screen.queryByRole('tooltip', { name: 'Agent 工作区' })).not.toBeInTheDocument();
+    const taskButton = screen.getByRole('button', { name: '任务' });
+    fireEvent.mouseEnter(taskButton.parentElement!);
     const taskTip = screen.getByRole('tooltip', { name: '任务' });
-    expect(taskTip).toHaveClass('left-full', 'bg-[var(--button-dark-bg)]/90');
+    expect(taskTip).toHaveClass('bg-[var(--button-dark-bg)]/90');
     expect(taskTip).not.toHaveClass('delay-500', 'transition-opacity');
 
+    fireEvent.mouseLeave(taskButton.parentElement!);
     fireEvent.click(screen.getByRole('button', { name: '小助理' }));
     expect(screen.queryByRole('tooltip', { name: '小助理' })).not.toBeInTheDocument();
   });
@@ -825,6 +866,7 @@ describe('GlobalSidebar rail flyout', () => {
     const toggleSlot = expand.closest('.absolute');
     expect(toggleSlot).toHaveClass('left-[var(--global-sidebar-toggle-left)]');
     expect(expand.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('lucide-panel-left');
+    fireEvent.mouseEnter(expand.parentElement!);
     expect(screen.getByRole('tooltip', { name: String(i18n.t('app:globalSidebar.expand')) }))
       .toHaveClass('bg-[var(--button-dark-bg)]/90');
     fireEvent.click(expand);
@@ -1125,6 +1167,7 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceRow = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]');
     expect(workspaceRow).toHaveClass('bg-[var(--hover-bg)]');
     expect(workspaceRow).not.toHaveClass('bg-[var(--paper-elevated)]', 'shadow-sm');
+    expect(workspaceRow?.querySelector('[data-global-sidebar-workspace-actions]')).toHaveClass('pr-2');
     const firstSession = screen.getByRole('button', { name: /Session 1/ });
     expect(firstSession.className).toContain('focus-visible:ring-2');
     expect(firstSession.firstElementChild?.textContent).toBe('Session 1');
@@ -1138,6 +1181,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(firstSession).toHaveClass('w-full');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-date]')).toHaveClass('ml-auto');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('right-2');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('pointer-events-none');
     const sessionDate = firstSessionRow?.querySelector('[data-global-sidebar-session-date]');
     expect(sessionDate).toHaveClass('text-xs');

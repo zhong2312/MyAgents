@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { relativeTime } from '@/utils/taskCenterUtils';
 import { TaskCategoryBadge } from '../TaskCategoryBadge';
 import { TaskStatusBadge } from '../TaskStatusBadge';
+import { TaskTriggerBadge } from '../TaskTriggerBadge';
 import { TaskItemActions, deriveTaskRowStatus } from './TaskItemActions';
 import { ViewSessionButton } from './TaskCardItem';
 import type { LegacyCronRow } from './types';
@@ -37,8 +38,9 @@ export function TaskListRow(props: TaskListRowProps) {
   const isLegacy = !!legacy && !task;
   const status = deriveTaskRowStatus(task ?? null);
   const name = task?.name ?? legacy?.name ?? '—';
-  const workspace = legacy?.workspacePath
-    ? shortenPath(legacy.workspacePath)
+  const workspacePath = task?.workspacePath ?? legacy?.workspacePath;
+  const workspace = workspacePath
+    ? shortenPath(workspacePath)
     : '';
   const updatedAt = task?.updatedAt ?? legacy?.updatedAt ?? 0;
   const category: TaskExecutionMode = task
@@ -58,7 +60,10 @@ export function TaskListRow(props: TaskListRowProps) {
           always starts at the same x-offset regardless of which chips
           are present. */}
       <div className="flex shrink-0 items-center gap-1.5">
-        <TaskStatusBadge status={status} executionState={task?.executionState} compact />
+        <div className="flex items-center gap-1">
+          {task?.trigger?.detector.type === 'command' && <TaskTriggerBadge compact />}
+          <TaskStatusBadge status={status} executionState={task?.executionState} compact />
+        </div>
         <TaskCategoryBadge mode={category} legacy={isLegacy} compact />
       </div>
       <span className="min-w-0 flex-1 truncate text-sm text-[var(--ink)]">

@@ -144,6 +144,8 @@ instruction、cron output 都只给模型看。
 | Space IssueDelivery（0.3.2 v2） | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue><registered-agent-context>…</registered-agent-context><registered-agent-instruction>…</registered-agent-instruction><operating-guidance>…</operating-guidance><deliveries>…</deliveries></myagents-space-issue></system-reminder>` + 本地化可见提示 |
 | Cron 结果投送 IM session | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息` |
 
+command Trigger 命中时仍使用 `CRON_TASK` 这一兼容 tag；builder 在 hidden payload 中追加规范化 `<activation-event>`，只包含 event id/kind/time、reason code 与 untrusted handoff。Detector checkpoint、stderr、命令路径和 harness error 永不进入 Session。handoff 来自外部事实，必须被 XML escape 并明确作为不可信上下文；它不能覆盖 `task.md`、消息 role 或 Session/Runtime 配置。没有 Activation Event 的 always Task 保持原 reminder wire shape。
+
 相关但不是完整复用模板的入口：
 
 Space v2 的内部 trust boundary 不改变通用 reminder wire protocol：Cloud 提供权威 Registered Agent instruction/revision、transport 索引与轻量因果导航；Desktop 描述当前 CLI/workspace/Task 执行方法并组装 Prompt；Issue 用户文本必须有界 XML escape，不能伪造结构。Renderer 仍只消费外层 `myagents-space-issue` badge 与 reminder 后的 visible tail。已发布旧 Desktop 的 v1 结构继续由 Cloud 版本化 projection 支持，但不进入 0.3.2 builder。

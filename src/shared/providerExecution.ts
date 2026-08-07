@@ -11,10 +11,11 @@ import {
   type ProviderRoute,
 } from './providerRoute';
 import {
-  coercePermissionModeForRuntime,
-  getDefaultRuntimePermissionMode,
+  isRuntimePermissionMode,
   RUNTIME_CONFIG_PER_RUNTIME_FIELDS,
   type RuntimeConfig,
+  type RuntimeSource,
+  type RuntimeType,
 } from './types/runtime';
 
 export type RuntimeBackedProviderIdentity = {
@@ -51,9 +52,28 @@ const MANAGED_CODEX_PROVIDER_PERMISSION_TO_RUNTIME: Record<PermissionMode, strin
 const MANAGED_CODEX_RUNTIME_PERMISSION_TO_PROVIDER: Record<string, PermissionMode> = {
   suggest: 'plan',
   'auto-edit': 'auto',
-  'full-auto': 'fullAgency',
   'no-restrictions': 'fullAgency',
 };
+
+type ManagedCodexAgentIdentity = {
+  providerId?: string | null;
+  runtime?: string | null;
+  runtimeConfig?: { source?: string | null } | null;
+};
+
+/**
+ * Current Agent defaults keep managed Codex in the builtin/provider shape;
+ * the former codex + managed-provider shape remains readable. Any other
+ * explicit external runtime wins over a dormant providerId/source.
+ */
+export function agentUsesManagedCodexProvider(
+  agent: ManagedCodexAgentIdentity | null | undefined,
+): boolean {
+  if (agent?.providerId !== CODEX_SUBSCRIPTION_PROVIDER_ID) return false;
+  const runtime = agent.runtime ?? 'builtin';
+  return runtime === 'builtin'
+    || (runtime === 'codex' && agent.runtimeConfig?.source === 'managed-provider');
+}
 
 export function isRuntimeBackedProvider(
   provider: ProviderExecutionShape | null | undefined,
@@ -117,9 +137,38 @@ export function managedCodexProviderPermissionToRuntimePermission(
 ): string | undefined {
   const mode = nonEmpty(permissionMode);
   if (!mode) return undefined;
-  return MANAGED_CODEX_PROVIDER_PERMISSION_TO_RUNTIME[mode as PermissionMode]
-    ?? coercePermissionModeForRuntime(mode, 'codex')
-    ?? getDefaultRuntimePermissionMode('codex');
+  return MANAGED_CODEX_PROVIDER_PERMISSION_TO_RUNTIME[mode as PermissionMode];
+}
+
+/** Read-time projection for historical/session values. Never accepts the
+ * system-Codex-only `full-auto` value. */
+export function projectManagedCodexPermissionToRuntime(
+  permissionMode: string | null | undefined,
+): string | undefined {
+  const mode = nonEmpty(permissionMode);
+  if (!mode) return undefined;
+  return managedCodexProviderPermissionToRuntimePermission(mode)
+    ?? (mode === 'suggest' || mode === 'auto-edit' || mode === 'no-restrictions'
+      ? mode
+      : undefined);
+}
+
+export function isManagedCodexRuntimePermissionMode(
+  permissionMode: string | null | undefined,
+): boolean {
+  const mode = nonEmpty(permissionMode);
+  return mode === 'suggest' || mode === 'auto-edit' || mode === 'no-restrictions';
+}
+
+/** Exact new-input validator for the complete execution identity. */
+export function isPermissionModeForRuntimeIdentity(
+  permissionMode: string | null | undefined,
+  runtime: RuntimeType,
+  runtimeSource?: RuntimeSource,
+): boolean {
+  return runtime === 'codex' && runtimeSource === 'managed-provider'
+    ? isManagedCodexRuntimePermissionMode(permissionMode)
+    : isRuntimePermissionMode(permissionMode, runtime);
 }
 
 export function managedCodexRuntimePermissionToProviderPermission(
@@ -167,15 +216,13 @@ export function runtimeConfigForRuntimeBackedProvider(
  */
 export function runtimeConfigForRuntimeBackedProviderDefault(
   current?: RuntimeConfig,
-  overrides?: Pick<RuntimeConfig, 'permissionMode' | 'reasoningEffort'>,
+  overrides?: Pick<RuntimeConfig, 'reasoningEffort'>,
 ): RuntimeConfig | undefined {
   const next: RuntimeConfig = { ...(current ?? {}) };
   delete next.source;
   delete next.model;
+  delete next.permissionMode;
   delete next.additionalArgs;
-  if (overrides?.permissionMode !== undefined) {
-    next.permissionMode = overrides.permissionMode;
-  }
   if (overrides?.reasoningEffort !== undefined) {
     next.reasoningEffort = overrides.reasoningEffort;
   }
@@ -190,16 +237,18 @@ export function agentDefaultsForRuntimeBackedProvider(
   providerId: RuntimeBackedProviderIdentity['providerId'];
   model: string;
   runtime: 'builtin';
+  permissionMode?: PermissionMode;
   runtimeConfig: RuntimeConfig | undefined;
 } {
+  const permissionMode = overrides?.permissionMode === undefined
+    ? undefined
+    : (managedCodexRuntimePermissionToProviderPermission(overrides.permissionMode) ?? 'auto');
   return {
     providerId: identity.providerId,
     model: identity.model,
     runtime: 'builtin',
+    ...(permissionMode ? { permissionMode } : {}),
     runtimeConfig: runtimeConfigForRuntimeBackedProviderDefault(current, {
-      ...(overrides?.permissionMode !== undefined
-        ? { permissionMode: runtimeBackedProviderPermissionMode(identity, overrides.permissionMode) }
-        : {}),
       ...(overrides?.reasoningEffort !== undefined ? { reasoningEffort: overrides.reasoningEffort } : {}),
     }),
   };

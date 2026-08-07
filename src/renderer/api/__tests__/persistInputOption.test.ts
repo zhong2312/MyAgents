@@ -234,7 +234,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       },
       fields: {
         runtimeBackedProviderSelection: identity,
-        permissionMode: 'full-auto',
+        permissionMode: 'fullAgency',
       },
       patchProject: m.patchProject,
       patchAgentConfig: m.patchAgentConfig,
@@ -251,9 +251,9 @@ describe('persistInputOptionChange — disk write fanout', () => {
       providerId: 'codex-sub',
       model: 'gpt-5.4-codex',
       runtime: 'builtin',
+      permissionMode: 'fullAgency',
       runtimeConfig: {
         envPolicy: { proxy: 'terminal' },
-        permissionMode: 'full-auto',
       },
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith({
@@ -262,11 +262,11 @@ describe('persistInputOptionChange — disk write fanout', () => {
       providerExecutionIdentity: identity,
       model: 'gpt-5.4-codex',
       providerEnvJson: null,
-      permissionMode: 'full-auto',
+      permissionMode: 'no-restrictions',
     });
     expect(m.pushRuntimeConfigToSidecar).toHaveBeenCalledWith({
       model: 'gpt-5.4-codex',
-      permissionMode: 'full-auto',
+      permissionMode: 'no-restrictions',
     });
   });
 
@@ -299,9 +299,9 @@ describe('persistInputOptionChange — disk write fanout', () => {
       providerId: 'codex-sub',
       model: 'gpt-5.4-codex',
       runtime: 'builtin',
+      permissionMode: 'plan',
       runtimeConfig: {
         envPolicy: { proxy: 'myagents' },
-        permissionMode: 'suggest',
       },
     });
     expect(m.patchSnapshot).toHaveBeenCalledWith(expect.objectContaining({

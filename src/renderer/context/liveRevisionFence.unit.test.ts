@@ -4,7 +4,6 @@ import {
   beginLiveRevisionRestore,
   completeLiveRevisionRestore,
   ingestLiveRevisionEvent,
-  ownsLiveRevisionRestore,
   type BufferedLiveRevisionEvent,
 } from './liveRevisionFence';
 
@@ -19,14 +18,6 @@ function event(liveRevision: number, connectionGeneration = 1): BufferedLiveRevi
 }
 
 describe('live revision restore fence', () => {
-  it('lets only the current restore token release shared restore state', () => {
-    const first = beginLiveRevisionRestore(EMPTY_LIVE_REVISION_FENCE, 'session-a', 1);
-    const second = beginLiveRevisionRestore(first, 'session-a', 2);
-
-    expect(ownsLiveRevisionRestore(second, first.restoreToken)).toBe(false);
-    expect(ownsLiveRevisionRestore(second, second.restoreToken)).toBe(true);
-  });
-
   it('drops snapshot-covered events and replays the contiguous tail once', () => {
     let fence = beginLiveRevisionRestore(EMPTY_LIVE_REVISION_FENCE, 'session-a', 1);
     fence = ingestLiveRevisionEvent(fence, event(2)).fence;
@@ -53,15 +44,30 @@ describe('live revision restore fence', () => {
     expect(completed.fence.restoreToken).toBe(fence.restoreToken + 1);
   });
 
-  it('drops duplicates, applies the next revision, and resyncs on a new connection', () => {
+  it('continues a new connection when revisions stay contiguous and resyncs only on a gap', () => {
     let fence = beginLiveRevisionRestore(EMPTY_LIVE_REVISION_FENCE, 'session-a', 1);
     fence = completeLiveRevisionRestore(fence, fence.restoreToken, 7).fence;
 
     expect(ingestLiveRevisionEvent(fence, event(7)).action).toBe('drop');
     const next = ingestLiveRevisionEvent(fence, event(8));
     expect(next.action).toBe('apply');
-    const reconnected = ingestLiveRevisionEvent(next.fence, event(1, 2));
-    expect(reconnected.action).toBe('resync');
-    expect(reconnected.fence.buffered).toEqual([event(1, 2)]);
+    const reconnected = ingestLiveRevisionEvent(next.fence, event(9, 2));
+    expect(reconnected.action).toBe('apply');
+    expect(reconnected.fence.connectionGeneration).toBe(2);
+    const gap = ingestLiveRevisionEvent(reconnected.fence, event(11, 2));
+    expect(gap.action).toBe('resync');
+    expect(gap.fence.buffered).toEqual([event(11, 2)]);
+  });
+
+  it('starts a fresh revision epoch after a Sidecar replacement', () => {
+    let fence = beginLiveRevisionRestore(EMPTY_LIVE_REVISION_FENCE, 'session-a', 1);
+    fence = completeLiveRevisionRestore(fence, fence.restoreToken, 50).fence;
+
+    const restarted = beginLiveRevisionRestore(fence, 'session-a', 2);
+    const restored = completeLiveRevisionRestore(restarted, restarted.restoreToken, 0).fence;
+    const firstNewProcessEvent = ingestLiveRevisionEvent(restored, event(1, 2));
+
+    expect(firstNewProcessEvent.action).toBe('apply');
+    expect(firstNewProcessEvent.fence.lastAppliedRevision).toBe(1);
   });
 });

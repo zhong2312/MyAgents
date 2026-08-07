@@ -35,7 +35,7 @@ import {
 } from 'fs';
 import { join } from 'path';
 
-import type { LogEntry } from '../renderer/types/log';
+import type { LogEntry } from '../shared/types/log';
 import { LOGS_DIR, ensureLogsDir } from './logUtils';
 import { localDate } from '../shared/logTime';
 import { runLogRetentionSweep } from './log-retention';

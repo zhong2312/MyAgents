@@ -14,8 +14,8 @@
 //  - persist-on-mutation: callers write synchronously on every structural
 //    change. We do NOT rely on `beforeunload` (unreliable in Tauri WKWebView;
 //    update install exits from the Rust side — see App.handleRestartAndUpdate).
-//  - Restored tabs are mounted "cold" (no TabProvider, no sidecar) until first
-//    activation; this module only owns the persisted shape, not that lifecycle.
+//  - Hydration creates normal live Chat shapes with a pending sidecar
+//    disposition. App owns validation, merge, materialization, and rollback.
 
 import { MAX_TABS, type Tab } from "@/types/tab";
 import { isPendingSessionId } from "../../shared/constants";
@@ -26,7 +26,7 @@ const PERSIST_VERSION = 1 as const;
 
 /** The whitelisted, persisted shape of a restorable chat tab. Intentionally a
  *  subset of `Tab` — runtime-only fields (isGenerating / hasUnread /
- *  sidecarConfigDisposition / initialMessage / restoreState) are never stored. */
+ *  sidecarConfigDisposition / initialMessage) are never stored. */
 export interface PersistedTab {
   id: string;
   agentDir: string; // non-null (launcher tabs filtered out)
@@ -42,22 +42,20 @@ export interface PersistedTabState {
   activeTabId: string | null;
 }
 
-/** A tab is restorable iff it is a chat tab pointing at a real, on-disk
- *  session in a real workspace. Existence-on-disk is validated lazily at
- *  activation (App.activateRestoredTab); here we only enforce shape. */
-function isRestorable(
-  tab: Tab,
-): tab is Tab & { agentDir: string; sessionId: string } {
-  return (
-    tab.view === "chat" &&
-    (tab.workbenchAgentSurface === undefined ||
-      tab.workbenchAgentSurface.toolset !== undefined) &&
-    typeof tab.agentDir === "string" &&
-    tab.agentDir.length > 0 &&
-    typeof tab.sessionId === "string" &&
-    tab.sessionId.length > 0 &&
-    !isPendingSessionId(tab.sessionId)
-  );
+/** A tab is restorable iff it is a chat tab pointing at a real Session identity
+ *  in a real workspace. Existence-on-disk is validated when the user accepts
+ *  the restore pill; here we only enforce the persisted shape. */
+function isRestorable(tab: Tab): tab is Tab & { agentDir: string; sessionId: string } {
+    return (
+        tab.view === 'chat' &&
+        (tab.workbenchAgentSurface === undefined ||
+            tab.workbenchAgentSurface.toolset !== undefined) &&
+        typeof tab.agentDir === 'string' &&
+        tab.agentDir.length > 0 &&
+        typeof tab.sessionId === 'string' &&
+        tab.sessionId.length > 0 &&
+        !isPendingSessionId(tab.sessionId)
+    );
 }
 
 /**
@@ -225,37 +223,31 @@ export function loadPersistedTabs(): PersistedTabState | null {
   }
 }
 
-/** Hydrate a validated PersistedTabState into live `Tab` objects flagged
- *  `restoreState:'cold'` so App renders them as lightweight chrome (no
- *  TabProvider / sidecar) until first activation. Shared by the localStorage
- *  boot read (buildRestoredTabs) and the durable-handoff recovery path (see
- *  tabPersistenceDurable). */
-export function hydratePersistedState(state: PersistedTabState): {
-  tabs: Tab[];
-  activeTabId: string | null;
-} {
-  const tabs: Tab[] = state.tabs.map((t) => ({
-    id: t.id,
-    agentDir: t.agentDir,
-    sessionId: t.sessionId,
-    view: "chat",
-    title: t.title,
-    restoreState: "cold",
-    // Cold tabs aren't ensured yet and render a placeholder (NOT Chat), so this is
-    // never read by a mounted chat. activateRestoredTab resolves it to push|adopt
-    // (from result.isNew) before clearing restoreState on first activation.
-    sidecarConfigDisposition: "pending",
-    ...(t.workbenchToolset
-      ? {
-          initialMessage: {
-            text: "",
-            workbenchToolset: t.workbenchToolset,
-            configureWorkbenchToolsetOnly: true,
-          },
-        }
-      : {}),
-  }));
-  return { tabs, activeTabId: state.activeTabId };
+/** Hydrate a validated PersistedTabState into normal live Chat Tab shapes.
+ *  They remain only in the restore candidate until the user accepts the pill;
+ *  App validates and atomically mounts the surviving Tabs before resolving the
+ *  pending sidecar disposition. Shared by localStorage and durable recovery. */
+export function hydratePersistedState(state: PersistedTabState): { tabs: Tab[]; activeTabId: string | null } {
+    const tabs: Tab[] = state.tabs.map((t) => ({
+        id: t.id,
+        agentDir: t.agentDir,
+        sessionId: t.sessionId,
+        view: 'chat',
+        title: t.title,
+        // App commits this live Chat before ensure, matching normal persisted-
+        // session navigation. The exact ensure result resolves push|adopt.
+        sidecarConfigDisposition: 'pending',
+        ...(t.workbenchToolset
+            ? {
+                initialMessage: {
+                    text: '',
+                    workbenchToolset: t.workbenchToolset,
+                    configureWorkbenchToolsetOnly: true,
+                },
+            }
+            : {}),
+    }));
+    return { tabs, activeTabId: state.activeTabId };
 }
 
 /** Read + hydrate the localStorage-persisted tabs. Returns null when there's

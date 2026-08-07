@@ -11,7 +11,7 @@ type ManagementCall = (
   method?: 'GET' | 'POST',
   body?: Record<string, unknown>,
   requestOptions?: { timeoutMs?: number; parentSignal?: AbortSignal },
-) => Promise<Record<string, unknown>>;
+) => Promise<unknown>;
 
 type GuardOptions = {
   managementCall?: ManagementCall;
@@ -24,15 +24,6 @@ type QueryWithInitialization = {
 
 const MANAGEMENT_GUARD_TIMEOUT_MS = 2_000;
 const MIN_RETRY_AFTER_MS = 1_000;
-
-class SdkChildLaunchGuardRejectedError extends Error {
-  readonly code = 'SDK_CHILD_LAUNCH_GUARD_REJECTED';
-
-  constructor(detail: unknown) {
-    super(`MyAgents 运行保护状态已失效，已阻止启动 Claude 运行组件。请重启应用后重试。（${String(detail || 'unknown')}）`);
-    this.name = 'SdkChildLaunchGuardRejectedError';
-  }
-}
 
 function executableIdentity(executablePath: string): string {
   let canonicalPath = executablePath;
@@ -51,8 +42,8 @@ function executableIdentity(executablePath: string): string {
     .digest('hex');
 }
 
-function deterministicErrorCode(value: unknown): 'EPERM' | 'EACCES' | 'ENOEXEC' {
-  return value === 'EACCES' || value === 'ENOEXEC' ? value : 'EPERM';
+function deterministicErrorCode(value: unknown): 'EPERM' | 'EACCES' | 'ENOEXEC' | null {
+  return value === 'EPERM' || value === 'EACCES' || value === 'ENOEXEC' ? value : null;
 }
 
 function finiteRetryAfter(value: unknown): number {
@@ -61,19 +52,26 @@ function finiteRetryAfter(value: unknown): number {
     : MIN_RETRY_AFTER_MS;
 }
 
-function isTransportUnavailable(admission: Record<string, unknown>): boolean {
-  return admission.code === 'management_unavailable'
-    || admission.code === 'transport_outcome_unknown';
+function continueWithoutCircuit<T>(createQuery: () => T, reason: string): T {
+  console.warn(`[sdk-child-launch-guard] ${reason}; continuing without application circuit`);
+  return createQuery();
+}
+
+function responseRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 /**
  * Application-level admission around the SDK's child-process control plane.
  *
- * Rust owns the circuit because Session:Sidecar is 1:1: a process-local flag
- * would still allow every tab, IM bot, and background owner to retry the same
- * broken bundled executable. Management unavailability deliberately fails
- * open so a Rust control-plane outage cannot disable otherwise healthy SDK
- * execution.
+ * Rust owns the best-effort retry circuit because Session:Sidecar is 1:1: a
+ * process-local flag would still allow every tab, IM bot, and background owner
+ * to retry the same broken bundled executable. The circuit is not the SDK
+ * launch owner: only an explicit denial carrying a deterministic OS spawn
+ * error may veto a launch. Missing, stale, or malformed control-plane state
+ * fails open so lifecycle bookkeeping cannot disable an otherwise healthy SDK.
  */
 export async function createGuardedSdkQuery<T>(
   executablePath: string,
@@ -82,36 +80,44 @@ export async function createGuardedSdkQuery<T>(
 ): Promise<T> {
   const sidecarId = options.sidecarId ?? process.env.MYAGENTS_SIDECAR_ID?.trim();
   if (!sidecarId) {
-    // Standalone unit/dev callers without an app control plane remain usable.
-    // A production Sidecar with a management port but no identity is stale or
-    // misconfigured and must not bypass the application circuit.
-    if (!options.managementCall && !process.env.MYAGENTS_MANAGEMENT_PORT) return createQuery();
-    throw new SdkChildLaunchGuardRejectedError('missing sidecar identity');
+    return continueWithoutCircuit(createQuery, 'missing sidecar identity');
   }
 
   const call = options.managementCall ?? managementApi;
   const identity = executableIdentity(executablePath);
   const requestOptions = { timeoutMs: MANAGEMENT_GUARD_TIMEOUT_MS };
-  const admission = await call(
-    '/api/runtime/sdk-child/admit',
-    'POST',
-    { sidecarId, executableIdentity: identity },
-    requestOptions,
-  );
+  let admissionResult: unknown;
+  try {
+    admissionResult = await call(
+      '/api/runtime/sdk-child/admit',
+      'POST',
+      { sidecarId, executableIdentity: identity },
+      requestOptions,
+    );
+  } catch {
+    return continueWithoutCircuit(createQuery, 'management admission failed');
+  }
+  const admission = responseRecord(admissionResult);
+  if (!admission) {
+    return continueWithoutCircuit(createQuery, 'invalid admission response');
+  }
   if (admission.ok !== true) {
-    if (isTransportUnavailable(admission)) return createQuery();
-    throw new SdkChildLaunchGuardRejectedError(admission.code ?? admission.error);
+    const code = typeof admission.code === 'string' ? admission.code : 'invalid admission response';
+    return continueWithoutCircuit(createQuery, code);
   }
 
   if (admission.admitted !== true) {
     const errorCode = deterministicErrorCode(admission.errorCode);
+    if (admission.admitted !== false || !errorCode) {
+      return continueWithoutCircuit(createQuery, 'malformed circuit denial');
+    }
     const retryAfterMs = finiteRetryAfter(admission.retryAfterMs);
     throw new SdkChildLaunchCircuitOpenError(errorCode, retryAfterMs);
   }
 
   const admissionEpoch = admission.admissionEpoch;
   if (typeof admissionEpoch !== 'number' || !Number.isSafeInteger(admissionEpoch) || admissionEpoch <= 0) {
-    throw new SdkChildLaunchGuardRejectedError('missing admission epoch');
+    return continueWithoutCircuit(createQuery, 'missing admission epoch');
   }
 
   let settled = false;
@@ -123,19 +129,27 @@ export async function createGuardedSdkQuery<T>(
     if (settled) return;
     if (settleInFlight) return settleInFlight;
     settleInFlight = (async () => {
-      const result = await call(
-        '/api/runtime/sdk-child/settle',
-        'POST',
-        {
-          sidecarId,
-          executableIdentity: identity,
-          admissionEpoch,
-          outcome,
-          ...(errorCode ? { errorCode } : {}),
-        },
-        requestOptions,
-      );
-      if (result.ok === true) settled = true;
+      try {
+        const result = responseRecord(await call(
+          '/api/runtime/sdk-child/settle',
+          'POST',
+          {
+            sidecarId,
+            executableIdentity: identity,
+            admissionEpoch,
+            outcome,
+            ...(errorCode ? { errorCode } : {}),
+          },
+          requestOptions,
+        ));
+        if (result?.ok === true) {
+          settled = true;
+        } else {
+          console.warn('[sdk-child-launch-guard] invalid settlement response; ignoring');
+        }
+      } catch {
+        console.warn('[sdk-child-launch-guard] management settlement failed; ignoring');
+      }
     })().finally(() => {
       settleInFlight = null;
     });

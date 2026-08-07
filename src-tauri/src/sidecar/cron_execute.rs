@@ -16,7 +16,7 @@ pub struct CronExecutePayload {
     /// own runtime/model/MCP configuration.
     #[serde(default)]
     pub initialize_session: bool,
-    /// Session ID for activation tracking (prevents Sidecar from being killed during cron execution)
+    /// Session ID whose Task owner prevents Sidecar release during execution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +52,10 @@ pub struct CronExecutePayload {
     /// Schedule kind for cron reminder metadata ("at" | "every" | "cron").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule_kind: Option<String>,
+    /// System-owned envelope derived from a durable command Detector
+    /// activation. It is rendered as escaped untrusted data inside CRON_TASK.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activation_event: Option<crate::task_trigger::TaskActivationPayload>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -72,6 +76,9 @@ pub struct GoalExecutePayload {
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundTurnResponse {
     pub success: bool,
+    /// Runtime adapter accepted this exact Task queue id.
+    #[serde(default)]
+    pub turn_dispatched: bool,
     /// The exact runtime turn may still be alive. The scheduler must retain
     /// its queue identity until a later stop request confirms termination.
     #[serde(default)]
@@ -100,6 +107,7 @@ pub type GoalExecuteResponse = BackgroundTurnResponse;
 fn unconfirmed_transport_response(session_id: &str, error: String) -> BackgroundTurnResponse {
     BackgroundTurnResponse {
         success: false,
+        turn_dispatched: false,
         termination_unconfirmed: true,
         error: Some(error),
         ai_requested_exit: None,
@@ -199,7 +207,7 @@ pub async fn execute_cron_task<R: Runtime>(
 
 /// Execute one Session-owned Goal continuation through the existing
 /// SessionEngine transport. Goal ownership is independent from CronTask and
-/// is intentionally not projected into legacy cron session activations.
+/// remains represented only by its Task owner token.
 pub async fn execute_goal_turn<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
@@ -437,6 +445,7 @@ mod tests {
             interval_minutes: Some(60),
             execution_number: Some(1),
             schedule_kind: Some("every".to_string()),
+            activation_event: None,
         }
     }
 

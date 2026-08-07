@@ -2,7 +2,7 @@ import type { AgentConfig } from '../../shared/types/agent';
 import {
   buildRuntimeChangePatch,
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
+  projectPermissionModeForRuntime,
   type RuntimeSource,
   type RuntimeType,
 } from '../../shared/types/runtime';
@@ -10,7 +10,11 @@ import { coerceReasoningEffortSettingForRuntime } from '../../shared/reasoningEf
 import type { SessionMetadata } from '../types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { createConcreteProviderRoute, type ProviderRoute } from '../../shared/providerRoute';
-import { createRuntimeBackedProviderIdentity } from '../../shared/providerExecution';
+import {
+  agentUsesManagedCodexProvider,
+  createRuntimeBackedProviderIdentity,
+  managedCodexProviderPermissionToRuntimePermission,
+} from '../../shared/providerExecution';
 
 /**
  * Session config snapshot helpers (v0.1.69).
@@ -61,6 +65,37 @@ export type OwnedSessionSnapshot = Pick<
   | 'providerExecutionIdentity'
   | 'providerEnvJson'
 >;
+
+/** Clone the frozen execution identity owned by an existing Session branch source. */
+export function snapshotForForkedSession(
+  source: SessionMetadata,
+  legacyFallback?: OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'>,
+): OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'> {
+  const fallback = source.configSnapshotAt ? undefined : legacyFallback;
+  return {
+    runtime: source.runtime ?? fallback?.runtime ?? 'builtin',
+    runtimeSource: source.runtimeSource ?? fallback?.runtimeSource,
+    model: source.model ?? fallback?.model,
+    reasoningEffort: source.reasoningEffort ?? fallback?.reasoningEffort,
+    permissionMode: source.permissionMode ?? fallback?.permissionMode,
+    mcpEnabledServers: source.mcpEnabledServers
+      ? [...source.mcpEnabledServers]
+      : fallback?.mcpEnabledServers ? [...fallback.mcpEnabledServers] : undefined,
+    enabledPluginIds: source.enabledPluginIds
+      ? [...source.enabledPluginIds]
+      : fallback?.enabledPluginIds ? [...fallback.enabledPluginIds] : undefined,
+    enabledOfficialToolIds: source.enabledOfficialToolIds
+      ? [...source.enabledOfficialToolIds]
+      : fallback?.enabledOfficialToolIds ? [...fallback.enabledOfficialToolIds] : undefined,
+    providerId: source.providerId ?? fallback?.providerId,
+    providerRoute: source.providerRoute ?? fallback?.providerRoute,
+    providerExecutionIdentity: source.providerExecutionIdentity ?? fallback?.providerExecutionIdentity,
+    providerEnvJson: source.providerEnvJson ?? fallback?.providerEnvJson,
+    // A fork is always an owned Session. Legacy sources followed Agent config,
+    // so their caller supplies the effective owned snapshot at the fork boundary.
+    configSnapshotAt: source.configSnapshotAt ?? fallback?.configSnapshotAt ?? new Date().toISOString(),
+  };
+}
 // #324 — `reasoningEffort` is a DOCUMENTED divergence from the Rust mirror
 // (`runtime_change.rs::OwnedSessionSnapshot` does NOT carry it): Rust never
 // tracks effort state (it is deliberately not part of sync_ai_config, same
@@ -133,7 +168,10 @@ function shouldSnapshotManagedCodexProvider(
   const isExplicitManagedCodexRuntime =
     options?.runtimeOverride === 'codex'
     && options?.runtimeSourceOverride === 'managed-provider';
+  const managedProviderSelected = isExplicitManagedCodexRuntime
+    || agentUsesManagedCodexProvider(agent);
   return (isImplicitAgentRuntime || isExplicitManagedCodexRuntime)
+    && managedProviderSelected
     && options?.managedCodexProviderReady === true
     && agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
     && typeof agent.model === 'string'
@@ -204,10 +242,8 @@ export function snapshotForOwnedSession(
         agent.runtimeConfig?.reasoningEffort,
         providerExecutionIdentity.runtime,
       ),
-      permissionMode: coercePermissionModeForRuntime(
-        agent.runtimeConfig?.permissionMode,
-        providerExecutionIdentity.runtime,
-      ),
+      permissionMode: managedCodexProviderPermissionToRuntimePermission(agent.permissionMode)
+        ?? 'auto-edit',
       mcpEnabledServers: agent.mcpEnabledServers ? [...agent.mcpEnabledServers] : undefined,
       enabledPluginIds: agent.enabledPluginIds ? [...agent.enabledPluginIds] : undefined,
       enabledOfficialToolIds: agent.enabledOfficialToolIds ? [...agent.enabledOfficialToolIds] : undefined,
@@ -242,7 +278,7 @@ export function snapshotForOwnedSession(
       ? coerceReasoningEffortSettingForRuntime(snapshotAgent.runtimeConfig?.reasoningEffort, runtime)
       : snapshotAgent.reasoningEffort,
     permissionMode: isExternal
-      ? coercePermissionModeForRuntime(snapshotAgent.runtimeConfig?.permissionMode, runtime)
+      ? projectPermissionModeForRuntime(snapshotAgent.runtimeConfig?.permissionMode, runtime)
       : snapshotAgent.permissionMode,
     mcpEnabledServers: snapshotAgent.mcpEnabledServers ? [...snapshotAgent.mcpEnabledServers] : undefined,
     enabledPluginIds: snapshotAgent.enabledPluginIds ? [...snapshotAgent.enabledPluginIds] : undefined,

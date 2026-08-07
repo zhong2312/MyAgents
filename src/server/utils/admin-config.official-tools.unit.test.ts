@@ -16,7 +16,7 @@ function apiVisionConfig(overrides: Partial<AdminAppConfig> = {}): AdminAppConfi
     officialToolSettings: {
       imageUnderstanding: {
         providerId: 'google-gemini',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.6-flash',
       },
     },
     providerApiKeys: { 'google-gemini': 'gemini-key' },
@@ -31,7 +31,7 @@ describe('official image understanding availability', () => {
     expect(resolveImageUnderstandingToolAvailability(config)).toMatchObject({
       ok: true,
       providerId: 'google-gemini',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.6-flash',
     });
     expect(isImageUnderstandingToolCallable(config)).toBe(true);
     expect(getEffectiveOfficialToolIdsForSession(

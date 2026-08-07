@@ -92,7 +92,12 @@ function areMessagesEqual(prev: MessageProps, next: MessageProps): boolean {
   if (prev.exitPlanModeSlot !== next.exitPlanModeSlot) return false;
   // initialUserCollapsed is consumed only by the initial state of a user row.
   // Once mounted, DOM measurement and explicit user expansion own the state.
-  // onRewind/onRetry 不比较 — 通过 Chat.tsx useCallback([]) + ref 保证稳定
+  // Callback identities are stable, but optional action presence is row data:
+  // Codex rewind/fork availability changes after terminal anchor persistence and
+  // across the shared busy/idle operation gate.
+  if (Boolean(prev.onRewind) !== Boolean(next.onRewind)) return false;
+  if (Boolean(prev.onFork) !== Boolean(next.onFork)) return false;
+  // onRetry is always present and stable, so its identity remains intentionally ignored.
 
   const prevMsg = prev.message;
   const nextMsg = next.message;
@@ -106,8 +111,10 @@ function areMessagesEqual(prev: MessageProps, next: MessageProps): boolean {
   // Metadata change -> must re-render
   if (prevMsg.metadata?.source !== nextMsg.metadata?.source) return false;
 
-  // sdkUuid change -> must re-render (fork button depends on sdkUuid presence)
+  // Runtime anchor changes control Codex conversation actions.
   if (prevMsg.sdkUuid !== nextMsg.sdkUuid) return false;
+  if (prevMsg.runtimeTurnAnchor?.turnId !== nextMsg.runtimeTurnAnchor?.turnId) return false;
+  if (prevMsg.runtimeTurnAnchor?.rootUserMessageId !== nextMsg.runtimeTurnAnchor?.rootUserMessageId) return false;
 
   // Tail-fade gating depends on this flag even when content/id are unchanged.
   if (prevMsg.streamingTextActive !== nextMsg.streamingTextActive) return false;
@@ -238,7 +245,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           </button>
         </Tip>
       )}
-      {onFork && message.sdkUuid && (
+      {onFork && (message.sdkUuid || message.runtimeTurnAnchor) && (
         <Tip label={t('message.actions.fork')}>
           <button type="button"
             aria-label={t('message.actions.fork')}

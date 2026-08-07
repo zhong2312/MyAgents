@@ -21,7 +21,7 @@ export async function fetchJsonLargeValueRef(
   if (!isJsonLargeValueRef(value)) throw new Error('Invalid JSON large-value ref');
   // `/refs/:id` is the explicit large-value escape hatch and carries CORS
   // headers. Native fetch keeps the body off the Tauri invoke JSON channel;
-  // routing it through proxyFetch would re-buffer 256KiB–1MiB refs in IPC.
+  // routing it through invoke would re-buffer 256KiB–1MiB refs in IPC.
   const response = await fetch(`${baseUrl}/refs/${value.id}`);
   if (!response.ok) throw new Error(`JSON large-value ref returned ${response.status}`);
   const parsed: unknown = await response.json();

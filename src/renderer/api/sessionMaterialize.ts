@@ -1,6 +1,6 @@
 import type { SessionMetadata } from './sessionClient';
 import type { SessionSnapshotPatch } from './persistInputOption';
-import { getSessionPort, proxyFetch, upgradeSessionId as defaultUpgradeSessionId } from './tauriClient';
+import { sessionSidecarFetch, upgradeSessionId as defaultUpgradeSessionId } from './tauriClient';
 
 export type MaterializePhase = 'prepare' | 'commit' | 'rollback';
 
@@ -21,22 +21,24 @@ export type MaterializePostBody = {
 export type MaterializeTransport = {
     postCurrent: (body: MaterializePostBody) => Promise<MaterializeResponse>;
     postForSession?: (sessionId: string, body: MaterializePostBody) => Promise<MaterializeResponse>;
-    upgradeSessionId?: (oldSessionId: string, newSessionId: string) => Promise<boolean>;
+    upgradeSessionId?: (oldSessionId: string, newSessionId: string, tabId: string) => Promise<boolean>;
 };
 
 async function postMaterializeForSession(
     targetSessionId: string,
+    tabId: string,
     body: MaterializePostBody,
 ): Promise<MaterializeResponse> {
-    const port = await getSessionPort(targetSessionId);
-    if (port === null) {
-        throw new Error(`No ready sidecar for materialize session ${targetSessionId}.`);
-    }
-    const response = await proxyFetch(`http://127.0.0.1:${port}/api/session/materialize`, {
+    const response = await sessionSidecarFetch(
+        targetSessionId,
+        { type: 'tab', id: tabId },
+        '/api/session/materialize',
+        {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-    });
+        },
+    );
     const payload = await response.json().catch(() => ({})) as MaterializeResponse;
     if (!response.ok) {
         throw new Error(payload.error ?? `Materialize request failed with HTTP ${response.status}.`);
@@ -46,12 +48,14 @@ async function postMaterializeForSession(
 
 export async function materializePendingSessionConfig(params: {
     pendingSessionId: string;
+    tabId: string;
     workspacePath: string;
     snapshotPatch: SessionSnapshotPatch;
     transport: MaterializeTransport;
 }): Promise<{ sessionId: string; metadata: SessionMetadata }> {
     const postCurrent = params.transport.postCurrent;
-    const postForSession = params.transport.postForSession ?? postMaterializeForSession;
+    const postForSession = params.transport.postForSession
+        ?? ((sessionId, body) => postMaterializeForSession(sessionId, params.tabId, body));
     const upgradeSessionId = params.transport.upgradeSessionId ?? defaultUpgradeSessionId;
 
     const prepare = await postCurrent({
@@ -67,7 +71,7 @@ export async function materializePendingSessionConfig(params: {
     let rustUpgraded = false;
     let committed = false;
     try {
-        rustUpgraded = await upgradeSessionId(params.pendingSessionId, preparedSessionId);
+        rustUpgraded = await upgradeSessionId(params.pendingSessionId, preparedSessionId, params.tabId);
         if (!rustUpgraded) {
             await postCurrent({
                 workspacePath: params.workspacePath,
@@ -99,7 +103,7 @@ export async function materializePendingSessionConfig(params: {
                 }).catch((rollbackError) => {
                     console.warn('[sessionMaterialize] rollback on target sidecar failed:', rollbackError);
                 });
-                await upgradeSessionId(preparedSessionId, params.pendingSessionId).catch((rollbackError) => {
+                await upgradeSessionId(preparedSessionId, params.pendingSessionId, params.tabId).catch((rollbackError) => {
                     console.warn('[sessionMaterialize] Rust session id rollback failed:', rollbackError);
                 });
             } else {

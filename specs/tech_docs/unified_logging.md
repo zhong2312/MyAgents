@@ -54,10 +54,9 @@ Rust unit-test binary 不写用户真实的 `~/.myagents/logs/unified-*.log`；�
 ## 日志类型
 
 ```typescript
-// src/renderer/types/log.ts
-// Note: the 'bun' source tag is retained for backward-compat with historical
-// log entries and field names; v0.2.0+ all sidecar logs are emitted by Node.js
-// and displayed with the [NODE] label via SOURCE_LABELS in UnifiedLogsPanel.
+// src/shared/types/log.ts
+// The historical 'bun' source tag remains part of the persisted wire format.
+// Renderer presentation maps it to the current Node label.
 export type LogSource = 'bun' | 'rust' | 'react';
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
@@ -73,8 +72,11 @@ export interface LogEntry {
   requestId?: string;
   turnId?: string;
   runtime?: string;
+  runtimeSource?: string;
 }
 ```
+
+`src/shared/types/log.ts` 是 Renderer 与 Server 共用日志类型的唯一定义。`src/renderer/types/log.ts` 只做 type-only re-export，Server 不得反向依赖 Renderer 类型。
 
 ## 核心组件
 
@@ -208,7 +210,8 @@ console.log('[FrontendLogger] ...');  // 会被过滤掉
 useEffect(() => {
   return () => {
     forceFlushLogs();  // 确保日志不丢失
-    void stopAllSidecars();
+    // Sidecar 应用生命周期由 Rust RunEvent::ExitRequested 统一清理；
+    // React unmount 也可能来自 error recovery，不能在这里停止进程。
   };
 }, []);
 ```
@@ -262,7 +265,7 @@ for (const entry of entries) {
 
 ## Boot Banner
 
-应用启动和每个 Sidecar 创建时输出 `[boot]` 单行自检信息：
+应用启动时输出 Rust `[boot]` 自检；每个 Session Sidecar 完成 Runtime 初始化后输出 Node `[boot]` 自检。Global Sidecar 不创建 Session Runtime，因此没有第二行 Session 自检：
 
 ```
 [boot] v=0.3.1 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
@@ -346,7 +349,8 @@ grep -E '\[AppErrorBoundary\]|\[REACT\] \[ERROR\]' ~/.myagents/logs/unified-*.lo
 | `src/renderer/utils/frontendLogger.ts` | React console 拦截 |
 | `src/renderer/context/TabProvider.tsx` | 日志状态管理 |
 | `src/renderer/components/UnifiedLogsPanel.tsx` | 日志 UI 面板 |
-| `src/renderer/types/log.ts` | 日志类型定义 |
+| `src/shared/types/log.ts` | Renderer/Server 共用的日志 wire 类型定义 |
+| `src/renderer/types/log.ts` | Renderer 本地的 type-only re-export |
 | `src/server/logger.ts` | Node.js 日志拦截 |
 | `src/server/UnifiedLogger.ts` | 统一日志持久化 |
 | `src/server/AgentLogger.ts` | Agent 会话日志 |

@@ -92,7 +92,6 @@ html[data-theme-id='raycast'][data-color-scheme='light'] {
   --fb-line-input: rgb(3 3 3 / 0.07);
   --fb-line-thumb: rgb(3 3 3 / 0.12);
   --fb-drag-handle: rgb(3 3 3 / 0.18);
-  --fb-scroll-thumb: rgb(108 108 108 / 0.50);
   --line: rgb(3 3 3 / 0.10);
   --line-strong: rgb(3 3 3 / 0.18);
   --line-subtle: rgb(3 3 3 / 0.06);
@@ -203,7 +202,6 @@ html[data-theme-id='raycast'][data-color-scheme='dark'] {
   --fb-line-input: rgb(254 254 254 / 0.07);
   --fb-line-thumb: rgb(254 254 254 / 0.16);
   --fb-drag-handle: rgb(254 254 254 / 0.20);
-  --fb-scroll-thumb: rgb(153 153 153 / 0.55);
   --line: rgb(254 254 254 / 0.10);
   --line-strong: rgb(254 254 254 / 0.18);
   --line-subtle: rgb(254 254 254 / 0.06);

@@ -46,7 +46,6 @@ describe('serializeTabs', () => {
             isGenerating: true,
             hasUnread: true,
             sidecarConfigDisposition: 'adopt',
-            restoreState: 'cold',
             initialMessage: { text: 'secret draft' },
         });
         const state = serializeTabs([tab], 'a')!;
@@ -57,7 +56,6 @@ describe('serializeTabs', () => {
             title: 'Chat A',
         });
         expect(Object.keys(state.tabs[0])).not.toContain('isGenerating');
-        expect(Object.keys(state.tabs[0])).not.toContain('restoreState');
         expect(Object.keys(state.tabs[0])).not.toContain('initialMessage');
     });
 
@@ -189,12 +187,12 @@ describe('hydratePersistedState', () => {
         activeTabId: 'b',
     };
 
-    it('hydrates each persisted tab as a cold chat tab', () => {
+    it('hydrates each persisted tab as a live pending chat tab', () => {
         const { tabs, activeTabId } = hydratePersistedState(state);
         expect(activeTabId).toBe('b');
         expect(tabs).toEqual([
-            { id: 'a', agentDir: '/ws/a', sessionId: 's-a', view: 'chat', title: 'A', restoreState: 'cold', sidecarConfigDisposition: 'pending' },
-            { id: 'b', agentDir: '/ws/b', sessionId: 's-b', view: 'chat', title: 'B', restoreState: 'cold', sidecarConfigDisposition: 'pending' },
+            { id: 'a', agentDir: '/ws/a', sessionId: 's-a', view: 'chat', title: 'A', sidecarConfigDisposition: 'pending' },
+            { id: 'b', agentDir: '/ws/b', sessionId: 's-b', view: 'chat', title: 'B', sidecarConfigDisposition: 'pending' },
         ]);
     });
 });
@@ -259,11 +257,11 @@ describe('shouldOfferRestore (Issue #309 — startup behaviour)', () => {
 
 describe('planRestoreTabs (Issue #309 — pill restore merge)', () => {
     const launcher: Tab = { id: 'launch-1', agentDir: null, sessionId: null, view: 'launcher', title: 'New Tab', sidecarConfigDisposition: 'push' };
-    function cold(id: string, session: string): Tab {
-        return { id, agentDir: '/ws/a', sessionId: session, view: 'chat', title: id, restoreState: 'cold', sidecarConfigDisposition: 'pending' };
+    function restored(id: string, session: string): Tab {
+        return { id, agentDir: '/ws/a', sessionId: session, view: 'chat', title: id, sidecarConfigDisposition: 'pending' };
     }
     const candidate = {
-        tabs: [cold('r1', 's-1'), cold('r2', 's-2'), cold('r3', 's-3')],
+        tabs: [restored('r1', 's-1'), restored('r2', 's-2'), restored('r3', 's-3')],
         activeTabId: 'r2',
     };
 
@@ -299,6 +297,6 @@ describe('planRestoreTabs (Issue #309 — pill restore merge)', () => {
     it('returns null when every candidate tab is already open (all deduped)', () => {
         const open: Tab = { id: 'open-1', agentDir: '/ws/b', sessionId: 's-1', view: 'chat', title: 'Open', sidecarConfigDisposition: 'push' };
         // single candidate, already open, base is not a pristine launcher → nothing to add.
-        expect(planRestoreTabs([open], { tabs: [cold('r1', 's-1')], activeTabId: 'r1' })).toBeNull();
+        expect(planRestoreTabs([open], { tabs: [restored('r1', 's-1')], activeTabId: 'r1' })).toBeNull();
     });
 });

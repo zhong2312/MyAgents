@@ -37,16 +37,14 @@ export function decideMcpSync(params: {
   previousServers: readonly McpServerDefinition[];
   nextServers: readonly McpServerDefinition[];
   hasQuerySession: boolean;
-  isSnapshotted: boolean;
 }): {
   changed: boolean;
   shouldRestart: boolean;
-  reason?: 'unchanged' | 'no-active-session' | 'snapshot-authoritative' | 'fingerprint-changed';
+  reason?: 'unchanged' | 'no-active-session' | 'fingerprint-changed';
 } {
   const changed = mcpConfigFingerprint(params.previousServers) !== mcpConfigFingerprint(params.nextServers);
   if (!changed) return { changed: false, shouldRestart: false, reason: 'unchanged' };
   if (!params.hasQuerySession) return { changed: true, shouldRestart: false, reason: 'no-active-session' };
-  if (params.isSnapshotted) return { changed: true, shouldRestart: false, reason: 'snapshot-authoritative' };
   return { changed: true, shouldRestart: true, reason: 'fingerprint-changed' };
 }
 

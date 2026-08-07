@@ -252,7 +252,7 @@ interface ProxyHttpResponse {
 //
 // New model: App.tsx owns the active tab across every surface, and
 // TabProvider supplies mounted Chat tab/session context as a fallback.
-// `proxyFetch` calls `resolveCorrelation()`, which prefers App's active tab,
+// Owner-addressed control fetch calls `resolveCorrelation()`, which prefers App's active tab,
 // then focused/mounted Chat context as a last resort. Multiple TabProviders
 // coexist without clobbering Launcher/Settings/TaskCenter correlation.
 const mountedTabs = new Map<string, { sessionId?: string }>();
@@ -373,9 +373,18 @@ export function getActiveTabId(): string | undefined {
  * useEffect cleanup paths fired by tab close — hide the expected
  * lifecycle warning that would otherwise spam the unified log.
  */
-export async function proxyFetch(
-    url: string,
-    options?: RequestInit
+type ProxyWireRequest = {
+    url?: string;
+    path?: string;
+    method: string;
+    body?: string;
+    headers: Record<string, string> | null;
+};
+
+async function invokeProxyFetch(
+    browserUrl: string,
+    options: RequestInit | undefined,
+    invokeRequest: (request: ProxyWireRequest) => Promise<ProxyHttpResponse>,
 ): Promise<Response> {
     const signal = options?.signal;
     // Pre-check: caller already aborted (e.g., useEffect cleanup ran before
@@ -386,22 +395,7 @@ export async function proxyFetch(
 
     // Browser mode: use native fetch (Vite proxy handles CORS)
     if (!isTauri()) {
-        return fetch(url, options);
-    }
-
-    // GUARD: In Tauri mode, URLs MUST be absolute (http://127.0.0.1:PORT/...).
-    // Relative URLs (e.g., "/api/something") happen when the sidecar port could not
-    // be resolved (race condition: sidecar died between URL construction and send).
-    // Without this guard, reqwest fails with "relative URL without a base" which
-    // cascades into SSE disconnect → Global Sidecar restart → full UI re-render. (#78)
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        const truncated = url.length > 100 ? url.slice(0, 100) + '...' : url;
-        const error = new Error(
-            `[proxyFetch] Blocked relative URL: "${truncated}". ` +
-            'Sidecar port may not be resolved yet. This request will be dropped to prevent cascading failures.'
-        );
-        console.warn(error.message);
-        throw error;
+        return fetch(browserUrl, options);
     }
 
     const method = options?.method || 'GET';
@@ -435,13 +429,10 @@ export async function proxyFetch(
     }
 
     try {
-        const result = await invoke<ProxyHttpResponse>('proxy_http_request', {
-            request: {
-                url,
-                method,
-                body,
-                headers: Object.keys(headers).length > 0 ? headers : null,
-            }
+        const result = await invokeRequest({
+            method,
+            body,
+            headers: Object.keys(headers).length > 0 ? headers : null,
         });
 
         // Pattern 2 §2.3.4 / §E — Large body via sidecar ref. Rust streamed
@@ -503,7 +494,7 @@ export async function proxyFetch(
         }
 
         // Classify lifecycle vs genuine fault — mirrors the Rust side
-        // (sse_proxy.rs `proxy_http_request`), which already downgrades
+        // (sse_proxy.rs control dispatch), which already downgrades
         // localhost connect/send-class errors from ERROR to WARN. Without
         // this symmetric classification on the renderer side, every Tab
         // close / Sidecar replace produces a "REACT ERROR" line in the
@@ -527,14 +518,59 @@ export async function proxyFetch(
     }
 }
 
+function assertSidecarPath(path: string): void {
+    if (!path.startsWith('/') || path.startsWith('//')) {
+        throw new Error(`Sidecar request path must start with one '/': ${path}`);
+    }
+}
+
+export async function sessionSidecarFetch(
+    sessionIdHint: string,
+    owner: { type: 'tab' | 'companion'; id: string },
+    path: string,
+    options?: RequestInit,
+): Promise<Response> {
+    assertSidecarPath(path);
+    return invokeProxyFetch(path, options, (request) => invoke<ProxyHttpResponse>(
+        'session_sidecar_http_request',
+        {
+            sessionIdHint,
+            sidecarOwnerType: owner.type,
+            sidecarOwnerId: owner.id,
+            request: { ...request, path },
+        },
+    ));
+}
+
+export async function globalSidecarFetch(
+    path: string,
+    options?: RequestInit,
+): Promise<Response> {
+    assertSidecarPath(path);
+    return invokeProxyFetch(path, options, (request) => invoke<ProxyHttpResponse>(
+        'global_sidecar_http_request',
+        { request: { ...request, path } },
+    ));
+}
+
+export async function proxyAnalyticsFetch(
+    url: string,
+    options?: RequestInit,
+): Promise<Response> {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        throw new Error(`Analytics endpoint must be absolute: ${url}`);
+    }
+    return invokeProxyFetch(url, options, (request) => invoke<ProxyHttpResponse>(
+        'proxy_analytics_http_request',
+        { request: { ...request, url } },
+    ));
+}
+
 /**
  * POST JSON through Rust proxy
  */
 export async function proxyPostJson<T>(endpoint: string, data: unknown): Promise<T> {
-    const baseUrl = await getServerUrl();
-    const url = `${baseUrl}${endpoint}`;
-
-    const response = await proxyFetch(url, {
+    const response = await globalSidecarFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -578,10 +614,7 @@ export async function proxyPostJsonWithRetry<T>(
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
             // Use auto-restart URL getter for resilience
-            const baseUrl = await getServerUrlWithAutoRestart();
-            const url = `${baseUrl}${endpoint}`;
-
-            const response = await proxyFetch(url, {
+            const response = await globalSidecarFetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
@@ -779,11 +812,6 @@ export async function stopSseProxy(tabId: string): Promise<void> {
  *   A future Rust-side wait primitive (event-driven, zero polling) is the
  *   ideal end state — tracked as follow-up.
  *
- * Asymmetry note: `getGlobalServerUrl` / `getGlobalServerUrlWithWait` use a
- * separate event-driven mechanism (`globalSidecarReadyPromise`). The Global
- * Sidecar boots at App mount and races are rare there, but unifying the
- * three readiness styles (cache, polling, event) is tracked as follow-up.
- *
  * @param tabId - Tab identifier
  */
 export async function getTabServerUrl(tabId: string): Promise<string> {
@@ -890,9 +918,7 @@ export async function startGlobalSidecar(): Promise<SidecarStatus> {
 
     try {
         const status = await invoke<SidecarStatus>('cmd_start_global_sidecar');
-        const url = `http://127.0.0.1:${status.port}`;
-        tabServerUrls.set('__global__', url);
-        console.debug(`[tauriClient] Global sidecar started on port ${status.port}`);
+        console.debug('[tauriClient] Global sidecar started');
         return status;
     } catch (error) {
         console.error('[tauriClient] Failed to start global sidecar:', error);
@@ -912,13 +938,12 @@ function describeInvokeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
-async function readGlobalServerUrlFromRust(): Promise<string | null> {
+async function probeGlobalSidecarReady(): Promise<{ ready: true } | { ready: false; error: string }> {
     try {
-        const url = await invoke<string>('cmd_get_global_server_url');
-        tabServerUrls.set('__global__', url);
-        return url;
-    } catch {
-        return null;
+        await invoke<string>('cmd_get_global_server_url');
+        return { ready: true };
+    } catch (error) {
+        return { ready: false, error: describeInvokeError(error) };
     }
 }
 
@@ -956,14 +981,12 @@ export async function waitForGlobalSidecar(timeoutMs: number = 60000): Promise<v
         return;
     }
 
-    const cached = tabServerUrls.get('__global__');
-    if (cached !== undefined) return;
-
     // The ready promise is only a same-webview hint. Floating ball windows are
     // separate WebViews, so Rust's sidecar registry is the cross-window source
     // of truth. Probe it first, then keep polling it until the timeout.
-    const immediate = await readGlobalServerUrlFromRust();
-    if (immediate) return;
+    const immediate = await probeGlobalSidecarReady();
+    if (immediate.ready) return;
+    let lastError = immediate.error;
 
     if (!globalSidecarReadyPromise) {
         initGlobalSidecarReadyPromise();
@@ -989,72 +1012,19 @@ export async function waitForGlobalSidecar(timeoutMs: number = 60000): Promise<v
         if (timer) clearTimeout(timer);
 
         attempts++;
-        const url = await readGlobalServerUrlFromRust();
-        if (url) {
+        const probe = await probeGlobalSidecarReady();
+        if (probe.ready) {
             console.info(
                 `[tauriClient] Global sidecar ready after ${Date.now() - startedAt}ms (attempts=${attempts})`,
             );
             return;
         }
+        lastError = probe.error;
     }
 
-    let lastError = 'not running';
-    try {
-        await invoke<string>('cmd_get_global_server_url');
-    } catch (error) {
-        lastError = describeInvokeError(error);
-    }
     throw new Error(
         `Global sidecar startup timeout after ${timeoutMs}ms (attempts=${attempts}, last=${lastError})`,
     );
-}
-
-/**
- * Get global sidecar server URL (for Settings page)
- */
-export async function getGlobalServerUrl(): Promise<string> {
-    if (!isTauri()) {
-        return '';
-    }
-
-    const cached = tabServerUrls.get('__global__');
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    try {
-        const url = await invoke<string>('cmd_get_global_server_url');
-        tabServerUrls.set('__global__', url);
-        return url;
-    } catch (error) {
-        console.warn('[tauriClient] Global sidecar not running:', error);
-        throw new Error('Global sidecar is not running');
-    }
-}
-
-/**
- * Get global sidecar server URL, waiting for it to be ready if needed
- * This is the preferred method for components that need the global sidecar
- */
-export async function getGlobalServerUrlWithWait(): Promise<string> {
-    if (!isTauri()) {
-        return '';
-    }
-
-    // First check cache
-    const cached = tabServerUrls.get('__global__');
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    const immediate = await readGlobalServerUrlFromRust();
-    if (immediate) return immediate;
-
-    // Wait for sidecar to be ready
-    await waitForGlobalSidecar();
-
-    // Now get the URL
-    return getGlobalServerUrl();
 }
 
 /**
@@ -1089,128 +1059,16 @@ export function resetTabServerUrlCache(tabId: string): void {
     tabServerUrlPending.delete(tabId);
 }
 
-/**
- * Update Global Sidecar server URL cache
- * Called when the Rust health monitor auto-restarts the Global Sidecar on a new port
- */
-export function updateGlobalServerUrl(url: string): void {
-    tabServerUrls.set('__global__', url);
-}
-
-/** Drop a stale Global Sidecar URL after a transport-level failure. */
-export function resetGlobalServerUrlCache(): void {
-    tabServerUrls.delete('__global__');
-}
-
-// ============= Session Activation API =============
-// These functions support Session singleton constraint
-
-/** Session activation information */
-export interface SessionActivation {
-    session_id: string;
-    tab_id: string | null;
-    task_id: string | null;  // If activated by cron task, contains the task ID
-    port: number;
-    workspace_path: string;
-    is_cron_task: boolean;
-}
-
-/** Sidecar info for a workspace */
-export interface SidecarInfo {
-    port: number;
-    workspace_path: string;
-    is_healthy: boolean;
-}
-
-/**
- * Get activation status for a session
- * @param sessionId - Session identifier
- * @returns SessionActivation if session is activated, null if not
- */
-export async function getSessionActivation(sessionId: string): Promise<SessionActivation | null> {
-    if (!isTauri()) {
-        return null;
-    }
-
-    try {
-        return await invoke<SessionActivation | null>('cmd_get_session_activation', { sessionId });
-    } catch (error) {
-        console.error(`[tauriClient] Failed to get session activation for ${sessionId}:`, error);
-        return null;
-    }
-}
-
-/**
- * Activate a session (mark it as in-use by a Tab/Sidecar)
- * @param sessionId - Session identifier
- * @param tabId - Tab that owns this session (null for cron tasks)
- * @param port - Sidecar port
- * @param workspacePath - Workspace directory path
- * @param isCronTask - Whether this is a cron task activation
- */
-export async function activateSession(
+/** Atomically attach an ensured Tab to Rust's latest activation state. */
+export async function reconcileSessionTabActivation(
     sessionId: string,
-    tabId: string | null,
-    taskId: string | null,
-    port: number,
-    workspacePath: string,
-    isCronTask: boolean = false
-): Promise<void> {
-    if (!isTauri()) {
-        return;
-    }
-
-    try {
-        await invoke('cmd_activate_session', {
-            sessionId,
-            tabId: tabId ?? null,
-            taskId: taskId ?? null,
-            port,
-            workspacePath,
-            isCronTask,
-        });
-        console.debug(`[tauriClient] Session ${sessionId} activated by tab ${tabId || 'cron'}, task: ${taskId || 'none'}`);
-    } catch (error) {
-        console.error(`[tauriClient] Failed to activate session ${sessionId}:`, error);
-        throw error;
-    }
-}
-
-/**
- * Deactivate a session (mark it as no longer in-use)
- * @param sessionId - Session identifier
- */
-export async function deactivateSession(sessionId: string): Promise<void> {
-    if (!isTauri()) {
-        return;
-    }
-
-    try {
-        await invoke('cmd_deactivate_session', { sessionId });
-        console.debug(`[tauriClient] Session ${sessionId} deactivated`);
-    } catch (error) {
-        console.error(`[tauriClient] Failed to deactivate session ${sessionId}:`, error);
-        // Don't throw - deactivation should be best-effort
-    }
-}
-
-/**
- * Update a session's owning Tab (for Tab switching within same Sidecar)
- * @param sessionId - Session identifier
- * @param newTabId - New Tab identifier
- */
-export async function updateSessionTab(sessionId: string, newTabId: string | null | undefined): Promise<void> {
-    if (!isTauri()) {
-        return;
-    }
-
-    try {
-        await invoke('cmd_update_session_tab', { sessionId, newTabId: newTabId ?? null });
-        console.debug(`[tauriClient] Session ${sessionId} transferred to tab ${newTabId ?? 'none'}`);
-    } catch (error) {
-        console.error(`[tauriClient] Failed to update session tab for ${sessionId}:`, error);
-        throw error;
-    }
+    tabId: string,
+): Promise<boolean> {
+    if (!isTauri()) return true;
+    return await invoke<boolean>('cmd_reconcile_session_tab_activation', {
+        sessionId,
+        tabId,
+    });
 }
 
 
@@ -1383,7 +1241,8 @@ export async function getSessionGeneration(sessionId: string): Promise<number | 
  */
 export async function upgradeSessionId(
     oldSessionId: string,
-    newSessionId: string
+    newSessionId: string,
+    tabId: string,
 ): Promise<boolean> {
     if (!isTauri()) {
         return true;
@@ -1393,6 +1252,7 @@ export async function upgradeSessionId(
         const upgraded = await invoke<boolean>('cmd_upgrade_session_id', {
             oldSessionId,
             newSessionId,
+            tabId,
         });
         console.debug(`[tauriClient] upgradeSessionId: ${oldSessionId} -> ${newSessionId}, success=${upgraded}`);
         return upgraded;

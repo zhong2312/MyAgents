@@ -2,20 +2,22 @@ import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/
 import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
 import type { RuntimeType } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
-import type { EnqueueResult, PermissionMode, ProviderEnv, QueueCancelResult } from '../agent-session';
+import type { ProviderEnv } from '../provider-types';
 import type { InteractionScenario } from '../system-prompt';
 import type { SessionSource, TurnAnalyticsSource } from '../types/session';
 import type { SessionMessage } from '../types/session';
-import type { ExternalRuntimeConfigPatch, ImagePayload } from '../runtimes/types';
-import type { ExternalConfigSource } from '../runtimes/external-session';
+import type { ImagePayload } from '../runtimes/types';
 import type { InboxTurnMeta } from '../inbox/types';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { RegisteredAgentSessionOrigin, SessionOrigin } from '../../shared/session-origin';
 import type { SessionCompletionTerminal } from '../../shared/sessionCompletion';
+import type { RequiredSystemSkill } from '../../shared/systemSkills';
 import type {
   DispatchGuard,
+  DesktopDeliveryMode,
+  QueueCancelResult,
   TurnIdentity,
   TurnOwner,
   TurnTerminalObserver,
@@ -24,14 +26,13 @@ import type { AssistantChannelDelivery } from '../session-core/channel-delivery'
 
 export type SessionEngineKind = 'builtin' | 'external';
 
-export type RuntimeConfigPatch = ExternalRuntimeConfigPatch;
-
-export type { PermissionMode, ProviderEnv } from '../agent-session';
+export type { PermissionMode } from '../agent-session';
 
 export type DesktopMessageRequest = {
   text: string;
   images?: ImagePayload[];
-  permissionMode?: PermissionMode;
+  /** Product mode for builtin sessions; runtime-native mode for external sessions. */
+  permissionMode?: string;
   backgroundAgentPermissionMode?: BackgroundAgentPermissionMode;
   model?: string;
   providerRoute?: ProviderRoute;
@@ -56,7 +57,7 @@ export type DesktopAdmissionResult = {
   queued?: boolean;
   queueId?: string;
   isInFlight?: boolean;
-  deliveryMode?: EnqueueResult['deliveryMode'];
+  deliveryMode?: DesktopDeliveryMode;
   canCancel?: boolean;
   canForceExecute?: boolean;
   error?: string;
@@ -110,6 +111,17 @@ export type InboxMessageRequest = {
   allowLazySessionMaterialization?: boolean;
   analyticsOrigin?: SessionOrigin;
   birthOrigin?: SessionOrigin;
+  /** Stable request/turn identity used by guarded fresh-session admission. */
+  queueId?: string;
+  /** Final prepared-session claim at the Runtime dispatch boundary. */
+  beforeDispatch?: DispatchGuard;
+};
+
+export type InboxAdmissionResult = {
+  queued: boolean;
+  error?: string;
+  terminationUnconfirmed?: boolean;
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 export type BackgroundMessageRequest = {
@@ -143,6 +155,8 @@ export type InjectedTurnRequest = {
   reasoningEffort?: string;
   providerEnv?: ProviderEnv | 'subscription';
   providerRoute?: ProviderRoute;
+  /** Ephemeral owner-aware recovery for a route that becomes unavailable at final dispatch. */
+  providerRoutingRecovery?: string;
   runtimeConfig?: RuntimeConfig | null;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
@@ -165,6 +179,47 @@ export type InjectedTurnResult = {
   assistantMessagePresent?: boolean;
   text?: string;
   error?: string;
+  status?: number;
+};
+
+export type ScheduledTaskPreparation = {
+  kind: 'task';
+  initializeSession: boolean;
+  model?: string;
+  providerId?: string;
+  permissionMode?: string;
+  runtimeConfig?: RuntimeConfig;
+  mcpEnabledServers?: string[];
+  requiredSystemSkill?: RequiredSystemSkill;
+  beforeDispatch: DispatchGuard;
+};
+
+export type ScheduledGoalPreparation = {
+  kind: 'goal';
+  permissionMode?: string;
+};
+
+export type ScheduledTurnPreparationRequest = {
+  sessionId: string;
+  workspacePath: string;
+  scenario: InteractionScenario;
+  operation: ScheduledTaskPreparation | ScheduledGoalPreparation;
+};
+
+export type ScheduledTurnPreparationResult = {
+  success: boolean;
+  sessionId?: string;
+  permissionMode?: string;
+  model?: string;
+  providerEnv?: ProviderEnv | 'subscription';
+  providerRoute?: ProviderRoute;
+  /** Ephemeral owner-aware recovery retained through final provider materialization. */
+  providerRoutingRecovery?: string;
+  runtimeConfig?: RuntimeConfig | null;
+  beforeDispatch?: DispatchGuard;
+  release?: () => void | Promise<void>;
+  error?: string;
+  code?: 'session_bind_failed' | 'configuration_failed' | 'scenario_failed';
   status?: number;
 };
 
@@ -306,7 +361,19 @@ export type CapabilityOperationResult = {
   skippedLinks?: number;
   /** Outcome of the independent workspace checkpoint restoration during rewind. */
   fileRewindStatus?: 'complete' | 'partial' | 'failed' | 'not_attempted';
+  errorCode?: ConversationOperationErrorCode;
+  rewindScope?: 'conversation-only';
 };
+
+export type ConversationOperationErrorCode =
+  | 'unsupported_runtime'
+  | 'codex_update_required'
+  | 'session_busy'
+  | 'anchor_unavailable'
+  | 'native_fork_failed'
+  | 'persistence_failed'
+  | 'storage_consistency_error'
+  | 'restore_failed';
 
 export interface SessionEngine {
   kind: SessionEngineKind;
@@ -331,8 +398,8 @@ export interface SessionEngine {
   enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult>;
   cancelImRequest(requestId: string, reason?: string): Promise<ImCancelResult>;
   enqueueBackgroundMessage(request: BackgroundMessageRequest): Promise<ImAdmissionResult>;
-  enqueueInboxMessage(request: InboxMessageRequest): Promise<{ queued: boolean; error?: string }>;
-  ensureGoalSessionConfig(): Promise<{ success: boolean; error?: string }>;
+  enqueueInboxMessage(request: InboxMessageRequest): Promise<InboxAdmissionResult>;
+  prepareScheduledTurn(request: ScheduledTurnPreparationRequest): Promise<ScheduledTurnPreparationResult>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;
   stopTurn(options?: { preserveQueue?: boolean }): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
   stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
@@ -361,17 +428,6 @@ export interface SessionEngine {
     metadata?: unknown;
     error?: string;
   }>;
-  updateRuntimeConfig(
-    patch: RuntimeConfigPatch,
-    options?: { source?: ExternalConfigSource },
-  ): Promise<{ success: boolean; error?: string; skipped?: string }>;
-  prewarm(options: {
-    sessionId: string;
-    workspacePath: string;
-    model?: string;
-    permissionMode?: string;
-  }): Promise<Record<string, unknown>>;
-  restoreInitialSession(sessionId: string, workspacePath: string): boolean;
   respondPermission(
     requestId: string,
     decision: 'deny' | 'allow_once' | 'always_allow',
@@ -379,7 +435,6 @@ export interface SessionEngine {
   ): Promise<boolean>;
   respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
-  retryLastExternalUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
   forkAtAssistantMessage(messageId: string): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
@@ -388,11 +443,6 @@ export interface SessionEngine {
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,
   ): Promise<{ success: boolean; skipped?: string; error?: string }>;
-  switchToExistingSession(
-    sessionId: string,
-    workspacePath: string,
-    getSessionMetadata: (sessionId: string) => { runtime?: RuntimeType; runtimeSource?: RuntimeSource } | null | undefined,
-  ): Promise<{ success: boolean; sessionId?: string; error?: string; status?: number }>;
   resetForNewDesktopSession(workspacePath: string): Promise<{ success: boolean; sessionId?: string; error?: string }>;
   resetForNewImSession(
     workspacePath: string,

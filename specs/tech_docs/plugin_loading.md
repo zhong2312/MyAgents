@@ -137,7 +137,7 @@ Chat 输入框的 `/` 菜单有两类数据源：
 
 这条动态源是 plugin skills 可被手动 `/plugin:skill` 触发的唯一正确来源：MyAgents 不扫描 `~/.myagents/plugins/<id>/skills` 来重建 SDK 语义，也不解析 plugin 内组件。合并规则是本地静态源优先，SDK 只追加本地没有的命令，避免覆盖 `/goal` / `/loop` 这类 renderer client-action 或本地自定义命令。外部 Runtime 不消费 `chat:slash-commands`。
 
-新会话首轮存在 `pending-* → UUID` 的 session birth upgrade：SDK snapshot 可能先于 React prop 同步到达，也可能在 SSE stream 仍标记为 pending 时携带真实 `sessionId`。前端只有在内部 state 已经由后端事件采纳该真实 `sessionId`、父级 prop 只是从 pending 补同步时，才把它视为同一个 session 的 snapshot 迁移窗口并保留/接受匹配真实 `sessionId` 的 SDK commands；真正的 session switch / reset / load / external runtime 切换仍然清空该 volatile state。特别地，空 pending tab 切到已有历史 session 不是 birth upgrade，必须立即清空旧 snapshot。
+新会话首轮存在 `pending-* → UUID` 的 session birth upgrade：SDK snapshot 可能先于 React prop 同步到达，也可能在 SSE stream 仍标记为 pending 时携带真实 `sessionId`。前端只有在内部 state 已经由后端事件采纳该真实 `sessionId`、父级 prop 只是从 pending 补同步时，才把它视为同一个 session 的 snapshot 迁移窗口并保留/接受匹配真实 `sessionId` 的 SDK commands；真正的 reset / target replacement / external runtime 切换仍然清空该 volatile state。已有历史 Session 必须由 App new / jump / revive 目标 Tab，任何未建立 birth proof 的 target 变化都不是 birth upgrade，必须立即清空旧 snapshot。
 
 ---
 

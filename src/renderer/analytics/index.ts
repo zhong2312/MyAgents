@@ -59,7 +59,6 @@ export type {
   AssistantEntry,
   HistoryEntrySource,
   SessionNewParams,
-  SessionSwitchParams,
   WorkspaceOpenParams,
   HistoryOpenParams,
   TaskCreateParams,

@@ -448,7 +448,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("skills-config.json"),
-            r#"{"disabled":["myagents-memory-update","myagents-memory-gardener","myagents-memory-molt","myagents-cli","myagents-docs","prompt-writer"]}"#,
+            r#"{"disabled":["myagents-memory-update","myagents-memory-gardener","myagents-memory-molt","myagents-cli","myagents-task-automation","myagents-docs","prompt-writer"]}"#,
         )
         .unwrap();
 
@@ -459,6 +459,7 @@ mod tests {
             "myagents-memory-gardener",
             "myagents-memory-molt",
             "myagents-cli",
+            "myagents-task-automation",
             "myagents-docs",
         ] {
             assert!(!disabled.iter().any(|candidate| candidate == name));

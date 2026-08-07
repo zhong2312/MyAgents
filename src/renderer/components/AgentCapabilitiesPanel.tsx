@@ -305,7 +305,10 @@ export default memo(function AgentCapabilitiesPanel({
 
             {/* Expanded content - scrollable */}
             {isExpanded && (
-                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-2 space-y-2">
+                <div
+                    className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-2 space-y-2"
+                    style={{ scrollbarGutter: 'stable' }}
+                >
                     {/* Commands Group */}
                     {commandsCount > 0 && (
                         <div>

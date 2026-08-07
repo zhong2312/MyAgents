@@ -16,11 +16,13 @@ describe('ThemePresetSelect', () => {
       />,
     );
 
-    const trigger = screen.getByRole('button', { name: /Default Black/ });
+    const trigger = screen.getByRole('button', { name: /MyAgents Classic2/ });
     fireEvent.click(trigger);
-    const defaultBlackOption = screen.getAllByRole('button', { name: 'Default Black' })
+    const defaultBlackOption = screen.getAllByRole('button', { name: 'MyAgents Classic2' })
       .find(candidate => candidate !== trigger);
     expect(defaultBlackOption).toBeDefined();
+    expect(screen.getByRole('button', { name: 'MyAgents Light' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'MyAgents Classic' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sage' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Claude' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Absolutely' })).not.toBeInTheDocument();
@@ -32,7 +34,7 @@ describe('ThemePresetSelect', () => {
     expect(swatchGroup).not.toBeNull();
     expect(swatchGroup?.children).toHaveLength(2);
     expect(swatchGroup?.children[0]).toHaveStyle({ backgroundColor: '#111111' });
-    const label = within(defaultBlackOption!).getByText('Default Black');
+    const label = within(defaultBlackOption!).getByText('MyAgents Classic2');
     const indicator = defaultBlackOption?.querySelector('[data-selected-indicator]');
     expect(indicator).not.toBeNull();
     expect(label.compareDocumentPosition(indicator!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -55,12 +57,12 @@ describe('ThemePresetSelect', () => {
       />,
     );
 
-    const trigger = screen.getByRole('button', { name: /MyAgents Default/ });
+    const trigger = screen.getByRole('button', { name: /MyAgents Classic/ });
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole('button', { name: 'Linear' }));
 
-    expect(trigger).toHaveTextContent('MyAgents Default');
+    expect(trigger).toHaveTextContent('MyAgents Classic');
     await waitFor(() => expect(onPersistError).toHaveBeenCalledWith(failure));
-    expect(trigger).toHaveTextContent('MyAgents Default');
+    expect(trigger).toHaveTextContent('MyAgents Classic');
   });
 });

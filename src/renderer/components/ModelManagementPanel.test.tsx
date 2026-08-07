@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { i18n } from '@/i18n';
 import { DEFAULT_CONFIG, type AppConfig, type Provider } from '@/config/types';
+import type { DiscoveredModel } from '@/config/services/modelDiscoveryService';
 import ModelManagementPanel from './ModelManagementPanel';
 
 vi.mock('@/hooks/useCloseLayer', () => ({
@@ -33,9 +34,9 @@ function customProvider(models: Provider['models'] = []): Provider {
 
 function renderPanel(overrides: Partial<{
   provider: Provider;
-  onUpdateCustomProvider: (provider: Provider) => Promise<void>;
+  onUpdateCustomProvider: (provider: Provider, discoveredModels?: DiscoveredModel[]) => Promise<void>;
   onRefresh: () => Promise<void>;
-  discoveryAction: () => Promise<Array<{ id: string; displayName?: string }>>;
+  discoveryAction: () => Promise<DiscoveredModel[]>;
   discoveryUnavailableMessage: string;
 }> = {}) {
   const onUpdateCustomProvider = overrides.onUpdateCustomProvider ?? vi.fn(async () => undefined);
@@ -156,5 +157,54 @@ describe('ModelManagementPanel managed discovery', () => {
     renderPanel({ discoveryUnavailableMessage: 'Log in to Grok first' });
     expect(screen.getByText('Log in to Grok first')).toBeInTheDocument();
     expect(screen.queryByText('Configure an API Key first')).not.toBeInTheDocument();
+  });
+
+  it('fills missing capabilities on an already-active custom-provider model from discovery (#516)', async () => {
+    const onUpdateCustomProvider = vi.fn(async () => undefined);
+    const discoveryAction = vi.fn(async () => [
+      { id: 'DeepSeek-V4-Flash', contextLength: 1_048_576 },
+    ]);
+    renderPanel({
+      provider: customProvider([
+        {
+          model: 'DeepSeek-V4-Flash',
+          modelName: 'DeepSeek V4 Flash',
+          modelSeries: 'custom',
+        },
+      ]),
+      onUpdateCustomProvider,
+      discoveryAction,
+    });
+
+    await waitFor(() => expect(onUpdateCustomProvider).toHaveBeenCalledTimes(1));
+    expect(onUpdateCustomProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'fox',
+        models: [expect.objectContaining({
+          model: 'DeepSeek-V4-Flash',
+          contextLength: 1_048_576,
+        })],
+      }),
+      [{ id: 'DeepSeek-V4-Flash', contextLength: 1_048_576 }],
+    );
+  });
+
+  it('does not replace an explicit capability with a discovery value', async () => {
+    const onUpdateCustomProvider = vi.fn(async () => undefined);
+    renderPanel({
+      provider: customProvider([{
+        model: 'DeepSeek-V4-Flash',
+        modelName: 'DeepSeek V4 Flash',
+        modelSeries: 'custom',
+        contextLength: 262_144,
+      }]),
+      onUpdateCustomProvider,
+      discoveryAction: vi.fn(async () => [
+        { id: 'DeepSeek-V4-Flash', contextLength: 1_048_576 },
+      ]),
+    });
+
+    await waitFor(() => expect(screen.queryByText('Loading models...')).not.toBeInTheDocument());
+    expect(onUpdateCustomProvider).not.toHaveBeenCalled();
   });
 });

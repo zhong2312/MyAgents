@@ -324,9 +324,13 @@ describe('IssueDetailDrawer', () => {
 
     const uploadButton = screen.getByRole('button', { name: '上传附件' });
     const sendButton = screen.getByRole('button', { name: '发送评论' });
-    expect(uploadButton.parentElement).toHaveTextContent('上传附件');
-    expect(sendButton.parentElement).toHaveTextContent('发送评论');
-    expect(sendButton.parentElement).toHaveTextContent('⌘ + Enter');
+    await user.hover(uploadButton.parentElement!);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('上传附件');
+    await user.unhover(uploadButton.parentElement!);
+
+    await user.hover(sendButton.parentElement!);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('发送评论');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('⌘ + Enter');
     expect(sendButton).not.toHaveAttribute('title');
 
     const composer = screen.getByPlaceholderText('说说你的想法');

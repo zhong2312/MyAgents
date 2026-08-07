@@ -32,8 +32,8 @@ export interface HelperRequestInput {
     /**
      * Resume an existing helper session in a new Tab instead of starting a
      * fresh conversation. When set, `description`/`images`/picker are ignored
-     * — the handler routes to `handleLaunchProject(project, sessionId)` and
-     * Tab title is left to Chat.tsx's natural session-title flow.
+     * — the handler routes to the canonical existing-Session opener and leaves
+     * the title to Chat.tsx's natural session-title flow.
      */
     resumeSessionId?: string;
     /** Fine-grained helper launch location for session_new analytics. */

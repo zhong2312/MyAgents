@@ -20,6 +20,61 @@
 //   turn rides REST's liveStreamingMessage + live chunk events). These two pure
 //   predicates encode that coordination.
 
+import type { ContentBlock } from '@/types/chat';
+
+export function isRestoreActionBlocked(
+    phase: 'inactive' | 'restoring' | 'ready' | 'failed',
+): boolean {
+    return phase === 'restoring' || phase === 'failed';
+}
+
+/**
+ * Normalize the persisted wire representation once, before it reaches the
+ * visible message projection. Older transcripts may contain a JSON-stringified
+ * ContentBlock array; malformed or ordinary strings remain text.
+ */
+function isContentBlock(value: unknown): value is ContentBlock {
+    if (typeof value !== 'object' || value === null) return false;
+    const block = value as Record<string, unknown>;
+    switch (block.type) {
+        case 'text':
+            return typeof block.text === 'string';
+        case 'thinking':
+            return typeof block.thinking === 'string';
+        case 'tool_use':
+        case 'server_tool_use': {
+            if (typeof block.tool !== 'object' || block.tool === null) return false;
+            const tool = block.tool as Record<string, unknown>;
+            return typeof tool.id === 'string' && typeof tool.name === 'string';
+        }
+        default:
+            return false;
+    }
+}
+
+export function normalizeSessionMessageContent(
+    content: unknown,
+): string | ContentBlock[] {
+    if (Array.isArray(content)) {
+        return content.every(isContentBlock) ? content : JSON.stringify(content);
+    }
+    if (typeof content !== 'string') return '';
+    if (!content.startsWith('[') || !content.includes('"type"')) return content;
+
+    try {
+        const parsed = JSON.parse(content) as unknown;
+        if (
+            Array.isArray(parsed)
+            && parsed.every(isContentBlock)
+        ) {
+            return parsed as ContentBlock[];
+        }
+    } catch {
+        // Persisted plain text is allowed to resemble JSON.
+    }
+    return content;
+}
+
 /**
  * True iff history for `currentSessionId` was already authoritatively restored
  * from disk by loadSession. BOTH ids must be non-null AND equal — a null

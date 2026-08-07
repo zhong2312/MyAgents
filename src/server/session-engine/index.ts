@@ -4,11 +4,16 @@ export {
   getSessionEngine,
   getSessionEngineKind,
   getSessionRuntimeType,
+  prewarmExternalRuntimeAtSelector,
+  restoreInitialExternalSessionAtSelector,
+  retryLastExternalUserMessageAtSelector,
   stopActiveTurn,
   stopOwnedTurn,
   stopOwnedTurnByQueueId,
+  updateExternalRuntimeConfigAtSelector,
 } from './selector';
 export { goalOrchestrator } from './goal-orchestrator';
+export { withScheduledTurnDispatchLock } from './scheduled-turn-lock';
 export {
   beginTaskSessionBirth,
   runTaskSessionBirthAdmission,
@@ -24,6 +29,5 @@ export type {
   InjectedTurnRequest,
   InjectedTurnResult,
   SessionEngine,
-  RuntimeConfigPatch,
   SessionEngineKind,
 } from './types';

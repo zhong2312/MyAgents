@@ -1,3 +1,4 @@
+use super::manager::GlobalMonitorSnapshot;
 use super::*;
 
 // ============= Tab-based Multi-instance Commands =============
@@ -36,9 +37,31 @@ pub fn start_tab_sidecar<R: Runtime>(
     agent_dir: Option<PathBuf>,
 ) -> Result<u16, String> {
     let process_role = resolve_sidecar_process_role(tab_id, agent_dir.is_some())?;
+    let _lifecycle_spawn_permit = begin_lifecycle_spawn_permit()?;
+
+    if process_role == SidecarProcessRole::Global {
+        manager
+            .lock()
+            .map_err(|error| error.to_string())?
+            .request_global_sidecar_running("start-request");
+    }
+
+    start_tab_sidecar_admitted(app_handle, manager, tab_id, agent_dir, process_role)
+}
+
+/// Spawn one candidate after lifecycle admission and role validation. Public
+/// start requests establish standing Global demand before entering here;
+/// monitor retries reuse this candidate path without re-establishing demand
+/// after an explicit stop.
+fn start_tab_sidecar_admitted<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+    tab_id: &str,
+    agent_dir: Option<PathBuf>,
+    process_role: SidecarProcessRole,
+) -> Result<u16, String> {
     let is_global = process_role == SidecarProcessRole::Global;
 
-    let _update_spawn_permit = begin_update_spawn_permit()?;
     // Ensure file descriptor limit is high enough for Bun
     ensure_high_file_descriptor_limit();
 
@@ -47,9 +70,13 @@ pub fn start_tab_sidecar<R: Runtime>(
     // common case this returns immediately (cleanup finishes in ~50 ms).
     // 15 s is a generous upper bound; the new sysinfo-based cleanup is
     // bounded internally at ~3 s even with laggy processes.
-    wait_for_startup_cleanup(Duration::from_secs(15));
+    wait_for_startup_cleanup(Duration::from_secs(15))?;
 
     let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+
+    if is_global && !manager_guard.global_sidecar_is_desired() {
+        return Err("Global Sidecar start canceled because it is no longer desired".to_string());
+    }
 
     // Check if already running for this tab
     if let Some(instance) = manager_guard.get_instance_mut(tab_id) {
@@ -64,7 +91,14 @@ pub fn start_tab_sidecar<R: Runtime>(
     }
 
     // Remove stale instance if exists
-    manager_guard.remove_instance(tab_id);
+    let removed_instance = manager_guard.remove_instance(tab_id);
+    if is_global && removed_instance.is_some() {
+        // The CLI port file is only a projection of the current healthy
+        // generation. Once replacement retires that generation, the old port
+        // must not remain discoverable during readiness/backoff.
+        remove_global_port_file();
+    }
+    drop(removed_instance);
 
     // Find executables
     let node_path =
@@ -140,6 +174,13 @@ pub fn start_tab_sidecar<R: Runtime>(
     // Session Sidecars. Reserve a process-global generation before spawn and
     // inject the manager key instead of fabricating a Session identity.
     let sidecar_generation = manager_guard.next_generation(tab_id);
+    if is_global {
+        ulog_info!(
+            "[sidecar-global] action=candidate-reserved generation={} port={}",
+            sidecar_generation,
+            port
+        );
+    }
     cmd.env("MYAGENTS_SIDECAR_ID", tab_id);
     cmd.env(
         "MYAGENTS_SIDECAR_GENERATION",
@@ -163,15 +204,6 @@ pub fn start_tab_sidecar<R: Runtime>(
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    // Windows: CREATE_NO_WINDOW already applied by process_cmd::new()
-
-    // Unix: Make child a process group leader so kill(-PGID) kills the entire tree
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-
     // 关键诊断日志：打印当前可执行文件路径，确认运行的是正确版本
     ulog_info!("[sidecar] current_exe = {:?}", std::env::current_exe().ok());
 
@@ -184,7 +216,7 @@ pub fn start_tab_sidecar<R: Runtime>(
     );
 
     // Spawn
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = crate::process_cmd::spawn_tree(&mut cmd).map_err(|e| {
         manager_guard.clear_generation(tab_id);
         ulog_error!("[sidecar] Failed to spawn: {}", e);
         format!("Failed to spawn sidecar: {}", e)
@@ -257,6 +289,7 @@ pub fn start_tab_sidecar<R: Runtime>(
         healthy: false,
         is_global,
         session_delete_authority,
+        dispatch_gate: DispatchGate::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -298,8 +331,31 @@ pub fn start_tab_sidecar<R: Runtime>(
         Ok(()) => {
             // Mark as healthy
             let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+            if is_global {
+                let candidate_is_current = manager_guard.current_generation(tab_id)
+                    == sidecar_generation
+                    && manager_guard
+                        .get_instance(tab_id)
+                        .is_some_and(|instance| instance.port == port);
+                if !manager_guard.global_sidecar_is_desired() || !candidate_is_current {
+                    if candidate_is_current {
+                        manager_guard.remove_instance(tab_id);
+                        remove_global_port_file();
+                    }
+                    return Err(
+                        "Global Sidecar candidate is no longer current or desired".to_string()
+                    );
+                }
+            }
             if let Some(instance) = manager_guard.get_instance_mut(tab_id) {
                 instance.healthy = true;
+            }
+            if is_global {
+                ulog_info!(
+                    "[sidecar-global] action=candidate-ready generation={} port={}",
+                    sidecar_generation,
+                    port
+                );
             }
             Ok(port)
         }
@@ -309,7 +365,15 @@ pub fn start_tab_sidecar<R: Runtime>(
             let mut diag = e.clone();
 
             let mut manager_guard = manager.lock().map_err(|_| e.clone())?;
-            if let Some(instance) = manager_guard.get_instance_mut(tab_id) {
+            let candidate_is_current = manager_guard.get_instance(tab_id).is_some_and(|instance| {
+                !is_global
+                    || (manager_guard.current_generation(tab_id) == sidecar_generation
+                        && instance.port == port)
+            });
+            if candidate_is_current {
+                let instance = manager_guard
+                    .get_instance_mut(tab_id)
+                    .expect("current candidate remains present while manager is locked");
                 match instance.process.try_wait() {
                     Ok(Some(status)) => {
                         #[cfg(target_os = "windows")]
@@ -335,8 +399,20 @@ pub fn start_tab_sidecar<R: Runtime>(
                 // No need to .take() here (it was already taken at spawn time)
             }
 
-            // Remove the failed instance
-            manager_guard.remove_instance(tab_id);
+            // Remove only the exact failed Global generation. A concurrent
+            // legal start may already have installed a newer winner.
+            if candidate_is_current {
+                manager_guard.remove_instance(tab_id);
+                if is_global {
+                    remove_global_port_file();
+                    ulog_error!(
+                        "[sidecar-global] action=candidate-readiness-failed generation={} port={} error={}",
+                        sidecar_generation,
+                        port,
+                        diag
+                    );
+                }
+            }
 
             Err(diag)
         }
@@ -347,6 +423,10 @@ pub fn start_tab_sidecar<R: Runtime>(
 /// Each Tab has its own Sidecar, so stopping is straightforward
 pub fn stop_tab_sidecar(manager: &ManagedSidecarManager, tab_id: &str) -> Result<(), String> {
     let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+
+    if tab_id == GLOBAL_SIDECAR_ID {
+        manager_guard.request_global_sidecar_stopped("explicit-tab-stop");
+    }
 
     if let Some(instance) = manager_guard.remove_instance(tab_id) {
         ulog_info!(
@@ -359,14 +439,16 @@ pub fn stop_tab_sidecar(manager: &ManagedSidecarManager, tab_id: &str) -> Result
         ulog_debug!("[sidecar] No instance found for tab {}", tab_id);
     }
 
+    if tab_id == GLOBAL_SIDECAR_ID {
+        remove_global_port_file();
+    }
+
     Ok(())
 }
 
 /// Get the server URL for a specific Tab
-/// This function checks multiple sources:
-/// 1. Direct Tab sidecar instances (Global Sidecar)
-/// 2. Session-centric sidecars via session_activations
-/// 3. Legacy instances for backward compatibility
+/// Direct legacy instances remain addressable, while Session-centric lookup is
+/// resolved from the authoritative Tab owner token.
 pub fn get_tab_server_url(manager: &ManagedSidecarManager, tab_id: &str) -> Result<String, String> {
     let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
 
@@ -377,37 +459,9 @@ pub fn get_tab_server_url(manager: &ManagedSidecarManager, tab_id: &str) -> Resu
         }
     }
 
-    // Priority 2: Check session_activations to find the Session-centric sidecar
-    let activation_session = manager_guard
-        .session_activations
-        .values()
-        .find(|a| a.tab_id.as_deref() == Some(tab_id))
-        .map(|a| (a.session_id.clone(), a.port));
-
-    if let Some((session_id, port)) = activation_session {
-        // Verify the sidecar is still healthy in Session-centric storage
-        let is_healthy = manager_guard
-            .sidecars
-            .get_mut(&session_id)
-            .map(|s| s.is_ready_for_requests())
-            .unwrap_or(false)
-            || manager_guard
-                .instances
-                .values_mut()
-                .any(|i| i.port == port && i.is_running());
-
-        if is_healthy {
-            ulog_info!(
-                "[sidecar] Tab {} using session {} sidecar on port {} (via session_activation)",
-                tab_id,
-                session_id,
-                port
-            );
-            return Ok(format!("http://127.0.0.1:{}", port));
-        }
-    }
-
-    Err(format!("No running sidecar for tab {}", tab_id))
+    manager_guard
+        .resolve_session_sidecar_for_frontend_owner("", &SidecarOwner::Tab(tab_id.to_string()))
+        .map(|binding| binding.base_url())
 }
 
 /// Get status for a Tab's sidecar
@@ -431,29 +485,27 @@ pub fn get_tab_sidecar_status(
         });
     }
 
-    // Priority 2: Check session_activations for Session-centric sidecar
-    let activation_info = manager_guard
-        .session_activations
-        .values()
-        .find(|a| a.tab_id.as_deref() == Some(tab_id))
-        .map(|a| (a.session_id.clone(), a.port, a.workspace_path.clone()));
-
-    if let Some((session_id, port, workspace_path)) = activation_info {
-        // Check if the sidecar is healthy in Session-centric storage
-        let is_running = manager_guard
+    let tab_owner = SidecarOwner::Tab(tab_id.to_string());
+    let mut matching_sessions = manager_guard
+        .sidecars
+        .iter()
+        .filter_map(|(session_id, sidecar)| {
+            sidecar
+                .owners
+                .contains(&tab_owner)
+                .then_some(session_id.clone())
+        })
+        .collect::<Vec<_>>();
+    if matching_sessions.len() == 1 {
+        let session_id = matching_sessions.pop().expect("one matching Session");
+        let sidecar = manager_guard
             .sidecars
             .get_mut(&session_id)
-            .map(|s| s.is_ready_for_requests())
-            .unwrap_or(false)
-            || manager_guard
-                .instances
-                .values_mut()
-                .any(|i| i.port == port && i.is_running());
-
+            .expect("matching Session remains present while manager is locked");
         return Ok(SidecarStatus {
-            running: is_running,
-            port,
-            agent_dir: workspace_path,
+            running: sidecar.is_ready_for_requests(),
+            port: sidecar.port,
+            agent_dir: sidecar.workspace_path.to_string_lossy().into_owned(),
         });
     }
 
@@ -471,23 +523,65 @@ pub fn start_global_sidecar<R: Runtime>(
     manager: &ManagedSidecarManager,
 ) -> Result<u16, String> {
     let port = start_tab_sidecar(app_handle, manager, GLOBAL_SIDECAR_ID, None)?;
-    // Write port file so the CLI can discover the running sidecar
-    write_global_port_file(port);
+    publish_global_port_if_current(manager, port)?;
     Ok(port)
 }
 
-/// Check Global Sidecar status.
-/// Returns:
-/// - None: sidecar was never started (no instance in manager) → skip
-/// - Some((port, true, created_at)):  process alive → do HTTP health check (if past grace)
-/// - Some((port, false, created_at)): process dead → needs restart immediately
+/// Publish CLI discovery only while the same healthy candidate is still the
+/// manager-owned current Global. Holding the manager lock across validation
+/// and write orders this projection against an explicit stop.
+fn publish_global_port_if_current(
+    manager: &ManagedSidecarManager,
+    port: u16,
+) -> Result<(), String> {
+    let mut guard = manager.lock().map_err(|error| error.to_string())?;
+    if !guard.global_sidecar_is_desired() || guard.current_generation(GLOBAL_SIDECAR_ID) == 0 {
+        return Err("Global Sidecar stopped before publishing its CLI port".to_string());
+    }
+    let instance = guard
+        .get_instance_mut(GLOBAL_SIDECAR_ID)
+        .ok_or_else(|| "Global Sidecar candidate disappeared before CLI publish".to_string())?;
+    if instance.port != port || !instance.is_running() {
+        return Err(
+            "Global Sidecar candidate is not current and healthy for CLI publish".to_string(),
+        );
+    }
+    write_global_port_file(port);
+    Ok(())
+}
+
+/// Retry the canonical Global candidate only while manager-owned standing
+/// demand still exists. Unlike a user start request, this must never recreate
+/// demand after an explicit stop raced with the monitor.
+fn restart_global_sidecar_if_desired<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+) -> Result<Option<u16>, String> {
+    let _lifecycle_spawn_permit = begin_lifecycle_spawn_permit()?;
+    {
+        let guard = manager.lock().map_err(|error| error.to_string())?;
+        if !guard.global_sidecar_is_desired() {
+            return Ok(None);
+        }
+    }
+
+    let port = start_tab_sidecar_admitted(
+        app_handle,
+        manager,
+        GLOBAL_SIDECAR_ID,
+        None,
+        SidecarProcessRole::Global,
+    )?;
+    publish_global_port_if_current(manager, port)?;
+    Ok(Some(port))
+}
+
+/// Atomically snapshot Global standing demand and its current candidate.
 fn check_global_sidecar_status(
     manager: &ManagedSidecarManager,
-) -> Option<(u16, bool, std::time::Instant)> {
-    let mut guard = manager.lock().ok()?;
-    let instance = guard.get_instance_mut(GLOBAL_SIDECAR_ID)?;
-    let created_at = instance.created_at;
-    Some((instance.port, instance.is_running(), created_at))
+) -> Result<GlobalMonitorSnapshot, String> {
+    let mut guard = manager.lock().map_err(|error| error.to_string())?;
+    Ok(guard.global_monitor_snapshot())
 }
 
 /// How often to poll session-state for the turn wake-lock. Idle sleep triggers
@@ -589,6 +683,203 @@ pub async fn monitor_turn_wake_lock(
 /// hung process within ~30s. A DEAD process is restarted immediately —
 /// liveness is unambiguous, only HTTP-readiness is blip-prone.
 const GLOBAL_HEALTH_FAIL_THRESHOLD: u32 = 2;
+const GLOBAL_MAX_RESTART_FAILURES: u32 = 5;
+const GLOBAL_CHECK_INTERVAL_SECS: u64 = 15;
+const GLOBAL_MAX_BACKOFF_SECS: u64 = 300;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalRestartSource {
+    DesiredMissing,
+    PresentDead {
+        port: u16,
+        created_at: std::time::Instant,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GlobalMonitorCycle<T> {
+    Idle,
+    RestartAttempted {
+        source: GlobalRestartSource,
+        result: T,
+    },
+    InspectPresent {
+        port: u16,
+        created_at: std::time::Instant,
+    },
+}
+
+/// One executable monitor-cycle seam. A missing desired candidate and an
+/// unambiguously dead present candidate both invoke the injected restart path;
+/// stopped state never does. Production injects the real spawn path, while
+/// tests inject deterministic `Err -> Ok` outcomes without a fault API.
+async fn run_global_monitor_cycle<T, Restart, RestartFuture>(
+    snapshot: GlobalMonitorSnapshot,
+    restart: Restart,
+) -> GlobalMonitorCycle<T>
+where
+    Restart: FnOnce(GlobalRestartSource) -> RestartFuture,
+    RestartFuture: std::future::Future<Output = T>,
+{
+    match snapshot {
+        GlobalMonitorSnapshot::Stopped => GlobalMonitorCycle::Idle,
+        GlobalMonitorSnapshot::DesiredMissing => GlobalMonitorCycle::RestartAttempted {
+            source: GlobalRestartSource::DesiredMissing,
+            result: restart(GlobalRestartSource::DesiredMissing).await,
+        },
+        GlobalMonitorSnapshot::Present {
+            port,
+            process_alive: false,
+            created_at,
+        } => {
+            let source = GlobalRestartSource::PresentDead { port, created_at };
+            GlobalMonitorCycle::RestartAttempted {
+                source,
+                result: restart(source).await,
+            }
+        }
+        GlobalMonitorSnapshot::Present {
+            port,
+            process_alive: true,
+            created_at,
+        } => GlobalMonitorCycle::InspectPresent { port, created_at },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalRestartAttemptStatus {
+    Succeeded,
+    Failed,
+    Stopped,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GlobalRestartAttemptResult {
+    Succeeded(u16),
+    Failed(String),
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GlobalRestartTransition {
+    restart_failures: u32,
+    health_failures: u32,
+    emit_restarted: bool,
+}
+
+/// Pure settlement for one monitor-owned restart attempt. The monitor keeps
+/// retry scheduling local, while standing demand remains manager-owned.
+fn global_restart_attempt_transition(
+    status: GlobalRestartAttemptStatus,
+    restart_failures: u32,
+    health_failures: u32,
+) -> GlobalRestartTransition {
+    match status {
+        GlobalRestartAttemptStatus::Succeeded => GlobalRestartTransition {
+            restart_failures: 0,
+            health_failures: 0,
+            emit_restarted: true,
+        },
+        GlobalRestartAttemptStatus::Failed => GlobalRestartTransition {
+            restart_failures: restart_failures.saturating_add(1),
+            health_failures,
+            emit_restarted: false,
+        },
+        GlobalRestartAttemptStatus::Stopped => GlobalRestartTransition {
+            restart_failures: 0,
+            health_failures: 0,
+            emit_restarted: false,
+        },
+    }
+}
+
+async fn run_global_sidecar_restart(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+) -> GlobalRestartAttemptResult {
+    let app_clone = app_handle.clone();
+    let mgr_clone = manager.clone();
+    match tokio::task::spawn_blocking(move || {
+        restart_global_sidecar_if_desired(&app_clone, &mgr_clone)
+    })
+    .await
+    {
+        Ok(Ok(Some(port))) => GlobalRestartAttemptResult::Succeeded(port),
+        Ok(Ok(None)) => GlobalRestartAttemptResult::Stopped,
+        Ok(Err(error)) => GlobalRestartAttemptResult::Failed(error),
+        Err(error) => GlobalRestartAttemptResult::Failed(format!(
+            "spawn_blocking failed during global sidecar restart: {}",
+            error
+        )),
+    }
+}
+
+fn settle_global_sidecar_restart(
+    app_handle: &AppHandle,
+    result: GlobalRestartAttemptResult,
+    consecutive_restart_failures: &mut u32,
+    consecutive_health_failures: &mut u32,
+) {
+    use crate::logger;
+
+    let status = match &result {
+        GlobalRestartAttemptResult::Succeeded(_) => GlobalRestartAttemptStatus::Succeeded,
+        GlobalRestartAttemptResult::Failed(_) => GlobalRestartAttemptStatus::Failed,
+        GlobalRestartAttemptResult::Stopped => GlobalRestartAttemptStatus::Stopped,
+    };
+
+    let transition = global_restart_attempt_transition(
+        status,
+        *consecutive_restart_failures,
+        *consecutive_health_failures,
+    );
+    *consecutive_restart_failures = transition.restart_failures;
+    *consecutive_health_failures = transition.health_failures;
+
+    match result {
+        GlobalRestartAttemptResult::Succeeded(new_port) => {
+            let new_url = format!("http://127.0.0.1:{}", new_port);
+            logger::info(
+                app_handle,
+                format!(
+                    "[sidecar] Global sidecar auto-restarted on port {} ({})",
+                    new_port, new_url
+                ),
+            );
+            if transition.emit_restarted {
+                let _ = app_handle.emit("global-sidecar:restarted", &new_url);
+            }
+        }
+        GlobalRestartAttemptResult::Failed(error) => {
+            let next_retry_secs = global_restart_backoff_secs(*consecutive_restart_failures);
+            if *consecutive_restart_failures >= GLOBAL_MAX_RESTART_FAILURES {
+                ulog_error!(
+                    "[sidecar] Failed to auto-restart global sidecar ({} consecutive failures, next_retry_secs={}): {}",
+                    consecutive_restart_failures,
+                    next_retry_secs,
+                    error
+                );
+            } else {
+                ulog_error!(
+                    "[sidecar] Failed to auto-restart global sidecar (attempt {}, next_retry_secs={}): {}",
+                    consecutive_restart_failures,
+                    next_retry_secs,
+                    error
+                );
+            }
+        }
+        GlobalRestartAttemptResult::Stopped => {
+            ulog_info!("[sidecar-global] action=restart-canceled reason=explicit-stop");
+        }
+    }
+}
+
+fn global_restart_backoff_secs(restart_failures: u32) -> u64 {
+    std::cmp::min(
+        GLOBAL_CHECK_INTERVAL_SECS.saturating_mul(2u64.saturating_pow(restart_failures)),
+        GLOBAL_MAX_BACKOFF_SECS,
+    )
+}
 
 /// Pure restart decision for the global sidecar health monitor. Extracted so
 /// the "don't kill on a single transient blip" rule (#236) is unit-testable
@@ -622,10 +913,6 @@ pub async fn monitor_global_sidecar(
     use crate::logger;
     use std::sync::atomic::Ordering::Relaxed;
 
-    const CHECK_INTERVAL_SECS: u64 = 15;
-    const MAX_RESTART_FAILURES: u32 = 5;
-    const MAX_BACKOFF_SECS: u64 = 300; // 5 minutes
-
     let mut consecutive_restart_failures: u32 = 0;
     // #236: consecutive HTTP-health misses while the process is still alive.
     // Reset on a healthy probe or a dead process; a restart only fires once it
@@ -643,17 +930,13 @@ pub async fn monitor_global_sidecar(
         // Subsequent iterations: normal interval or backoff on restart failures
         if is_first_check {
             is_first_check = false;
-            tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(GLOBAL_CHECK_INTERVAL_SECS)).await;
         } else if consecutive_restart_failures > 0 {
             // Exponential backoff: 30s, 60s, 120s, 240s, 300s, 300s, ...
-            let backoff = std::cmp::min(
-                CHECK_INTERVAL_SECS
-                    .saturating_mul(2u64.saturating_pow(consecutive_restart_failures)),
-                MAX_BACKOFF_SECS,
-            );
+            let backoff = global_restart_backoff_secs(consecutive_restart_failures);
             tokio::time::sleep(Duration::from_secs(backoff)).await;
         } else {
-            tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(GLOBAL_CHECK_INTERVAL_SECS)).await;
         }
 
         if shutdown.load(Relaxed) {
@@ -670,15 +953,54 @@ pub async fn monitor_global_sidecar(
             continue;
         }
 
-        // Check process status (cheap, no HTTP)
-        let (port, process_alive, created_at) = match check_global_sidecar_status(&manager) {
-            Some(status) => status,
-            None => {
-                // No instance to watch — drop any stale health-failure streak so
-                // a future instance starts clean (Codex review hardening, #236).
-                consecutive_health_failures = 0;
+        // Read standing demand and current process state under one manager
+        // lock. A desired-but-missing Global is pending recovery work.
+        let snapshot = match check_global_sidecar_status(&manager) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                ulog_error!("[sidecar-global] action=snapshot-error error={}", error);
                 continue;
             }
+        };
+        let restart_attempt = consecutive_restart_failures.saturating_add(1);
+        let cycle = run_global_monitor_cycle(snapshot, |source| {
+            let app_handle = &app_handle;
+            let manager = &manager;
+            async move {
+                match source {
+                    GlobalRestartSource::DesiredMissing => ulog_warn!(
+                        "[sidecar-global] action=restart source=desired-missing attempt={}",
+                        restart_attempt
+                    ),
+                    GlobalRestartSource::PresentDead { port, created_at } => ulog_warn!(
+                        "[sidecar-global] action=restart source=present-dead port={} age={:?} attempt={}",
+                        port,
+                        created_at.elapsed(),
+                        restart_attempt
+                    ),
+                }
+                run_global_sidecar_restart(app_handle, manager).await
+            }
+        })
+        .await;
+
+        let (port, created_at) = match cycle {
+            GlobalMonitorCycle::Idle => {
+                consecutive_health_failures = 0;
+                consecutive_restart_failures = 0;
+                continue;
+            }
+            GlobalMonitorCycle::RestartAttempted { result, .. } => {
+                consecutive_health_failures = 0;
+                settle_global_sidecar_restart(
+                    &app_handle,
+                    result,
+                    &mut consecutive_restart_failures,
+                    &mut consecutive_health_failures,
+                );
+                continue;
+            }
+            GlobalMonitorCycle::InspectPresent { port, created_at } => (port, created_at),
         };
 
         // Startup grace period: skip health checks for recently-created instances.
@@ -687,42 +1009,29 @@ pub async fn monitor_global_sidecar(
         // triggers an unnecessary restart that cascades into frontend timeout (#58).
         let age = created_at.elapsed();
         if age < Duration::from_secs(STARTUP_GRACE_SECS) {
-            if !process_alive {
-                // Process died during startup — still worth restarting, but log clearly
-                ulog_warn!(
-                    "[sidecar] Global sidecar on port {} died during startup (age {:?}), restarting",
-                    port, age
-                );
-                // Fall through to restart below
-            } else {
-                // Within grace period and process alive — skip check. A freshly
-                // created instance hasn't earned any failures yet; clear the
-                // streak so grace doesn't carry one over (Codex review, #236).
-                consecutive_health_failures = 0;
-                continue;
-            }
+            // Dead candidates were restarted by `run_global_monitor_cycle`.
+            // A live candidate in grace has not earned any failures yet.
+            consecutive_health_failures = 0;
+            continue;
         }
 
-        let http_healthy = if process_alive {
-            // Process alive → verify with HTTP health check (blocking)
-            tokio::task::spawn_blocking(move || check_sidecar_http_health(port))
-                .await
-                .unwrap_or(false)
-        } else {
-            false
-        };
+        // The cycle already handled a dead process; verify the live candidate
+        // with the existing blocking HTTP probe.
+        let http_healthy = tokio::task::spawn_blocking(move || check_sidecar_http_health(port))
+            .await
+            .unwrap_or(false);
 
         // #236: don't restart a still-alive global on a single transient HTTP
         // blip — require GLOBAL_HEALTH_FAIL_THRESHOLD consecutive misses.
         let (needs_restart, next_failures) = global_restart_decision(
-            process_alive,
+            true,
             http_healthy,
             consecutive_health_failures,
             GLOBAL_HEALTH_FAIL_THRESHOLD,
         );
         consecutive_health_failures = next_failures;
 
-        if process_alive && !http_healthy && !needs_restart {
+        if !http_healthy && !needs_restart {
             ulog_warn!(
                 "[sidecar] Global sidecar on port {} HTTP health check failed ({}/{}) — alive, deferring restart (transient blip guard)",
                 port, consecutive_health_failures, GLOBAL_HEALTH_FAIL_THRESHOLD
@@ -737,7 +1046,7 @@ pub async fn monitor_global_sidecar(
 
         ulog_warn!(
             "[sidecar] Global sidecar on port {} is unhealthy (alive={}, health_failures={}), auto-restarting...",
-            port, process_alive, consecutive_health_failures
+            port, true, consecutive_health_failures
         );
 
         // Mark the existing instance as unhealthy so start_global_sidecar() won't
@@ -747,55 +1056,36 @@ pub async fn monitor_global_sidecar(
         {
             if let Ok(mut guard) = manager.lock() {
                 if let Some(instance) = guard.get_instance_mut(GLOBAL_SIDECAR_ID) {
-                    instance.healthy = false;
+                    if instance.port == port {
+                        instance.healthy = false;
+                    }
                 }
             }
         }
 
-        let app_clone = app_handle.clone();
-        let mgr_clone = manager.clone();
-        match tokio::task::spawn_blocking(move || start_global_sidecar(&app_clone, &mgr_clone))
-            .await
-        {
-            Ok(Ok(new_port)) => {
-                consecutive_restart_failures = 0;
-                consecutive_health_failures = 0; // fresh process — clear the blip streak
-                let new_url = format!("http://127.0.0.1:{}", new_port);
-                logger::info(
-                    &app_handle,
-                    format!(
-                        "[sidecar] Global sidecar auto-restarted on port {} ({})",
-                        new_port, new_url
-                    ),
-                );
-                let _ = app_handle.emit("global-sidecar:restarted", &new_url);
-            }
-            Ok(Err(e)) => {
-                consecutive_restart_failures += 1;
-                if consecutive_restart_failures >= MAX_RESTART_FAILURES {
-                    ulog_error!("[sidecar] Failed to auto-restart global sidecar ({} consecutive failures, backing off): {}", consecutive_restart_failures, e);
-                } else {
-                    ulog_error!(
-                        "[sidecar] Failed to auto-restart global sidecar (attempt {}): {}",
-                        consecutive_restart_failures,
-                        e
-                    );
-                }
-            }
-            Err(e) => {
-                consecutive_restart_failures += 1;
-                ulog_error!(
-                    "[sidecar] spawn_blocking failed during global sidecar restart: {}",
-                    e
-                );
-            }
-        }
+        ulog_warn!(
+            "[sidecar-global] action=restart source=present-unhealthy attempt={}",
+            consecutive_restart_failures.saturating_add(1)
+        );
+        let result = run_global_sidecar_restart(&app_handle, &manager).await;
+        settle_global_sidecar_restart(
+            &app_handle,
+            result,
+            &mut consecutive_restart_failures,
+            &mut consecutive_health_failures,
+        );
     }
 }
 
 #[cfg(test)]
 mod global_restart_decision_tests {
-    use super::global_restart_decision;
+    use super::{
+        global_restart_attempt_transition, global_restart_backoff_secs, global_restart_decision,
+        run_global_monitor_cycle, GlobalMonitorCycle, GlobalRestartAttemptResult,
+        GlobalRestartAttemptStatus, GlobalRestartSource,
+    };
+    use crate::sidecar::manager::GlobalMonitorSnapshot;
+    use crate::sidecar::SidecarManager;
 
     const T: u32 = 2; // GLOBAL_HEALTH_FAIL_THRESHOLD in tests
 
@@ -834,6 +1124,111 @@ mod global_restart_decision_tests {
             global_restart_decision(true, false, after_recover, T),
             (false, 1)
         );
+    }
+
+    #[tokio::test]
+    async fn failed_candidate_dispatches_a_real_second_cycle_and_success_settles_once() {
+        use std::cell::Cell;
+
+        let mut manager = SidecarManager::new();
+        manager.request_global_sidecar_running("test-start");
+
+        let attempts = Cell::new(0_u32);
+        let first_attempts = &attempts;
+        let mut restarted_events = 0;
+        let first_cycle = run_global_monitor_cycle(
+            GlobalMonitorSnapshot::Present {
+                port: 31419,
+                process_alive: false,
+                created_at: std::time::Instant::now(),
+            },
+            move |source| async move {
+                first_attempts.set(first_attempts.get() + 1);
+                assert!(matches!(source, GlobalRestartSource::PresentDead { .. }));
+                GlobalRestartAttemptResult::Failed("candidate #1 readiness failed".to_string())
+            },
+        )
+        .await;
+        let first_result = match first_cycle {
+            GlobalMonitorCycle::RestartAttempted { result, .. } => result,
+            other => panic!("dead candidate must dispatch restart, got {other:?}"),
+        };
+        let first = global_restart_attempt_transition(
+            match first_result {
+                GlobalRestartAttemptResult::Failed(_) => GlobalRestartAttemptStatus::Failed,
+                other => panic!("first attempt must fail, got {other:?}"),
+            },
+            0,
+            T,
+        );
+        assert_eq!(first.restart_failures, 1);
+        assert_eq!(first.health_failures, T);
+        assert!(!first.emit_restarted);
+        assert_eq!(global_restart_backoff_secs(first.restart_failures), 30);
+
+        assert!(matches!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::DesiredMissing
+        ));
+        let second_attempts = &attempts;
+        let second_cycle = run_global_monitor_cycle(
+            manager.global_monitor_snapshot(),
+            move |source| async move {
+                second_attempts.set(second_attempts.get() + 1);
+                assert_eq!(source, GlobalRestartSource::DesiredMissing);
+                GlobalRestartAttemptResult::Succeeded(31420)
+            },
+        )
+        .await;
+        let second_result = match second_cycle {
+            GlobalMonitorCycle::RestartAttempted { result, .. } => result,
+            other => panic!("desired-missing must dispatch restart, got {other:?}"),
+        };
+        let second = global_restart_attempt_transition(
+            match second_result {
+                GlobalRestartAttemptResult::Succeeded(31420) => {
+                    GlobalRestartAttemptStatus::Succeeded
+                }
+                other => panic!("second attempt must succeed, got {other:?}"),
+            },
+            first.restart_failures,
+            first.health_failures,
+        );
+        restarted_events += u32::from(second.emit_restarted);
+
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(second.restart_failures, 0);
+        assert_eq!(second.health_failures, 0);
+        assert_eq!(restarted_events, 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_stop_between_attempts_prevents_the_second_restart_dispatch() {
+        use std::cell::Cell;
+
+        let mut manager = SidecarManager::new();
+        manager.request_global_sidecar_running("test-start");
+        let first = global_restart_attempt_transition(GlobalRestartAttemptStatus::Failed, 0, T);
+        assert_eq!(first.restart_failures, 1);
+
+        manager.request_global_sidecar_stopped("test-stop-between-attempts");
+        let attempts = Cell::new(0_u32);
+        let cycle = run_global_monitor_cycle(manager.global_monitor_snapshot(), |_| async {
+            attempts.set(attempts.get() + 1);
+            GlobalRestartAttemptResult::Failed("must not run".to_string())
+        })
+        .await;
+        assert!(matches!(cycle, GlobalMonitorCycle::Idle));
+        assert_eq!(attempts.get(), 0);
+
+        let stopped = global_restart_attempt_transition(
+            GlobalRestartAttemptStatus::Stopped,
+            first.restart_failures,
+            first.health_failures,
+        );
+        assert_eq!(stopped.restart_failures, 0);
+        assert_eq!(stopped.health_failures, 0);
+        assert!(!stopped.emit_restarted);
     }
 }
 
@@ -946,7 +1341,66 @@ pub async fn forward_terminal_events_to_renderer(
 }
 
 /// Monitor all session sidecars and auto-restart dead ones that still have owners.
-/// Mirrors the `monitor_global_sidecar()` pattern with backoff tracking.
+/// Recovery identity, retained owners, and retry clock all remain manager-owned;
+/// this task is only a periodic dispatcher.
+fn recovery_dispatch_candidates(
+    manager: &mut SidecarManager,
+    now: std::time::Instant,
+    update_quiesced: bool,
+) -> Vec<String> {
+    if update_quiesced {
+        Vec::new()
+    } else {
+        manager.due_session_recoveries(now)
+    }
+}
+
+#[cfg(test)]
+mod session_recovery_dispatch_tests {
+    use super::recovery_dispatch_candidates;
+    use crate::sidecar::{SidecarManager, SidecarOwner, SidecarState};
+
+    #[test]
+    fn update_quiesce_pauses_without_losing_active_or_recovering_work() {
+        let mut manager = SidecarManager::new();
+        manager.insert_test_ready_frontend_sidecar(
+            "session-a",
+            32001,
+            SidecarOwner::Tab("tab-a".to_string()),
+        );
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("sidecar")
+            .state = SidecarState::Dead;
+        let now = std::time::Instant::now();
+
+        assert!(recovery_dispatch_candidates(&mut manager, now, true).is_empty());
+        assert!(manager.sidecars.contains_key("session-a"));
+        assert!(!manager.has_session_recovery("session-a"));
+
+        assert_eq!(
+            recovery_dispatch_candidates(&mut manager, now, false),
+            vec!["session-a".to_string()]
+        );
+        let epoch = manager
+            .recovering_sidecars
+            .get("session-a")
+            .expect("manager-owned recovery")
+            .epoch;
+        let failure = manager
+            .record_session_recovery_failure("session-a", Some(epoch), now)
+            .expect("retry state");
+        let retry_at = now + failure.retry_after;
+
+        assert!(recovery_dispatch_candidates(&mut manager, retry_at, true).is_empty());
+        assert!(manager.has_session_recovery("session-a"));
+        assert_eq!(
+            recovery_dispatch_candidates(&mut manager, retry_at, false),
+            vec!["session-a".to_string()]
+        );
+    }
+}
+
 pub async fn monitor_session_sidecars(
     app_handle: AppHandle,
     manager: ManagedSidecarManager,
@@ -955,75 +1409,28 @@ pub async fn monitor_session_sidecars(
     use std::sync::atomic::Ordering::Relaxed;
 
     const CHECK_INTERVAL_SECS: u64 = 15;
-    const MAX_RESTART_FAILURES: u32 = 5;
 
     // Initial delay: let app fully start before monitoring
     tokio::time::sleep(Duration::from_secs(20)).await;
     ulog_info!("[sidecar] Session sidecar health monitor started");
-
-    // This map tracks retry counts only. The dead SessionSidecar itself stays
-    // manager-owned so there is no parallel owner snapshot.
-    let mut recovery: HashMap<String, u32> = HashMap::new();
 
     loop {
         tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
         if shutdown.load(Relaxed) {
             break;
         }
-        if is_update_shutdown_in_progress() {
-            recovery.clear();
-            continue;
-        }
-
-        // Phase 1: Scan sidecars for newly dead sessions, merge into recovery queue
-        {
-            let mut guard = match manager.lock() {
-                Ok(g) => g,
-                Err(_) => continue,
-            };
-            for (sid, sc) in guard.sidecars.iter_mut() {
-                if sc.is_dead() && !sc.owners.is_empty() && !recovery.contains_key(sid) {
-                    recovery.insert(sid.clone(), 0);
-                }
+        let update_quiesced = is_update_shutdown_in_progress();
+        let session_ids = match manager.lock() {
+            Ok(mut guard) => {
+                recovery_dispatch_candidates(&mut guard, std::time::Instant::now(), update_quiesced)
             }
-        }
-
-        // Remove entries that recovered, lost all owners, or were removed by a
-        // legitimate lifecycle transition.
-        recovery.retain(|sid, _| {
-            manager
-                .lock()
-                .map(|mut g| {
-                    let dead_in_active_map = g
-                        .sidecars
-                        .get_mut(sid)
-                        .map(|sc| sc.is_dead() && !sc.owners.is_empty())
-                        .unwrap_or(false);
-                    let retained_for_restart = g
-                        .recovering_sidecars
-                        .get(sid)
-                        .is_some_and(|sc| !sc.owners.is_empty());
-                    dead_in_active_map || retained_for_restart
-                })
-                .unwrap_or(false)
-        });
-
-        if recovery.is_empty() {
-            continue;
-        }
-
-        // Phase 2: Attempt restart for each entry in recovery queue
-        let session_ids: Vec<String> = recovery.keys().cloned().collect();
+            Err(_) => continue,
+        };
         for session_id in session_ids {
             if shutdown.load(Relaxed) {
                 break;
             }
-
-            if recovery
-                .get(&session_id)
-                .map(|failures| *failures >= MAX_RESTART_FAILURES)
-                .unwrap_or(true)
-            {
+            if is_update_shutdown_in_progress() {
                 continue;
             }
 
@@ -1032,55 +1439,33 @@ pub async fn monitor_session_sidecars(
             // delete can observe the deliberate manager gap.
             let _lifecycle = acquire_session_lifecycle(&[&session_id]).await;
 
-            // Move the dead process object into manager-owned recovery state.
-            // It remains the owner authority while the replacement starts, so
-            // synchronous release paths can still remove owners during the
-            // readiness wait.
             let restart_identity = {
-                let mut guard = match manager.lock() {
+                let guard = match manager.lock() {
                     Ok(g) => g,
                     Err(_) => continue,
                 };
-                if !guard.recovering_sidecars.contains_key(&session_id) {
-                    let should_restart = guard
-                        .sidecars
-                        .get_mut(&session_id)
-                        .map(|sidecar| sidecar.is_dead() && !sidecar.owners.is_empty())
-                        .unwrap_or(false);
-                    if should_restart {
-                        if let Some(sidecar) = guard.remove_sidecar(&session_id) {
-                            guard
-                                .recovering_sidecars
-                                .insert(session_id.clone(), sidecar);
-                        }
-                    }
-                }
-                guard
-                    .recovering_sidecars
-                    .get(&session_id)
-                    .and_then(|sidecar| {
-                        sidecar.owners.iter().next().cloned().map(|first_owner| {
-                            (
-                                first_owner,
-                                sidecar.workspace_path.clone(),
-                                sidecar.runtime.clone(),
-                                sidecar.runtime_source.clone(),
-                            )
-                        })
-                    })
+                guard.recovery_restart_identity(&session_id, std::time::Instant::now())
             };
-            let Some((first_owner, workspace, pinned_runtime, pinned_runtime_source)) =
-                restart_identity
-            else {
-                recovery.remove(&session_id);
+            let Some(restart_identity) = restart_identity else {
                 continue;
             };
+            ulog_info!(
+                "[sidecar-recovery] action=dispatch session={} epoch={} dead_generation={} candidate_generation={:?} attempt={} next_retry_ms=0",
+                session_id,
+                restart_identity.epoch,
+                restart_identity.dead_generation,
+                restart_identity.prior_candidate_generation,
+                restart_identity.attempt
+            );
             // Pin the restart to the same runtime the dead sidecar was running
-            // with. `ensure_session_sidecar` would otherwise re-resolve runtime
-            // via an owner-type branch (Agent → agent config; Tab/Cron → session
-            // meta → agent fallback), and since `owners[0]` is picked from a
-            // HashSet the owner type is non-deterministic when a session has
-            // mixed owners. See cross-review Codex #2.
+            // with. Owner iteration order cannot change the process identity.
+            let recovery_epoch = restart_identity.epoch;
+            let dead_generation = restart_identity.dead_generation;
+            let attempt = restart_identity.attempt;
+            let first_owner = restart_identity.owner;
+            let workspace = restart_identity.workspace_path;
+            let pinned_runtime = restart_identity.runtime;
+            let pinned_runtime_source = restart_identity.runtime_source;
             let mgr = manager.clone();
             let app = app_handle.clone();
             let sid = session_id.clone();
@@ -1094,35 +1479,27 @@ pub async fn monitor_session_sidecars(
                     first_owner,
                     pinned_runtime,
                     pinned_runtime_source,
+                    Some(recovery_epoch),
                 )
             })
             .await;
 
             match restart {
                 Ok(Ok(result)) => {
-                    let installed = manager.lock().ok().is_some_and(|mut guard| {
-                        let Some(mut dead_sidecar) = guard.recovering_sidecars.remove(&session_id)
-                        else {
-                            return false;
-                        };
-                        let owners = std::mem::take(&mut dead_sidecar.owners);
-                        let Some(replacement) = guard.sidecars.get_mut(&session_id) else {
-                            dead_sidecar.owners = owners;
-                            guard
-                                .recovering_sidecars
-                                .insert(session_id.clone(), dead_sidecar);
-                            return false;
-                        };
-                        replacement.owners = owners;
-                        true
+                    let installed = manager.lock().ok().is_some_and(|guard| {
+                        guard.is_live(&session_id, result.generation)
+                            && !guard.has_session_recovery(&session_id)
                     });
                     if !installed {
                         continue;
                     }
-                    recovery.remove(&session_id);
                     ulog_info!(
-                        "[sidecar] Session {} auto-restarted on port {}",
+                        "[sidecar-recovery] action=settled session={} epoch={} dead_generation={} candidate_generation={} attempt={} port={}",
                         session_id,
+                        recovery_epoch,
+                        dead_generation,
+                        result.generation,
+                        attempt,
                         result.port
                     );
                     let _ = app_handle.emit(
@@ -1134,22 +1511,27 @@ pub async fn monitor_session_sidecars(
                     );
                 }
                 Ok(Err(e)) => {
-                    if let Some(failures) = recovery.get_mut(&session_id) {
-                        *failures += 1;
-                    }
                     ulog_error!(
-                        "[sidecar] Failed to auto-restart session {}: {}",
-                        session_id,
-                        e
+                        "[sidecar-recovery] action=attempt-failed session={} epoch={} dead_generation={} attempt={} error={}",
+                        session_id, recovery_epoch, dead_generation, attempt, e
                     );
                 }
                 Err(e) => {
-                    if let Some(failures) = recovery.get_mut(&session_id) {
-                        *failures += 1;
-                    }
+                    let failure = manager.lock().ok().and_then(|mut guard| {
+                        guard.record_session_recovery_failure(
+                            &session_id,
+                            Some(recovery_epoch),
+                            std::time::Instant::now(),
+                        )
+                    });
                     ulog_error!(
-                        "[sidecar] spawn_blocking failed for session {}: {}",
+                        "[sidecar-recovery] action=worker-failed session={} epoch={} dead_generation={} candidate_generation={:?} attempt={} next_retry_ms={:?} error={}",
                         session_id,
+                        recovery_epoch,
+                        dead_generation,
+                        failure.and_then(|value| value.candidate_generation),
+                        attempt,
+                        failure.map(|value| value.retry_after.as_millis()),
                         e
                     );
                 }

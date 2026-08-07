@@ -69,7 +69,7 @@ const TMPL_CHANNEL_IM = `<myagents-interaction-channel>
 const TMPL_CRON_TASK = `<myagents-cron-task-instructions>
 你正处于心跳循环任务模式 (Task ID: {{taskId}})。每隔 {{intervalText}} 系统触发唤醒你一次。{{#if aiCanExit}}
 
-如果任务目标已完全达成、或继续执行无意义/有害，请按下方 \`<myagents-cli-cron-exit>\` 段落给出的 \`myagents cron exit\` 命令结束任务。{{/if}}
+如果任务目标已完全达成、或继续执行无意义/有害，请按下方 \`<myagents-cli-task-exit>\` 段落给出的 \`myagents task exit\` 命令结束任务。{{/if}}
 </myagents-cron-task-instructions>`;
 
 const TMPL_HEARTBEAT = `<myagents-heartbeat-instructions>

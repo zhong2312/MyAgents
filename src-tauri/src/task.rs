@@ -28,6 +28,7 @@ use uuid::Uuid;
 use crate::cron_task::{
     EndConditions as CronEndConditions, RecurringWindow, RunMode as CronRunMode,
 };
+use crate::task_trigger::{validate_task_trigger, TaskTrigger};
 use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 use tauri::Emitter;
 
@@ -124,6 +125,13 @@ pub enum TaskStatus {
 pub enum TaskExecutionTrigger {
     Scheduled,
     Manual,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TaskExecutionTerminalTransition {
+    pub status: TaskStatus,
+    pub message: String,
+    pub source: TransitionSource,
 }
 
 impl TaskStatus {
@@ -233,7 +241,7 @@ pub struct StatusTransition {
     pub source: Option<TransitionSource>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationConfig {
     #[serde(default = "default_true")]
@@ -246,6 +254,94 @@ pub struct NotificationConfig {
     /// `Option<Vec>` so omitted-means-default is distinguishable from explicit empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<String>>,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            desktop: true,
+            bot_channel_id: None,
+            bot_thread: None,
+            events: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NotificationFieldPatch<T> {
+    Unchanged,
+    Clear,
+    Set(T),
+}
+
+impl<T> Default for NotificationFieldPatch<T> {
+    fn default() -> Self {
+        Self::Unchanged
+    }
+}
+
+impl<'de, T> Deserialize<'de> for NotificationFieldPatch<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Set(value),
+            None => Self::Clear,
+        })
+    }
+}
+
+/// Task-specific partial notification mutation. Missing fields are unchanged;
+/// explicit null clears the field to its domain default.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskNotificationPatch {
+    #[serde(default)]
+    desktop: NotificationFieldPatch<bool>,
+    #[serde(default)]
+    bot_channel_id: NotificationFieldPatch<String>,
+    #[serde(default)]
+    bot_thread: NotificationFieldPatch<String>,
+    #[serde(default)]
+    events: NotificationFieldPatch<Vec<String>>,
+}
+
+impl TaskNotificationPatch {
+    fn is_empty(&self) -> bool {
+        matches!(self.desktop, NotificationFieldPatch::Unchanged)
+            && matches!(self.bot_channel_id, NotificationFieldPatch::Unchanged)
+            && matches!(self.bot_thread, NotificationFieldPatch::Unchanged)
+            && matches!(self.events, NotificationFieldPatch::Unchanged)
+    }
+
+    fn apply(self, existing: Option<NotificationConfig>) -> NotificationConfig {
+        let mut notification = existing.unwrap_or_default();
+        match self.desktop {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.desktop = true,
+            NotificationFieldPatch::Set(value) => notification.desktop = value,
+        }
+        match self.bot_channel_id {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.bot_channel_id = None,
+            NotificationFieldPatch::Set(value) => notification.bot_channel_id = Some(value),
+        }
+        match self.bot_thread {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.bot_thread = None,
+            NotificationFieldPatch::Set(value) => notification.bot_thread = Some(value),
+        }
+        match self.events {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.events = None,
+            NotificationFieldPatch::Set(value) => notification.events = Some(value),
+        }
+        notification
+    }
 }
 
 fn default_true() -> bool {
@@ -282,6 +378,23 @@ fn reject_managed_kind_from_ordinary_create(kind: &Option<String>) -> Result<(),
         return Err(MANAGED_TASK_ERROR.to_string());
     }
     Ok(())
+}
+
+fn validate_ordinary_caller_origin(
+    actor: TransitionActor,
+    source: Option<TransitionSource>,
+) -> Result<(), String> {
+    match (actor, source) {
+        (TransitionActor::User, Some(TransitionSource::Ui | TransitionSource::Cli))
+        | (TransitionActor::Agent, Some(TransitionSource::Cli)) => Ok(()),
+        (TransitionActor::System, _) => {
+            Err("ordinary Task mutations cannot claim system authority".to_string())
+        }
+        (TransitionActor::Agent, _) => Err(String::from(TaskOpError::agent_source_must_be_cli())),
+        (TransitionActor::User, _) => {
+            Err("user Task mutations require source=ui or source=cli".to_string())
+        }
+    }
 }
 
 fn normalize_managed_kind(kind: Option<String>) -> Result<Option<String>, String> {
@@ -363,6 +476,10 @@ pub struct Task {
     /// which semantically means "when to stop running".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_at: Option<i64>,
+    /// Optional persisted trigger configuration. Missing means effective
+    /// time/always without rewriting legacy Task rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<TaskTrigger>,
     /// Per-task model override used when the Task creates an execution Session.
     /// Existing Sessions keep their own model authority.
     ///
@@ -426,6 +543,12 @@ pub struct Task {
     pub last_scheduled_at: Option<i64>,
     #[serde(default)]
     pub execution_count: u32,
+    /// Durable receipt for the most recently admitted command-trigger event.
+    /// It closes the cross-file crash window between Task outcome accounting
+    /// and clearing the Trigger outbox. Startup may safely settle a matching
+    /// pending event without admitting a second AI turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activation_event_id: Option<String>,
     #[serde(default)]
     pub status_history: Vec<StatusTransition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -437,6 +560,12 @@ pub struct Task {
     pub deleted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<i64>,
+}
+
+impl Task {
+    pub fn effective_trigger(&self) -> TaskTrigger {
+        self.trigger.clone().unwrap_or_default()
+    }
 }
 
 pub(crate) fn task_bound_session_ids(task: &Task) -> Vec<String> {
@@ -544,6 +673,10 @@ pub struct TaskWithDocs {
     pub execution_state: Option<crate::task_scheduler::TaskExecutionState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_state: Option<crate::task_trigger::TaskTriggerRuntimeState>,
+    /// Computed by the scheduler authority; never persisted on the Task row.
+    pub next_execution_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -555,19 +688,46 @@ pub struct TaskProjection {
     pub execution_state: Option<crate::task_scheduler::TaskExecutionState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_error: Option<String>,
+    /// Computed by the scheduler authority; never persisted on the Task row.
+    pub next_execution_at: Option<i64>,
 }
 
 impl TaskProjection {
-    pub(crate) fn new(
-        task: Task,
-        execution: Option<crate::task_scheduler::TaskExecutionProjection>,
-    ) -> Self {
+    fn new(task: Task, execution: Option<crate::task_scheduler::TaskExecutionProjection>) -> Self {
+        let next_execution_at = crate::task_scheduler::next_execution_at(&task)
+            .ok()
+            .flatten()
+            .map(|value| value.timestamp_millis());
         Self {
             task,
             execution_state: execution.as_ref().map(|value| value.state),
             execution_error: execution.and_then(|value| value.error),
+            next_execution_at,
         }
     }
+}
+
+pub(crate) async fn project_task(task: Task) -> TaskProjection {
+    let execution = crate::task_scheduler::get_task_scheduler()
+        .execution_projection(&task.id)
+        .await;
+    TaskProjection::new(task, execution)
+}
+
+/// Lightweight list projection. Trigger runtime diagnostics intentionally stay
+/// on the per-id get path so one large or corrupt state file cannot fail a
+/// collection read.
+pub(crate) async fn project_task_list(tasks: Vec<Task>) -> Vec<TaskProjection> {
+    let executions = crate::task_scheduler::get_task_scheduler()
+        .execution_projections_snapshot()
+        .await;
+    tasks
+        .into_iter()
+        .map(|task| {
+            let execution = executions.get(&task.id).cloned();
+            TaskProjection::new(task, execution)
+        })
+        .collect()
 }
 
 // ================ Input DTOs ================
@@ -601,6 +761,8 @@ pub struct TaskCreateDirectInput {
     pub recurring_window: Option<RecurringWindow>,
     #[serde(default)]
     pub dispatch_at: Option<i64>,
+    #[serde(default)]
+    pub trigger: Option<TaskTrigger>,
     // ── Execution overrides ──────────────────────────────────────────────
     #[serde(default)]
     pub model: Option<String>,
@@ -653,6 +815,8 @@ pub struct TaskCreateFromAlignmentInput {
     pub run_mode: Option<TaskRunMode>,
     #[serde(default)]
     pub end_conditions: Option<TaskEndConditions>,
+    #[serde(default)]
+    pub trigger: Option<TaskTrigger>,
     // ── Execution overrides (must stay in lockstep with TaskCreateDirectInput) ──
     // Without these fields the Bun admin-api would accept `--model` /
     // `--permissionMode` flags from the CLI, validate them, enrich the success
@@ -667,6 +831,8 @@ pub struct TaskCreateFromAlignmentInput {
     pub provider_id: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub preselected_session_id: Option<String>,
     #[serde(default)]
     pub runtime: Option<String>,
     #[serde(default)]
@@ -757,6 +923,10 @@ pub struct TaskUpdateInput {
     pub recurring_window: Option<RecurringWindow>,
     #[serde(default)]
     pub dispatch_at: Option<i64>,
+    #[serde(default)]
+    pub trigger: Option<TaskTrigger>,
+    #[serde(default)]
+    pub clear_trigger: bool,
     // ── Execution overrides ──────────────────────────────────────────────
     #[serde(default)]
     pub model: Option<String>,
@@ -809,6 +979,11 @@ pub struct TaskUpdateInput {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub notification: Option<NotificationConfig>,
+    /// Field-level notification update merged under the same Task write lock.
+    /// Kept separate from full `notification` replacement so existing GUI
+    /// callers retain their exact contract.
+    #[serde(default)]
+    pub notification_patch: Option<TaskNotificationPatch>,
     /// When `Some`, the new contents are atomically written to
     /// `~/.myagents/tasks/<id>/task.md` under the same write lock that persists the
     /// JSONL row. Empty string is rejected — prompt must have content.
@@ -990,6 +1165,10 @@ pub struct TaskStore {
     /// A malformed store remains read-only so recovery cannot overwrite the
     /// original bytes with an empty or partial map.
     load_error: Option<String>,
+    /// User-scoped Task artifact root. In production this is the same
+    /// `~/.myagents/tasks/` root used by `task_docs_dir`; deriving it from the
+    /// store data dir keeps tests and alternate app data roots isolated.
+    task_artifacts_root: PathBuf,
 }
 
 impl TaskStore {
@@ -998,6 +1177,7 @@ impl TaskStore {
     /// (post-recovery) map.
     pub fn new(data_dir: PathBuf) -> Self {
         let jsonl_path = data_dir.join("tasks.jsonl");
+        let task_artifacts_root = data_dir.join("tasks");
         if let Some(parent) = jsonl_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -1021,11 +1201,67 @@ impl TaskStore {
                 ulog_info!("[task] startup recovery updates persisted");
             }
         }
-        Self {
+        let store = Self {
             inner: Arc::new(RwLock::new(initial)),
             jsonl_path,
             load_error,
+            task_artifacts_root,
+        };
+        store.cleanup_orphaned_trigger_state();
+        store
+    }
+
+    /// A deleted or non-command Task cannot own Trigger runtime state. The Task
+    /// row itself is the durable cleanup obligation, so startup can repair any
+    /// interrupted best-effort deletion without a second persisted flag.
+    fn cleanup_orphaned_trigger_state(&self) {
+        let current = self
+            .inner
+            .try_read()
+            .expect("TaskStore is uncontended during construction")
+            .clone();
+        for task in current
+            .values()
+            .filter(|task| task.deleted || !task.effective_trigger().is_command())
+        {
+            let task_id = &task.id;
+            let path = match self.trigger_state_path(task_id) {
+                Ok(path) => path,
+                Err(error) => {
+                    ulog_warn!(
+                        "[task] Trigger state cleanup path rejected task={}: {}",
+                        task_id,
+                        error
+                    );
+                    continue;
+                }
+            };
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    ulog_info!("[task] Trigger state cleanup recovered task={}", task_id);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    ulog_warn!(
+                        "[task] Trigger state cleanup will retry on next startup task={}: {}",
+                        task_id,
+                        error
+                    );
+                }
+            }
         }
+    }
+
+    pub(crate) fn trigger_state_path(&self, task_id: &str) -> Result<PathBuf, String> {
+        validate_safe_id(task_id, "taskId")?;
+        let resolved = self
+            .task_artifacts_root
+            .join(task_id)
+            .join("trigger-state.json");
+        if !resolved.starts_with(&self.task_artifacts_root) {
+            return Err("trigger state path escaped Task artifact root".to_string());
+        }
+        Ok(resolved)
     }
 
     /// Acquire every Session lifecycle that the projected Task state will
@@ -1105,7 +1341,8 @@ impl TaskStore {
             // Tasks and one-shots that have not fired; TaskScheduler rebuilds
             // their only in-memory handle after startup migration.
             let recover_scheduler = from == TaskStatus::Running
-                && (task.execution_mode == TaskExecutionMode::Recurring
+                && (task.effective_trigger().is_command()
+                    || task.execution_mode == TaskExecutionMode::Recurring
                     || (task.execution_mode == TaskExecutionMode::Scheduled
                         && task.execution_count == 0));
             if recover_scheduler {
@@ -1157,7 +1394,7 @@ impl TaskStore {
         Ok(map)
     }
 
-    fn ensure_writable(&self) -> Result<(), String> {
+    pub(crate) fn ensure_writable(&self) -> Result<(), String> {
         match self.load_error.as_deref() {
             Some(error) => Err(format!(
                 "Task store is read-only because startup validation failed: {error}"
@@ -1225,12 +1462,24 @@ impl TaskStore {
     // ---- Create ----
 
     pub async fn create_direct(&self, input: TaskCreateDirectInput) -> Result<Task, String> {
+        self.create_direct_with_origin(input, TransitionActor::User, Some(TransitionSource::Ui))
+            .await
+    }
+
+    pub async fn create_direct_with_origin(
+        &self,
+        input: TaskCreateDirectInput,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<Task, String> {
         reject_managed_kind_from_ordinary_create(&input.managed_kind)?;
+        validate_ordinary_caller_origin(actor, source)?;
         self.create_direct_internal(
             input,
-            TransitionActor::User,
-            Some(TransitionSource::Ui),
+            actor,
+            source,
             "created (direct)",
+            session_metadata_exists,
         )
         .await
     }
@@ -1251,23 +1500,32 @@ impl TaskStore {
             TransitionActor::System,
             Some(TransitionSource::Scheduler),
             "created (system-managed)",
+            session_metadata_exists,
         )
         .await
     }
 
-    async fn create_direct_internal(
+    async fn create_direct_internal<F>(
         &self,
         mut input: TaskCreateDirectInput,
         created_actor: TransitionActor,
         created_source: Option<TransitionSource>,
         created_message: &'static str,
-    ) -> Result<Task, String> {
+        session_exists: F,
+    ) -> Result<Task, String>
+    where
+        F: FnOnce(&str) -> bool,
+    {
         if input.execution_mode == TaskExecutionMode::Loop {
             return Err("Loop task mode is retired; use a Session Goal".to_string());
         }
         // Validate workspace_path + name up front so we don't half-write.
         let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
         validate_task_name(&input.name)?;
+        validate_new_task_session_binding(input.run_mode, input.preselected_session_id.as_deref())?;
+        if let Some(trigger) = input.trigger.as_ref() {
+            validate_task_trigger(trigger)?;
+        }
         // PRD 0.2.9 — Pin runtime='builtin' when provider_id is set with no
         // explicit runtime (closes the "Agent runtime later flips to
         // external" cross-talk hole). Idempotent.
@@ -1289,6 +1547,25 @@ impl TaskStore {
         // task_docs_dir() internally validates `id`, but `id` is our freshly-minted
         // UUID so it always passes; the guard is for callers that pass external ids.
         let task_dir = task_docs_dir(&id)?;
+        let bound_session_id = if input.run_mode == Some(TaskRunMode::SingleSession) {
+            input.preselected_session_id.clone()
+        } else {
+            None
+        };
+        let bound_session_refs = bound_session_id
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let session_lifecycle =
+            crate::sidecar::acquire_session_lifecycle(&bound_session_refs).await;
+        if let Some(session_id) = bound_session_id.as_deref() {
+            if !session_exists(session_id) {
+                return Err(format!(
+                    "preselectedSessionId does not reference an existing Session: {}",
+                    session_id
+                ));
+            }
+        }
 
         let t = Task {
             id: id.clone(),
@@ -1306,6 +1583,7 @@ impl TaskStore {
             start_at: input.start_at,
             recurring_window: input.recurring_window,
             dispatch_at: input.dispatch_at,
+            trigger: input.trigger,
             model: input.model,
             provider_id: input.provider_id,
             permission_mode: input.permission_mode,
@@ -1323,6 +1601,7 @@ impl TaskStore {
             last_executed_at: None,
             last_scheduled_at: None,
             execution_count: 0,
+            last_activation_event_id: None,
             status_history: vec![StatusTransition {
                 from: None,
                 to: TaskStatus::Todo,
@@ -1373,6 +1652,7 @@ impl TaskStore {
         }
         *inner = next;
         drop(inner);
+        drop(session_lifecycle);
         ulog_info!("[task] created direct id={} name={}", id, t.name);
 
         // Broadcast so every open Task Center panel refreshes (CC review C5).
@@ -1424,6 +1704,9 @@ impl TaskStore {
     ) -> Result<Task, String> {
         validate_safe_id(&id, "legacy cron id")?;
         validate_task_name(&input.name)?;
+        if let Some(trigger) = input.trigger.as_ref() {
+            validate_task_trigger(trigger)?;
+        }
         // PRD 0.2.9 — Same pin+validate sequence as create_direct.
         pin_runtime_for_provider_id(&input.provider_id, &mut input.runtime);
         validate_task_provider_routing(&input.provider_id, &input.model, &input.runtime)?;
@@ -1464,6 +1747,7 @@ impl TaskStore {
             start_at: input.start_at,
             recurring_window: input.recurring_window,
             dispatch_at: input.dispatch_at,
+            trigger: input.trigger,
             model: input.model,
             provider_id: input.provider_id,
             permission_mode: input.permission_mode,
@@ -1481,6 +1765,7 @@ impl TaskStore {
             last_executed_at: None,
             last_scheduled_at: None,
             execution_count: 0,
+            last_activation_event_id: None,
             status_history: vec![StatusTransition {
                 from: None,
                 to: initial_status,
@@ -1570,10 +1855,29 @@ impl TaskStore {
 
     pub async fn create_from_alignment(
         &self,
-        mut input: TaskCreateFromAlignmentInput,
+        input: TaskCreateFromAlignmentInput,
     ) -> Result<Task, String> {
+        self.create_from_alignment_with_origin(
+            input,
+            TransitionActor::Agent,
+            Some(TransitionSource::Cli),
+        )
+        .await
+    }
+
+    pub async fn create_from_alignment_with_origin(
+        &self,
+        mut input: TaskCreateFromAlignmentInput,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<Task, String> {
+        validate_ordinary_caller_origin(actor, source)?;
         validate_task_name(&input.name)?;
         validate_safe_id(&input.alignment_session_id, "alignmentSessionId")?;
+        validate_new_task_session_binding(input.run_mode, input.preselected_session_id.as_deref())?;
+        if let Some(trigger) = input.trigger.as_ref() {
+            validate_task_trigger(trigger)?;
+        }
         // PRD 0.2.9 — Same pin+validate sequence as create_direct.
         pin_runtime_for_provider_id(&input.provider_id, &mut input.runtime);
         validate_task_provider_routing(&input.provider_id, &input.model, &input.runtime)?;
@@ -1658,6 +1962,25 @@ impl TaskStore {
         let now = now_ms();
         let id = Uuid::new_v4().to_string();
         let dst = task_docs_dir(&id)?;
+        let bound_session_id = if input.run_mode == Some(TaskRunMode::SingleSession) {
+            input.preselected_session_id.clone()
+        } else {
+            None
+        };
+        let bound_session_refs = bound_session_id
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let session_lifecycle =
+            crate::sidecar::acquire_session_lifecycle(&bound_session_refs).await;
+        if let Some(session_id) = bound_session_id.as_deref() {
+            if !session_metadata_exists(session_id) {
+                return Err(format!(
+                    "preselectedSessionId does not reference an existing Session: {}",
+                    session_id
+                ));
+            }
+        }
 
         let t = Task {
             id: id.clone(),
@@ -1675,6 +1998,7 @@ impl TaskStore {
             start_at: None,
             recurring_window: None,
             dispatch_at: None,
+            trigger: input.trigger,
             // Per-task overrides — surface the CLI-provided values so the
             // execution path in Bun (`/cron/execute-sync` via T15 snapshot
             // resolution) actually picks them up. Prior to v0.1.69's
@@ -1684,7 +2008,7 @@ impl TaskStore {
             model: input.model,
             provider_id: input.provider_id,
             permission_mode: input.permission_mode,
-            preselected_session_id: None,
+            preselected_session_id: input.preselected_session_id,
             runtime: input.runtime,
             runtime_config: input.runtime_config,
             mcp_enabled_servers: normalize_mcp_override(input.mcp_enabled_servers),
@@ -1698,13 +2022,14 @@ impl TaskStore {
             last_executed_at: None,
             last_scheduled_at: None,
             execution_count: 0,
+            last_activation_event_id: None,
             status_history: vec![StatusTransition {
                 from: None,
                 to: TaskStatus::Todo,
                 at: now,
-                actor: TransitionActor::Agent,
+                actor,
                 message: Some("created (ai-aligned)".to_string()),
-                source: Some(TransitionSource::Cli),
+                source,
             }],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::AiAligned,
@@ -1740,6 +2065,7 @@ impl TaskStore {
 
         *inner = next;
         drop(inner);
+        drop(session_lifecycle);
         ulog_info!("[task] created ai-aligned id={} name={}", id, t.name);
 
         emit_task_event(
@@ -1759,11 +2085,8 @@ impl TaskStore {
     }
 
     pub async fn create_attached(&self, input: TaskCreateAttachedInput) -> Result<Task, String> {
-        self.create_attached_with_session_probe(input, |session_id| {
-            crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(session_id)
-                .is_some()
-        })
-        .await
+        self.create_attached_with_session_probe(input, session_metadata_exists)
+            .await
     }
 
     async fn create_attached_with_session_probe<F>(
@@ -1832,6 +2155,7 @@ impl TaskStore {
             start_at: None,
             recurring_window: None,
             dispatch_at: None,
+            trigger: None,
             model: None,
             provider_id: None,
             permission_mode: None,
@@ -1849,6 +2173,7 @@ impl TaskStore {
             last_executed_at: Some(now),
             last_scheduled_at: None,
             execution_count: 0,
+            last_activation_event_id: None,
             status_history: vec![created_transition, attached_transition],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::AttachedSession,
@@ -2051,8 +2376,25 @@ impl TaskStore {
     pub(crate) async fn update_with_task_control_held(
         &self,
         input: TaskUpdateInput,
-        _task_control: &crate::task_scheduler::TaskControlGuard,
+        task_control: &crate::task_scheduler::TaskControlGuard,
     ) -> Result<Task, String> {
+        self.update_with_task_control_and_session_probe(
+            input,
+            task_control,
+            session_metadata_exists,
+        )
+        .await
+    }
+
+    async fn update_with_task_control_and_session_probe<F>(
+        &self,
+        input: TaskUpdateInput,
+        _task_control: &crate::task_scheduler::TaskControlGuard,
+        session_exists: F,
+    ) -> Result<Task, String>
+    where
+        F: Fn(&str) -> bool,
+    {
         if crate::task_scheduler::get_task_scheduler()
             .execution_projection(&input.id)
             .await
@@ -2060,11 +2402,42 @@ impl TaskStore {
         {
             return Err("cannot edit a Task while its current execution is unresolved".to_string());
         }
+        if self
+            .get(&input.id)
+            .await
+            .is_some_and(|task| task.effective_trigger().is_command())
+            && self
+                .read_trigger_state(&input.id)
+                .await?
+                .pending_activation
+                .is_some()
+        {
+            return Err(
+                "cannot edit a Task while its Activation Event is pending; stop it first"
+                    .to_string(),
+            );
+        }
         self.ensure_writable()?;
+        if input
+            .run_mode
+            .is_some_and(|mode| mode != TaskRunMode::SingleSession)
+            && input
+                .preselected_session_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(
+                "preselectedSessionId is only valid with runMode=single-session".to_string(),
+            );
+        }
+        let projected_run_mode = input.run_mode;
         let projected_preselected_session_id = input.preselected_session_id.clone();
         let (mut inner, session_lifecycle) = self
             .lock_for_session_protection(&input.id, move |task| {
                 let mut projected = task.clone();
+                if let Some(value) = projected_run_mode {
+                    projected.run_mode = Some(value);
+                }
                 if let Some(value) = projected_preselected_session_id.as_ref() {
                     projected.preselected_session_id = if value.trim().is_empty() {
                         None
@@ -2072,7 +2445,18 @@ impl TaskStore {
                         Some(value.clone())
                     };
                 }
-                task_protected_session_ids(&projected)
+                if projected_run_mode.is_some_and(|mode| mode != TaskRunMode::SingleSession) {
+                    projected.preselected_session_id = None;
+                }
+                let mut protected = task_protected_session_ids(&projected);
+                if projected.run_mode == Some(TaskRunMode::SingleSession) {
+                    if let Some(session_id) = projected.preselected_session_id.as_ref() {
+                        protected.push(session_id.clone());
+                        protected.sort();
+                        protected.dedup();
+                    }
+                }
+                protected
             })
             .await?;
         let interval_updated = input.interval_minutes.is_some();
@@ -2104,6 +2488,14 @@ impl TaskStore {
             return Err(
                 "mcpEnabledServers 与 clearMcpOverride=true 冲突 — 调用方必须二选一".to_string(),
             );
+        }
+        if input.notification.is_some() && input.notification_patch.is_some() {
+            return Err(
+                "notification 与 notificationPatch 不能同时设置 — 调用方必须二选一".to_string(),
+            );
+        }
+        if input.clear_trigger && input.trigger.is_some() {
+            return Err("trigger 与 clearTrigger=true 冲突 — 调用方必须二选一".to_string());
         }
         let mut updated = existing.clone();
         if let Some(v) = input.name {
@@ -2153,6 +2545,13 @@ impl TaskStore {
         if let Some(v) = input.dispatch_at {
             updated.dispatch_at = Some(v);
         }
+        if let Some(v) = input.trigger {
+            validate_task_trigger(&v)?;
+            updated.trigger = Some(v);
+        }
+        if input.clear_trigger {
+            updated.trigger = None;
+        }
         if let Some(v) = input.model {
             updated.model = if v.trim().is_empty() { None } else { Some(v) };
         }
@@ -2173,6 +2572,12 @@ impl TaskStore {
         }
         if let Some(v) = input.preselected_session_id {
             updated.preselected_session_id = if v.trim().is_empty() { None } else { Some(v) };
+        }
+        if input
+            .run_mode
+            .is_some_and(|mode| mode != TaskRunMode::SingleSession)
+        {
+            updated.preselected_session_id = None;
         }
         if let Some(v) = input.runtime {
             updated.runtime = Some(v);
@@ -2199,6 +2604,11 @@ impl TaskStore {
         if let Some(v) = input.notification {
             updated.notification = Some(v);
         }
+        if let Some(patch) = input.notification_patch {
+            if !patch.is_empty() {
+                updated.notification = Some(patch.apply(updated.notification));
+            }
+        }
         // PRD 0.2.9 — Pin runtime='builtin' on the merged state when the
         // post-merge shape has provider_id set without an explicit runtime.
         // Mirrors the pin done in create_direct; closes the cross-talk hole.
@@ -2219,8 +2629,6 @@ impl TaskStore {
         // needs them.
         match updated.execution_mode {
             TaskExecutionMode::Once => {
-                updated.run_mode = None;
-                updated.end_conditions = None;
                 updated.interval_minutes = None;
                 updated.cron_expression = None;
                 updated.cron_timezone = None;
@@ -2257,6 +2665,27 @@ impl TaskStore {
             }
         }
 
+        let session_binding_updated = updated.run_mode != existing.run_mode
+            || updated.preselected_session_id != existing.preselected_session_id;
+        if session_binding_updated {
+            validate_new_task_session_binding(
+                updated.run_mode,
+                updated.preselected_session_id.as_deref(),
+            )?;
+            if updated.run_mode == Some(TaskRunMode::SingleSession) {
+                let session_id = updated
+                    .preselected_session_id
+                    .as_deref()
+                    .expect("single-session binding validated above");
+                if !session_exists(session_id) {
+                    return Err(format!(
+                        "preselectedSessionId does not reference an existing Session: {}",
+                        session_id
+                    ));
+                }
+            }
+        }
+
         // Validate cron_expression at the boundary so malformed input can't
         // reach the scheduler (it would silently die at first fire, leaving
         // the task "running" but never ticking).
@@ -2265,6 +2694,17 @@ impl TaskStore {
                 crate::cron_task::validate_cron_expression(expr, updated.cron_timezone.as_deref())
                     .map_err(|e| format!("cron expression invalid: {}", e))?;
             }
+        }
+
+        let leaves_command_mode =
+            existing.effective_trigger().is_command() && !updated.effective_trigger().is_command();
+        let enters_command_mode =
+            !existing.effective_trigger().is_command() && updated.effective_trigger().is_command();
+        if enters_command_mode {
+            // A non-command row is itself the durable proof that any existing
+            // Trigger state is stale. Delete it before enabling command mode;
+            // if this fails the authoritative row remains non-command.
+            self.remove_trigger_state_file(&updated.id)?;
         }
 
         // Atomic task.md write — when the client sent `prompt`, we want the
@@ -2292,6 +2732,16 @@ impl TaskStore {
         *inner = next;
         drop(inner);
         drop(session_lifecycle);
+
+        if leaves_command_mode {
+            if let Err(error) = self.remove_trigger_state(&updated.id).await {
+                ulog_warn!(
+                    "[task] command Trigger state cleanup deferred to startup task={}: {}",
+                    updated.id,
+                    error
+                );
+            }
+        }
 
         Ok(updated)
     }
@@ -2419,6 +2869,22 @@ impl TaskStore {
         } else {
             None
         };
+        // An ambiguous exact stop still owns the durable Activation Event.
+        // Only clear that outbox after Runtime termination was confirmed.
+        let pending_cancel_error = if should_cancel_pending_after_transition(
+            to,
+            updated.effective_trigger().is_command(),
+            stop_error.is_none(),
+        ) {
+            self.cancel_pending_activation(&updated.id)
+                .await
+                .err()
+                .map(|error| {
+                    format!("Task was stopped, but pending Activation cleanup needs retry: {error}")
+                })
+        } else {
+            None
+        };
 
         // NB: progress.md is intentionally NOT touched here. It's the
         // AI's own workspace document — `/task-alignment` creates it
@@ -2450,7 +2916,7 @@ impl TaskStore {
             }),
         );
 
-        if let Some(error) = stop_error {
+        if let Some(error) = stop_error.or(pending_cancel_error) {
             return Err(error);
         }
 
@@ -2541,37 +3007,6 @@ impl TaskStore {
         let (updated, changed) = result?;
         if changed {
             Self::emit_session_appended(&updated, session_id);
-        }
-        Ok(updated)
-    }
-
-    pub async fn set_execution_session(
-        &self,
-        id: &str,
-        session_id: String,
-    ) -> Result<Task, String> {
-        self.ensure_writable()?;
-        let projected_session_id = session_id.clone();
-        let (mut inner, session_lifecycle) = self
-            .lock_for_session_protection(id, move |task| {
-                let mut projected = task.clone();
-                projected.preselected_session_id = Some(projected_session_id.clone());
-                if !projected
-                    .session_ids
-                    .iter()
-                    .any(|value| value == &projected_session_id)
-                {
-                    projected.session_ids.push(projected_session_id.clone());
-                }
-                task_protected_session_ids(&projected)
-            })
-            .await?;
-        let result = self.set_execution_session_locked(&mut inner, id, &session_id);
-        drop(inner);
-        drop(session_lifecycle);
-        let (updated, appended) = result?;
-        if appended {
-            Self::emit_session_appended(&updated, &session_id);
         }
         Ok(updated)
     }
@@ -2675,6 +3110,142 @@ impl TaskStore {
         Ok(Some(updated))
     }
 
+    /// Atomically commit an admitted command-trigger turn to the Task row.
+    ///
+    /// The Trigger outbox is a separate crash-durable file. We therefore
+    /// persist the execution count, event receipt, and any terminal Task
+    /// transition together *before* clearing that outbox. If the app exits in
+    /// between, startup recognizes the receipt and settles the matching event
+    /// without dispatching the AI turn again.
+    pub(crate) async fn record_activation_execution_if_status(
+        &self,
+        id: &str,
+        event_id: &str,
+        trigger: TaskExecutionTrigger,
+        expected_status: TaskStatus,
+        terminal: Option<TaskExecutionTerminalTransition>,
+    ) -> Result<Option<Task>, String> {
+        self.ensure_writable()?;
+        let projected_terminal = terminal.as_ref().map(|transition| transition.status);
+        let (mut inner, session_lifecycle) = self
+            .lock_for_session_protection(id, move |task| {
+                let mut projected = task.clone();
+                if let Some(status) = projected_terminal {
+                    projected.status = status;
+                }
+                task_protected_session_ids(&projected)
+            })
+            .await?;
+        let existing = inner
+            .get(id)
+            .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
+            .clone();
+        if existing.deleted {
+            return Ok(None);
+        }
+        if existing.last_activation_event_id.as_deref() == Some(event_id) {
+            return Ok(Some(existing));
+        }
+        if existing.status != expected_status {
+            return Ok(None);
+        }
+
+        let mut updated = existing;
+        let executed_at = now_ms();
+        updated.execution_count = updated.execution_count.saturating_add(1);
+        updated.last_executed_at = Some(executed_at);
+        updated.last_activation_event_id = Some(event_id.to_string());
+        if trigger == TaskExecutionTrigger::Scheduled {
+            updated.last_scheduled_at = Some(executed_at);
+        }
+        let transition = if let Some(terminal) = terminal {
+            if !matches!(terminal.status, TaskStatus::Done | TaskStatus::Blocked)
+                || !is_transition_legal(updated.status, terminal.status)
+            {
+                return Err(format!(
+                    "invalid activation terminal transition: {} -> {}",
+                    updated.status.as_str(),
+                    terminal.status.as_str()
+                ));
+            }
+            let transition = StatusTransition {
+                from: Some(updated.status),
+                to: terminal.status,
+                at: executed_at,
+                actor: TransitionActor::System,
+                message: Some(terminal.message),
+                source: Some(terminal.source),
+            };
+            updated.status = terminal.status;
+            updated.status_history.push(transition.clone());
+            Some(transition)
+        } else {
+            None
+        };
+        updated.updated_at = executed_at;
+
+        let mut next = inner.clone();
+        next.insert(updated.id.clone(), updated.clone());
+        Self::persist_locked(&self.jsonl_path, &next)?;
+        *inner = next;
+        drop(inner);
+        drop(session_lifecycle);
+
+        emit_task_event(
+            "task:execution-complete",
+            serde_json::json!({
+                "taskId": updated.id,
+                "executionCount": updated.execution_count,
+                "lastExecutedAt": updated.last_executed_at,
+                "activationEventId": event_id,
+            }),
+        );
+        if let Some(transition) = transition.as_ref() {
+            dispatch_notification(&updated, transition);
+            emit_task_event(
+                "task:status-changed",
+                serde_json::json!({
+                    "taskId": updated.id,
+                    "from": transition.from.map(|status| status.as_str()),
+                    "to": transition.to.as_str(),
+                    "at": transition.at,
+                    "actor": transition.actor.as_str(),
+                    "source": transition.source.map(|source| source.as_str()),
+                    "message": transition.message.clone(),
+                }),
+            );
+        }
+        Ok(Some(updated))
+    }
+
+    /// Advance only the timer anchor after a command Detector check that did
+    /// not enter an AI turn. `executionCount` and `lastExecutedAt` remain AI-
+    /// execution metrics.
+    pub async fn record_scheduled_check_if_status(
+        &self,
+        id: &str,
+        expected_status: TaskStatus,
+    ) -> Result<Option<Task>, String> {
+        self.ensure_writable()?;
+        let mut inner = self.inner.write().await;
+        let existing = inner
+            .get(id)
+            .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
+            .clone();
+        if existing.status != expected_status || existing.deleted {
+            return Ok(None);
+        }
+        let mut updated = existing;
+        let checked_at = now_ms();
+        updated.last_scheduled_at = Some(checked_at);
+        updated.updated_at = checked_at;
+        let mut next = inner.clone();
+        next.insert(updated.id.clone(), updated.clone());
+        Self::persist_locked(&self.jsonl_path, &next)?;
+        *inner = next;
+        Ok(Some(updated))
+    }
+
     pub async fn import_legacy_execution_state(
         &self,
         id: &str,
@@ -2744,49 +3315,81 @@ impl TaskStore {
     /// User-only archive entry. Emits `Done → Archived` with actor=user.
     /// `update_status` tears down the Task scheduler on terminal states.
     pub async fn archive(&self, id: &str, message: Option<String>) -> Result<Task, String> {
+        self.archive_with_origin(
+            id,
+            message,
+            TransitionActor::User,
+            Some(TransitionSource::Ui),
+        )
+        .await
+    }
+
+    pub async fn archive_with_origin(
+        &self,
+        id: &str,
+        message: Option<String>,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<Task, String> {
+        validate_ordinary_caller_origin(actor, source)?;
         let (task, _) = self
             .update_status(TaskUpdateStatusInput {
                 id: id.to_string(),
                 status: TaskStatus::Archived,
                 message,
-                actor: TransitionActor::User,
-                source: Some(TransitionSource::Ui),
+                actor,
+                source,
             })
             .await?;
         Ok(task)
     }
 
-    /// Soft-delete. Writes a proper synthetic `→ Deleted` pseudo-transition to
-    /// `statusHistory` (PRD §10.2.2), sets `status=Deleted`, flips the
+    /// Product-level delete. Writes a durable `→ Deleted` tombstone transition
+    /// to `statusHistory` (PRD §10.2.2), sets `status=Deleted`, flips the
     /// `deleted` flag, and tears down the Task scheduler so it cannot fire
     /// against a deleted Task. Downstream auditors
-    /// can filter `statusHistory` on `to == Deleted` to find all removed tasks.
-    /// Physical cleanup happens out-of-band (§9.5, 30-day retention).
+    /// can filter `statusHistory` on `to == Deleted` to find all removed tasks,
+    /// preserving migration safety and audit without promising restoration or a
+    /// retention window. Workspace-owned scripts are outside this store.
     pub async fn delete(&self, id: &str) -> Result<(), String> {
-        let task_control = crate::task_scheduler::acquire_task_control(id).await;
-        // A deleted Task disappears from ordinary list/get surfaces. Hiding it
-        // while an exact turn is still running (or its stop is unconfirmed)
-        // would also hide the only retry-stop entry point. Task control keeps
-        // this check linear with every new claim: stop the concrete turn first,
-        // then delete the now-quiescent Task.
-        if let Some(execution) = crate::task_scheduler::get_task_scheduler()
-            .execution_projection(id)
+        self.delete_with_origin(id, TransitionActor::User, Some(TransitionSource::Ui))
             .await
-        {
-            return Err(format!(
-                "task {id} still has an unresolved {} execution; stop it before deleting",
-                execution.state.as_str()
-            ));
-        }
+    }
+
+    pub async fn delete_with_origin(
+        &self,
+        id: &str,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<(), String> {
+        validate_ordinary_caller_origin(actor, source)?;
+        let task_control = crate::task_scheduler::acquire_task_control(id).await;
         self.ensure_writable()?;
+        let before = self
+            .get(id)
+            .await
+            .ok_or_else(|| String::from(TaskOpError::not_found(id)))?;
+        // Delete owns cancellation: an active Detector/AI turn is stopped and
+        // its exact process/session lifecycle is confirmed before the row can
+        // disappear from ordinary recovery surfaces.
+        crate::task_scheduler::get_task_scheduler()
+            .stop_with_control_held(id, &task_control)
+            .await?;
+        if before.deleted {
+            if let Err(error) = self.remove_trigger_state(id).await {
+                ulog_warn!(
+                    "[task] deleted Trigger state cleanup deferred to startup retry task={}: {}",
+                    id,
+                    error
+                );
+            }
+            return Ok(());
+        }
         let mut inner = self.inner.write().await;
         let existing = inner
             .get(id)
             .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
             .clone();
-        if existing.deleted {
-            return Ok(());
-        }
         let mut updated = existing;
         let now = now_ms();
         let from = updated.status;
@@ -2794,25 +3397,36 @@ impl TaskStore {
             from: Some(from),
             to: TaskStatus::Deleted,
             at: now,
-            actor: TransitionActor::User,
+            actor,
             message: Some("deleted".to_string()),
-            source: Some(TransitionSource::Ui),
+            source,
         });
         updated.status = TaskStatus::Deleted;
         updated.deleted = true;
         updated.deleted_at = Some(now);
         updated.updated_at = now;
         let mut next = inner.clone();
-        next.insert(updated.id.clone(), updated);
-        Self::persist_locked(&self.jsonl_path, &next)?;
+        next.insert(updated.id.clone(), updated.clone());
+        if let Err(error) = Self::persist_locked(&self.jsonl_path, &next) {
+            drop(inner);
+            if before.status == TaskStatus::Running {
+                let _ = crate::task_scheduler::get_task_scheduler()
+                    .start_with_control_held(id, &task_control)
+                    .await;
+            }
+            return Err(error);
+        }
         *inner = next;
         drop(inner);
-
-        let stop_result = crate::task_scheduler::get_task_scheduler()
-            .stop_with_control_held(id, &task_control)
-            .await;
+        if let Err(error) = self.remove_trigger_state(id).await {
+            ulog_warn!(
+                "[task] deleted Trigger state cleanup deferred to startup retry task={}: {}",
+                id,
+                error
+            );
+        }
         ulog_info!("[task] soft-deleted id={}", id);
-        stop_result
+        Ok(())
     }
 }
 
@@ -2891,6 +3505,35 @@ fn validate_task_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_new_task_session_binding(
+    run_mode: Option<TaskRunMode>,
+    preselected_session_id: Option<&str>,
+) -> Result<(), String> {
+    if run_mode != Some(TaskRunMode::SingleSession) {
+        if preselected_session_id
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(
+                "preselectedSessionId is only valid with runMode=single-session".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    let session_id = preselected_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "single-session Task creation requires a materialized preselectedSessionId".to_string()
+        })?;
+    if session_id.starts_with("pending-") {
+        return Err(
+            "single-session Task creation requires a materialized preselectedSessionId".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// PRD 0.2.9 — Validate the per-task provider routing invariants.
 ///
 /// Three invariants enforced uniformly across Task write paths, including
@@ -2944,6 +3587,20 @@ fn validate_task_provider_routing(
         }
     }
     Ok(())
+}
+
+fn session_metadata_exists(session_id: &str) -> bool {
+    crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(session_id).is_some()
+}
+
+fn should_cancel_pending_after_transition(
+    status: TaskStatus,
+    command_trigger: bool,
+    exact_stop_confirmed: bool,
+) -> bool {
+    exact_stop_confirmed
+        && command_trigger
+        && matches!(status, TaskStatus::Stopped | TaskStatus::Archived)
 }
 
 /// PRD 0.2.9 — Materialize `runtime: Some("builtin")` whenever a
@@ -3033,7 +3690,7 @@ fn task_docs_root() -> Result<PathBuf, String> {
 
 /// Crash-durable atomic text write: tmp write → sync_all → rename → cleanup
 /// on any failure. Mirrors `persist_locked` guarantees for arbitrary files.
-fn write_atomic_text(path: &Path, content: &str) -> Result<(), String> {
+pub(crate) fn write_atomic_text(path: &Path, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
     }
@@ -3058,6 +3715,16 @@ fn write_atomic_text(path: &Path, content: &str) -> Result<(), String> {
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(format!("rename: {}", e));
+    }
+    // A synced file followed by rename is not fully power-loss durable until
+    // the directory entry itself is synced. Trigger state contains the durable
+    // Activation Event outbox, so treat a failed directory sync as a failed
+    // commit on Unix instead of acknowledging an event that may disappear.
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| format!("sync parent dir: {e}"))?;
     }
     Ok(())
 }
@@ -3318,10 +3985,8 @@ pub fn get_task_store() -> Option<&'static Arc<TaskStore>> {
 // Server-side callers (scheduler, CLI → Admin API) use the richer internal
 // `TaskStore::update_status` API and supply their own trusted actor/source.
 //
-// Coordination with `ThoughtStore` (link / unlink `convertedTaskIds`) also lives
-// in the command layer: it keeps `TaskStore` single-responsibility and lets us
-// add SSE broadcast / notification dispatch here in later phases without
-// touching the store.
+// Cross-store/scheduler policy lives in `task_application`; commands only
+// stamp trusted caller fields and adapt Tauri DTOs/errors.
 
 pub type ManagedTaskStore = Arc<TaskStore>;
 
@@ -3331,18 +3996,13 @@ pub async fn cmd_task_create_direct(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     input: TaskCreateDirectInput,
 ) -> Result<Task, String> {
-    let source_thought_id = input.source_thought_id.clone();
-    let created = task_state.create_direct(input).await?;
-    if let Some(thought_id) = source_thought_id {
-        if let Err(e) = thought_state.link_task(&thought_id, &created.id).await {
-            ulog_warn!(
-                "[task] created {} but thought link_task failed: {}",
-                created.id,
-                e
-            );
-        }
-    }
-    Ok(created)
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .create_direct(input)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3351,22 +4011,13 @@ pub async fn cmd_task_create_from_alignment(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     input: TaskCreateFromAlignmentInput,
 ) -> Result<Task, String> {
-    let created = task_state.create_from_alignment(input).await?;
-    // Resolve thought↔task linkage from the CREATED task, not the raw input
-    // (cross-review fix): source_thought_id may have been auto-inherited from
-    // alignment metadata.json inside create_from_alignment, in which case the
-    // input never carried it. Reading from `created` covers both code paths
-    // uniformly and matches the HTTP handler in management_api.rs.
-    if let Some(thought_id) = created.source_thought_id.clone() {
-        if let Err(e) = thought_state.link_task(&thought_id, &created.id).await {
-            ulog_warn!(
-                "[task] created {} but thought link_task failed: {}",
-                created.id,
-                e
-            );
-        }
-    }
-    Ok(created)
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .create_from_alignment(input)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3374,7 +4025,10 @@ pub async fn cmd_task_create_attached(
     task_state: tauri::State<'_, ManagedTaskStore>,
     input: TaskCreateAttachedInput,
 ) -> Result<Task, String> {
-    task_state.create_attached(input).await
+    crate::task_application::TaskApplication::new(task_state.inner().as_ref(), None)
+        .create_attached(input)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3385,16 +4039,7 @@ pub async fn cmd_task_list(
     let mut filter = filter.unwrap_or_default();
     filter.include_managed = None;
     let tasks = state.list(filter).await;
-    let executions = crate::task_scheduler::get_task_scheduler()
-        .execution_projections_snapshot()
-        .await;
-    Ok(tasks
-        .into_iter()
-        .map(|task| {
-            let execution = executions.get(&task.id).cloned();
-            TaskProjection::new(task, execution)
-        })
-        .collect())
+    Ok(project_task_list(tasks).await)
 }
 
 #[tauri::command]
@@ -3411,12 +4056,97 @@ pub async fn cmd_task_get(
     let execution = crate::task_scheduler::get_task_scheduler()
         .execution_projection(&task.id)
         .await;
+    let trigger_state = if task.effective_trigger().is_command() {
+        Some(state.read_trigger_state(&task.id).await?)
+    } else {
+        None
+    };
+    let next_execution_at = crate::task_scheduler::next_execution_at(&task)
+        .ok()
+        .flatten()
+        .map(|value| value.timestamp_millis());
     Ok(Some(TaskWithDocs {
         task,
         docs,
         execution_state: execution.as_ref().map(|value| value.state),
         execution_error: execution.and_then(|value| value.error),
+        trigger_state,
+        next_execution_at,
     }))
+}
+
+#[tauri::command]
+pub async fn cmd_task_trigger_validate(trigger: TaskTrigger) -> Result<TaskTrigger, String> {
+    validate_task_trigger(&trigger)?;
+    Ok(trigger)
+}
+
+#[tauri::command]
+pub async fn cmd_task_trigger_test(
+    task_id: Option<String>,
+    owner_task_id: Option<String>,
+    trigger: Option<TaskTrigger>,
+    workspace_path: Option<String>,
+    checkpoint: Option<serde_json::Map<String, serde_json::Value>>,
+    checkpoint_revision: Option<u64>,
+    checkpoint_updated_at: Option<i64>,
+) -> serde_json::Value {
+    let result = match (task_id, trigger, workspace_path) {
+        (Some(task_id), None, None) => {
+            crate::task_scheduler::get_task_scheduler()
+                .test_trigger(&task_id, None)
+                .await
+        }
+        (None, Some(trigger), Some(workspace_path)) => {
+            crate::task_scheduler::get_task_scheduler()
+                .test_trigger_spec(
+                    owner_task_id,
+                    trigger,
+                    workspace_path,
+                    checkpoint,
+                    checkpoint_revision.unwrap_or(0),
+                    checkpoint_updated_at,
+                )
+                .await
+        }
+        _ => Err(crate::task_trigger::DetectorRunFailure::from_message(
+            "invalid_request",
+            "provide either taskId or trigger + workspacePath",
+        )),
+    };
+    match result {
+        Ok(result) => serde_json::json!({ "ok": true, "result": result }),
+        Err(failure) => serde_json::json!({ "ok": false, "failure": failure }),
+    }
+}
+
+#[tauri::command]
+pub async fn cmd_task_check_now(
+    id: String,
+) -> Result<crate::task_scheduler::TaskTriggerCheckNowResult, String> {
+    crate::task_scheduler::get_task_scheduler()
+        .check_now(&id)
+        .await
+}
+
+#[tauri::command]
+pub async fn cmd_task_run_now(
+    state: tauri::State<'_, ManagedTaskStore>,
+    id: String,
+) -> Result<String, String> {
+    state.get_ordinary(&id).await?;
+    crate::task_scheduler::get_task_scheduler()
+        .trigger_now(&id)
+        .await
+}
+
+#[tauri::command]
+pub async fn cmd_task_reset_checkpoint(
+    id: String,
+) -> Result<crate::task_trigger::TaskTriggerRuntimeState, String> {
+    crate::task_scheduler::get_task_scheduler()
+        .reset_checkpoint(&id)
+        .await
 }
 
 #[tauri::command]
@@ -3424,8 +4154,10 @@ pub async fn cmd_task_update(
     state: tauri::State<'_, ManagedTaskStore>,
     input: TaskUpdateInput,
 ) -> Result<Task, String> {
-    state.get_ordinary(&input.id).await?;
-    state.update(input).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .update_ordinary(input)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3433,30 +4165,20 @@ pub async fn cmd_task_update_status(
     state: tauri::State<'_, ManagedTaskStore>,
     input: UiTaskUpdateStatusInput,
 ) -> Result<Task, String> {
-    let task_control = crate::task_scheduler::acquire_task_control(&input.id).await;
-    let current = state.get_ordinary(&input.id).await?;
-    if is_terminal_execution_stop_request(current.status, input.status) {
-        crate::task_scheduler::get_task_scheduler()
-            .stop_with_control_held(&current.id, &task_control)
-            .await?;
-        return Ok(current);
-    }
     // Trust boundary: UI callers are stamped as user/ui here. The internal
     // `update_status` API remains available for scheduler / watchdog / crash /
     // endCondition / rerun paths with their own actor/source context.
-    state
-        .update_status_with_task_control_held(
-            TaskUpdateStatusInput {
-                id: input.id,
-                status: input.status,
-                message: input.message,
-                actor: TransitionActor::User,
-                source: Some(TransitionSource::Ui),
-            },
-            &task_control,
-        )
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .update_status_ordinary(TaskUpdateStatusInput {
+            id: input.id,
+            status: input.status,
+            message: input.message,
+            actor: TransitionActor::User,
+            source: Some(TransitionSource::Ui),
+        })
         .await
-        .map(|(t, _)| t)
+        .map(|result| result.task)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3465,8 +4187,10 @@ pub async fn cmd_task_append_session(
     id: String,
     session_id: String,
 ) -> Result<Task, String> {
-    state.get_ordinary(&id).await?;
-    state.append_session(&id, &session_id).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .append_session_ordinary(&id, &session_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Persist alignment-session sidecar metadata to
@@ -3519,8 +4243,10 @@ pub async fn cmd_task_archive(
     id: String,
     message: Option<String>,
 ) -> Result<Task, String> {
-    state.get_ordinary(&id).await?;
-    state.archive(&id, message).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .archive_ordinary(&id, message)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3529,19 +4255,13 @@ pub async fn cmd_task_delete(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     id: String,
 ) -> Result<(), String> {
-    // Capture source_thought_id before delete so we can unlink after.
-    let source_thought_id = task_state.get_ordinary(&id).await?.source_thought_id;
-    task_state.delete(&id).await?;
-    if let Some(thought_id) = source_thought_id {
-        if let Err(e) = thought_state.unlink_task(&thought_id, &id).await {
-            ulog_warn!(
-                "[task] deleted {} but thought unlink_task failed: {}",
-                id,
-                e
-            );
-        }
-    }
-    Ok(())
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .delete_ordinary(&id)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// Read one of the markdown documents attached to a Task.
@@ -3749,6 +4469,22 @@ mod tests {
         });
     }
 
+    async fn create_direct_with_existing_session(
+        store: &TaskStore,
+        input: TaskCreateDirectInput,
+    ) -> Result<Task, String> {
+        reject_managed_kind_from_ordinary_create(&input.managed_kind)?;
+        store
+            .create_direct_internal(
+                input,
+                TransitionActor::User,
+                Some(TransitionSource::Ui),
+                "created (direct)",
+                |_| true,
+            )
+            .await
+    }
+
     fn sample_direct_input(ws: &Path) -> TaskCreateDirectInput {
         TaskCreateDirectInput {
             name: "升级 openclaw lark 适配器".to_string(),
@@ -3766,6 +4502,7 @@ mod tests {
             start_at: None,
             recurring_window: None,
             dispatch_at: None,
+            trigger: None,
             model: None,
             provider_id: None,
             permission_mode: None,
@@ -3810,6 +4547,8 @@ mod tests {
             start_at: None,
             recurring_window: None,
             dispatch_at: None,
+            trigger: None,
+            clear_trigger: false,
             model: None,
             provider_id: None,
             clear_provider_override: false,
@@ -3822,6 +4561,7 @@ mod tests {
             clear_mcp_override: false,
             tags: None,
             notification: None,
+            notification_patch: None,
             prompt: None,
         }
     }
@@ -3978,6 +4718,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn single_session_create_requires_a_materialized_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        for preselected_session_id in [None, Some("   "), Some("pending-tab-1")] {
+            let mut input = sample_direct_input(&ws);
+            input.run_mode = Some(TaskRunMode::SingleSession);
+            input.preselected_session_id = preselected_session_id.map(str::to_string);
+            let error = store
+                .create_direct(input)
+                .await
+                .expect_err("pending or empty single-session binding must not commit a Task");
+            assert_eq!(
+                error,
+                "single-session Task creation requires a materialized preselectedSessionId"
+            );
+        }
+
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_session_create_rejects_a_missing_session() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let missing = format!("missing-session-{}", uuid::Uuid::new_v4());
+        let mut input = sample_direct_input(&ws);
+        input.run_mode = Some(TaskRunMode::SingleSession);
+        input.preselected_session_id = Some(missing.clone());
+
+        let error = store
+            .create_direct_internal(
+                input,
+                TransitionActor::User,
+                Some(TransitionSource::Ui),
+                "created (direct)",
+                |_| false,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "preselectedSessionId does not reference an existing Session: {}",
+                missing
+            )
+        );
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unchanged_legacy_single_session_binding_remains_editable() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut input = sample_direct_input(&ws);
+        input.run_mode = Some(TaskRunMode::SingleSession);
+        input.preselected_session_id = Some("legacy-missing-session".to_string());
+        let created = store
+            .create_migrated_with_id(
+                format!("legacy-edit-{}", uuid::Uuid::new_v4()),
+                input,
+                TaskStatus::Stopped,
+                "migrated".to_string(),
+            )
+            .await
+            .unwrap();
+        let mut update = empty_update_input(&created.id);
+        update.name = Some("edited legacy task".to_string());
+        update.run_mode = Some(TaskRunMode::SingleSession);
+        update.preselected_session_id = Some("legacy-missing-session".to_string());
+
+        let updated = store.update(update).await.unwrap();
+        assert_eq!(updated.name, "edited legacy task");
+        assert_eq!(
+            updated.preselected_session_id.as_deref(),
+            Some("legacy-missing-session")
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_single_session_rebind_rejects_a_missing_session() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        let missing = format!("missing-session-{}", uuid::Uuid::new_v4());
+        let mut update = empty_update_input(&created.id);
+        update.run_mode = Some(TaskRunMode::SingleSession);
+        update.preselected_session_id = Some(missing.clone());
+        let task_control = crate::task_scheduler::acquire_task_control(&created.id).await;
+
+        let error = store
+            .update_with_task_control_and_session_probe(update, &task_control, |_| false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "preselectedSessionId does not reference an existing Session: {}",
+                missing
+            )
+        );
+        let unchanged = store.get(&created.id).await.unwrap();
+        assert_eq!(unchanged.run_mode, None);
+        assert!(unchanged.preselected_session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn multiple_single_session_tasks_can_share_one_materialized_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        for _ in 0..2 {
+            let mut input = sample_direct_input(&ws);
+            input.run_mode = Some(TaskRunMode::SingleSession);
+            input.preselected_session_id = Some("session-real".to_string());
+            let created = create_direct_with_existing_session(&store, input)
+                .await
+                .unwrap();
+            assert_eq!(
+                created.preselected_session_id.as_deref(),
+                Some("session-real")
+            );
+        }
+
+        assert_eq!(store.list(TaskListFilter::default()).await.len(), 2);
+    }
+
+    #[tokio::test]
     async fn corrupt_store_is_all_or_nothing_and_read_only() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -4126,6 +5009,183 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activation_receipt_closes_outbox_accounting_crash_window() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(data_dir.clone());
+        let mut input = sample_direct_input(&ws);
+        input.trigger = Some(crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "node".to_string(),
+                    args: vec!["detector.mjs".to_string()],
+                    cwd: None,
+                },
+                timeout_ms: Some(30_000),
+            },
+        });
+        let task = store.create_direct(input).await.unwrap();
+        let (task, _) = store
+            .update_status(status_input(
+                &task.id,
+                TaskStatus::Running,
+                TransitionActor::System,
+                Some(TransitionSource::Scheduler),
+            ))
+            .await
+            .unwrap();
+        let detector_result = crate::task_trigger::DetectorRunSuccess {
+            invocation_id: "invocation-319".to_string(),
+            decision: crate::task_trigger::DetectorDecision::Activate,
+            reason: crate::task_trigger::TaskTriggerReason {
+                code: "build_failed".to_string(),
+                message: "Build failed".to_string(),
+            },
+            event: Some(crate::task_trigger::TaskActivationEvent {
+                id: "build-319".to_string(),
+                kind: "ci.failed".to_string(),
+                occurred_at: "2026-08-03T09:30:00+08:00".to_string(),
+            }),
+            handoff: Some(crate::task_trigger::TaskActivationHandoff {
+                summary: "Build 319 failed".to_string(),
+                text: None,
+                data: None,
+            }),
+            next_checkpoint: None,
+            duration_ms: 10,
+            exit_code: 0,
+            stderr_tail: None,
+        };
+        store
+            .commit_detector_success(
+                &task,
+                &detector_result,
+                crate::task_trigger::DetectorInvocationCause::Scheduled,
+            )
+            .await
+            .unwrap();
+
+        let committed = store
+            .record_activation_execution_if_status(
+                &task.id,
+                "build-319",
+                TaskExecutionTrigger::Scheduled,
+                TaskStatus::Running,
+                Some(TaskExecutionTerminalTransition {
+                    status: TaskStatus::Done,
+                    message: "Task execution completed".to_string(),
+                    source: TransitionSource::EndCondition,
+                }),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.execution_count, 1);
+        assert_eq!(committed.status, TaskStatus::Done);
+        assert_eq!(
+            committed.last_activation_event_id.as_deref(),
+            Some("build-319")
+        );
+        assert!(store
+            .read_trigger_state(&task.id)
+            .await
+            .unwrap()
+            .pending_activation
+            .is_some());
+
+        // Simulate a crash after the Task row commit but before clearing the
+        // Trigger outbox. The receipt survives reload and makes re-accounting
+        // idempotent; startup can now settle only the matching pending event.
+        let recovered = TaskStore::new(data_dir);
+        let replay = recovered
+            .record_activation_execution_if_status(
+                &task.id,
+                "build-319",
+                TaskExecutionTrigger::Scheduled,
+                TaskStatus::Running,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.execution_count, 1);
+        assert_eq!(replay.status, TaskStatus::Done);
+        recovered
+            .settle_pending_activation(&task.id, "build-319")
+            .await
+            .unwrap();
+        assert!(recovered
+            .read_trigger_state(&task.id)
+            .await
+            .unwrap()
+            .pending_activation
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn command_task_cannot_be_edited_while_activation_is_pending() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut input = sample_direct_input(&ws);
+        input.trigger = Some(crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "node".to_string(),
+                    args: vec!["detector.mjs".to_string()],
+                    cwd: None,
+                },
+                timeout_ms: None,
+            },
+        });
+        let task = store.create_direct(input).await.unwrap();
+        let success = crate::task_trigger::DetectorRunSuccess {
+            invocation_id: "invocation-pending".to_string(),
+            decision: crate::task_trigger::DetectorDecision::Activate,
+            reason: crate::task_trigger::TaskTriggerReason {
+                code: "changed".to_string(),
+                message: "Changed".to_string(),
+            },
+            event: Some(crate::task_trigger::TaskActivationEvent {
+                id: "event-pending".to_string(),
+                kind: "state.changed".to_string(),
+                occurred_at: "2026-08-03T09:30:00Z".to_string(),
+            }),
+            handoff: Some(crate::task_trigger::TaskActivationHandoff {
+                summary: "State changed".to_string(),
+                text: None,
+                data: None,
+            }),
+            next_checkpoint: None,
+            duration_ms: 1,
+            exit_code: 0,
+            stderr_tail: None,
+        };
+        store
+            .commit_detector_success(
+                &task,
+                &success,
+                crate::task_trigger::DetectorInvocationCause::Scheduled,
+            )
+            .await
+            .unwrap();
+        let mut update = empty_update_input(&task.id);
+        update.name = Some("must not change".to_string());
+
+        let error = store.update(update).await.unwrap_err();
+
+        assert!(error.contains("Activation Event is pending"));
+        assert_eq!(store.get(&task.id).await.unwrap().name, task.name);
+    }
+
+    #[tokio::test]
     async fn stale_execution_cannot_commit_after_status_changes() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -4271,7 +5331,9 @@ mod tests {
         let mut input = sample_direct_input(&ws);
         input.run_mode = Some(TaskRunMode::SingleSession);
         input.preselected_session_id = Some("session-locked".to_string());
-        let created = store.create_direct(input).await.unwrap();
+        let created = create_direct_with_existing_session(&store, input)
+            .await
+            .unwrap();
         let store_for_transition = Arc::clone(&store);
         let task_id = created.id.clone();
         let (updated, _) = assert_waits_for_session_lifecycle("session-locked", async move {
@@ -4388,7 +5450,9 @@ mod tests {
         let mut input = sample_direct_input(&ws);
         input.run_mode = Some(TaskRunMode::SingleSession);
         input.preselected_session_id = Some("primary-session".to_string());
-        let created = store.create_direct(input).await.unwrap();
+        let created = create_direct_with_existing_session(&store, input)
+            .await
+            .unwrap();
         store
             .update_status(status_input(
                 &created.id,
@@ -4411,41 +5475,6 @@ mod tests {
             .session_ids
             .iter()
             .any(|id| id == "appended-session"));
-    }
-
-    #[tokio::test]
-    async fn set_execution_session_waits_before_rebinding_a_protected_task() {
-        ensure_test_docs_root();
-        let dir = tempdir().unwrap();
-        let ws = dir.path().join("workspace");
-        std::fs::create_dir_all(&ws).unwrap();
-        let store = Arc::new(TaskStore::new(dir.path().join("data")));
-        let mut input = sample_direct_input(&ws);
-        input.run_mode = Some(TaskRunMode::SingleSession);
-        input.preselected_session_id = Some("primary-session".to_string());
-        let created = store.create_direct(input).await.unwrap();
-        store
-            .update_status(status_input(
-                &created.id,
-                TaskStatus::Running,
-                TransitionActor::System,
-                Some(TransitionSource::Scheduler),
-            ))
-            .await
-            .unwrap();
-
-        let store_for_rebind = Arc::clone(&store);
-        let task_id = created.id.clone();
-        let updated = assert_waits_for_session_lifecycle("replacement-session", async move {
-            store_for_rebind
-                .set_execution_session(&task_id, "replacement-session".to_string())
-                .await
-        })
-        .await;
-        assert_eq!(
-            updated.preselected_session_id.as_deref(),
-            Some("replacement-session")
-        );
     }
 
     #[tokio::test]
@@ -4490,9 +5519,13 @@ mod tests {
         let store_for_update = Arc::clone(&store);
         let task_id = created.id.clone();
         let mut update = empty_update_input(&task_id);
+        update.run_mode = Some(TaskRunMode::SingleSession);
         update.preselected_session_id = Some("attached-secondary".to_string());
         let updated = assert_waits_for_session_lifecycle("attached-secondary", async move {
-            store_for_update.update(update).await
+            let task_control = crate::task_scheduler::acquire_task_control(&task_id).await;
+            store_for_update
+                .update_with_task_control_and_session_probe(update, &task_control, |_| true)
+                .await
         })
         .await;
         assert_eq!(
@@ -4713,6 +5746,8 @@ mod tests {
                 start_at: None,
                 recurring_window: None,
                 dispatch_at: None,
+                trigger: None,
+                clear_trigger: false,
                 model: None,
                 provider_id: None,
                 clear_provider_override: false,
@@ -4725,11 +5760,116 @@ mod tests {
                 clear_mcp_override: false,
                 tags: None,
                 notification: None,
+                notification_patch: None,
                 prompt: None,
             })
             .await
             .expect_err("should reject");
         assert!(err.contains("update_rejected_running"));
+    }
+
+    #[tokio::test]
+    async fn notification_patch_preserves_omitted_fields_and_applies_false_and_null() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut create = sample_direct_input(&ws);
+        create.notification = Some(NotificationConfig {
+            desktop: true,
+            bot_channel_id: Some("bot-a".to_string()),
+            bot_thread: Some("thread-a".to_string()),
+            events: Some(vec!["done".to_string()]),
+        });
+        let created = store.create_direct(create).await.unwrap();
+
+        let mut false_patch = empty_update_input(&created.id);
+        false_patch.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+        let after_false = store.update(false_patch).await.unwrap();
+        let notification = after_false.notification.unwrap();
+        assert!(!notification.desktop);
+        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-a"));
+        assert_eq!(notification.bot_thread.as_deref(), Some("thread-a"));
+        assert_eq!(notification.events, Some(vec!["done".to_string()]));
+
+        let mut clear_patch = empty_update_input(&created.id);
+        clear_patch.notification_patch = Some(
+            serde_json::from_value(serde_json::json!({
+                "desktop": null,
+                "botChannelId": null,
+                "botThread": null,
+                "events": null
+            }))
+            .unwrap(),
+        );
+        let after_clear = store.update(clear_patch).await.unwrap();
+        assert_eq!(
+            after_clear.notification,
+            Some(NotificationConfig::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_notification_patch_is_an_exact_noop() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        assert!(created.notification.is_none());
+
+        let mut update = empty_update_input(&created.id);
+        update.notification_patch = Some(serde_json::from_value(serde_json::json!({})).unwrap());
+        let updated = store.update(update).await.unwrap();
+
+        assert!(updated.notification.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_notification_patches_preserve_both_writers() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+
+        let mut desktop = empty_update_input(&created.id);
+        desktop.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+        let mut bot = empty_update_input(&created.id);
+        bot.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "botChannelId": "bot-b" })).unwrap());
+
+        let (desktop_result, bot_result) = tokio::join!(store.update(desktop), store.update(bot));
+        desktop_result.unwrap();
+        bot_result.unwrap();
+        let final_task = store.get(&created.id).await.unwrap();
+        let notification = final_task.notification.unwrap();
+        assert!(!notification.desktop);
+        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-b"));
+    }
+
+    #[tokio::test]
+    async fn full_notification_and_patch_are_mutually_exclusive() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        let mut update = empty_update_input(&created.id);
+        update.notification = Some(NotificationConfig::default());
+        update.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+
+        let error = store.update(update).await.unwrap_err();
+
+        assert!(error.contains("notificationPatch"));
+        assert!(store.get(&created.id).await.unwrap().notification.is_none());
     }
 
     #[tokio::test]
@@ -4765,6 +5905,190 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_retries_trigger_state_cleanup_for_deleted_rows() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store_dir = dir.path().join("data");
+        let store = TaskStore::new(store_dir.clone());
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        store.delete(&created.id).await.unwrap();
+
+        // Recreate the file after delete to model a transient cleanup failure
+        // that left the durable deleted row as the retry obligation.
+        let trigger_state = store.trigger_state_path(&created.id).unwrap();
+        std::fs::create_dir_all(trigger_state.parent().unwrap()).unwrap();
+        std::fs::write(&trigger_state, "orphaned-state").unwrap();
+        drop(store);
+
+        let recovered = TaskStore::new(store_dir);
+        assert!(recovered.get(&created.id).await.unwrap().deleted);
+        assert!(!trigger_state.exists());
+    }
+
+    #[tokio::test]
+    async fn startup_retries_trigger_state_cleanup_for_non_command_rows() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store_dir = dir.path().join("data");
+        let store = TaskStore::new(store_dir.clone());
+        let mut input = sample_direct_input(&ws);
+        input.trigger = Some(crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "node".to_string(),
+                    args: vec!["detector.mjs".to_string()],
+                    cwd: None,
+                },
+                timeout_ms: None,
+            },
+        });
+        let created = store.create_direct(input).await.unwrap();
+        let mut update = empty_update_input(&created.id);
+        update.trigger = Some(crate::task_trigger::TaskTrigger::default());
+        let updated = store.update(update).await.unwrap();
+        assert!(!updated.effective_trigger().is_command());
+
+        // Recreate the file after the authoritative command-to-always row
+        // commit to model a transient physical-cleanup failure. The
+        // non-command row remains the durable retry obligation across restart.
+        let trigger_state = store.trigger_state_path(&created.id).unwrap();
+        std::fs::create_dir_all(trigger_state.parent().unwrap()).unwrap();
+        std::fs::write(&trigger_state, "orphaned-state").unwrap();
+        drop(store);
+
+        let recovered = TaskStore::new(store_dir);
+        assert!(!recovered
+            .get(&created.id)
+            .await
+            .unwrap()
+            .effective_trigger()
+            .is_command());
+        assert!(!trigger_state.exists());
+    }
+
+    #[tokio::test]
+    async fn failed_command_cleanup_blocks_reenable_until_stale_state_is_gone() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let command_trigger = crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "node".to_string(),
+                    args: vec!["detector.mjs".to_string()],
+                    cwd: None,
+                },
+                timeout_ms: None,
+            },
+        };
+        let mut input = sample_direct_input(&ws);
+        input.trigger = Some(command_trigger.clone());
+        let created = store.create_direct(input).await.unwrap();
+
+        let trigger_state = store.trigger_state_path(&created.id).unwrap();
+        std::fs::create_dir_all(trigger_state.parent().unwrap()).unwrap();
+        std::fs::write(
+            &trigger_state,
+            serde_json::to_vec(&crate::task_trigger::TaskTriggerRuntimeState::default()).unwrap(),
+        )
+        .unwrap();
+        let cleanup_failure = crate::task_trigger::force_trigger_cleanup_failure(&created.id);
+        let mut disable = empty_update_input(&created.id);
+        disable.trigger = Some(crate::task_trigger::TaskTrigger::default());
+        let disabled = store.update(disable).await.unwrap();
+        assert!(!disabled.effective_trigger().is_command());
+        assert!(trigger_state.exists());
+
+        let mut reenable = empty_update_input(&created.id);
+        reenable.trigger = Some(command_trigger.clone());
+        let error = store.update(reenable).await.unwrap_err();
+        assert!(error.contains("remove"), "got: {error}");
+        let still_disabled = store.get(&created.id).await.unwrap();
+        assert!(!still_disabled.effective_trigger().is_command());
+        assert!(trigger_state.exists());
+
+        drop(cleanup_failure);
+        let mut retry = empty_update_input(&created.id);
+        retry.trigger = Some(command_trigger);
+        let reenabled = store.update(retry).await.unwrap();
+        assert!(reenabled.effective_trigger().is_command());
+        assert!(!trigger_state.exists());
+    }
+
+    #[tokio::test]
+    async fn stop_reports_pending_activation_cleanup_failure_after_persisting_status() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let data_dir = dir.path().join("data");
+        let store = TaskStore::new(data_dir.clone());
+        let mut input = sample_direct_input(&ws);
+        input.trigger = Some(crate::task_trigger::TaskTrigger {
+            source: crate::task_trigger::TaskTriggerSource::Time,
+            detector: crate::task_trigger::TaskTriggerDetector::Command {
+                command: crate::task_trigger::TaskTriggerCommand {
+                    executable: "node".to_string(),
+                    args: vec!["detector.mjs".to_string()],
+                    cwd: None,
+                },
+                timeout_ms: None,
+            },
+        });
+        let created = store.create_direct(input).await.unwrap();
+        store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Running,
+                TransitionActor::User,
+                Some(TransitionSource::Ui),
+            ))
+            .await
+            .unwrap();
+        // Make the TaskStore-owned trigger-state root non-traversable. The
+        // durable status write still succeeds, while pending cancellation must
+        // fail loudly so the user can retry instead of assuming cleanup won.
+        std::fs::write(data_dir.join("tasks"), "not-a-directory").unwrap();
+
+        let error = store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Stopped,
+                TransitionActor::User,
+                Some(TransitionSource::Ui),
+            ))
+            .await
+            .unwrap_err();
+        assert!(error.contains("trigger-state.json"), "got: {error}");
+        assert_eq!(
+            store.get(&created.id).await.unwrap().status,
+            TaskStatus::Stopped
+        );
+    }
+
+    #[test]
+    fn ambiguous_exact_stop_keeps_the_durable_pending_activation() {
+        assert!(!should_cancel_pending_after_transition(
+            TaskStatus::Stopped,
+            true,
+            false,
+        ));
+        assert!(should_cancel_pending_after_transition(
+            TaskStatus::Stopped,
+            true,
+            true,
+        ));
+    }
+
+    #[tokio::test]
     async fn delete_rejects_until_the_exact_execution_is_settled() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -4783,8 +6107,11 @@ mod tests {
             .release_execution_for_test(&created.id, &queue_id)
             .await;
 
-        let error = result.expect_err("an unresolved turn must remain visible for retry-stop");
-        assert!(error.contains("stop it before deleting"), "got: {error}");
+        let error = result.expect_err("delete must fail closed until exact stop is confirmed");
+        assert!(
+            error.contains("current turn could not be confirmed stopped"),
+            "got: {error}"
+        );
         assert!(!store.get(&created.id).await.unwrap().deleted);
     }
 
@@ -4852,6 +6179,8 @@ mod tests {
                 start_at: None,
                 recurring_window: None,
                 dispatch_at: None,
+                trigger: None,
+                clear_trigger: false,
                 model: None,
                 provider_id: None,
                 clear_provider_override: false,
@@ -4864,6 +6193,7 @@ mod tests {
                 clear_mcp_override: true,
                 tags: None,
                 notification: None,
+                notification_patch: None,
                 prompt: None,
             })
             .await
@@ -5104,6 +6434,7 @@ mod tests {
             Some(&serde_json::json!("stop failed"))
         );
         assert!(value.get("execution_state").is_none());
+        assert!(value.get("triggerState").is_none());
     }
 
     #[tokio::test]

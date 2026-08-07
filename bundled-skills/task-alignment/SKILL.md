@@ -1,7 +1,8 @@
 ---
 name: task-alignment
 description: "Alignment conversation starting from a 想法/idea. Co-decides with the user whether the idea should be acted on directly in the current session, or fixed into a formal Task for independent dispatch (one-off or recurring). Handles lightweight 'do it now while we talk', heavyweight 'define precisely, run later or on a schedule', and 'just help me think about this' — all on the same skill. Use when the user arrives via the 想法 panel's 'AI 讨论' button (parameter dictionary in the first message), or says 'let's think this through', 'help me plan this', 'I want to explore X', 'I have an idea', '/task-alignment'. Also use proactively when a user jumps into a complex task without defining scope or success criteria — pause, align, and help them pick the right vessel (this session vs. a task)."
-author: MyAgents
+metadata:
+  author: MyAgents
 ---
 
 # Task Alignment

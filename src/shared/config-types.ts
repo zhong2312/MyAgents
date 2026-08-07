@@ -517,9 +517,9 @@ export interface Project {
    * visible when a chat opens. Undefined preserves the responsive default.
    */
   workspacePanelVisible?: boolean;
-  /** Whether this workspace has been upgraded to an Agent (v0.1.41) */
+  /** Legacy mirror indicating this workspace has its required Agent identity. */
   isAgent?: boolean;
-  /** Associated Agent ID when isAgent=true (v0.1.41) */
+  /** Associated stable Agent ID. Optional only for reading legacy disk state. */
   agentId?: string;
   /** Source template ID used when this workspace was created from a template. */
   templateId?: string;
@@ -1623,7 +1623,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: "Moonshot",
     cloudProvider: "模型官方",
     type: "api",
-    primaryModel: "kimi-k2.6",
+    primaryModel: "kimi-k3",
     isBuiltin: true,
     authType: "auth_token",
     websiteUrl: "https://platform.moonshot.cn/console",
@@ -1632,11 +1632,25 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: "https://api.moonshot.cn/anthropic",
     },
     modelAliases: {
-      sonnet: "kimi-k2.6",
-      opus: "kimi-k2.6",
-      haiku: "kimi-k2-thinking-turbo",
+      sonnet: "kimi-k3",
+      opus: "kimi-k3",
+      haiku: "kimi-k3",
     },
     models: [
+      {
+        model: "kimi-k3",
+        modelName: "Kimi K3",
+        modelSeries: "moonshot",
+        contextLength: 1_048_576,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "kimi-k2.7-code",
+        modelName: "Kimi K2.7 Code",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        inputModalities: ["text"],
+      },
       // K2.5 引入视觉,K2.6 增加视频;K2-0711(原始 0711 release)在视觉之前,纯文本
       {
         model: "kimi-k2.6",
@@ -1702,6 +1716,20 @@ export const PRESET_PROVIDERS: Provider[] = [
         maxOutputTokens: 65_536,
         inputModalities: ["text", "image"],
       },
+      {
+        model: "k3",
+        modelName: "Kimi K3",
+        modelSeries: "moonshot",
+        contextLength: 1_048_576,
+        inputModalities: ["text", "image", "video"],
+      },
+      {
+        model: "k3-256k",
+        modelName: "Kimi K3 256K",
+        modelSeries: "moonshot",
+        contextLength: 262_144,
+        inputModalities: ["text", "image"],
+      },
     ],
   },
   {
@@ -1710,7 +1738,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: "Zhipu",
     cloudProvider: "模型官方",
     type: "api",
-    primaryModel: "glm-4.7",
+    primaryModel: "glm-5.2",
     isBuiltin: true,
     authType: "auth_token",
     websiteUrl: "https://bigmodel.cn/console/overview",
@@ -1720,7 +1748,7 @@ export const PRESET_PROVIDERS: Provider[] = [
       timeout: 600000,
       disableNonessential: true,
     },
-    modelAliases: { sonnet: "glm-5.1", opus: "glm-5.2", haiku: "glm-5.1" },
+    modelAliases: { sonnet: "glm-5.2", opus: "glm-5.2", haiku: "glm-5-turbo" },
     models: [
       // GLM-5.2 Coding Plan 官方接入文档公布 1M 上下文 / 131072 max tokens；
       // GLM-5.1 / 5-Turbo 官方公布 200K 上下文（docs.bigmodel.cn / z.ai），其余系列以 LiteLLM 数据为准
@@ -1786,7 +1814,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: "Zhipu",
     cloudProvider: "模型官方",
     type: "api",
-    primaryModel: "glm-4.7",
+    primaryModel: "glm-5.2",
     isBuiltin: true,
     authType: "api_key",
     apiProtocol: "openai",
@@ -1796,7 +1824,7 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
       timeout: 600000,
     },
-    modelAliases: { sonnet: "glm-5.1", opus: "glm-5.2", haiku: "glm-5.1" },
+    modelAliases: { sonnet: "glm-5.2", opus: "glm-5.2", haiku: "glm-5-turbo" },
     models: [
       // GLM-5.2 Coding Plan 官方接入文档公布 1M 上下文 / 131072 max tokens；
       // GLM-5.1 / 5-Turbo 官方公布 200K 上下文（docs.bigmodel.cn / z.ai），其余系列以 LiteLLM 数据为准
@@ -1857,7 +1885,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: "MiniMax",
     cloudProvider: "模型官方",
     type: "api",
-    primaryModel: "MiniMax-M2.7",
+    primaryModel: "MiniMax-M3",
     isBuiltin: true,
     authType: "auth_token",
     websiteUrl: "https://platform.minimaxi.com/docs/guides/models-intro",
@@ -1865,8 +1893,8 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: "https://api.minimaxi.com/anthropic",
     },
     modelAliases: {
-      sonnet: "MiniMax-M2.7",
-      opus: "MiniMax-M2.7",
+      sonnet: "MiniMax-M3",
+      opus: "MiniMax-M3",
       haiku: "MiniMax-M2.7-highspeed",
     },
     models: [
@@ -1981,7 +2009,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: "Google",
     cloudProvider: "模型官方",
     type: "api",
-    primaryModel: "gemini-2.5-flash",
+    primaryModel: "gemini-3.6-flash",
     isBuiltin: true,
     authType: "api_key",
     apiProtocol: "openai",
@@ -1991,12 +2019,36 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     },
     modelAliases: {
-      sonnet: "gemini-3.1-pro-preview",
-      opus: "gemini-3.1-pro-preview",
-      haiku: "gemini-3.5-flash",
+      sonnet: "gemini-3-pro-preview",
+      opus: "gemini-3-pro-preview",
+      haiku: "gemini-3.6-flash",
     },
     models: [
       // Gemini 全系原生多模态：text + image + video + audio
+      {
+        model: "gemini-3.6-flash",
+        modelName: "Gemini 3.6 Flash",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "gemini-3.5-flash-lite",
+        modelName: "Gemini 3.5 Flash-Lite",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
+      {
+        model: "gemini-3-pro-preview",
+        modelName: "Gemini 3 Pro Preview",
+        modelSeries: "google",
+        contextLength: 1_048_576,
+        maxOutputTokens: 65_536,
+        inputModalities: ["text", "image", "video", "audio"],
+      },
       {
         model: "gemini-2.5-pro",
         modelName: "Gemini 2.5 Pro",

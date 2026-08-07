@@ -10,13 +10,16 @@ import {
 } from './config-types';
 import {
   agentDefaultsForRuntimeBackedProvider,
+  agentUsesManagedCodexProvider,
   assertBuiltinExecutionProvider,
   canReuseSessionAcrossProviderExecutionBoundary,
   getProviderExecutionHistoryFamily,
   isAnthropicSubscriptionProviderIntent,
+  isPermissionModeForRuntimeIdentity,
   isRuntimeBackedProvider,
   managedCodexProviderPermissionToRuntimePermission,
   managedCodexRuntimePermissionToProviderPermission,
+  projectManagedCodexPermissionToRuntime,
   runtimeConfigForRuntimeBackedProvider,
   toProviderExecutionIntent,
 } from './providerExecution';
@@ -80,14 +83,14 @@ describe('provider execution identity', () => {
       additionalArgs: ['--legacy'],
       permissionMode: 'suggest',
     }, {
-      permissionMode: 'full-auto',
+      permissionMode: 'no-restrictions',
     })).toEqual({
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
       model: 'gpt-5.4-codex',
       runtime: 'builtin',
+      permissionMode: 'fullAgency',
       runtimeConfig: {
         envPolicy: { proxy: 'terminal' },
-        permissionMode: 'full-auto',
       },
     });
   });
@@ -96,12 +99,44 @@ describe('provider execution identity', () => {
     expect(managedCodexProviderPermissionToRuntimePermission('auto')).toBe('auto-edit');
     expect(managedCodexProviderPermissionToRuntimePermission('plan')).toBe('suggest');
     expect(managedCodexProviderPermissionToRuntimePermission('fullAgency')).toBe('no-restrictions');
-    expect(managedCodexProviderPermissionToRuntimePermission('no-restrictions')).toBe('no-restrictions');
+    expect(managedCodexProviderPermissionToRuntimePermission('no-restrictions')).toBeUndefined();
+    expect(managedCodexProviderPermissionToRuntimePermission('full-auto')).toBeUndefined();
 
     expect(managedCodexRuntimePermissionToProviderPermission('auto-edit')).toBe('auto');
     expect(managedCodexRuntimePermissionToProviderPermission('suggest')).toBe('plan');
     expect(managedCodexRuntimePermissionToProviderPermission('no-restrictions')).toBe('fullAgency');
-    expect(managedCodexRuntimePermissionToProviderPermission('full-auto')).toBe('fullAgency');
+    expect(managedCodexRuntimePermissionToProviderPermission('full-auto')).toBeUndefined();
+
+    expect(projectManagedCodexPermissionToRuntime('fullAgency')).toBe('no-restrictions');
+    expect(projectManagedCodexPermissionToRuntime('no-restrictions')).toBe('no-restrictions');
+    expect(projectManagedCodexPermissionToRuntime('full-auto')).toBeUndefined();
+  });
+
+  it('validates permission against the complete runtime identity', () => {
+    expect(isPermissionModeForRuntimeIdentity('no-restrictions', 'codex', 'managed-provider')).toBe(true);
+    expect(isPermissionModeForRuntimeIdentity('full-auto', 'codex', 'managed-provider')).toBe(false);
+    expect(isPermissionModeForRuntimeIdentity('full-auto', 'codex', 'system-cli')).toBe(true);
+  });
+
+  it('does not let a dormant managed provider id override an explicit system runtime', () => {
+    expect(agentUsesManagedCodexProvider({
+      providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+      runtime: 'builtin',
+    })).toBe(true);
+    expect(agentUsesManagedCodexProvider({
+      providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+      runtime: 'codex',
+    })).toBe(false);
+    expect(agentUsesManagedCodexProvider({
+      providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+      runtime: 'codex',
+      runtimeConfig: { source: 'managed-provider' },
+    })).toBe(true);
+    expect(agentUsesManagedCodexProvider({
+      providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+      runtime: 'gemini',
+      runtimeConfig: { source: 'managed-provider' },
+    })).toBe(false);
   });
 
   it('keeps Anthropic subscription as a builtin subscription provider intent', () => {

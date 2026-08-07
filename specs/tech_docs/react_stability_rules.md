@@ -131,14 +131,19 @@ const buildProviderEnv = useCallback((provider) => {
 异步操作完成前检查组件是否仍 mounted：
 
 ```typescript
-const isMountedRef = useRef(true);
-useEffect(() => () => { isMountedRef.current = false; }, []);
+const isMountedRef = useRef(false);
+useEffect(() => {
+  isMountedRef.current = true;
+  return () => { isMountedRef.current = false; };
+}, []);
 
 loadData().then(result => {
   if (!isMountedRef.current) return;
   setState(result);
 });
 ```
+
+setup 必须显式恢复 `true`：React StrictMode 会执行 effect setup → cleanup → setup 来验证清理对称性；只在初始化器写一次 `true` 会让第二次 setup 永久停留在 `false`，后续合法异步结果全部被误判为 unmounted。
 
 **应用**：`ConfigProvider`、`TabProvider`、`BotPlatformRegistry`。
 

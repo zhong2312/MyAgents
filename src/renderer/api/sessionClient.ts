@@ -119,6 +119,11 @@ export interface SessionMessage {
     role: 'user' | 'assistant';
     content: string;
     timestamp: string;
+    sdkUuid?: string;
+    runtimeTurnAnchor?: {
+        turnId: string;
+        rootUserMessageId: string;
+    };
     attachments?: Array<{
         id: string;
         name: string;

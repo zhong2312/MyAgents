@@ -98,7 +98,9 @@
     "hiddenSystemMessage": "系统消息",
     "sendFailed": "发送失败",
     "networkError": "网络错误",
-    "networkDisconnected": "网络连接中断，请重试"
+    "networkDisconnected": "网络连接中断，请重试",
+    "sessionRestoreFailed": "无法恢复这段对话",
+    "sessionAlreadyOpen": "这段对话已在另一个标签页中打开"
   },
   "floatingSession": {
     "sidecarUnavailable": "sidecar 不可达",
@@ -207,7 +209,7 @@
     "rotate": "旋转",
     "reset": "重置",
     "closeEsc": "关闭 (Esc)",
-    "hint": "双击图片放大 · 按 Esc 关闭"
+    "hint": "双击放大 · 捏合缩放 · 双指或拖拽移动 · 按 Esc 关闭"
   },
   "errorBoundary": {
     "title": "界面渲染出错",
@@ -261,7 +263,13 @@
     "openMyAgentsPreview": "打开 MyAgents 预览",
     "preview": "预览",
     "open": "打开",
-    "revealInTree": "在文件目录中展示"
+    "revealInTree": "在文件目录中展示",
+    "previewUnsupported": "暂不支持预览，可右键菜单打开",
+    "targetUnavailable": "文件不存在或无法访问",
+    "directoryNotInWorkspace": "无法在当前工作区中定位该目录，可右键菜单打开",
+    "imageLoadFailed": "图片预览加载失败",
+    "previewLoadFailed": "文件预览加载失败",
+    "openFailed": "无法使用系统应用打开"
   },
   "markdown": {
     "copyCode": "复制代码",

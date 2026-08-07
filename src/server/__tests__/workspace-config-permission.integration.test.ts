@@ -199,6 +199,99 @@ describe('resolveWorkspaceConfig permissionMode (#295)', () => {
     expect(resolved.permissionMode).toBe('no-restrictions');
   });
 
+  it('projects historical managed full-auto to auto-edit without writing it back', async () => {
+    const workspacePath = join(scratch, 'workspace');
+    writeConfig({
+      agents: [{
+        id: 'agent-1',
+        name: 'Managed Codex Agent',
+        enabled: true,
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.5',
+        permissionMode: 'fullAgency',
+      }],
+    });
+    writeProjects([]);
+
+    const { resolveWorkspaceConfig } = await import('../utils/admin-config');
+    const metadata = {
+      id: 'managed-session',
+      agentDir: workspacePath,
+      title: 'Managed',
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      permissionMode: 'full-auto',
+      configSnapshotAt: new Date().toISOString(),
+    } as SessionMetadata;
+    const resolved = resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: false });
+
+    expect(resolved.permissionMode).toBe('auto-edit');
+    expect(resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: false }).permissionMode)
+      .toBe('auto-edit');
+    expect(resolveWorkspaceConfig(
+      workspacePath,
+      { ...metadata, permissionMode: 'no-restrictions' },
+      { includeMcp: false },
+    ).permissionMode).toBe('no-restrictions');
+  });
+
+  it('does not inherit current Agent permission into an existing managed Session with missing history', async () => {
+    const workspacePath = join(scratch, 'workspace');
+    writeConfig({
+      agents: [{
+        id: 'agent-1',
+        name: 'Managed Codex Agent',
+        enabled: true,
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.5',
+        permissionMode: 'fullAgency',
+      }],
+    });
+    writeProjects([]);
+    const metadata = {
+      id: 'managed-legacy-session',
+      agentDir: workspacePath,
+      title: 'Managed Legacy',
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+    } as SessionMetadata;
+
+    const { resolveWorkspaceConfig } = await import('../utils/admin-config');
+    expect(resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: false }).permissionMode)
+      .toBe('auto-edit');
+  });
+
+  it('preserves system Codex full-auto even when a dormant managed provider id remains', async () => {
+    const workspacePath = join(scratch, 'workspace');
+    writeConfig({
+      agents: [{
+        id: 'agent-1',
+        name: 'System Codex Agent',
+        enabled: true,
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.5',
+        permissionMode: 'fullAgency',
+        runtime: 'codex',
+        runtimeConfig: {
+          source: 'system-cli',
+          permissionMode: 'full-auto',
+        },
+      }],
+    });
+    writeProjects([]);
+
+    const { resolveWorkspaceConfig } = await import('../utils/admin-config');
+    expect(resolveWorkspaceConfig(workspacePath, null, { includeMcp: false }).permissionMode)
+      .toBe('full-auto');
+  });
+
   it('falls back to auto when no valid builtin permission mode is configured', async () => {
     const workspacePath = join(scratch, 'workspace');
     writeConfig({
@@ -290,6 +383,26 @@ describe('resolveWorkspaceConfig runtime-aware model snapshots', () => {
 
     expect(resolved.permissionMode).toBe('full-auto');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('permissionMode'));
+  });
+
+  it('projects unknown historical external permission modes to the interactive default', async () => {
+    const workspacePath = join(scratch, 'workspace');
+    writeConfig({ agents: [] });
+    writeProjects([]);
+
+    const { resolveWorkspaceConfig } = await import('../utils/admin-config');
+    const resolved = resolveWorkspaceConfig(workspacePath, {
+      id: 'session-unknown-permission',
+      agentDir: workspacePath,
+      title: 'Unknown Permission',
+      createdAt: '2026-07-31T00:00:00.000Z',
+      lastActiveAt: '2026-07-31T00:00:00.000Z',
+      runtime: 'codex',
+      runtimeSource: 'system-cli',
+      permissionMode: 'unlimited',
+    } as SessionMetadata, { includeMcp: false });
+
+    expect(resolved.permissionMode).toBe('full-auto');
   });
 
   it('does not use agent model/provider/MCP fallbacks for locked owned snapshots', async () => {

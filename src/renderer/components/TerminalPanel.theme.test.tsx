@@ -215,7 +215,7 @@ describe('TerminalPanel Theme adapter', () => {
       workspacePath: '/tmp/theme-test',
       rows: 24,
       cols: 80,
-      sidecarPort: null,
+      sessionId: null,
       terminalId: expect.any(String),
     });
   });

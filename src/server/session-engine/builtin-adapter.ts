@@ -13,6 +13,7 @@ import {
   getAgentState,
   getBuiltinLiveSessionSnapshot,
   getBuiltinSessionCompletionTerminal,
+  getCurrentMcpServers,
   getLastBuiltinAssistantText,
   getMcpServers,
   getMessages,
@@ -38,6 +39,8 @@ import {
   materializeCurrentSessionMetadataForPublishedReset,
   materializePendingDesktopSession as materializeBuiltinPendingDesktopSession,
   resetSession,
+  resetInteractionScenario,
+  requireCurrentBuiltinSkill,
   rewindSession,
   setAgents,
   setBackgroundAgentPermissionMode,
@@ -53,11 +56,24 @@ import {
   switchToSession,
   waitForSessionIdle,
 } from '../agent-session';
-import type { MessageWire, PermissionMode, ProviderEnv } from '../agent-session';
+import type { MessageWire, PermissionMode } from '../agent-session';
+import type { ProviderEnv } from '../provider-types';
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { CancelReason } from '../utils/cancellation';
 import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../../shared/providerRoute';
-import { getEffectiveOfficialToolIdsForSession, materializeProviderRouteEnv, resolveSubscriptionAuthKind, resolveWorkspaceConfig } from '../utils/admin-config';
+import {
+  decodeProviderEnvSnapshot,
+  findProjectAgentByWorkspacePath,
+  getAllMcpServers,
+  getEffectiveMcpServers,
+  getEffectiveOfficialToolIdsForSession,
+  getEnabledMcpServerIds,
+  isProviderDisabled,
+  loadConfig,
+  materializeProviderRouteEnv,
+  resolveSubscriptionAuthKind,
+  resolveWorkspaceConfig,
+} from '../utils/admin-config';
 import type {
   DesktopAdmissionResult,
   DesktopMessageRequest,
@@ -67,6 +83,7 @@ import type {
   InjectedTurnResult,
   SessionEngineReplayMessage,
   SessionEngine,
+  ScheduledTurnPreparationResult,
 } from './types';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { DispatchGuard, TurnTerminalOutcome } from '../session-core/turn-queue';
@@ -74,6 +91,7 @@ import {
   ensureRegisteredAgentSessionOrigin,
   getPersistedSessionOrigin,
   getSessionData,
+  getSessionMetadata,
 } from '../SessionStore';
 import type { SessionMessage } from '../types/session';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
@@ -84,6 +102,19 @@ import {
   SESSION_BOUND_CHANNEL_DELIVERY,
   injectedTurnChannelDelivery,
 } from '../session-core/channel-delivery';
+import type { AgentConfig } from '../../shared/types/agent';
+import { resolveSessionConfig } from '../utils/resolve-session-config';
+import { isManagedCodexProviderReady, managedCodexNotReadyMessage } from '../utils/managed-codex-readiness';
+import {
+  resolveTaskProviderRouting,
+  taskProviderRoutingRecovery,
+  type TaskProviderRoutingOwner,
+} from '../utils/task-provider-routing';
+import { resolveScheduledTurnPermissionMode } from '../../shared/types/runtime';
+import {
+  createScheduledDispatchGuard,
+  runtimeConfigSource,
+} from './scheduled-turn-preparation';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -102,6 +133,20 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
   });
 }
 
+function taskProviderRoutingOwner(
+  request: Parameters<SessionEngine['prepareScheduledTurn']>[0],
+  hasTaskProviderOverride: boolean,
+  agent: AgentConfig | undefined,
+): TaskProviderRoutingOwner {
+  if (hasTaskProviderOverride && request.scenario.type === 'cron') {
+    return { kind: 'task', taskId: request.scenario.taskId };
+  }
+  if (request.operation.kind === 'task' && request.operation.initializeSession && agent) {
+    return { kind: 'agent', agentId: agent.id };
+  }
+  return { kind: 'session', sessionId: request.sessionId };
+}
+
 // runInjectedTurn requires an explicit promotion acknowledgement even when no
 // domain guard is present. MCP readiness is intentionally not part of it.
 const acceptInjectedTurnDispatch: DispatchGuard = async () => ({ accepted: true });
@@ -109,6 +154,7 @@ const acceptInjectedTurnDispatch: DispatchGuard = async () => ({ accepted: true 
 function providerEnvForRouteRequest(request: {
   providerRoute?: ProviderRoute;
   providerEnv?: ProviderEnv | 'subscription';
+  providerRoutingRecovery?: string;
   model?: string;
 }): { providerEnv: ProviderEnv | 'subscription' | undefined; model?: string; error?: string; status?: number } {
   if (!request.providerRoute) {
@@ -143,9 +189,10 @@ function providerEnvForRouteRequest(request: {
   }
   const providerEnv = materializeProviderRouteEnv(request.providerRoute);
   if (!providerEnv) {
+    const recovery = request.providerRoutingRecovery?.trim();
     return {
       providerEnv: undefined,
-      error: `Provider "${request.providerRoute.providerId}" is unavailable or missing an API key.`,
+      error: `Provider "${request.providerRoute.providerId}" is unavailable or missing an API key.${recovery ? ` ${recovery}` : ''}`,
       status: 409,
     };
   }
@@ -161,6 +208,12 @@ function getLatestBuiltinResult(): string {
       : NO_TEXT_RESPONSE;
   }
   return latestResult.trim() || NO_TEXT_RESPONSE;
+}
+
+function asBuiltinPermissionMode(mode: string | undefined): PermissionMode | undefined {
+  return mode === 'auto' || mode === 'plan' || mode === 'fullAgency' || mode === 'custom'
+    ? mode
+    : undefined;
 }
 
 function getBuiltinWorkspacePath(): string | null {
@@ -320,6 +373,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
+      const permissionMode = asBuiltinPermissionMode(request.permissionMode);
+      if (request.permissionMode !== undefined && permissionMode === undefined) {
+        return { success: false, error: `Invalid builtin permission mode: ${request.permissionMode}`, status: 400 };
+      }
       await setInteractionScenario(request.scenario);
       if (request.backgroundAgentPermissionMode) {
         setBackgroundAgentPermissionMode(request.backgroundAgentPermissionMode);
@@ -331,7 +388,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       const result = await enqueueUserMessage(
         request.text,
         request.images,
-        request.permissionMode,
+        permissionMode,
         routed.model,
         routed.providerEnv,
         request.reasoningEffort,
@@ -453,25 +510,180 @@ export function createBuiltinSessionEngine(): SessionEngine {
         {
           allowLazySessionMaterialization: request.allowLazySessionMaterialization === true,
           sessionBirthOrigin: request.birthOrigin,
+          queueId: request.queueId,
+          beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
     },
 
-    async ensureGoalSessionConfig() {
-      if (getMcpServers() !== null) return { success: true };
-      const sessionId = getSessionId();
-      const workspacePath = getBuiltinWorkspacePath();
-      if (!workspacePath) {
-        return { success: false, error: 'Goal session has no workspace path' };
+    async prepareScheduledTurn(request): Promise<ScheduledTurnPreparationResult> {
+      if (getSessionId() !== request.sessionId) {
+        const switched = await switchToSession(request.sessionId);
+        if (!switched || getSessionId() !== request.sessionId) {
+          return { success: false, code: 'session_bind_failed', status: 409 };
+        }
       }
-      const resolved = resolveWorkspaceConfig(
-        workspacePath,
-        sessionId ? getSessionData(sessionId) : null,
-        { includeMcp: true },
-      );
-      await applyMcpOverrideAndAwaitReady(resolved.mcpServers);
-      return { success: true };
+
+      try {
+        await setInteractionScenario(request.scenario);
+      } catch (error) {
+        return {
+          success: false,
+          code: 'scenario_failed',
+          status: 500,
+          error: `System prompt error: ${error}`,
+        };
+      }
+
+      const release = () => resetInteractionScenario();
+      if (request.operation.kind === 'goal') {
+        try {
+          if (getMcpServers() === null) {
+            const resolved = resolveWorkspaceConfig(
+              request.workspacePath,
+              getSessionData(request.sessionId),
+              { includeMcp: true },
+            );
+            await applyMcpOverrideAndAwaitReady(resolved.mcpServers);
+          }
+          return {
+            success: true,
+            sessionId: request.sessionId,
+            permissionMode: resolveScheduledTurnPermissionMode(
+              'goal',
+              request.operation.permissionMode,
+              undefined,
+              'builtin',
+            ),
+            release,
+          };
+        } catch (error) {
+          release();
+          return {
+            success: false,
+            code: 'configuration_failed',
+            status: 503,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+
+      const operation = request.operation;
+      try {
+        const managedCodexReady = isManagedCodexProviderReady(loadConfig());
+        const metadata = getSessionMetadata(request.sessionId);
+        const agent = findProjectAgentByWorkspacePath(request.workspacePath) as AgentConfig | undefined;
+        let model = operation.model;
+        let providerEnv: ProviderEnv | 'subscription' | undefined;
+        let providerRoute: ProviderRoute | undefined;
+        let runtimeConfig = operation.runtimeConfig;
+        const routingOwner = taskProviderRoutingOwner(request, Boolean(operation.providerId), agent);
+        const providerRoutingRecovery = taskProviderRoutingRecovery(routingOwner);
+
+        if (operation.providerId) {
+          providerEnv = resolveTaskProviderRouting(operation.providerId, routingOwner);
+          if (operation.model) {
+            providerRoute = createConcreteProviderRoute(operation.providerId, operation.model);
+          }
+        } else if (metadata) {
+          const resolved = resolveSessionConfig(metadata, agent, undefined, 'owned', {
+            managedCodexProviderReady: managedCodexReady,
+          });
+          model = resolved.model;
+          if (isConcreteProviderRoute(resolved.providerRoute)) {
+            providerRoute = resolved.providerRoute;
+            model = resolved.providerRoute.model;
+            providerEnv = resolveTaskProviderRouting(resolved.providerRoute.providerId, routingOwner);
+          } else if (resolved.providerEnvJson) {
+            const decoded = decodeProviderEnvSnapshot(resolved.providerEnvJson, resolved.providerId);
+            if (!decoded) {
+              const reason = resolved.providerId && isProviderDisabled(resolved.providerId)
+                ? `Provider '${resolved.providerId}' is disabled`
+                : 'Session provider snapshot is invalid';
+              throw new Error(
+                `${reason}. ${providerRoutingRecovery}`,
+              );
+            }
+            providerEnv = decoded as ProviderEnv;
+          } else if (resolved.providerId) {
+            providerEnv = resolveTaskProviderRouting(resolved.providerId, routingOwner);
+            if (model) providerRoute = createConcreteProviderRoute(resolved.providerId, model);
+          }
+          if (resolved.runtime !== 'builtin') {
+            runtimeConfig = {
+              ...(operation.runtimeConfig ?? {}),
+              source: operation.runtimeConfig?.source ?? resolved.runtimeSource ?? runtimeConfig?.source,
+              model: operation.runtimeConfig?.model ?? resolved.model,
+              permissionMode: operation.runtimeConfig?.permissionMode
+                ?? operation.permissionMode
+                ?? resolved.permissionMode,
+            };
+          }
+        }
+        if (operation.permissionMode) {
+          runtimeConfig = { ...(runtimeConfig ?? {}), permissionMode: operation.permissionMode };
+        }
+        if (runtimeConfigSource(runtimeConfig) === 'managed-provider' && !managedCodexReady) {
+          throw new Error(managedCodexNotReadyMessage('cron task execution'));
+        }
+
+        if (operation.initializeSession) {
+          try {
+            let target;
+            if (operation.mcpEnabledServers !== undefined) {
+              const enabled = new Set(getEnabledMcpServerIds());
+              const requested = new Set(operation.mcpEnabledServers.filter(id => enabled.has(id)));
+              const current = (getCurrentMcpServers() ?? []).filter(server => requested.has(server.id));
+              target = current.length === requested.size
+                ? current
+                : getAllMcpServers().filter(server => requested.has(server.id));
+            } else {
+              target = getEffectiveMcpServers(request.workspacePath);
+            }
+            await applyMcpOverrideAndAwaitReady([...target]);
+          } catch (error) {
+            release();
+            return {
+              success: false,
+              code: 'configuration_failed',
+              status: 500,
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }
+
+        return {
+          success: true,
+          sessionId: request.sessionId,
+          permissionMode: resolveScheduledTurnPermissionMode(
+            'cron',
+            operation.permissionMode,
+            runtimeConfig?.permissionMode,
+            'builtin',
+          ),
+          model,
+          providerEnv,
+          providerRoute,
+          providerRoutingRecovery,
+          runtimeConfig: runtimeConfig ?? null,
+          beforeDispatch: createScheduledDispatchGuard({
+            preceding: operation.beforeDispatch,
+            workspacePath: request.workspacePath,
+            requiredSystemSkill: operation.requiredSystemSkill,
+            requireNativeSystemSkill: skill => requireCurrentBuiltinSkill(skill),
+          }),
+          release,
+        };
+      } catch (error) {
+        release();
+        return {
+          success: false,
+          code: 'configuration_failed',
+          status: 400,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     },
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
@@ -660,21 +872,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
       });
     },
 
-    async updateRuntimeConfig() {
-      return {
-        success: false,
-        error: 'Runtime config endpoint is only for external runtimes',
-      };
-    },
-
-    async prewarm() {
-      return { success: false, error: 'Pre-warm is only for external runtimes' };
-    },
-
-    restoreInitialSession() {
-      return false;
-    },
-
     async respondPermission(requestId, decision) {
       return handlePermissionResponse(requestId, decision);
     },
@@ -685,14 +882,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     rewindToUserMessage(userMessageId) {
       return rewindSession(userMessageId);
-    },
-
-    async retryLastExternalUserMessage() {
-      return {
-        success: false,
-        status: 400,
-        error: 'external-retry is only for external runtimes; builtin uses /chat/rewind',
-      };
     },
 
     forkAtAssistantMessage(messageId) {
@@ -721,13 +910,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
     async updateDesktopInteractionScenario(scenario) {
       await setInteractionScenario(scenario);
       return { success: true };
-    },
-
-    async switchToExistingSession(sessionId) {
-      const success = await switchToSession(sessionId);
-      return success
-        ? { success: true, sessionId }
-        : { success: false, error: 'Session not found.', status: 404 };
     },
 
     async resetForNewDesktopSession() {

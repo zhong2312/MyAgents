@@ -144,8 +144,8 @@ export async function resolveAgentEnvPolicy(
   workspacePath: string,
 ): Promise<RuntimeEnvPolicy | undefined> {
   try {
-    const { findAgentByWorkspacePath } = await import('../utils/admin-config');
-    const agent = findAgentByWorkspacePath(workspacePath);
+    const { findProjectAgentByWorkspacePath } = await import('../utils/admin-config');
+    const agent = findProjectAgentByWorkspacePath(workspacePath);
     const raw = (agent?.runtimeConfig as Record<string, unknown> | undefined)?.envPolicy;
     if (!raw || typeof raw !== 'object') return undefined;
     const policyObj = raw as Record<string, unknown>;

@@ -35,8 +35,7 @@ const DEFAULT_PROXY_PORT: u16 = 7890;
 /// Public so that `terminal.rs` can reuse the same constant (portable-pty uses
 /// `CommandBuilder` instead of `std::process::Command`, so `apply_to_subprocess`
 /// can't be called directly).
-pub const LOCALHOST_NO_PROXY: &str =
-    "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]";
+pub const LOCALHOST_NO_PROXY: &str = "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1";
 
 pub const PROXY_INJECTED_MARKER_ENV: &str = "MYAGENTS_PROXY_INJECTED";
 pub const PROXY_INHERITED_ENV_JSON: &str = "MYAGENTS_PROXY_INHERITED_ENV_JSON";
@@ -296,7 +295,7 @@ fn merge_no_proxy_with_localhost(inherited: Option<&str>) -> String {
     let mut entries = raw
         .split(',')
         .map(str::trim)
-        .filter(|entry| !entry.is_empty())
+        .filter(|entry| !entry.is_empty() && !entry.eq_ignore_ascii_case("[::1]"))
         .map(str::to_string)
         .collect::<Vec<_>>();
     let mut seen = entries
@@ -438,7 +437,7 @@ pub fn build_client_with_proxy(builder: reqwest::ClientBuilder) -> Result<reqwes
         // Comprehensive NO_PROXY list for maximum compatibility:
         // - localhost, localhost.localdomain (common DNS names)
         // - 127.0.0.1, 127.0.0.0/8 (IPv4 loopback range)
-        // - ::1, [::1] (IPv6 loopback with/without brackets)
+        // - ::1 (IPv6 loopback; NO_PROXY uses host tokens, not URL brackets)
         let proxy = reqwest::Proxy::all(&proxy_url)
             .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
             .no_proxy(reqwest::NoProxy::from_string(LOCALHOST_NO_PROXY));
@@ -728,9 +727,11 @@ mod tests {
 
     #[test]
     fn test_inherited_no_proxy_keeps_existing_entries_and_localhost() {
-        let merged = merge_no_proxy_with_localhost(Some(".corp.local,localhost"));
+        let merged = merge_no_proxy_with_localhost(Some(".corp.local,localhost,[::1]"));
         assert!(merged.split(',').any(|entry| entry == ".corp.local"));
         assert!(merged.split(',').any(|entry| entry == "127.0.0.0/8"));
+        assert!(merged.split(',').any(|entry| entry == "::1"));
+        assert!(!merged.split(',').any(|entry| entry == "[::1]"));
         assert_eq!(merge_no_proxy_with_localhost(Some("*")), "*");
     }
 }

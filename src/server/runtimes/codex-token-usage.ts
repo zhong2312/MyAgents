@@ -4,15 +4,28 @@
  * 抽出来单独可测，因为 Codex 的 token schema 随版本漂移，是本特性最易回归的点。
  * 字段名以 `codex app-server generate-ts`（v0.136.0）产物为准：
  *   ThreadTokenUsage    = { total, last: TokenUsageBreakdown, modelContextWindow: number | null }
- *   TokenUsageBreakdown = { totalTokens, inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens }
+ *   TokenUsageBreakdown = {
+ *     totalTokens, inputTokens, cachedInputTokens, cacheWriteInputTokens,
+ *     outputTokens, reasoningOutputTokens
+ *   }
+ * `cacheWriteInputTokens` was added in Codex 0.146 and remains optional so
+ * system-cli / older Managed runtimes keep using the same parser.
  */
 
 export interface CodexTokenUsageBreakdown {
   totalTokens?: number;
   inputTokens?: number;
   cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
   outputTokens?: number;
   reasoningOutputTokens?: number;
+}
+
+export interface CodexExactUsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 export interface CodexThreadTokenUsage {
@@ -46,5 +59,41 @@ export function mapCodexTokenUsage(
     runningTotalOutputTokens: usage.total.outputTokens ?? 0,
     contextOccupiedTokens: typeof lastInput === 'number' && lastInput > 0 ? lastInput : undefined,
     runtimeContextWindow: typeof usage.modelContextWindow === 'number' ? usage.modelContextWindow : null,
+  };
+}
+
+function requiredFiniteNonNegative(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Add one exact upstream Responses API completion to a turn-local total.
+ *
+ * Codex reports these values from the provider response itself; callers own
+ * response-id deduplication because replay/reconnect policy belongs to the
+ * app-server adapter, not this numeric helper.
+ */
+export function addCodexExactResponseUsage(
+  current: CodexExactUsageTotals | null | undefined,
+  response: unknown,
+): CodexExactUsageTotals | null {
+  if (!response || typeof response !== 'object') return null;
+  const raw = response as Record<string, unknown>;
+  const inputTokens = requiredFiniteNonNegative(raw.inputTokens);
+  const outputTokens = requiredFiniteNonNegative(raw.outputTokens);
+  const cacheReadTokens = requiredFiniteNonNegative(raw.cachedInputTokens);
+  const cacheCreationTokens = requiredFiniteNonNegative(raw.cacheWriteInputTokens);
+  if (
+    inputTokens === null
+    || outputTokens === null
+    || cacheReadTokens === null
+    || cacheCreationTokens === null
+  ) return null;
+
+  return {
+    inputTokens: (current?.inputTokens ?? 0) + inputTokens,
+    outputTokens: (current?.outputTokens ?? 0) + outputTokens,
+    cacheReadTokens: (current?.cacheReadTokens ?? 0) + cacheReadTokens,
+    cacheCreationTokens: (current?.cacheCreationTokens ?? 0) + cacheCreationTokens,
   };
 }

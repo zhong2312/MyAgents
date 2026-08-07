@@ -17,12 +17,21 @@ export interface SlashCommand {
 }
 
 /**
- * Complete Skill frontmatter interface
- * Matches the Agent Skills Open Standard specification
+ * Skill frontmatter projection used by the editor. Standard fields remain
+ * round-trippable; `author` is a normalized compatibility view; the remaining
+ * advanced fields are MyAgents/Claude extensions.
  */
 export interface SkillFrontmatter {
     name: string;
     description: string;
+    license?: string;
+    compatibility?: string;
+    metadata?: Record<string, string>;
+    /**
+     * Normalized UI/API projection. Readers accept legacy top-level `author`
+     * and standard `metadata.author`; serializers always write the standard
+     * nested form.
+     */
     author?: string;
     // Advanced options
     'disable-model-invocation'?: boolean;
@@ -154,21 +163,37 @@ function loadFrontmatterObject(frontmatterStr: string, warnLabel: string): Recor
 
 /**
  * Extract author from parsed YAML object
- * Checks both top-level (author, Author) and nested (metadata.author, metadata.Author)
+ * Standard `metadata.author` wins when both forms exist. Top-level
+ * `author`/`Author` remains a read-only compatibility fallback.
  */
 function extractAuthor(parsed: Record<string, unknown>): string | undefined {
-    // Check top-level author/Author
-    if (typeof parsed.author === 'string') return parsed.author;
-    if (typeof parsed.Author === 'string') return parsed.Author;
-
-    // Check nested metadata.author/Author
     const metadata = parsed.metadata as Record<string, unknown> | undefined;
     if (metadata && typeof metadata === 'object') {
         if (typeof metadata.author === 'string') return metadata.author;
         if (typeof metadata.Author === 'string') return metadata.Author;
     }
 
+    if (typeof parsed.author === 'string') return parsed.author;
+    if (typeof parsed.Author === 'string') return parsed.Author;
+
     return undefined;
+}
+
+/**
+ * Preserve standard Skill metadata through the detail editor. The official
+ * schema requires string values; scalar legacy values are normalized to
+ * strings on the next save instead of being silently dropped.
+ */
+function extractSkillMetadata(parsed: Record<string, unknown>): Record<string, string> | undefined {
+    const value = parsed.metadata;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+    const metadata = Object.fromEntries(
+        Object.entries(value)
+            .filter(([, entry]) => ['string', 'number', 'boolean'].includes(typeof entry))
+            .map(([key, entry]) => [key, String(entry)]),
+    );
+    return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
 /**
@@ -283,6 +308,12 @@ export function parseFullSkillContent(content: string): {
 
         if (typeof parsed.name === 'string') frontmatter.name = parsed.name;
         if (typeof parsed.description === 'string') frontmatter.description = parsed.description;
+        if (typeof parsed.license === 'string') frontmatter.license = parsed.license;
+        if (typeof parsed.compatibility === 'string') frontmatter.compatibility = parsed.compatibility;
+        const metadata = extractSkillMetadata(parsed);
+        if (metadata) frontmatter.metadata = metadata;
+        const author = extractAuthor(parsed);
+        if (author) frontmatter.author = author;
         if (typeof parsed['disable-model-invocation'] === 'boolean') {
             frontmatter['disable-model-invocation'] = parsed['disable-model-invocation'];
         }
@@ -364,6 +395,25 @@ export function serializeSkillContent(frontmatter: Partial<SkillFrontmatter>, bo
 
     if (frontmatter.name) lines.push(`name: ${frontmatter.name}`);
     if (frontmatter.description) lines.push(`description: "${frontmatter.description.replace(/"/g, '\\"')}"`);
+    if (frontmatter.license) lines.push(`license: ${JSON.stringify(frontmatter.license)}`);
+    if (frontmatter.compatibility) lines.push(`compatibility: ${JSON.stringify(frontmatter.compatibility)}`);
+
+    // `author` is a normalized projection for old callers and the UI. Persist
+    // it only through the Agent Skills standard `metadata` map. Other metadata
+    // survives an edit even though the current panel does not expose fields
+    // for it.
+    const metadata = { ...(frontmatter.metadata ?? {}) };
+    if (frontmatter.author) {
+        delete metadata.Author;
+        metadata.author = frontmatter.author;
+    }
+    if (Object.keys(metadata).length > 0) {
+        lines.push('metadata:');
+        for (const [key, value] of Object.entries(metadata)) {
+            const yamlKey = /^[A-Za-z_][A-Za-z0-9_-]*$/.test(key) ? key : JSON.stringify(key);
+            lines.push(`  ${yamlKey}: ${JSON.stringify(String(value))}`);
+        }
+    }
     if (frontmatter['disable-model-invocation'] !== undefined) {
         lines.push(`disable-model-invocation: ${frontmatter['disable-model-invocation']}`);
     }

@@ -229,6 +229,9 @@ export function SummaryCard({ task, stats }: Props) {
               v={task.runMode === 'single-session' ? t('summary.runModeSingle') : t('summary.runModeNew')}
             />
           )}
+          {task.runMode === 'single-session' && task.preselectedSessionId && (
+            <MetaRow k={t('trigger.targetSession')} v={task.preselectedSessionId} mono />
+          )}
           {task.model && <MetaRow k={t('summary.modelOverride')} v={task.model} mono />}
           {task.permissionMode && task.permissionMode !== 'auto' && (
             <MetaRow k={t('summary.permissionOverride')} v={task.permissionMode} mono />

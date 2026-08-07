@@ -30,6 +30,7 @@ export class SdkChildLaunchCircuitOpenError extends Error {
   readonly errorCode: DeterministicLaunchCode;
   readonly retryAfterMs: number;
   readonly imMessage: string;
+  readonly platform: NodeJS.Platform | string;
 
   constructor(
     errorCode: DeterministicLaunchCode,
@@ -42,6 +43,7 @@ export class SdkChildLaunchCircuitOpenError extends Error {
     this.errorCode = errorCode;
     this.retryAfterMs = retryAfterMs;
     this.imMessage = messages.imMessage;
+    this.platform = platform;
   }
 }
 
@@ -130,7 +132,11 @@ export function diagnoseSdkSubprocessFailure(input: {
       kind: 'sdk-child-launch-circuit-open',
       errorCode: circuitError.errorCode,
       automaticRetryDelayMs: retryAfterMs,
-      ...launchDeniedMessages(circuitError.errorCode, platform, ''),
+      ...launchDeniedMessages(
+        circuitError.errorCode,
+        typeof circuitError.platform === 'string' ? circuitError.platform : platform,
+        '',
+      ),
     };
   }
 

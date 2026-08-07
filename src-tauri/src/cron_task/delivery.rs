@@ -111,7 +111,9 @@ async fn find_agent_id_for_delivery(
             first_channel_match = Some(agent_id.clone());
         }
         if let Some(task_workspace) = normalized_task_workspace.as_ref() {
-            if crate::cron_task::normalize_path(&agent.config.workspace_path) == *task_workspace {
+            if crate::cron_task::normalize_path(&agent.config.resolved_workspace_path)
+                == *task_workspace
+            {
                 return Some(agent_id.clone());
             }
         }

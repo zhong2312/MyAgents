@@ -29,13 +29,21 @@ import {
   buildRuntimeChangePatch,
   RUNTIME_CONFIG_PER_RUNTIME_FIELDS,
   type RuntimeModelInfo,
+  type RuntimeSource,
   type RuntimeType,
 } from '@/../shared/types/runtime';
+import { isPermissionModeForRuntimeIdentity } from '@/../shared/providerExecution';
 import type { McpServerDefinition } from '@/config/types';
 import type { RuntimeConfig } from '@/../shared/types/runtime';
 import { getAllMcpServersFromConfig } from '@/config/services/mcpService';
 import { workspacePathsEqual } from '@/../shared/workspacePath';
 import { apiGetJson } from '@/api/apiFetch';
+import {
+  clearRuntimeModelOverride,
+  resolveAgentRuntimeModelCatalogIdentity,
+  resolveRuntimeModelCatalogIdentity,
+  runtimeModelCatalogPath,
+} from '@/utils/runtimeModelCatalog';
 
 // "跟随" sentinel: an empty-string value selected from <CustomSelect>
 // translates back to `undefined` on the wrapper level. Using `''` rather
@@ -124,8 +132,11 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // permission / MCP via their own CLI flags.
   const workspaceAgent = useMemo(() => {
     if (!workspacePath) return null;
-    return config?.agents?.find((a) => workspacePathsEqual(a.workspacePath, workspacePath)) ?? null;
-  }, [workspacePath, config]);
+    const project = projects.find(candidate => workspacePathsEqual(candidate.path, workspacePath));
+    return project?.agentId
+      ? config?.agents?.find(agent => agent.id === project.agentId) ?? null
+      : null;
+  }, [workspacePath, config, projects]);
 
   // Multi-Agent Runtime feature gate (Settings → 实验室) gates user-managed
   // external runtimes only. Managed Codex Provider tasks carry
@@ -138,10 +149,17 @@ export function TaskAdvancedConfigEditor(props: Props) {
   //   user override `runtime` (if set) > Agent's runtime > 'builtin' default
   // External runtimes self-manage model/permission/MCP, so all three
   // sub-fields are gated on `effectiveRuntime === 'builtin'`.
-  const agentRuntime: RuntimeType = workspaceAgent?.runtime ?? 'builtin';
-  const rawEffectiveRuntime: RuntimeType = runtime ?? agentRuntime;
+  const agentRuntimeCatalogIdentity = resolveAgentRuntimeModelCatalogIdentity(workspaceAgent);
+  const agentRuntime = agentRuntimeCatalogIdentity.runtime;
+  const runtimeCatalogIdentity = resolveRuntimeModelCatalogIdentity(
+    runtime,
+    runtimeConfig,
+    agentRuntimeCatalogIdentity,
+  );
+  const rawEffectiveRuntime = runtimeCatalogIdentity.runtime;
+  const effectiveRuntimeSource = runtimeCatalogIdentity.source;
   const managedProviderRuntimeActive =
-    rawEffectiveRuntime === 'codex' && runtimeConfig?.source === 'managed-provider';
+    rawEffectiveRuntime === 'codex' && effectiveRuntimeSource === 'managed-provider';
   const runtimeUiEnabled = multiAgentRuntimeEnabled || managedProviderRuntimeActive;
   const effectiveRuntime: RuntimeType = runtimeUiEnabled ? rawEffectiveRuntime : 'builtin';
   const isBuiltin = effectiveRuntime === 'builtin';
@@ -168,15 +186,23 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // lockstep with the agent-level confirmRuntimeChange / Settings /
   // Launcher / `myagents agent set runtime` paths.
   //
-  // No-op guard: when the new effective runtime equals the old one (e.g. the
-  // user toggles override → "follow Agent" but Agent is the same kind),
-  // bail before any scrub so we don't gratuitously clear values the user
-  // already picked for the same runtime.
+  // No-op guard compares the complete catalog identity. Codex system CLI and
+  // managed provider share a RuntimeType but not model/permission vocabularies,
+  // so returning to an Agent with the other source must still scrub stale
+  // per-runtime fields.
   const setRuntime = useCallback(
     (next: RuntimeType | undefined) => {
       setRuntimeRaw(next);
       const nextEffective: RuntimeType = next ?? agentRuntime;
-      if (nextEffective === effectiveRuntime) return;
+      const nextIdentity = resolveRuntimeModelCatalogIdentity(
+        next,
+        next === runtime ? runtimeConfig : undefined,
+        agentRuntimeCatalogIdentity,
+      );
+      if (
+        nextIdentity.runtime === rawEffectiveRuntime
+        && nextIdentity.source === effectiveRuntimeSource
+      ) return;
 
       // Task-level permissionMode (independent of runtimeConfig).
       if (permissionMode !== undefined) setPermissionMode(undefined);
@@ -214,8 +240,11 @@ export function TaskAdvancedConfigEditor(props: Props) {
       permissionMode,
       mcpEnabledServers,
       runtimeConfig,
+      runtime,
       agentRuntime,
-      effectiveRuntime,
+      rawEffectiveRuntime,
+      effectiveRuntimeSource,
+      agentRuntimeCatalogIdentity,
     ],
   );
 
@@ -287,30 +316,44 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // Static for CC; dynamic for Codex/Gemini (queried from the CLI). Mirrors
   // Chat.tsx:721-738. Empty list while the fetch is in flight is fine —
   // the picker just shows "跟随 Agent 当前模型" alone.
-  const [codexModels, setCodexModels] = useState<RuntimeModelInfo[]>([]);
+  const [codexCatalog, setCodexCatalog] = useState<{
+    source: RuntimeSource;
+    models: RuntimeModelInfo[];
+  } | null>(null);
   const [geminiModels, setGeminiModels] = useState<RuntimeModelInfo[]>([]);
   useEffect(() => {
     if ((!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) || effectiveRuntime !== 'codex') return;
     let cancelled = false;
-    apiGetJson<{ models?: RuntimeModelInfo[] }>(`/api/runtime/models?type=codex`)
-      .then((res) => { if (!cancelled && res?.models?.length) setCodexModels(res.models); })
-      .catch(() => {});
+    const source = effectiveRuntimeSource ?? 'system-cli';
+    apiGetJson<{ models?: RuntimeModelInfo[] }>(
+      runtimeModelCatalogPath('codex', source),
+    )
+      .then((res) => {
+        if (!cancelled) setCodexCatalog({ source, models: res?.models ?? [] });
+      })
+      .catch(() => {
+        if (!cancelled) setCodexCatalog({ source, models: [] });
+      });
     return () => { cancelled = true; };
-  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, effectiveRuntime]);
+  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, effectiveRuntime, effectiveRuntimeSource]);
   useEffect(() => {
     if (!multiAgentRuntimeEnabled || effectiveRuntime !== 'gemini') return;
     let cancelled = false;
-    apiGetJson<{ models?: RuntimeModelInfo[] }>(`/api/runtime/models?type=gemini`)
+    apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('gemini'))
       .then((res) => { if (!cancelled && res?.models?.length) setGeminiModels(res.models); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [multiAgentRuntimeEnabled, effectiveRuntime]);
   const externalRuntimeModels: RuntimeModelInfo[] = useMemo(() => {
     if (effectiveRuntime === 'claude-code') return CC_MODELS;
-    if (effectiveRuntime === 'codex') return codexModels;
+    if (effectiveRuntime === 'codex') {
+      return codexCatalog && codexCatalog.source === effectiveRuntimeSource
+        ? codexCatalog.models
+        : [];
+    }
     if (effectiveRuntime === 'gemini') return geminiModels;
     return [];
-  }, [effectiveRuntime, codexModels, geminiModels]);
+  }, [effectiveRuntime, effectiveRuntimeSource, codexCatalog, geminiModels]);
 
   // PRD 0.2.9 — Pair-write helpers. Selecting a provider's model writes
   // BOTH `providerId` and `model` atomically; selecting "跟随 Agent" uses
@@ -329,10 +372,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
   }, [setProviderId, setModel]);
   const selectExternalFollow = useCallback(() => {
     if (runtimeConfig?.model) {
-      const next: RuntimeConfig = { ...runtimeConfig, model: undefined };
-      const hasAny = next.permissionMode !== undefined
-        || (next.additionalArgs && next.additionalArgs.length > 0);
-      setRuntimeConfig(hasAny ? next : undefined);
+      setRuntimeConfig(clearRuntimeModelOverride(runtimeConfig));
     }
     setModelPickerOpen(null);
   }, [runtimeConfig, setRuntimeConfig]);
@@ -386,14 +426,20 @@ export function TaskAdvancedConfigEditor(props: Props) {
   const permissionOptions = useMemo(
     () => [
       { value: FOLLOW_VALUE, label: t('advanced.permissionFollow') },
-      ...getRuntimePermissionModes(effectiveRuntime).map((m) => ({
+      ...getRuntimePermissionModes(effectiveRuntime)
+        .filter((m) => isPermissionModeForRuntimeIdentity(
+          m.value,
+          effectiveRuntime,
+          effectiveRuntimeSource,
+        ))
+        .map((m) => ({
         value: m.value,
         label: m.description
           ? `${m.label} · ${t(`advanced.permissionModes.${effectiveRuntime}.${m.value}`, { defaultValue: m.description })}`
           : m.label,
-      })),
+        })),
     ],
-    [effectiveRuntime, t],
+    [effectiveRuntime, effectiveRuntimeSource, t],
   );
 
   // Toggle a single MCP server in the override list.

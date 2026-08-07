@@ -76,10 +76,13 @@ async function stopChild(child: ChildProcess): Promise<void> {
   }
 }
 
-function writeSkill(root: string, name: string): void {
+function writeSkill(root: string, name: string, extraFrontmatter = ''): void {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+  writeFileSync(
+    join(dir, 'SKILL.md'),
+    `---\nname: ${name}\ndescription: ${name}\n${extraFrontmatter ? `${extraFrontmatter}\n` : ''}---\n\n# ${name}\n`,
+  );
 }
 
 function byFolder(skills: SkillItem[], folderName: string): SkillItem {
@@ -103,6 +106,8 @@ describe('required system skill API contract', () => {
     for (const name of [...REQUIRED_SYSTEM_SKILLS, OPTIONAL_SYSTEM_SKILL, 'user-skill']) {
       writeSkill(userSkills, name);
     }
+    writeSkill(userSkills, OPTIONAL_SYSTEM_SKILL, 'author: Legacy Author');
+    writeSkill(userSkills, 'user-skill', 'metadata:\n  author: Standard Author\n  version: "1.0"');
     // Same folder name at project scope is user-owned and must not inherit the
     // global system lifecycle flags.
     writeSkill(projectSkills, 'myagents-cli');
@@ -143,6 +148,30 @@ describe('required system skill API contract', () => {
     try {
       await waitForReady(baseUrl, () => output);
 
+      // AUTH-02: this is a real Global process, not a synthetic Session shell.
+      // Wrong-role turn routes fail before parsing their body, while one-shot
+      // SDK utility routes remain mounted (the empty payload is rejected by
+      // the real provider handler rather than by the role gate).
+      expect(output).not.toContain('[startup] initializeAgent done');
+      const wrongRoleTurn = await fetch(`${baseUrl}/chat/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(wrongRoleTurn.status).toBe(404);
+      const providerUtility = await fetch(`${baseUrl}/api/provider/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(providerUtility.status).toBe(400);
+      const oauthUtility = await fetch(`${baseUrl}/api/mcp/oauth/discover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(oauthUtility.status).toBe(400);
+
       const userResponse = await fetch(`${baseUrl}/api/skills?scope=user`);
       expect(userResponse.ok).toBe(true);
       const userBody = await userResponse.json() as SkillsListResponse;
@@ -156,15 +185,45 @@ describe('required system skill API contract', () => {
         });
       }
       expect(byFolder(userBody.skills, OPTIONAL_SYSTEM_SKILL)).toMatchObject({
+        author: 'Legacy Author',
         systemOwned: true,
         required: false,
         enabled: false,
       });
       expect(byFolder(userBody.skills, 'user-skill')).toMatchObject({
+        author: 'Standard Author',
         systemOwned: false,
         required: false,
         enabled: false,
       });
+
+      const detailResponse = await fetch(`${baseUrl}/api/skill/user-skill?scope=user`);
+      expect(detailResponse.ok).toBe(true);
+      const detailBody = await detailResponse.json() as {
+        success: boolean;
+        skill: {
+          frontmatter: Record<string, unknown>;
+          body: string;
+        };
+      };
+      expect(detailBody.skill.frontmatter).toMatchObject({
+        author: 'Standard Author',
+        metadata: { author: 'Standard Author', version: '1.0' },
+      });
+
+      const saveResponse = await fetch(`${baseUrl}/api/skill/user-skill`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope: 'user',
+          frontmatter: detailBody.skill.frontmatter,
+          body: detailBody.skill.body,
+        }),
+      });
+      expect(saveResponse.ok).toBe(true);
+      const savedSkill = readFileSync(join(userSkills, 'user-skill', 'SKILL.md'), 'utf8');
+      expect(savedSkill).not.toMatch(/^author:/m);
+      expect(savedSkill).toContain('metadata:\n  author: "Standard Author"\n  version: "1.0"');
 
       const projectResponse = await fetch(`${baseUrl}/api/skills?scope=project`);
       const projectBody = await projectResponse.json() as SkillsListResponse;

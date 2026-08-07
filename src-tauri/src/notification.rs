@@ -43,9 +43,7 @@
 // which drained the same entry and emitted a *second* identical event. The
 // strict cfg-split below makes the bug structurally unrepresentable.
 
-// `Duration` / `Instant` only feed the non-Windows fallback click-latch.
-// `Mutex` is also used by the cross-platform session-completion claim below.
-use std::collections::HashSet;
+#[cfg(not(target_os = "windows"))]
 use std::sync::Mutex;
 #[cfg(not(target_os = "windows"))]
 use std::time::{Duration, Instant};
@@ -101,8 +99,6 @@ enum PendingState {
 
 #[cfg(not(target_os = "windows"))]
 static PENDING_CLICK: Mutex<PendingState> = Mutex::new(PendingState::Empty);
-
-static SESSION_COMPLETION_CLAIMS: Mutex<Option<HashSet<(String, String)>>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -235,15 +231,6 @@ fn is_generic_session_completion_eligible(terminal: &SessionCompletionTerminal) 
     )
 }
 
-fn claim_session_completion(terminal: &SessionCompletionTerminal) -> bool {
-    let mut guard = SESSION_COMPLETION_CLAIMS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    guard
-        .get_or_insert_with(HashSet::new)
-        .insert((terminal.session_id.clone(), terminal.turn_id.clone()))
-}
-
 fn should_show_session_completion<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.get_webview_window("main")
         .map(|window| {
@@ -258,9 +245,10 @@ pub fn completion_terminal_from_sse_data(data: &str) -> Option<SessionCompletion
     serde_json::from_value(payload.get("completionTerminal")?.clone()).ok()
 }
 
-pub fn submit_session_completion<R: Runtime>(
+pub(crate) fn submit_session_completion<R: Runtime>(
     app: &AppHandle<R>,
     terminal: SessionCompletionTerminal,
+    _claim: crate::sidecar::SessionCompletionClaim,
 ) {
     if !is_generic_session_completion_eligible(&terminal) {
         ulog_debug!(
@@ -269,14 +257,6 @@ pub fn submit_session_completion<R: Runtime>(
             terminal.turn_id,
             terminal.turn_owner,
             terminal.origin,
-        );
-        return;
-    }
-    if !claim_session_completion(&terminal) {
-        ulog_debug!(
-            "[Notification] Duplicate session completion ignored: session={} turn={}",
-            terminal.session_id,
-            terminal.turn_id,
         );
         return;
     }
@@ -1044,18 +1024,6 @@ mod session_completion_tests {
             "automation",
             "memory_update",
         )));
-    }
-
-    #[test]
-    fn claims_each_session_turn_once() {
-        let session_id = "claim-test-session";
-        let first = terminal(session_id, "turn-1", None, "desktop", "launcher_input");
-        let second = terminal(session_id, "turn-2", None, "desktop", "launcher_input");
-        assert!(claim_session_completion(&first));
-        assert!(!claim_session_completion(&first));
-        assert!(claim_session_completion(&second));
-        assert!(!claim_session_completion(&second));
-        assert!(!claim_session_completion(&first));
     }
 
     #[test]

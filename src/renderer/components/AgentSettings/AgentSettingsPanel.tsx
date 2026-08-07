@@ -1,7 +1,7 @@
 // Agent settings panel — flat layout with section dividers
 // NOTE: This panel is still used by the Settings page Agent card list.
 // The new WorkspaceGeneralTab replaces it inside WorkspaceConfigPanel.
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConfig } from '@/hooks/useConfig';
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
@@ -16,6 +16,7 @@ import AgentMemoryEvolutionSection from './sections/AgentMemoryEvolutionSection'
 import AgentTasksSection from './sections/AgentTasksSection';
 import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import { DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
+import { resolveAgentWorkspaceProjections } from '../../../shared/agentWorkspaceIdentity';
 
 interface AgentSettingsPanelProps {
   agentId: string;
@@ -35,6 +36,11 @@ export default function AgentSettingsPanel({ agentId }: AgentSettingsPanelProps)
     await refreshConfig();
     await refreshStatuses();
   }, [refreshConfig, refreshStatuses]);
+  const workspacePath = useMemo(
+    () => resolveAgentWorkspaceProjections(projects, config.agents ?? []).agentProjections
+      .find(item => item.agentId === agentId)?.workspacePath,
+    [agentId, config.agents, projects],
+  );
 
   if (!agent) {
     return (
@@ -63,7 +69,7 @@ export default function AgentSettingsPanel({ agentId }: AgentSettingsPanelProps)
             {displayName}
           </h2>
           <span className="text-xs text-[var(--ink-subtle)]">
-            {agent.workspacePath}
+            {workspacePath ?? '—'}
           </span>
         </div>
       </div>
@@ -85,26 +91,27 @@ export default function AgentSettingsPanel({ agentId }: AgentSettingsPanelProps)
 
       {/* Heartbeat */}
       <div className="border-b border-[var(--line)] pb-6 pt-6">
-        <AgentHeartbeatSection agent={agent} onAgentChanged={handleAgentChanged} />
+        {workspacePath && <AgentHeartbeatSection agent={agent} workspacePath={workspacePath} onAgentChanged={handleAgentChanged} />}
       </div>
 
       {/* Memory Auto-Update (v0.1.43) */}
       <div className="border-b border-[var(--line)] pb-6 pt-6">
-        <AgentMemoryUpdateSection agent={agent} onAgentChanged={handleAgentChanged} />
+        {workspacePath && <AgentMemoryUpdateSection agent={agent} workspacePath={workspacePath} onAgentChanged={handleAgentChanged} />}
       </div>
 
       {/* Long-Term Memory Evolution */}
       <div className="border-b border-[var(--line)] pb-6 pt-6">
-        <AgentMemoryEvolutionSection
+        {workspacePath && <AgentMemoryEvolutionSection
           agent={agent}
           workspaceId={proj?.id ?? agent.id}
+          workspacePath={workspacePath}
           onAgentChanged={handleAgentChanged}
-        />
+        />}
       </div>
 
       {/* Tasks (read-only) */}
       <div className="pt-6">
-        <AgentTasksSection agent={agent} />
+        {workspacePath && <AgentTasksSection workspacePath={workspacePath} />}
       </div>
     </div>
   );

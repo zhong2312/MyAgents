@@ -17,16 +17,17 @@ import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, type ProviderEnv } from './agent-session';
-import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
+import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge } from './agent-session';
+import type { ProviderEnv } from './provider-types';
+import { applyContextWindowSuffixForContextLength, applyProviderContextWindowSuffix } from './utils/model-capabilities';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isLikelyErrorTitle } from '../shared/titleFilters';
 import { capTitleAtBoundary } from '../shared/sessionTitle';
 import { ClaudeCodeRuntime } from './runtimes/claude-code';
 import { CodexRuntime } from './runtimes/codex';
 import { GeminiRuntime } from './runtimes/gemini';
-import type { AgentRuntime, RuntimeProcess } from './runtimes/types';
-import type { RuntimeType } from '../shared/types/runtime';
+import type { AgentRuntime, RuntimeProcess, SessionStartOptions } from './runtimes/types';
+import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import { ensureDirSync } from './utils/fs-utils';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 
@@ -303,6 +304,10 @@ async function generateTitleInner(
       bridgeToken,
       providerId: providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
     });
+    const launchModel = applyContextWindowSuffixForContextLength(
+      model,
+      Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW),
+    );
     const prompt = buildUserPrompt(rounds);
 
     async function* titlePrompt() {
@@ -347,7 +352,7 @@ async function generateTitleInner(
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
         // uses the 1M path even for a one-shot title-gen subprocess. SDK strips
         // the suffix before the wire.
-        ...(model ? { model: applyProviderContextWindowSuffix(model, providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID) } : {}),
+        ...(launchModel ? { model: launchModel } : {}),
       },
     }));
 
@@ -431,6 +436,52 @@ function titlePermissionMode(runtimeType: RuntimeType): string {
 }
 
 /**
+ * Project a title utility turn onto the shared external-runtime start contract.
+ * Runtime identity is preserved, while Managed Codex deliberately receives no
+ * workspace MCP injection. Kept pure so the identity/capability boundary is
+ * regression-testable without spawning a real CLI process.
+ */
+export function buildExternalTitleSessionOptions(input: {
+  sessionId: string;
+  workspacePath: string;
+  userPrompt: string;
+  runtimeType: RuntimeType;
+  model: string;
+  runtimeSource?: RuntimeSource;
+}): SessionStartOptions {
+  return {
+    sessionId: input.sessionId,
+    workspacePath: input.workspacePath,
+    initialMessage: input.userPrompt,
+    systemPromptAppend: SYSTEM_PROMPT,
+    ...(input.model ? { model: input.model } : {}),
+    permissionMode: titlePermissionMode(input.runtimeType),
+    // Strip all tools from the model's context (Claude Code honours this;
+    // Codex/Gemini are constrained by the read-only/approval mode above).
+    disallowedTools: TITLE_GEN_DISALLOWED_TOOLS,
+    maxTurns: 1,
+    // Placeholder — title-gen passes its own systemPromptAppend and explicit permissionMode,
+    // so scenario-driven branches in each runtime (default-mode/L2-prompt) never fire.
+    scenario: { type: 'desktop' },
+    // Runtime Source is part of Codex identity. Without this, startSession()
+    // defaults to system-cli even when the owning Session is Managed Codex.
+    ...(input.runtimeType === 'codex' ? {
+      runtimeSource: input.runtimeSource,
+      // Managed Codex has an isolated CODEX_HOME; an explicit empty set means
+      // this utility process receives no workspace MCP injection. system-cli
+      // intentionally keeps its user-owned native config unchanged.
+      ...(input.runtimeSource === 'managed-provider' ? {
+        mcpServers: [],
+        // Title generation is a short text task. Do not inherit a user's xhigh
+        // effort or persist a throwaway Managed Codex thread.
+        reasoningEffort: 'low',
+        ephemeral: true,
+      } : {}),
+    } : {}),
+  };
+}
+
+/**
  * Generate a title using the session's external runtime (claude-code / codex /
  * gemini). Spawns a brand-new short-lived process, sends the title prompt as
  * initialMessage, accumulates text_delta, returns on turn_complete or
@@ -445,6 +496,7 @@ export async function generateTitleExternal(
   runtimeType: RuntimeType,
   model: string,
   workspacePath: string,
+  runtimeSource?: RuntimeSource,
 ): Promise<string | null> {
   const startTime = Date.now();
   // Plain UUID — Claude Code CLI rejects `--session-id <non-uuid>` with
@@ -478,21 +530,16 @@ export async function generateTitleExternal(
   // Hoist startSession out of the Promise ctor so we can await it on the timeout path —
   // without that, a 30s timeout during Gemini's cold-start handshake leaves `handle === null`
   // forever, stranding the child process + its GEMINI_SYSTEM_MD tmp file.
-  const startPromise = runtime.startSession({
+  const titleSessionOptions = buildExternalTitleSessionOptions({
     sessionId: titleSessionId,
     workspacePath,
-    initialMessage: userPrompt,
-    systemPromptAppend: SYSTEM_PROMPT,
-    ...(model ? { model } : {}),
-    permissionMode: titlePermissionMode(runtimeType),
-    // Strip all tools from the model's context (Claude Code honours this;
-    // Codex/Gemini are constrained by the read-only/approval mode above).
-    disallowedTools: TITLE_GEN_DISALLOWED_TOOLS,
-    maxTurns: 1,
-    // Placeholder — title-gen passes its own systemPromptAppend and explicit permissionMode,
-    // so scenario-driven branches in each runtime (default-mode/L2-prompt) never fire.
-    scenario: { type: 'desktop' },
-  }, (event) => {
+    userPrompt,
+    runtimeType,
+    model,
+    runtimeSource,
+  });
+
+  const startPromise = runtime.startSession(titleSessionOptions, (event) => {
     // Guard: events can still stream in after we've settled (timeout winner / late turn_complete).
     if (resolved) return;
     if (event.kind === 'text_delta') {

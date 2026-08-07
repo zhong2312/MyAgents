@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { MANAGED_CODEX_REQUIRED_RUNTIME } from '@/config/types';
+
 import {
     getManagedCodexRuntimePresentation,
     getManagedCodexUpdateRefreshAction,
@@ -111,7 +113,7 @@ describe('Managed Codex update refresh action', () => {
         expect(getManagedCodexUpdateRefreshAction({
             status: 'installed',
             usable: true,
-            installedVersion: '0.144.1',
+            installedVersion: MANAGED_CODEX_REQUIRED_RUNTIME.version,
         })).toBe('no-update');
     });
 });

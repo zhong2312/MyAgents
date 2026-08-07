@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_WORKSPACE_LAYOUT_METRICS, resolveWorkspacePanelMode } from './chatWorkspaceLayout';
+import {
+  DEFAULT_WORKSPACE_LAYOUT_METRICS,
+  nextSplitViewAfterBrowserClose,
+  resolveWorkspacePanelMode,
+  shouldPresentBrowserFullscreen,
+} from './chatWorkspaceLayout';
 
 const baseInput = {
   ...DEFAULT_WORKSPACE_LAYOUT_METRICS,
@@ -46,5 +51,56 @@ describe('resolveWorkspacePanelMode', () => {
       splitPanelVisible: false,
       splitRatio: 0.2,
     })).toBe('inline');
+  });
+});
+
+describe('shouldPresentBrowserFullscreen', () => {
+  it('keeps an open browser split only when split view has enough room', () => {
+    expect(shouldPresentBrowserFullscreen({
+      browserPresented: true,
+      splitViewEnabled: true,
+      narrowLayout: false,
+    })).toBe(false);
+  });
+
+  it('uses fullscreen for an open browser when the layout is narrow or split view is disabled', () => {
+    expect(shouldPresentBrowserFullscreen({
+      browserPresented: true,
+      splitViewEnabled: true,
+      narrowLayout: true,
+    })).toBe(true);
+    expect(shouldPresentBrowserFullscreen({
+      browserPresented: true,
+      splitViewEnabled: false,
+      narrowLayout: false,
+    })).toBe(true);
+  });
+
+  it('does not claim fullscreen when a browser resource exists behind another active view', () => {
+    expect(shouldPresentBrowserFullscreen({
+      browserPresented: false,
+      splitViewEnabled: false,
+      narrowLayout: true,
+    })).toBe(false);
+  });
+});
+
+describe('nextSplitViewAfterBrowserClose', () => {
+  it('hands fullscreen browser close to the surviving terminal before the file view', () => {
+    expect(nextSplitViewAfterBrowserClose({
+      terminalVisible: true,
+      fileVisible: true,
+    })).toBe('terminal');
+  });
+
+  it('falls back to a file view and returns null when no split resource survives', () => {
+    expect(nextSplitViewAfterBrowserClose({
+      terminalVisible: false,
+      fileVisible: true,
+    })).toBe('file');
+    expect(nextSplitViewAfterBrowserClose({
+      terminalVisible: false,
+      fileVisible: false,
+    })).toBeNull();
   });
 });

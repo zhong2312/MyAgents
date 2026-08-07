@@ -12,8 +12,10 @@
 | 外观偏好 | `AppearanceMode` | durable `AppConfig.appearanceMode` | `system / light / dark` |
 | 已解析明暗 | `ResolvedColorScheme` | 每个 Webview 的 Theme runtime | 当前实际使用的 `light / dark` |
 
-Production registry 按产品顺序注册八套完整 Theme：`myagents-default`、`default-black`、`sage`、
-`absolutely`（用户可见名 `Claude`）、`linear`、`proof`、`codex`、`raycast`。
+Production registry 的展示顺序与 canonical 注册顺序解耦，当前九套完整 Theme 的产品顺序为：
+`myagents-light`（用户可见名 `MyAgents Light`）、`myagents-default`（`MyAgents Classic`）、
+`default-black`（`MyAgents Classic2`）、`sage`、`absolutely`（`Claude`）、`linear`、`proof`、
+`codex`、`raycast`。canonical package 仍先注册并独立承担 fail-fast fallback。
 不得把 light/dark 拆成两个 Theme，也不得重新用 `theme` 字段表达 appearance。
 
 目录：
@@ -49,7 +51,7 @@ interface AppConfig {
 `src/shared/theme.ts::normalizeThemeConfigRecord()` 是 TypeScript 读取边界的共同语义：
 
 1. 有效 `appearanceMode` 优先；否则读取 legacy `theme`；无效值归一为 `system`。
-2. `themeSelectionExplicit:false` 表示用户从未明确选择，`themeId` 每次读取都投影为产品默认 `DEFAULT_THEME_ID`（当前 `default-black`）；以后只改该常量即可迁移所有仍跟随默认的用户。
+2. `themeSelectionExplicit:false` 表示用户从未明确选择，`themeId` 每次读取都投影为产品默认 `DEFAULT_THEME_ID`（当前 `myagents-light`）；以后只改该常量及跨进程 bootstrap 镜像即可迁移所有仍跟随默认的用户。
 3. `themeSelectionExplicit:true` 永久尊重有效的非空 `themeId`。兼容旧配置时，非 canonical ID 推断为显式选择；历史自动物化的 `myagents-default` 推断为未选择。用户在新选择器中明确选择 `myagents-default` 后会连同显式标记一起保存，不再被迁移。
 4. 未知但非空的显式 ID 保留给 renderer registry 做整套 canonical fallback；内存结果删除 legacy `theme`。
 5. load 不主动写盘；下一次真实写入由 renderer/Node/Rust 各自的 config lock 路径发布归一结果。
@@ -85,12 +87,15 @@ surface 共享同一套视觉事实，构造或校验失败都只拒绝当前可
 构造与校验必须共同消费 `stylesheet-contract.ts` 的语义解析结果，不能依赖 `?inline` CSS 在开发态
 保留的引号、空格、换行或末尾分号；Vite production minifier 可以合法改写这些序列化细节。
 
-`default-black` 是当前产品默认，也是唯一受控 Baseline 比较变体：它仍交付完整、独立、精确 scope 的 light/dark CSS，
-但产品意图只允许 light `--button-primary-bg/hover` 相对 canonical 改为中性黑；dark 与其它 host Token
-必须逐项相等。因为这组差异不涉及 embedded surface，其 Factory 直接复用 canonical 的 immutable
-Hero/adapters，避免代码块、终端、编辑器或图表在“只比较按钮”时产生伪差异。架构测试锁定完整
-Token 差异白名单，Registry 仍在同一个 optional failure boundary 内验证并原子注册整套 Definition；
-这不是运行时 CSS 继承或逐字段 fallback。
+两个受控比较 Theme 都交付完整、独立、精确 scope 的 light/dark CSS，而不是运行时继承：
+
+- `myagents-light` 是当前产品默认，除 light `--button-primary-bg/hover` 改为中性黑外，host Token
+  逐项等于 `absolutely` / Claude；dark 与从 CSS 语义色板派生的五类 embedded adapter 也保持一致；
+- `default-black` 的 host Token 除同一组 light 主按钮差异外逐项等于 canonical `myagents-default`；
+  因为差异不涉及 embedded surface，其 Factory 直接复用 canonical 的 immutable Hero/adapters。
+
+架构测试分别锁定两组完整 Token 差异白名单，Registry 仍在同一个 optional failure boundary 内验证并
+原子注册整套 Definition，避免代码块、终端、编辑器或图表在“只比较按钮”时产生伪差异。
 
 `ThemeRegistry` 直接校验同一份实际打包的 stylesheet source：可选 Theme 的 required Token 只能来自顶层、精确的 `html[data-theme-id='<id>']` root 与两个顶层精确 scheme root；canonical default 则必须全部来自 `:root, <exact-theme-root>`、`<generic-scheme>, <exact-scheme-root>` 成对 fallback block，禁止再追加 standalone exact block，从结构上保证未知 ID 首帧与注册后的 canonical package 完整同源。这些 root 与 Hero block 只能包含平坦 declaration，CSS Nesting、descendant、不可达 at-rule 与空/CSS-wide 值不能冒充或扩张 root 声明；轻量扫描器遵循 CSS input preprocessing 与 bad-string 换行恢复，不能用跨行坏字符串藏住结构括号。只有 canonical default 可在与精确 Theme selector 成对的 selector list 中使用 `:root`、通用 scheme 和无 scope Hero fallback；可选 Theme 即使把这些 selector 包在条件规则中也会被拒绝，避免未激活包泄漏全局值或污染 Space。Theme stylesheet 禁止 `@theme`、`@property`、`@font-face` 等全局副作用 at-rule；唯一允许的 at-rule 是只包含合法 scoped Hero selector 的顶层 `@media`，用于响应式 Launcher 排版，并且不能替代顶层 Hero 完整性声明。Token 在解析同 Theme `var(...)` 依赖后还必须满足实际消费属性的 CSS 语法。注册时还拒绝重复/非法 ID、缺 Hero selector、缺 scheme/Hero/adapter、空或属性值无效的 Prism、残缺/非 iframe literal/属性语法无效的 Widget variable、无效字体/数值，以及 stylesheet/Hero 中的远程资源；不得用另一份 token 名称元数据代替 CSS 事实。无效的可选包被拒绝但不阻断 canonical registry；未知配置 ID 只记录一次不含秘密的 warning，并把 Definition、CSS root ID、Hero 和全部 adapters **整套**切到 `myagents-default`。pre-React 阶段由 canonical `:root` package globals + 通用 scheme selector 提供完整视觉兜底，禁止出现无 Token root 或逐字段继承形成混合 Theme。
 
@@ -168,7 +173,7 @@ runtime 一次 resolve 后同步投影：
 `index.html` 只读取 `myagents:theme-bootstrap`：
 
 ```json
-{ "version": 2, "themeId": "default-black", "appearanceMode": "system", "themeSelectionExplicit": false }
+{ "version": 2, "themeId": "myagents-light", "appearanceMode": "system", "themeSelectionExplicit": false }
 ```
 
 快照不得包含 AppConfig、API key 或 MCP env。新快照不存在时可一次读取 legacy localStorage `theme`；durable runtime 第一次发布后删除 legacy key。快照损坏/版本不支持时首帧回退 default + system，应用不能因此阻断。
@@ -254,13 +259,13 @@ Space 是全局 Theme 的标准 CSS host surface：组件直接消费 root seman
 - component DOM：Hero、xterm、Monaco、Mermaid、Prism、Widget 原位更新；
 - floating DOM：snapshot → durable config → Tauri live event；
 - architecture unit + dependency-cruiser：禁止 consumer 直引 internals、禁止本地 palette/MutationObserver 回流；
-- preset contract：accepted IDs/名称/顺序精确等于八套，设置下拉直接映射 Registry 顺序；六套 palette
-  Theme 的正文和实色主动作对比度不低于 4.5:1，`default-black` 单独验证新增黑色主按钮对比度并
-  逐 Token 锁定其余值等于 canonical；`verify:theme-presets` 先按 Vite production 使用的
-  esbuild CSS minifier 序列化七套实际 stylesheet，再经 optional factory 完成精确八套 Registry
+- preset contract：accepted IDs/名称/顺序精确等于九套，设置下拉直接映射 Registry 的显式产品顺序；七套 preset-built
+  Theme 的正文和实色主动作对比度不低于 4.5:1，`myagents-light` / `default-black` 分别验证新增黑色主按钮对比度并
+  逐 Token 锁定其余值等于 Claude / canonical；`verify:theme-presets` 先按 Vite production 使用的
+  esbuild CSS minifier 序列化八套实际 optional stylesheet，再经 optional factory 完成精确九套 Registry
   注册并逐套 resolve light/dark；
-- structural surface contract：八套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar` 是唯一宿主消费点，右侧页面、卡片和顶部 Tab 栏不随该 Token 改写；
-- dark control contrast：八套 Theme 的 Primary 正常/hover 均验证 4.5:1，深色 action
+- structural surface contract：九套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar` 是唯一宿主消费点，右侧页面、卡片和顶部 Tab 栏不随该 Token 改写；
+- dark control contrast：九套 Theme 的 Primary 正常/hover 均验证 4.5:1，深色 action
   surface 锁定白色/近白前景；全部 production Theme 的 dark Switch thumb 锁定为白色/近白控制面；
 - build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际
   `dist/assets/*.css`，验证 font/radius/shadow/duration utility 仍引用 runtime Theme Token，且 bundle

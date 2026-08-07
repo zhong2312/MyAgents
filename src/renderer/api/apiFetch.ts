@@ -1,17 +1,13 @@
 /**
  * Unified API fetch utility that works in both browser and Tauri modes.
  * - Browser mode: Uses native fetch with relative URLs (Vite proxy)
- * - Tauri mode: Uses proxyFetch with full URLs through Rust proxy
+ * - Tauri mode: Uses the owner-addressed Global Sidecar command through Rust
  *
- * For Tauri mode, this now uses the global Sidecar URL, which is suitable
+ * For Tauri mode, this uses the Global Sidecar owner, which is suitable
  * for global operations like API key verification in Settings.
  */
 
-import {
-  getGlobalServerUrlWithWait,
-  proxyFetch,
-  resetGlobalServerUrlCache,
-} from "./tauriClient";
+import { globalSidecarFetch } from './tauriClient';
 import { isTauriEnvironment } from "@/utils/browserMock";
 
 export interface TransientApiRetryOptions {
@@ -76,17 +72,7 @@ export async function apiFetch(
 ): Promise<Response> {
   const execute = async () => {
     if (isTauriEnvironment()) {
-      // Resolve on every retry so a restarted global Sidecar can publish a new port.
-      const baseUrl = await getGlobalServerUrlWithWait();
-      const url = `${baseUrl}${endpoint}`;
-      try {
-        return await proxyFetch(url, options);
-      } catch (error) {
-        if (isTransientSidecarError(error)) {
-          resetGlobalServerUrlCache();
-        }
-        throw error;
-      }
+      return globalSidecarFetch(endpoint, options);
     }
     // Browser mode: use relative URL (Vite proxy handles it)
     return fetch(endpoint, options);
@@ -150,7 +136,7 @@ export async function apiGetJson<T>(endpoint: string): Promise<T> {
 /**
  * POST FormData to API endpoint (for file uploads)
  *
- * WARNING: FormData uploads don't work in Tauri mode through proxyFetch.
+ * WARNING: FormData uploads don't work through the Tauri JSON command.
  * This function only works in browser development mode.
  * For Tauri mode file uploads, use Tauri's native file dialog APIs.
  */
@@ -159,7 +145,7 @@ export async function apiPostFormData<T>(
   formData: FormData,
 ): Promise<T> {
   if (isTauriEnvironment()) {
-    // FormData doesn't serialize properly through Tauri's proxyFetch
+    // FormData doesn't serialize properly through the Tauri JSON command
     // Need to use Tauri's native file APIs for file uploads in desktop mode
     throw new Error(
       "FormData uploads are not supported in desktop mode. " +

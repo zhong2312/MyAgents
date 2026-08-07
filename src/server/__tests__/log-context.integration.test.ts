@@ -40,7 +40,7 @@ import {
   clearAmbientLogContextField,
   __resetAmbientForTests,
 } from '../logger-context';
-import type { LogEntry } from '../../renderer/types/log';
+import type { LogEntry } from '../../shared/types/log';
 
 let captured: LogEntry[] = [];
 const fakeClients = [

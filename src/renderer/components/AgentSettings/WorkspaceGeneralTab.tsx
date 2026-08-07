@@ -6,8 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useConfig } from '@/hooks/useConfig';
 import { useToast } from '@/components/Toast';
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
-import { getAgentById, addAgentConfig, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
-import type { AgentConfig } from '../../../shared/types/agent';
+import { getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels, reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { DEFAULT_HEARTBEAT_CONFIG, DEFAULT_MEMORY_AUTO_UPDATE_CONFIG } from '../../../shared/types/im';
 import WorkspaceBasicsSection from './WorkspaceBasicsSection';
@@ -65,26 +64,14 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
         }
         toastRef.current.success(t('agentSettings.general.enabled'));
       } else if (!agent) {
-        // Fallback: create AgentConfig if somehow missing (shouldn't happen after migration)
-        const newAgent: AgentConfig = {
-          id: crypto.randomUUID(),
-          name: project.displayName || project.name || agentDir.split('/').pop() || 'Agent',
-          icon: project.icon,
-          enabled: true,
-          workspacePath: agentDir,
-          providerId: project.providerId ?? undefined,
-          model: project.model ?? undefined,
-          permissionMode: project.permissionMode || config.defaultPermissionMode || 'plan',
-          mcpEnabledServers: project.mcpEnabledServers,
-          channels: [],
-          heartbeat: {
-            ...DEFAULT_HEARTBEAT_CONFIG,
-            enabled: true,
-          },
+        const identity = await reconcilePersistedAgentWorkspaceIdentities();
+        const created = identity.agentProjections.find(item => item.projectId === project.id)?.agent;
+        if (!created) throw new Error(`Could not create Agent for Project '${project.id}'.`);
+        await enableAgentAndStartChannels(created.id, {
+          heartbeat: { ...DEFAULT_HEARTBEAT_CONFIG, enabled: true },
           memoryAutoUpdate: { ...DEFAULT_MEMORY_AUTO_UPDATE_CONFIG },
-        };
-        await addAgentConfig(newAgent);
-        await patchProject(project.id, { isAgent: true, agentId: newAgent.id });
+        });
+        await patchProject(project.id, { isAgent: true });
         toastRef.current.success(t('agentSettings.general.enabled'));
       } else if (agent.enabled) {
         // Disable — stop all running channels first
@@ -115,7 +102,7 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
     } finally {
       if (isMountedRef.current) setToggling(false);
     }
-  }, [project, agent, agentDir, config.defaultPermissionMode, toggling, patchProject, refreshConfig, refreshStatuses, t]);
+  }, [project, agent, toggling, patchProject, refreshConfig, refreshStatuses, t]);
 
   const handleToggleWorkspacePanel = useCallback(async () => {
     if (!project || togglingWorkspacePanel) return;
@@ -225,23 +212,24 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
               </div>
 
               <div className="mt-6 border-t border-[var(--line)] pt-5">
-                <AgentHeartbeatSection agent={agent} onAgentChanged={handleAgentChanged} />
+                <AgentHeartbeatSection agent={agent} workspacePath={project.path} onAgentChanged={handleAgentChanged} />
               </div>
 
               <div className="mt-6 border-t border-[var(--line)] pt-5">
-                <AgentMemoryUpdateSection agent={agent} onAgentChanged={handleAgentChanged} />
+                <AgentMemoryUpdateSection agent={agent} workspacePath={project.path} onAgentChanged={handleAgentChanged} />
               </div>
 
               <div className="mt-6 border-t border-[var(--line)] pt-5">
                 <AgentMemoryEvolutionSection
                   agent={agent}
                   workspaceId={project.id}
+                  workspacePath={project.path}
                   onAgentChanged={handleAgentChanged}
                 />
               </div>
 
               <div className="mt-6 border-t border-[var(--line)] pt-5">
-                <AgentTasksSection agent={agent} />
+                <AgentTasksSection workspacePath={project.path} />
               </div>
             </>
           )}

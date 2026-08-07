@@ -74,4 +74,50 @@ describe("admin config lock", () => {
       rmSync(home, { recursive: true, force: true });
     }
   }, 10000);
+
+  it("preserves agent-config-intent.lock identity on timeout", async () => {
+    const home = mkdtempSync(join(tmpdir(), "myagents-intent-lock-"));
+    const configDir = join(home, ".myagents");
+    const lockDir = join(configDir, "agent-config-intent.lock");
+    const adminConfigUrl = pathToFileURL(
+      join(process.cwd(), "src/server/utils/admin-config.ts"),
+    ).href;
+
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "owner"), `node:${process.pid}:0\n`, "utf-8");
+
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "--import",
+          "tsx/esm",
+          "-e",
+          `
+          const { withAgentConfigIntentLock } = await import(${JSON.stringify(adminConfigUrl)});
+          try {
+            await withAgentConfigIntentLock(async () => undefined);
+          } catch (error) {
+            console.log(JSON.stringify({ code: error.code, message: error.message }));
+          }
+        `,
+        ],
+        {
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+          },
+        },
+      );
+
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        code: "AGENT_CONFIG_INTENT_BUSY",
+      });
+      expect(stdout).toContain("agent-config-intent.lock");
+      expect(stdout).not.toContain("config.json.lock");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 10000);
 });

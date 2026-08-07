@@ -229,11 +229,13 @@ describe('Chat history entry developer gate', () => {
 });
 
 describe('Zhipu preset models', () => {
-  it('ships GLM-5.2 in both Coding Plan and API presets with official 1M window metadata', () => {
+  it('ships only GLM-5.2 and GLM-5 Turbo in both presets and defaults to GLM-5.2', () => {
     for (const providerId of ['zhipu', 'zhipu-ai']) {
       const provider = PRESET_PROVIDERS.find(p => p.id === providerId);
       const model = provider?.models.find(m => m.model === 'glm-5.2');
 
+      expect(provider?.primaryModel).toBe('glm-5.2');
+      expect(provider?.models.map(item => item.model)).toEqual(['glm-5.2', 'glm-5-turbo']);
       expect(model).toMatchObject({
         modelName: 'GLM 5.2',
         modelSeries: 'zhipu',
@@ -243,10 +245,86 @@ describe('Zhipu preset models', () => {
       });
       expect(provider?.modelAliases).toEqual({
         opus: 'glm-5.2',
-        sonnet: 'glm-5.1',
-        haiku: 'glm-5.1',
+        sonnet: 'glm-5.2',
+        haiku: 'glm-5-turbo',
       });
     }
+  });
+});
+
+describe('Moonshot preset models', () => {
+  it('defaults the official API preset to Kimi K3 and ships only the current catalog', () => {
+    const provider = PRESET_PROVIDERS.find(p => p.id === 'moonshot');
+
+    expect(provider?.primaryModel).toBe('kimi-k3');
+    expect(provider?.models.map(model => model.model)).toEqual([
+      'kimi-k3',
+      'kimi-k2.6',
+      'kimi-k2.7-code',
+    ]);
+    expect(provider?.models.find(model => model.model === 'kimi-k3')).toMatchObject({
+      contextLength: 1_048_576,
+      inputModalities: ['text', 'image', 'video'],
+    });
+    expect(provider?.models.find(model => model.model === 'kimi-k2.7-code')).toMatchObject({
+      contextLength: 262_144,
+    });
+  });
+
+  it('adds both K3 variants to Kimi Code with their provider-specific model IDs', () => {
+    const provider = PRESET_PROVIDERS.find(p => p.id === 'moonshot-coding');
+
+    expect(provider?.primaryModel).toBe('kimi-for-coding');
+    expect(provider?.models.map(model => model.model)).toEqual([
+      'kimi-for-coding',
+      'k3',
+      'k3-256k',
+    ]);
+    expect(provider?.models.find(model => model.model === 'k3')).toMatchObject({
+      modelName: 'Kimi K3',
+      contextLength: 1_048_576,
+      inputModalities: ['text', 'image', 'video'],
+    });
+    expect(provider?.models.find(model => model.model === 'k3-256k')).toMatchObject({
+      contextLength: 262_144,
+      inputModalities: ['text', 'image'],
+    });
+  });
+});
+
+describe('MiniMax preset models', () => {
+  it('keeps only M3 and the M2.7 variants and defaults to M3', () => {
+    const provider = PRESET_PROVIDERS.find(p => p.id === 'minimax');
+
+    expect(provider?.primaryModel).toBe('MiniMax-M3');
+    expect(provider?.models.map(model => model.model)).toEqual([
+      'MiniMax-M3',
+      'MiniMax-M2.7',
+      'MiniMax-M2.7-highspeed',
+    ]);
+    expect(provider?.modelAliases).toEqual({
+      sonnet: 'MiniMax-M3',
+      opus: 'MiniMax-M3',
+      haiku: 'MiniMax-M2.7-highspeed',
+    });
+  });
+});
+
+describe('Google Gemini preset models', () => {
+  it('ships only the current Gemini family and defaults to Gemini 3.6 Flash', () => {
+    const provider = PRESET_PROVIDERS.find(p => p.id === 'google-gemini');
+
+    expect(provider?.primaryModel).toBe('gemini-3.6-flash');
+    expect(provider?.models.map(model => model.model)).toEqual([
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3-pro-preview',
+    ]);
+    expect(provider?.modelAliases).toEqual({
+      sonnet: 'gemini-3-pro-preview',
+      opus: 'gemini-3-pro-preview',
+      haiku: 'gemini-3.6-flash',
+    });
   });
 });
 
@@ -286,8 +364,8 @@ describe('model aliases', () => {
     expect(getEffectiveModelAliases(provider!)).toEqual({
       fable: 'glm-5.2',
       opus: 'glm-5.2',
-      sonnet: 'glm-5.1',
-      haiku: 'glm-5.1',
+      sonnet: 'glm-5.2',
+      haiku: 'glm-5-turbo',
     });
   });
 });

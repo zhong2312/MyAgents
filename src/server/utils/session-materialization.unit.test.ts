@@ -12,7 +12,6 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     id: 'agent-1',
     name: 'Agent',
     enabled: true,
-    workspacePath: '/tmp/workspace',
     permissionMode: 'fullAgency',
     model: 'claude-sonnet-4-6',
     mcpEnabledServers: ['fs'],

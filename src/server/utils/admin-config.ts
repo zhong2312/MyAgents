@@ -49,8 +49,9 @@ import {
   XAI_SUBSCRIPTION_PROVIDER_ID,
 } from "../../shared/config-types";
 import {
+  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
-  managedCodexProviderPermissionToRuntimePermission,
+  projectManagedCodexPermissionToRuntime,
 } from "../../shared/providerExecution";
 import type { AgentConfig, ChannelConfig } from "../../shared/types/agent";
 import {
@@ -63,9 +64,9 @@ import {
 import { applyMcpServerConfigAdditions } from "../../shared/mcpConfig";
 import {
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
   getDefaultRuntimePermissionMode,
   normalizeRuntime,
+  projectPermissionModeForRuntime,
   type RuntimeType,
 } from "../../shared/types/runtime";
 import type { SessionMetadata } from "../types/session";
@@ -81,6 +82,7 @@ import {
 import { resolveSessionConfig } from "./resolve-session-config";
 import { normalizeThemeConfigRecord } from "../../shared/theme";
 import { buildAvailableProvidersJson } from "../../shared/availableProvidersProjection";
+import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -126,6 +128,15 @@ export class ProjectsBusyError extends Error {
   ) {
     super(message);
     this.name = "ProjectsBusyError";
+  }
+}
+
+export class AgentConfigIntentBusyError extends Error {
+  readonly code = 'AGENT_CONFIG_INTENT_BUSY';
+
+  constructor(message = 'Agent config intent busy: could not acquire agent-config-intent.lock within 5000ms; retry') {
+    super(message);
+    this.name = 'AgentConfigIntentBusyError';
   }
 }
 
@@ -183,7 +194,6 @@ export interface AgentConfigSlim {
   id: string;
   name: string;
   enabled: boolean;
-  workspacePath?: string;
   providerId?: string;
   model?: string;
   permissionMode?: string;
@@ -215,6 +225,13 @@ export interface ProjectSlim {
   path: string;
   agentId?: string;
   archivedAt?: string;
+  hidden?: boolean;
+  internal?: boolean;
+  displayName?: string;
+  icon?: string;
+  isAgent?: boolean;
+  templateId?: string;
+  templateSource?: 'builtin' | 'user';
   archivedAgentEnabledBeforeArchive?: boolean;
   pinnedAt?: string;
   mcpEnabledServers?: string[];
@@ -370,7 +387,7 @@ export async function withAgentConfigIntentLock<T>(
       fn,
     );
   } catch (error) {
-    if (error instanceof FileBusyError) throw new ConfigBusyError();
+    if (error instanceof FileBusyError) throw new AgentConfigIntentBusyError();
     throw error;
   }
 }
@@ -686,15 +703,12 @@ export function getDefaultEnabledOfficialToolIdsForWorkspace(
 ): OfficialToolId[] {
   if (!agentDir) return [];
   const c = config ?? loadConfig();
-  const agents = (c.agents ?? []) as Array<Record<string, unknown>>;
-  const agent = agents.find(
-    (a) =>
-      typeof a.workspacePath === "string" &&
-      workspacePathsEqual(a.workspacePath, agentDir),
+  const projects = loadProjects();
+  const matchingProjects = projects.filter(p =>
+    typeof p.path === 'string' && workspacePathsEqual(p.path, agentDir)
   );
-  const project = loadProjects().find(
-    (p) => typeof p.path === "string" && workspacePathsEqual(p.path, agentDir),
-  );
+  const project = matchingProjects.length === 1 ? matchingProjects[0] : undefined;
+  const agent = findRuntimeAgentForWorkspace(c, projects, agentDir);
   return filterEffectiveOfficialToolIds(
     c,
     agent?.enabledOfficialToolIds ?? project?.enabledOfficialToolIds,
@@ -1347,28 +1361,46 @@ function resolveOwnedBuiltinProviderRoute(args: {
 // ---------------------------------------------------------------------------
 
 /**
- * Find the Agent whose workspacePath matches `agentDir` (cross-platform path normalization).
+ * Find the exact Agent selected by the Project whose path matches `agentDir`.
  * Used by session-snapshot helpers to capture the AgentConfig at session creation time (v0.1.69).
  *
  * Returns the raw on-disk shape — callers cast to AgentConfig at use sites (the session snapshot
  * helpers only read `runtime`/`providerId`/`providerEnvJson`/`model`/`permissionMode`/
  * `mcpEnabledServers`, all of which are documented optional/required on AgentConfig).
  */
-export function findAgentByWorkspacePath(
+function findRuntimeAgentForWorkspace(
+  config: AdminAppConfig,
+  projects: ProjectSlim[],
   agentDir: string,
 ): AgentConfigSlim | undefined {
-  const config = loadConfig();
-  const agents = (config.agents ?? []) as AgentConfigSlim[];
-  // #320 family: slash-only folding missed drive-letter case + trailing-slash
-  // differences (C:\Users vs c:/users/), so the v0.1.69 session-snapshot lookup
-  // could silently miss the Agent on Windows — the session then fell back to
-  // live-follow and stayed exposed to the #327 config-stomp this snapshot
-  // exists to prevent. Use the canonical workspace-path identity.
-  return agents.find(
-    (a) =>
-      typeof a.workspacePath === "string" &&
-      workspacePathsEqual(a.workspacePath, agentDir),
-  );
+  const matchingProjects = projects.filter(project => workspacePathsEqual(project.path, agentDir));
+  if (matchingProjects.length === 1) {
+    const project = matchingProjects[0];
+    if (project.agentId) {
+      return (config.agents ?? []).find(agent => agent.id === project.agentId);
+    }
+    return resolveAgentWorkspaceProjections(projects, config.agents ?? []).agentProjections
+      .find(projection => projection.projectId === project.id)?.agent;
+  }
+  if (matchingProjects.length > 1) return undefined;
+  return resolveAgentWorkspaceProjections(projects, config.agents ?? []).agentProjections
+    .find(projection => projection.association === 'legacy-orphan'
+      && workspacePathsEqual(projection.workspacePath, agentDir))?.agent;
+}
+
+/**
+ * Select runtime config for a workspace. Project-backed paths are exact-ID
+ * only; the legacy path adapter is consulted solely for an unlinked Project
+ * or a true orphan that has no Project backing.
+ */
+export function findProjectAgentByWorkspacePath(agentDir: string): AgentConfigSlim | undefined {
+  return findRuntimeAgentForWorkspace(loadConfig(), loadProjects(), agentDir);
+}
+
+/** Compatibility name for session snapshot callers; selection still follows
+ * the Project-owned workspace identity rules above. */
+export function findAgentByWorkspacePath(agentDir: string): AgentConfigSlim | undefined {
+  return findProjectAgentByWorkspacePath(agentDir);
 }
 
 export type ImProviderRoutingResult =
@@ -1409,12 +1441,7 @@ function findImAgentAndChannel(
   agentDir: string,
   channelId: string | undefined,
 ): { agent?: AgentConfigSlim; channel?: ChannelConfigSlim } {
-  const agents = (config.agents ?? []) as AgentConfigSlim[];
-  const agent = agents.find(
-    (a) =>
-      typeof a.workspacePath === "string" &&
-      workspacePathsEqual(a.workspacePath, agentDir),
-  );
+  const agent = findRuntimeAgentForWorkspace(config, loadProjects(), agentDir);
   if (!agent) return {};
   const channel = channelId
     ? ((agent.channels ?? []) as ChannelConfigSlim[]).find(
@@ -1503,14 +1530,16 @@ export function resolveImProviderRouting(
     (c.defaultProviderId as string | undefined);
   const model = resolved.model;
 
-  if (resolved.runtime !== "builtin") {
+  if (resolved.runtime !== 'builtin') {
+    const isManagedCodexRuntime = resolved.runtime === 'codex'
+      && resolved.runtimeSource === 'managed-provider';
     return {
       kind: "external-runtime",
       runtime: resolved.runtime,
       runtimeSource: resolved.runtimeSource,
       model,
       providerId,
-      reason: "runtime-not-builtin",
+      reason: isManagedCodexRuntime ? 'managed-codex-provider' : 'runtime-not-builtin',
     };
   }
 
@@ -1710,16 +1739,10 @@ export function resolveWorkspaceConfig(
   // can short-circuit via `{ includeMcp: false }` to skip it entirely.
   const includeMcp = options?.includeMcp !== false;
 
-  // Find matching agent by workspace path
-  const agents = (config.agents ?? []) as Array<Record<string, unknown>>;
-  const agent = agents.find(
-    (a) =>
-      typeof a.workspacePath === "string" &&
-      workspacePathsEqual(a.workspacePath, agentDir),
-  );
-  const project = loadProjects().find(
-    (p) => typeof p.path === "string" && workspacePathsEqual(p.path, agentDir),
-  );
+  const projects = loadProjects();
+  const matchingProjects = projects.filter(p => workspacePathsEqual(p.path, agentDir));
+  const project = matchingProjects.length === 1 ? matchingProjects[0] : undefined;
+  const agent = findRuntimeAgentForWorkspace(config, projects, agentDir);
 
   // --- Resolve MCP ---
   // Session snapshot first (PRD §6 D2/D9): if the session captured its own enabled
@@ -1760,37 +1783,34 @@ export function resolveWorkspaceConfig(
   );
 
   const agentProviderId = agent?.providerId as string | undefined;
-  const agentProvider = agentProviderId
-    ? findEffectiveProvider(agentProviderId, config)
-    : undefined;
-  const agentUsesRuntimeBackedProvider =
-    agentProviderId === CODEX_SUBSCRIPTION_PROVIDER_ID ||
-    Boolean(agentProvider && isRuntimeBackedProvider(agentProvider));
-  const resolvedRuntime: RuntimeType =
-    agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
-      ? "codex"
-      : normalizeRuntime(
-          (sessionMeta?.runtime as string | undefined) ??
-            (agent?.runtime as string | undefined),
-        );
-  const agentRuntimeConfig = agent?.runtimeConfig as
-    | {
-        model?: string;
-        permissionMode?: string;
-        reasoningEffort?: string;
-      }
-    | undefined;
-  const agentProductPermissionMode = isProductPermissionMode(
-    agent?.permissionMode,
-  )
+  const agentUsesRuntimeBackedProvider = agentUsesManagedCodexProvider({
+    providerId: agentProviderId,
+    runtime: typeof agent?.runtime === 'string' ? agent.runtime : undefined,
+    runtimeConfig: agent?.runtimeConfig as { source?: string } | undefined,
+  });
+  const resolvedRuntime: RuntimeType = agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
+    ? 'codex'
+    : normalizeRuntime(
+        (sessionMeta?.runtime as string | undefined) ?? (agent?.runtime as string | undefined),
+      );
+  const agentRuntimeConfig = agent?.runtimeConfig as {
+    source?: string;
+    model?: string;
+    permissionMode?: string;
+    reasoningEffort?: string;
+  } | undefined;
+  const agentProductPermissionMode = isProductPermissionMode(agent?.permissionMode)
     ? agent.permissionMode
     : undefined;
-  const agentRuntimeBackedProviderPermissionMode =
-    agentUsesRuntimeBackedProvider && agentProductPermissionMode
-      ? managedCodexProviderPermissionToRuntimePermission(
-          agentProductPermissionMode,
-        )
-      : undefined;
+  const resolvedRuntimeSource = resolvedRuntime === 'builtin'
+    ? undefined
+    : (sessionMeta?.runtime !== undefined
+      ? (sessionMeta.runtimeSource
+        ?? sessionMeta.providerExecutionIdentity?.runtimeSource
+        ?? 'system-cli')
+      : (agentUsesRuntimeBackedProvider ? 'managed-provider' : agentRuntimeConfig?.source ?? 'system-cli'));
+  const usesManagedCodexExecution = resolvedRuntime === 'codex'
+    && resolvedRuntimeSource === 'managed-provider';
 
   // --- Resolve Provider ---
   // Priority: session.providerId → agent.providerId → config.defaultProviderId → persisted snapshot
@@ -1934,28 +1954,23 @@ export function resolveWorkspaceConfig(
         asBuiltinPermissionMode(config.defaultPermissionMode) ??
         "auto");
   } else {
-    const rawPermissionMode = snapshotOwnsConfig
-      ? sessionMeta?.permissionMode
-      : (sessionMeta?.permissionMode ??
-        agentRuntimeBackedProviderPermissionMode ??
-        agentRuntimeConfig?.permissionMode);
-    const coercedPermissionMode = coercePermissionModeForRuntime(
-      rawPermissionMode,
-      resolvedRuntime,
-    );
-    if (
-      typeof rawPermissionMode === "string" &&
-      rawPermissionMode.trim().length > 0 &&
-      coercedPermissionMode === undefined
-    ) {
+    const rawPermissionMode = sessionMeta
+      ? sessionMeta.permissionMode
+      : ((usesManagedCodexExecution ? agentProductPermissionMode : undefined)
+        ?? agentRuntimeConfig?.permissionMode);
+    const coercedPermissionMode = usesManagedCodexExecution
+      ? projectManagedCodexPermissionToRuntime(rawPermissionMode)
+      : projectPermissionModeForRuntime(rawPermissionMode, resolvedRuntime);
+    if (typeof rawPermissionMode === 'string'
+        && rawPermissionMode.trim().length > 0
+        && coercedPermissionMode === undefined) {
       console.warn(
         `[runtime-coerce] dropping stale workspace permissionMode='${rawPermissionMode}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? "<none>"} agentDir=${agentDir}`,
       );
     }
-    permissionMode =
-      coercedPermissionMode ??
-      getDefaultRuntimePermissionMode(resolvedRuntime) ??
-      "default";
+    permissionMode = coercedPermissionMode
+      ?? (usesManagedCodexExecution ? 'auto-edit' : getDefaultRuntimePermissionMode(resolvedRuntime))
+      ?? 'default';
   }
 
   // Gate on the signals that indicate a real workspace match — NOT permissionMode,

@@ -209,6 +209,43 @@ export function toModelEntity(d: DiscoveredModel, provider: Provider): ModelEnti
   };
 }
 
+/**
+ * Fill capability gaps on already-configured models from this provider's own
+ * discovery response. Explicit/manual values remain authoritative. Returning
+ * the original array when nothing changes lets callers avoid redundant writes
+ * and discovery-refresh loops.
+ */
+export function enrichExistingModelsFromDiscovery(
+  existing: ModelEntity[],
+  discovered: DiscoveredModel[],
+): ModelEntity[] {
+  const discoveredById = new Map(discovered.map(model => [model.id, model]));
+  let changed = false;
+  const enriched = existing.map(model => {
+    const match = discoveredById.get(model.model);
+    if (!match) return model;
+    const discoveredModalities = synthesizeModalitiesFromDiscovered(match);
+    const contextLength = model.contextLength ?? match.contextLength;
+    const maxOutputTokens = model.maxOutputTokens ?? match.maxOutputTokens;
+    const inputModalities = model.inputModalities ?? discoveredModalities;
+    if (
+      contextLength === model.contextLength
+      && maxOutputTokens === model.maxOutputTokens
+      && inputModalities === model.inputModalities
+    ) {
+      return model;
+    }
+    changed = true;
+    return {
+      ...model,
+      ...(contextLength !== undefined ? { contextLength } : {}),
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+      ...(inputModalities !== undefined ? { inputModalities } : {}),
+    };
+  });
+  return changed ? enriched : existing;
+}
+
 // ============= Helpers =============
 
 /** Format token count for display: 128000 → "128K", 1000000 → "1M" */

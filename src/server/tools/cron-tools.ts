@@ -2,8 +2,8 @@
 //
 // Historical note: this module used to ALSO host an in-process MCP server
 // (`cron-tools` with `exit_cron_task`). The MCP was retired in v0.2.11 in
-// favour of the universal `myagents cron exit` CLI command + system prompt
-// guidance (see system-prompt-cli-tools.ts SECTION_CRON_EXIT). The CLI
+// favour of the universal `myagents task exit` CLI command (`cron exit` remains
+// a compatibility alias) + system prompt guidance (see SECTION_TASK_EXIT). The CLI
 // handler lives in admin-api.ts::handleCronExit. Rust consumes the request in
 // the synchronous Task result and commits the terminal Task state.
 //

@@ -53,6 +53,39 @@ async function writeProviderJson(providerPath: string, provider: Provider): Prom
     });
 }
 
+/**
+ * Read-modify-write a custom Provider while holding its cross-process file
+ * lock. Callers that only own one field (for example model discovery) must use
+ * this instead of saving a Provider snapshot captured before asynchronous IO.
+ */
+export async function atomicModifyCustomProvider(
+    providerId: string,
+    modify: (provider: Provider) => Provider,
+): Promise<Provider | null> {
+    if (isBrowserDevMode()) return null;
+
+    await ensureConfigDir();
+    const dir = await getConfigDir();
+    const providerPath = await join(dir, PROVIDERS_DIR, `${providerId}.json`);
+    return withFileLock(providerPath, async () => {
+        if (!(await exists(providerPath))) return null;
+        const metadata = await lstat(providerPath);
+        if (metadata.isDirectory || metadata.isSymlink) {
+            throw new Error(`Provider path is not a regular file: ${providerPath}`);
+        }
+        const parsed = JSON.parse(await readTextFile(providerPath)) as Provider;
+        if (parsed.id !== providerId || !Array.isArray(parsed.models)) {
+            throw new Error(`Invalid custom provider file: ${providerPath}`);
+        }
+        const next = modify(parsed);
+        if (next.id !== providerId) {
+            throw new Error(`Custom provider updater cannot change id: ${providerId}`);
+        }
+        if (next !== parsed) await safeWriteJson(providerPath, next);
+        return next;
+    });
+}
+
 export async function loadCustomProviders(): Promise<Provider[]> {
     if (isBrowserDevMode()) {
         return [];

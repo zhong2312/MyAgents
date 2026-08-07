@@ -90,6 +90,7 @@ export default function WorkbenchAgentSurfaceHost({
   );
 
   useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
     const query = window.matchMedia("(max-width: 899px)");
     const update = () => setCompactVertical(query.matches);
     update();

@@ -14,12 +14,14 @@ import { useToast } from '@/components/Toast';
 interface AgentMemoryEvolutionSectionProps {
   agent: AgentConfig;
   workspaceId: string;
+  workspacePath: string;
   onAgentChanged: () => void;
 }
 
 export default function AgentMemoryEvolutionSection({
   agent,
   workspaceId,
+  workspacePath,
   onAgentChanged,
 }: AgentMemoryEvolutionSectionProps) {
   const { t } = useTranslation('settings');
@@ -34,7 +36,7 @@ export default function AgentMemoryEvolutionSection({
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('cmd_ensure_memory_rule_substrate', {
-        workspacePath: agent.workspacePath,
+        workspacePath,
       });
       return true;
     } catch (e) {
@@ -42,7 +44,7 @@ export default function AgentMemoryEvolutionSection({
       toastRef.current.error(t('agentSettings.memory.fileError'));
       return false;
     }
-  }, [agent.workspacePath, t]);
+  }, [workspacePath, t]);
 
   const updateConfig = useCallback(async (patch: Partial<MemoryEvolutionConfig>) => {
     const current = agent.memoryEvolution ?? {
@@ -57,14 +59,14 @@ export default function AgentMemoryEvolutionSection({
 
   const configureManagedTasks = useCallback(async (enabled: boolean): Promise<boolean> => {
     try {
-      await configureMemoryEvolutionTasksForAgent(agent, workspaceId, enabled);
+      await configureMemoryEvolutionTasksForAgent(agent, workspaceId, workspacePath, enabled);
       return true;
     } catch (e) {
       console.warn('[AgentMemoryEvolutionSection] Configure managed tasks failed:', e);
       toastRef.current.error(t('agentSettings.memoryEvolution.taskError'));
       return false;
     }
-  }, [agent, t, workspaceId]);
+  }, [agent, t, workspaceId, workspacePath]);
 
   const enabled = agent.memoryEvolution?.enabled ?? false;
 

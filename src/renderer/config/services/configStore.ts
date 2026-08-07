@@ -38,13 +38,57 @@ const CONFIG_LOCK_TIMEOUT_MS = 5000;
 const CONFIG_LOCK_POLL_MS = 50;
 const CONFIG_LOCK_STALE_MS = 30000;
 
-export class ConfigBusyError extends Error {
+export class FileBusyError extends Error {
+    readonly code: string = 'FILE_BUSY';
+
+    constructor(
+        readonly lockPath: string,
+        readonly timeoutMs: number,
+        message = `File busy: could not acquire ${lockPath} within ${timeoutMs}ms; retry`,
+    ) {
+        super(message);
+        this.name = 'FileBusyError';
+    }
+}
+
+export class ConfigBusyError extends FileBusyError {
     readonly code = 'CONFIG_BUSY';
 
-    constructor(message = 'Config busy: could not acquire config.json.lock within 5000ms; retry') {
-        super(message);
+    constructor(lockPath: string, timeoutMs: number) {
+        super(lockPath, timeoutMs, `Config busy: could not acquire config.json.lock within ${timeoutMs}ms; retry`);
         this.name = 'ConfigBusyError';
     }
+}
+
+export class ProjectsBusyError extends FileBusyError {
+    readonly code = 'PROJECTS_BUSY';
+
+    constructor(lockPath: string, timeoutMs: number) {
+        super(lockPath, timeoutMs, `Projects busy: could not acquire projects.json.lock within ${timeoutMs}ms; retry`);
+        this.name = 'ProjectsBusyError';
+    }
+}
+
+export class AgentConfigIntentBusyError extends FileBusyError {
+    readonly code = 'AGENT_CONFIG_INTENT_BUSY';
+
+    constructor(lockPath: string, timeoutMs: number) {
+        super(lockPath, timeoutMs, `Agent config intent busy: could not acquire agent-config-intent.lock within ${timeoutMs}ms; retry`);
+        this.name = 'AgentConfigIntentBusyError';
+    }
+}
+
+const LOCK_BUSY_CODES = new Set([
+    'FILE_BUSY',
+    'CONFIG_BUSY',
+    'PROJECTS_BUSY',
+    'AGENT_CONFIG_INTENT_BUSY',
+    'PROVIDER_BUSY',
+]);
+
+export function isLockBusyError(error: unknown): boolean {
+    if (!error || typeof error !== 'object' || !('code' in error)) return false;
+    return LOCK_BUSY_CODES.has(String(error.code));
 }
 
 // ============= Constants =============
@@ -59,7 +103,14 @@ export async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
         await ensureConfigDir();
         const dir = await getConfigDir();
         const configPath = await join(dir, CONFIG_FILE);
-        return withFileLock(configPath, fn);
+        try {
+            return await withFileLock(configPath, fn);
+        } catch (error) {
+            if (error instanceof FileBusyError && error.code === 'FILE_BUSY') {
+                throw new ConfigBusyError(error.lockPath, error.timeoutMs);
+            }
+            throw error;
+        }
     });
 }
 
@@ -74,7 +125,14 @@ export async function withProjectsLock<T>(fn: () => Promise<T>): Promise<T> {
         await ensureConfigDir();
         const dir = await getConfigDir();
         const projectsPath = await join(dir, PROJECTS_FILE);
-        return withFileLock(projectsPath, fn);
+        try {
+            return await withFileLock(projectsPath, fn);
+        } catch (error) {
+            if (error instanceof FileBusyError && error.code === 'FILE_BUSY') {
+                throw new ProjectsBusyError(error.lockPath, error.timeoutMs);
+            }
+            throw error;
+        }
     });
 }
 
@@ -89,7 +147,14 @@ export async function withAgentConfigIntentLock<T>(fn: () => Promise<T>): Promis
         await ensureConfigDir();
         const dir = await getConfigDir();
         const intentPath = await join(dir, 'agent-config-intent');
-        return withFileLock(intentPath, fn);
+        try {
+            return await withFileLock(intentPath, fn);
+        } catch (error) {
+            if (error instanceof FileBusyError && error.code === 'FILE_BUSY') {
+                throw new AgentConfigIntentBusyError(error.lockPath, error.timeoutMs);
+            }
+            throw error;
+        }
     });
 }
 
@@ -216,17 +281,12 @@ async function acquireFileLock(lockDir: string): Promise<string> {
     while (true) {
         try {
             await mkdir(lockDir);
-            const ownerToken = `renderer:${Date.now()}:${crypto.randomUUID()}`;
-            try {
-                await writeTextFile(await join(lockDir, 'owner'), `${ownerToken}\n`);
-            } catch (error) {
-                // Owner identity is part of safe release, not merely
-                // diagnostic. Never retain a lock we cannot prove is ours.
-                await remove(lockDir, { recursive: true }).catch(() => undefined);
-                throw error;
-            }
-            return ownerToken;
-        } catch {
+        } catch (error) {
+            // A mkdir failure only means contention while the target lock
+            // directory actually exists. Permission and filesystem errors
+            // must retain their real identity.
+            if (!(await exists(lockDir))) throw error;
+
             // mkdir failed — lock dir already exists. Try stale-recovery before
             // sleeping. The renderer can't observe other processes' pids, so it
             // relies on the renderer-written owner timestamp (`renderer:<ts>`)
@@ -237,10 +297,22 @@ async function acquireFileLock(lockDir: string): Promise<string> {
             }
 
             if (Date.now() - start >= CONFIG_LOCK_TIMEOUT_MS) {
-                throw new ConfigBusyError();
+                throw new FileBusyError(lockDir, CONFIG_LOCK_TIMEOUT_MS);
             }
             await delay(CONFIG_LOCK_POLL_MS);
+            continue;
         }
+
+        const ownerToken = `renderer:${Date.now()}:${crypto.randomUUID()}`;
+        try {
+            await writeTextFile(await join(lockDir, 'owner'), `${ownerToken}\n`);
+        } catch (error) {
+            // Owner identity is part of safe release, not merely diagnostic.
+            // Never retain a lock we cannot prove is ours.
+            await remove(lockDir, { recursive: true }).catch(() => undefined);
+            throw error;
+        }
+        return ownerToken;
     }
 }
 
@@ -260,8 +332,10 @@ async function acquireFileLock(lockDir: string): Promise<string> {
  * sidecar crashes are rare, and (b) on next sidecar restart the Node-side
  * helper observes its own dead pid and breaks the lock immediately.
  */
+const RENDERER_OWNER_PATTERN = /^renderer:(\d+)(?::[0-9a-f-]+)?$/i;
+
 function shouldBreakStaleLock(ageMs: number, owner: string, staleMs: number): boolean {
-    if (owner.startsWith('renderer:')) {
+    if (RENDERER_OWNER_PATTERN.test(owner)) {
         return ageMs > staleMs; // we trust mtime for our own runtime.
     }
     if (owner.startsWith('node:') || owner.startsWith('rust:')) {
@@ -269,7 +343,10 @@ function shouldBreakStaleLock(ageMs: number, owner: string, staleMs: number): bo
         // Use a 4× threshold to be conservative.
         return ageMs > staleMs * 4;
     }
-    return false; // unknown owner format — never break, surface as timeout.
+    // Missing, malformed, and legacy owner metadata must not create a
+    // permanent lock. Use the same conservative age threshold as an owner
+    // whose liveness the renderer cannot inspect.
+    return ageMs > staleMs * 4;
 }
 
 async function tryBreakStaleLock(lockDir: string): Promise<boolean> {
@@ -277,8 +354,9 @@ async function tryBreakStaleLock(lockDir: string): Promise<boolean> {
     try {
         owner = (await readTextFile(await join(lockDir, 'owner'))).trim();
     } catch {
-        // No owner file — fall back to "exists but no metadata" → don't break.
-        return false;
+        // A writer can terminate between mkdir and owner metadata creation.
+        // Age-only recovery below prevents that partial acquisition from
+        // blocking all future writers forever.
     }
 
     // Compute age. For renderer:<ts> owners we have an embedded timestamp
@@ -286,7 +364,7 @@ async function tryBreakStaleLock(lockDir: string): Promise<boolean> {
     // lockdir itself. In all cases the owner string also gates whether we're
     // willing to break this kind of owner at all.
     let ageMs: number | null = null;
-    const rendererMatch = /^renderer:(\d+)(?::[0-9a-f-]+)?$/i.exec(owner);
+    const rendererMatch = RENDERER_OWNER_PATTERN.exec(owner);
     if (rendererMatch) {
         const ts = Number(rendererMatch[1]);
         if (Number.isFinite(ts)) ageMs = Date.now() - ts;
@@ -325,8 +403,8 @@ async function releaseFileLock(lockDir: string, ownerToken: string): Promise<voi
             return;
         }
         await remove(lockDir, { recursive: true });
-    } catch {
-        // Best-effort unlock. Timeout errors on future acquisitions make this visible.
+    } catch (error) {
+        console.warn(`[configStore] Failed to release lock ${lockDir}:`, error);
     }
 }
 

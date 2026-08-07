@@ -104,7 +104,6 @@ Application lifecycle:
 Session management:
 
 - `session_new`
-- `session_switch`
 - `session_rewind`
 - `session_title_edit`
 - `session_fork`
@@ -217,6 +216,8 @@ Task center:
 - `task_stop`
 - `task_delete`
 - `task_align_discuss`
+
+`task_run.run_count` 使用 Task execution owner 接受 run/rerun 后返回的 `attemptOrdinal`，并从 1 开始计数。它不由 `sessionIds` 数量推算；dispatch/admission 前失败不会产生该事件。Desktop 与 CLI 使用同一操作结果，因此 Session 复用与 new-session 路径的统计语义一致。
 
 Launcher and thoughts:
 

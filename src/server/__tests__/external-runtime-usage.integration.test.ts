@@ -42,6 +42,28 @@ describe('external runtime usage utils', () => {
     });
   });
 
+  it('does not charge unknown historical cache when a Codex fallback omits cache dimensions', () => {
+    const legacyBaseline: MessageUsage = {
+      inputTokens: 1_000,
+      outputTokens: 100,
+      model: 'gpt-5-codex',
+    };
+    const nextFallbackTotal: MessageUsage = {
+      inputTokens: 1_100,
+      outputTokens: 110,
+      model: 'gpt-5-codex',
+    };
+
+    expect(diffUsageTotals(legacyBaseline, nextFallbackTotal)).toEqual({
+      inputTokens: 100,
+      outputTokens: 10,
+      cacheReadTokens: undefined,
+      cacheCreationTokens: undefined,
+      model: 'gpt-5-codex',
+      modelUsage: undefined,
+    });
+  });
+
   it('restores codex baseline from the last historical running total when metadata is missing', () => {
     const messages: SessionMessage[] = [
       assistantUsage({ inputTokens: 12, outputTokens: 2, model: 'gpt-5-codex' }),

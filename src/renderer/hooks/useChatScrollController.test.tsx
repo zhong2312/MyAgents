@@ -190,6 +190,38 @@ describe('useChatScrollController', () => {
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'process-row-expand',
+    'process-row-collapse',
+    'user-message-expand',
+    'block-group-expand',
+    'expandable-container-expand',
+  ] as const)('leaves %s in natural document flow instead of restoring a later message anchor', (reason) => {
+    const scroller = document.createElement('div');
+    const row = document.createElement('div');
+    row.setAttribute('data-chat-search-scope', '');
+    row.setAttribute('data-message-id', 'm1');
+    scroller.appendChild(row);
+    setRect(scroller, { top: 10, bottom: 410 });
+    setRect(row, { top: 30, bottom: 100 });
+    controls.scrollerRef.current = scroller;
+
+    const { result } = renderHook(() => useChatScrollController({
+      messages: [msg('m1')],
+      isActive: true,
+    }));
+
+    act(() => {
+      result.current.onRowLayoutChanged('m1', reason);
+      // Emulate the same React commit growing or shrinking the virtualized row.
+      setRect(row, { top: 80, bottom: 150 });
+    });
+
+    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(controls.scrollToIndex).not.toHaveBeenCalled();
+    expect(controls.scrollToBottom).not.toHaveBeenCalled();
+  });
+
   it('captures and restores an anchor with one offset correction', () => {
     const scroller = document.createElement('div');
     const row = document.createElement('div');
@@ -214,5 +246,225 @@ describe('useChatScrollController', () => {
     });
 
     expect(controls.scrollBy).toHaveBeenCalledWith({ top: 50, behavior: 'auto' });
+  });
+
+  it.each([true, 'force'] as const)(
+    'restores %s follow intent to the latest background output on window focus',
+    (followMode) => {
+      controls.followEnabledRef.current = followMode;
+      const initial = [msg('m1')];
+      const { rerender } = renderHook(
+        ({ messages, focused }) => useChatScrollController({
+          messages,
+          isActive: true,
+          isWindowFocused: focused,
+          sessionId: 's1',
+        }),
+        { initialProps: { messages: initial, focused: true } },
+      );
+
+      rerender({ messages: initial, focused: false });
+      // Simulate a stale background callback changing the live ref while the
+      // controller's blur snapshot remains authoritative.
+      controls.followEnabledRef.current = false;
+      rerender({ messages: [...initial, msg('m2', 'finished in background')], focused: false });
+      controls.scrollToBottom.mockClear();
+
+      rerender({ messages: [...initial, msg('m2', 'finished in background')], focused: true });
+
+      expect(controls.scrollToBottom).toHaveBeenCalledTimes(1);
+      expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
+      expect(controls.scrollBy).not.toHaveBeenCalled();
+    },
+  );
+
+  it('restores the same message anchor when a scrolled-up reader returns', () => {
+    const scroller = document.createElement('div');
+    const row = document.createElement('div');
+    row.setAttribute('data-chat-search-scope', '');
+    row.setAttribute('data-message-id', 'm1');
+    scroller.appendChild(row);
+    setRect(scroller, { top: 10, bottom: 410 });
+    setRect(row, { top: 30, bottom: 100 });
+    controls.scrollerRef.current = scroller;
+    controls.followEnabledRef.current = false;
+
+    const initial = [msg('m1')];
+    const { rerender } = renderHook(
+      ({ messages, focused }) => useChatScrollController({
+        messages,
+        isActive: true,
+        isWindowFocused: focused,
+        sessionId: 's1',
+      }),
+      { initialProps: { messages: initial, focused: true } },
+    );
+
+    rerender({ messages: initial, focused: false });
+    setRect(row, { top: 80, bottom: 150 });
+    rerender({ messages: [...initial, msg('m2', 'new output below')], focused: false });
+
+    rerender({ messages: [...initial, msg('m2', 'new output below')], focused: true });
+
+    expect(controls.scrollToBottom).not.toHaveBeenCalled();
+    expect(controls.scrollBy).toHaveBeenCalledTimes(1);
+    expect(controls.scrollBy).toHaveBeenCalledWith({ top: 50, behavior: 'auto' });
+    expect(controls.followEnabledRef.current).toBe(false);
+  });
+
+  it('handles row layout changes while the active Chat window is unfocused', () => {
+    controls.followEnabledRef.current = true;
+    const { result } = renderHook(() => useChatScrollController({
+      messages: [msg('m1')],
+      isActive: true,
+      isWindowFocused: false,
+      sessionId: 's1',
+    }));
+
+    act(() => {
+      result.current.onRowLayoutChanged('m1', 'tool-complete');
+    });
+
+    expect(controls.scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
+    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(controls.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it('invalidates a blur snapshot when the Session changes before focus returns', () => {
+    controls.followEnabledRef.current = true;
+    const { rerender } = renderHook(
+      ({ focused, sessionId }) => useChatScrollController({
+        messages: [msg('m1')],
+        isActive: true,
+        isWindowFocused: focused,
+        sessionId,
+      }),
+      { initialProps: { focused: true, sessionId: 's1' } },
+    );
+
+    rerender({ focused: false, sessionId: 's1' });
+    controls.scrollToBottom.mockClear();
+    rerender({ focused: false, sessionId: 's2' });
+    rerender({ focused: true, sessionId: 's2' });
+
+    expect(controls.scrollToBottom).not.toHaveBeenCalled();
+    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(controls.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it('consumes only the latest snapshot across consecutive blur and focus transitions', () => {
+    controls.followEnabledRef.current = true;
+    const { rerender } = renderHook(
+      ({ focused }) => useChatScrollController({
+        messages: [msg('m1')],
+        isActive: true,
+        isWindowFocused: focused,
+        sessionId: 's1',
+      }),
+      { initialProps: { focused: true } },
+    );
+
+    rerender({ focused: false });
+    rerender({ focused: true });
+    expect(controls.scrollToBottom).toHaveBeenCalledTimes(1);
+
+    controls.followEnabledRef.current = true;
+    rerender({ focused: false });
+    rerender({ focused: true });
+    expect(controls.scrollToBottom).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a delayed anchor correction after the Session changes', () => {
+    let correctionFrame: FrameRequestCallback | null = null;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      correctionFrame = callback;
+      return 1;
+    });
+    const scroller = document.createElement('div');
+    setRect(scroller, { top: 10, bottom: 410 });
+    controls.scrollerRef.current = scroller;
+
+    const { result, rerender } = renderHook(
+      ({ sessionId }) => useChatScrollController({
+        messages: [msg('m1')],
+        isActive: true,
+        isWindowFocused: true,
+        sessionId,
+      }),
+      { initialProps: { sessionId: 's1' } },
+    );
+
+    act(() => {
+      result.current.restoreAnchorAfterNextCommit({
+        messageId: 'm1',
+        offsetFromViewportTop: 20,
+        label: 'window-blur',
+      });
+    });
+    expect(controls.scrollToIndex).toHaveBeenCalledWith({
+      index: 0,
+      align: 'start',
+      behavior: 'auto',
+    });
+
+    const row = document.createElement('div');
+    row.setAttribute('data-chat-search-scope', '');
+    row.setAttribute('data-message-id', 'm1');
+    setRect(row, { top: 80, bottom: 150 });
+    scroller.appendChild(row);
+    rerender({ sessionId: 's2' });
+    act(() => correctionFrame?.(1_000));
+
+    expect(controls.scrollBy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('drops an older delayed correction after a newer focus recovery in the same Session', () => {
+    const correctionFrames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      correctionFrames.push(callback);
+      return correctionFrames.length;
+    });
+    const scroller = document.createElement('div');
+    const row = document.createElement('div');
+    row.setAttribute('data-chat-search-scope', '');
+    row.setAttribute('data-message-id', 'm1');
+    scroller.appendChild(row);
+    setRect(scroller, { top: 10, bottom: 410 });
+    setRect(row, { top: 30, bottom: 100 });
+    controls.scrollerRef.current = scroller;
+    controls.followEnabledRef.current = false;
+
+    const { rerender } = renderHook(
+      ({ focused }) => useChatScrollController({
+        messages: [msg('m1')],
+        isActive: true,
+        isWindowFocused: focused,
+        sessionId: 's1',
+      }),
+      { initialProps: { focused: true } },
+    );
+
+    rerender({ focused: false });
+    row.remove();
+    rerender({ focused: true });
+
+    setRect(row, { top: 80, bottom: 150 });
+    scroller.appendChild(row);
+    rerender({ focused: false });
+    row.remove();
+    rerender({ focused: true });
+
+    setRect(row, { top: 130, bottom: 200 });
+    scroller.appendChild(row);
+    expect(correctionFrames).toHaveLength(2);
+    act(() => correctionFrames[0](1_000));
+    expect(controls.scrollBy).not.toHaveBeenCalled();
+
+    act(() => correctionFrames[1](1_001));
+    expect(controls.scrollBy).toHaveBeenCalledTimes(1);
+    expect(controls.scrollBy).toHaveBeenCalledWith({ top: 50, behavior: 'auto' });
+    vi.unstubAllGlobals();
   });
 });

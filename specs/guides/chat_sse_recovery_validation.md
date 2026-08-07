@@ -1,4 +1,4 @@
-# Chat SSE 断线恢复验证清单（0.4.1）
+# Chat SSE 断线恢复验证清单（0.4.2）
 
 本文只验证 Tauri SSE 维护型订阅。不要使用 reload、切换 Session 或重启 App 作为“恢复”步骤；恢复必须自动发生。
 
@@ -52,7 +52,7 @@ Stop-Process -Id <SIDE_CAR_PID> -Force
 
 3. 保持 Chat Tab 不动，等待 Rust health monitor 重建 Sidecar。
 
-通过标准：日志出现新的 resolved endpoint、随后出现更大的 transport generation；Renderer 的 `session-sidecar:restarted` 只清 URL cache，没有 stop/start SSE；当前页自动恢复。
+通过标准：日志出现新的 resolved endpoint、随后出现更大的 transport generation；Renderer 的 `session-sidecar:restarted` 清理 URL cache、废弃旧 live-revision baseline 并重新执行 REST restore，但不 stop/start 长期 SSE subscription；当前页自动恢复。
 
 ## 逐项产品验收
 

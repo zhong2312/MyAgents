@@ -47,6 +47,7 @@ SDK 自 0.2.113+ 以 `bun build --compile` 的 native binary 形式分发（SDK 
 - 首次拒绝后每分钟最多放行一个 half-open probe。probe 是 Rust-owned lease，即使 Sidecar 退出或 settlement 丢失也会自动到期。
 - admission epoch 随 settlement 返回；旧 `ready` 不得清除更新的 failure epoch。只有 `initializationResult()` 成功才算 control plane ready。
 - executable identity 在应用更新/重装后变化，旧 circuit 自动失效。普通 Provider / network failure 只释放本次 admission，不打开 circuit。
+- circuit 是 best-effort 重试保护，不拥有 SDK 启动权。只有 Rust 显式返回携带 `EPERM` / `EACCES` / `ENOEXEC` 的 circuit denial 才能阻止本次启动；Sidecar identity 缺失/过期、Management transport 异常或响应畸形都必须跳过 circuit 并继续调用 SDK。Session 业务 ID 重绑时保留进程出生时注入的不可变 management identity。
 - Desktop 与 IM 显示可操作的更新/重装提示；内部 epoch/circuit 标记不得泄漏到用户错误文本。
 
 ## 应用结构
@@ -107,6 +108,12 @@ SDK 子进程（AI Bash 工具）看到的 PATH 优先级：
 注意：SDK shell env **不设置** `npm_config_prefix` / `NPM_CONFIG_PREFIX` / `PREFIX`。
 nvm 会在 shell 初始化时检测这些变量并输出兼容性警告。需要固定 npm 全局安装落点的
 skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_PREFIX" npm install -g ...`）。
+
+### Task command Detector
+
+Activation Trigger 的 command Detector 是 Rust Task harness 启动的受管子进程，不是 SDK Bash。为保证 AI 生成的 JavaScript 感知器零外部依赖，Detector 的 bare `node` / `node.exe` **固定**解析到 MyAgents bundled Node.js v24；这与上面 AI shell 的“系统优先、bundled 兜底”是两个不同入口。其他 bare executable 走 `system_binary::find()`，绝对路径直接校验；结构化 args 原样传递，不经 shell 拼接。
+
+Detector 在 `env_clear()` 后只恢复本地命令所需的 OS home/user/temp/system 基线、证书、通用代理变量和增强后的 `PATH`，并固定设置 UTF-8 locale、`PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`。它不继承 Provider API key、Session credential、`MYAGENTS_*` 控制端口或任意启动 shell 变量；需要业务 credential 的脚本必须自己从明确的外部安全来源读取，不能依赖 MyAgents 进程环境的偶然泄漏。
 
 ## MCP / 社区 npm 包的执行
 

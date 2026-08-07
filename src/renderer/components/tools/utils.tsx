@@ -105,10 +105,13 @@ function useResolvedFileAction(path?: string | null) {
     : null;
   const pathInfo = actionTarget ? fileAction?.checkFileTarget(actionTarget) ?? null : null;
 
-  if (!displayPath || !fileAction || !actionTarget || !pathInfo?.exists) return null;
+  if (!displayPath || !fileAction || !actionTarget || !pathInfo) return null;
   return {
     displayPath,
     pathInfo,
+    openPrimary: (forceExternal: boolean) => {
+      fileAction.openFileTarget(actionTarget, { displayPath, forceExternal });
+    },
     openMenu: (x: number, y: number) => {
       fileAction.openFileMenu(x, y, actionTarget.path, pathInfo.type, displayPath, {
         scope: actionTarget.scope,
@@ -121,11 +124,13 @@ function useResolvedFileAction(path?: string | null) {
  * File-path chip rendered by file tools (Write / Edit / Read / NotebookEdit).
  *
  * When rendered inside a Chat (FileActionContext available) and the path
- * resolves to a real file/folder, the chip becomes interactive — dashed
- * underline + click / right-click context menu (预览 / 引用 / 打开 / 打开所在文件夹),
- * matching how inline file paths in AI text behave (see markdown/InlineCode.tsx,
- * which shares the same FileActionContext). Outside Chat, or while the path is
- * still unresolved / does not exist, it renders as a plain monospace chip.
+ * resolves to a file/folder target, the chip becomes interactive — dashed
+ * underline + primary click / right-click context menu, matching how inline
+ * file paths in AI text behave (see markdown/InlineCode.tsx, which shares the
+ * same FileActionContext). Unavailable targets stay interactive so the shared
+ * owner can explain the failure instead of silently degrading to plain text.
+ * Outside Chat, or while the path is still unresolved, it renders as a plain
+ * monospace chip.
  */
 export function FilePath({ path }: { path?: string | null }) {
   const { t } = useTranslation('chat');
@@ -149,8 +154,7 @@ export function FilePath({ path }: { path?: string | null }) {
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        const rect = e.currentTarget.getBoundingClientRect();
-        resolvedAction.openMenu(rect.left, rect.bottom + 4);
+        resolvedAction.openPrimary(e.metaKey || e.ctrlKey);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -168,8 +172,9 @@ export function FilePath({ path }: { path?: string | null }) {
 
 /**
  * The single file-toolbar action used by FilePatchTool. It deliberately shares
- * the same resolution, existence gate, and FileActionContext menu owner as
- * FilePath; unsafe or missing paths render no misleading action at all.
+ * the same resolution and FileActionContext menu owner as FilePath. Once
+ * resolution completes, unavailable paths also keep the menu so failures are
+ * explicit.
  */
 export function FileActionMenuButton({ path, className = '' }: { path?: string | null; className?: string }) {
   const { t } = useTranslation('chat');

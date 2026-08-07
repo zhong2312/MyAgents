@@ -15,6 +15,7 @@ function executableFixture(): string {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   const { rm } = await import('fs/promises');
   await Promise.all(scratchDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
@@ -41,9 +42,10 @@ describe('createGuardedSdkQuery', () => {
     expect(createQuery).not.toHaveBeenCalled();
   });
 
-  it('does not fail open when Rust rejects an invalid or stale Sidecar identity', async () => {
+  it('does not let stale lifecycle bookkeeping veto a healthy SDK launch', async () => {
     const executablePath = executableFixture();
-    const createQuery = vi.fn();
+    const query = {};
+    const createQuery = vi.fn(() => query);
     const managementCall = vi.fn().mockResolvedValue({
       ok: false,
       code: 'stale_sidecar',
@@ -53,11 +55,26 @@ describe('createGuardedSdkQuery', () => {
     await expect(createGuardedSdkQuery(executablePath, createQuery, {
       managementCall,
       sidecarId: 'pending-1',
-    })).rejects.toMatchObject({ code: 'SDK_CHILD_LAUNCH_GUARD_REJECTED' });
-    expect(createQuery).not.toHaveBeenCalled();
+    })).resolves.toBe(query);
+    expect(createQuery).toHaveBeenCalledOnce();
   });
 
-  it('fails open only when the local management transport is unavailable', async () => {
+  it('keeps mixed-version Sidecars usable when launch-guard identity is absent', async () => {
+    vi.stubEnv('MYAGENTS_SIDECAR_ID', '');
+    vi.stubEnv('MYAGENTS_MANAGEMENT_PORT', '31415');
+    const executablePath = executableFixture();
+    const query = {};
+    const createQuery = vi.fn(() => query);
+    const managementCall = vi.fn();
+
+    await expect(createGuardedSdkQuery(executablePath, createQuery, {
+      managementCall,
+    })).resolves.toBe(query);
+    expect(managementCall).not.toHaveBeenCalled();
+    expect(createQuery).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the SDK usable when the local management transport is unavailable', async () => {
     const executablePath = executableFixture();
     const query = { initializationResult: vi.fn().mockResolvedValue({}) };
     const createQuery = vi.fn(() => query);
@@ -71,6 +88,66 @@ describe('createGuardedSdkQuery', () => {
       sidecarId: '__global__',
     })).resolves.toBe(query);
     expect(createQuery).toHaveBeenCalledOnce();
+  });
+
+  it('does not invent EPERM when a circuit denial has no deterministic OS error', async () => {
+    const executablePath = executableFixture();
+    const query = {};
+    const createQuery = vi.fn(() => query);
+    const managementCall = vi.fn().mockResolvedValue({
+      ok: true,
+      admitted: false,
+      errorCode: 'unknown',
+    });
+
+    await expect(createGuardedSdkQuery(executablePath, createQuery, {
+      managementCall,
+      sidecarId: '__global__',
+    })).resolves.toBe(query);
+    expect(createQuery).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the SDK usable when the management request throws', async () => {
+    const executablePath = executableFixture();
+    const query = {};
+    const createQuery = vi.fn(() => query);
+    const managementCall = vi.fn().mockRejectedValue(new Error('connection reset'));
+
+    await expect(createGuardedSdkQuery(executablePath, createQuery, {
+      managementCall,
+      sidecarId: '__global__',
+    })).resolves.toBe(query);
+    expect(createQuery).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, [], 'invalid'])('keeps the SDK usable for a top-level malformed admission response', async (admission) => {
+    const executablePath = executableFixture();
+    const query = {};
+    const createQuery = vi.fn(() => query);
+    const managementCall = vi.fn().mockResolvedValue(admission);
+
+    await expect(createGuardedSdkQuery(executablePath, createQuery, {
+      managementCall,
+      sidecarId: '__global__',
+    })).resolves.toBe(query);
+    expect(createQuery).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { label: 'malformed response', settle: () => Promise.resolve(null) },
+    { label: 'rejected request', settle: () => Promise.reject(new Error('connection reset')) },
+  ])('contains a $label from best-effort settlement', async ({ settle }) => {
+    const executablePath = executableFixture();
+    const managementCall = vi.fn()
+      .mockResolvedValueOnce({ ok: true, admitted: true, admissionEpoch: 10 })
+      .mockImplementationOnce(settle);
+    const query = { initializationResult: vi.fn().mockResolvedValue({}) };
+
+    await createGuardedSdkQuery(executablePath, () => query, {
+      managementCall,
+      sidecarId: '__global__',
+    });
+    await vi.waitFor(() => expect(managementCall).toHaveBeenCalledTimes(2));
   });
 
   it('reports deterministic spawn denial at executable scope', async () => {

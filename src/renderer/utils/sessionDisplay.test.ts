@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getSessionDisplayText } from './sessionDisplay';
+import { getFullSessionDisplayText, getSessionDisplayText } from './sessionDisplay';
 
 describe('getSessionDisplayText', () => {
   it('uses the session title for every surface when it is meaningful', () => {
@@ -29,5 +29,13 @@ describe('getSessionDisplayText', () => {
       title: 'New Chat',
       lastMessagePreview: 'a'.repeat(40),
     })).toBe(`${'a'.repeat(35)}...`);
+  });
+
+  it('keeps the normalized full title available to overflow affordances', () => {
+    const fullTitle = 'A historical conversation title that is longer than the compact list projection';
+    expect(getFullSessionDisplayText({
+      title: fullTitle,
+      lastMessagePreview: 'preview should not win',
+    })).toBe(fullTitle);
   });
 });

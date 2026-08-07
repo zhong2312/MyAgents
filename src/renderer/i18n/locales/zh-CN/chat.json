@@ -839,7 +839,9 @@
       "subtitle": "非图片文件将复制到 myagents_files 并自动引用"
     },
     "boot": {
-      "loading": "AI 启动中"
+      "loading": "AI 启动中",
+      "restoreFailed": "对话加载失败，请重新打开或切换对话后重试",
+      "retry": "重试"
     },
     "agentError": {
       "title": "AI 调用失败：",
@@ -918,6 +920,12 @@
         "message": "您的「对话记录」与「文件修改状态」都将回溯到本次对话发生之前。",
         "confirm": "确认回溯"
       },
+      "codexRewind": {
+        "title": "时间回溯",
+        "message": "对话将回到本次提问之前。工作区文件不会自动恢复，当前文件修改会保留。",
+        "messageWithDraft": "对话将回到本次提问之前。工作区文件不会自动恢复，当前文件修改会保留。当前未发送的草稿和图片将被本次提问替换。",
+        "confirm": "仅回溯对话"
+      },
       "fork": {
         "title": "创建分支",
         "message": "将从此处创建一个新的会话分支，在新标签页中打开。原会话不受影响。",
@@ -960,6 +968,19 @@
       "unknownError": "未知错误",
       "rewindFailedWithError": "时间回溯失败：{{error}}",
       "rewindFailedRetry": "时间回溯失败，请重试",
+      "codexRewindSuccess": "对话已回溯；工作区文件保持当前状态。",
+      "codexRestoreFailed": "对话已回溯，但 Codex 需要重启后才能继续。",
+      "codexRewindReconciled": "连接曾中断，已按本地历史重新同步对话；请确认当前记录后再继续。",
+      "conversationError": {
+        "session_busy": "当前会话仍有操作在执行，请稍后再试。",
+        "anchor_unavailable": "这个历史点缺少可用的 Codex 锚点，或原生历史已发生变化。",
+        "codex_update_required": "请将 Codex CLI 更新到 0.143.0 或更高版本。",
+        "native_fork_failed": "Codex 无法创建原生对话分支，请重试。",
+        "persistence_failed": "分支已创建，但 MyAgents 无法安全保存本地会话。",
+        "storage_consistency_error": "会话存储状态不一致，请重启 MyAgents 后再试。",
+        "restore_failed": "操作已生效，但 Codex 需要重启后才能继续。",
+        "unsupported_runtime": "当前 Runtime 不支持此操作。"
+      },
       "rewindPartialLinks": "对话已回溯，但为保证安全，有 {{count}} 个链接文件未恢复。",
       "rewindFilesFailed": "对话已回溯，但工作区文件恢复失败，文件保持当前状态。",
       "rewindFilesNotAttempted": "对话已回溯，但没有可用的文件检查点，工作区文件保持当前状态。",

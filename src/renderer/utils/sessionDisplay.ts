@@ -22,11 +22,20 @@ function normalizeCandidate(value: string | null | undefined): string {
  * the product's empty-session title.
  */
 export function getSessionDisplayText(session: Pick<SessionMetadata, 'title' | 'lastMessagePreview'>): string {
+  return truncateDisplayText(getFullSessionDisplayText(session));
+}
+
+/**
+ * Resolve the canonical Session title without applying list-surface truncation.
+ * Overflow affordances use this projection so they can reveal the real title
+ * while rows and Tab chrome keep their existing compact display contract.
+ */
+export function getFullSessionDisplayText(session: Pick<SessionMetadata, 'title' | 'lastMessagePreview'>): string {
   const title = normalizeCandidate(session.title);
-  if (title) return truncateDisplayText(title);
+  if (title) return title;
 
   const preview = normalizeCandidate(session.lastMessagePreview);
-  if (preview) return truncateDisplayText(preview);
+  if (preview) return preview;
 
   return 'New Chat';
 }

@@ -11,6 +11,7 @@ import type { ChannelConfig } from '../../shared/types/agent';
 import { normalizeWorkspacePathIdentity } from '../../shared/workspacePath';
 import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { resolveChannelDisplayName } from '@/utils/channelDisplayName';
+import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
 
 /** Sentinel value: Rust deliver_cron_result_to_bot uses the bot's router to auto-determine chat target */
 const AUTO_CHAT_ID = '_auto_';
@@ -77,16 +78,17 @@ export function useDeliveryChannels(currentWorkspacePath?: string) {
 
     // Build agentId → Project display name mapping (matches Agent card list logic)
     const agentDisplayNames = new Map<string, string>();
-    // Key by canonical workspace identity: an Agent's workspacePath may be in
-    // the native Windows form while currentWorkspacePath arrives POSIX-style
-    // (e.g. from a Task), so raw-string keying mis-grouped the current
-    // workspace's channels as "other workspace" on Windows (#320).
     const wsToAgent = new Map<string, string>();
+    const workspaceByAgent = new Map(
+      resolveAgentWorkspaceProjections(projects, agents).agentProjections
+        .map(item => [item.agentId, item.workspacePath]),
+    );
     for (const a of agents) {
-      wsToAgent.set(normalizeWorkspacePathIdentity(a.workspacePath), a.id);
+      const workspacePath = workspaceByAgent.get(a.id);
+      if (workspacePath) wsToAgent.set(normalizeWorkspacePathIdentity(workspacePath), a.id);
       // Find corresponding Project for display name (same logic as AgentCardList/AgentSettingsPanel)
       const proj = projects.find(p => p.agentId === a.id);
-      const displayName = proj?.displayName || proj?.name || a.workspacePath.split('/').pop() || a.id;
+      const displayName = proj?.displayName || proj?.name || workspacePath?.split(/[\\/]/).pop() || a.id;
       agentDisplayNames.set(a.id, displayName);
     }
 

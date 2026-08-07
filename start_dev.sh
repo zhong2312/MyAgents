@@ -88,7 +88,7 @@ echo -e "${BLUE}启动后端服务器...${NC}"
 cd "${PROJECT_DIR}"
 "$NODE" --import tsx/esm --watch \
     "${PROJECT_DIR}/src/server/index.ts" \
-    --agent-dir "${AGENT_DIR}" --port ${PORT} &
+    --agent-dir "${AGENT_DIR}" --port ${PORT} --dev-union &
 BACKEND_PID=$!
 echo -e "后端 PID: ${BACKEND_PID}"
 

@@ -1156,20 +1156,23 @@ pub async fn restart_gateway(
 
 /// Handle to a running bridge process
 pub struct BridgeProcess {
-    child: std::process::Child,
+    child: crate::process_cmd::ChildTree,
     pub port: u16,
 }
 
 impl BridgeProcess {
     pub fn kill_sync(&mut self) -> Result<(), String> {
-        match self.child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
-            Ok(None) => {}
+        let root_already_exited = match self.child.try_wait() {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
             Err(error) => {
                 return Err(format!("failed to inspect Plugin Bridge process: {error}"));
             }
-        }
+        };
 
+        // The command wrapper may exit before one of its descendants. Always
+        // terminate the retained process-group / Job authority, even after the
+        // direct child has already been reaped.
         if let Err(kill_error) = self.child.kill() {
             return match self.child.try_wait() {
                 Ok(Some(_)) => Ok(()),
@@ -1178,6 +1181,10 @@ impl BridgeProcess {
                     "failed to terminate Plugin Bridge process: {kill_error}; status check failed: {wait_error}"
                 )),
             };
+        }
+
+        if root_already_exited {
+            return Ok(());
         }
 
         self.child
@@ -1339,10 +1346,9 @@ pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
     rust_port: u16,
     bot_id: &str,
     plugin_config: Option<&serde_json::Value>,
+    _creation_permit: &crate::sidecar::LifecycleSpawnPermit,
 ) -> Result<BridgeProcess, String> {
     use crate::sidecar::find_node_executable_pub;
-
-    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
 
     let node_path = find_node_executable_pub(app_handle)
         .ok_or_else(|| "Node executable not found".to_string())?;
@@ -1526,10 +1532,9 @@ pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
     // Inject proxy env vars — reuse shared helper (pit-of-success: single source of truth)
     apply_proxy_env(&mut cmd);
 
-    let mut child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = crate::process_cmd::spawn_tree(&mut cmd)
         .map_err(|e| format!("Failed to spawn bridge process: {}", e))?;
 
     // Pipe stdout/stderr to unified log

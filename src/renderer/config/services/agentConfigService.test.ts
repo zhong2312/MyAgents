@@ -41,7 +41,10 @@ function project(overrides: Partial<Project> = {}): Project {
 
 describe('agentConfigService template Agent defaults', () => {
   it('builds ordinary projects as disabled basic Agents', () => {
-    const agent = buildAgentForProject(project(), {
+    const agent = buildAgentForProject(project({
+      enabledPluginIds: ['plugin-one'],
+      enabledOfficialToolIds: ['image-understanding'],
+    }), {
       agentId: 'agent-1',
       defaultPermissionMode: 'auto',
     });
@@ -49,10 +52,11 @@ describe('agentConfigService template Agent defaults', () => {
     expect(agent).toMatchObject({
       id: 'agent-1',
       name: 'workspace',
-      workspacePath: '/tmp/workspace',
       enabled: false,
       channels: [],
       permissionMode: 'auto',
+      enabledPluginIds: ['plugin-one'],
+      enabledOfficialToolIds: ['image-understanding'],
     });
     expect(agent.heartbeat).toBeUndefined();
     expect(agent.memoryAutoUpdate).toBeUndefined();
@@ -159,7 +163,7 @@ describe('agentConfigService template Agent defaults', () => {
     });
   });
 
-  it('does not overwrite a project that is already linked to an Agent', () => {
+  it('preserves an existing linked Agent while normalizing the required identity mirror', () => {
     const cfg: AppConfig = {
       defaultPermissionMode: 'auto',
       themeId: 'myagents-default',
@@ -173,7 +177,6 @@ describe('agentConfigService template Agent defaults', () => {
         id: 'existing-agent',
         name: 'Existing',
         enabled: false,
-        workspacePath: '/tmp/workspace',
         permissionMode: 'plan',
         channels: [],
       }],
@@ -228,10 +231,31 @@ describe('projectMemoryEvolutionTaskRuntimeForAgent', () => {
       runtimeConfig: { envPolicy: { proxy: 'myagents' } },
     });
   });
+
+  it('does not reroute memory evolution through a dormant managed provider', () => {
+    expect(projectMemoryEvolutionTaskRuntimeForAgent({
+      providerId: 'codex-sub',
+      model: 'gpt-5.5',
+      permissionMode: 'fullAgency',
+      runtime: 'gemini',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'gemini-3.1-pro-preview',
+        permissionMode: 'yolo',
+      },
+    })).toEqual({
+      runtime: 'gemini',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'gemini-3.1-pro-preview',
+        permissionMode: 'yolo',
+      },
+    });
+  });
 });
 
 describe('migrateImBotConfigsToAgents', () => {
-  it('groups legacy IM bots by canonical Windows workspace identity without rewriting the persisted path', () => {
+  it('migrates only Project-backed IM groups into a pathless Agent and preserves unmatched bots', () => {
     const winPath = 'C:\\Users\\Me\\Project';
     const cfg = {
       defaultPermissionMode: 'auto',
@@ -284,11 +308,10 @@ describe('migrateImBotConfigsToAgents', () => {
 
     const migrated = migrateImBotConfigsToAgents(cfg, projects);
 
-    expect(migrated.agents).toHaveLength(2);
-    expect(migrated.agents![0].workspacePath).toBe(winPath);
+    expect(migrated.agents).toHaveLength(1);
+    expect(migrated.agents![0]).not.toHaveProperty('workspacePath');
     expect(migrated.agents![0].channels).toHaveLength(2);
-    expect(migrated.agents![1].workspacePath).toBe('');
-    expect(migrated.agents![1].channels).toHaveLength(1);
+    expect(migrated.imBotConfigs?.map(bot => bot.id)).toEqual(['bot-default']);
     expect(projects[0]).toMatchObject({
       isAgent: true,
       agentId: migrated.agents![0].id,

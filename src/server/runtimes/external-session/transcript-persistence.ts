@@ -1,8 +1,11 @@
-import type { MessageUsage, SessionMessage } from '../../types/session';
+import type { MessageUsage, RuntimeTurnAnchor, SessionMessage } from '../../types/session';
 import {
-  saveSessionMessages,
+  appendSessionMessages,
+  loadSessionTranscript,
+  mutateSessionTranscript,
   updateSessionMetadata,
-  type SaveSessionMessagesResult,
+  type AppendSessionMessagesResult,
+  type TranscriptWriteCursor,
 } from '../../SessionStore';
 import { resolveLastVisibleTurnPreview } from '../../utils/session-message-preview';
 import type { ContextUsage } from '../../../shared/types/context-usage';
@@ -11,11 +14,13 @@ import type { PersistContentBlock } from './types';
 let allSessionMessages: SessionMessage[] = [];
 let lastPersistedRuntimeUsageTotals: MessageUsage | null = null;
 let transcriptSessionId = '';
+let transcriptCursor: TranscriptWriteCursor | null = null;
 
 export function resetExternalTranscriptState(): void {
   allSessionMessages = [];
   lastPersistedRuntimeUsageTotals = null;
   transcriptSessionId = '';
+  transcriptCursor = null;
 }
 
 export function getExternalSessionMessagesSnapshot(): SessionMessage[] {
@@ -34,9 +39,14 @@ export function forEachExternalSessionMessage(
   }
 }
 
-export function setExternalSessionMessages(sessionId: string, messages: SessionMessage[]): void {
+export function setExternalSessionMessages(
+  sessionId: string,
+  messages: SessionMessage[],
+  cursor: TranscriptWriteCursor,
+): void {
   transcriptSessionId = sessionId;
   allSessionMessages = messages;
+  transcriptCursor = cursor;
 }
 
 export function clearExternalSessionMessages(sessionId?: string): void {
@@ -44,6 +54,7 @@ export function clearExternalSessionMessages(sessionId?: string): void {
     transcriptSessionId = sessionId;
   }
   allSessionMessages = [];
+  transcriptCursor = null;
 }
 
 export function pushExternalSessionMessage(message: SessionMessage): void {
@@ -112,25 +123,37 @@ export function getLastExternalAssistantTextFromTranscript(): string {
 }
 
 function describeSaveSessionMessagesFailure(
-  result: Extract<SaveSessionMessagesResult, { ok: false }>,
+  result: Extract<AppendSessionMessagesResult, { ok: false }>,
 ): string {
   switch (result.reason) {
     case 'unindexed-create-refused':
-      return `session metadata is missing; refused to create JSONL (${result.count} message(s))`;
-    case 'shrink-refused':
-      return `append-only save saw shorter memory history (${result.count}) than disk (${result.existingCount})`;
+    case 'stale-cursor':
+    case 'storage-consistency-error':
     case 'write-error':
       return result.error;
   }
 }
 
 function assertExternalSessionMessagesPersisted(
-  result: SaveSessionMessagesResult,
+  result: AppendSessionMessagesResult,
   context: string,
-): void {
+): TranscriptWriteCursor {
   if (!result.ok) {
     throw new Error(`${context}: ${describeSaveSessionMessagesFailure(result)}`);
   }
+  return result.cursor;
+}
+
+export async function persistExternalForkTranscript(
+  sessionId: string,
+  messages: SessionMessage[],
+): Promise<void> {
+  const snapshot = await loadSessionTranscript(sessionId);
+  if (snapshot.cursor.persistedMessageCount !== 0 || snapshot.hasMalformedRows) {
+    throw new Error(`Fork transcript persist refused for non-empty target ${sessionId}`);
+  }
+  const saveResult = await appendSessionMessages(sessionId, snapshot.cursor, messages);
+  assertExternalSessionMessagesPersisted(saveResult, 'Fork transcript persist failed');
 }
 
 export async function persistExternalUserMessageAppend(
@@ -141,8 +164,10 @@ export async function persistExternalUserMessageAppend(
   metadataDisposition: 'update' | 'skip' = 'update',
 ): Promise<{ lastMessagePreview?: string }> {
   const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(allSessionMessages);
-  const saveResult = await saveSessionMessages(sessionId, allSessionMessages, { allowShrink: false });
-  assertExternalSessionMessagesPersisted(saveResult, failureContext);
+  const cursor = await ensureExternalTranscriptCursor(sessionId);
+  const tail = allSessionMessages.slice(cursor.persistedMessageCount);
+  const saveResult = await appendSessionMessages(sessionId, cursor, tail);
+  transcriptCursor = assertExternalSessionMessagesPersisted(saveResult, failureContext);
 
   if (metadataDisposition === 'skip') return { lastMessagePreview };
   try {
@@ -163,10 +188,18 @@ export async function removeAndPersistExternalSessionMessage(
   messageId: string,
   failureContext: string,
 ): Promise<boolean> {
-  const removed = removeExternalSessionMessageById(messageId);
-  if (!removed) return false;
-  const saveResult = await saveSessionMessages(sessionId, allSessionMessages);
-  assertExternalSessionMessagesPersisted(saveResult, failureContext);
+  if (!allSessionMessages.some(message => message.id === messageId)) return false;
+  const cursor = await ensureExternalTranscriptCursor(sessionId);
+  const result = await mutateSessionTranscript(sessionId, cursor, {
+    kind: 'external-rejected-message',
+    messageId,
+  });
+  if (!result.ok) {
+    if (result.reason === 'stale-cursor') await reloadExternalTranscript(sessionId);
+    throw new Error(`${failureContext}: ${result.reason}: ${result.error}`);
+  }
+  transcriptCursor = result.cursor;
+  removeExternalSessionMessageById(messageId);
   return true;
 }
 
@@ -192,19 +225,30 @@ export async function truncateExternalTranscriptForRetry(
   const content = typeof target.content === 'string' ? target.content : '';
   const attachments = target.attachments;
 
-  // Drops the failed user message plus any partial assistant blocks left
-  // behind from a half-finalized turn. saveSessionMessages detects the
-  // shorter in-memory history and rewrites the JSONL.
-  allSessionMessages.length = targetIndex;
   try {
-    const saveResult = await saveSessionMessages(sessionId, allSessionMessages);
-    assertExternalSessionMessagesPersisted(
-      saveResult,
-      '[external-session] popLastUserMessageForRetry failed to persist truncation',
-    );
+    const cursor = await ensureExternalTranscriptCursor(sessionId);
+    const result = await mutateSessionTranscript(sessionId, cursor, {
+      kind: 'external-retry',
+      userMessageId,
+      targetMessageCount: targetIndex,
+    });
+    if (!result.ok) {
+      if (result.reason === 'stale-cursor') await reloadExternalTranscript(sessionId);
+      const userFacingError = result.reason === 'stale-cursor'
+        ? 'Conversation history changed while retrying; reopen the session before trying again.'
+        : result.reason === 'malformed-transcript'
+          ? 'Conversation history contains data that cannot be safely modified.'
+          : `Failed to persist truncation: ${result.error}`;
+      throw new Error(userFacingError);
+    }
+    transcriptCursor = result.cursor;
+    allSessionMessages.length = targetIndex;
   } catch (err) {
     console.error('[external-session] popLastUserMessageForRetry: failed to persist truncation:', err);
-    return { success: false, error: 'Failed to persist truncation' };
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to persist truncation',
+    };
   }
   return { success: true, content, attachments };
 }
@@ -217,6 +261,7 @@ export interface ExternalAssistantTurnPersistInput {
   toolCount: number;
   contextUsage: ContextUsage | null;
   lastActiveAt?: string;
+  runtimeTurnAnchor?: RuntimeTurnAnchor;
 }
 
 export interface ExternalAssistantTurnPersistResult {
@@ -224,31 +269,45 @@ export interface ExternalAssistantTurnPersistResult {
   failureReason?: string;
   messageCount: number;
   appendedAssistant: boolean;
+  assistantMessageId?: string;
 }
 
 export async function appendAndPersistExternalAssistantTurn(
   input: ExternalAssistantTurnPersistInput,
 ): Promise<ExternalAssistantTurnPersistResult> {
   let appendedAssistant = false;
+  let assistantMessageId: string | undefined;
   if (input.content) {
+    assistantMessageId = `assistant-${Date.now()}`;
     allSessionMessages.push({
-      id: `assistant-${Date.now()}`,
+      id: assistantMessageId,
       role: 'assistant',
       content: input.content,
       timestamp: new Date().toISOString(),
       durationMs: input.durationMs,
       usage: input.usage || undefined,
       toolCount: input.toolCount || undefined,
+      runtimeTurnAnchor: input.runtimeTurnAnchor,
     });
     appendedAssistant = true;
   }
 
   if (allSessionMessages.length === 0 || !input.sessionId) {
-    return { ok: true, messageCount: allSessionMessages.length, appendedAssistant };
+    return {
+      ok: true,
+      messageCount: allSessionMessages.length,
+      appendedAssistant,
+      ...(assistantMessageId ? { assistantMessageId } : {}),
+    };
   }
 
   try {
-    const saveResult = await saveSessionMessages(input.sessionId, allSessionMessages, { allowShrink: false });
+    const cursor = await ensureExternalTranscriptCursor(input.sessionId);
+    const saveResult = await appendSessionMessages(
+      input.sessionId,
+      cursor,
+      allSessionMessages.slice(cursor.persistedMessageCount),
+    );
     if (!saveResult.ok) {
       if (input.lastActiveAt) {
         try {
@@ -262,24 +321,72 @@ export async function appendAndPersistExternalAssistantTurn(
         failureReason: describeSaveSessionMessagesFailure(saveResult),
         messageCount: allSessionMessages.length,
         appendedAssistant,
+        ...(assistantMessageId ? { assistantMessageId } : {}),
       };
     }
+    transcriptCursor = saveResult.cursor;
 
     const { preview: lastMessagePreview } =
       resolveLastVisibleTurnPreview(allSessionMessages);
-    await updateSessionMetadata(input.sessionId, {
-      lastMessagePreview,
-      runtimeUsageTotals: lastPersistedRuntimeUsageTotals ?? undefined,
-      ...(input.contextUsage ? { lastContextUsage: input.contextUsage } : {}),
-      ...(input.lastActiveAt ? { lastActiveAt: input.lastActiveAt } : {}),
-    });
-    return { ok: true, messageCount: allSessionMessages.length, appendedAssistant };
+    try {
+      await updateSessionMetadata(input.sessionId, {
+        lastMessagePreview,
+        runtimeUsageTotals: lastPersistedRuntimeUsageTotals ?? undefined,
+        ...(input.contextUsage ? { lastContextUsage: input.contextUsage } : {}),
+        ...(input.lastActiveAt ? { lastActiveAt: input.lastActiveAt } : {}),
+      });
+    } catch (error) {
+      console.warn('[external-session] assistant transcript committed but metadata update failed:', error);
+    }
+    return {
+      ok: true,
+      messageCount: allSessionMessages.length,
+      appendedAssistant,
+      ...(assistantMessageId ? { assistantMessageId } : {}),
+    };
   } catch (err) {
     return {
       ok: false,
       failureReason: err instanceof Error ? err.message : String(err),
       messageCount: allSessionMessages.length,
       appendedAssistant,
+      ...(assistantMessageId ? { assistantMessageId } : {}),
     };
   }
+}
+
+async function reloadExternalTranscript(sessionId: string): Promise<TranscriptWriteCursor> {
+  const snapshot = await loadSessionTranscript(sessionId);
+  transcriptSessionId = sessionId;
+  allSessionMessages = snapshot.messages;
+  transcriptCursor = snapshot.cursor;
+  return snapshot.cursor;
+}
+
+async function ensureExternalTranscriptCursor(sessionId: string): Promise<TranscriptWriteCursor> {
+  if (transcriptSessionId === sessionId && transcriptCursor) {
+    if (allSessionMessages.length < transcriptCursor.persistedMessageCount) {
+      const durableCount = transcriptCursor.persistedMessageCount;
+      const liveCount = allSessionMessages.length;
+      await reloadExternalTranscript(sessionId);
+      throw new Error(
+        `External transcript projection invariant failed: live ${liveCount} was shorter than durable cursor ${durableCount}; rehydrated from SessionStore`,
+      );
+    }
+    return transcriptCursor;
+  }
+  const snapshot = await loadSessionTranscript(sessionId);
+  const prefixMatches = snapshot.messages.every(
+    (message, index) => allSessionMessages[index]?.id === message.id,
+  );
+  if (
+    transcriptSessionId !== sessionId
+    || allSessionMessages.length < snapshot.messages.length
+    || !prefixMatches
+  ) {
+    allSessionMessages = snapshot.messages;
+  }
+  transcriptSessionId = sessionId;
+  transcriptCursor = snapshot.cursor;
+  return snapshot.cursor;
 }

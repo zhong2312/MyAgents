@@ -22,7 +22,11 @@
 // own model push (no `imConfigSync`) stays authoritative, and pure IM / cron
 // (live-follow, no snapshot) sessions keep applying channel config.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Control isCurrentSessionSnapshotted() by mocking the metadata source. Keep all
 // other SessionStore exports real so agent-session's import graph is intact.
@@ -39,9 +43,26 @@ import {
   getSessionProviderEnv,
   setSessionPermissionMode,
   getSessionPermissionMode,
+  getMcpServers,
+  setMcpServers,
 } from '../agent-session';
+import {
+  drainDeferredRestart,
+  hasDeferredRestart,
+  resetConfigForTest,
+  setCurrentMcpServers,
+} from '../builtin-session/config';
+import { setQuerySession, setSessionProcessing } from '../builtin-session/lifecycle';
+import { resetProductSessionBinding } from '../session-engine/product-session-binding';
 
 const getMeta = vi.mocked(getSessionMetadata);
+
+beforeEach(() => {
+  // This fixture exercises Session-sidecar setters directly, outside the real
+  // bootstrap that normally establishes the product Session binding. Importing
+  // shared server modules no longer mints that identity on Global's behalf.
+  resetProductSessionBinding({ sessionId: 'snapshot-guard-session' });
+});
 
 function markSnapshotted(snapshotted: boolean): void {
   // Only `configSnapshotAt` is consulted by isCurrentSessionSnapshotted().
@@ -97,5 +118,66 @@ describe('#327 — snapshot authority for IM config sync (setSessionPermissionMo
     const target = before === 'plan' ? 'fullAgency' : 'plan';
     setSessionPermissionMode(target);
     expect(getSessionPermissionMode()).toBe(before);
+  });
+});
+
+describe('#512 — layered MCP snapshot authority', () => {
+  it('keeps snapshot IDs, refreshes definitions, and honors the global disable lever', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'myagents-mcp-snapshot-'));
+    const configDir = join(scratch, '.myagents');
+    mkdirSync(configDir, { recursive: true });
+    const configPath = join(configDir, 'config.json');
+    const envKey = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+    const previousHome = process.env[envKey];
+    process.env[envKey] = scratch;
+    const writeConfig = (enabledIds: string[], ownedCommand: string): void => {
+      writeFileSync(configPath, JSON.stringify({
+        mcpServers: [
+          { id: 'owned', name: 'Owned', type: 'stdio', command: ownedCommand, isBuiltin: false },
+          { id: 'workspace-default', name: 'Workspace default', type: 'stdio', command: 'workspace', isBuiltin: false },
+        ],
+        mcpEnabledServers: enabledIds,
+      }), 'utf8');
+    };
+
+    getMeta.mockReturnValue({
+      configSnapshotAt: '2026-08-05T00:00:00.000Z',
+      mcpEnabledServers: ['owned'],
+    } as never);
+    resetConfigForTest();
+    setCurrentMcpServers([
+      { id: 'owned', name: 'Owned', type: 'stdio', command: 'stale-command', isBuiltin: false },
+    ]);
+    setQuerySession({} as never);
+    setSessionProcessing(true);
+
+    try {
+      writeConfig(['owned', 'workspace-default'], 'current-command');
+      setMcpServers([
+        { id: 'workspace-default', name: 'Workspace default', type: 'stdio', command: 'workspace', isBuiltin: false },
+      ]);
+      expect(getMcpServers()).toEqual([
+        expect.objectContaining({ id: 'owned', command: 'current-command' }),
+      ]);
+      expect(hasDeferredRestart()).toBe(true);
+      expect(drainDeferredRestart()).toBe('mcp');
+
+      // Definition and selection changes can be coalesced in one disk read.
+      // The global security lever must win without letting workspace defaults
+      // replace the owned Session's snapshotted ID selection.
+      writeConfig(['workspace-default'], 'newer-but-disabled-command');
+      setMcpServers([
+        { id: 'workspace-default', name: 'Workspace default', type: 'stdio', command: 'workspace', isBuiltin: false },
+      ]);
+      expect(getMcpServers()).toEqual([]);
+      expect(drainDeferredRestart()).toBe('mcp');
+    } finally {
+      setQuerySession(null);
+      setSessionProcessing(false);
+      resetConfigForTest();
+      if (previousHome === undefined) delete process.env[envKey];
+      else process.env[envKey] = previousHome;
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });

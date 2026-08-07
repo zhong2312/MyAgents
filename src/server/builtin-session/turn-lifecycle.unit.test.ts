@@ -9,6 +9,7 @@ import {
   pushPendingOutputOwner,
   resetTurnForTest,
   setCurrentTurnCompactResult,
+  setCurrentTurnImTerminalEmitted,
   setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setCurrentTurnToolCount,
@@ -446,6 +447,28 @@ describe('turn-lifecycle owner', () => {
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
   });
 
+  it('preserves an older FIFO owner when an exact request already claimed graceful cancellation', () => {
+    const { deps } = makeDeps({
+      getIsInterruptingResponse: () => true,
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushOutputOwner('older-queue', 'older-request');
+    setCurrentTurnImTerminalEmitted(true);
+    markCurrentTurnHasOutput();
+
+    lifecycle.handleSdkResult(makeResult({
+      terminal_reason: 'aborted_streaming',
+      result: 'partial answer',
+    }));
+
+    expect(deps.cancelCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toMatchObject({
+      queueId: 'older-queue',
+      requestId: 'older-request',
+    });
+  });
+
   it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
     const { deps, broadcasts } = makeDeps({
       recoverInvalidResumeAnchorError: vi.fn(() => true),
@@ -544,13 +567,13 @@ describe('turn-lifecycle owner', () => {
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
   });
 
-  it('auto-retries success-shaped transient provider text instead of completing the turn', () => {
+  it('auto-retries success-shaped transient provider text instead of completing the turn', async () => {
     const { deps, broadcasts } = makeDeps({
       scheduleTransientProviderRetry: vi.fn(() => true),
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
 
-    lifecycle.handleSdkResult(makeResult({
+    await lifecycle.handleSdkResult(makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
     }));
 
@@ -569,14 +592,14 @@ describe('turn-lifecycle owner', () => {
     expect(deps.persistTranscript).not.toHaveBeenCalled();
   });
 
-  it('does not auto-retry transient provider text after tool side effects', () => {
+  it('does not auto-retry transient provider text after tool side effects', async () => {
     const { deps, broadcasts } = makeDeps({
       scheduleTransientProviderRetry: vi.fn(() => true),
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
     setCurrentTurnToolCount(1);
 
-    lifecycle.handleSdkResult(makeResult({
+    await lifecycle.handleSdkResult(makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
     }));
 
@@ -589,13 +612,13 @@ describe('turn-lifecycle owner', () => {
     expect(deps.setLastAgentError).toHaveBeenCalledWith(expect.stringContaining('无法安全自动重试'));
   });
 
-  it('surfaces a clear terminal error after transient provider text retries are exhausted', () => {
+  it('surfaces a clear terminal error after transient provider text retries are exhausted', async () => {
     const { deps, broadcasts } = makeDeps({
       getCurrentTransientProviderRetryAttempt: () => 3,
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
 
-    lifecycle.handleSdkResult(makeResult({
+    await lifecycle.handleSdkResult(makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
     }));
 
@@ -647,6 +670,21 @@ describe('turn-lifecycle owner', () => {
     expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, expect.any(String));
   });
 
+  it('does not pop the output-owner FIFO after an exact request already emitted its terminal', () => {
+    const { deps } = makeDeps();
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushOutputOwner('older-queue', 'older-request');
+    setCurrentTurnImTerminalEmitted(true);
+
+    lifecycle.stopTurn();
+
+    expect(deps.cancelCurrentImRequest).not.toHaveBeenCalled();
+    expect(peekPendingOutputOwner()).toMatchObject({
+      queueId: 'older-queue',
+      requestId: 'older-request',
+    });
+  });
+
   it('persists unexpected errors and commits terminal metadata for expected terminations', async () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
@@ -675,12 +713,26 @@ describe('turn-lifecycle owner', () => {
   it('drains deferred restart ownership after accepted setup fails before SDK dispatch', async () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
+    setCurrentTurnSourceItem({
+      id: 'admitted-persist-failure',
+      requestId: 'request-persist-failure',
+      message: { role: 'user', content: 'persist me' },
+      messageText: 'persist me',
+      wasQueued: false,
+      resolve: vi.fn(),
+      channelDelivery: NO_CHANNEL_DELIVERY,
+    });
 
     lifecycle.failAdmittedTurnSetup('metadata setup failed');
 
     await waitForCurrentTurnTerminalObserver();
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
     expect(deps.applyDeferredRestartIfNeeded).toHaveBeenCalledOnce();
+    expect(deps.failCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: 'localized:metadata setup failed', isError: true }],
+    });
+    expect(deps.persistTranscript).toHaveBeenCalledOnce();
+    expect(deps.setSessionState).toHaveBeenCalledWith('idle');
   });
 
   it('surfaces forced in-flight items but preserves natural completions for SDK replay', () => {

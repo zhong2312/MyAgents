@@ -58,7 +58,6 @@ function taskCenterData(
         sessions,
         cronTasks: [],
         deleteProtectedSessionIds: new Set<string>(),
-        tasks: [],
         sessionTagsMap: new Map(),
         cronBotInfoMap: new Map(),
         isLoading: false,
@@ -71,7 +70,6 @@ function taskCenterData(
             setSessionFavorite: vi.fn(async () => true),
             refreshSessions: vi.fn(),
             refreshCronTasks: vi.fn(),
-            refreshTasks: vi.fn(),
             ...actionOverrides,
         },
     };

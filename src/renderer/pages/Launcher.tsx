@@ -42,9 +42,10 @@ import { patchAgentConfig, patchAgentProjectConfig, getAgentById, disableAgentAn
 import { archiveProject, unarchiveProject } from '@/config/services/projectService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
-import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections, RuntimeConfig } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections } from '../../shared/types/runtime';
 import { CC_MODELS, CC_PERMISSION_MODES, CODEX_PERMISSION_MODES, GEMINI_PERMISSION_MODES, buildRuntimeChangePatch } from '../../shared/types/runtime';
 import {
+    agentUsesManagedCodexProvider,
     isRuntimeBackedProvider,
     toProviderExecutionIntent,
 } from '../../shared/providerExecution';
@@ -56,6 +57,7 @@ import {
     type OfficialToolId,
 } from '../../shared/official-tools';
 import { apiGetJson } from '@/api/apiFetch';
+import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { isBrowserDevMode, pickFolderForDialog } from '@/utils/browserMock';
 import { resolveLauncherProvider } from '@/utils/optionResolve';
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
@@ -68,11 +70,16 @@ import type { WorkbenchProjectCreateRequest } from '@/workbench-sdk';
 interface LauncherProps {
     onLaunchProject: (
         project: Project,
-        sessionId?: string,
         initialMessage?: InitialMessage,
-        analyticsContext?: { surface?: Surface; entryIntent?: EntryIntent; historyEntrySource?: HistoryEntrySource },
+        analyticsContext?: { surface?: Surface; entryIntent?: EntryIntent },
         sessionBirthHint?: LaunchSessionBirthHint,
     ) => void;
+    onOpenHistorySession: (
+        sessionId: string,
+        project: Project,
+        title: string,
+        historyEntrySource?: HistoryEntrySource,
+    ) => Promise<unknown>;
     isStarting?: boolean;
     startError?: string | null;
     isActive: boolean;
@@ -80,7 +87,7 @@ interface LauncherProps {
     sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
 
-export default function Launcher({ onLaunchProject, isStarting, startError: _startError, isActive, attachmentSessionId, sessionNotificationBadgeCounts }: LauncherProps) {
+export default function Launcher({ onLaunchProject, onOpenHistorySession, isStarting, startError: _startError, isActive, attachmentSessionId, sessionNotificationBadgeCounts }: LauncherProps) {
     const { t } = useTranslation('launcher');
     const toast = useToast();
     const toastRef = useRef(toast);
@@ -150,15 +157,16 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const agentLookup = useMemo(() => {
         const map = new Map<string, { agent: NonNullable<typeof config.agents>[number]; status?: (typeof agentStatuses)[string] }>();
         if (!config.agents) return map;
-        for (const agent of config.agents) {
-            // Canonical identity key (#320): agent.workspacePath and project.path
-            // can diverge in separator/case form across stores on Windows.
-            const key = normalizeWorkspacePathIdentity(agent.workspacePath);
+        for (const project of userVisibleProjects) {
+            if (!project.agentId) continue;
+            const agent = config.agents.find(candidate => candidate.id === project.agentId);
+            if (!agent) continue;
+            const key = normalizeWorkspacePathIdentity(project.path);
             map.set(key, { agent, status: agentStatuses[agent.id] });
         }
         return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- config.agents is the actual dependency; full config would cause unnecessary recomputes
-    }, [config.agents, agentStatuses]);
+    }, [config.agents, agentStatuses, userVisibleProjects]);
 
     const [_addError, setAddError] = useState<string | null>(null);
     const [launchingProjectId, setLaunchingProjectId] = useState<string | null>(null);
@@ -305,10 +313,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     runtimeConfigRef.current = selectedAgent?.runtimeConfig;
 
     // Runtime-aware model/permission lists — adapts input bar for external runtimes
-    const selectedAgentRuntimeConfig = selectedAgent?.runtimeConfig as RuntimeConfig | undefined;
-    const selectedAgentUsesManagedCodexProvider =
-        selectedAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-        || selectedAgentRuntimeConfig?.source === 'managed-provider';
+    const selectedAgentUsesManagedCodexProvider = agentUsesManagedCodexProvider(selectedAgent);
     const launcherRuntime: RuntimeType = selectedAgentUsesManagedCodexProvider
         ? 'builtin'
         : multiAgentRuntimeEnabled
@@ -321,7 +326,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     useEffect(() => {
         if (!multiAgentRuntimeEnabled || launcherRuntime !== 'codex') { setCodexModels([]); return; }
         let cancelled = false;
-        apiGetJson<{ models?: RuntimeModelInfo[] }>('/api/runtime/models?type=codex')
+        apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('codex', 'system-cli'))
             .then(res => { if (!cancelled && res?.models?.length) setCodexModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };
@@ -329,7 +334,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     useEffect(() => {
         if (!multiAgentRuntimeEnabled || launcherRuntime !== 'gemini') { setGeminiModels([]); return; }
         let cancelled = false;
-        apiGetJson<{ models?: RuntimeModelInfo[] }>('/api/runtime/models?type=gemini')
+        apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('gemini'))
             .then(res => { if (!cancelled && res?.models?.length) setGeminiModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };
@@ -531,20 +536,26 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const handleLauncherPermissionModeChange = useCallback((mode: PermissionMode) => {
         setLauncherPermissionMode(mode);
         if (selectedWorkspace) {
+            const model = launcherSelectedModel ?? launcherProvider?.primaryModel;
+            const intent = selectedAgentUsesManagedCodexProvider && launcherProvider && model
+                ? toProviderExecutionIntent(launcherProvider, model)
+                : undefined;
             void persistInputOptionChange({
                 workspaceId: selectedWorkspace.id,
                 agentId: selectedWorkspace.agentId ?? null,
                 isExternalRuntime,
                 currentRuntimeConfig: runtimeConfigRef.current,
                 currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
-                fields: { permissionMode: mode },
+                fields: intent?.kind === 'runtime-backed-provider'
+                    ? { runtimeBackedProviderSelection: intent, permissionMode: mode }
+                    : { permissionMode: mode },
                 patchProject,
                 patchAgentConfig,
                 patchAgentProjectConfig,
             });
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; runtimeConfigRef is a ref
-    }, [selectedWorkspace?.id, patchProject, isExternalRuntime]);
+    }, [selectedWorkspace?.id, patchProject, isExternalRuntime, launcherSelectedModel, launcherProvider, selectedAgentUsesManagedCodexProvider]);
 
     const handleLauncherModelChange = useCallback((model: string | undefined) => {
         setLauncherSelectedModel(model);
@@ -827,7 +838,6 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
 
         onLaunchProject(
             selectedWorkspace,
-            undefined,
             initialMessage,
             { surface: 'launcher_input', entryIntent: 'send_message' },
         );
@@ -896,18 +906,25 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 };
             }
         }
+        if (sessionId) {
+            void onOpenHistorySession(
+                sessionId,
+                project,
+                project.displayName || project.name,
+                historyEntrySource ?? 'launcher_recent',
+            ).finally(() => setLaunchingProjectId(null));
+            return;
+        }
         onLaunchProject(
             project,
-            sessionId,
             undefined,
-            sessionId
-                ? { historyEntrySource: historyEntrySource ?? 'launcher_recent' }
-                : { surface: 'agent_card', entryIntent: 'open_workspace' },
+            { surface: 'agent_card', entryIntent: 'open_workspace' },
             sessionBirthHint,
         );
     }, [
         touchProject,
         onLaunchProject,
+        onOpenHistorySession,
         selectedWorkspace,
         isExternalRuntime,
         launcherProvider,
@@ -1194,7 +1211,6 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         };
         onLaunchProject(
             project,
-            undefined,
             initialMessage,
             { surface: 'agent_setup', entryIntent: 'workspace_init' },
         );

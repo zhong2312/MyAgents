@@ -44,7 +44,7 @@ Goal Mode 是 CLI 的特殊 current-session 控制能力：`myagents goal create
 | **CLI 脚本** | `src/cli/myagents.ts` | 参数解析、命令路由、HTTP 调用、输出格式化（含 `recoveryHint` 渲染） |
 | **CLI 同步** | `src-tauri/src/commands.rs` (`cmd_sync_cli`) | 版本门控拷贝脚本到用户目录 |
 | **Admin API** | `src/server/admin-api.ts` | 业务逻辑：验证 → 写 config → 更新内存状态 → SSE 广播；含跨 runtime 发现 handler |
-| **PATH 注入** | `src/server/agent-session.ts` (`buildClaudeSessionEnv`) | 将 `~/.myagents/bin` / `~/.myagents/npm-global/bin` 加入 SDK 子进程 PATH |
+| **PATH 注入** | `src/server/utils/session-executable-path.ts` | 将 `~/.myagents/bin` / `~/.myagents/npm-global/bin` 等正式 Session 搜索路径同时提供给 SDK 子进程和 MCP probe |
 
 ## 文件布局
 
@@ -95,12 +95,12 @@ Groups:
   skill     管理 Skills（list/info/add/remove/enable/disable/sync）
   tool      用户注册 CLI 工具注册表（实验室开关开启后可用）
   vision    官方图片理解 CLI 工具（readme/analyze；由设置页工具箱开关和读图模型配置门控）
-  cron      管理定时 Task 的兼容命令面（list/add/start/stop/remove/update/run-now/runs/status）
+  cron      定时 Task 的已发布兼容命令面（不再是 Agent canonical surface）
   goal      管理当前 session Goal Mode（get/create/update）
-  task      管理任务中心任务（list/get/create-direct/create-from-alignment/run/rerun/...）
+  task      管理任务中心与定时自动化（create/run/start/stop/runs/exit/Trigger/...）
   thought   管理任务中心想法（list/create）
   im        IM runtime actions（send-media）
-  session   Session 间事件通信（send/watch）
+  session   Agent Session 发现与协作（list/start/send/watch）
   diagnose  Runtime / 系统自诊断（runtime <type>）— `runtime diagnose <type>` 的别名糖
   widget    Generative UI widget 说明（readme）
   plugin    管理 OpenClaw 社区插件（list/install/remove）
@@ -116,6 +116,8 @@ Global flags:
   --port NUM      覆盖端口
   --disable-nonessential  禁用非必要校验
 ```
+
+`mcp add` 是 create-only 操作：自定义 MCP ID 已存在时明确失败并保持原定义不变；需要替换时先检查并显式 `mcp remove`，避免省略的 `args/env/description` 被一次不完整 add 静默清空。
 
 ### 请求-响应模式
 
@@ -153,22 +155,38 @@ AI 在调用写操作前通常需要先「问清楚选项」。以下三条命�
 ```bash
 myagents runtime list                             # 看哪些 runtime 装了、未装的给出安装提示
 myagents runtime describe <runtime>               # 看某 runtime 的 model + permissionMode 枚举
-myagents agent show <agent-id>                    # 看某 Agent 的 effective 默认（按 runtime 正确解析）
-myagents agent list --active|--archived           # 按工作区归档状态筛选 Agent
+myagents agent list --active|--archived           # 找 stable Agent ID；human/JSON 标记当前调用方
+myagents agent show <agent-id>                    # 看 identity + effective Session birth 默认
+myagents session list --agent <agent-id>          # 看最近可复用的 persisted Session context
 ```
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
 
-`agent set` 不是裸 JSON 属性写入：provider/model/permissionMode 属于配置 intent，
+`agent set` 不是裸 JSON 属性写入：只接受帮助中列出的 canonical 字段
+`enabled/runtime/runtimeConfig/providerId/model/permissionMode`，未知字段在写盘前拒绝；
+历史帮助里的 `provider` / `permission` 从未产生有效配置，因此不保留为第二套 alias，
+而是明确提示 `providerId` / `permissionMode`。providerId/model/permissionMode 属于配置 intent，
 必须在 Admin API 边界校验并同步 Agent 权威记录、Project 兼容镜像和运行中的
-Agent/IM Channel。Managed Codex 的 runtime permission 词汇会在写入时规范化为
-产品 permission（`suggest→plan`、`auto-edit→auto`、`no-restrictions→fullAgency`），
-`agent show` 再投影为 effective Codex runtime/permission。`full-auto` 保留
-workspace-write sandbox，无法无损存入现有产品 enum，因此必须拒绝而不是升级成
+Agent/IM Channel。Managed Codex 的 Agent 配置只接受产品 permission
+（`auto | plan | fullAgency`）；`agent show` 再精确投影为 effective Codex
+runtime permission。Native 值属于 Session 执行快照，不能写入 Agent 的产品字段。
+`full-auto` 保留 workspace-write sandbox，不能当作 `fullAgency` 或升级为
 `no-restrictions`。任何单字段更新不得重置未涉及的 provider/model/permission 字段。
 Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-intent.lock`
 保护的磁盘最新快照上完成；Admin API 与 Renderer 的 Agent/Project 双写路径共享同一把
 跨进程 intent lock，两个文件各自的原子锁只负责单文件 read-modify-write。
+
+Agent identity 是所有 Project 的必备底层事实，不等同于主动 Agent 开关：
+`Project.agentId → AgentConfig.id` 是配置 selector，`Project.path` 是 Project-backed
+当前工作区，`enabled=false` 只关闭 Channel、heartbeat、memory auto-update 等主动能力，
+不影响显式 addressability 或普通工作区使用。Renderer
+birth/repair 与 Node discovery 都复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure
+policy，并在 `agent-config-intent.lock` 内按 Project-first 顺序提交：先落
+`Project.agentId`，再以同一 ID 幂等补建不含 `workspacePath` 的 Agent。有效 ID 不按
+旧 path 重新选择；缺失/失效 ID 才由 legacy adapter 按持久化数组顺序取第一个
+canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/config/start，
+但只有 exact Project claim 能做 Project lifecycle mutation。重复 Project path/Agent ID
+仍是硬冲突；多 Project claim 同一 Agent 只隔离相关目标，不拖垮健康 discovery。
 
 ### Goal Mode 命令（0.3.0）
 
@@ -199,12 +217,42 @@ Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-i
 
 `myagents cron` 保留既有用户命令名和 JSON shape，但不再创建 `CronTask`。所有 add/list/update/start/stop/remove/run-now 都由 Rust compatibility facade 直接读写 `TaskStore`，时间触发由 `TaskSchedulerController` 管理；`cron_tasks.json` 只作为启动迁移的只读历史格式。
 
+新 Agent 工作流以 `myagents task` 为 canonical surface；`task start/stop/runs/exit` 在 CLI 路由层复用对应 compatibility handler，不复制 Admin/Rust 业务逻辑。旧 `cron` 命令继续服务已发布脚本和人工习惯。
+
 标准 Cron list/get 也只投影 TaskStore。迁移失败的旧行不混入可操作列表，只通过桌面内部 `cmd_get_unmigrated_legacy_cron_tasks` 供只读 Legacy 面板诊断；deleted Task 保留 legacy id tombstone。
 
-- `start` 提交 Task `Running` 并 arm timer，不立即执行。
+- `start` 提交 Task `Running` 并 arm timer，不绕过 schedule/Detector；若保留的 interval anchor 已过期，scheduler 可能把下一次 tick clamp 到约 2 秒后，调用方必须读取权威 `nextExecutionAt`。
 - `run-now` 可执行 Stopped Task，不启用 scheduler，也不移动下一次 scheduled anchor。
+- `task start/stop/run/rerun` 的成功数据统一包含 `taskId`、`status`、epoch-ms `nextExecutionAt` 与 canonical `TaskProjection` 字段 `task`；run/rerun 额外包含 `attemptOrdinal`。Task application 失败统一在 Rust Management API 边界输出顶层 `code` + `error`，不得把 TaskStore 的 `{code,message}` 再编码进 `error` 字符串。
 - `Loop` 被拒绝；持续工作使用 current-session Goal。
 - `/api/admin/cron/*` 是兼容路由名，不代表独立 Cron domain/store。
+
+### Task Automation Skill 与条件激活（0.4.5）
+
+`myagents-task-automation` 是 Required system skill，也是所有“定时、未来唤醒、周期执行、等待条件后继续”的统一 Agent 入口。Skill 先建立 Task，再选择默认 `always` 或低成本 `command Detector`；Sensor 不再作为独立 Skill / 产品实体。Detector 详细协议放在 Skill 的按需 reference，普通 scheduled Task 不加载这部分上下文。
+
+```bash
+myagents task trigger validate --spec-file trigger.json
+myagents task trigger test --spec-file trigger.json --workspacePath /abs/workspace --expect quiet
+myagents task trigger test <taskId> --expect activate
+myagents task create-direct ... --trigger-file trigger.json \
+  --runMode single-session --preselectedSessionId current
+myagents task start <taskId>           # 恢复 stopped schedule
+myagents task stop <taskId>            # 暂停 schedule / 活跃执行
+myagents task runs <taskId>            # AI 执行历史
+myagents task exit --reason "..."     # eligible Task run 内主动结束
+myagents task check-now <taskId>       # 提交 Detector 状态，命中才唤醒 AI
+myagents task run-now <taskId>         # 绕过 Detector，强制执行 AI
+myagents task reset-checkpoint <taskId>
+```
+
+`task create-direct` 与 `task list` 在 Sidecar Admin 边界复用当前 workspace 解析：正常路径省略 workspace flags，Sidecar 以当前 path 匹配 `projects.json` 并补齐 Rust 所需的 stable `workspaceId + workspacePath`；只有显式跨 workspace 时由调用方提供。`agent current --json` 只返回当前 Agent/workspace/Session 的紧凑诊断，不是创建前置步骤。`task list` 的 Agent 投影默认只在当前 workspace 内返回紧凑字段与 `sessionCount`，完整 `sessionIds`、文档和 Trigger health 仍由 `task get` 拥有。
+
+CLI 从自身 `MYAGENTS_SESSION_ID` 判定 `agent/cli` 或 `user/cli`，把内部 caller metadata 传到既有 Rust transition 审计；Sidecar 不用自己的 `MYAGENTS_PORT` 猜调用者。UI 继续在 Tauri command 边界权威盖章为 `user/ui`。archive 仍由状态机执行 user-only guard，delete 记录真实 CLI actor/source。
+
+`--preselectedSessionId current` 在 CLI 边界解析 `MYAGENTS_SESSION_ID`，持久层只接收 canonical id；新建 single-session 不允许空绑定。trigger/spec/checkpoint 文件使用有界 regular-file no-follow 读取，拒绝 NUL、无效 UTF-8、超限或非 object JSON；`trigger test --expect` 也必须在任何 Detector 调用前校验为 `quiet | activate`。test 不提交 MyAgents 状态，但命令的外部副作用仍真实发生。human/JSON failure 都保留结构化 code、suggestion、可选 suggested command，以及 Detector 的有界 stderr/stdout 诊断。pending Activation Event 未结算时，Rust authority 拒绝 `run-now`，CLI 只透传该拒绝而不建立第二条执行路径。
+
+Agent-facing CLI 统一使用 `myagents task`。`task start/stop/runs/exit` 只是在 CLI 路由层复用既有 Cron compatibility handler，后端仍进入同一个 Rust Task authority；`myagents cron` 命令为外部用户和脚本继续兼容。Task 创建还可用 `--deadline`、`--maxExecutions`、`--aiCanExit` 写入既有 `TaskEndConditions`，不新增结束状态 owner。
 
 ### Runtime 自诊断（PRD 0.2.16）
 
@@ -259,6 +307,9 @@ app 启动 → ConfigProvider → invoke('cmd_sync_cli')
 - 修改 `src/cli/myagents.ts` 或 `src/cli/myagents.cmd`：bump `CLI_VERSION`；若 CLI surface 改变，还要同步 `bundled-skills/myagents-cli/SKILL.md` 并 bump `SYSTEM_SKILLS_VERSION`。
 - 修改 `SYSTEM_SKILLS` 清单内的 `bundled-skills/<name>/`：bump `SYSTEM_SKILLS_VERSION`。
 - 新增 system skill：加入 Rust `SYSTEM_SKILLS` 与 Node `src/server/index.ts::SYSTEM_SKILLS` 两个清单并 bump 版本。未进清单的 utility skill 首次 seed 后归用户，不使用强制更新语义。
+- 退役此前由产品强制托管的 system skill 时，必须在同一次版本同步事务中精确清理其旧目录；不能只从名单删除后把旧副本遗留成普通用户 Skill。该清理只接受明确列出的产品旧名，不做通用 orphan 扫描。
+
+Skill frontmatter 以 Agent Skills 标准为 canonical：作者写在 `metadata.author`，不能新增顶层 `author`。`src/shared/slashCommands.ts` 是 UI / Sidecar 共用的归一化 owner：读取时标准 `metadata.author` 优先，并兼容旧顶层 `author` / `Author`；list/detail/CLI 投影继续提供扁平 `author` 方便消费，保存时只写回 `metadata.author`，同时保留其它标准 string metadata。这样旧 Skill 无需一次性迁移也能展示，而任何后续编辑都会自然收敛到标准格式。
 
 `SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI、文档或其它模块再复制第三份。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
@@ -326,18 +377,18 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 |---------|------|
 | `/api/admin/mcp/*` | MCP 服务器 CRUD、启用/禁用、环境变量管理、连通性测试、OAuth 流程 |
 | `/api/admin/model/*` | Provider CRUD、API Key 设置、模型验证、默认供应商切换 |
-| `/api/admin/agent/*` | Agent 启用/禁用/归档/取消归档/属性设置/**show**、Channel CRUD、runtime 状态查询 |
+| `/api/admin/agent/*` | stable Agent identity `list/show`、启用/禁用/归档/取消归档/属性设置、Channel CRUD、runtime 状态查询 |
 | `/api/admin/runtime/*` | 跨 runtime 发现：`list` / `describe` |
 | `/api/admin/cron/*` | 定时任务 CRUD、启停、执行历史、状态查询 |
 | `/api/admin/goal/*` | 当前 session Goal Mode：`get` / `create` / `update` |
-| `/api/admin/task/*` | 任务中心：list/get/create-direct/create-from-alignment/run/rerun/update-status/append-session/archive/delete/read-doc/write-doc |
+| `/api/admin/task/*` | 任务中心：list/get/create/update/run/rerun/run-now、trigger validate/test/check-now/reset、status/session/archive/delete/doc |
 | `/api/admin/thought/*` | 任务中心想法：list/create |
 | `/api/admin/skill/*` | Skills CRUD、URL 安装、启停、sync |
 | `/api/admin/tool/*` | 用户注册 CLI 工具注册表（实验室门控，默认关闭） |
 | `/api/admin/vision/*` | 官方图片理解 CLI 工具：`readme` / `analyze` |
 | `/api/admin/plugin/*` | OpenClaw 插件安装/卸载/列表 |
 | `/api/admin/im/*` | IM runtime actions（send-media） |
-| `/api/admin/session/*` | Session 间事件通信：`send` 投递新工作/通知，`watch` 监听目标当前工作完成 |
+| `/api/admin/session/*` | Agent Session `list/start` discovery/fresh admission，以及 `send/watch` 既有上下文通信 |
 | `/api/admin/space/*` | Cloud Space：显式 slug、whoami/assignee/Goal discovery、Issue create/read/metadata update、comment/top attachment、claim/complete/download |
 | `/api/admin/widget/*` | Generative UI widget 资料 |
 | `/api/admin/config/*` | 通用配置读写 |
@@ -359,7 +410,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 - top help 不承诺全局 preview。所有 Space write-like command 携带 `--dry-run` 时，CLI 在端口发现、HTTP 与本地文件 IO 前返回 `DRY_RUN_UNSUPPORTED`；只读命令不会把无关 flag 描述成 preview。真正支持 dry-run 的配置类命令以各自精确 leaf help 为准。
 - repeatable `--attachment`/`--file` 只传路径；Rust 一次 bounded/no-follow 读取后同时拥有 multipart bytes 与 complete idempotency hash，Node 不读取附件内容。
 
-### Session send/watch 协议边界
+### Agent / Session discovery 与协作协议边界
 
 `/api/admin/session/*` 是 CLI 暴露的 session 间通信入口，但协议 owner 不在 CLI
 进程。CLI 只负责解析参数、把调用发给当前 Sidecar；Sidecar / Management API 负责
@@ -367,8 +418,29 @@ session 选择、结构化事件生成与投递确认。
 
 | 子命令 | 事件 | 关键不变量 |
 |--------|------|------------|
+| `myagents agent list/show` | 无 | exact Agent ID 是 selector；Project-backed 与历史 extra/orphan 均可发现；只有 Project 选中的 Agent 可为 `isCurrent`；目标 claim conflict 局部失败 |
+| `myagents session list --agent` | 无 | 只读 `sessions.json` 的 history-visible metadata，按 `lastActiveAt` 倒序；不唤醒、不探测 live、不读 transcript |
+| `myagents session start --agent` | `send.request` / 可选 `send.result` | Rust 生成 Session/request ID，目标 Sidecar 按 Agent 当前有效配置创建 owned snapshot；Runtime dispatch acceptance 是成功点，CLI receipt 不等待 terminal |
 | `myagents session send` | `send.request` / 可选 `send.result` | 目标 session 收到 `<myagents-session-event type="send.request">`；若需要回执，目标 turn terminal 后自动把 `send.result` 推回源 session |
 | `myagents session watch` | `watch.already_idle` / `watch.completed` / `watch.error` | Rust Management API 先确认目标 live state；目标忙时在目标 Sidecar 注册 pending watch，完成事件确认送达后才 ack 清理；目标已 idle 时调用方立即收到最近结果 |
+
+`start` 不是“先建空 Session，再 best-effort send”的两步写入。source 只解析目标
+AgentConfig 与已解析 workspace 并提交 prompt；Project-backed workspace 来自 `Project.path`，真 orphan 才使用 legacy fallback。Rust Management API `/api/inbox/start-session` 获取 target
+workspace lifecycle + transient Agent owner并确保目标 Sidecar。target 在任何 metadata 写入前
+重新解析 Agent/Project lifecycle，并核对当前 Sidecar 的 Session/workspace。随后目标按自己的
+当前 Agent 配置和实际 Runtime 写
+`materializationState=prepared` 的隐藏 metadata，再通过 `SessionEngine.enqueueInboxMessage()`
+把同一个 typed dispatch guard 交给 builtin/external adapter。guard 赢得
+Runtime dispatch acceptance 时提交可见 Session。明确
+rejection 按 source request ID 回滚；guard 之后的 runtime error 是已接纳 turn 的 terminal error。
+ACK 丢失返回 unconfirmed receipt 并保留 ID、不自动重试。Rust 复用既有
+`BackgroundCompletion` handoff 后释放 transient owner；不新增 fresh-start durable token、恢复
+状态机、配置 fingerprint 或跨文件事务。
+
+调用方只能提交 `agentId + prompt + replyBack`，且必须来自有真实 sessionId 的 MyAgents
+Session。目标 Agent 是 runtime/model/permission/provider/MCP/plugin/tool birth authority；
+Admin API 对调用方同名 override fail closed。默认 terminal 结果复用既有 `send.result` 回投，
+receipt 的 `messageId` 对应后续 `requestEventId`。
 
 事件 prompt 统一由 `src/server/inbox/session-event.ts` 渲染，标签形态为
 `<myagents-session-event ...>`，payload 内部会 neutralize 协议结构标签。新增
@@ -384,11 +456,11 @@ CLI → Admin API → atomicModifyConfig() → 写 config.json（磁盘优先）
                 → broadcast() SSE 事件（当前 Sidecar 兼容面）
 ```
 
-只有 `model set-key / set-default / verify / add / remove` 在完成各自磁盘提交后额外调用
-`notifyModelConfigChanged()`：保留当前 Sidecar 的 `config:changed`，再经 Management API
+`model set-key / set-default / verify / add / remove` 与 MCP mutation 在完成各自磁盘提交后额外调用
+app-wide config notifier：保留当前 Sidecar 的 `config:changed`，再经 Management API
 `/api/app/config-changed` 向所有 WebView 广播空 payload 的应用级失效信号；挂载 `ConfigProvider`
 的 renderer surface 收到后重读完整磁盘快照。浮球等轻量 WebView 不挂 `ConfigProvider`，不消费这条刷新链。
-普通 `config set`、MCP 等写操作不拥有这条 app-wide model refresh 路径；新增全窗口同步需求时必须先明确
+普通 `config set` 等写操作不拥有这条 app-wide refresh 路径；新增全窗口同步需求时必须先明确
 其磁盘 authority 与完整 snapshot owner，不能把局部 Sidecar broadcast 泛化成应用级协议。
 
 Agent 的破坏性生命周期 intent 还必须收敛 Rust live owner：`agent channel remove` 先从
@@ -399,7 +471,7 @@ Agent 的破坏性生命周期 intent 还必须收敛 Rust live owner：`agent c
 从而等待尚未登记进 `ManagedAgents` 的启动流程。Management API 失败时 CLI 必须明确报告“配置已提交但
 live runtime 未收敛”，不能把当前 Sidecar 的 `config:changed` 当作生命周期完成信号。
 
-这确保了 CLI model mutation 和 GUI 模型配置产生相同的应用级效果。`model add/remove` 的 provider 文件必须持有 `${providerPath}.lock` 并原子替换；Provider 文件是定义权威，`availableProvidersJson` 只是 Rust IM 的派生投影。新增先提交可幂等重试的定义文件再重建投影；删除先提交 config 清理再删除定义文件，使 config 失败时定义天然保持不变，不引入跨文件伪事务。投影的 availability、primary 与 wire shape 只由 `src/shared/availableProvidersProjection.ts` 生成，renderer/Node 仅分别负责目录读取和持久化，禁止复制投影策略。GUI 不读取该投影作为 Provider authority，而是以一次 `config.json` 读取派生 credential/verify，并结合同代 projects/provider 文件形成完整 snapshot；所有磁盘 refresh 经 ConfigProvider 的同一个 snapshot commit owner，本地磁盘提交也推进同一 revision，拒绝旧读覆盖新写。应用级事件 payload 永远为空，不能把 API key/MCP env 放进 Tauri event；Management API 返回失败时 model mutation 必须向 CLI 报告“已写盘但 app-wide refresh 失败”，不得返回局部 success。
+这确保了 CLI model / MCP mutation 和 GUI 配置产生相同的应用级效果。`model add/remove` 的 provider 文件必须持有 `${providerPath}.lock` 并原子替换；Provider 文件是定义权威，`availableProvidersJson` 只是 Rust IM 的派生投影。新增先提交可幂等重试的定义文件再重建投影；删除先提交 config 清理再删除定义文件，使 config 失败时定义天然保持不变，不引入跨文件伪事务。投影的 availability、primary 与 wire shape 只由 `src/shared/availableProvidersProjection.ts` 生成，renderer/Node 仅分别负责目录读取和持久化，禁止复制投影策略。GUI 不读取该投影作为 Provider authority，而是以一次 `config.json` 读取派生 credential/verify，并结合同代 projects/provider 文件形成完整 snapshot；所有磁盘 refresh 经 ConfigProvider 的同一个 snapshot commit owner，本地磁盘提交也推进同一 revision，拒绝旧读覆盖新写。应用级事件 payload 永远为空，不能把 API key/MCP env 放进 Tauri event；Management API 返回失败时 mutation 必须向 CLI 报告“已写盘但 app-wide refresh 失败”，不得返回局部 success。
 
 `myagents model list` 的 JSON 与 human 输出都必须展示每个 Provider 的 `primaryModel` 和 `models`；human renderer 不能把 Admin 已返回的详情静默丢弃。
 
@@ -436,10 +508,11 @@ MyAgents CLI 同时承载两类“工具”：
 
 ## Task 创建链路（关键机制）
 
-`task create-direct` / `task create-from-alignment` 是任务中心的重点命令，链路比其他命令长一层 —— 在转发给 Rust 前有一次 **pre-flight 验证**：
+`task create-direct` / `task create-from-alignment` 是任务中心的重点命令，链路比其他命令长一层 —— create-direct 先补齐当前 workspace 与 CLI caller provenance，再在转发给 Rust 前做一次 **pre-flight 验证**：
 
 ```
-CLI → /api/admin/task/create-direct → validateTaskOverrides(payload)
+CLI → /api/admin/task/create-direct → resolveTaskWorkspace(payload)
+                                      → validateTaskOverrides(payload)
                                             │
         ┌───────────────────────────────────┴────────────────────┐
         │                                                         │

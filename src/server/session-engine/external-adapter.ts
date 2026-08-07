@@ -1,14 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
-  freezeCurrentSessionMetadataForImDetach,
-  getAgentState,
-  getSessionId,
-  materializeCurrentSessionMetadataForPublishedReset,
-  materializePendingDesktopSession as materializeBuiltinPendingDesktopSession,
-  resetSession,
-} from '../agent-session';
-import {
   cancelExternalQueueItem,
   cancelExternalQueuedTurnsByOwner,
   cancelExternalImRequest,
@@ -21,6 +13,7 @@ import {
   getActiveRuntimeType,
   getCurrentBoundSessionId,
   getExternalLiveSessionSnapshot,
+  getExternalNativeSessionId,
   getExternalSessionCompletionTerminal,
   getExternalPendingInteractiveRequests,
   getExternalQueueStatus,
@@ -39,19 +32,19 @@ import {
   hasExternalRuntimeProcess,
   isExternalSessionActive,
   isExternalSessionBusy,
+  tryAcquireExternalSessionMutationLease,
   isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
-  popLastUserMessageForRetry,
-  prewarmExternalSession,
   respondExternalAskUserQuestion,
   respondExternalPermission,
   restoreExternalSessionState,
+  rewindExternalConversation,
+  forkExternalConversation,
   sendExternalMessage,
   setExternalModel,
   setExternalPermissionMode,
   setExternalReasoningEffort,
   stopExternalSession,
-  updateExternalRuntimeConfig,
   waitForExternalSessionIdle,
 } from '../runtimes/external-session';
 import type {
@@ -61,16 +54,22 @@ import type {
   ImMessageRequest,
   InjectedTurnRequest,
   InjectedTurnResult,
+  ScheduledTurnPreparationResult,
   SessionEngine,
   SessionEngineReplayMessage,
 } from './types';
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
-import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
+import {
+  findProjectAgentByWorkspacePath,
+  getEffectiveOfficialToolIdsForSession,
+  loadConfig as loadAdminConfig,
+} from '../utils/admin-config';
 import {
   ensureRegisteredAgentSessionOrigin,
   getPersistedSessionOrigin,
   getSessionData,
+  getSessionMetadata,
   updateSessionMetadata,
 } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
@@ -80,9 +79,11 @@ import {
   getProviderProxyScopeKey,
   setProcessProxyConfig,
 } from '../proxy-state';
-import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
-import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
-import type { SessionMessage } from '../types/session';
+import {
+  isPermissionModeForRuntimeIdentity,
+  type RuntimeBackedProviderIdentity,
+} from '../../shared/providerExecution';
+import type { SessionMessage, SessionMetadata } from '../types/session';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import {
   DESKTOP_CHANNEL_DELIVERY,
@@ -90,6 +91,27 @@ import {
   SESSION_BOUND_CHANNEL_DELIVERY,
   injectedTurnChannelDelivery,
 } from '../session-core/channel-delivery';
+import type { AgentConfig } from '../../shared/types/agent';
+import { createMaterializedSessionMetadata, isLiveFollowScenario } from '../utils/session-materialization';
+import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
+import { managedCodexNotReadyMessage } from '../utils/managed-codex-readiness';
+import {
+  commitPendingProductSession,
+  freezeCurrentProductSessionMetadata,
+  getCurrentProductSessionId,
+  getCurrentProductSessionContext,
+  preparePendingProductSession,
+  publishCurrentProductSessionMetadata,
+  resetProductSessionBinding,
+  rollbackPendingProductSession,
+} from './product-session-binding';
+import { resolveSessionConfig } from '../utils/resolve-session-config';
+import { resolveScheduledTurnPermissionMode } from '../../shared/types/runtime';
+import {
+  createScheduledDispatchGuard,
+  runtimeConfigModel,
+  runtimeConfigSource,
+} from './scheduled-turn-preparation';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -143,7 +165,7 @@ async function stopExternalTarget(): Promise<boolean> {
 }
 
 function getRuntimeSessionId(): string {
-  return getExternalSessionId() || getCurrentBoundSessionId() || getSessionId();
+  return getExternalSessionId() || getCurrentBoundSessionId() || getCurrentProductSessionId();
 }
 
 function sessionMessageToReplayMessage(message: SessionMessage): SessionEngineReplayMessage {
@@ -154,7 +176,7 @@ function sessionMessageToReplayMessage(message: SessionMessage): SessionEngineRe
 }
 
 function getRuntimeWorkspacePath(): string {
-  return getExternalSessionWorkspacePath() || getAgentState().agentDir || '';
+  return getExternalSessionWorkspacePath() || getCurrentProductSessionContext().workspacePath;
 }
 
 function getLatestExternalResult(): string {
@@ -169,17 +191,7 @@ function getLatestExternalResult(): string {
   return latestResult.trim() || NO_TEXT_RESPONSE;
 }
 
-function normalizeExternalRuntimeSource(
-  runtime: RuntimeType,
-  runtimeSource: RuntimeSource | undefined,
-): RuntimeSource | undefined {
-  if (runtime === 'builtin') return undefined;
-  return runtimeSource ?? 'system-cli';
-}
-
-type ExternalFreezeSnapshotPatch = NonNullable<
-  Parameters<typeof freezeCurrentSessionMetadataForImDetach>[0]
->;
+type ExternalFreezeSnapshotPatch = Partial<SessionMetadata> & Pick<SessionMetadata, 'configSnapshotAt'>;
 
 function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
   const runtime = getActiveRuntimeType();
@@ -189,6 +201,7 @@ function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
   const reasoningEffort = getExternalSessionReasoningEffort() ?? undefined;
   const patch: ExternalFreezeSnapshotPatch = {
     runtime,
+    configSnapshotAt: new Date().toISOString(),
   };
   if (runtime !== 'builtin' && runtimeSource) patch.runtimeSource = runtimeSource;
   if (model) patch.model = model;
@@ -204,6 +217,35 @@ function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
     };
   }
   return patch;
+}
+
+function createExternalProductSessionMetadata(
+  sessionId: string,
+  workspacePath: string,
+  scenario: 'desktop' | 'agent-channel',
+  origin?: import('../../shared/session-origin').SessionOrigin,
+): { metadata: SessionMetadata; snapshotKind: string } {
+  const agent = findProjectAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
+  const runtime = getActiveRuntimeType();
+  const runtimeSource = getActiveRuntimeSource();
+  const metadata = createMaterializedSessionMetadata({
+    agentDir: workspacePath,
+    sessionId,
+    scenario,
+    agent,
+    runtimeOverride: runtime,
+    runtimeSourceOverride: runtimeSource,
+    managedCodexProviderReady: isManagedCodexProviderReady(loadAdminConfig()),
+    fallbackRuntime: runtime,
+    title: 'New Chat',
+    origin,
+  });
+  return {
+    metadata,
+    snapshotKind: agent
+      ? (isLiveFollowScenario(scenario) ? 'live-follow' : 'owned')
+      : `runtime:${runtime}`,
+  };
 }
 
 export function createExternalSessionEngine(): SessionEngine {
@@ -246,9 +288,14 @@ export function createExternalSessionEngine(): SessionEngine {
       const sessionId = getCurrentBoundSessionId() || getRuntimeSessionId();
       const liveSnapshot = getExternalLiveSessionSnapshot(sessionId);
       const systemInitPayload = getExternalSystemInitPayload();
+      const productContext = getCurrentProductSessionContext();
       return {
         sessionId,
-        initState: { ...getAgentState(), sessionState: getExternalSessionState() },
+        initState: {
+          agentDir: productContext.workspacePath,
+          sessionState: getExternalSessionState(),
+          hasInitialPrompt: productContext.hasInitialPrompt,
+        },
         replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
           ? sessionMessageToReplayMessage(liveSnapshot.liveStreamingMessage)
@@ -332,6 +379,17 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
+      if (request.permissionMode !== undefined && !isPermissionModeForRuntimeIdentity(
+        request.permissionMode,
+        getActiveRuntimeType(),
+        getActiveRuntimeSource(),
+      )) {
+        return {
+          success: false,
+          status: 400,
+          error: `Invalid permissionMode '${request.permissionMode}' for ${getActiveRuntimeSource() ?? getActiveRuntimeType()}`,
+        };
+      }
       const sent = enqueueExternalSendForDesktop(
         request.text,
         request.images,
@@ -459,8 +517,17 @@ export function createExternalSessionEngine(): SessionEngine {
       return { success: true, queued: result.queued };
     },
 
-    enqueueInboxMessage(request) {
-      return sendExternalMessage(
+    async enqueueInboxMessage(request) {
+      let resolveDispatch!: (value: { accepted: boolean; error?: string }) => void;
+      let dispatchSettled = false;
+      const dispatchAcceptance = new Promise<{ accepted: boolean; error?: string }>((resolve) => {
+        resolveDispatch = value => {
+          if (dispatchSettled) return;
+          dispatchSettled = true;
+          resolve(value);
+        };
+      });
+      const result = await sendExternalMessage(
         request.text,
         undefined,
         undefined,
@@ -473,13 +540,124 @@ export function createExternalSessionEngine(): SessionEngine {
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,
           birthOrigin: request.birthOrigin,
+          queueId: request.queueId,
+          beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
+        undefined,
+        () => resolveDispatch({ accepted: true }),
       );
+      if (result.error || !result.queued) {
+        resolveDispatch({ accepted: false, error: result.error ?? 'external runtime rejected inbox message' });
+      }
+      return { ...result, dispatchAcceptance };
     },
 
-    async ensureGoalSessionConfig() {
-      return { success: true };
+    async prepareScheduledTurn(request): Promise<ScheduledTurnPreparationResult> {
+      await awaitExternalSessionStarting();
+      const metadata = getSessionMetadata(request.sessionId);
+      if (!metadata) {
+        return { success: false, code: 'session_bind_failed', status: 409 };
+      }
+      const currentSessionId = getCurrentBoundSessionId() || getExternalSessionId();
+      if (currentSessionId !== request.sessionId) {
+        if (hasExternalRuntimeProcess() && !await stopExternalSession()) {
+          return {
+            success: false,
+            code: 'session_bind_failed',
+            status: 503,
+            error: 'External runtime process did not stop',
+          };
+        }
+        resetProductSessionBinding({
+          sessionId: request.sessionId,
+          workspacePath: request.workspacePath,
+          hasInitialPrompt: true,
+          allowLazySessionMaterialization: false,
+        });
+      } else if (getCurrentProductSessionId() !== request.sessionId) {
+        // Runtime lifecycle and product identity are separate owners. Repair
+        // the product binding without restarting an already-correct native
+        // Session when only the former projection is stale.
+        resetProductSessionBinding({
+          sessionId: request.sessionId,
+          workspacePath: request.workspacePath,
+          hasInitialPrompt: true,
+          allowLazySessionMaterialization: false,
+        });
+      }
+      // Do not reload persisted transcript/config over a coherently bound live
+      // Session. A scheduled turn may queue behind an in-flight desktop turn;
+      // restoring here would replace that turn's unpersisted in-memory tail.
+      // The runtime owner already exposes the exact restored-state predicate,
+      // so only stale/new bindings need disk rehydration.
+      if (!isExternalSessionStateRestoredFor(request.sessionId)) {
+        const restored = await restoreExternalSessionState(request.sessionId, request.workspacePath, request.scenario);
+        if (!restored.success) {
+          return { success: false, code: 'session_bind_failed', status: 500, error: restored.error };
+        }
+      }
+
+      const runtime = getActiveRuntimeType();
+      if (request.operation.kind === 'goal') {
+        return {
+          success: true,
+          sessionId: request.sessionId,
+          permissionMode: resolveScheduledTurnPermissionMode(
+            'goal',
+            request.operation.permissionMode,
+            undefined,
+            runtime,
+          ),
+        };
+      }
+
+      const operation = request.operation;
+      const managedCodexReady = isManagedCodexProviderReady(loadAdminConfig());
+      const agent = findProjectAgentByWorkspacePath(request.workspacePath) as AgentConfig | undefined;
+      let runtimeConfig = operation.runtimeConfig;
+      if (metadata) {
+        const resolved = resolveSessionConfig(metadata, agent, undefined, 'owned', {
+          managedCodexProviderReady: managedCodexReady,
+        });
+        runtimeConfig = {
+          ...(operation.runtimeConfig ?? {}),
+          source: operation.runtimeConfig?.source ?? resolved.runtimeSource ?? runtimeConfig?.source,
+          model: operation.runtimeConfig?.model ?? resolved.model,
+          permissionMode: operation.runtimeConfig?.permissionMode
+            ?? operation.permissionMode
+            ?? resolved.permissionMode,
+        };
+      }
+      if (operation.permissionMode) {
+        runtimeConfig = { ...(runtimeConfig ?? {}), permissionMode: operation.permissionMode };
+      }
+      if (runtimeConfigSource(runtimeConfig) === 'managed-provider' && !managedCodexReady) {
+        return {
+          success: false,
+          code: 'configuration_failed',
+          status: 400,
+          error: managedCodexNotReadyMessage('cron task execution'),
+        };
+      }
+
+      return {
+        success: true,
+        sessionId: request.sessionId,
+        permissionMode: resolveScheduledTurnPermissionMode(
+          'cron',
+          operation.permissionMode,
+          runtimeConfig?.permissionMode,
+          runtime,
+        ),
+        model: runtimeConfigModel(runtimeConfig, runtime),
+        runtimeConfig: runtimeConfig ?? null,
+        beforeDispatch: createScheduledDispatchGuard({
+          preceding: operation.beforeDispatch,
+          workspacePath: request.workspacePath,
+          requiredSystemSkill: operation.requiredSystemSkill,
+        }),
+      };
     },
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
@@ -689,57 +867,63 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async materializePendingDesktopSession(request) {
-      const runtimeSessionIdBefore = getExternalSessionId() || undefined;
-      if (request.phase === 'commit' || request.phase === undefined) {
-        await awaitExternalSessionStarting();
-        if (hasExternalRuntimeProcess()) {
-          await stopExternalSession();
-        }
+      const phase = request.phase ?? 'commit';
+      if (phase === 'rollback') {
+        return rollbackPendingProductSession(request.preparedSessionId);
       }
-      const result = await materializeBuiltinPendingDesktopSession({
-        phase: request.phase,
+      if (phase === 'prepare') {
+        return preparePendingProductSession(
+          { snapshotPatch: request.snapshotPatch, origin: request.origin },
+          {
+            hasActiveWork: isExternalSessionBusy() || getExternalQueueStatus().length > 0,
+            createPreparedMetadata() {
+              const targetSessionId = randomUUID();
+              const created = createExternalProductSessionMetadata(
+                targetSessionId,
+                request.workspacePath,
+                'desktop',
+                request.origin,
+              );
+              return {
+                targetSessionId,
+                reusingNativeSession: false,
+                snapshotKind: created.snapshotKind,
+                metadata: created.metadata,
+              };
+            },
+          },
+        );
+      }
+      if (phase !== 'commit') {
+        return { success: false, error: `Unsupported materialize phase: ${phase}`, status: 400 };
+      }
+
+      await awaitExternalSessionStarting();
+      const nativeSessionId = getExternalNativeSessionId() || undefined;
+      return commitPendingProductSession({
         preparedSessionId: request.preparedSessionId,
-        snapshotPatch: request.snapshotPatch,
-        origin: request.origin,
-      });
-      if ((request.phase === 'commit' || request.phase === undefined) && result.success && result.sessionId) {
-        if (runtimeSessionIdBefore && runtimeSessionIdBefore !== result.sessionId) {
-          const updated = await updateSessionMetadata(result.sessionId, { runtimeSessionId: runtimeSessionIdBefore });
-          if (!updated) {
-            console.warn(`[session-engine] external materialize: failed to preserve runtimeSessionId for ${result.sessionId}`);
+        async beforeBind() {
+          if (hasExternalRuntimeProcess()) await stopExternalSession();
+        },
+        async afterBind(_prepared, metadata) {
+          if (nativeSessionId && metadata.runtimeSessionId !== nativeSessionId) {
+            const updated = await updateSessionMetadata(metadata.id, { runtimeSessionId: nativeSessionId });
+            if (!updated) {
+              console.warn(`[session-engine] external materialize: failed to preserve runtimeSessionId for ${metadata.id}`);
+            }
           }
-        }
-        restoreExternalSessionState(result.sessionId, request.workspacePath, { type: 'desktop' });
-      }
-      return result;
+          const restored = await restoreExternalSessionState(metadata.id, request.workspacePath, { type: 'desktop' });
+          if (!restored.success) throw new Error(restored.error ?? 'External Session restore failed');
+        },
+      });
     },
 
     freezeCurrentSessionForImDetach(options) {
-      return freezeCurrentSessionMetadataForImDetach(
-        buildExternalFreezeSnapshotPatch(),
-        {
-          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
-        },
-      );
-    },
-
-    updateRuntimeConfig(patch, options) {
-      return updateExternalRuntimeConfig(patch, { source: options?.source ?? 'runtime-config' });
-    },
-
-    async prewarm(options) {
-      return prewarmExternalSession({
-        sessionId: options.sessionId,
-        workspacePath: options.workspacePath,
-        scenario: { type: 'desktop' },
-        model: options.model,
-        permissionMode: options.permissionMode,
+      return freezeCurrentProductSessionMetadata({
+        workspacePath: getRuntimeWorkspacePath(),
+        snapshotPatch: buildExternalFreezeSnapshotPatch(),
+        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
       });
-    },
-
-    restoreInitialSession(sessionId, workspacePath) {
-      restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
-      return true;
     },
 
     async respondPermission(requestId, decision, reason) {
@@ -750,24 +934,12 @@ export function createExternalSessionEngine(): SessionEngine {
       return respondExternalAskUserQuestion(requestId, answers);
     },
 
-    async rewindToUserMessage() {
-      return {
-        success: false,
-        status: 400,
-        error: 'Rewind is not supported for external runtimes (CC/Codex)',
-      };
+    rewindToUserMessage(userMessageId) {
+      return rewindExternalConversation(userMessageId);
     },
 
-    retryLastExternalUserMessage(userMessageId) {
-      return popLastUserMessageForRetry(userMessageId);
-    },
-
-    async forkAtAssistantMessage() {
-      return {
-        success: false,
-        status: 400,
-        error: 'Fork is not supported for external runtimes (CC/Codex)',
-      };
+    forkAtAssistantMessage(messageId) {
+      return forkExternalConversation(messageId);
     },
 
     async updateProviderEnv() {
@@ -794,81 +966,54 @@ export function createExternalSessionEngine(): SessionEngine {
       return { success: true, skipped: 'external-runtime' };
     },
 
-    async switchToExistingSession(sessionId, workspacePath, getSessionMetadata) {
-      if (getCurrentBoundSessionId() === sessionId && isExternalSessionStateRestoredFor(sessionId)) {
-        return { success: true, sessionId };
-      }
-
-      await awaitExternalSessionStarting();
-      if (getCurrentBoundSessionId() === sessionId && isExternalSessionStateRestoredFor(sessionId)) {
-        return { success: true, sessionId };
-      }
-
-      const meta = getSessionMetadata(sessionId);
-      if (!meta) {
-        return { success: false, error: 'Session not found.', status: 404 };
-      }
-      const activeRuntime = getActiveRuntimeType();
-      if (meta.runtime && meta.runtime !== activeRuntime) {
-        return {
-          success: false,
-          error: `Session runtime mismatch: persisted=${meta.runtime}, current=${activeRuntime}`,
-          status: 409,
-        };
-      }
-      if (meta.runtime) {
-        const activeRuntimeSource = normalizeExternalRuntimeSource(activeRuntime, getActiveRuntimeSource());
-        const persistedRuntimeSource = normalizeExternalRuntimeSource(meta.runtime, meta.runtimeSource);
-        if (persistedRuntimeSource !== activeRuntimeSource) {
-          return {
-            success: false,
-            error: `Session runtime source mismatch: persisted=${persistedRuntimeSource ?? 'none'}, current=${activeRuntimeSource ?? 'none'}`,
-            status: 409,
-          };
-        }
-      }
-
-      if (hasExternalRuntimeProcess()) {
-        await stopExternalSession();
-      }
-      restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
-      return { success: true, sessionId };
-    },
-
     async resetForNewDesktopSession(workspacePath) {
       await awaitExternalSessionStarting();
-      if (hasExternalRuntimeProcess()) {
-        await stopExternalSession();
+      const lease = tryAcquireExternalSessionMutationLease();
+      if (!lease) {
+        return { success: false, error: 'Wait for the current Session operation to finish' };
       }
-      await resetSession();
-      const newSessionId = getSessionId();
-      if (newSessionId) {
-        restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
+      try {
+        if (hasExternalRuntimeProcess()) {
+          await stopExternalSession();
+        }
+        const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+        broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
+        const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
+        if (!restored.success) return { success: false, error: restored.error };
+        return { success: true, sessionId: newSessionId };
+      } finally {
+        lease.release();
       }
-      return { success: true, sessionId: newSessionId };
     },
 
     async resetForNewImSession(workspacePath, options) {
       await awaitExternalSessionStarting();
-      const freeze = await freezeCurrentSessionMetadataForImDetach(
-        buildExternalFreezeSnapshotPatch(),
-        {
+      const lease = tryAcquireExternalSessionMutationLease();
+      if (!lease) {
+        return { success: false, error: 'Wait for the current Session operation to finish' };
+      }
+      try {
+        const freeze = await freezeCurrentProductSessionMetadata({
+          workspacePath,
+          snapshotPatch: buildExternalFreezeSnapshotPatch(),
           allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
-        },
-      );
-      if (!freeze.success) {
-        return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
+        });
+        if (!freeze.success) {
+          return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
+        }
+        if (hasExternalRuntimeProcess()) {
+          await stopExternalSession();
+        }
+        const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+        await publishCurrentProductSessionMetadata(sessionId =>
+          createExternalProductSessionMetadata(sessionId, workspacePath, 'agent-channel'));
+        broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
+        const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
+        if (!restored.success) return { success: false, error: restored.error };
+        return { success: true, sessionId: newSessionId };
+      } finally {
+        lease.release();
       }
-      if (hasExternalRuntimeProcess()) {
-        await stopExternalSession();
-      }
-      await resetSession();
-      await materializeCurrentSessionMetadataForPublishedReset();
-      const newSessionId = getSessionId();
-      if (newSessionId) {
-        restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
-      }
-      return { success: true, sessionId: newSessionId };
     },
   };
 }

@@ -11,13 +11,21 @@ const cronTaskMocks = vi.hoisted(() => ({
     getBackgroundSessions: vi.fn(),
 }));
 
-const taskCenterMocks = vi.hoisted(() => ({
-    taskCenterAvailable: vi.fn(),
-    taskList: vi.fn(),
-}));
-
 const configMocks = vi.hoisted(() => ({
     loadAppConfig: vi.fn(),
+}));
+
+const browserMocks = vi.hoisted(() => ({
+    isTauri: false,
+}));
+
+const tauriListenMocks = vi.hoisted(() => ({
+    handlers: new Map<string, Set<(event: { payload: unknown }) => void>>(),
+    listenWithCleanup: vi.fn(),
+}));
+
+const tauriCoreMocks = vi.hoisted(() => ({
+    invoke: vi.fn(),
 }));
 
 vi.mock('@/api/sessionClient', () => ({
@@ -31,13 +39,20 @@ vi.mock('@/api/cronTaskClient', () => ({
     getBackgroundSessions: cronTaskMocks.getBackgroundSessions,
 }));
 
-vi.mock('@/api/taskCenter', () => ({
-    taskCenterAvailable: taskCenterMocks.taskCenterAvailable,
-    taskList: taskCenterMocks.taskList,
-}));
-
 vi.mock('@/config/configService', () => ({
     loadAppConfig: configMocks.loadAppConfig,
+}));
+
+vi.mock('@/utils/browserMock', () => ({
+    isTauriEnvironment: () => browserMocks.isTauri,
+}));
+
+vi.mock('@/utils/tauriListen', () => ({
+    listenWithCleanup: tauriListenMocks.listenWithCleanup,
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+    invoke: tauriCoreMocks.invoke,
 }));
 
 import {
@@ -87,12 +102,34 @@ function deferred<T>() {
 beforeEach(() => {
     __resetTaskCenterStoreForTest();
     vi.clearAllMocks();
+    browserMocks.isTauri = false;
+    tauriListenMocks.handlers.clear();
+    tauriCoreMocks.invoke.mockImplementation(async (command: string) => {
+        if (command === 'cmd_get_user_scheduler_lifecycle_snapshot') {
+            return { runningTaskCount: 0, deleteProtectedSessionIds: [] };
+        }
+        if (command === 'cmd_all_agents_status') return {};
+        throw new Error(`Unexpected Tauri command in taskCenterStore test: ${command}`);
+    });
+    tauriListenMocks.listenWithCleanup.mockImplementation(async (
+        event: string,
+        handler: (event: { payload: unknown }) => void,
+        signal: AbortSignal,
+    ) => {
+        const handlers = tauriListenMocks.handlers.get(event) ?? new Set();
+        handlers.add(handler);
+        tauriListenMocks.handlers.set(event, handlers);
+        const unlisten = () => handlers.delete(handler);
+        signal.addEventListener('abort', unlisten, { once: true });
+        return {
+            unlisten,
+            isRegistered: () => handlers.has(handler),
+        };
+    });
     sessionClientMocks.deleteSession.mockResolvedValue({ deleted: true });
     sessionClientMocks.getSessions.mockResolvedValue([]);
     cronTaskMocks.getAllCronTasks.mockResolvedValue([]);
     cronTaskMocks.getBackgroundSessions.mockResolvedValue([]);
-    taskCenterMocks.taskCenterAvailable.mockReturnValue(false);
-    taskCenterMocks.taskList.mockResolvedValue([]);
     configMocks.loadAppConfig.mockResolvedValue({ agents: [] });
 });
 
@@ -223,7 +260,6 @@ describe('store snapshot', () => {
         const unsubscribe = subscribePassive(listener);
         try {
             expect(sessionClientMocks.getSessions).not.toHaveBeenCalled();
-            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
 
             ensureWorkspaceSessions(['/work/mino']);
             await vi.waitFor(() => {
@@ -232,9 +268,184 @@ describe('store snapshot', () => {
 
             expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(1);
             expect(sessionClientMocks.getSessions).toHaveBeenCalledWith('/work/mino');
-            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
         } finally {
             unsubscribe();
+        }
+    });
+
+    it('refreshes a loaded passive workspace when authoritative Session metadata changes', async () => {
+        const agentDir = '/work/mino';
+        let currentSessions = [
+            { ...favoriteSession(false), agentDir, id: 'existing-session' },
+        ];
+        sessionClientMocks.getSessions.mockImplementation(async (requestedAgentDir?: string) => (
+            requestedAgentDir === agentDir ? currentSessions : []
+        ));
+
+        setSidebarWorkspaceSessionDemand([agentDir]);
+        await vi.waitFor(() => {
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['existing-session']);
+        });
+
+        browserMocks.isTauri = true;
+        const unsubscribe = subscribePassive(() => undefined);
+        try {
+            await vi.waitFor(() => {
+                expect(tauriListenMocks.handlers.get('session:metadata-changed')?.size).toBe(1);
+                expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(2);
+            });
+
+            currentSessions = [
+                { ...favoriteSession(false), agentDir, id: 'feishu-session', title: 'Feishu turn' },
+                { ...favoriteSession(false), agentDir, id: 'existing-session' },
+            ];
+            for (const handler of tauriListenMocks.handlers.get('session:metadata-changed') ?? []) {
+                handler({ payload: { agentDirs: [agentDir] } });
+            }
+
+            await vi.waitFor(() => {
+                expect(getSnapshot().sessions.map((session) => session.id)).toEqual([
+                    'feishu-session',
+                    'existing-session',
+                ]);
+            });
+            expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(3);
+            expect(sessionClientMocks.getSessions).toHaveBeenLastCalledWith(agentDir);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('reconciles changes that land while the metadata listener is still registering', async () => {
+        const agentDir = '/work/mino';
+        let currentSessions = [
+            { ...favoriteSession(false), agentDir, id: 'existing-session' },
+        ];
+        sessionClientMocks.getSessions.mockImplementation(async (requestedAgentDir?: string) => (
+            requestedAgentDir === agentDir ? currentSessions : []
+        ));
+
+        setSidebarWorkspaceSessionDemand([agentDir]);
+        await vi.waitFor(() => {
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['existing-session']);
+        });
+
+        const registration = deferred<{
+            unlisten: () => void;
+            isRegistered: () => boolean;
+        }>();
+        tauriListenMocks.listenWithCleanup.mockReturnValueOnce(registration.promise);
+        browserMocks.isTauri = true;
+        const unsubscribe = subscribePassive(() => undefined);
+        try {
+            currentSessions = [
+                { ...favoriteSession(false), agentDir, id: 'feishu-session', title: 'Feishu turn' },
+                { ...favoriteSession(false), agentDir, id: 'existing-session' },
+            ];
+
+            registration.resolve({
+                unlisten: () => undefined,
+                isRegistered: () => true,
+            });
+
+            await vi.waitFor(() => {
+                expect(getSnapshot().sessions.map((session) => session.id)).toEqual([
+                    'feishu-session',
+                    'existing-session',
+                ]);
+            });
+            expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(2);
+            expect(sessionClientMocks.getSessions).toHaveBeenLastCalledWith(agentDir);
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it('reconciles a loaded workspace after a zero-subscriber event gap', async () => {
+        const agentDir = '/work/mino';
+        let currentSessions = [
+            { ...favoriteSession(false), agentDir, id: 'existing-session' },
+        ];
+        sessionClientMocks.getSessions.mockImplementation(async (requestedAgentDir?: string) => (
+            requestedAgentDir === agentDir ? currentSessions : []
+        ));
+
+        setSidebarWorkspaceSessionDemand([agentDir]);
+        await vi.waitFor(() => {
+            expect(getSnapshot().sessions.map((session) => session.id)).toEqual(['existing-session']);
+        });
+
+        browserMocks.isTauri = true;
+        const firstUnsubscribe = subscribePassive(() => undefined);
+        await vi.waitFor(() => {
+            expect(tauriListenMocks.handlers.get('session:metadata-changed')?.size).toBe(1);
+        });
+        firstUnsubscribe();
+        expect(tauriListenMocks.handlers.get('session:metadata-changed')?.size).toBe(0);
+
+        currentSessions = [
+            { ...favoriteSession(false), agentDir, id: 'feishu-session', title: 'Feishu turn' },
+            { ...favoriteSession(false), agentDir, id: 'existing-session' },
+        ];
+        const secondUnsubscribe = subscribePassive(() => undefined);
+        try {
+            await vi.waitFor(() => {
+                expect(getSnapshot().sessions.map((session) => session.id)).toEqual([
+                    'feishu-session',
+                    'existing-session',
+                ]);
+            });
+        } finally {
+            secondUnsubscribe();
+        }
+    });
+
+    it('retries a failed metadata-listener registration while subscribers remain', async () => {
+        vi.useFakeTimers();
+        browserMocks.isTauri = true;
+        tauriListenMocks.listenWithCleanup
+            .mockResolvedValueOnce({
+                unlisten: () => undefined,
+                isRegistered: () => false,
+            })
+            .mockResolvedValueOnce({
+                unlisten: () => undefined,
+                isRegistered: () => true,
+            });
+
+        const unsubscribe = subscribePassive(() => undefined);
+        try {
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(tauriListenMocks.listenWithCleanup).toHaveBeenCalledTimes(1);
+
+            await vi.advanceTimersByTimeAsync(2_000);
+            expect(tauriListenMocks.listenWithCleanup).toHaveBeenCalledTimes(2);
+        } finally {
+            unsubscribe();
+            vi.useRealTimers();
+        }
+    });
+
+    it('cancels metadata-listener retry after the final subscriber leaves', async () => {
+        vi.useFakeTimers();
+        browserMocks.isTauri = true;
+        tauriListenMocks.listenWithCleanup.mockResolvedValue({
+            unlisten: () => undefined,
+            isRegistered: () => false,
+        });
+
+        const unsubscribe = subscribePassive(() => undefined);
+        try {
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(tauriListenMocks.listenWithCleanup).toHaveBeenCalledTimes(1);
+
+            unsubscribe();
+            await vi.advanceTimersByTimeAsync(2_000);
+            expect(tauriListenMocks.listenWithCleanup).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
         }
     });
 
@@ -474,6 +685,7 @@ describe('store snapshot', () => {
             unsubscribe();
         }
     });
+
 });
 
 describe('actions.deleteSession', () => {

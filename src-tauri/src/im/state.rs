@@ -281,9 +281,14 @@ pub(super) fn runtime_permission_choices(runtime: &str) -> Vec<RuntimePermission
         ],
         "claude-code" => vec![
             RuntimePermissionChoice {
-                value: "default".to_string(),
-                label: "Default".to_string(),
+                value: "manual".to_string(),
+                label: "Manual".to_string(),
                 description: "每次工具调用都需要确认".to_string(),
+            },
+            RuntimePermissionChoice {
+                value: "auto".to_string(),
+                label: "Auto".to_string(),
+                description: "由 Claude Code 自动判断工具权限".to_string(),
             },
             RuntimePermissionChoice {
                 value: "plan".to_string(),
@@ -299,6 +304,11 @@ pub(super) fn runtime_permission_choices(runtime: &str) -> Vec<RuntimePermission
                 value: "bypassPermissions".to_string(),
                 label: "Bypass Permissions".to_string(),
                 description: "跳过所有权限确认".to_string(),
+            },
+            RuntimePermissionChoice {
+                value: "dontAsk".to_string(),
+                label: "Don't Ask".to_string(),
+                description: "不弹出权限确认，未授权操作直接拒绝".to_string(),
             },
         ],
         "gemini" => vec![
@@ -383,11 +393,9 @@ pub(super) async fn query_runtime_models_from_sidecar(
     client: &Client,
     port: u16,
     runtime: &str,
+    runtime_source: Option<&str>,
 ) -> Result<Vec<RuntimeModelChoice>, String> {
-    let url = format!(
-        "http://127.0.0.1:{}/api/runtime/models?type={}",
-        port, runtime,
-    );
+    let url = runtime_models_url(port, runtime, runtime_source);
     let resp = client
         .get(&url)
         .send()
@@ -426,6 +434,18 @@ pub(super) async fn query_runtime_models_from_sidecar(
         })
         .unwrap_or_default();
     Ok(models)
+}
+
+fn runtime_models_url(port: u16, runtime: &str, runtime_source: Option<&str>) -> String {
+    let mut url = format!(
+        "http://127.0.0.1:{}/api/runtime/models?type={}",
+        port, runtime,
+    );
+    if runtime == "codex" {
+        url.push_str("&source=");
+        url.push_str(runtime_source.unwrap_or("system-cli"));
+    }
+    url
 }
 
 pub(super) async fn sync_runtime_config_to_sidecars(
@@ -1168,34 +1188,56 @@ pub fn create_agent_state() -> ManagedAgents {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-/// Signal all running agents to shut down (sync, for use in app exit handlers).
+#[cfg(test)]
+mod tests {
+    use super::runtime_models_url;
+
+    #[test]
+    fn runtime_model_url_preserves_codex_catalog_owner() {
+        assert_eq!(
+            runtime_models_url(9527, "codex", Some("managed-provider")),
+            "http://127.0.0.1:9527/api/runtime/models?type=codex&source=managed-provider",
+        );
+        assert_eq!(
+            runtime_models_url(9527, "codex", None),
+            "http://127.0.0.1:9527/api/runtime/models?type=codex&source=system-cli",
+        );
+        assert_eq!(
+            runtime_models_url(9527, "gemini", Some("managed-provider")),
+            "http://127.0.0.1:9527/api/runtime/models?type=gemini",
+        );
+    }
+}
+
+/// Signal all running agents and release their process owners (sync, app exit only).
 pub fn signal_all_agents_shutdown(agent_state: &ManagedAgents) {
-    if let Ok(agents) = agent_state.try_lock() {
-        for (agent_id, instance) in agents.iter() {
-            ulog_info!("[agent] Signaling shutdown for agent {}", agent_id);
-            for (channel_id, ch) in &instance.channels {
-                ulog_info!(
-                    "[agent] Shutting down channel {} of agent {}",
-                    channel_id,
-                    agent_id
-                );
-                let _ = ch.bot_instance.shutdown_tx.send(true);
-                ch.bot_instance.poll_handle.abort();
-                ch.bot_instance.process_handle.abort();
-                ch.bot_instance.approval_handle.abort();
-                ch.bot_instance.question_handle.abort();
-                ch.bot_instance.health_handle.abort();
-                if let Some(ref h) = ch.bot_instance.heartbeat_handle {
-                    h.abort();
-                }
-            }
-            if let Some(ref h) = instance.heartbeat_handle {
+    let mut agents = agent_state.blocking_lock();
+    for (agent_id, instance) in agents.iter() {
+        ulog_info!("[agent] Signaling shutdown for agent {}", agent_id);
+        for (channel_id, ch) in &instance.channels {
+            ulog_info!(
+                "[agent] Shutting down channel {} of agent {}",
+                channel_id,
+                agent_id
+            );
+            let _ = ch.bot_instance.shutdown_tx.send(true);
+            ch.bot_instance.poll_handle.abort();
+            ch.bot_instance.process_handle.abort();
+            ch.bot_instance.approval_handle.abort();
+            ch.bot_instance.question_handle.abort();
+            ch.bot_instance.health_handle.abort();
+            if let Some(ref h) = ch.bot_instance.heartbeat_handle {
                 h.abort();
             }
         }
-    } else {
-        ulog_warn!("[agent] Could not acquire lock for shutdown signal, agents may linger");
+        if let Some(ref h) = instance.heartbeat_handle {
+            h.abort();
+        }
     }
+    // ExitRequested is terminal for this app instance. Dropping the map also
+    // drops every retained Plugin Bridge ChildTree, initiating exact tree
+    // termination before the process-exit settlement barrier.
+    agents.clear();
 }
 
 /// Create the managed IM Bot state (called during app setup)
@@ -1203,23 +1245,20 @@ pub fn create_im_bot_state() -> ManagedImBots {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-/// Signal all running IM bots to shut down (sync, for use in app exit handlers).
-/// Best-effort: uses try_lock to avoid blocking if mutex is held.
+/// Signal all running IM bots and release their process owners (app exit only).
 pub fn signal_all_bots_shutdown(im_state: &ManagedImBots) {
-    if let Ok(bots) = im_state.try_lock() {
-        for (bot_id, instance) in bots.iter() {
-            ulog_info!("[im] Signaling shutdown for bot {}", bot_id);
-            let _ = instance.shutdown_tx.send(true);
-            instance.poll_handle.abort();
-            instance.process_handle.abort();
-            instance.approval_handle.abort();
-            instance.question_handle.abort();
-            instance.health_handle.abort();
-            if let Some(ref h) = instance.heartbeat_handle {
-                h.abort();
-            }
+    let mut bots = im_state.blocking_lock();
+    for (bot_id, instance) in bots.iter() {
+        ulog_info!("[im] Signaling shutdown for bot {}", bot_id);
+        let _ = instance.shutdown_tx.send(true);
+        instance.poll_handle.abort();
+        instance.process_handle.abort();
+        instance.approval_handle.abort();
+        instance.question_handle.abort();
+        instance.health_handle.abort();
+        if let Some(ref h) = instance.heartbeat_handle {
+            h.abort();
         }
-    } else {
-        ulog_warn!("[im] Could not acquire lock for shutdown signal, IM bots may linger");
     }
+    bots.clear();
 }

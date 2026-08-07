@@ -33,11 +33,10 @@ import UnreadNotificationIndicator from './UnreadNotificationIndicator';
 interface SessionHistoryDropdownProps {
     agentDir: string;
     currentSessionId: string | null;
-    onSelectSession: (sessionId: string) => void;
+    onSelectSession: (sessionId: string, title: string) => void;
     /**
-     * Open the session in a NEW tab (vs. onSelectSession which switches the
-     * current tab). When omitted (e.g. the Settings helper inbox, which has no
-     * tab context), the per-row "在新 tab 打开" action is hidden.
+     * Explicit per-row new-tab action. The Chat surface routes both selection
+     * actions through the same App navigation owner.
      */
     onOpenInNewTab?: (sessionId: string, title: string) => void;
     isOpen: boolean;
@@ -501,7 +500,7 @@ export default function SessionHistoryDropdown({
                                         }`}
                                     onClick={() => {
                                         if (!isCurrent) {
-                                            onSelectSession(session.id);
+                                            onSelectSession(session.id, getSessionDisplayText(session));
                                             onClose();
                                         }
                                     }}

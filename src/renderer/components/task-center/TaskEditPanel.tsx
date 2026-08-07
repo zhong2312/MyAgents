@@ -24,7 +24,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bell, Bot, Clock, FileText, Flag, FolderOpen, Settings2 } from 'lucide-react';
+import { Activity, Bell, Bot, Clock, FileText, Flag, FolderOpen, Settings2 } from 'lucide-react';
 
 import {
   taskOpenDocsDir,
@@ -37,12 +37,16 @@ import NotificationConfigEditor from '@/components/task-center/NotificationConfi
 import TaskDocBlock from '@/components/task-center/TaskDocBlock';
 import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
+import { useTaskCenterData } from '@/hooks/useTaskCenterData';
+import CustomSelect from '@/components/CustomSelect';
+import { workspacePathsEqual } from '@/../shared/workspacePath';
 import type {
   EndConditions,
   NotificationConfig,
   Task,
   TaskExecutionMode,
   TaskRunMode,
+  TaskTrigger,
   TaskUpdateInput,
 } from '@/../shared/types/task';
 import {
@@ -52,6 +56,7 @@ import {
 import { ExecutionModeEditor } from './editors/ExecutionModeEditor';
 import { INPUT_CLS, toLocalDateTimeString } from './editors/controls';
 import { TaskAdvancedConfigEditor } from './editors/TaskAdvancedConfigEditor';
+import { TriggerEditor } from './editors/TriggerEditor';
 import { projectTaskExecutionOverrides } from './taskProviderProjection';
 import {
   FormSection,
@@ -87,6 +92,8 @@ interface Draft {
   verifyMd: string;
   executionMode: TaskExecutionMode;
   runMode: TaskRunMode;
+  preselectedSessionId: string;
+  trigger: TaskTrigger;
   atDateTime: string;
   intervalMinutes: number;
   cronExpression: string;
@@ -126,6 +133,8 @@ function taskToDraft(task: Task, taskMd: string, verifyMd: string): Draft {
     verifyMd,
     executionMode: task.executionMode,
     runMode: task.runMode ?? 'new-session',
+    preselectedSessionId: task.preselectedSessionId ?? '',
+    trigger: task.trigger ?? { source: { type: 'time' }, detector: { type: 'always' } },
     atDateTime,
     intervalMinutes: task.intervalMinutes ?? 30,
     cronExpression: task.cronExpression ?? '',
@@ -159,12 +168,14 @@ export function TaskEditPanel({
   onError,
 }: TaskEditPanelProps) {
   const { t } = useTranslation('task');
+  const { sessions } = useTaskCenterData({ isActive: true });
   const [draft, setDraft] = useState<Draft>(() => taskToDraft(task, '', ''));
   // Snapshot of the draft at the moment task.md / verify.md finished
   // loading. We diff against this for the dirty check so reads
   // populating the textareas don't count as dirty.
   const initialDraftRef = useRef<Draft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [triggerValid, setTriggerValid] = useState(true);
   // Tri-state: null (loading) | true (loaded) | false (failed) — separate
   // from just "loaded" so a read failure doesn't silently let the user
   // overwrite their existing task.md with an empty string (C2 review).
@@ -292,6 +303,22 @@ export function TaskEditPanel({
   const isRecurring = draft.executionMode === 'recurring';
   const isLoop = draft.executionMode === 'loop';
   const showEndConditions = isRecurring || isLoop;
+  const sessionOptions = useMemo(
+    () => sessions
+      .filter((session) => task.workspacePath && workspacePathsEqual(session.agentDir, task.workspacePath))
+      .map((session, index) => ({
+        value: session.id,
+        label: index === 0
+          ? t('trigger.sessionRecent', { title: session.title || session.id })
+          : session.title || session.id,
+      })),
+    [sessions, t, task.workspacePath],
+  );
+  const preservesLegacyMissingBinding =
+    task.runMode === 'single-session' &&
+    !task.preselectedSessionId &&
+    draft.runMode === 'single-session' &&
+    !draft.preselectedSessionId;
 
   // Keep runMode aligned with PRD §9.2 defaults when user flips mode.
   const setExecutionMode = useCallback((next: TaskExecutionMode) => {
@@ -313,6 +340,14 @@ export function TaskEditPanel({
       errs.push(t('edit.validation.taskRequired'));
     if (verifyMdReadState === 'failed')
       errs.push(t('edit.validation.verifyReadFailed'));
+    if (!triggerValid) errs.push(t('trigger.validation.invalid'));
+    if (
+      draft.runMode === 'single-session' &&
+      !draft.preselectedSessionId &&
+      !preservesLegacyMissingBinding
+    ) {
+      errs.push(t('trigger.validation.sessionRequired'));
+    }
     if (isScheduled) {
       const ts = Date.parse(draft.atDateTime);
       if (Number.isNaN(ts) || ts <= Date.now()) errs.push(t('edit.validation.futureTimeRequired'));
@@ -339,7 +374,7 @@ export function TaskEditPanel({
       errs.push(t('edit.validation.endConditionRequired'));
     }
     return errs;
-  }, [draft, isScheduled, isRecurring, showEndConditions, taskMdReadState, verifyMdReadState, t]);
+  }, [draft, isScheduled, isRecurring, preservesLegacyMissingBinding, showEndConditions, taskMdReadState, triggerValid, verifyMdReadState, t]);
 
   const buildEndConditions = useCallback((): EndConditions | undefined => {
     if (!showEndConditions) return undefined;
@@ -414,14 +449,24 @@ export function TaskEditPanel({
     const modeChanged = draft.executionMode !== task.executionMode;
     if (modeChanged) payload.executionMode = draft.executionMode;
 
-    if (draft.executionMode !== 'once') {
-      const nextRunMode: TaskRunMode = isLoop ? 'single-session' : draft.runMode;
-      if (modeChanged || nextRunMode !== task.runMode) payload.runMode = nextRunMode;
+    const nextRunMode: TaskRunMode = isLoop ? 'single-session' : draft.runMode;
+    if (nextRunMode !== (task.runMode ?? 'new-session')) payload.runMode = nextRunMode;
+    const nextPreselected = nextRunMode === 'single-session' ? draft.preselectedSessionId : '';
+    if (nextPreselected !== (task.preselectedSessionId ?? '')) {
+      payload.preselectedSessionId = nextPreselected;
+    }
 
+    if (draft.executionMode !== 'once') {
       const ec = buildEndConditions();
       const initialEc = JSON.stringify(task.endConditions ?? null);
       const nextEc = JSON.stringify(ec ?? null);
       if (modeChanged || initialEc !== nextEc) payload.endConditions = ec;
+    }
+
+    const initialTrigger = task.trigger ?? { source: { type: 'time' }, detector: { type: 'always' } };
+    if (JSON.stringify(initialTrigger) !== JSON.stringify(draft.trigger)) {
+      if (draft.trigger.detector.type === 'always') payload.clearTrigger = true;
+      else payload.trigger = draft.trigger;
     }
 
     // Scheduling detail — only forward the field relevant to the target
@@ -773,6 +818,41 @@ export function TaskEditPanel({
             cronTimezone={draft.cronTimezone}
             setCronTimezone={(v) => setDraft((d) => ({ ...d, cronTimezone: v }))}
           />
+          {draft.runMode === 'single-session' && !isLoop && (
+            <div className="mt-5">
+              <label className="mb-2 block text-sm font-medium text-[var(--ink-secondary)]">
+                {t('trigger.targetSession')}
+              </label>
+              <CustomSelect
+                value={draft.preselectedSessionId}
+                options={sessionOptions}
+                onChange={(value) => setDraft((current) => ({
+                  ...current,
+                  preselectedSessionId: value,
+                }))}
+                placeholder={t('trigger.targetSessionPlaceholder')}
+                size="md"
+              />
+            </div>
+          )}
+        </FormSection>
+
+        <div className={SECTION_DIVIDER} />
+
+        <FormSection icon={Activity} title={t('trigger.sectionTitle')}>
+          <TriggerEditor
+            value={draft.trigger}
+            workspacePath={task.workspacePath ?? ''}
+            ownerTaskId={task.id}
+            checkpointState={task.triggerState}
+            onChange={(trigger) => setDraft((current) => ({ ...current, trigger }))}
+            onValidityChange={setTriggerValid}
+          />
+          {task.trigger?.detector.type === 'command' && draft.trigger.detector.type === 'always' && (
+            <p className="mt-3 text-xs leading-relaxed text-[var(--ink-muted)]">
+              {t('trigger.switchAlwaysWarning')}
+            </p>
+          )}
         </FormSection>
 
         {showEndConditions && (

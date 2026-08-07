@@ -18,7 +18,7 @@ import type { createSseClient } from './sse';
 // already imported it from there.
 import { SSE_INSTANCE_ID } from './sse-instance';
 import { appendUnifiedLog } from './UnifiedLogger';
-import type { LogEntry, LogLevel } from '../renderer/types/log';
+import type { LogEntry, LogLevel } from '../shared/types/log';
 import { localTimestamp } from '../shared/logTime';
 import { getLogContext } from './logger-context';
 
@@ -124,9 +124,9 @@ function createAndBroadcast(level: LogLevel, args: unknown[]): void {
 
     const entry: LogEntry = {
         // NOTE (fix #15): kept as 'bun' for backward compatibility with
-        // historical log files and the renderer's `LogSource` discriminant
-        // (`src/renderer/types/log.ts` + UnifiedLogsPanel SOURCE_LABELS still
-        // expect 'bun' — labelled "NODE" in the UI). v0.2.0 migrated to
+        // historical log files and the shared `LogSource` discriminant
+        // (`src/shared/types/log.ts`; UnifiedLogsPanel SOURCE_LABELS still
+        // expects 'bun' — labelled "NODE" in the UI). v0.2.0 migrated to
         // Node.js but the wire-level token stays so old logs are still
         // queryable. Don't rename without coordinated migration of every
         // historical log file.

@@ -8,13 +8,13 @@ import {
   parseLeadingSystemReminder,
 } from '../../shared/systemReminder';
 import { workspacePathsEqual } from '../../shared/workspacePath';
+import { normalizeSessionOrigin } from '../../shared/session-origin';
 import { managementApi } from '../utils/management-api-client';
 import type {
   DesktopAdmissionResult,
   DesktopMessageRequest,
   ImAdmissionResult,
   ImMessageRequest,
-  InjectedTurnRequest,
   InjectedTurnResult,
   SessionEngine,
 } from './types';
@@ -22,6 +22,9 @@ import type {
   DispatchGuard,
   TurnTerminalOutcome,
 } from '../session-core/turn-queue';
+import { getSessionMetadata } from '../SessionStore';
+import { clearCronTaskContext } from '../tools/cron-tools';
+import { withScheduledTurnDispatchLock } from './scheduled-turn-lock';
 
 export type SessionGoalStatus =
   | 'active'
@@ -208,6 +211,21 @@ function goalContext(goal: SessionGoal, text: string, firstUserTurn: boolean): s
     aiCanExit: goal.endConditions.aiCanExit,
     visibleUserMessage,
   });
+}
+
+function goalContinuationScenario(sessionId: string): import('../system-prompt').InteractionScenario {
+  const metadata = getSessionMetadata(sessionId);
+  const origin = normalizeSessionOrigin(metadata?.origin);
+  if (origin?.kind !== 'agent-channel') return { type: 'desktop' };
+  const parts = (typeof metadata?.source === 'string' ? metadata.source : '')
+    .split('_')
+    .filter(Boolean);
+  const tail = parts[parts.length - 1];
+  return {
+    type: 'agent-channel',
+    platform: parts.length > 1 ? parts.slice(0, -1).join('_') : (parts[0] || 'unknown'),
+    sourceType: tail === 'group' ? 'group' : 'private',
+  };
 }
 
 function createGoalTurnLifecycle(
@@ -469,36 +487,97 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
     },
 
     async runScheduledTurn(
-      engine: Pick<SessionEngine, 'runInjectedTurn'>,
+      engine: Pick<SessionEngine, 'prepareScheduledTurn' | 'runInjectedTurn'>,
       request: {
         goal: SessionGoal;
         queueId: string;
         expectedControlRevision: number;
-        channelDeliveryExpected: boolean;
-        turn: Omit<InjectedTurnRequest,
-          'queueId' | 'turnOwner' | 'onTerminal' | 'beforeDispatch' | 'assistantChannelDelivery'>;
+        turnNumber: number;
+        permissionMode?: string;
       },
-    ): Promise<InjectedTurnResult> {
-      const lifecycle = createGoalTurnLifecycle(client, {
-        goal: { ...request.goal, controlRevision: request.expectedControlRevision },
-        sessionId: request.goal.sessionId,
-        workspacePath: request.goal.workspacePath,
-        queueId: request.queueId,
-        kind: 'continuation',
-        channelDeliveryExpected: request.channelDeliveryExpected,
+    ): Promise<InjectedTurnResult & { sessionId?: string; channelDeliveryExpected?: boolean }> {
+      return withScheduledTurnDispatchLock(async () => {
+        clearCronTaskContext();
+        const scenario = goalContinuationScenario(request.goal.sessionId);
+        const metadata = getSessionMetadata(request.goal.sessionId);
+        const turnOrigin = normalizeSessionOrigin(metadata?.origin)
+          ?? { kind: 'desktop' as const, surface: 'unknown' as const };
+        const channelDeliveryExpected = turnOrigin.kind === 'agent-channel';
+        const prepared = await engine.prepareScheduledTurn({
+          sessionId: request.goal.sessionId,
+          workspacePath: request.goal.workspacePath,
+          scenario,
+          operation: { kind: 'goal', permissionMode: request.permissionMode },
+        });
+        if (!prepared.success) {
+          clearCronTaskContext();
+          if (prepared.code === 'session_bind_failed') {
+            return {
+              success: false,
+              error: `Goal Sidecar is not bound to its owning session ${request.goal.sessionId}.`,
+              status: 409,
+            };
+          }
+          return {
+            success: false,
+            error: prepared.error ?? 'Failed to restore Goal session configuration',
+            status: prepared.status ?? 503,
+          };
+        }
+
+        const lifecycle = createGoalTurnLifecycle(client, {
+          goal: { ...request.goal, controlRevision: request.expectedControlRevision },
+          sessionId: request.goal.sessionId,
+          workspacePath: request.goal.workspacePath,
+          queueId: request.queueId,
+          kind: 'continuation',
+          channelDeliveryExpected,
+        });
+        try {
+          const result = await engine.runInjectedTurn({
+            prompt: buildGoalContinuationReminder({
+              objective: request.goal.objective,
+              goalId: request.goal.id,
+              goalStatus: 'active',
+              turnNumber: request.turnNumber,
+              aiCanExit: request.goal.endConditions.aiCanExit,
+            }),
+            sessionId: prepared.sessionId ?? request.goal.sessionId,
+            workspacePath: request.goal.workspacePath,
+            scenario,
+            permissionMode: prepared.permissionMode,
+            runtimeConfig: null,
+            analyticsOrigin: turnOrigin,
+            timeoutMs: 3_600_000,
+            pollMs: 1_000,
+            assistantChannelDelivery: channelDeliveryExpected
+              ? 'caller-owned'
+              : 'session-binding',
+            queueId: request.queueId,
+            turnOwner: { kind: 'goal', id: request.goal.id },
+            onTerminal: lifecycle.onTerminal,
+            beforeDispatch: lifecycle.beforeDispatch,
+          });
+          if (!result.success && !result.terminationUnconfirmed) await lifecycle.abort();
+          return {
+            ...result,
+            sessionId: request.goal.sessionId,
+            channelDeliveryExpected,
+          };
+        } catch (error) {
+          await lifecycle.abort();
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            status: 500,
+            sessionId: request.goal.sessionId,
+            channelDeliveryExpected,
+          };
+        } finally {
+          clearCronTaskContext();
+          await prepared.release?.();
+        }
       });
-      const result = await engine.runInjectedTurn({
-        ...request.turn,
-        assistantChannelDelivery: request.channelDeliveryExpected
-          ? 'caller-owned'
-          : 'session-binding',
-        queueId: request.queueId,
-        turnOwner: { kind: 'goal', id: request.goal.id },
-        onTerminal: lifecycle.onTerminal,
-        beforeDispatch: lifecycle.beforeDispatch,
-      });
-      if (!result.success && !result.terminationUnconfirmed) await lifecycle.abort();
-      return result;
     },
 
     async updateObjective(

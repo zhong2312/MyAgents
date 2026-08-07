@@ -37,6 +37,7 @@ pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
+mod proxy_spill;
 pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
@@ -48,20 +49,24 @@ mod space_cloud_mock;
 mod sse_proxy;
 pub mod system_binary;
 pub mod task;
+pub mod task_application;
 pub mod task_execution;
 pub mod task_scheduler;
+pub mod task_trigger;
 pub mod terminal;
 pub mod thought;
 mod tray;
 mod updater;
 pub mod utils;
 pub mod wake_lock;
+mod webview_policy;
 pub mod workspace_files;
 mod workspace_path;
 
 use sidecar::{
-    cleanup_stale_sidecars, cleanup_stale_sidecars_preamble, create_sidecar_state,
-    init_startup_cleanup_barrier, stop_all_sidecars,
+    begin_app_exit_shutdown, cleanup_stale_sidecars, cleanup_stale_sidecars_preamble,
+    create_sidecar_state, init_startup_cleanup_barrier, recover_proxy_spills_after_startup_cleanup,
+    stop_all_sidecars,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -246,7 +251,6 @@ pub fn run() {
     let im_bot_state = im::create_im_bot_state();
     // Create Agent managed state (v0.1.41)
     let agent_state = im::create_agent_state();
-    let sidecar_state_for_window = sidecar_state.clone();
     let sidecar_state_for_exit = sidecar_state.clone();
     let sidecar_state_for_monitor = sidecar_state.clone();
     let sidecar_state_for_session_monitor = sidecar_state.clone();
@@ -256,18 +260,12 @@ pub fn run() {
     let im_state_for_management = im_bot_state.clone();
     let agent_state_for_management = agent_state.clone();
     let sidecar_state_for_management = sidecar_state.clone();
-    let im_state_for_window = im_bot_state.clone();
     let im_state_for_exit = im_bot_state.clone();
-    let agent_state_for_window = agent_state.clone();
     let agent_state_for_exit = agent_state.clone();
 
-    // Track if cleanup has been performed to avoid duplicate cleanup
-    // All clones share the same underlying AtomicBool - whichever exit path
-    // triggers first will do cleanup, and all others will see the flag as true
-    // and skip. The separate variables are needed because each is moved into
-    // a different closure (window event, app exit).
+    // App-owned cleanup is performed exactly once by the app exit lifecycle.
+    // Monitor tasks only observe the same flag so they can stop promptly.
     let cleanup_done = Arc::new(AtomicBool::new(false));
-    let cleanup_done_for_window = cleanup_done.clone();
     let cleanup_done_for_exit = cleanup_done.clone();
     let cleanup_done_for_monitor = cleanup_done.clone();
     let cleanup_done_for_session_monitor = cleanup_done.clone();
@@ -278,12 +276,10 @@ pub fn run() {
     // Create terminal manager state
     let terminal_state = terminal::TerminalManager::new();
     let terminal_state_for_exit = terminal_state.clone();
-    let terminal_state_for_window = terminal_state.clone();
 
     // Create browser manager state
     let browser_state = browser::BrowserManager::new();
     let browser_state_for_exit = browser_state.clone();
-    let browser_state_for_window = browser_state.clone();
 
     // Create Task Center state (v0.1.69 — thought & task stores)
     let data_dir = app_dirs::myagents_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -298,6 +294,7 @@ pub fn run() {
 
     // Create SSE proxy state
     let sse_proxy_state = Arc::new(sse_proxy::SseProxyState::default());
+    let proxy_spill_state = Arc::new(proxy_spill::ProxySpillManager::new(data_dir.join("refs")));
 
     // Build the app first, then run with event handler
     // This allows us to handle RunEvent::ExitRequested for Cmd+Q and Dock quit
@@ -366,6 +363,7 @@ pub fn run() {
     let app = builder
         .manage(sidecar_state)
         .manage(sse_proxy_state)
+        .manage(proxy_spill_state)
         .manage(im_bot_state)
         .manage(agent_state)
         .manage(terminal_state)
@@ -402,7 +400,9 @@ pub fn run() {
             sse_proxy::start_sse_proxy,
             sse_proxy::stop_sse_proxy,
             sse_proxy::stop_all_sse_proxies,
-            sse_proxy::proxy_http_request,
+            sse_proxy::session_sidecar_http_request,
+            sse_proxy::global_sidecar_http_request,
+            sse_proxy::proxy_analytics_http_request,
             // Updater commands
             updater::check_and_download_update,
             updater::restart_app,
@@ -463,7 +463,6 @@ pub fn run() {
             cron_task::commands::cmd_get_workspace_cron_tasks,
             session_metadata::cmd_list_session_metadata,
             cron_task::commands::cmd_get_session_cron_task,
-            cron_task::commands::cmd_update_cron_task_session,
             session_goal::commands::cmd_create_session_goal,
             session_goal::commands::cmd_get_session_goal,
             session_goal::commands::cmd_pause_session_goal,
@@ -473,11 +472,8 @@ pub fn run() {
             cron_task::commands::cmd_is_task_executing,
             cron_task::commands::cmd_get_cron_runs,
             cron_task::commands::cmd_update_cron_task_fields,
-            // Session activation commands (for Session singleton)
-            sidecar::commands::cmd_get_session_activation,
-            sidecar::commands::cmd_activate_session,
-            sidecar::commands::cmd_deactivate_session,
-            sidecar::commands::cmd_update_session_tab,
+            // Session owner reconciliation
+            sidecar::commands::cmd_reconcile_session_tab_activation,
             // Session Inbox cross-sidecar delivery (PRD 0.2.18)
             crate::inbox::deliver::cmd_inbox_deliver,
             // Session-centric Sidecar API (v0.1.11)
@@ -555,8 +551,6 @@ pub fn run() {
             im::commands::cmd_agent_status,
             im::commands::cmd_all_agents_status,
             im::commands::cmd_update_agent_config,
-            im::commands::cmd_create_agent,
-            im::commands::cmd_delete_agent,
             // Session ↔ channel surface handover (PRD 0.2.14)
             im::handover::cmd_session_new_with_surface_migration,
             im::handover::cmd_handover_session_to_channel,
@@ -668,6 +662,11 @@ pub fn run() {
             task::cmd_task_create_attached,
             task::cmd_task_list,
             task::cmd_task_get,
+            task::cmd_task_trigger_validate,
+            task::cmd_task_trigger_test,
+            task::cmd_task_check_now,
+            task::cmd_task_run_now,
+            task::cmd_task_reset_checkpoint,
             task::cmd_task_update,
             task::cmd_task_update_status,
             task::cmd_task_append_session,
@@ -859,6 +858,7 @@ pub fn run() {
                 WebviewUrl::default(),
             )
             .data_directory(webview_data_dir)
+            .scroll_bar_style(crate::webview_policy::scroll_bar_style())
             .title("MyAgents")
             .inner_size(1200.0, 800.0)
             .min_inner_size(800.0, 600.0)
@@ -980,6 +980,10 @@ pub fn run() {
             // this lock handles the "build script killed + macOS restarted" case via PID.
             let lock_state = app_dirs::acquire_lock();
             let had_prior_instance = lock_state.had_prior_instance();
+            let spill_manager = app
+                .state::<Arc<proxy_spill::ProxySpillManager>>()
+                .inner()
+                .clone();
 
             // Stale sidecar cleanup:
             //   1. Run the fast preamble (remove stale port file) synchronously
@@ -991,36 +995,62 @@ pub fn run() {
             //      "frontend freezes on first launch" user report. The new
             //      `process_cleanup` module uses native `sysinfo` (no
             //      subprocess spawn) and completes in ~10–200 ms.
-            //   3. `start_tab_sidecar` waits on the barrier before
-            //      spawning, so port allocation still serializes with
-            //      cleanup — no correctness regression.
+            //   3. Only after every prior writer is confirmed stopped, run
+            //      the one startup ref inventory. Sidecar birth waits on the
+            //      same barrier, so a new Node writer cannot race the scan.
+            //   4. Cleanup residual/panic leaves proxy inventory incomplete
+            //      and Rust spill fail-closed for this run. No runtime rescan
+            //      is allowed because it could delete a live Node `.part`.
             init_startup_cleanup_barrier();
             cleanup_stale_sidecars_preamble();
-            tauri::async_runtime::spawn_blocking(move || {
-                // Panic-safe: if cleanup panics (sysinfo crash, etc.) we
-                // still MUST mark the barrier done, otherwise every future
-                // sidecar spawn will wait the full 15 s timeout. The outer
-                // guard fires regardless of whether the inner closure
-                // returned normally or unwound.
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    cleanup_stale_sidecars(had_prior_instance);
-                }));
-                // Always mark done — cleanup_stale_sidecars normally marks
-                // internally on success, but we cover both the panic path
-                // and any early-return paths we might add in the future.
-                sidecar::mark_startup_cleanup_done();
-                if let Err(panic) = result {
-                    // Try to log something useful about the panic.
-                    let msg = panic
-                        .downcast_ref::<&'static str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "<non-string panic payload>".to_string());
-                    ulog_error!(
-                        "[sidecar] cleanup_stale_sidecars panicked: {} — barrier released so startup can proceed",
-                        msg
-                    );
+            tauri::async_runtime::spawn(async move {
+                let cleanup_result = tauri::async_runtime::spawn_blocking(move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        cleanup_stale_sidecars(had_prior_instance)
+                    }))
+                })
+                .await;
+
+                let writers_quiesced = match cleanup_result {
+                    Ok(Ok(writers_quiesced)) => writers_quiesced,
+                    Ok(Err(panic)) => {
+                        let msg = panic
+                            .downcast_ref::<&'static str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                        ulog_error!(
+                            "[sidecar] cleanup_stale_sidecars panicked: {} — proxy spill remains fail-closed",
+                            msg
+                        );
+                        false
+                    }
+                    Err(error) => {
+                        ulog_error!(
+                            "[sidecar] cleanup_stale_sidecars worker failed: {} — proxy spill remains fail-closed",
+                            error
+                        );
+                        false
+                    }
+                };
+
+                match recover_proxy_spills_after_startup_cleanup(
+                    spill_manager.as_ref(),
+                    writers_quiesced,
+                )
+                .await
+                {
+                    Ok(removed) if removed > 0 => {
+                        ulog_info!("[proxy] Removed {} incomplete ref files at startup", removed)
+                    }
+                    Ok(_) => {}
+                    Err(error) => ulog_warn!("{}", error),
                 }
+
+                // The process-start barrier is always released. On failure,
+                // the separate proxy inventory fact remains false, so only
+                // Rust spill admission is denied for this run.
+                sidecar::mark_startup_cleanup_done();
             });
 
             // ── Boot Banner: single-line consolidated diagnostics for AI grep ──
@@ -1226,6 +1256,12 @@ pub fn run() {
                 }
             };
 
+            // Arm the App-level persisted Session observer before scheduling
+            // startup writers. The watcher also emits a broad readiness
+            // invalidation after its OS watches and baseline are established,
+            // closing the unavoidable background-thread startup interval.
+            session_metadata::spawn_session_metadata_watcher(app.handle().clone());
+
             // Start the internal control plane before any backend automation can
             // create a Sidecar that needs MYAGENTS_MANAGEMENT_PORT.
             let automation_app_handle = app.handle().clone();
@@ -1400,23 +1436,15 @@ pub fn run() {
                         }
                     }
                 }
-                // Clean up when window is actually destroyed
                 tauri::WindowEvent::Destroyed => {
-                    use std::sync::atomic::Ordering::Relaxed;
-                    if !cleanup_done_for_window.swap(true, Relaxed) {
-                        ulog_info!("[App] Window destroyed, cleaning up sidecars...");
-                        im::signal_all_agents_shutdown(&agent_state_for_window);
-                        im::signal_all_bots_shutdown(&im_state_for_window);
-                        let _ = stop_all_sidecars(&sidecar_state_for_window);
-                        // Clean up terminal PTY sessions
-                        let ts = terminal_state_for_window.clone();
-                        tauri::async_runtime::block_on(terminal::close_all_terminals(&ts));
-                        // Clean up browser webviews
-                        let bs = browser_state_for_window.clone();
-                        let app_for_browser = window.app_handle().clone();
-                        tauri::async_runtime::block_on(browser::close_all_browsers(&bs, &app_for_browser));
-                        app_dirs::release_lock();
-                    }
+                    // A window owns only its WebView. Auxiliary windows are
+                    // routinely destroyed while the application and every
+                    // Session Sidecar remain live; app-wide teardown belongs
+                    // exclusively to RunEvent::ExitRequested/update shutdown.
+                    ulog_info!(
+                        "[App] window_lifecycle event=destroyed label={} app_cleanup=false",
+                        window.label()
+                    );
                 }
                 _ => {}
             }
@@ -1432,13 +1460,36 @@ pub fn run() {
                 // Only cleanup once (Relaxed is sufficient for simple flag)
                 use std::sync::atomic::Ordering::Relaxed;
                 if !cleanup_done_for_exit.swap(true, Relaxed) {
+                    let shutdown_reason = if code == Some(tauri::RESTART_EXIT_CODE) {
+                        "app-restart"
+                    } else {
+                        "app-exit"
+                    };
                     ulog_info!(
-                        "[App] Exit requested (Cmd+Q or Dock quit), cleaning up sidecars..."
+                        "[App] app_lifecycle event=exit_requested code={:?} reason={} app_cleanup=begin",
+                        code,
+                        shutdown_reason
                     );
+                    // Close birth admission before draining owner registries.
+                    // Every admitted creation lease spans process/resource
+                    // birth through managed-state registration, so this wait
+                    // prevents a late ChildTree from appearing after the
+                    // termination settlement barrier.
+                    let creation_gate_ok = match begin_app_exit_shutdown() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            ulog_error!(
+                                "[App] app_lifecycle cleanup=creation_gate status=error reason={} error={}",
+                                shutdown_reason,
+                                error
+                            );
+                            false
+                        }
+                    };
                     // Record a deliberate-quit marker so the next boot starts
                     // fresh instead of restoring the session (Issue #309), UNLESS
                     // this is an update-restart. Both update paths — plugin
-                    // `relaunch()` and `AppHandle::restart` — fire ExitRequested
+                    // `relaunch()` and `AppHandle::request_restart` — fire ExitRequested
                     // with `code == RESTART_EXIT_CODE`; a deliberate quit carries
                     // `None` (Cmd+Q / Dock) or `Some(0)` (tray "Exit"). Gating on
                     // the code keeps "offer restore after an update" working on
@@ -1446,7 +1497,24 @@ pub fn run() {
                     app_dirs::record_clean_exit(code == Some(tauri::RESTART_EXIT_CODE));
                     im::signal_all_agents_shutdown(&agent_state_for_exit);
                     im::signal_all_bots_shutdown(&im_state_for_exit);
-                    let _ = stop_all_sidecars(&sidecar_state_for_exit);
+                    tauri::async_runtime::block_on(
+                        task_scheduler::get_task_scheduler().shutdown_all(),
+                    );
+                    let sidecar_cleanup_ok = match stop_all_sidecars(
+                        &sidecar_state_for_exit,
+                        shutdown_reason,
+                    ) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            ulog_error!(
+                                "[App] app_lifecycle cleanup=sidecars status=error reason={} error={}",
+                                shutdown_reason,
+                                error
+                            );
+                            false
+                        }
+                    };
+                    process_cmd::settle_pending_tree_terminations();
                     // Clean up terminal PTY sessions
                     let ts = terminal_state_for_exit.clone();
                     tauri::async_runtime::block_on(terminal::close_all_terminals(&ts));
@@ -1454,6 +1522,12 @@ pub fn run() {
                     let bs = browser_state_for_exit.clone();
                     tauri::async_runtime::block_on(browser::close_all_browsers(&bs, _app_handle));
                     app_dirs::release_lock();
+                    ulog_info!(
+                        "[App] app_lifecycle event=cleanup_complete reason={} creation_gate_ok={} sidecars_ok={}",
+                        shutdown_reason,
+                        creation_gate_ok,
+                        sidecar_cleanup_ok
+                    );
                 }
             }
             // Handle Dock icon click on macOS (Reopen event)
@@ -1571,7 +1645,7 @@ mod nav_guard_tests {
             "main",
         );
         assert!(script.contains("if (themeSelectionExplicit) themeId = storedThemeId"));
-        assert!(script.contains("let themeId = 'default-black'"));
+        assert!(script.contains("let themeId = 'myagents-light'"));
         assert!(script.contains("appearanceMode: \"dark\""));
         assert!(!script.contains(THEME_BOOTSTRAP_APPEARANCE_MARKER));
         assert!(!script.contains(THEME_BOOTSTRAP_RUN_ID_MARKER));
@@ -1581,5 +1655,49 @@ mod nav_guard_tests {
         assert!(script.contains("report('native-init-script')"));
         assert!(script.contains("report('renderer-uncaught-error'"));
         assert!(script.contains("report('renderer-unhandled-rejection'"));
+    }
+
+    #[test]
+    fn window_destruction_never_owns_application_cleanup() {
+        let source = include_str!("lib.rs");
+        let window_handler = source
+            .split_once(".on_window_event")
+            .and_then(|(_, tail)| tail.split_once(".build(tauri::generate_context!())"))
+            .map(|(handler, _)| handler)
+            .expect("window event handler source");
+
+        for forbidden in [
+            "stop_all_sidecars(",
+            "signal_all_agents_shutdown(",
+            "signal_all_bots_shutdown(",
+            "close_all_terminals(",
+            "close_all_browsers(",
+            "release_lock()",
+        ] {
+            assert!(
+                !window_handler.contains(forbidden),
+                "window lifecycle must not perform app cleanup via {forbidden}"
+            );
+        }
+
+        let exit_handler = source
+            .split_once("tauri::RunEvent::ExitRequested { code, .. } => {")
+            .and_then(|(_, tail)| tail.split_once("// Handle Dock icon click on macOS"))
+            .map(|(handler, _)| handler)
+            .expect("app exit handler source");
+        assert!(exit_handler.contains("stop_all_sidecars("));
+        assert!(exit_handler.contains("&sidecar_state_for_exit"));
+        assert!(exit_handler.contains("begin_app_exit_shutdown()"));
+        assert!(exit_handler.contains("process_cmd::settle_pending_tree_terminations()"));
+        assert!(exit_handler.contains("app_dirs::release_lock()"));
+
+        let updater = include_str!("updater.rs");
+        let restart_command = updater
+            .split_once("pub fn restart_app")
+            .and_then(|(_, tail)| tail.split_once("/// Command: Check if a pending update exists"))
+            .map(|(command, _)| command)
+            .expect("restart command source");
+        assert!(restart_command.contains("app.request_restart()"));
+        assert!(!restart_command.contains("app.restart()"));
     }
 }

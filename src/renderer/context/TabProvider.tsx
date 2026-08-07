@@ -9,7 +9,7 @@
  * - Its own logs and system info
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { ReactNode } from 'react';
 
@@ -23,7 +23,7 @@ import {
 } from '@/analytics';
 import type { PendingSessionBirthContext } from '@/analytics';
 import { useConfigData } from '@/config/useConfigData';
-import { getAgentByWorkspacePath } from '@/config/services/agentConfigService';
+import { getProjectAgent } from '@/config/services/agentConfigService';
 import { notifyConfigChanged } from '@/config/services/appConfigService';
 import { normalizeRuntime, resolveEffectiveRuntime } from '@/utils/sessionOpenPlan';
 import type { RuntimeDiagnostics, RuntimeSource, RuntimeType } from '@/../shared/types/runtime';
@@ -40,8 +40,8 @@ import type { PermissionRequest } from '@/components/PermissionPrompt';
 import type { AskUserQuestionRequest, AskUserQuestion } from '../../shared/types/askUserQuestion';
 import type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedPrompt } from '../../shared/types/planMode';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
-import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
-import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit, reconcileLiveRecoveryHistory } from './sessionRestoreGuards';
+import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type CurrentSessionRestoreResult, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
+import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit, reconcileLiveRecoveryHistory, normalizeSessionMessageContent, isRestoreActionBlocked } from './sessionRestoreGuards';
 import {
     classifySessionActivity,
     decideSystemInitSessionId,
@@ -59,6 +59,7 @@ import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import { stripLeadingSystemReminder } from '../../shared/systemReminder';
+import { deriveSessionTitle } from '../../shared/sessionTitle';
 import {
     COLD_HISTORY_REPLAY_KIND,
     LIVE_USER_ECHO_REPLAY_KIND,
@@ -69,10 +70,10 @@ import { parsePartialJson } from '@/utils/parsePartialJson';
 import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
 import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
-import { getTabServerUrl, proxyFetch, isTauri, getSessionActivation, getSessionPort, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
+import { getTabServerUrl, sessionSidecarFetch, isTauri, getSessionPort, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
 import { fetchJsonLargeValueRef } from '@/api/largeValueRef';
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
-import { isExistingSessionSwitch, isResetSessionBirth, shouldDegradedLoad, shouldReuseSseSubscriptionForSessionChange } from '@/utils/optionResolve';
+import { isResetSessionBirth, shouldDegradedLoad, shouldReuseSseSubscriptionForSessionChange } from '@/utils/optionResolve';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import type { PermissionMode } from '@/config/types';
@@ -90,7 +91,6 @@ import {
     beginLiveRevisionRestore,
     completeLiveRevisionRestore,
     ingestLiveRevisionEvent,
-    ownsLiveRevisionRestore,
     type LiveRevisionFence,
 } from './liveRevisionFence';
 
@@ -185,11 +185,23 @@ type WireSessionMessage = {
     content: string | ContentBlock[];
     timestamp: string;
     sdkUuid?: string;
+    runtimeTurnAnchor?: Message['runtimeTurnAnchor'];
     metadata?: Message['metadata'];
     attachments?: WireMessageAttachment[];
     usage?: WireMessageUsage;
     toolCount?: number;
     durationMs?: number | null;
+};
+
+type PersistedRestoreMode = 'initial' | 'live-recovery';
+
+type PersistedRestoreLifecycle = {
+    phase: 'inactive' | 'restoring' | 'ready' | 'failed';
+    mode: PersistedRestoreMode;
+    sessionId: string | null;
+    restoreToken: number;
+    connectionGeneration: number;
+    error: string | null;
 };
 
 type AssistantCompletionPatch = {
@@ -198,6 +210,7 @@ type AssistantCompletionPatch = {
     usage?: Message['usage'];
     toolCount?: number;
     durationMs?: number;
+    runtimeTurnAnchor?: Message['runtimeTurnAnchor'];
 };
 
 function applyAssistantCompletionPatch(message: Message, patch: AssistantCompletionPatch | undefined): Message {
@@ -207,7 +220,9 @@ function applyAssistantCompletionPatch(message: Message, patch: AssistantComplet
     const needsUsage = patch.usage && message.usage !== patch.usage;
     const needsToolCount = patch.toolCount !== undefined && message.toolCount !== patch.toolCount;
     const needsDuration = patch.durationMs !== undefined && message.durationMs !== patch.durationMs;
-    if (!needsUuid && !needsId && !needsUsage && !needsToolCount && !needsDuration) return message;
+    const needsRuntimeTurnAnchor = patch.runtimeTurnAnchor !== undefined
+        && message.runtimeTurnAnchor !== patch.runtimeTurnAnchor;
+    if (!needsUuid && !needsId && !needsUsage && !needsToolCount && !needsDuration && !needsRuntimeTurnAnchor) return message;
     return {
         ...message,
         ...(needsId ? { id: patch.realId } : {}),
@@ -215,6 +230,7 @@ function applyAssistantCompletionPatch(message: Message, patch: AssistantComplet
         ...(patch.usage ? { usage: patch.usage } : {}),
         ...(patch.toolCount !== undefined ? { toolCount: patch.toolCount } : {}),
         ...(patch.durationMs !== undefined ? { durationMs: patch.durationMs } : {}),
+        ...(patch.runtimeTurnAnchor ? { runtimeTurnAnchor: patch.runtimeTurnAnchor } : {}),
     };
 }
 
@@ -237,25 +253,13 @@ function getAssistantTurnMetrics(msg: Pick<WireSessionMessage, 'role' | 'usage' 
 
 function wireAssistantToStreamingMessage(message: WireSessionMessage | null | undefined): Message | null {
     if (!message || message.role !== 'assistant') return null;
-    let content: string | ContentBlock[] = message.content;
-    if (
-        typeof message.content === 'string'
-        && message.content.length > 0
-        && message.content.startsWith('[')
-        && message.content.includes('"type"')
-    ) {
-        try {
-            content = JSON.parse(message.content) as ContentBlock[];
-        } catch {
-            content = message.content;
-        }
-    }
     return {
         id: message.id,
         role: 'assistant',
-        content,
+        content: normalizeSessionMessageContent(message.content),
         timestamp: new Date(message.timestamp),
         sdkUuid: message.sdkUuid,
+        runtimeTurnAnchor: message.runtimeTurnAnchor,
         ...getAssistantTurnMetrics(message),
     };
 }
@@ -278,6 +282,20 @@ function normalizeWireAttachments(
         const previewUrl = att.previewUrl ?? resolveAttachmentUrl(normalized);
         return previewUrl ? { ...normalized, previewUrl } : normalized;
     });
+}
+
+function wireSessionMessageToMessage(message: WireSessionMessage): Message {
+    return {
+        id: message.id,
+        role: message.role,
+        content: normalizeSessionMessageContent(message.content),
+        timestamp: new Date(message.timestamp),
+        sdkUuid: message.sdkUuid,
+        runtimeTurnAnchor: message.runtimeTurnAnchor,
+        attachments: normalizeWireAttachments(message.attachments),
+        metadata: message.metadata,
+        ...getAssistantTurnMetrics(message),
+    };
 }
 
 function normalizeAgentPlanTodos(value: unknown): AgentStatusTodoSnapshot[] {
@@ -383,6 +401,8 @@ interface TabProviderProps {
     tabId: string;
     agentDir: string;
     sessionId?: string | null;
+    /** Current App-shell title projection, used to preserve newer manual/AI titles during rollback. */
+    sessionTitle?: string;
     /** Whether this Tab is currently visible — fed into TabActiveContext for useTabActive() consumers */
     isActive?: boolean;
     /** Callback when generating state changes (for close confirmation) */
@@ -405,10 +425,18 @@ interface TabProviderProps {
 /**
  * Handle API response - check for errors and throw if not ok
  */
-async function handleApiResponse<T>(response: Response): Promise<T> {
+export async function handleApiResponse<T>(response: Response): Promise<T> {
     if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error((errorData as { error?: string }).error || `HTTP ${response.status}`);
+        const errorData = await response.json().catch(() => ({})) as {
+            error?: unknown;
+            errorCode?: unknown;
+        };
+        const error = new Error(
+            typeof errorData.error === 'string' ? errorData.error : `HTTP ${response.status}`,
+        ) as Error & { status: number; errorCode?: string };
+        error.status = response.status;
+        if (typeof errorData.errorCode === 'string') error.errorCode = errorData.errorCode;
+        throw error;
     }
     return (await response.json()) as T;
 }
@@ -444,7 +472,7 @@ function mergeAttachmentsByPendingId(
     });
 }
 
-async function getBaseUrl(tabId: string, sessionId?: string | null): Promise<string> {
+async function getDataPlaneBaseUrl(tabId: string, sessionId?: string | null): Promise<string> {
     // Session-centric: try to get a ready port from sessionId first.
     if (sessionId) {
         const port = await getSessionPort(sessionId);
@@ -461,7 +489,7 @@ interface TabApiCallOptions {
     /**
      * Pass an AbortSignal to cancel the request from the renderer side. The
      * underlying Tauri invoke can't truly be cancelled, but if the signal is
-     * aborted before / during the call, proxyFetch silently throws AbortError
+     * aborted before / during the call, the control dispatcher throws AbortError
      * instead of logging a "Sidecar gone" warning. The classic use case is a
      * useEffect cleanup that fires when the tab is closing — without this,
      * every tab close emits noisy lifecycle warnings for in-flight prewarm /
@@ -485,9 +513,7 @@ function tabCorrelationHeaders(tabId: string, sessionId?: string | null): Record
 function createPostJson(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, body?: unknown, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -507,9 +533,7 @@ function createPostJson(tabId: string, sessionIdRef: React.MutableRefObject<stri
 function createApiGetJson(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             headers: tabCorrelationHeaders(tabId, sessionId),
             signal: opts?.signal,
         });
@@ -524,9 +548,7 @@ function createApiGetJson(tabId: string, sessionIdRef: React.MutableRefObject<st
 function createApiPutJson(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, body?: unknown, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             method: 'PUT',
             headers: {
                 'Content-Type': 'application/json',
@@ -546,9 +568,7 @@ function createApiPutJson(tabId: string, sessionIdRef: React.MutableRefObject<st
 function createApiDelete(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             method: 'DELETE',
             headers: tabCorrelationHeaders(tabId, sessionId),
             signal: opts?.signal,
@@ -562,6 +582,7 @@ export default function TabProvider({
     tabId,
     agentDir,
     sessionId = null,
+    sessionTitle,
     isActive,
     onGeneratingChange,
     onSessionIdChange,
@@ -569,6 +590,9 @@ export default function TabProvider({
     onUnreadChange,
     claimSessionOpeningTransition,
 }: TabProviderProps) {
+    const initialPersistedSessionId = sessionId && !isPendingSessionId(sessionId)
+        ? sessionId
+        : null;
     // Core state
     // currentSessionId tracks the actual loaded session (starts from prop, updated by loadSession)
     const [currentSessionId, setCurrentSessionId] = useState<string | null>(sessionId);
@@ -587,7 +611,7 @@ export default function TabProvider({
     // Reads through config to look up the agent bound to this tab's agentDir;
     // returns ('unknown' / null) when no agent is bound, which is itself a
     // useful signal (means launcher / no-agent session).
-    const { config: appConfig } = useConfigData();
+    const { config: appConfig, projects: configProjects } = useConfigData();
     // sendMessage is a useCallback keyed only on [tabId] (exhaustive-deps off), so
     // reading appConfig directly inside it would capture a stale render. Mirror it
     // into a ref (updated every render) so the per-send background-agent policy echo
@@ -625,8 +649,8 @@ export default function TabProvider({
     // after the latest render commit. NOTE: because this mirror lags by a commit,
     // it must NOT be the sole basis for a synchronous "is history already loaded?"
     // decision — the chat:init clear guard additionally consults the synchronous
-    // `restoredSessionIdRef` so a late chat:init can't wipe a just-restored page
-    // before this ref catches up (#0608).
+    // persisted restore lifecycle so a late chat:init can't wipe a just-restored
+    // page before this ref catches up (#0608).
     const historyMessagesRef = useRef<Message[]>(historyMessages);
     useEffect(() => { historyMessagesRef.current = historyMessages; }, [historyMessages]);
     const [streamingMessage, rawSetStreamingMessage] = useState<Message | null>(null);
@@ -674,7 +698,42 @@ export default function TabProvider({
     }, []);
 
     const [isLoading, setIsLoading] = useState(false);
-    const [isSessionLoading, setIsSessionLoading] = useState(false);
+    // Persisted history owns the first visible frame. Seed the shell during
+    // render so the synchronous cold-history replay sent on initial SSE attach
+    // can never become an intermediate projection.
+    const initialPersistedRestoreLifecycle: PersistedRestoreLifecycle = initialPersistedSessionId
+        ? {
+            phase: 'restoring',
+            mode: 'initial',
+            sessionId: initialPersistedSessionId,
+            restoreToken: 1,
+            connectionGeneration: 0,
+            error: null,
+        }
+        : {
+            phase: 'inactive',
+            mode: 'initial',
+            sessionId: null,
+            restoreToken: 0,
+            connectionGeneration: 0,
+            error: null,
+        };
+    const [persistedRestoreLifecycle, setPersistedRestoreLifecycle] = useState<PersistedRestoreLifecycle>(
+        initialPersistedRestoreLifecycle,
+    );
+    const persistedRestoreLifecycleRef = useRef<PersistedRestoreLifecycle>(
+        initialPersistedRestoreLifecycle,
+    );
+    const publishPersistedRestoreLifecycle = useCallback((next: PersistedRestoreLifecycle) => {
+        persistedRestoreLifecycleRef.current = next;
+        setPersistedRestoreLifecycle(next);
+    }, []);
+    const isSessionLoading = persistedRestoreLifecycle.phase === 'restoring'
+        || persistedRestoreLifecycle.phase === 'failed';
+    const sessionRestoreError = persistedRestoreLifecycle.phase === 'failed'
+        ? persistedRestoreLifecycle.error
+        : null;
+    const sessionRestoreMode = persistedRestoreLifecycle.mode;
     // Pagination state for large sessions. firstItemIndex is Virtuoso's
     // mechanism for maintaining visible scroll position when items are
     // prepended — on prepend we decrement it by the number of added items.
@@ -683,7 +742,6 @@ export default function TabProvider({
     const PAGINATION_START_INDEX = 1_000_000;
     const INITIAL_PAGE_SIZE = 80;
     const OLDER_PAGE_SIZE = 80;
-    const LIVE_RESTORE_RETRY_DELAY_MS = 250;
     const [firstItemIndex, setFirstItemIndex] = useState(PAGINATION_START_INDEX);
     const [hasMoreBefore, setHasMoreBefore] = useState(false);
     const hasMoreBeforeRef = useRef(false);
@@ -702,7 +760,7 @@ export default function TabProvider({
     // session_new / message_send / message_complete would diverge from
     // ai_turn_complete after a user changes an agent's runtime (cross-review C1).
     useEffect(() => {
-        const agent = agentDir ? getAgentByWorkspacePath(appConfig, agentDir) : undefined;
+        const agent = agentDir ? getProjectAgent(appConfig, configProjects, agentDir) : undefined;
         const runtime: RuntimeType = sessionRuntime
             ? normalizeRuntime(sessionRuntime)
             : resolveEffectiveRuntime(agent?.runtime, !!appConfig.multiAgentRuntime);
@@ -711,7 +769,7 @@ export default function TabProvider({
             : analyticsRuntimeSource(runtime, agent?.runtimeConfig?.source);
         const agentHash = hashAgentNameSync(agent?.name ?? null);
         analyticsMetaRef.current = { runtime, runtimeSource, agentHash };
-    }, [appConfig, agentDir, sessionRuntime, sessionRuntimeSource]);
+    }, [appConfig, configProjects, agentDir, sessionRuntime, sessionRuntimeSource]);
     const [sessionMeta, setSessionMeta] = useState<SessionMetadata | null>(null);
     const [logs, setLogs] = useState<string[]>([]);
     const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
@@ -786,6 +844,40 @@ export default function TabProvider({
     onSessionIdChangeRef.current = onSessionIdChange;
     const onTitleChangeRef = useRef(onTitleChange);
     onTitleChangeRef.current = onTitleChange;
+    const currentSessionTitleRef = useRef(sessionTitle);
+    currentSessionTitleRef.current = sessionTitle;
+    type FirstUserTitleProjection = 'established' | {
+        messageId: string;
+        title: string;
+    } | null;
+    // The SessionStore owns the persisted default title, but the active Tab is
+    // a live App-shell projection. Keep one Tab-local marker so a provisional
+    // accepted-user echo can be compensated by chat:messages-retracted without
+    // ever replacing a newer manual/AI title.
+    const firstUserTitleProjectionRef = useRef<FirstUserTitleProjection>(null);
+    const projectAcceptedFirstUserTitle = useCallback((params: {
+        content: unknown;
+        messageId: string;
+    }) => {
+        if (firstUserTitleProjectionRef.current !== null) return;
+        if (historyMessagesRef.current.some(message => (
+            message.role === 'user'
+            && typeof message.content === 'string'
+            && Boolean(deriveSessionTitle(message.content, 40))
+        ))) {
+            firstUserTitleProjectionRef.current = 'established';
+            return;
+        }
+        if (typeof params.content !== 'string') return;
+        const title = deriveSessionTitle(params.content, 40);
+        if (!title) return;
+        firstUserTitleProjectionRef.current = {
+            messageId: params.messageId,
+            title,
+        };
+        currentSessionTitleRef.current = title;
+        onTitleChangeRef.current?.(title);
+    }, []);
     const onUnreadChangeRef = useRef(onUnreadChange);
     onUnreadChangeRef.current = onUnreadChange;
     // Ref for isActive to avoid stale closures in SSE event handlers
@@ -794,8 +886,10 @@ export default function TabProvider({
 
     // Auto-title generation is backend-owned (#296): the sidecar triggers it
     // after a successful turn and pushes the result via the
-    // `chat:session-title-changed` SSE event (handled below). The frontend no
-    // longer accumulates rounds or decides when to title — it only displays.
+    // `chat:session-title-changed` SSE event (handled below). The frontend does
+    // not accumulate rounds or decide AI-title policy. It only projects the
+    // shared deterministic first-query title at the accepted-user boundary and
+    // displays later backend title changes.
 
     // Notify parent when generating state changes (for close confirmation)
     useEffect(() => {
@@ -809,8 +903,56 @@ export default function TabProvider({
     // so attachment must be scoped to THIS session independently of transport liveness.
     const attachedSseSessionIdRef = useRef<string | null>(null);
     const sseReconnectGenerationRef = useRef(0);
-    const liveRevisionFenceRef = useRef<LiveRevisionFence>({ ...EMPTY_LIVE_REVISION_FENCE });
-    const requestLiveRestoreRef = useRef<(sessionId: string, restoreToken: number) => void>(() => {});
+    const liveRevisionFenceRef = useRef<LiveRevisionFence>(
+        initialPersistedSessionId
+            ? {
+                sessionId: initialPersistedSessionId,
+                connectionGeneration: 0,
+                restoreToken: 1,
+                restoring: true,
+                lastAppliedRevision: null,
+                buffered: [],
+            }
+            : { ...EMPTY_LIVE_REVISION_FENCE },
+    );
+    const requestLiveRestoreRef = useRef<(
+        sessionId: string,
+        restoreToken: number,
+        mode?: PersistedRestoreMode,
+        gapRecoveryAttempted?: boolean,
+    ) => void>(() => {});
+    const activeRestoreRequestRef = useRef<{
+        sessionId: string;
+        restoreToken: number;
+        connectionGeneration: number;
+        controller: AbortController;
+    } | null>(null);
+    const abortActiveRestoreRequest = useCallback(() => {
+        activeRestoreRequestRef.current?.controller.abort();
+        activeRestoreRequestRef.current = null;
+    }, []);
+    const beginPersistedRestore = useCallback((
+        targetSessionId: string,
+        connectionGeneration: number,
+        mode: PersistedRestoreMode,
+    ): LiveRevisionFence => {
+        abortActiveRestoreRequest();
+        const fence = beginLiveRevisionRestore(
+            liveRevisionFenceRef.current,
+            targetSessionId,
+            connectionGeneration,
+        );
+        liveRevisionFenceRef.current = fence;
+        publishPersistedRestoreLifecycle({
+            phase: 'restoring',
+            mode,
+            sessionId: targetSessionId,
+            restoreToken: fence.restoreToken,
+            connectionGeneration,
+            error: null,
+        });
+        return fence;
+    }, [abortActiveRestoreRequest, publishPersistedRestoreLifecycle]);
     const isStreamingRef = useRef(false);
     // Tracks whether the authoritative backend session state is starting/running.
     // Separate from isStreamingRef which means "a streaming message exists in React state".
@@ -846,22 +988,61 @@ export default function TabProvider({
     // misclassified as user history switches.
     const resetBirthPendingRef = useRef(false);
     const resetBirthSessionIdRef = useRef<string | null>(null);
-    // Flag to skip SSE replays while loadSession REST API is in-flight.
-    // Without this, SSE replays race with loadSession and create intermediate
-    // render states (3→46→249) causing visible scroll jumps on session entry.
-    const isLoadingSessionRef = useRef(false);
-    // Session whose history was authoritatively restored from disk by loadSession
-    // (REST `/sessions/:id`, paginated + ordered). For such a session the SSE
-    // `chat:message-replay` stream (sidecar IN-MEMORY history) is redundant and
-    // must NOT re-deliver history: replaying the in-memory set after a partial
-    // REST page would append OLDER messages past the newest ones (out of order)
-    // or, if it raced the clear guard, refill a truncated set — the #0608
-    // "restore drops recent messages" bug. Older history is loaded in order via
-    // the `?before=` pagination path; the in-flight turn is carried by REST's
-    // liveStreamingMessage + live chunk events, not by replay. Set synchronously
-    // on a successful load, nulled on reset / new-session so a genuinely
-    // SSE-only (never-REST-loaded) session still replays normally.
-    const restoredSessionIdRef = useRef<string | null>(null);
+    const isPersistedRestoreInFlight = useCallback(() => (
+        persistedRestoreLifecycleRef.current.phase === 'restoring'
+    ), []);
+    const restoredPersistedSessionId = useCallback(() => {
+        const restore = persistedRestoreLifecycleRef.current;
+        return restore.phase === 'ready' ? restore.sessionId : null;
+    }, []);
+    // A supported persisted-history navigation normally mounts a target-bound
+    // Tab. This layout guard also covers a future prop replacement without
+    // reopening the old mutable-runtime switch path. Reset and pending births
+    // remain SSE-native under their existing owner markers.
+    useLayoutEffect(() => {
+        const previousSessionId = previousSessionPropRef.current;
+        if (previousSessionId === sessionId) return;
+
+        abortActiveRestoreRequest();
+        if (!sessionId || isPendingSessionId(sessionId)) {
+            liveRevisionFenceRef.current = {
+                ...EMPTY_LIVE_REVISION_FENCE,
+                restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
+            };
+            publishPersistedRestoreLifecycle({
+                phase: 'inactive',
+                mode: 'initial',
+                sessionId: null,
+                restoreToken: liveRevisionFenceRef.current.restoreToken,
+                connectionGeneration: 0,
+                error: null,
+            });
+            return;
+        }
+
+        const isSseNativeBirth = isPendingSessionId(previousSessionId)
+            || isResetSessionBirth({
+                resetBirthSessionId: resetBirthSessionIdRef.current,
+                sessionId,
+        });
+        if (isSseNativeBirth) {
+            publishPersistedRestoreLifecycle({
+                phase: 'inactive',
+                mode: 'initial',
+                sessionId,
+                restoreToken: liveRevisionFenceRef.current.restoreToken,
+                connectionGeneration: liveRevisionFenceRef.current.connectionGeneration,
+                error: null,
+            });
+            return;
+        }
+
+        beginPersistedRestore(
+            sessionId,
+            sseRef.current?.getConnectionGeneration() ?? 0,
+            'initial',
+        );
+    }, [sessionId, abortActiveRestoreRequest, beginPersistedRestore, publishPersistedRestoreLifecycle]);
     // Ref for cron task exit handler (set by useCronTask hook via context)
     // Synchronous map: toolUseId → toolName. Updated outside React state updaters
     // to avoid React 18 automatic batching timing issues (state updaters run during
@@ -902,8 +1083,8 @@ export default function TabProvider({
 
     // Reset pagination state (firstItemIndex + hasMoreBefore + in-flight guard)
     // on any boundary where historyMessages is cleared or replaced without a
-    // subsequent loadSession: resetSession, chat:init SSE-reconnect clear path,
-    // and as a fallback for places that drop history. loadSession has its own
+    // subsequent persisted restore: resetSession, chat:init SSE-reconnect clear
+    // path, and as a fallback for places that drop history. The REST restore has its own
     // inline reset that uses the server's `hasMoreBefore` value from the
     // response, so it deliberately does not call this helper.
     const resetPaginationState = useCallback(() => {
@@ -915,6 +1096,22 @@ export default function TabProvider({
 
     const resetSession = useCallback(async (): Promise<boolean> => {
         console.log(`[TabProvider ${tabId}] resetSession: starting...`);
+        abortActiveRestoreRequest();
+        const titleBeforeReset = currentSessionTitleRef.current;
+        const titleProjectionBeforeReset = firstUserTitleProjectionRef.current;
+        const restoreTitleAfterRejectedReset = () => {
+            if (currentSessionTitleRef.current === 'New Chat' && titleBeforeReset) {
+                currentSessionTitleRef.current = titleBeforeReset;
+                firstUserTitleProjectionRef.current = titleProjectionBeforeReset;
+                onTitleChangeRef.current?.(titleBeforeReset);
+                return;
+            }
+            // A manual/AI title may have landed while reset was pending. Keep it
+            // authoritative instead of restoring the older projection.
+            firstUserTitleProjectionRef.current = currentSessionTitleRef.current === 'New Chat'
+                ? titleProjectionBeforeReset
+                : 'established';
+        };
 
         // 1. Clear frontend state immediately for responsive UI
         setHistoryMessages([]);
@@ -925,11 +1122,18 @@ export default function TabProvider({
         setAgentPlanTodos(null);
         setSdkSlashCommands([]);
         seenIdsRef.current.clear();
-        restoredSessionIdRef.current = null;  // new session: no REST-restored history → replay normally
         liveRevisionFenceRef.current = {
             ...EMPTY_LIVE_REVISION_FENCE,
             restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
         };
+        publishPersistedRestoreLifecycle({
+            phase: 'inactive',
+            mode: 'initial',
+            sessionId: null,
+            restoreToken: liveRevisionFenceRef.current.restoreToken,
+            connectionGeneration: 0,
+            error: null,
+        });
         isNewSessionRef.current = true;
         resetBirthPendingRef.current = true;
         resetBirthSessionIdRef.current = null;
@@ -973,6 +1177,7 @@ export default function TabProvider({
         // remains the fallback confirmation path.
 
         // Reset tab title so SortableTabItem falls back to folder name
+        currentSessionTitleRef.current = 'New Chat';
         onTitleChangeRef.current?.('New Chat');
 
         // 2. Tell backend to reset (this will also broadcast chat:init)
@@ -982,6 +1187,7 @@ export default function TabProvider({
                 isNewSessionRef.current = false;
                 resetBirthPendingRef.current = false;
                 resetBirthSessionIdRef.current = null;
+                restoreTitleAfterRejectedReset();
                 console.error(`[TabProvider ${tabId}] resetSession failed:`, response.error);
                 return false;
             }
@@ -1023,6 +1229,7 @@ export default function TabProvider({
                         isNewSessionRef.current = false;
                         resetBirthPendingRef.current = false;
                         resetBirthSessionIdRef.current = null;
+                        restoreTitleAfterRejectedReset();
                         console.error(`[TabProvider ${tabId}] resetSession failed to upgrade parent session id to ${response.sessionId}`);
                         return false;
                     }
@@ -1040,6 +1247,7 @@ export default function TabProvider({
             // `isNewSessionRef.current` is already true (set above), which the
             // organic-mint detector in chat:system-init uses to know that the
             // upcoming id-change is an intentional reset (vs spurious sync).
+            firstUserTitleProjectionRef.current = null;
             setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
 
             return true;
@@ -1047,10 +1255,11 @@ export default function TabProvider({
             isNewSessionRef.current = false;
             resetBirthPendingRef.current = false;
             resetBirthSessionIdRef.current = null;
+            restoreTitleAfterRejectedReset();
             console.error(`[TabProvider ${tabId}] resetSession error:`, error);
             return false;
         }
-    }, [tabId, postJson, setStreamingMessage, clearInteractiveState, clearSessionActive, resetPaginationState]);
+    }, [tabId, postJson, setStreamingMessage, clearInteractiveState, clearSessionActive, resetPaginationState, abortActiveRestoreRequest, publishPersistedRestoreLifecycle]);
 
     /**
      * Local-only session swap for the IM-handover "新对话保留绑定" flow.
@@ -1070,6 +1279,7 @@ export default function TabProvider({
     const adoptMigratedSession = useCallback(async (newSessionId: string, options?: AdoptMigratedSessionOptions): Promise<boolean> => {
         const previousSessionId = currentSessionIdRef.current;
         console.log(`[TabProvider ${tabId}] adoptMigratedSession: ${previousSessionId?.slice(0, 8) ?? 'none'} → ${newSessionId.slice(0, 8)}`);
+        abortActiveRestoreRequest();
 
         // Suppress the chat:init that the migrate already broadcast on the
         // sidecar — we're treating the new session as "freshly created here"
@@ -1087,11 +1297,18 @@ export default function TabProvider({
         setAgentPlanTodos(null);
         setSdkSlashCommands([]);
         seenIdsRef.current.clear();
-        restoredSessionIdRef.current = null;  // new session: no REST-restored history → replay normally
         liveRevisionFenceRef.current = {
             ...EMPTY_LIVE_REVISION_FENCE,
             restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
         };
+        publishPersistedRestoreLifecycle({
+            phase: 'inactive',
+            mode: 'initial',
+            sessionId: null,
+            restoreToken: liveRevisionFenceRef.current.restoreToken,
+            connectionGeneration: 0,
+            error: null,
+        });
         clearSessionActive();
         toolNameMapRef.current.clear();
         pendingToolResultDeltasRef.current.clear();
@@ -1117,10 +1334,12 @@ export default function TabProvider({
         setUnifiedLogs([]);
         setLogs([]);
         setSessionMeta(null);
+        firstUserTitleProjectionRef.current = null;
         setSessionRuntimeSource(null);
         clearInteractiveState();
 
         // Reset tab title so SortableTabItem falls back to folder name.
+        currentSessionTitleRef.current = 'New Chat';
         onTitleChangeRef.current?.('New Chat');
 
         const relabeledAttachment = Boolean(
@@ -1165,7 +1384,7 @@ export default function TabProvider({
             return false;
         }
         return true;
-    }, [tabId, setStreamingMessage, clearInteractiveState, clearSessionActive, resetPaginationState]);
+    }, [tabId, setStreamingMessage, clearInteractiveState, clearSessionActive, resetPaginationState, abortActiveRestoreRequest, publishPersistedRestoreLifecycle]);
 
     const trackSessionNewForBirth = useCallback((
         newSessionId: string,
@@ -1731,15 +1950,15 @@ export default function TabProvider({
                 // AND on backend-initiated auto-reset (e.g. stale SDK conversation).
                 // The last case used to destroy the user's just-loaded history
                 // because the old unconditional clear ran after loadSession had
-                // already finished setting isLoadingSessionRef back to false.
+                // already completed its persisted restore lifecycle.
                 // With the history-length guard, any session the user can see
                 // on screen stays on screen; the only scenario that still clears
                 // is "first-ever chat:init before any history loaded", which is
                 // exactly the case where the clear is correct (no-op on empty).
                 if (!shouldPreserveResetProjection && shouldClearHistoryOnInit({
-                    isLoadingSession: isLoadingSessionRef.current,
+                    isLoadingSession: isPersistedRestoreInFlight(),
                     historyLength: historyMessagesRef.current.length,
-                    restoredSessionId: restoredSessionIdRef.current,
+                    restoredSessionId: restoredPersistedSessionId(),
                     currentSessionId: currentSessionIdRef.current,
                 })) {
                     seenIdsRef.current.clear();
@@ -1846,11 +2065,11 @@ export default function TabProvider({
                     );
                 if (shouldSkipHistoryReplay({
                     isNewSession: isNewSessionRef.current,
-                    isLoadingSession: isLoadingSessionRef.current,
+                    isLoadingSession: isPersistedRestoreInFlight(),
                     isColdHistoryReplay,
                     isCurrentSessionReplay,
                     isResetBirthPending: isResetBirthReplayPending,
-                    restoredSessionId: restoredSessionIdRef.current,
+                    restoredSessionId: restoredPersistedSessionId(),
                     currentSessionId: currentSessionIdRef.current,
                 })) {
                     break;
@@ -1863,6 +2082,13 @@ export default function TabProvider({
                 if (seenIdsRef.current.has(msg.id)) break;
                 seenIdsRef.current.add(msg.id);
 
+                if (isExplicitLiveEcho && msg.role === 'user') {
+                    projectAcceptedFirstUserTitle({
+                        content: msg.content,
+                        messageId: msg.id,
+                    });
+                }
+
                 let attachments = normalizeWireAttachments(msg.attachments);
                 if (msg.role === 'user' && pendingAttachmentsRef.current) {
                     attachments = mergeAttachmentPreviews(attachments, pendingAttachmentsRef.current);
@@ -1871,7 +2097,7 @@ export default function TabProvider({
 
                 // Replayed assistant messages are completed — mark thinking blocks as isComplete
                 // so the UI doesn't show a spinner on them.
-                let replayContent = msg.content;
+                let replayContent = normalizeSessionMessageContent(msg.content);
                 if (msg.role === 'assistant' && Array.isArray(replayContent)) {
                     const needsPatch = replayContent.some(b => b.type === 'thinking' && !b.isComplete);
                     if (needsPatch) {
@@ -1887,6 +2113,7 @@ export default function TabProvider({
                     content: replayContent,
                     timestamp: new Date(msg.timestamp),
                     sdkUuid: msg.sdkUuid,
+                    runtimeTurnAnchor: msg.runtimeTurnAnchor,
                     attachments,
                     metadata: msg.metadata,
                     ...getAssistantTurnMetrics(msg),
@@ -1931,6 +2158,22 @@ export default function TabProvider({
                 const ids = payload?.messageIds;
                 if (ids && ids.length > 0) {
                     const idSet = new Set(ids);
+                    const titleProjection = firstUserTitleProjectionRef.current;
+                    if (
+                        titleProjection !== null
+                        && titleProjection !== 'established'
+                        && idSet.has(titleProjection.messageId)
+                    ) {
+                        if (currentSessionTitleRef.current === titleProjection.title) {
+                            currentSessionTitleRef.current = 'New Chat';
+                            firstUserTitleProjectionRef.current = null;
+                            onTitleChangeRef.current?.('New Chat');
+                        } else {
+                            // A newer manual/AI title superseded the provisional
+                            // first-query projection before the rejection arrived.
+                            firstUserTitleProjectionRef.current = 'established';
+                        }
+                    }
                     setHistoryMessages(prev =>
                         prev.some(m => idSet.has(m.id)) ? prev.filter(m => !idSet.has(m.id)) : prev
                     );
@@ -2329,7 +2572,7 @@ export default function TabProvider({
                 }
                 if (toolId && inputRef) {
                     const targetSessionId = currentSessionIdRef.current;
-                    void getBaseUrl(tabId, targetSessionId)
+                    void getDataPlaneBaseUrl(tabId, targetSessionId)
                         .then((baseUrl) => fetchJsonLargeValueRef(
                             baseUrl,
                             inputRef,
@@ -2527,6 +2770,7 @@ export default function TabProvider({
                     assistant_sdk_uuid?: string;
                     assistant_message_id?: string;
                     compact_result?: 'success';
+                    runtime_turn_anchor?: Message['runtimeTurnAnchor'];
                 } | null;
                 const inputTokens = normalizeFiniteNumber(completePayload?.input_tokens);
                 const outputTokens = normalizeFiniteNumber(completePayload?.output_tokens);
@@ -2553,13 +2797,15 @@ export default function TabProvider({
                     completePayload?.assistant_message_id ||
                     completedUsage ||
                     completedToolCount !== undefined ||
-                    completedDurationMs !== undefined
+                    completedDurationMs !== undefined ||
+                    completePayload?.runtime_turn_anchor
                         ? {
                             sdkUuid: completePayload?.assistant_sdk_uuid,
                             realId: completePayload?.assistant_message_id,
                             usage: completedUsage,
                             toolCount: completedToolCount,
                             durationMs: completedDurationMs,
+                            runtimeTurnAnchor: completePayload?.runtime_turn_anchor,
                         }
                         : undefined;
                 // Pattern 3 §3.2.2 — drain all pending RAF-batched tool deltas
@@ -2655,6 +2901,8 @@ export default function TabProvider({
                 const titlePayload = data as { sessionId?: string; title?: string } | null;
                 if (titlePayload?.title && titlePayload.sessionId
                     && titlePayload.sessionId === currentSessionIdRef.current) {
+                    firstUserTitleProjectionRef.current = 'established';
+                    currentSessionTitleRef.current = titlePayload.title;
                     onTitleChangeRef.current?.(titlePayload.title);
                 }
                 // Refresh the session-list surfaces (history dropdown / task center),
@@ -2981,7 +3229,7 @@ export default function TabProvider({
                 };
                 if (payload.inputRef) {
                     const targetSessionId = currentSessionIdRef.current;
-                    void getBaseUrl(tabId, targetSessionId)
+                    void getDataPlaneBaseUrl(tabId, targetSessionId)
                         .then((baseUrl) => fetchJsonLargeValueRef(
                             baseUrl,
                             payload.inputRef,
@@ -3450,6 +3698,11 @@ export default function TabProvider({
                         if (!seenIdsRef.current.has(msgId)) {
                             seenIdsRef.current.add(msgId);
 
+                            projectAcceptedFirstUserTitle({
+                                content: payload.userMessage.content,
+                                messageId: msgId,
+                            });
+
                             let attachments = normalizeWireAttachments(payload.userMessage.attachments);
                             // Look up queued message by real queueId first;
                             // fall back to first opt-* entry when queue:started arrives
@@ -3609,7 +3862,7 @@ export default function TabProvider({
                 }
             }
         }
-    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent]);
+    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle]);
 
     const handleSseEvent = useCallback((
         eventName: string,
@@ -3618,6 +3871,33 @@ export default function TabProvider({
     ) => {
         const eventSessionId = metadata.sessionId;
         const liveRevision = metadata.liveRevision;
+        const restore = persistedRestoreLifecycleRef.current;
+        if (restore.phase === 'failed') {
+            const isGlobalControlEvent = eventName === 'config:changed'
+                || eventName === 'plugin:install-progress'
+                || eventName === 'plugins:changed';
+            const payloadSessionId = eventSessionId ?? (
+                typeof data === 'object'
+                && data !== null
+                && 'sessionId' in data
+                && typeof data.sessionId === 'string'
+                    ? data.sessionId
+                    : null
+            );
+            if (
+                !isGlobalControlEvent
+                && (
+                    payloadSessionId === restore.sessionId
+                    || currentSessionIdRef.current === restore.sessionId
+                )
+            ) {
+                // Failed is terminal until the explicit retry action creates a
+                // new lifecycle token. Legacy chat:init and external-runtime
+                // cold-history carry no Session scope, so the Tab's current
+                // Session is also authoritative for rejecting local events.
+                return;
+            }
+        }
         if (!eventSessionId || liveRevision === undefined) {
             applySseEvent(eventName, data);
             return;
@@ -3633,8 +3913,13 @@ export default function TabProvider({
         }
 
         const fence = liveRevisionFenceRef.current;
-        const isRestoredSession = restoredSessionIdRef.current === eventSessionId;
-        const isRestoreTarget = fence.sessionId === eventSessionId;
+        if (restore.phase === 'failed' && restore.sessionId === eventSessionId) {
+            // Failed is terminal until the user explicitly retries. Live events
+            // remain covered by the error shell; the retry snapshot catches up.
+            return;
+        }
+        const isRestoredSession = restore.phase === 'ready' && restore.sessionId === eventSessionId;
+        const isRestoreTarget = restore.sessionId === eventSessionId && restore.phase !== 'inactive';
         if (!isRestoredSession && !isRestoreTarget) {
             // Brand-new sessions are SSE-native until their first REST adoption.
             applySseEvent(eventName, data);
@@ -3665,7 +3950,10 @@ export default function TabProvider({
     const connectSseTailRef = useRef<Promise<void> | null>(null);
     // Unmount guard for async attachment work.
     const isMountedRef = useRef(true);
-    useEffect(() => { return () => { isMountedRef.current = false; }; }, []);
+    useEffect(() => () => {
+        isMountedRef.current = false;
+        abortActiveRestoreRequest();
+    }, [abortActiveRestoreRequest]);
 
     // Install one SSE subscription for the current Session. In Tauri mode
     // Rust owns transport lookup/retry; this layer owns only attachment and
@@ -3704,21 +3992,23 @@ export default function TabProvider({
                 }
             }
             if (status === 'connected') {
-                const attachedSessionId = attachedSseSessionIdRef.current;
-                setIsConnected(true);
-                if (attachedSessionId && restoredSessionIdRef.current === attachedSessionId) {
-                    const generation = sse.getConnectionGeneration();
-                    const currentFence = liveRevisionFenceRef.current;
-                    if (currentFence.connectionGeneration !== generation) {
-                        const nextFence = beginLiveRevisionRestore(
-                            currentFence,
-                            attachedSessionId,
-                            generation,
-                        );
-                        liveRevisionFenceRef.current = nextFence;
-                        requestLiveRestoreRef.current(attachedSessionId, nextFence.restoreToken);
-                    }
+                const targetSessionId = currentSessionIdRef.current;
+                const restore = persistedRestoreLifecycleRef.current;
+                const connectionGeneration = sse.getConnectionGeneration();
+                if (
+                    targetSessionId
+                    && restore.phase === 'restoring'
+                    && restore.sessionId === targetSessionId
+                    && restore.connectionGeneration !== connectionGeneration
+                ) {
+                    const fence = beginPersistedRestore(
+                        targetSessionId,
+                        connectionGeneration,
+                        restore.mode,
+                    );
+                    requestLiveRestoreRef.current(targetSessionId, fence.restoreToken, restore.mode);
                 }
+                setIsConnected(true);
             }
         });
         sseRef.current = sse;
@@ -3743,7 +4033,7 @@ export default function TabProvider({
             console.error(`[TabProvider ${tabId}] SSE connect failed:`, error);
             throw error;
         }
-    }, [tabId, handleSseEvent]);
+    }, [tabId, handleSseEvent, beginPersistedRestore]);
 
     // Public connectSse — every caller chains its own task onto the
     // previous task's tail, giving true serial execution. Without chaining,
@@ -3863,10 +4153,25 @@ export default function TabProvider({
             if (restartedSid === currentSessionIdRef.current) {
                 console.log(`[TabProvider ${tabId}] Session Sidecar restarted on port ${port}; invalidating tab URL cache`);
                 resetTabServerUrlCache(tabId);
+                const restore = persistedRestoreLifecycleRef.current;
+                if (isPendingSessionId(restartedSid)) return;
+                // liveRevision is process-local. A replacement Sidecar starts a
+                // new epoch, so an old numeric baseline cannot be compared with
+                // its revisions even if the transport generation later looks
+                // contiguous. Re-arm the existing lifecycle from REST now.
+                const mode: PersistedRestoreMode = restore.phase === 'ready'
+                    ? 'live-recovery'
+                    : restore.mode;
+                const fence = beginPersistedRestore(
+                    restartedSid,
+                    sseRef.current?.getConnectionGeneration() ?? 0,
+                    mode,
+                );
+                requestLiveRestoreRef.current(restartedSid, fence.restoreToken, mode);
             }
         }, ac.signal);
         return () => ac.abort();
-    }, [tabId]);
+    }, [tabId, beginPersistedRestore]);
 
     // Send message with optional images, permission mode, and model
     // Returns true immediately (optimistic) to clear the input without waiting for HTTP response.
@@ -3886,6 +4191,7 @@ export default function TabProvider({
     ): Promise<boolean> => {
         const trimmed = text.trim();
         if (!trimmed && (!images || images.length === 0)) return false;
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return false;
         const visibleQueueText = queueDisplayText(trimmed);
 
         // Detect skill/slash command: /command at start of message (for analytics)
@@ -4129,134 +4435,94 @@ export default function TabProvider({
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     }, [recoverStreamingUi, tabId]);
 
-    // Load session from history
-    // Options:
-    // - skipLoadingReset: If true, don't reset isLoading to false. Useful when caller
-    //   knows an operation is in progress (e.g., cron task execution) and will manage
-    //   the loading state separately.
-    //
-    // Note: This option is currently available for future use cases but not actively used.
-    // Chat.tsx manages loading state through pendingCronLoadingRef pattern instead of
-    // calling loadSession directly, to avoid duplicate loadSession calls with TabProvider's
-    // session loading effect.
-    const loadSession = useCallback(async (
+    // Read and project the current Tab's persisted Session. This internal
+    // function accepts an explicit target only so fence-driven recovery can
+    // retain its captured identity; the public context exposes current-Session
+    // reload without a target argument.
+    const restorePersistedSession = useCallback(async (
         targetSessionId: string,
         options?: {
-            skipLoadingReset?: boolean;
-            previousSessionId?: string | null;
-            skipSessionSwitch?: boolean;
             restoreToken?: number;
-            mode?: 'session-switch' | 'live-recovery';
+            mode?: PersistedRestoreMode;
+            gapRecoveryAttempted?: boolean;
         }
     ): Promise<boolean> => {
-        const isLiveRecovery = options?.mode === 'live-recovery';
+        if (currentSessionIdRef.current !== targetSessionId) return false;
+        if (persistedRestoreLifecycleRef.current.phase === 'failed') return false;
         const connectionGeneration = sseRef.current?.getConnectionGeneration() ?? 0;
-        let restoreToken = options?.restoreToken;
-        if (restoreToken === undefined) {
-            const fence = beginLiveRevisionRestore(
-                liveRevisionFenceRef.current,
-                targetSessionId,
-                connectionGeneration,
+        const currentRestore = persistedRestoreLifecycleRef.current;
+        const restoreMode = options?.mode ?? currentRestore.mode;
+        let restoreToken: number;
+
+        if (options?.restoreToken !== undefined) {
+            restoreToken = options.restoreToken;
+        } else {
+            const currentFence = liveRevisionFenceRef.current;
+            const canReuseRestore = (
+                currentRestore.phase === 'restoring'
+                && currentRestore.sessionId === targetSessionId
+                && currentRestore.restoreToken === currentFence.restoreToken
+                && currentFence.sessionId === targetSessionId
+                && currentFence.connectionGeneration === connectionGeneration
+                && currentFence.restoring
             );
-            liveRevisionFenceRef.current = fence;
-            restoreToken = fence.restoreToken;
+            if (canReuseRestore) {
+                restoreToken = currentFence.restoreToken;
+            } else {
+                const nextFence = beginPersistedRestore(
+                    targetSessionId,
+                    connectionGeneration,
+                    restoreMode,
+                );
+                restoreToken = nextFence.restoreToken;
+            }
         }
-        const cancelRestore = () => {
+
+        abortActiveRestoreRequest();
+        const controller = new AbortController();
+        const restoreRequest = {
+            sessionId: targetSessionId,
+            restoreToken,
+            connectionGeneration,
+            controller,
+        };
+        activeRestoreRequestRef.current = restoreRequest;
+
+        const ownsCurrentRestore = (): boolean => {
             const fence = liveRevisionFenceRef.current;
-            if (!ownsLiveRevisionRestore(fence, restoreToken)) return;
+            return (
+                isMountedRef.current
+                && activeRestoreRequestRef.current === restoreRequest
+                && currentSessionIdRef.current === targetSessionId
+                && fence.sessionId === targetSessionId
+                && fence.restoreToken === restoreToken
+                && fence.connectionGeneration === connectionGeneration
+                && (sseRef.current?.getConnectionGeneration() ?? 0) === connectionGeneration
+                && fence.restoring
+            );
+        };
+
+        const failOwnedRestore = (message: string) => {
+            if (!ownsCurrentRestore()) return;
+            const fence = liveRevisionFenceRef.current;
             liveRevisionFenceRef.current = {
                 ...fence,
                 restoring: false,
                 lastAppliedRevision: null,
                 buffered: [],
             };
+            publishPersistedRestoreLifecycle({
+                phase: 'failed',
+                mode: restoreMode,
+                sessionId: targetSessionId,
+                restoreToken,
+                connectionGeneration,
+                error: message,
+            });
         };
-        const retryLiveRestore = (): boolean => {
-            if (!isLiveRecovery) return false;
-            const fence = liveRevisionFenceRef.current;
-            if (
-                currentSessionIdRef.current !== targetSessionId
-                || fence.sessionId !== targetSessionId
-                || !ownsLiveRevisionRestore(fence, restoreToken)
-                || !fence.restoring
-            ) {
-                return false;
-            }
 
-            // Keep the same fence/token and its buffered live events. The
-            // transport is already healthy; only the authoritative REST
-            // snapshot failed transiently, so retry that boundary without
-            // creating a second reconnect owner or exposing loading chrome.
-            isLoadingSessionRef.current = false;
-            window.setTimeout(() => {
-                if (!isMountedRef.current) return;
-                const currentFence = liveRevisionFenceRef.current;
-                if (
-                    currentSessionIdRef.current === targetSessionId
-                    && currentFence.sessionId === targetSessionId
-                    && ownsLiveRevisionRestore(currentFence, restoreToken)
-                    && currentFence.restoring
-                ) {
-                    requestLiveRestoreRef.current(targetSessionId, restoreToken);
-                }
-            }, LIVE_RESTORE_RETRY_DELAY_MS);
-            return true;
-        };
-        // Rollback target for the prop-sync ref/state move (line 340-344). Prop
-        // sync fires synchronously when tab.sessionId changes, moving
-        // `currentSessionIdRef` to target before /sessions/switch is verified.
-        // On switch failure, restore so context.sessionId stays consistent with
-        // the visible history (which we deliberately don't replace on failure).
-        //
-        // Scope-of-rollback note: only Provider-internal ref/state is reverted.
-        // `tab.sessionId` (App-level) and the Rust-side sidecar swap that
-        // App.handleSwitchSession performed before this loadSession ran are NOT
-        // unwound. PRD 0.2.6 §5.3 step 5 explicitly accepts this: on rare
-        // /sessions/switch failure, surface an error and keep the visible UI
-        // stable, but do not implement a four-layer two-phase commit. Users
-        // retry; closing/reopening the Tab fully resets state.
-        const rollbackSessionId = options?.previousSessionId ?? null;
-        const rollbackOnSwitchFailure = () => {
-            if (rollbackSessionId && rollbackSessionId !== targetSessionId) {
-                currentSessionIdRef.current = rollbackSessionId;
-                setCurrentSessionId(rollbackSessionId);
-            }
-        };
         try {
-            console.log(`[TabProvider ${tabId}] Loading session: ${targetSessionId}`);
-            isLoadingSessionRef.current = true;
-            if (!isLiveRecovery) {
-                setIsSessionLoading(true);
-            }
-
-            // Check if session is already activated by another Tab or CronTask (Session singleton constraint)
-            const activation = isLiveRecovery ? null : await getSessionActivation(targetSessionId);
-            if (activation) {
-                // Case 1: Session is open in another Tab - jump to that Tab
-                if (activation.tab_id && activation.tab_id !== tabId) {
-                    console.log(`[TabProvider ${tabId}] Session ${targetSessionId} is already activated by tab ${activation.tab_id}, requesting jump`);
-                    window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.JUMP_TO_TAB, {
-                        detail: { targetTabId: activation.tab_id, sessionId: targetSessionId }
-                    }));
-                    isLoadingSessionRef.current = false;
-                    if (!isLiveRecovery) setIsSessionLoading(false);
-                    cancelRestore();
-                    return false;
-                }
-
-                // Case 2: Session is used by a CronTask without Tab - jump to show cron task UI
-                // This happens when cron task is running in background (tab was closed)
-                if (activation.is_cron_task && !activation.tab_id) {
-                    console.log(`[TabProvider ${tabId}] Session ${targetSessionId} is used by background cron task, will connect to it`);
-                    // Don't block - let the session load, Chat.tsx will restore cron task UI
-                    // The session switch will update the activation's tab_id
-                }
-            }
-
-            // Load only the last INITIAL_PAGE_SIZE messages. MessageList's
-            // startReached handler pulls older history lazily via `?before=<id>`
-            // as the user scrolls up. Keeps first-paint JSON body tiny on 600+
-            // message sessions.
+            console.log(`[TabProvider ${tabId}] Restoring persisted session: ${targetSessionId}`);
             const response = await apiGetJson<{
                 success: boolean;
                 session?: SessionMetadata & {
@@ -4268,51 +4534,15 @@ export default function TabProvider({
                     totalCount?: number;
                     hasMoreBefore?: boolean;
                 };
-            }>(`/sessions/${targetSessionId}?limit=${INITIAL_PAGE_SIZE}`);
+            }>(
+                `/sessions/${encodeURIComponent(targetSessionId)}?limit=${INITIAL_PAGE_SIZE}`,
+                { signal: controller.signal },
+            );
 
+            if (!ownsCurrentRestore()) return false;
             if (!response.success || !response.session) {
-                // Session not found is not necessarily an error - it may have been deleted
-                // or be a newly created empty session. Log as info, not error.
-                console.log(`[TabProvider ${tabId}] Session ${targetSessionId} not found in storage (may be deleted or empty)`);
-                if (!retryLiveRestore()) {
-                    const fence = liveRevisionFenceRef.current;
-                    if (ownsLiveRevisionRestore(fence, restoreToken)) {
-                        isLoadingSessionRef.current = false;
-                        if (!isLiveRecovery) setIsSessionLoading(false);
-                        cancelRestore();
-                    }
-                }
+                failOwnedRestore(String(i18n.t('chat:shell.boot.restoreFailed')));
                 return false;
-            }
-
-            // Confirm the sidecar runtime has switched before replacing the
-            // visible message history. Otherwise a failed /sessions/switch can
-            // leave the UI showing target history while subsequent send/SSE
-            // traffic still belongs to the previous session.
-            if (!options?.skipSessionSwitch) {
-                let switchResult: { success: boolean; error?: string };
-                try {
-                    switchResult = await postJson<{ success: boolean; error?: string }>('/sessions/switch', { sessionId: targetSessionId });
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    console.warn(`[TabProvider ${tabId}] Session switch failed for ${targetSessionId}: ${message}`);
-                    setAgentError(message);
-                    isLoadingSessionRef.current = false;
-                    if (!isLiveRecovery) setIsSessionLoading(false);
-                    rollbackOnSwitchFailure();
-                    cancelRestore();
-                    return false;
-                }
-                if (!switchResult.success) {
-                    const message = switchResult.error || 'Session switch failed.';
-                    console.warn(`[TabProvider ${tabId}] Session switch rejected for ${targetSessionId}: ${message}`);
-                    setAgentError(message);
-                    isLoadingSessionRef.current = false;
-                    if (!isLiveRecovery) setIsSessionLoading(false);
-                    rollbackOnSwitchFailure();
-                    cancelRestore();
-                    return false;
-                }
             }
 
             const restoreCompletion = completeLiveRevisionRestore(
@@ -4320,86 +4550,43 @@ export default function TabProvider({
                 restoreToken,
                 response.session.snapshotRevision ?? 0,
             );
-            if (restoreCompletion.stale) {
-                // A newer restore keeps ownership of the load guard while it
-                // is pending. If the token was invalidated by reset/switch
-                // without a replacement restore, release the old guard.
-                if (!liveRevisionFenceRef.current.restoring) {
-                    isLoadingSessionRef.current = false;
-                    if (!isLiveRecovery) setIsSessionLoading(false);
+            if (restoreCompletion.stale) return false;
+            if (restoreCompletion.needsResync) {
+                if (options?.gapRecoveryAttempted) {
+                    failOwnedRestore(String(i18n.t('chat:shell.boot.restoreFailed')));
+                    return false;
                 }
+                liveRevisionFenceRef.current = restoreCompletion.fence;
+                publishPersistedRestoreLifecycle({
+                    phase: 'restoring',
+                    mode: restoreMode,
+                    sessionId: targetSessionId,
+                    restoreToken: restoreCompletion.fence.restoreToken,
+                    connectionGeneration: restoreCompletion.fence.connectionGeneration,
+                    error: null,
+                });
+                requestLiveRestoreRef.current(
+                    targetSessionId,
+                    restoreCompletion.fence.restoreToken,
+                    restoreMode,
+                    true,
+                );
                 return false;
             }
 
-            // Convert session messages to Message format
-            const loadedMessages: Message[] = response.session.messages.map((msg) => {
-                // Parse content - it may be JSON stringified ContentBlock[] or plain text
-                let parsedContent: string | ContentBlock[] = msg.content ?? '';
-
-                // Only try to parse if content is a non-empty string starting with '['
-                if (typeof msg.content === 'string' && msg.content.length > 0 && msg.content.startsWith('[') && msg.content.includes('"type"')) {
-                    try {
-                        parsedContent = JSON.parse(msg.content) as ContentBlock[];
-                    } catch {
-                        // Keep as string if parse fails
-                        parsedContent = msg.content;
-                    }
-                }
-
-                return {
-                    id: msg.id,
-                    role: msg.role,
-                    content: parsedContent,
-                    timestamp: new Date(msg.timestamp),
-                    sdkUuid: msg.sdkUuid,
-                    attachments: msg.attachments?.map((att) => ({
-                        id: att.id,
-                        name: att.name,
-                        size: 0,
-                        mimeType: att.mimeType,
-                        savedPath: att.path ?? att.savedPath,
-                        relativePath: att.path ?? att.relativePath ?? att.savedPath,
-                        // Server no longer embeds base64 previews — resolve to
-                        // `myagents://` (Tauri) or `/api/attachment/*` (dev).
-                        previewUrl: resolveAttachmentUrl({
-                            savedPath: att.path ?? att.savedPath ?? att.relativePath,
-                            relativePath: att.relativePath,
-                            previewUrl: att.previewUrl,
-                        }),
-                        isImage: att.mimeType.startsWith('image/'),
-                    })),
-                    metadata: msg.metadata,
-                    ...getAssistantTurnMetrics(msg),
-                };
-            });
-
+            const loadedMessages = response.session.messages.map(wireSessionMessageToMessage);
+            const isLiveRecovery = restoreMode === 'live-recovery';
             const liveStreamingMessage = wireAssistantToStreamingMessage(
                 response.session.liveStreamingMessage,
             );
 
-            // Auto-title generation is backend-owned (#296): if this loaded
-            // session still lacks an AI title, the sidecar will generate one off
-            // its next successful turn (reading rounds from the persisted
-            // transcript) and push it via `chat:session-title-changed`. The
-            // frontend no longer reconstructs rounds here.
-
+            let projectedMessages = loadedMessages;
             if (isLiveRecovery) {
                 const reconciled = reconcileLiveRecoveryHistory(
                     historyMessagesRef.current,
                     loadedMessages,
                 );
-                seenIdsRef.current.clear();
-                for (const message of reconciled.messages) {
-                    seenIdsRef.current.add(message.id);
-                }
-                historyMessagesRef.current = reconciled.messages;
-                setHistoryMessages(reconciled.messages);
-                restoredSessionIdRef.current = targetSessionId;
-                isLoadingSessionRef.current = false;
-
-                // Preserve the paginated viewport when the snapshot overlaps
-                // its recent tail. With no overlap, the REST snapshot is the
-                // only ordering fact and pagination must restart from it.
+                projectedMessages = reconciled.messages;
                 if (!reconciled.hasOverlap) {
                     setFirstItemIndex(PAGINATION_START_INDEX);
                     const hasMoreBefore = response.session.hasMoreBefore ?? false;
@@ -4407,216 +4594,136 @@ export default function TabProvider({
                     hasMoreBeforeRef.current = hasMoreBefore;
                     loadingOlderRef.current = false;
                 }
-
-                // Discard only stale in-flight reveal state; do not clear the
-                // stable history projection or show a session-switch overlay.
-                pendingTextRef.current = '';
-                if (revealRafRef.current != null) {
-                    cancelAnimationFrame(revealRafRef.current);
-                    revealRafRef.current = null;
-                }
-                revealAccRef.current = 0;
-                revealLastRef.current = 0;
-
-                const liveSessionState = response.session.liveSessionState ?? 'idle';
-                const isLiveActive = classifySessionActivity(liveSessionState) === 'active';
-                isSessionActiveRef.current = isLiveActive;
-                if (liveStreamingMessage && isLiveActive) {
-                    isStreamingRef.current = true;
-                    adoptedStreamRef.current = true;
-                    streamingMessageRef.current = liveStreamingMessage;
-                    setStreamingMessage(liveStreamingMessage);
-                } else {
-                    isStreamingRef.current = false;
-                    adoptedStreamRef.current = false;
-                    streamingMessageRef.current = null;
-                    setStreamingMessage(null);
-                    clearRuntimePlanTodos();
-                }
-                setIsLoading(isLiveActive);
-                setSessionState(liveSessionState);
-
-                // Pending interactive UI is part of the live snapshot and
-                // must converge across a disconnect window.
-                clearInteractiveState();
-                for (const pending of response.session.pendingInteractiveRequests ?? []) {
-                    applySseEvent(pending.type, pending.data);
-                }
-
-                const { messages: _meta_messages, ...metaOnly } = response.session as SessionMetadata & { messages?: unknown };
-                void _meta_messages;
-                setSessionMeta(metaOnly as SessionMetadata);
-                onTitleChangeRef.current?.(getSessionDisplayText(response.session));
-
-                // Publish the fence only after the entire authoritative
-                // snapshot projection has been queued, then replay events that
-                // arrived beyond snapshotRevision.
-                liveRevisionFenceRef.current = restoreCompletion.fence;
-                for (const event of restoreCompletion.replay) {
-                    applySseEvent(event.eventName, event.data);
-                }
-                if (restoreCompletion.needsResync) {
-                    requestLiveRestoreRef.current(targetSessionId, restoreCompletion.fence.restoreToken);
-                }
-
-                console.log(`[TabProvider ${tabId}] Reconciled live snapshot at revision ${response.session.snapshotRevision ?? 0}`);
-                return true;
+            } else {
+                setAgentPlanTodos(null);
+                isNewSessionRef.current = false;
+                resetBirthPendingRef.current = false;
+                resetBirthSessionIdRef.current = null;
+                clearSessionActive();
+                setFirstItemIndex(PAGINATION_START_INDEX);
+                const hasMoreBefore = response.session.hasMoreBefore ?? false;
+                setHasMoreBefore(hasMoreBefore);
+                hasMoreBeforeRef.current = hasMoreBefore;
+                loadingOlderRef.current = false;
             }
 
-            // Clear current state and load new messages
             seenIdsRef.current.clear();
-            setAgentPlanTodos(null);
-            isNewSessionRef.current = false; // Allow SSE replays again
-            resetBirthPendingRef.current = false;
-            resetBirthSessionIdRef.current = null;
-            clearSessionActive();  // Stop any streaming/active state
-            // isLoadingSessionRef stays TRUE here — it is cleared only AFTER
-            // setHistoryMessages + restoredSessionIdRef below. Clearing it at this
-            // (old) position, before the history is set, opened a window where a
-            // late chat:init / message-replay saw "no load in flight" and wiped /
-            // appended over the REST page (#0608).
-            setIsSessionLoading(false);
-            // Reset pagination for the new session. Virtuoso sees this as a
-            // full data replacement; firstItemIndex snaps back to the start
-            // constant so subsequent prepends decrement into a fresh range.
-            setFirstItemIndex(PAGINATION_START_INDEX);
-            setHasMoreBefore(response.session.hasMoreBefore ?? false);
-            hasMoreBeforeRef.current = response.session.hasMoreBefore ?? false;
-            loadingOlderRef.current = false;
-            // Preload seen IDs so SSE replays / cron sync don't re-append them.
-            for (const m of loadedMessages) seenIdsRef.current.add(m.id);
-            historyMessagesRef.current = loadedMessages;
-            setHistoryMessages(loadedMessages);
-            // History is now authoritatively restored from disk for this session.
-            // Mark it (and drop the load guard) in this order so SSE chat:init /
-            // message-replay firing the instant the guard drops still treat REST as
-            // the owner of history and never re-deliver the in-memory set (#0608).
-            restoredSessionIdRef.current = targetSessionId;
-            isLoadingSessionRef.current = false;
-            // Reveal state is per-tab; a session swap must not let a stale reveal loop or
-            // un-revealed pending text bleed across. Clear buffer + stop loop (any enqueued
-            // commit is id-guarded against the new/null message).
+            for (const message of projectedMessages) {
+                seenIdsRef.current.add(message.id);
+            }
+            historyMessagesRef.current = projectedMessages;
+            setHistoryMessages(projectedMessages);
+
             pendingTextRef.current = '';
-            if (revealRafRef.current != null) { cancelAnimationFrame(revealRafRef.current); revealRafRef.current = null; }
+            if (revealRafRef.current != null) {
+                cancelAnimationFrame(revealRafRef.current);
+                revealRafRef.current = null;
+            }
             revealAccRef.current = 0;
             revealLastRef.current = 0;
+
             const liveSessionState = response.session.liveSessionState ?? 'idle';
             const isLiveActive = classifySessionActivity(liveSessionState) === 'active';
-            // REST liveSessionState is the reconnect/history-load activity
-            // authority. It must not depend on whether the first assistant
-            // chunk has materialized a streaming message yet.
             isSessionActiveRef.current = isLiveActive;
             if (liveStreamingMessage && isLiveActive) {
                 isStreamingRef.current = true;
-                // Adopted mid-turn stream: bypass the typewriter (reveal instantly) so the
-                // REST-snapshot / live-SSE boundary race is not amplified by buffered text.
                 adoptedStreamRef.current = true;
                 streamingMessageRef.current = liveStreamingMessage;
                 setStreamingMessage(liveStreamingMessage);
             } else {
+                isStreamingRef.current = false;
                 adoptedStreamRef.current = false;
                 streamingMessageRef.current = null;
                 setStreamingMessage(null);
+                if (isLiveRecovery) clearRuntimePlanTodos();
             }
-            // Old sessions (pre-v0.1.60) have no runtime field → treat as 'builtin'.
-            // null is reserved strictly for "session not loaded yet" (initial state).
+
             const loadedRuntime = response.session.runtime || 'builtin';
             setSessionRuntime(loadedRuntime);
             setSessionRuntimeSource(loadedRuntime === 'builtin'
                 ? null
                 : (response.session.runtimeSource ?? 'system-cli'));
-            // Strip SessionData.messages so sessionMeta holds just the metadata slice
-            // (prevents accidental reliance on .messages elsewhere and keeps the
-            // snapshot concept clean — SessionData is a superset of SessionMetadata).
-            const { messages: _meta_messages, ...metaOnly } = response.session as SessionMetadata & { messages?: unknown };
-            void _meta_messages;
+
+            const { messages: _metaMessages, ...metaOnly } = response.session as SessionMetadata & { messages?: unknown };
+            void _metaMessages;
             setSessionMeta(metaOnly as SessionMetadata);
-            // PRD 0.2.32 — seed context 用量指示器 from the persisted last-turn snapshot.
-            // "进入会话时 display = 该 session 的 lastContextUsage ?? null" —— 同时承担「重开→显示真实
-            // 占用」和「无持久值→清空」（前端清空只动展示态，不影响后端持久数据）。实时 SSE 后续覆盖。
-            // review #W4 — only seed when the snapshot's `source` matches this session's runtime;
-            // a stale builtin snapshot must not paint the builtin-only /compact button onto a
-            // now-external session. Mismatch → null; the next live turn seeds the correct one.
-            const persistedUsage = response.session.lastContextUsage ?? null;
-            const seedRuntime = response.session.runtime || 'builtin';
-            const seedDecision = decidePersistedContextUsageSeed({
-                snapshotSource: persistedUsage?.source,
-                seedRuntime,
-                targetSessionId,
-                liveSessionId: liveContextUsageSessionIdRef.current,
-            });
-            if (seedDecision === 'seed') {
-                setContextUsage(persistedUsage);
-            } else if (seedDecision === 'clear') {
-                liveContextUsageSessionIdRef.current = null;
-                setContextUsage(null);
+            firstUserTitleProjectionRef.current = (
+                response.session.titleSource === 'user'
+                || (response.session.title && response.session.title !== 'New Chat')
+                || projectedMessages.some(message => (
+                    message.role === 'user'
+                    && typeof message.content === 'string'
+                    && Boolean(deriveSessionTitle(message.content, 40))
+                ))
+            ) ? 'established' : null;
+            const restoredTitle = getSessionDisplayText(response.session);
+            currentSessionTitleRef.current = restoredTitle;
+            onTitleChangeRef.current?.(restoredTitle);
+
+            if (!isLiveRecovery) {
+                const persistedUsage = response.session.lastContextUsage ?? null;
+                const seedDecision = decidePersistedContextUsageSeed({
+                    snapshotSource: persistedUsage?.source,
+                    seedRuntime: loadedRuntime,
+                    targetSessionId,
+                    liveSessionId: liveContextUsageSessionIdRef.current,
+                });
+                if (seedDecision === 'seed') {
+                    setContextUsage(persistedUsage);
+                } else if (seedDecision === 'clear') {
+                    liveContextUsageSessionIdRef.current = null;
+                    setContextUsage(null);
+                }
+                setSdkSlashCommands([]);
+                setSystemStatus(null);
+                setSystemNotice(null);
+                setAgentError(null);
+                setLastTerminalReason(null);
+                setRuntimeDiagnostics(null);
+                currentSessionIdRef.current = targetSessionId;
+                setCurrentSessionId(targetSessionId);
             }
-            setSdkSlashCommands([]);
-            // Only reset loading state if not explicitly skipped
-            // (caller may be managing loading state for an in-progress operation like cron task)
-            if (!options?.skipLoadingReset) {
-                setIsLoading(isLiveActive);
-                setSessionState(liveSessionState);
-            }
-            setSystemStatus(null);
-            setSystemNotice(null);
-            setAgentError(null);
-            setLastTerminalReason(null);
-            // Issue #194 — clear runtime diagnostics when loading a different
-            // session; the runtime adapter will re-emit `runtime_diagnostics`
-            // for the new session if it's external. Avoids showing previous
-            // session's "X tools unreachable" warning on an unrelated session.
-            setRuntimeDiagnostics(null);
+
+            setIsLoading(isLiveActive);
+            setSessionState(liveSessionState);
+
             clearInteractiveState();
             for (const pending of response.session.pendingInteractiveRequests ?? []) {
                 applySseEvent(pending.type, pending.data);
             }
-            // Update current session ID to reflect the loaded session.
-            // Ref is updated synchronously so that any in-flight async handler
-            // (cron incremental sync, loadOlderMessages) checking `currentSessionIdRef`
-            // after its await resolves sees the new id immediately — otherwise
-            // its post-await guard would pass against the old id and dispatch a
-            // stale setHistoryMessages onto the already-switched session.
-            currentSessionIdRef.current = targetSessionId;
-            setCurrentSessionId(targetSessionId);
 
-            // Keep Chat header and all session-list surfaces on the same
-            // title/query fallback policy.
-            onTitleChangeRef.current?.(getSessionDisplayText(response.session));
-
-            // Keep the fence closed through the complete REST snapshot commit.
-            // Publishing restoring=false earlier lets a re-entrant/live event
-            // mutate the old projection before these snapshot setters are queued.
             liveRevisionFenceRef.current = restoreCompletion.fence;
+            publishPersistedRestoreLifecycle({
+                phase: 'ready',
+                mode: restoreMode,
+                sessionId: targetSessionId,
+                restoreToken,
+                connectionGeneration,
+                error: null,
+            });
             for (const event of restoreCompletion.replay) {
                 applySseEvent(event.eventName, event.data);
             }
-            if (restoreCompletion.needsResync) {
-                requestLiveRestoreRef.current(targetSessionId, restoreCompletion.fence.restoreToken);
-            }
 
-            console.log(`[TabProvider ${tabId}] Loaded ${loadedMessages.length} messages from session`);
+            console.log(
+                `[TabProvider ${tabId}] Restored ${loadedMessages.length} persisted messages at revision ${response.session.snapshotRevision ?? 0}`,
+            );
             return true;
         } catch (error) {
-            if (!retryLiveRestore()) {
-                const fence = liveRevisionFenceRef.current;
-                if (ownsLiveRevisionRestore(fence, restoreToken)) {
-                    isLoadingSessionRef.current = false;
-                    if (!isLiveRecovery) setIsSessionLoading(false);
-                    cancelRestore();
-                }
+            if (error instanceof Error && error.name === 'AbortError') {
+                return false;
             }
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            const errorStack = error instanceof Error ? error.stack : undefined;
-            console.error(`[TabProvider ${tabId}] Load session failed:`, errorMessage);
-            if (errorStack) {
-                console.error(errorStack);
-            }
+            const message = error instanceof Error ? error.message : String(error);
+            failOwnedRestore(message);
+            console.error(`[TabProvider ${tabId}] Persisted session restore failed:`, error);
             return false;
+        } finally {
+            if (activeRestoreRequestRef.current === restoreRequest) {
+                activeRestoreRequestRef.current = null;
+            }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson and postJson are stable
-    }, [tabId, clearInteractiveState, applySseEvent]);
-
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson is stable
+    }, [tabId, clearInteractiveState, applySseEvent, clearSessionActive, clearRuntimePlanTodos, abortActiveRestoreRequest, beginPersistedRestore, publishPersistedRestoreLifecycle]);
     // Fetch the page of messages immediately older than the one currently at
     // the top of the history. Called by MessageList when Virtuoso's
     // startReached fires. Safe to call repeatedly — the loadingOlderRef guard
@@ -4643,39 +4750,7 @@ export default function TabProvider({
             if (currentSessionIdRef.current !== sid) return;
             if (!resp.success || !resp.session) return;
 
-            const older: Message[] = resp.session.messages.map((msg) => {
-                let parsedContent: string | ContentBlock[] = msg.content ?? '';
-                if (typeof msg.content === 'string' && msg.content.length > 0 && msg.content.startsWith('[') && msg.content.includes('"type"')) {
-                    try {
-                        parsedContent = JSON.parse(msg.content) as ContentBlock[];
-                    } catch {
-                        parsedContent = msg.content;
-                    }
-                }
-                return {
-                    id: msg.id,
-                    role: msg.role,
-                    content: parsedContent,
-                    timestamp: new Date(msg.timestamp),
-                    sdkUuid: msg.sdkUuid,
-                    attachments: msg.attachments?.map((att) => ({
-                        id: att.id,
-                        name: att.name,
-                        size: 0,
-                        mimeType: att.mimeType,
-                        savedPath: att.path ?? att.savedPath,
-                        relativePath: att.path ?? att.relativePath ?? att.savedPath,
-                        previewUrl: resolveAttachmentUrl({
-                            savedPath: att.path ?? att.savedPath ?? att.relativePath,
-                            relativePath: att.relativePath,
-                            previewUrl: att.previewUrl,
-                        }),
-                        isImage: att.mimeType.startsWith('image/'),
-                    })),
-                    metadata: msg.metadata,
-                    ...getAssistantTurnMetrics(msg),
-                };
-            });
+            const older = resp.session.messages.map(wireSessionMessageToMessage);
 
             if (older.length === 0) {
                 setHasMoreBefore(false);
@@ -4719,21 +4794,41 @@ export default function TabProvider({
     // we're currently viewing. This handles the case where a Tab opens a cron session
     // during/after execution on a different Sidecar — the Tab won't get SSE streaming,
     // so we reload from disk when cron:execution-complete fires.
-    const loadSessionRef = useRef(loadSession);
-    loadSessionRef.current = loadSession;
-    requestLiveRestoreRef.current = (targetSessionId, restoreToken) => {
+    const restorePersistedSessionRef = useRef(restorePersistedSession);
+    restorePersistedSessionRef.current = restorePersistedSession;
+    requestLiveRestoreRef.current = (
+        targetSessionId,
+        restoreToken,
+        requestedMode,
+        gapRecoveryAttempted,
+    ) => {
         const fence = liveRevisionFenceRef.current;
         if (
             currentSessionIdRef.current !== targetSessionId
             || fence.sessionId !== targetSessionId
             || fence.restoreToken !== restoreToken
+            || !fence.restoring
         ) {
             return;
         }
-        void loadSessionRef.current(targetSessionId, {
-            skipSessionSwitch: true,
+        const currentRestore = persistedRestoreLifecycleRef.current;
+        const mode: PersistedRestoreMode = requestedMode ?? (
+            currentRestore.phase === 'ready' && currentRestore.sessionId === targetSessionId
+                ? 'live-recovery'
+                : currentRestore.mode
+        );
+        publishPersistedRestoreLifecycle({
+            phase: 'restoring',
+            mode,
+            sessionId: targetSessionId,
             restoreToken,
-            mode: 'live-recovery',
+            connectionGeneration: fence.connectionGeneration,
+            error: null,
+        });
+        void restorePersistedSessionRef.current(targetSessionId, {
+            restoreToken,
+            mode,
+            gapRecoveryAttempted,
         });
     };
 
@@ -4746,12 +4841,13 @@ export default function TabProvider({
                 const { internalSessionId } = event.payload;
                 const currentSid = currentSessionIdRef.current;
                 if (!internalSessionId || !currentSid || internalSessionId !== currentSid) return;
+                if (persistedRestoreLifecycleRef.current.phase === 'failed') return;
 
                 // Don't disturb an in-flight turn. If the user is still streaming
                 // or actively loading this session, let the normal SSE path
                 // deliver new messages — appending mid-turn would compete with
                 // the streaming message's final move-to-history step.
-                if (isStreamingRef.current || isLoadingSessionRef.current) {
+                if (isStreamingRef.current || isPersistedRestoreInFlight()) {
                     return;
                 }
 
@@ -4759,7 +4855,7 @@ export default function TabProvider({
                 if (!last) {
                     // Empty tab view — fall through to a full load (first-time open).
                     console.log(`[TabProvider ${tabId}] Cron complete on empty view, full load`);
-                    loadSessionRef.current(internalSessionId);
+                    restorePersistedSessionRef.current(internalSessionId, { mode: 'live-recovery' });
                     return;
                 }
 
@@ -4767,15 +4863,7 @@ export default function TabProvider({
                     const resp = await apiGetJson<{
                         success: boolean;
                         fromIndex: number;
-                        messages: Array<{
-                            id: string;
-                            role: 'user' | 'assistant';
-                            content: string;
-                            timestamp: string;
-                            sdkUuid?: string;
-                            attachments?: Array<{ id: string; name: string; mimeType: string; path: string }>;
-                            metadata?: Message['metadata'];
-                        }>;
+                        messages: WireSessionMessage[];
                     }>(`/sessions/${encodeURIComponent(internalSessionId)}/since/${encodeURIComponent(last.id)}`);
 
                     if (!resp.success) return;
@@ -4785,40 +4873,13 @@ export default function TabProvider({
                     // than stale data.
                     if (resp.fromIndex === -1) {
                         console.log(`[TabProvider ${tabId}] Cron complete, baseline lost, full reload`);
-                        loadSessionRef.current(internalSessionId);
+                        restorePersistedSessionRef.current(internalSessionId, { mode: 'live-recovery' });
                         return;
                     }
 
                     if (resp.messages.length === 0) return;
 
-                    const appended: Message[] = resp.messages.map((msg) => {
-                            let parsedContent: string | ContentBlock[] = msg.content ?? '';
-                            if (typeof msg.content === 'string' && msg.content.length > 0 && msg.content.startsWith('[') && msg.content.includes('"type"')) {
-                                try {
-                                    parsedContent = JSON.parse(msg.content) as ContentBlock[];
-                                } catch {
-                                    parsedContent = msg.content;
-                                }
-                            }
-                            return {
-                                id: msg.id,
-                                role: msg.role,
-                                content: parsedContent,
-                                timestamp: new Date(msg.timestamp),
-                                sdkUuid: msg.sdkUuid,
-                                attachments: msg.attachments?.map((att) => ({
-                                    id: att.id,
-                                    name: att.name,
-                                    size: 0,
-                                    mimeType: att.mimeType,
-                                    savedPath: att.path,
-                                    relativePath: att.path,
-                                    previewUrl: resolveAttachmentUrl({ savedPath: att.path }),
-                                    isImage: att.mimeType.startsWith('image/'),
-                                })),
-                                metadata: msg.metadata,
-                            };
-                        });
+                    const appended = resp.messages.map(wireSessionMessageToMessage);
 
                         // Dedupe against any IDs already in history — guards against
                         // the rare race where SSE delivered the same message moments
@@ -4834,7 +4895,7 @@ export default function TabProvider({
                         console.log(`[TabProvider ${tabId}] Cron incremental sync appended ${appended.length} message(s)`);
                 } catch (err) {
                     console.warn(`[TabProvider ${tabId}] Incremental sync failed, falling back to full reload:`, err);
-                    loadSessionRef.current(internalSessionId);
+                    restorePersistedSessionRef.current(internalSessionId, { mode: 'live-recovery' });
                 }
             },
             ac.signal,
@@ -4843,20 +4904,13 @@ export default function TabProvider({
         // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson is stable via useMemo
     }, [tabId]);
 
-    // Track whether initial session has been loaded
-    const initialSessionLoadedRef = useRef(false);
-    // Track previous sessionId to detect changes (must be before the effect that uses it)
-    // A persisted session supplied on mount is still a real history adoption.
-    // Seed with null so initial existing-session opens run REST restore even
-    // when the already-attached Sidecar reports an active background turn.
+    // Track the previous prop identity so pending/reset births stay on their
+    // SSE-native path while persisted targets enter the REST restore lifecycle.
     const prevSessionIdRef = useRef<string | null | undefined>(null);
 
-    // #235: degraded-load fallback. When SSE never (re)attaches after a
-    // ConnectionReset cascade, the session-load effect's "waiting for SSE to
-    // attach" / "!isConnected" early-returns would leave the tab blank forever
-    // because loadSession never fires. This timer loads the session over HTTP
-    // (which is independent of the SSE stream) after a grace period so the user
-    // sees their conversation; live streaming resumes if/when SSE recovers.
+    // If SSE attachment never completes, persisted history can still load from
+    // the target Sidecar over HTTP. This is an existing degraded transport path,
+    // not an additional startup delay: the normal path starts as soon as SSE is ready.
     const sseAttachFallbackRef = useRef<{ timer: ReturnType<typeof setTimeout>; sessionId: string } | null>(null);
     const SSE_ATTACH_FALLBACK_MS = 8000;
     const clearSseAttachFallback = useCallback(() => {
@@ -4865,172 +4919,146 @@ export default function TabProvider({
             sseAttachFallbackRef.current = null;
         }
     }, []);
-    const armSseAttachFallback = useCallback((
-        target: string,
-        prevSessionId: string | null | undefined,
-        options?: { allowWhileActive?: boolean },
-    ) => {
-        // Already armed for this exact session — don't restart the countdown.
+    const armSseAttachFallback = useCallback((target: string) => {
         if (sseAttachFallbackRef.current?.sessionId === target) return;
         clearSseAttachFallback();
         const timer = setTimeout(() => {
             sseAttachFallbackRef.current = null;
+            const restore = persistedRestoreLifecycleRef.current;
+            const request = activeRestoreRequestRef.current;
+            const alreadySettled = restore.sessionId === target && restore.phase !== 'restoring';
             if (!shouldDegradedLoad({
                 mounted: isMountedRef.current,
                 currentSessionId: currentSessionIdRef.current,
                 target,
                 connectedSseSessionId: attachedSseSessionIdRef.current,
-                alreadyLoaded: initialSessionLoadedRef.current,
+                alreadyLoaded: alreadySettled || request?.sessionId === target,
                 prevSessionId: prevSessionIdRef.current,
                 sessionActiveOrStreaming: isSessionActiveRef.current || isStreamingRef.current,
-                allowWhileActive: options?.allowWhileActive,
+                allowWhileActive: true,
             })) return;
-            console.warn(`[TabProvider ${tabId}] SSE attach timed out for ${target} after ${SSE_ATTACH_FALLBACK_MS}ms — loading session over HTTP (degraded)`);
-            initialSessionLoadedRef.current = true;
-            void loadSessionRef.current(target, { previousSessionId: prevSessionId ?? null });
+            console.warn(`[TabProvider ${tabId}] SSE attach timed out for ${target} after ${SSE_ATTACH_FALLBACK_MS}ms — restoring persisted history over HTTP`);
+            void restorePersistedSessionRef.current(target, { mode: 'initial' });
         }, SSE_ATTACH_FALLBACK_MS);
         sseAttachFallbackRef.current = { timer, sessionId: target };
     }, [tabId, clearSseAttachFallback]);
-    // #235: don't leak the degraded-load timer if the tab unmounts mid-wait.
     useEffect(() => clearSseAttachFallback, [clearSseAttachFallback]);
 
-    // Unified session loading effect - handles both initial load and session changes
     useEffect(() => {
         const prevSessionId = prevSessionIdRef.current;
         const isPendingSession = isPendingSessionId(sessionId);
         const wasPendingSession = isPendingSessionId(prevSessionId);
         const sessionChanged = prevSessionId !== sessionId;
+
         if (
-            sessionChanged &&
-            resetBirthSessionIdRef.current &&
-            resetBirthSessionIdRef.current !== sessionId
+            sessionChanged
+            && resetBirthSessionIdRef.current
+            && resetBirthSessionIdRef.current !== sessionId
         ) {
-            // Leaving the exact reset/migration target consumes its birth
-            // authority immediately. A later switch back is normal history,
-            // even if the intervening REST load is still pending.
             isNewSessionRef.current = false;
             resetBirthPendingRef.current = false;
             resetBirthSessionIdRef.current = null;
         }
+
         const resetSessionBirth = isResetSessionBirth({
             resetBirthSessionId: resetBirthSessionIdRef.current,
             sessionId,
         });
-        const existingSessionSwitch = isExistingSessionSwitch({
-            sessionChanged,
-            wasPendingSession,
-            isPendingSession,
-            isResetSessionBirth: resetSessionBirth,
-        });
         prevSessionIdRef.current = sessionId;
-
-        // #235: re-arm the degraded-load fallback fresh each run. During a real
-        // hang none of this effect's deps change, so the armed timer survives to
-        // fire; any re-run (e.g. isConnected flipping true) clears it before we
-        // proceed normally, so a successful attach never triggers a degraded load.
         clearSseAttachFallback();
 
-        // No sessionId - reset flag and return
-        if (!sessionId) {
-            initialSessionLoadedRef.current = false;
+        if (!sessionId || isPendingSession) return;
+
+        // Pending materialization and reset/migration birth already own their
+        // live projection through SSE; persisted history restoration must not
+        // compete with that path.
+        if (wasPendingSession || resetSessionBirth) {
+            console.log(`[TabProvider ${tabId}] Session ${sessionId} is an SSE-native birth; skipping persisted restore`);
             return;
         }
 
-        // A real session switch must be allowed to load after SSE reattaches.
-        // Preserve the pending->real loaded flag because that path represents
-        // the same live sidecar/session becoming durable, not a user switch.
-        if (sessionChanged && !(wasPendingSession && !isPendingSession)) {
-            initialSessionLoadedRef.current = false;
+        const restore = persistedRestoreLifecycleRef.current;
+        if (
+            restore.sessionId === sessionId
+            && (restore.phase === 'inactive' || restore.phase === 'ready' || restore.phase === 'failed')
+        ) {
+            return;
         }
+        if (activeRestoreRequestRef.current?.sessionId === sessionId) return;
 
-        // Not connected yet - wait. For a real (non-pending) session, arm the
-        // degraded-load fallback so a never-connecting SSE doesn't hang the tab.
-        if (!isConnected) {
-            if (!isPendingSession) {
-                armSseAttachFallback(sessionId, prevSessionId, { allowWhileActive: existingSessionSwitch });
-            }
+        if (!isConnected || attachedSseSessionIdRef.current !== sessionId) {
+            armSseAttachFallback(sessionId);
             return;
         }
 
-        // Case 1: Current sessionId is pending - skip (doesn't exist in backend yet)
-        if (isPendingSession) {
-            console.log(`[TabProvider ${tabId}] Session is pending (${sessionId}), skipping load`);
-            return;
-        }
-
-        // Case 2: Upgraded from pending to real session
-        // This happens when backend creates the real session after first message (including cron task)
-        if (wasPendingSession) {
-            // Case 2a: Already have data (normal message flow) - skip
-            if (initialSessionLoadedRef.current) {
-                console.log(`[TabProvider ${tabId}] SessionId upgraded from pending to ${sessionId}, already in session`);
-                return;
-            }
-
-            // Case 2b: Session is currently running (e.g., cron task executing) - skip
-            // CRITICAL: Do NOT call loadSession while AI is responding, as it would abort the current session!
-            // The messages will come through SSE stream naturally.
-            // Use authoritative backend activity OR the first-chunk streaming ref.
-            if (isSessionActiveRef.current || isStreamingRef.current) {
-                console.log(`[TabProvider ${tabId}] SessionId upgraded from pending to ${sessionId}, session is active, skipping loadSession`);
-                initialSessionLoadedRef.current = true;  // Mark as loaded to prevent future attempts
-                return;
-            }
-
-            if (attachedSseSessionIdRef.current !== sessionId) {
-                console.log(`[TabProvider ${tabId}] Waiting for SSE to attach to session ${sessionId} before loadSession`);
-                armSseAttachFallback(sessionId, prevSessionId);
-                return;
-            }
-
-            // Case 2c: Switching from an unused pending session to a real session - need to load data
-            // This happens when user selects a history session while current tab has unused pending session
-            console.log(`[TabProvider ${tabId}] Switching from unused pending to ${sessionId}, loading session`);
-            initialSessionLoadedRef.current = true;
-            void loadSession(sessionId, { previousSessionId: prevSessionId ?? null });
-            return;
-        }
-
-        if (attachedSseSessionIdRef.current !== sessionId) {
-            console.log(`[TabProvider ${tabId}] Waiting for SSE to attach to session ${sessionId} before loadSession`);
-            armSseAttachFallback(sessionId, prevSessionId, { allowWhileActive: existingSessionSwitch });
-            return;
-        }
-
-        // Case 3: Already loaded this session - skip
-        if (initialSessionLoadedRef.current && prevSessionId === sessionId) {
-            return;
-        }
-
-        // Case 4: Need to load session (initial load or session switch)
-        // Exception 1: if resetSession was just called (isNewSessionRef=true), the session
-        // upgrade (old→new) arrives via system:init. Messages are already streaming via SSE,
-        // so calling loadSession would flash isLoading=false. Skip and let SSE handle it.
-        if (resetSessionBirth) {
-            console.log(`[TabProvider ${tabId}] SessionId upgraded to ${sessionId} after resetSession, skipping loadSession (messages arriving via SSE)`);
-            initialSessionLoadedRef.current = true;
-            return;
-        }
         if (isNewSessionRef.current) {
-            console.log(`[TabProvider ${tabId}] Clearing stale new-session flag before loading existing session ${sessionId}`);
             isNewSessionRef.current = false;
             resetBirthPendingRef.current = false;
             resetBirthSessionIdRef.current = null;
         }
-        // Every persisted session adopts REST history, including an already-active
-        // background Session. REST merges the durable page with the runtime's live
-        // overlay; reset-birth and pending->real transitions were handled above.
-        if (prevSessionId !== sessionId) {
-            console.log(`[TabProvider ${tabId}] SessionId changed from ${prevSessionId} to ${sessionId}, loading session`);
-        } else {
-            console.log(`[TabProvider ${tabId}] Initial session load: ${sessionId}`);
+
+        void restorePersistedSession(sessionId, { mode: 'initial' });
+    }, [sessionId, isConnected, tabId, restorePersistedSession, armSseAttachFallback, clearSseAttachFallback]);
+
+    const retryCurrentSessionRestore = useCallback(async (
+        targetMessageId?: string,
+    ): Promise<CurrentSessionRestoreResult> => {
+        const targetSessionId = currentSessionIdRef.current;
+        if (!targetSessionId || isPendingSessionId(targetSessionId)) {
+            return { restored: false, targetMessagePresent: null };
         }
-        initialSessionLoadedRef.current = true;
-        void loadSession(sessionId, { previousSessionId: prevSessionId ?? null });
-    }, [sessionId, isConnected, tabId, loadSession, armSseAttachFallback, clearSseAttachFallback]);
+        const restore = persistedRestoreLifecycleRef.current;
+        const mode: PersistedRestoreMode = restore.phase === 'ready'
+            ? 'live-recovery'
+            : restore.mode;
+        const fence = beginPersistedRestore(
+            targetSessionId,
+            sseRef.current?.getConnectionGeneration() ?? 0,
+            mode,
+        );
+        const restored = await restorePersistedSession(targetSessionId, {
+            restoreToken: fence.restoreToken,
+            mode,
+        });
+        if (!restored || !targetMessageId) {
+            return { restored, targetMessagePresent: null };
+        }
+        if (historyMessagesRef.current.some(message => message.id === targetMessageId)) {
+            return { restored: true, targetMessagePresent: true };
+        }
+
+        let before = historyMessagesRef.current[0]?.id;
+        let hasOlder = hasMoreBeforeRef.current;
+        try {
+            while (hasOlder && before) {
+                const response = await apiGetJson<{
+                    success: boolean;
+                    session?: {
+                        messages: WireSessionMessage[];
+                        hasMoreBefore?: boolean;
+                    };
+                }>(`/sessions/${encodeURIComponent(targetSessionId)}?limit=${OLDER_PAGE_SIZE}&before=${encodeURIComponent(before)}`);
+                if (currentSessionIdRef.current !== targetSessionId || !response.success || !response.session) {
+                    return { restored: true, targetMessagePresent: null };
+                }
+                if (response.session.messages.some(message => message.id === targetMessageId)) {
+                    return { restored: true, targetMessagePresent: true };
+                }
+                hasOlder = response.session.hasMoreBefore ?? false;
+                before = response.session.messages[0]?.id;
+            }
+        } catch {
+            return { restored: true, targetMessagePresent: null };
+        }
+        return {
+            restored: true,
+            targetMessagePresent: hasOlder ? null : false,
+        };
+    }, [apiGetJson, beginPersistedRestore, restorePersistedSession]);
 
     // Cancel a queued message — returns the original text (for restoring to input)
     const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return null;
         try {
             const response = await postJson<{ success: boolean; stale?: boolean; cancelledText?: string }>('/chat/queue/cancel', { queueId });
             if (response.success) {
@@ -5055,6 +5083,7 @@ export default function TabProvider({
     // Force-execute a queued message (interrupt current + run immediately)
     // Does NOT optimistically remove from queue — queue:started SSE is the single source of truth
     const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return false;
         const sid = currentSessionIdRef.current ?? sessionId;
         const releaseSendTransition = sid
             ? claimSessionOpeningTransition(sid)
@@ -5080,6 +5109,7 @@ export default function TabProvider({
 
     // Respond to permission request
     const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow', requestIdOverride?: string) => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return;
         const permission = requestIdOverride
             ? pendingPermissions.find(item => item.requestId === requestIdOverride)
             : pendingPermission;
@@ -5111,6 +5141,7 @@ export default function TabProvider({
 
     // Respond to AskUserQuestion request
     const respondAskUserQuestion = useCallback(async (answers: Record<string, string> | null) => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return;
         if (!pendingAskUserQuestion) return;
 
         const requestId = pendingAskUserQuestion.requestId;
@@ -5137,6 +5168,7 @@ export default function TabProvider({
     // card would lock into "已拒绝" while the SDK's pendingExitPlanMode entry
     // hung waiting for a response that never arrives.
     const respondExitPlanMode = useCallback(async (approved: boolean, feedback?: string): Promise<boolean> => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return false;
         if (!pendingExitPlanMode) return false;
         const snapshot = pendingExitPlanMode;
         const requestId = pendingExitPlanMode.requestId;
@@ -5168,6 +5200,8 @@ export default function TabProvider({
         hasMoreBefore,
         isLoading,
         isSessionLoading,
+        sessionRestoreError,
+        sessionRestoreMode,
         sessionState,
         sessionRuntime,
         sessionRuntimeSource,
@@ -5203,7 +5237,7 @@ export default function TabProvider({
         setSessionMeta,
         sendMessage,
         stopResponse,
-        loadSession,
+        retryCurrentSessionRestore,
         loadOlderMessages,
         resetSession,
         adoptMigratedSession,
@@ -5218,9 +5252,9 @@ export default function TabProvider({
         cancelQueuedMessage,
         forceExecuteQueuedMessage,
     }), [
-        tabId, agentDir, currentSessionId, messages, historyMessages, streamingMessage, firstItemIndex, hasMoreBefore, isLoading, isSessionLoading, sessionState, sessionRuntime, sessionRuntimeSource, sessionMeta,
+        tabId, agentDir, currentSessionId, messages, historyMessages, streamingMessage, firstItemIndex, hasMoreBefore, isLoading, isSessionLoading, sessionRestoreError, sessionRestoreMode, sessionState, sessionRuntime, sessionRuntimeSource, sessionMeta,
         logs, unifiedLogs, systemInitInfo, sdkSlashCommands, runtimeDiagnostics, agentError, systemStatus, systemNotice, contextUsage, agentPlanTodos, lastTerminalReason, pendingPermission, pendingAskUserQuestion, pendingExitPlanMode, pendingEnterPlanMode, toolCompleteCount, queuedMessages, isConnected,
-        setMessages, appendLog, appendUnifiedLog, clearUnifiedLogs, sendMessage, stopResponse, loadSession, loadOlderMessages, resetSession, adoptMigratedSession,
+        setMessages, appendLog, appendUnifiedLog, clearUnifiedLogs, sendMessage, stopResponse, retryCurrentSessionRestore, loadOlderMessages, resetSession, adoptMigratedSession,
         apiGetJson, postJson, apiPutJson, apiDeleteJson, respondPermission, respondAskUserQuestion, respondExitPlanMode, cancelQueuedMessage, forceExecuteQueuedMessage
     ]);
 

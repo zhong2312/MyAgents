@@ -103,8 +103,10 @@ import {
 } from '@/utils/globalSidebarPreference';
 import { isBrowserDevMode, isTauriEnvironment, pickFolderForDialog } from '@/utils/browserMock';
 import { formatTime, getSessionDisplayText } from '@/utils/taskCenterUtils';
+import { getFullSessionDisplayText } from '@/utils/sessionDisplay';
 import { copyPlainText } from '@/utils/clipboard';
 import { openExternal } from '@/utils/openExternal';
+import { OverflowNameTooltip } from '@/components/workspace-tree/OverflowNameTooltip';
 
 const loadHistorySearchOverlayContent = () => import('@/components/HistorySearchOverlayContent');
 const HistorySearchOverlayContent = lazy(loadHistorySearchOverlayContent);
@@ -1465,7 +1467,11 @@ function WorkspaceTree({
         />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3" role="tree">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3"
+        role="tree"
+        style={{ scrollbarGutter: 'stable' }}
+      >
         {projectsLoading ? (
           <div className="space-y-2 px-1 py-2" aria-label={t('common.loading')}>
             {[0, 1, 2].map((item) => (
@@ -1715,7 +1721,11 @@ function WorkspaceRow({
           {displayName}
         </span>
       </button>
-      <div className={`flex shrink-0 items-center pr-1 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}>
+      {/* The scroll owner supplies 8px; this local 8px keeps controls outside Fluent's 16px overlay hit region. */}
+      <div
+        className={`flex shrink-0 items-center pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        data-global-sidebar-workspace-actions
+      >
         <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
           <button
             ref={menuRef}
@@ -1795,6 +1805,8 @@ function SessionRow({
   const { t: tLauncher, i18n } = useTranslation('launcher');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const [menuOpen, setMenuOpen] = useState(false);
+  const displayTitle = getSessionDisplayText(session);
+  const fullTitle = getFullSessionDisplayText(session);
   const menuRef = useRef<HTMLButtonElement | null>(null);
   const setMenu = useCallback((open: boolean) => {
     setMenuOpen(open);
@@ -1830,12 +1842,14 @@ function SessionRow({
           isGenerating={tab?.isGenerating}
           hasUnread={tab?.hasUnread}
         />
-        <span
+        <OverflowNameTooltip
+          label={displayTitle}
+          tooltipLabel={fullTitle}
+          contentIsTruncated={displayTitle !== fullTitle}
+          delayMs={1_000}
           className="min-w-0 flex-1 truncate text-sm"
           data-global-sidebar-session-title
-        >
-          {getSessionDisplayText(session)}
-        </span>
+        />
         {session.favorite && <Star className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
         {tags.map((tag, index) => <SessionTagBadge key={`${tag.type}-${index}`} tag={tag} />)}
         <UnreadNotificationIndicator
@@ -1852,7 +1866,7 @@ function SessionRow({
         </span>
       </button>
       <div
-        className={`absolute inset-y-0 right-1 flex w-9 items-center justify-end transition-opacity ${
+        className={`absolute inset-y-0 right-2 flex w-9 items-center justify-end transition-opacity ${
           menuOpen
             ? 'pointer-events-auto opacity-100'
             : 'pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100'

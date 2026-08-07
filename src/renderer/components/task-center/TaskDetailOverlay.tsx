@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Activity,
   Archive,
   Bell,
   Bot,
@@ -11,6 +12,7 @@ import {
   Pencil,
   Play,
   RotateCcw,
+  RadioTower,
   Square,
   Trash2,
   X,
@@ -29,12 +31,16 @@ import {
   taskDelete,
   taskGet,
   taskGetRunStats,
+  taskCheckNow,
   taskRerun,
+  taskResetCheckpoint,
   taskRun,
+  taskRunNow,
+  taskTriggerTestTask,
   taskUpdateStatus,
 } from '@/api/taskCenter';
 import { patchAgentConfig } from '@/config/services/agentConfigService';
-import type { Task, TaskRunStats } from '@/../shared/types/task';
+import type { Task, TaskRunStats, TaskTriggerTestResponse } from '@/../shared/types/task';
 import { TaskStatusBadge } from './TaskStatusBadge';
 import { DispatchOriginBadge } from './DispatchOriginBadge';
 import { StatusHistoryList } from './StatusHistoryList';
@@ -42,7 +48,9 @@ import { TaskSessionsList } from './TaskSessionsList';
 import { SummaryCard } from './SummaryCard';
 import { TaskDocBlock } from './TaskDocBlock';
 import { TaskEditPanel, type FocusDoc } from './TaskEditPanel';
+import { TaskTriggerBadge } from './TaskTriggerBadge';
 import { extractErrorMessage } from './errors';
+import { TriggerErrorDetails } from './TriggerErrorDetails';
 
 /** Esc-to-close for the overlay's preview mode. The edit panel handles its
  *  own Esc (with dirty-guard) via PanelChrome.usePanelKeys, so this wires
@@ -90,6 +98,9 @@ export function TaskDetailOverlay({
   const [showSyncConfirm, setShowSyncConfirm] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showResetCheckpointConfirm, setShowResetCheckpointConfirm] = useState(false);
+  const [triggerAction, setTriggerAction] = useState<'test' | 'check' | 'run' | 'reset' | null>(null);
+  const [triggerTestResult, setTriggerTestResult] = useState<TaskTriggerTestResponse | null>(null);
   // Bumped on every external task change so child blocks (TaskDocBlock) can
   // reload their document contents without us having to lift the content up.
   const [reloadToken, setReloadToken] = useState(0);
@@ -107,6 +118,8 @@ export function TaskDetailOverlay({
   // but local setBusy / setSyncing / setTask need protection.
   const isMountedRef = useRef(true);
   const taskFetchGenerationRef = useRef(0);
+  const triggerActionGenerationRef = useRef(0);
+  const deleteGenerationRef = useRef(0);
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -223,6 +236,9 @@ export function TaskDetailOverlay({
       'task:status-changed',
       'task:session-appended',
       'task:session-rebound',
+      'task:trigger-checked',
+      'task:trigger-error',
+      'task:execution-complete',
       'cron:execution-state-changed',
     ]) {
       void listenWithCleanup<{ taskId?: string }>(evt, (e) => {
@@ -300,20 +316,72 @@ export function TaskDetailOverlay({
     }
   }, [task.id, onChanged]);
 
+  const runTriggerAction = useCallback(async (action: 'test' | 'check' | 'run' | 'reset') => {
+    if (triggerAction) return;
+    const generation = ++triggerActionGenerationRef.current;
+    setTriggerAction(action);
+    setErr(null);
+    if (action !== 'test') setTriggerTestResult(null);
+    try {
+      if (action === 'test') {
+        const result = await taskTriggerTestTask(task.id);
+        if (isMountedRef.current && generation === triggerActionGenerationRef.current) {
+          setTriggerTestResult(result);
+        }
+      } else if (action === 'check') {
+        const result = await taskCheckNow(task.id);
+        if (!isMountedRef.current || generation !== triggerActionGenerationRef.current) return;
+        if (result.outcome === 'error') {
+          setErr(result.state.lastError?.message ?? t('common.unknownError'));
+        }
+      } else if (action === 'run') {
+        await taskRunNow(task.id);
+        if (!isMountedRef.current || generation !== triggerActionGenerationRef.current) return;
+      } else {
+        await taskResetCheckpoint(task.id);
+        if (!isMountedRef.current || generation !== triggerActionGenerationRef.current) return;
+        setShowResetCheckpointConfirm(false);
+      }
+      if (action !== 'test') {
+        if (!isMountedRef.current || generation !== triggerActionGenerationRef.current) return;
+        const fresh = await fetchLatestTask();
+        if (
+          fresh
+          && isMountedRef.current
+          && generation === triggerActionGenerationRef.current
+        ) {
+          onChanged?.(fresh);
+          setReloadToken((value) => value + 1);
+        }
+      }
+    } catch (error) {
+      if (isMountedRef.current && generation === triggerActionGenerationRef.current) {
+        setErr(extractErrorMessage(error));
+      }
+    } finally {
+      if (isMountedRef.current && generation === triggerActionGenerationRef.current) {
+        setTriggerAction(null);
+      }
+    }
+  }, [fetchLatestTask, onChanged, task.id, t, triggerAction]);
+
   // OverflowMenu's 删除 entry opens a <ConfirmDialog> (matching the
   // sync-to-agent flow); `doDelete` is the confirmed path. Replaces the
   // prior `window.confirm` which rendered as an OS-native modal that
   // bypassed the overlay's Cmd+W closeLayer stack and ignored the
   // app's design tokens.
   const doDelete = useCallback(async () => {
+    const generation = ++deleteGenerationRef.current;
     setBusy(true);
     setErr(null);
     try {
       await taskDelete(task.id);
+      if (!isMountedRef.current || generation !== deleteGenerationRef.current) return;
       setShowDeleteConfirm(false);
       onChanged?.(null);
       onClose();
     } catch (e) {
+      if (!isMountedRef.current || generation !== deleteGenerationRef.current) return;
       setErr(extractErrorMessage(e));
       setBusy(false);
     }
@@ -378,6 +446,17 @@ export function TaskDetailOverlay({
           onCancel={() => setShowDeleteConfirm(false)}
         />
       )}
+      {showResetCheckpointConfirm && (
+        <ConfirmDialog
+          title={t('trigger.resetTitle')}
+          message={t('trigger.resetMessage')}
+          confirmText={t('trigger.resetConfirm')}
+          cancelText={t('common.cancel')}
+          loading={triggerAction === 'reset'}
+          onConfirm={() => void runTriggerAction('reset')}
+          onCancel={() => setShowResetCheckpointConfirm(false)}
+        />
+      )}
       <OverlayBackdrop onClose={onClose} className="z-[200]">
       <div
         onClick={(e) => e.stopPropagation()}
@@ -399,6 +478,7 @@ export function TaskDetailOverlay({
               ) : (
                 <>
                   <TaskStatusBadge status={task.status} executionState={task.executionState} />
+                  {task.trigger?.detector.type === 'command' && <TaskTriggerBadge />}
                   {/* DispatchOriginBadge: v0.1.69 review — hide the
                       default "直接派发" which applies to 99% of tasks.
                       Only render when origin adds information
@@ -449,6 +529,7 @@ export function TaskDetailOverlay({
             )}
             {((task.status === 'running' || task.status === 'verifying') ||
               task.executionState === 'running' ||
+              task.executionState === 'checking' ||
               task.executionState === 'stop_failed') && task.executionState !== 'stopping' && (
               <ActionBtn
                 icon={<Square className="h-3.5 w-3.5" />}
@@ -518,6 +599,18 @@ export function TaskDetailOverlay({
                   fields behind "展开更多详情". Replaces the prior
                   ~14-row <Meta> dl + conditional <RunStatsSection>. */}
               <SummaryCard task={task} stats={runStats} />
+
+              {task.trigger?.detector.type === 'command' && (
+                <TriggerRuntimeSection
+                  task={task}
+                  action={triggerAction}
+                  testResult={triggerTestResult}
+                  onTest={() => void runTriggerAction('test')}
+                  onCheck={() => void runTriggerAction('check')}
+                  onRun={() => void runTriggerAction('run')}
+                  onReset={() => setShowResetCheckpointConfirm(true)}
+                />
+              )}
 
               {/* 任务执行 — promoted to the second block (right after meta)
                   per v0.1.69 UX feedback. Users opening a task detail are
@@ -648,6 +741,185 @@ function OverflowMenu({
       minWidth={160}
       zIndex={OVERLAY_Z + 1}
     />
+  );
+}
+
+export function TriggerRuntimeSection({
+  task,
+  action,
+  testResult,
+  onTest,
+  onCheck,
+  onRun,
+  onReset,
+}: {
+  task: Task;
+  action: 'test' | 'check' | 'run' | 'reset' | null;
+  testResult: TaskTriggerTestResponse | null;
+  onTest: () => void;
+  onCheck: () => void;
+  onRun: () => void;
+  onReset: () => void;
+}) {
+  const { t, i18n } = useTranslation('task');
+  const [now, setNow] = useState(() => Date.now());
+  const detector = task.trigger?.detector;
+  const backoffUntil = task.triggerState?.backoffUntil;
+  useEffect(() => {
+    if (!backoffUntil || backoffUntil <= now) return;
+    const delay = Math.min(backoffUntil - now + 1, 60_000);
+    const timer = window.setTimeout(() => setNow(Date.now()), delay);
+    return () => window.clearTimeout(timer);
+  }, [backoffUntil, now]);
+  if (!detector || detector.type !== 'command') return null;
+  const state = task.triggerState;
+  const health = task.executionState === 'checking'
+    ? 'checking'
+    : state?.pendingActivation
+      ? 'pending'
+      : task.executionState === 'running'
+        ? 'running'
+        : state?.backoffUntil && state.backoffUntil > now
+          ? 'backoff'
+          : state?.lastError
+            ? 'error'
+            : task.status === 'stopped'
+              ? 'paused'
+              : 'waiting';
+  const formatTime = (value: number | undefined) => value
+    ? new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium', timeStyle: 'short' }).format(value)
+    : t('trigger.never');
+  const checkpoint = JSON.stringify(state?.checkpoint ?? null, null, 2);
+  const anyBusy = action !== null || !!task.executionState;
+
+  return (
+    <section className="mt-5 border-t border-[var(--line-subtle)] pt-5" data-testid="trigger-runtime-section">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--ink)]">
+            <RadioTower className="h-4 w-4" />
+            {t('trigger.runtimeTitle')}
+            <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
+              {t(`trigger.health.${health}`)}
+            </span>
+          </div>
+          <p className="mt-1.5 max-w-[65ch] text-xs leading-relaxed text-[var(--ink-muted)]">
+            {t('trigger.runtimeDescription')}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1">
+          <ActionBtn
+            icon={<Activity className={action === 'test' ? 'h-3.5 w-3.5 animate-pulse' : 'h-3.5 w-3.5'} />}
+            label={action === 'test' ? t('trigger.testing') : t('trigger.test')}
+            disabled={anyBusy}
+            onClick={onTest}
+          />
+          <ActionBtn
+            icon={<RadioTower className={action === 'check' ? 'h-3.5 w-3.5 animate-pulse' : 'h-3.5 w-3.5'} />}
+            label={t('trigger.checkNow')}
+            disabled={anyBusy || !!state?.pendingActivation || !['running', 'stopped', 'blocked'].includes(task.status)}
+            onClick={onCheck}
+          />
+          <ActionBtn
+            icon={<Play className="h-3.5 w-3.5" />}
+            label={t('trigger.runNow')}
+            disabled={anyBusy || !!state?.pendingActivation || !['running', 'stopped'].includes(task.status)}
+            onClick={onRun}
+          />
+          <ActionBtn
+            icon={<RotateCcw className="h-3.5 w-3.5" />}
+            label={t('trigger.reset')}
+            disabled={anyBusy || !!state?.pendingActivation}
+            onClick={onReset}
+          />
+        </div>
+      </div>
+
+      <p className="mt-3 rounded-md bg-[var(--paper-inset)] px-3 py-2 text-xs leading-relaxed text-[var(--ink-muted)]">
+        {t('trigger.testWarning')}
+      </p>
+
+      {testResult && (
+        <div
+          className={`mt-3 rounded-md border px-3 py-2 text-xs ${
+            testResult.ok
+              ? 'border-[var(--line-subtle)] text-[var(--ink-secondary)]'
+              : 'border-[var(--error)]/30 bg-[var(--error-bg)] text-[var(--error)]'
+          }`}
+        >
+          {testResult.ok ? (
+            <>
+              <p className="font-medium">
+                {t(`trigger.decision.${testResult.result.decision}`)} · {testResult.result.reason.message}
+              </p>
+              {testResult.result.handoff?.summary && <p className="mt-1">{testResult.result.handoff.summary}</p>}
+            </>
+          ) : (
+            <TriggerErrorDetails error={testResult.failure.error} />
+          )}
+        </div>
+      )}
+
+      <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-xs md:grid-cols-4">
+        <TriggerMetric label={t('trigger.lastChecked')} value={formatTime(state?.lastCheckedAt)} />
+        <TriggerMetric label={t('trigger.lastOutcome')} value={state?.lastOutcome ? t(`trigger.outcome.${state.lastOutcome}`) : t('trigger.never')} />
+        <TriggerMetric label={t('trigger.checkCount')} value={String(state?.checkCount ?? 0)} mono />
+        <TriggerMetric label={t('trigger.executionCount')} value={String(task.executionCount ?? 0)} mono />
+        <TriggerMetric label={t('trigger.lastActivated')} value={formatTime(state?.lastActivatedAt)} />
+        <TriggerMetric label={t('trigger.failures')} value={String(state?.consecutiveFailures ?? 0)} mono />
+        <TriggerMetric label={t('trigger.checkpointRevision')} value={String(state?.checkpointRevision ?? 0)} mono />
+        <TriggerMetric label={t('trigger.checkpointUpdated')} value={formatTime(state?.checkpointUpdatedAt)} />
+      </dl>
+
+      {state?.lastReason && (
+        <p className="mt-4 text-xs text-[var(--ink-secondary)]">
+          <span className="font-mono text-[var(--ink-muted)]">{state.lastReason.code}</span>
+          {' · '}{state.lastReason.message}
+        </p>
+      )}
+      {state?.lastError && (
+        <div className="mt-3 rounded-md border border-[var(--error)]/30 bg-[var(--error-bg)] px-3 py-2 text-xs text-[var(--error)]">
+          <TriggerErrorDetails error={state.lastError} />
+        </div>
+      )}
+      {state?.pendingActivation && (
+        <div className="mt-3 border-l-2 border-[var(--accent)] pl-3 text-xs text-[var(--ink-secondary)]">
+          <p className="font-medium">{t('trigger.pendingTitle')}</p>
+          <p className="mt-1 font-mono break-all">
+            {state.pendingActivation.event.id} · {state.pendingActivation.event.kind}
+          </p>
+          <p className="mt-1 text-[var(--ink-muted)]">
+            {formatTime(state.pendingActivation.detectedAt)} · {state.pendingActivation.deliveryState}
+            {state.pendingActivation.queueId ? ` · ${state.pendingActivation.queueId}` : ''}
+          </p>
+        </div>
+      )}
+
+      <details className="mt-4 text-xs">
+        <summary className="cursor-pointer font-medium text-[var(--ink-muted)]">
+          {t('trigger.configuration')}
+        </summary>
+        <dl className="mt-3 grid gap-2 text-[var(--ink-secondary)]">
+          <TriggerMetric label={t('trigger.executable')} value={detector.command.executable} mono />
+          <TriggerMetric label={t('trigger.args')} value={JSON.stringify(detector.command.args)} mono />
+          <TriggerMetric label={t('trigger.cwd')} value={detector.command.cwd ?? task.workspacePath ?? ''} mono />
+          <TriggerMetric label={t('trigger.timeout')} value={`${detector.timeoutMs ?? 30_000} ms`} mono />
+        </dl>
+        <p className="mt-3 font-medium text-[var(--ink-muted)]">{t('trigger.checkpointPreview')}</p>
+        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-[var(--paper-inset)] p-3 font-mono text-[var(--ink-secondary)]">
+          {checkpoint}
+        </pre>
+      </details>
+    </section>
+  );
+}
+
+function TriggerMetric({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[var(--ink-muted)]">{label}</dt>
+      <dd className={`mt-0.5 break-words text-[var(--ink-secondary)] ${mono ? 'font-mono' : ''}`}>{value}</dd>
+    </div>
   );
 }
 

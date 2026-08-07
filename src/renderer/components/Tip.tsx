@@ -1,11 +1,27 @@
-/** Lightweight CSS-only tooltip — appears instantly on hover, no JS timers.
- *  `position="top"` (default) shows above; `"bottom"` shows below; `"right"`
- *  vertically centers beside rail controls.
+import { useRef, useState } from 'react';
+
+import { Popover, type PopoverPlacement } from './ui/Popover';
+
+/** Lightweight portaled tooltip — appears instantly on hover, no timers.
+ *  The bubble is mounted only while visible and uses the shared Popover owner,
+ *  so scroll containers cannot clip it and Floating UI can flip/shift it at
+ *  viewport edges. `position="top"` (default) shows above; `"bottom"` shows
+ *  below; `"right"` vertically centers beside rail controls.
  *  `align="center"` (default) centers; `"end"` aligns to the right edge.
  *  `disabled` suppresses the tooltip while the trigger owns an open Popover.
  *  `shortcut` adds a muted second line (e.g. "⌘ + Enter") rendered below
  *  the main label. Use for actions with a keyboard accelerator worth
  *  teaching — keep it to a short inline string, no raw JSX. */
+
+function tipPlacement(
+  position: 'top' | 'bottom' | 'right',
+  align: 'center' | 'end',
+): PopoverPlacement {
+  if (position === 'right') return 'right';
+  if (align === 'end') return `${position}-end`;
+  return position;
+}
+
 export default function Tip({
   label,
   shortcut,
@@ -23,31 +39,54 @@ export default function Tip({
   disabled?: boolean;
   className?: string;
 }) {
-  const posClass = position === 'right'
-    ? 'left-full top-1/2 ml-3 -translate-y-1/2'
-    : position === 'bottom'
-      ? 'top-full mt-1.5'
-      : 'bottom-full mb-1.5';
-  const alignClass = position === 'right'
-    ? ''
-    : align === 'end'
-      ? 'right-0'
-      : 'left-1/2 -translate-x-1/2';
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focusedWithin, setFocusedWithin] = useState(false);
+  const visible = (hovered || focusedWithin) && !disabled;
+
   return (
-    <span className={`group/tip relative inline-flex ${className}`}>
+    <span
+      ref={anchorRef}
+      className={`relative inline-flex ${className}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusedWithin(true)}
+      onBlurCapture={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          setFocusedWithin(false);
+        }
+      }}
+    >
       {children}
-      {!disabled && (
-        <span
-          role="tooltip"
-          className={`pointer-events-none absolute z-50 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)]/90 px-2.5 py-1.5 text-xs leading-tight text-[var(--button-dark-text)] opacity-0 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 ${posClass} ${alignClass}`}
+      {visible && (
+        <Popover
+          open
+          onClose={() => {
+            setHovered(false);
+            setFocusedWithin(false);
+          }}
+          anchorRef={anchorRef}
+          placement={tipPlacement(position, align)}
+          offset={position === 'right' ? 12 : 6}
+          closeOnOutsideClick={false}
+          closeOnEscape={false}
+          zIndex={280}
+          unstyled
+          className="pointer-events-none"
         >
-          {label}
-          {shortcut && (
-            <span className="mt-0.5 block text-xs text-[var(--button-dark-text)]/70">
-              {shortcut}
-            </span>
-          )}
-        </span>
+          <span
+            role="tooltip"
+            className="block whitespace-nowrap rounded-md bg-[var(--button-dark-bg)]/90 px-2.5 py-1.5 text-xs leading-tight text-[var(--button-dark-text)]"
+          >
+            {label}
+            {shortcut && (
+              <span className="mt-0.5 block text-xs text-[var(--button-dark-text)]/70">
+                {shortcut}
+              </span>
+            )}
+          </span>
+        </Popover>
       )}
     </span>
   );

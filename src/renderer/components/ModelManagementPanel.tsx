@@ -22,6 +22,7 @@ import {
 import { PRESET_PROVIDERS, splitProviderModelInput, type Provider, type ModelEntity, type AppConfig } from '@/config/types';
 import {
   fetchProviderModels,
+  enrichExistingModelsFromDiscovery,
   toModelEntity,
   formatTokenCount,
   supportsModelDiscovery,
@@ -39,7 +40,7 @@ interface ModelManagementPanelProps {
   config: AppConfig;
   onClose: () => void;
   onSaveCustomModels: (providerId: string, models: ModelEntity[]) => Promise<void>;
-  onUpdateCustomProvider?: (provider: Provider) => Promise<void>;
+  onUpdateCustomProvider?: (provider: Provider, discoveredModels?: DiscoveredModel[]) => Promise<void>;
   onSetPrimaryModel: (providerId: string, modelId: string) => Promise<void>;
   onRefresh: () => Promise<void>;
   discoveryAction?: () => Promise<DiscoveredModel[]>;
@@ -132,6 +133,16 @@ export default function ModelManagementPanel({
         ? await discoveryAction()
         : await fetchProviderModels(provider, apiKey);
       if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
+      if (!provider.isBuiltin && onUpdateCustomProvider) {
+        const enrichedModels = enrichExistingModelsFromDiscovery(provider.models, result);
+        if (enrichedModels !== provider.models) {
+          // Pass the raw discovery result as merge intent. ConfigProvider
+          // re-reads the Provider under its file lock before filling gaps, so
+          // this stale render snapshot can never overwrite a newer manual edit.
+          await onUpdateCustomProvider({ ...provider, models: enrichedModels }, result);
+          if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
+        }
+      }
       setDiscoveredModels(result);
     } catch (e) {
       if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
@@ -148,7 +159,7 @@ export default function ModelManagementPanel({
         setDiscoveryLoading(false);
       }
     }
-  }, [provider, apiKey, canDiscover, discoveryAction]);
+  }, [provider, apiKey, canDiscover, discoveryAction, onUpdateCustomProvider]);
 
   useEffect(() => { doFetch(); }, [doFetch]);
 

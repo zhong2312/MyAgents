@@ -194,7 +194,7 @@ myagents-releases/
 ./publish_managed_codex_runtime.sh -y
 ```
 
-脚本复用 `.env` 凭证、R2 bucket、`download.myagents.io` 域名、Cloudflare purge 和上传后 HTTP 验证。正式上传仍要求 `scripts/package-managed-codex-runtime.mjs` 完成 manifest/artifact 校验；它会逐个枚举 Mach-O / PE，固定 native 文件集合，并校验上游签名。macOS 主 `codex` 与 `codex-code-mode-host` 必须保持 OpenAI Team/Developer ID；Windows 的 OpenAI 原生二进制必须通过 Authenticode 且 publisher 默认为 `OpenAI OpCo, LLC`，实际 signer certificate SHA-256 只写入 `release-audit-v1.json`，不作为每个版本都要人工更新的发布锁。仅对固定路径且确认为完全未签名的 helper 走例外：macOS 的 `rg` / `zsh` 正式打包会用 `.env` 中的 `APPLE_SIGNING_IDENTITY` 补签并复验，Windows 的 `codex-path/rg.exe` 保持上游未签名状态并写入 audit。开发用 unsigned 包只应使用 `npm run package:managed-codex` 本地生成，不应上传到正式 R2 路径。
+脚本复用 `.env` 凭证、R2 bucket、`download.myagents.io` 域名、Cloudflare purge 和上传后 HTTP 验证。正式上传仍要求 `scripts/package-managed-codex-runtime.mjs` 完成 manifest/artifact 校验；它会逐个枚举 Mach-O / PE，固定 native 文件集合，并校验上游签名。macOS 主 `codex` 与 `codex-code-mode-host` 必须保持 OpenAI Team/Developer ID；macOS `rg` / `zsh` helper 若已有同一 OpenAI Developer ID 或旧版 ad-hoc 签名则原样保留并复验，只有固定路径且确认为完全未签名时才使用 `.env` 中的 `APPLE_SIGNING_IDENTITY` 补签。Windows 的 OpenAI 原生二进制必须通过 Authenticode 且 publisher 默认为 `OpenAI OpCo, LLC`，实际 signer certificate SHA-256 只写入 `release-audit-v1.json`，不作为每个版本都要人工更新的发布锁；Windows `codex-path/rg.exe` 保持上游未签名状态并写入 audit。开发用 unsigned 包只应使用 `npm run package:managed-codex` 本地生成，不应上传到正式 R2 路径。
 
 客户端升级采用版本目录 + Sidecar 启动边界切换：已验证安装的旧 runtime 在 `update-required`、后台下载或下载失败期间仍可使用；运行中的 Codex `app-server` 固定其启动时的绝对 binary path，不会因下载完成被 abort 或热替换。新 artifact 安装完成后只原子更新后续进程的安装指针，新建 / 自然重启的 Sidecar 使用新版，既有 Sidecar 继续使用旧版直到 owner 自然释放。macOS 与 Windows 产品时序相同，Windows 也因此无需覆盖运行中的 `codex.exe`。
 

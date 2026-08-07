@@ -84,10 +84,6 @@ export const getWorkspaceCronTasks = (workspacePath: string): Promise<CronTask[]
 export const getSessionCronTask = (sessionId: string): Promise<CronTask | null> =>
   invokeCommandWithFallback('cmd_get_session_cron_task', { sessionId }, null);
 
-/** Update task's session ID (called when session is created after task creation) */
-export const updateCronTaskSession = (taskId: string, sessionId: string): Promise<CronTask> =>
-  invokeCommand('cmd_update_cron_task_session', { taskId, sessionId });
-
 // ============= Background Session Queries =============
 
 /** Get session IDs that have active background completions */

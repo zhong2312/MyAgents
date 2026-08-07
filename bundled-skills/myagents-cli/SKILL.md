@@ -5,15 +5,16 @@ description: >-
   模型 Provider、IM Bot 渠道、社区插件、Skills 安装、MyAgents Cloud Space、Generative UI Widget、Goal 目标模式等），全部通过内置 `myagents` CLI 暴露给你。
   当用户的需求**落在 MyAgents 产品能力的射程内**，就加载并使用这个 skill，用 CLI 主动帮用户把事情做掉，
   而不是让用户去 GUI 点击。
-  典型触发场景：用户说"每天 X 点帮我 Y"（→ cron）、"记一下这个想法"（→ thought）、"派发成任务"（→ task）、
+  典型触发场景：用户说"每天 X 点帮我 Y / 等 X 发生后继续 / 持续盯着，命中才处理"（→ myagents-task-automation）、"记一下这个想法"（→ thought）、"派发成任务"（→ task）、
   "接个 X 工具进来"（→ mcp）、"配 X 模型/Provider"（→ model）、"在飞书/钉钉/Telegram 里跟我聊"（→ agent channel）、
   "装个 X 插件 / 装个 X skill"（→ plugin / skill）、"处理 Space Issue / 下载附件 / 回复 Issue"（→ space）、
   "把图发到 IM 里"（→ im send-media）、"用已配置的读图模型理解图片"（→ vision analyze）、"持续执行直到目标完成"（→ goal）、
   "做个图表/仪表盘"
   （→ widget readme）、"看下我有啥任务/定时/Runtime/版本"（→ list / status / version）、"改下应用设置"（→ config）。
   即使用户没说"用 MyAgents 做"几个字，只要意图能映射到上述能力之一，就该走这个 skill。
-  反向边界：纯业务任务（写代码、查资料、读文件）不归这里；用户自己会话里给 AI 排任务用 im-cron MCP，不是这里。
-author: MyAgents
+  反向边界：纯业务任务（立即写代码、查资料、读文件）不归这里；只有需要操作 MyAgents 产品状态或未来自动化时才使用本 Skill。
+metadata:
+  author: MyAgents
 ---
 
 # myagents-cli — MyAgents 产品能力的 CLI 入口
@@ -152,6 +153,7 @@ myagents model verify <id> [--model <某个具体模型>]      # 实际发一条
 
 ```bash
 myagents agent list                                     # 列出所有 Agent
+myagents agent current --json                          # 只看当前 Agent/workspace/Session
 myagents agent list --active                            # 只列出未归档 Agent 工作区
 myagents agent list --archived                          # 只列出已归档 Agent 工作区
 myagents agent show <id>                                # 看某 Agent 的 effective 默认（runtime/model/permissionMode）
@@ -160,7 +162,8 @@ myagents agent disable <id>                             # 禁用
 myagents agent archive <id>                             # 归档 Agent 工作区，并暂停 proactive Channel
 myagents agent unarchive <id>                           # 取消归档；若归档前是 proactive，会恢复启用
 myagents agent set <id> <key> <jsonValue>               # 改单个字段（key/value 形式，value 必须是合法 JSON）
-                                                        # 受保护字段：id / channels（这俩用专用命令）
+                                                        # key 仅限 enabled/runtime/runtimeConfig/providerId/model/permissionMode
+                                                        # id / channels 用专用命令；未知 key 会在写盘前拒绝
 myagents agent channel list <agentId>                   # 列出某 Agent 的所有 Channel
 myagents agent channel add <agentId> --type <平台> --<凭证flag> ...
                                                         # 添加 Channel（平台 = telegram / dingtalk / openclaw:xxx）
@@ -176,7 +179,7 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 - "飞书 Bot 在线吗" → `agent runtime-status`（这个看运行时；`agent list` 看的是配置）
 - 配 Channel 详见下方 §配置 Agent Channel 流程
 
-`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。provider/model/permissionMode 会先按当前 Provider 的 credential/readiness 与 model 目录校验，再同步 Agent 权威记录、Project 兼容镜像和运行中的 Channel；Managed Codex 的 permissionMode 可传 `suggest/auto-edit/no-restrictions` 或产品值 `plan/auto/fullAgency`，落盘统一规范化为产品值。`full-auto` 无法无损映射（它保留 workspace-write sandbox，而 `fullAgency` 会投影成 `no-restrictions`），因此 setter 会拒绝。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
+`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。只使用上面列出的 canonical key；`provider` / `permission` 不是 alias，分别改用 `providerId` / `permissionMode`。providerId/model/permissionMode 会先按当前 Provider 的 credential/readiness 与 model 目录校验，再同步 Agent 权威记录、Project 兼容镜像和运行中的 Channel；Managed Codex 的 permissionMode 可传 `suggest/auto-edit/no-restrictions` 或产品值 `plan/auto/fullAgency`，落盘统一规范化为产品值。`full-auto` 无法无损映射（它保留 workspace-write sandbox，而 `fullAgency` 会投影成 `no-restrictions`），因此 setter 会拒绝。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
 
 ### Agent Runtime 发现（runtime）
 
@@ -228,35 +231,23 @@ myagents skill sync                                     # 把 ~/.claude/skills �
 - 报错 `技能 X 已存在` → 跟用户确认要不要 `--force` 覆盖
 - 用户在 `~/.claude/skills/` 自己塞了东西 MyAgents 看不见 → `skill sync`
 
-### 定时任务（cron）
+### 定时与未来自动化 Task
 
 ```bash
-myagents cron list                                      # 列出【当前工作区】的定时任务（按作用域过滤，非全局！）
-                                                        # 空结果≠系统无任务——可能在别的工作区。响应带 scope+提示文案
-myagents cron list --workspace <abs>                    # 查看指定工作区的定时任务（跨工作区查看的唯一方式）
-myagents cron add --name "..." --prompt "..." --schedule "..." --workspace <abs>
-                                                        # --schedule "0 18 * * *" 标准 cron / --every 15 每 N 分钟
-                                                        # --prompt-file <path> 也行（多行 / 含 backtick 用这个，1MB 上限）
-myagents cron update <taskId> [--name X] [--prompt X | --prompt-file path] [--schedule X --every N --model X --permissionMode X]
-                                                        # 改任意字段，没传的不动
-myagents cron start <taskId>                            # 启动已停止的任务
-myagents cron stop <taskId>                             # 停止运行中的任务
-myagents cron run-now <taskId>                          # 立即手动触发一次（不影响计划）
-myagents cron remove <taskId>                           # 删除
-myagents cron runs <taskId> [--limit N]                 # 看执行历史
-myagents cron status                                    # 概览：总数 / 运行中 / 下次执行（同样按【当前工作区】作用域，0 ≠ 全局无任务）
-myagents cron exit [--reason "..."]                     # 仅在 cron 任务自己的 session 内可用，且任务的 Allow AI to exit 必须开
-                                                        # AI 判断"该结束了"时主动退出当前轮
-myagents cron readme                                    # 拉 cron 工具的完整使用文档（progressive disclosure）
+myagents task readme                                    # 统一自动化模型与当前命令
+myagents agent current --json                          # 仅诊断当前 Agent/workspace/Session
+myagents task get <taskId> --json                       # 权威配置与运行状态
+myagents task run <taskId>                              # 首次启用 Todo Task
+myagents task start <taskId>                            # 恢复 schedule；看回执 nextExecutionAt
+myagents task stop <taskId>                             # 暂停并停止活跃执行
+myagents task runs <taskId> [--limit N]                 # 看 AI 执行历史
+myagents task run-now <taskId>                          # 绕过 Detector 立即执行
+myagents task exit [--reason "..."]                     # 仅在允许 AI exit 的 Task run 内
 ```
 
-**何时用：**
-- "帮我每天 6 点出日报" → `cron add --name "日报" --prompt "..." --schedule "0 18 * * *" --workspace /path`
-- "把日报的 prompt 改一下" → `cron update <taskId> --prompt "新内容"`
-- "立刻跑一次看看" → `cron run-now <taskId>`
-- "停了它别再跑" → `cron stop`（保留配置）；彻底删用 `cron remove`
-- "上次执行成功了吗" → `cron runs <taskId>`
-- `cron exit` / `cron readme` 是 AI 在自己 cron 任务运行中用的——给用户管 cron 用前面那一串
+定时、未来唤醒、循环执行和“满足条件才处理”是同一类 Task 意图。先加载 `myagents-task-automation`，由它选择普通 always 激活或 command Detector，并完成创建、回读和启动。不要让用户先选择 Cron 或 Sensor。
+
+`myagents cron ...` 继续作为旧用户/脚本的兼容 alias，但不是 Agent 新建自动化的规范入口。不要调用系统 `cron/crontab/at/launchctl/schtasks`。
 
 ### Goal 目标模式（goal）
 
@@ -278,6 +269,8 @@ myagents goal update --status blocked                  # AI 判断无法继续�
 
 ### 任务中心（task / thought）
 
+用户要定时、未来唤醒、循环执行或满足条件才叫醒 AI 时，统一加载 `myagents-task-automation`。command Detector 的协议、fixture 和测试由该 Skill 按需路由到自己的 reference；这里仅保留 Task Center 的通用命令索引。
+
 ```bash
 myagents thought list [--tag X --query X --limit N]     # 列想法（用户先记下来、后续派发的轻量条目）
 myagents thought create '...'                           # 记一条想法（首选：单引号包裹防 shell 注入；
@@ -286,29 +279,39 @@ myagents thought create --content "..."                 # 显式 flag 形态，�
 myagents thought create --content-file <abs-path>       # 内容含多行 / CJK / shell 元字符 /
                                                         # Windows 下单引号失灵时的保底通道
 
-myagents task list [--status X --workspaceId X --tag X --includeDeleted]
+myagents task list [--status X --tag X --query X --limit N --includeDeleted]
+                                                        # 默认当前 workspace；JSON 是紧凑投影
 myagents task get <taskId>                              # 详情 + statusHistory + 各 .md 文档路径
-myagents task create-direct --name "..." --workspaceId <id> --workspacePath <abs> \
+myagents task create-direct --name "..." \
     [--taskMdFile <path> | --taskMdContent "..."] \
-    [--runtime X --model X --permissionMode X --runtimeConfig <jsonStr> --mcpEnabledServers a,b] \
+    [--runtime X --providerId X --model X --permissionMode X --runtimeConfig <jsonStr> --mcpEnabledServers a,b] \
     [--executor agent --executionMode once --runMode X --tags x,y --sourceThoughtId X]
 myagents task create-from-alignment <alignmentSessionId> --name "..." [--run] [其它同 create-direct]
                                                         # 从 AI 对齐会话物化任务（workspaceId/Path/sourceThoughtId 自动继承）
                                                         # --run 创建后立刻派发，省一步
 myagents task run <taskId>                              # 派发 todo 任务
+myagents task start <taskId>                            # 按保留 anchor 恢复，以 nextExecutionAt 为准
+myagents task stop <taskId>                             # 暂停 schedule 并停止活跃执行
+myagents task runs <taskId> [--limit N]                 # 查看最近 AI 执行历史
+myagents task exit [--reason "..."]                     # 仅在允许 AI exit 的 scheduled Task 内
 myagents task rerun <taskId>                            # 从 blocked/stopped/done 重新派发
 myagents task update-status <taskId> <status> [--message "..."]
                                                         # 状态机：todo→running→verifying→done（或 →blocked/stopped）、done→archived
 myagents task append-session <taskId> <sessionId>       # 把一个聊天 session 关联到任务（任务过程中开了新会话用这个登记）
 myagents task archive <taskId> [--message "..."]        # 归档（仅用户可操作；AI 走会被拒）
-myagents task delete <taskId>                           # 软删除（30 天保留）
+myagents task delete <taskId>                           # 不可恢复地移出产品使用；不删工作区脚本
 ```
 
-**任务级 runtime/model/permissionMode 覆盖**：`create-direct` / `create-from-alignment` 支持仅对该任务生效的覆盖 flag，**不会改 Agent 工作区默认**。典型场景："实现用 Claude Code、review 用 Codex" → 创两个任务，`--runtime` 不一样，工作区配置不变。
+`create-direct` 和 `task list` 正常会继承当前 workspace，不需要先枚举 Agent 再手工拼 `workspaceId/path`；只有明确跨 workspace 时才传两者。`myagents agent current --json` 是紧凑诊断入口，不是 happy path 前置步骤。
+
+创建 scheduled/recurring Task 可用 `--deadline <ISO-8601-with-offset>`、`--maxExecutions <正整数>`、`--aiCanExit true|false` 设置结束条件；quiet Detector 检查不消耗 maxExecutions。固定 interval 第一次 `run` 默认约 2 秒后产生首次 tick；要延后首次机会时传 `--startAt <ISO-8601-with-offset>`。Cron 等下一个墙钟点，scheduled 等 `dispatchAt`。
+
+**任务级 runtime/provider/model/permissionMode 覆盖**：`create-direct` / `create-from-alignment` 支持仅对该任务生效的覆盖 flag，**不会改 Agent 工作区默认**。典型场景："实现用 Claude Code、review 用 Codex" → 创两个任务，`--runtime` 不一样，工作区配置不变。
 
 | Flag | 语义 |
 |------|------|
 | `--runtime` | `builtin` / `claude-code` / `codex` / `gemini`，不传则继承 |
+| `--providerId` | builtin Provider id；必须与 `--model` 成对设置，不传则继承 |
 | `--model` | 值取决于 runtime，**先 `runtime describe <runtime>` 查** |
 | `--permissionMode` | 值取决于 runtime，**同样先 `runtime describe`** |
 | `--runtimeConfig` | JSON 对象字符串，runtime 专属配置（罕用） |
@@ -323,9 +326,11 @@ myagents task delete <taskId>                           # 软删除（30 天保�
 - "任务过程中我开了个新对话登记一下" → `task append-session <taskId> <sessionId>`
 - "标记完成" → `task update-status <taskId> done --message "..."`
 - "重新跑一遍" → `task rerun <taskId>`
-- 只读类 `task get` / `task list`：CLI 输出会带各 `.md` 文档路径（task.md / verify.md / progress.md / alignment.md），用 Read/Edit/Write 直接读改即可
+- `task list --json` 只返回紧凑发现字段和 `sessionCount`，不会展开历史 `sessionIds`；拿到 ID 后用 `task get` 读取完整状态与各 `.md` 文档路径
 
 **验证与恢复**：CLI 在转发给 Rust 前会前置校验 `--runtime` / `--model` / `--permissionMode`，不合法直接拒绝并带 `→ Run: myagents runtime describe <rt>` 指引；输出会打印 `overridesRequested` vs `overridden`，传了 override 但没落到持久化态会明确提示 drift。
+
+**归档与删除**：`task archive` 是仅用户可执行、长期可恢复的归档状态，Agent 调用会被 Task authority 拒绝；`task delete` 经确认后不可恢复，没有 30 天恢复或 undelete 承诺。删除会停止调度并清平台 Trigger state/pending activation，但内部 tombstone/审计仍用于 authority 与迁移安全，工作区脚本和脚本自持状态不归 TaskStore 删除。
 
 ### MyAgents Cloud Space（space）
 
@@ -437,36 +442,60 @@ myagents im readme                                      # 拉 IM 工具完整文
 - `--file` 必须是绝对路径，且路径白名单：必须落在 workspace / `/tmp` / MyAgents scratch 目录之一——这是为了防 prompt injection 把 `~/.ssh/id_rsa` 之类发给聊天对方
 - 不在 IM session 内调用会返回 "No IM context"，正常——这命令本来就是 session-scoped
 
-### Session 间通信（session, PRD 0.2.37）
+### Agent 身份与 Session 协作（agent / session, PRD 0.4.3）
+
+每个 user-visible Workspace 都有一个稳定 Agent identity。Agent 是工作区
+及其执行默认的长期地址；`enabled=false` 只关闭 channel / heartbeat 等主动
+能力，不会取消身份，也不妨碍显式发起 Session。一个 Agent 可以拥有多个
+相互隔离的 Session。
 
 ```bash
-# 让另一个 session 做新工作或接收通知；从 shell/Bash 工具调用
+# 先发现 Agent，并确认哪个是当前 CLI 调用方
+myagents agent list
+myagents agent show <agentId>
+
+# 查看某 Agent 最近可复用的历史上下文（只读，不唤醒）
+myagents session list --agent <agentId> [--limit 10]
+
+# 在目标 Agent 下开启干净的新上下文
+myagents session start --agent <agentId> -p "<prompt>"
+myagents session start --agent <agentId> --prompt-file <abs-path>
+
+# 在已知 Session 的既有上下文里继续做新工作
 myagents session send <sessionId> -p "<prompt>"
 myagents session send <sessionId> --prompt-file <abs-path>   # 多行/长文本(>4KB)必用,跨平台稳定
 
-# 默认: 目标 turn 结束后,MyAgents 会把结果推回当前 session
-# 仅通知:不需要结果回流时加 --no-reply
-myagents session send <sessionId> -p "<prompt>" --no-reply
+# start / send 默认在目标 turn 结束后把结果推回当前 Session
+# 仅通知、不需要结果回流时加 --no-reply
+myagents session start --agent <agentId> -p "<prompt>" --no-reply
 
-# 监听另一个 session 当前正在进行的工作；不创建新工作
+# 只观察另一个 Session；不注入新工作
 myagents session watch <sessionId>
+myagents agent --help                                        # Agent identity 完整契约
 myagents session --help                                      # 完整用法 / EXIT CODES / 示例
 ```
 
 **何时用:**
+- 使用 `agent list/show`: 发现目标 Agent、当前调用方身份和目标执行默认
+- 使用 `session list --agent`: 判断最近上下文是否值得复用；它不证明目标正在运行
+- 使用 `start`: 需要目标 Agent 在全新隔离上下文中执行
 - 使用 `send`: 另一个 session 需要做新工作、接收通知、澄清或后续指令
 - 使用 `watch`: 当前任务依赖另一个 session 的工作,或用户明确希望你监听另一个 session 的当前/最新结果
-- 用户在对话里直接给了你一个 sessionId,让你与其交互或监听
+- `start` 创建 fresh context；`send` 保留现有 context；`watch` 不注入工作
 - **不要用**于答复当前用户(直接回复就行);不要用于给 IM peer 发消息(用 `im send-media`)
 - AI 身份(from label)系统会自动从你所在 session 元数据推导——你不需要也不应该手动指定
+- 只使用 discovery 命令返回的 ID，不猜 ID，也不用 workspace path 充当 selector
 
 **异步语义(关键):**
-- `send` CLI 立即返回投递结果,**不等待**对方处理
-- 默认期待结果推回:对方处理完后,你将在新 turn 收到 `<myagents-session-event type="send.result">`
+- `start` / `send` CLI 成功只表示首条请求已接纳，**不表示工作完成**
+- `start` 必须从真实 MyAgents Session 发起；目标按自己的 runtime/model/permission/MCP/plugin/tool 配置执行，不接受调用方覆盖
+- `start` receipt 返回新的 `sessionId`、`messageId`；`messageId` 对应稍后 `send.result.requestEventId`
+- 默认期待结果推回：对方处理完后，你将在新 turn 收到 `<myagents-session-event type="send.result">`
 - `--no-reply`:仅通知,reply 不回流(对方按自己呈现路径输出)
-- target session idle/dead 不影响投递——系统会自动唤起
+- `send` 的 target session idle/dead 不影响投递——系统会自动唤起
 - `watch` 只观察目标 session 当前工作；目标已经 idle 时,CLI 会直接返回 `<myagents-session-event type="watch.already_idle">` 和最近结果
 - `watch` 不会向目标 session 注入新 prompt；需要新工作时用 `send`
+- 若 `start` 返回 admission unconfirmed，保留 receipt IDs，用 `session list --agent` 辅助观察，**不要自动重试**
 
 **Windows 安全:**
 - `-p` 内容含 `\n` 或 > 4KB → CLI 立即 fail-fast(exit 3),提示切到 `--prompt-file`
@@ -484,7 +513,7 @@ myagents widget readme <module1> [<module2> ...]        # 拉具体模块的完�
 - 模块清单：`chart`（Chart.js 图表）/ `diagram`（SVG 流程图）/ `interactive`（滑块/计算器/对比卡）/ `dashboard`（多图表 + 控件）/ `art`（SVG 插画）
 - 渲染输出有严格 `<generative-ui-widget>` 格式契约——readme 开头会说明，跳读会出错
 
-`cron readme` / `im readme` / `widget readme` 都是 progressive disclosure：brief 已经在系统 prompt 里，要用时才 fetch full doc。
+`task readme` / `im readme` / `widget readme` 都是 progressive disclosure：brief 已经在系统 prompt 里，要用时才 fetch full doc。
 
 ---
 

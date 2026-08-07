@@ -19,7 +19,6 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     id: 'agent-1',
     name: 'Test Agent',
     enabled: true,
-    workspacePath: '/tmp/agent',
     permissionMode: 'auto',
     channels: [],
     ...overrides,
@@ -126,6 +125,25 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
     expect(r.model).toBe('gpt-5.5-codex');
   });
 
+  it('owned snapshot remains authoritative when the live Project no longer resolves an Agent', () => {
+    const r = resolveSessionConfig(meta({
+      configSnapshotAt: '2026-08-02T00:00:00.000Z',
+      runtime: 'codex',
+      runtimeSource: 'system-cli',
+      model: 'gpt-5.5-codex',
+      permissionMode: 'full-auto',
+      mcpEnabledServers: ['snapshot-mcp'],
+    }), undefined, undefined, 'owned');
+
+    expect(r).toMatchObject({
+      runtime: 'codex',
+      runtimeSource: 'system-cli',
+      model: 'gpt-5.5-codex',
+      permissionMode: 'full-auto',
+      mcpEnabledServers: ['snapshot-mcp'],
+    });
+  });
+
   it('owned/external: stale claude model in snapshot is coerced to undefined (issue #224 repro)', () => {
     // This is the exact field state the bug reporter had: cron session
     // snapshot frozen with runtime=codex but model=claude-opus-4-6 (leaked
@@ -217,6 +235,24 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
     expect(r.permissionMode).toBe('no-restrictions');
   });
 
+  it('im full identity preserves explicit Gemini despite dormant managed fields', () => {
+    const r = resolveSessionConfig(
+      undefined,
+      makeAgent({
+        providerId: 'codex-sub',
+        model: 'gpt-5.5-codex',
+        runtime: 'gemini',
+        runtimeConfig: { source: 'managed-provider' },
+      }),
+      undefined,
+      'im',
+      { managedCodexProviderReady: true },
+    );
+
+    expect(r.runtime).toBe('gemini');
+    expect(r.runtimeSource).toBe('system-cli');
+  });
+
   it('owned/external: missing snapshot model uses runtime default instead of agent fallback', () => {
     const r = resolveSessionConfig(meta({
       runtime: 'codex',
@@ -262,7 +298,7 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
     expect(r.model).toBeUndefined();
   });
 
-  it('owned/external: stale builtin permissionMode in snapshot is coerced to undefined', () => {
+  it('owned/external: stale builtin permissionMode in snapshot projects to the runtime default', () => {
     const r = resolveSessionConfig(meta({
       runtime: 'codex',
       permissionMode: 'fullAgency',
@@ -270,13 +306,13 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
       runtime: 'codex',
       runtimeConfig: { permissionMode: 'full-auto' },
     }), undefined, 'owned');
-    expect(r.permissionMode).toBeUndefined();
+    expect(r.permissionMode).toBe('full-auto');
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('permissionMode'),
     );
   });
 
-  it('legacy external: agent fallback reads runtimeConfig.permissionMode when snapshot is not locked', () => {
+  it('existing legacy external Session does not inherit current Agent permission', () => {
     const r = resolveSessionConfig(meta({
       runtime: 'codex',
       permissionMode: undefined,
@@ -285,7 +321,7 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
       permissionMode: 'fullAgency',
       runtimeConfig: { permissionMode: 'no-restrictions' },
     }), undefined, 'owned');
-    expect(r.permissionMode).toBe('no-restrictions');
+    expect(r.permissionMode).toBe('full-auto');
   });
 
   it('owned/external: missing snapshot permission uses runtime default instead of agent fallback', () => {
@@ -298,7 +334,15 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
       permissionMode: 'fullAgency',
       runtimeConfig: { permissionMode: 'full-auto' },
     }), undefined, 'owned');
-    expect(r.permissionMode).toBeUndefined();
+    expect(r.permissionMode).toBe('full-auto');
+  });
+
+  it('owned/external: unknown historical permission uses the runtime default', () => {
+    const r = resolveSessionConfig(meta({
+      runtime: 'codex',
+      permissionMode: 'unlimited',
+    }), makeAgent({ runtime: 'codex' }), undefined, 'owned');
+    expect(r.permissionMode).toBe('full-auto');
   });
 
   it('owned/builtin: missing provider and MCP snapshot do not fall back to agent defaults', () => {

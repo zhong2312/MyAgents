@@ -107,7 +107,6 @@ html[data-theme-id='default-black'][data-color-scheme='light'] {
   --fb-line-input: rgb(28 22 18 / 0.07);
   --fb-line-thumb: rgb(28 22 18 / 0.12);
   --fb-drag-handle: rgb(28 22 18 / 0.18);
-  --fb-scroll-thumb: rgb(166 154 144 / 0.50);
 
   --line: rgb(28 22 18 / 0.10);
   --line-strong: rgb(28 22 18 / 0.18);
@@ -224,7 +223,6 @@ html[data-theme-id='default-black'][data-color-scheme='dark'] {
   --fb-line-input: rgb(228 220 212 / 0.08);
   --fb-line-thumb: rgb(228 220 212 / 0.16);
   --fb-drag-handle: rgb(228 220 212 / 0.20);
-  --fb-scroll-thumb: rgb(150 138 126 / 0.55);
 
   --line: rgb(228 220 212 / 0.10);
   --line-strong: rgb(228 220 212 / 0.18);

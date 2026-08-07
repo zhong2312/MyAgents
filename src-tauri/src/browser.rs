@@ -217,7 +217,7 @@ pub async fn cmd_browser_create(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
+    let _lifecycle_spawn_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let label = format!("browser-{}", tab_id);
 
     ulog_info!(
@@ -267,6 +267,7 @@ pub async fn cmd_browser_create(
     let label_new_win = label.clone();
 
     let builder = WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed_url.clone()))
+        .scroll_bar_style(crate::webview_policy::scroll_bar_style())
         .user_agent(BROWSER_USER_AGENT)
         .initialization_script(BROWSER_INIT_SCRIPT)
         .on_navigation(move |nav_url| {
