@@ -130,28 +130,77 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 |-- .gitignore
 |-- manuscript/
 |   |-- index.json
-|   |-- state-ledger.json
-|   |-- continuity-state.json
+|   |-- state-ledger/
+|   |   |-- index.json
+|   |   |-- baselines.json
+|   |   `-- batches/
+|   |-- continuity-state/
+|       |-- index.json
+|       |-- facts/<fact-id>.json
 |   |-- chapters/
 |   |   `-- .gitkeep
 |   `-- trash/
 |-- narrative/
-|   `-- index.json
+|   |-- index.json
+|   |-- lines/
+|   |   `-- records/
+|   |-- arcs/
+|   |   `-- records/
+|   |-- directories/
+|   |   `-- records/
+|   |-- chapters/
+|   |   `-- records/
+|   |-- simulation-proposals/
+|   |   `-- records/
+|   |-- legacy/
+|   `-- proposals/
 |-- inspiration/
-|   `-- index.json
+|   |-- index.json
+|   `-- records/
 |-- settings/
 |   `-- ai-model-scenes.json
 |-- characters/
 |   |-- library.json
 |   |-- index.json
 |   |-- records/
+|   |-- souls/
+|   |   |-- index.json
+|   |   `-- records/
 |   `-- proposals/
 |-- world/
-|   |-- cultivation-ecology.json
+|   |-- cultivation/
+|   |   |-- index.json
+|   |   |-- origins/
+|   |   |   `-- records/
+|   |   |-- relations/
+|   |   |   |-- index.json
+|   |   |   `-- records/
+|   |   `-- systems/
+|   |       `-- <system-id>/
+|   |           |-- system.json
+|   |           |-- projection.json
+|   |           |-- theory/
+|   |           |   |-- index.json
+|   |           |   `-- nodes/
+|   |           |-- progression/
+|   |           |   |-- index.json
+|   |           |   `-- records/
+|   |           |-- track-interactions/
+|   |           |-- resources/
+|   |           |-- methods/
+|   |           |-- abilities/
+|   |           |-- formations/
+|   |           |-- foundations/
+|   |           |-- transitions/
+|   |           |-- constraints/
+|   |           `-- audit.json
 |   |-- locations/
-|   |   `-- index.json
+|   |   |-- index.json
+|   |   `-- records/
 |   |-- factions/
-|   |   `-- index.json
+|   |   |-- index.json
+|   |   |-- records/
+|   |   `-- proposals/
 |   |-- items/
 |   |   |-- meta.json
 |   |   |-- index.json
@@ -176,10 +225,28 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 |   |           `-- after/
 |   `-- cultivation-proposals/
 |-- timeline/
-|   `-- index.json
+|   |-- index.json
+|   |-- calendars/records/
+|   |-- periods/records/
+|   |-- views/records/
+|   |-- branches/records/
+|   `-- events/records/
 |-- simulation/
 |   |-- scenarios.json
-|   `-- councils.json
+|   `-- runs/
+|       |-- index.json
+|       `-- <run-id>/
+|           |-- run.json
+|           |-- baseline.json
+|           |-- council.json
+|           |-- reports/
+|           |   `-- index.json
+|           `-- branches/
+|               `-- <branch-id>/
+|                   |-- state.json
+|                   |-- event-ledger.jsonl
+|                   |-- observations.json
+|                   `-- checkpoints.jsonl
 |-- research/
 |   |-- index.json
 |   `-- notes/
@@ -209,7 +276,10 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 说明：
 
 - 新项目不再初始化旧版 `world/worldview.md`、`world/rules.json` 与 `world/codex/`；旧项目打开时保留这些文件供兼容读取，世界观与规则事实统一由 `world/setting-library/` 承载（见第 13 节）。
-- `world/locations/index.json` 是故事地点库的唯一事实源，与空间树并存，职责边界见第 13.1 节。
+- `world/locations/index.json` 是故事地点库的逻辑入口，与空间树并存，职责边界见第 13.1 节；物理存储使用 `schemaVersion: 1`、`storageVersion: 1` 的目录协议，根索引只保存有序 `{id,path}`，完整地点记录位于 `world/locations/records/<location-id>.json`。Repository 在内存中聚合完整地点库，保存时比较整个目录快照、差量写入记录并最后提交根索引；旧的内嵌数组单文件格式不兼容、不迁移。
+- `world/cultivation/index.json` 是修行生态入口，只保存世界本源、修行体系和跨体系关系的有序目录。每个体系位于 `world/cultivation/systems/<system-id>/`；理论、成长轨道、资源、法门、能力、阵法、根基、跃迁和约束按模块拆分，大型集合继续采用 `index.json + records/<entity-id>.json`。Repository 在内存中聚合完整领域模型，保存时校验跨模块引用并只写变化文件；AI 提案也按受影响文件保存 before/after。旧的 `world/cultivation-ecology.json` 不兼容、不迁移。
+- `world/factions/index.json` 是势力库入口，使用 `schemaVersion: 2`、`storageVersion: 1` 的目录协议，只保存有序 `{id,path}` 引用；完整势力记录位于 `world/factions/records/<faction-id>.json`。Repository 在内存中聚合完整势力库，保存时比较整个目录快照、差量写入记录并最后提交根索引；删除势力时同步清理孤立记录。旧的内嵌数组单文件格式不兼容、不迁移。
+- `simulation/runs/<run-id>/run.json` 是一次世界推演运行的清单，不保存基线、运行状态或历史记录正文。Repository 根据清单聚合 `baseline.json`、议会、报告和各分支文件，在内存中向推演引擎提供完整运行对象；保存时使用整个运行目录的精确内容快照检测外部修改，只写变化文件，并最后提交清单。
 - 顶层 `settings/` 保存 `ai-model-scenes.json`（模型场景配置）等 MyAgents 平台级项目配置，该文件由“设置 / 模型场景”首次保存时创建，不属于初始化文件。
 
 `.gitignore` 仍然初始化，用于排除操作系统和编辑器临时文件；但创建项目时不自动执行 `git init`，Git 仓库是否建立由用户决定。
@@ -259,11 +329,13 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 - 严格同步只创建缺失的正文 Markdown，不覆盖已有正文内容；剧情工程章节计划的 `manuscriptChapterId` 与正文索引在一次受 `expectedContent` 保护的事务中闭合。事务失败时回滚已创建正文和已写入的索引。
 - `typography` 保存项目级 `fontFamily`、`fontSize`、`lineHeight`、`paragraphSpacing`、`firstLineIndent` 和 `contentWidth`，写作纸面与预览共享该配置。
 - 删除章节必须将 Markdown 移入 `manuscript/trash/<deletion-id>/`，在索引中保留原路径、目录、正文关联、删除时间和状态批次；恢复先恢复文件，再恢复索引与仍然有效的剧情关联。删除不是永久删除。
-- 正文连续性结果保存到 `manuscript/state-ledger.json`。AI 只能创建带正文证据的 `proposed` 批次，作者审阅后才可标记 `applied`；删除章节按批次逆序标记 `reverted`，恢复章节可重新应用原批次。批次领域覆盖时间线、人物出场 / 状态 / 关系、物品、地点、势力、伏笔、世界规则和承接事项。
+- 正文连续性账本位于 `manuscript/state-ledger/`。`index.json` 使用领域 `schemaVersion: 3`、目录 `storageVersion: 1`，只保存更新时间、全局基线路径和批次的有序 `{id,path}` 引用；首次变更前的目标快照保存在 `baselines.json`，每个批次的正文哈希、证据、变更和回滚 mutation 独立保存在 `batches/<batch-id>.json`。Repository 在内存中聚合完整账本，保存时比较整个目录快照、差量写入基线与批次并最后提交根索引；旧 `manuscript/state-ledger.json` 单文件格式不兼容、不迁移。
+- 正文连续性事实位于 `manuscript/continuity-state/`。`index.json` 使用领域 `schemaVersion: 1`、目录 `storageVersion: 1`，只保存更新时间和事实的有序 `{id,path}` 引用；每条 `ManuscriptContinuityFact` 独立保存在 `facts/<fact-id>.json`。投影在内存中聚合完整连续性状态，保存时比较整个目录快照、差量写入事实并最后提交根索引，删除已移除事实文件；旧 `manuscript/continuity-state.json` 单文件格式不兼容、不迁移。
+- AI 只能创建带正文证据的 `proposed` 批次，作者审阅后才可标记 `applied`；删除章节按批次逆序标记 `reverted`，恢复章节可重新应用原批次。批次领域覆盖时间线、人物出场 / 状态 / 关系、物品、地点、势力、伏笔、世界规则和承接事项。`novel_continuity_get_context` 默认只返回批次摘要和当前连续性事实，传 `chapterId` 可筛选章节，只有传 `batchId` 才展开单个完整批次，避免把全部证据和回滚快照一次塞入模型上下文。
 
 ### 6.3 时间线事实源
 
-- `timeline/index.json`：时间线唯一事实源，保存历法、纪元树、视图、主分支、分支树和事件；历史时间线与故事时间线共享同一份世界事实，不拆成两套独立数据。
+- `timeline/index.json` 是时间线事实源入口，当前使用 `schemaVersion: 1`、`storageVersion: 1` 的目录协议；根索引只保存故事起点、事实截止点以及历法、纪元、视图、分支和事件的有序 `{id,path}` 引用。五类完整记录分别保存到 `timeline/<collection>/records/<id>.json`，历史时间线与故事时间线仍共享同一份世界事实，不拆成两套数据。Repository 在内存中聚合完整 `TimelineLibrary`，保存时比较整个目录快照、差量写入变化记录并最后提交根索引；旧 `timeline/index.json` 内嵌数组结构不兼容、不迁移。
 - `sortKey` 是从宇宙起源开始的统一世界时间坐标，用于稳定排序；它不要求与任一本地历法存在可计算换算关系。
 - 纪元是不限层级的区间树，不是事件。每个纪元保存上级、范围、起止坐标、时间精度和说明；全库必须且只能有一个根纪元，子级区间不得越出上级区间。
 - 默认提供宇宙史、地方史、故事进程和叙事揭示四个视图：宇宙史与地方史按世界时间查看，故事进程以 `storyStartEventId` 为相对零点，叙事揭示按 `narrativeOrder` 展示信息在正文中的揭露次序。
@@ -274,7 +346,7 @@ Agent 运行信息小窗只是宿主运行状态的简化投影，统一显示�
 - 伏笔附属于埋设事件，保存埋设章节、状态、回收事件和说明；“已回收”状态必须关联明确的回收事件。
 - 时间线必须且只能有一个主分支。子分支使用 `parentBranchId + forkEventId` 表示从直接父分支的哪个事件开始分歧；分支查看时，父分支在分歧点后的事件只保留在父分支中。
 - 人物、地点和事件名称允许重复，稳定 ID 才是引用身份。
-- 时间线 AI 使用模型场景 `timeline.assist`，通过完整 MyAgents 会话提供时间序列校验、历史事件补全、分支后果推演和伏笔 / 揭示闭环建议。AI 默认携带当前时间线、选中纪元、分支、视图、事件及页面草稿快照；需要补充保存事实时按需读取 `novel_timeline_get_context`，也可结合剧情、人物、世界、物品或修行体系上下文。当前能力只读且不创建时间线提案，所有事件、纪元、分支和伏笔仍由作者在时间线页面确认并保存。
+- 时间线 AI 使用模型场景 `timeline.assist`，通过完整 MyAgents 会话提供时间序列校验、历史事件补全、分支后果推演和伏笔 / 揭示闭环建议。启动消息只携带当前视图、分支、纪元、事件等稳定目标标识和任务引导，不携带时间线事实或页面草稿；Agent 按需读取 `novel_timeline_get_context`，也可结合剧情、人物、世界、物品或修行体系上下文。当前能力只读且不创建时间线提案，所有事件、纪元、分支和伏笔仍由作者在时间线页面确认并保存。
 
 ### 6.4 知识图谱事实源
 
@@ -438,6 +510,7 @@ src/renderer/workbenches/novel/
 - `modules/items`：物品实体、Repository、AI 业务、批量提案和管理视图；
 - `modules/factions`：势力实体、Repository、提案审核和势力管理视图；
 - `modules/characters`：人物实体、默认值、Repository、提案审核和人物管理视图，并通过模块公开入口供正文、叙事工程、时间线、势力和世界推演使用。
+- `modules/locations`：地点实体、目录 Repository、跨空间节点校验和地点管理视图；
 
 根目录中与这些模块同名的少量 `.ts` / `.tsx` 文件是过渡性的导出桥接，仅服务尚未完成分模块迁移的调用方；它们不负责旧数据兼容或迁移。无引用桥接必须直接删除，当前已清理人物、势力及 19 个不再被调用的公共层、灵感、物品、知识、地图、提示词和时间线薄转发文件。后续设定、正文、叙事工程、修炼生态和世界推演模块完成迁移后，应继续删除对应桥接并让应用层直接引用模块公开入口。
 
@@ -459,10 +532,12 @@ src/renderer/workbenches/novel/
 ### 13.1 地点库（`world/locations/index.json`）
 
 - 地点库与空间树并存，职责边界固定为：**空间树 = 世界结构层**（星球、大陆、国家、城市等层级与层级类型），**地点库 = 叙事引用层**（故事中实际登场、被正文与时间线引用的地点）。两棵树都允许存在同名条目，稳定 ID 是引用身份，不要求互相同步。
+- 地点库物理结构固定为 `world/locations/index.json + world/locations/records/<location-id>.json`。根索引只保存 `schemaVersion: 1`、`storageVersion: 1` 和有序 `{id,path}` 引用；`path` 必须严格等于 `world/locations/records/<id>.json`，记录内 `id` 必须与索引一致。
+- 地点 Repository 递归聚合根索引引用的全部记录，在界面和业务层提供完整 `LocationLibraryIndex`。保存以根索引和全部已引用 records 的有序内容快照执行 CAS，只写新增或变化记录，根索引在同一事务中最后提交；删除地点后再清理不被新索引引用的孤立记录。旧的根索引内嵌完整地点数组格式不兼容、不迁移。
 - 地点库是正文连续性追踪、时间线事件 `locationIds`、地图要素 `entityRef`（kind 为 `location`）与跨库引用检查的唯一事实源；空间树节点不能直接作为叙事引用目标。
 - 每条地点保存稳定 ID、所属空间节点 `nodeId`、同节点内上级地点 `parentLocationId`（不得跨节点、不得成环）、名称、别名、类型、状态、摘要、出场说明、描述与排序。地点必须归属现有空间节点；节点被删除时，归属它的地点会阻止删除。
 - 设定库的“地点”页签只是地点库的编辑入口之一，数据文件独立；新建地点时选择归属的空间节点。
-- 世界架构 Agent 提案允许修改 `world/locations/index.json`（见第 16 节允许目标）。
+- 世界架构 Agent 提案允许修改逻辑聚合路径 `world/locations/index.json`（见第 16 节允许目标）；审阅和应用由地点 Repository 将逻辑 before/after 快照拆装到 records，Agent 不需要也不允许管理物理 `records/` 路径。
 
 ### 13.2 设定库维护语义
 
@@ -499,7 +574,10 @@ src/renderer/workbenches/novel/
 - 大型 AI 功能必须复用 MyAgents 完整 Agent 对话窗口。工作台只提交任务意图、项目身份和领域上下文，不复制消息列表、输入框、权限审批、工具过程或 Session 生命周期。
 - 小型 AI 功能必须通过 Workbench Host AI 接口执行，并复用统一的 Agent 运行信息小窗。小窗只显示运行投影和候选结果，可以停止任务或展开到完整对话。
 - 人物库、物品库、世界架构、修行体系等 AI 会话使用的读上下文、校验和提交提案能力，产品语义统一为“小说工作台内置工具”。它们由 Workbench Host 按会话自动装配，不进入“设置 / MCP 服务”，不允许用户开关，也不得向用户展示连接或断开状态。
+- 小说工作台所有 AI 写入工具都必须支持可恢复的小批量增量写入：单次调用默认不超过 32 项、64 KB，Agent 应通过同一草稿多次调用逐步累积候选；禁止为了修改少量字段重新上传完整大 JSON。对象候选使用稳定 ID 合并、追加或删除，文件型事实使用领域 patch 工具生成最终快照；只有小文件新建或确有必要时才允许整份替换。
 - builtin Runtime 可在 Claude Agent SDK 边界通过进程内自定义工具适配器承载上述能力；SDK 生成的 `mcp__` 前缀和 `novel-workbench` 标识仅是传输层实现细节。UI 工具卡、运行提示、错误消息和模型回答必须使用业务名称，不得引导用户检查 MCP 设置、切换 MCP 服务或重启应用。
+- 小说工作台完整 Agent Session 保留 MyAgents 常规命令和文件工具能力。Workbench Host 不得因会话属于小说工作台而硬拦截 `Bash`、`Read`、`Glob`、`Grep`、`Write`、`Edit` 等普通 SDK 工具；Agent 可以按任务需要读取小说目录内外的素材和设定，也可以执行作者要求的通用文件操作。小说工作台内置工具负责结构化领域上下文与正式提案协议，不取代文件系统访问权限；Agent 不得声称受控会话没有文件访问权限。
+- 工具可用性与正式事实写回是两条独立边界。由小说工作台 Repository 管理的正式结构化事实仍必须遵守 `草稿 -> 领域校验 -> 待审提案 -> 作者审阅 -> Repository 原子写入`；原始文件工具不得被用来伪造提案提交结果或绕过审阅协议。项目外素材、项目内辅助文件和作者明确要求的其它普通文件操作不受该领域写回协议限制。
 - 工作台 Tab 继续不隐式持有 Sidecar。只有用户明确发起大型对话或小型生成请求时，宿主才创建或绑定显式 Agent Session owner。
 - `novel.world.guide` 是首个正式执行入口。“AI 创建世界”必须先解析当前启用集；缺失、停用或同 ID 多副本冲突时阻止请求。解析成功后由 Workbench API 1.5 打开绑定小说目录的 MyAgents Chat Tab。
 - Workbench API 1.5 打开带初始消息的 Chat Tab 前，MyAgents 宿主必须解析并冻结当前可用的 Provider/Model 或外部 Runtime Model；项目或 Agent 中失效、停用、缺少凭据的旧 Provider 配置不得进入首次自动发送。系统没有可用模型服务时必须在创建 Sidecar 前返回明确错误。
@@ -530,7 +608,7 @@ src/renderer/workbenches/novel/
 - “设定库相对路径”明确以 `world/setting-library/` 为根：`targetPath` 仍写项目根相对路径，但快照中不得再次嵌套 `world/setting-library/`。例如 `targetPath=world/setting-library/spatial-tree.json` 对应 `before/spatial-tree.json` 与 `after/spatial-tree.json`。
 - `proposal.json` 的 changes 与 after 文件必须一一对应；`settings.json` 新增的每个设置必须同时具备并登记其 Markdown 页面与词条 JSON。Agent 完成前必须检查 JSON 可解析、modify 的 before 齐全、after 全部登记及 settings 引用闭合。
 - 审阅器兼容早期提案中重复嵌套 `world/setting-library/` 的快照路径，并把合法但漏登记的 after 文件作为“自动补录”变更展示。单个快照缺失只阻断该变更，不再使整份提案不可审阅；引用闭合校验仍会阻止不完整提案写入正式设定。
-- 允许的目标严格限制为设定库 `meta.json`、`spatial-tree.json`、`settings.json`、`pages/<node-id>/<setting-id>.md`、`entries/<node-id>/<setting-id>.json` 和地点库 `world/locations/index.json`；禁止提案修改小说目录中的其它文件或递归修改 proposals。
+- 允许的目标严格限制为设定库 `meta.json`、`spatial-tree.json`、`settings.json`、`pages/<node-id>/<setting-id>.md`、`entries/<node-id>/<setting-id>.json` 和地点库逻辑聚合路径 `world/locations/index.json`；禁止提案修改小说目录中的其它文件、地点 `records/` 或递归修改 proposals。地点 before/after 保存完整逻辑聚合 JSON，冲突检测、写后复验与回滚均通过地点 Repository 转译为目录操作，物理根索引不得被完整数组覆盖。
 - “审阅提案”是世界架构页内的全屏工具工作面。左侧按提案和文件组织队列，右侧使用项目已依赖的开源 Monaco `DiffEditor` 展示只读差异，并支持并排和行内两种模式。
 - 用户可以逐文件选择接受或拒绝。已应用、已拒绝和冲突文件保留在提案清单中作为可审阅记录，不因操作完成而删除快照。
 - 应用前必须重新读取正式目标并与 before 快照比较。正式文件不存在、意外已存在或内容变化时将该文件标记为阻断冲突，不允许用过期提案覆盖人工编辑。
@@ -547,12 +625,12 @@ src/renderer/workbenches/novel/
 - `FileProposalChange` 必须投影当前正式内容；`resolveConflict` 必须携带并再次比较 `expectedCurrentContent`，随后仍经过领域 Schema、引用闭合、原子写入和失败回滚。正式内容在审阅期间再次变化时必须中止并要求重新加载，不得应用旧的合并结果。
 - 支持对象候选的领域应保存对象级生成基准。剧情提案 v4 为每个线路、故事弧、卷篇组目录和章节候选保存 `baseValue`，新增对象使用 `null`；章节候选完整包含其节与段规划，节和段不另建顶层提案。只有目标对象相对基准发生变化才判定冲突，无关对象或事实源元数据变化不得锁死整份提案。旧提案缺少对象级基准时保留兼容读取，但三方基准视图必须明确不可用，自动合并不得声称已可靠判断冲突字段。
 
-| 领域     | 候选形态                               | 领域应用器                                            | 审阅工作面                                               |
-| -------- | -------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------- |
-| 世界架构 | 文件快照（before/after）               | `NovelWorldProposalRepository`                        | `WorldProposalReview`                                    |
+| 领域     | 候选形态                                     | 领域应用器                                            | 审阅工作面                                               |
+| -------- | -------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------- |
+| 世界架构 | 文件快照（before/after）                     | `NovelWorldProposalRepository`                        | `WorldProposalReview`                                    |
 | 剧情工程 | 线路、故事弧、关键节点、卷篇组目录及章节候选 | `NarrativeProposalRepository`，通过文件变更适配器投影 | `WorldProposalReview`                                    |
-| 人物库   | 人物、种族、分组、灵魂操作候选         | `NovelCharacterProposalRepository`                    | 领域预览包装；后续接入同一 `FileProposalRepository` 契约 |
-| 物品库   | 同分类的物品批量候选                   | `NovelItemBatchProposalRepository`                    | 领域预览包装；后续接入同一 `FileProposalRepository` 契约 |
+| 人物库   | 人物、种族、分组、灵魂操作候选               | `NovelCharacterProposalRepository`                    | 领域预览包装；后续接入同一 `FileProposalRepository` 契约 |
+| 物品库   | 同分类的物品批量候选                         | `NovelItemBatchProposalRepository`                    | 领域预览包装；后续接入同一 `FileProposalRepository` 契约 |
 
 - 人物与物品的字段型预览可以作为统一审阅工作面的内容插槽或页面包装保留；不得因此复制第二套提案状态、选择、冲突或应用协议。新的提案领域必须先实现通用契约，再按需要提供领域预览。
 
@@ -579,7 +657,8 @@ src/renderer/workbenches/novel/
 ## 18. 势力组织
 
 - 势力组织是小说工作台独立一级模块，位于人物库与世界架构之间；用于记录宗门、家族、帮派、商会、官方机构及其它长期行动主体。
-- 正式事实源为 `world/factions/index.json`，当前 `schemaVersion` 为 `2`。每个势力保存稳定 ID、名称、类型、当前状态、状态快照、概要、地盘、成员、经营资产、争夺资源、组织单元、势力关系、权利与名分、跨库关联和创建/更新时间；保存必须使用 `expectedContent` 防止覆盖外部编辑。旧版 v1 文件只在内存归一化；下一次作者保存当前势力时写入 v2，不得因普通打开静默重写。
+- 正式事实源位于 `world/factions/`。`index.json` 当前使用 `schemaVersion: 2`、`storageVersion: 1`，只保存势力的有序 `{id,path}` 引用；每个势力的完整内容保存到 `records/<faction-id>.json`，包括稳定 ID、名称、类型、当前状态、状态快照、概要、地盘、成员、经营资产、争夺资源、组织单元、势力关系、权利与名分、跨库关联和创建/更新时间。
+- 势力 Repository 必须递归读取根索引引用的全部记录，在内存中提供完整 `FactionLibrary`。保存使用整个目录的精确内容快照执行 CAS，在同一存储事务中先差量创建或更新记录、最后提交根索引；事务失败必须回滚已完成的文件操作，提交成功后再清理不被新索引引用的孤立记录。旧的内嵌数组单文件格式不兼容、不迁移。
 - 势力地盘可以关联世界架构的空间节点，关联仅保存空间节点稳定 ID；也可以不关联，直接建立据点、辖区、城池或其它地盘说明。关联不存在或被调整时，势力记录不得被静默删除。
 - 势力成员可以关联人物库的稳定角色 ID，也可以直接创建故事发展中的成员类别。未命名成员使用“打手”“帮众”等类别名称，并通过数量表达同类人物规模；命名人物和成员类别都必须保留职责与说明。
 - 经营资产保存名称、类型、规模或收益和说明；争夺资源保存名称、资源类型、控制状态、控制权等级、关联地盘、关联物品、争夺势力和争夺历史。它们是势力视角的事实，不替代物品库或世界架构中的原始资料。
@@ -588,37 +667,46 @@ src/renderer/workbenches/novel/
 - 权利与名分保存类型、授予势力、适用地盘、范围、状态、起止时间和说明；默认类型包括法统、名分、辖权、通行权、采购权、贸易权、采矿权、税权和铸币权，也允许自定义类型。
 - 势力当前状态快照包括治理、军事、经济、民望和领土完整度。历史变化的唯一时间事实仍由 `timeline/index.json` 事件承载：势力库仅按 `factionIds` 汇总展示事件，不反向修改时间线，也不复制一份可独立编辑的势力历史。
 - 商路、战争、产业、人物、世界设定、物品与时间线事件通过跨库关联记录连接；关联仅保存稳定 ID（可用时）和作者可读标签，不反向修改任何目标资料库。
-- 势力 AI 场景必须注册到模型场景设置：组织架构、势力关系、资源与产业、权限与法统、势力演化、势力批量设计。场景模型按“场景绑定 → 小说工作台默认模型 → 全局默认模型”解析。单势力 AI 只能围绕当前势力和直接关联对象生成可编辑建议，不得做全库 N×N 冲突分析或直接修改正式资料；批量设计必须先确认数量、类型和叙事目标，基于既有势力摘要生成待作者审核的候选卡，不得直接写入正式势力库。
+- 势力 AI 场景必须注册到模型场景设置：组织架构、势力关系、资源与产业、权限与法统、势力演化、势力批量设计。场景模型按“场景绑定 → 小说工作台默认模型 → 全局默认模型”解析。会话通过 `novel_factions_get_context` 按需读取目录聚合后的正式事实，`sourceHash` 必须覆盖根索引和全部被引用记录；提示词不得内嵌整份势力库。单势力 AI 只能围绕当前势力和直接关联对象生成可编辑建议，不得做全库 N×N 冲突分析或直接修改正式资料；批量设计必须先确认数量、类型和叙事目标，基于既有势力摘要生成待作者审核的候选卡，不得直接写入正式势力库。
 - 势力模块不得反向修改人物库和世界架构。关联只为创作检索与一致性提示服务，作者始终可以解除关联后保留势力内的自定义记录。
 
 ## 19. 灵感
 
 - 灵感是独立素材库，用于保存尚未定稿的片段、意象、问题和研究触发点，不代表正文已经发生或设定已经确定。
-- 正式事实源为 `inspiration/index.json`，当前 `schemaVersion` 为 `1`。Repository 只依赖 `WorkbenchStorage`，保存使用 `expectedContent` 防止覆盖外部修改。
+- 正式事实源位于 `inspiration/`：`index.json` 使用 `schemaVersion: 1`、`storageVersion: 1`，只保存灵感的有序 `{id,path}` 引用和库更新时间；每条灵感的完整内容独立保存到 `records/<inspiration-id>.json`。Repository 在内存中聚合完整 `InspirationLibrary`，保存时比较整个灵感目录快照并差量写入变化记录，最后提交根索引；提交成功后清理不再被索引引用的孤立记录。旧单文件灵感库不兼容、不迁移。
 - 每条灵感保存稳定 ID、标题、Markdown 正文、状态、来源、标签及创建/更新时间。状态只有收集箱、待整理、暂不使用和已归档。
 - 灵感支持列表、看板、搜索、来源排序和状态筛选。不存在采用关系、规划对象、自定义类型或项目级自定义字段。
 - 页面存在未保存草稿时，离开必须提供“保存并离开 / 放弃修改 / 继续编辑”三种明确选择。
-- 一次性 AI 可诊断或展开当前灵感，深度共创复用 MyAgents 完整会话；两者都只产生建议，不自动修改灵感、正文或其它项目数据。
-- 新项目只初始化 `inspiration/index.json`，不再创建故事规划、旧大纲或规划自定义文件；打开既有项目时也不会主动删除用户磁盘上的旧文件。
+- 灵感诊断、展开与深度共创均复用 MyAgents 完整会话；提示词只携带任务和灵感稳定 ID，正式内容通过小说工作台内置工具 `novel_inspiration_get_context` 按需读取。它们都只产生建议，不自动修改灵感、正文或其它项目数据。
+- 新项目初始化 `inspiration/index.json` 与 `inspiration/records/` 目录，不再创建故事规划、旧大纲或规划自定义文件；打开既有项目时不会主动删除用户磁盘上的其它旧文件。
 
 ## 20. 剧情工程
 
 - 剧情工程是小说工作台独立一级模块。它不是必须按顺序完成的向导，不要求作者依次规划线路、大纲和章节；正文、线路、故事弧、目录和章节计划均可独立创建并在任意阶段回填关联。
-- 正式事实源为 `narrative/index.json`，当前 `schemaVersion` 为 `4`。Repository 只依赖绑定项目根目录的 `WorkbenchStorage`，保存必须使用 `expectedContent` 防止覆盖外部修改。JSON 是剧情规划的唯一事实源，SQLite、甘特图区间或其它分析视图不得保存第二份同义事实。
+- 正式事实源位于 `narrative/`，领域 `schemaVersion` 为 `4`，目录 `storageVersion` 为 `1`。`index.json` 只保存更新时间、各类对象顺序和规范化 `{id,path}` 引用；线路、故事弧、卷篇组目录、章节计划与世界推演提案分别保存到 `lines/arcs/directories/chapters/simulation-proposals/records/<id>.json`。Repository 在内存中聚合完整剧情工程，保存时比较整个已读取目录快照并只写变化记录，根索引最后提交。JSON 仍是剧情规划的唯一事实源，SQLite、甘特图区间或其它分析视图不得保存第二份同义事实。
 - 数据所有权明确分为两层：卷、篇、组只负责目录组织；章、节、段负责正文规划和内容拆解。目录保存为自由引用树，章节归属一个目录或暂时未归类，节和段作为章节内部的嵌套数组保存。`01节`、`02节`、`01段`、`02段`等编号由当前排序动态生成，稳定 ID 不因拖动排序而变化。
 - 卷只能位于根层；篇位于卷下；组可以位于卷、篇或其它组下并自由递归嵌套。卷、篇、组均可直接收纳章节。非空目录必须先移动子目录和章节后才能删除。
 - 剧情工程内部顶部导航固定为“总览、线路、故事弧、大纲、章节、故事编排、叙事检查”。大纲页只管理卷、篇、组，采用目录树与目录详情两栏；章节页采用目录树、章节列表、章节详情三栏，默认显示所选目录及子目录章节，并允许切换为仅当前目录。
 - 章节保存标题、说明、状态、正文关联、所属目录、线路和故事弧关联；章节内可以添加、删除、折叠和拖动排序多个节。节保存可选标题、长文本简述、视角人物、线路和故事弧关联，并拥有多个可拖动排序的段。段只保存长文本规划，不得出现线路、故事弧或人物关联字段。
 - 正文仍以 `manuscript/index.json` 和 `manuscript/chapters/*.md` 为唯一事实源。章节规划通过稳定 `manuscriptChapterId` 可选关联正文，一篇正文最多关联一个章节规划；未关联正文和未关联规划都不阻止继续创作。修改或删除章节规划不得移动、改写或删除正文文件。
-- 人物库以 `characters/library.json`、`characters/index.json` 和 `characters/records/<id>.json` 为事实源：前两者分别保存元数据与可检索摘要，单角色详情独立保存。故事弧通过稳定 `characterId` 和 `characterArcStageId` 关联人物，并保存人物弧阶段标题快照用于人工核对；剧情工程不得反向覆盖人物小传、总弧光或弧阶段。人物不存在或角色弧阶段失效时只产生一致性提示，不自动删除作者的故事弧设计。
+- 人物库以 `characters/library.json`、`characters/index.json`、`characters/records/<id>.json` 和 `characters/souls/` 为事实源。`library.json` 只保存种族、分组和未分组定义，`characters/index.json` 只保存人物可检索摘要，单角色详情独立保存；`characters/souls/index.json` 只保存灵魂顺序、名称、分类、内置状态和规范化记录路径，完整灵魂定义独立保存到 `characters/souls/records/<soul-id>.json`。Repository 在内存中聚合 `meta.souls` 供现有界面使用，保存时比较整个灵魂目录快照并差量写入记录，最后提交灵魂索引；旧 `library.json` 内嵌灵魂结构不兼容、不迁移。故事弧通过稳定 `characterId` 和 `characterArcStageId` 关联人物，并保存人物弧阶段标题快照用于人工核对；剧情工程不得反向覆盖人物小传、总弧光或弧阶段。人物不存在或角色弧阶段失效时只产生一致性提示，不自动删除作者的故事弧设计。
 - 线路与故事弧的活动关联由章和节单向拥有，最细绑定层级是节，段不得关联。删除线路或故事弧时必须清理章、节和故事弧内部的相应引用；跨库人物或正文被删除时保留剧情记录并提示作者重新关联。
 - “故事编排”是由章、节关联实时投影的甘特式泳道视图，不保存 `startChapter` 或 `endChapter`。横轴只显示全书章节序号；支持双头拖动选择起止章节，粒度为每格 `1~1000` 章，默认根据当前范围适配约 10 格。点击泳道色条弹出该格实际关联的章节列表，并下钻展示章级关联和命中的节级关联。
 - “总览”只汇总目录、章、节、段数量、正文关联进度、线路和故事弧覆盖、未归类章节、诊断数量与最近编辑章节，不再编辑主题、母题或项目叙事摘要。主题、关键节拍、代价账本和因果图不再属于活动功能。
 - “叙事检查”是非阻断式诊断面。目录循环、悬空目录或线路/故事弧引用、重复正文关联属于错误；未归类章节、章节没有节、节或段为空、跨库人物或正文失效属于警告或提示；线路存在异常长空档只作为可忽略提示。检查结果不得强迫作者补齐后才能保存。
-- 读取 `schemaVersion: 1`、`2` 或 `3` 时只在内存中迁移：旧卷、篇、自由目录映射为卷、篇、组，旧章映射为章节规划，旧节和段嵌入对应章节；旧主题、母题、关键节拍、统一结构节点和故事弧节点链接完整进入只读 `legacyArchive`。普通打开不得静默改写用户文件，作者下一次明确保存剧情工程时才通过 `expectedContent` 写回 v4。
+- 旧的单文件 `narrative/index.json` 以及 `schemaVersion: 1`、`2`、`3` 数据不兼容、不迁移，也不得在普通加载时自动归档或改写。现有 `legacyArchive` 若已属于 v4 聚合，则独立保存在 `narrative/legacy/archive.json`。
 - 页面存在未保存修改时，离开必须提供“保存并离开 / 放弃修改 / 继续编辑”三种明确选择。
 - 剧情工程文本控件分为短文本和长叙事。名称与标题使用单行输入；目录说明、线路驱动、故事弧内在变化、章节说明、节简述和段规划使用可自动增高并可展开到大编辑窗口的长文本输入。展开编辑只修改当前页面 draft，不单独写盘，也不替代正文编辑器。
 - 固定枚举继续使用轻量下拉；人物、正文、目录、线路和故事弧等稳定 ID 引用必须使用可搜索实体选择器。实体选择器支持名称、别名、编号和业务元数据搜索，角色额外支持拼音；多选不把全部候选项铺成标签墙，只显示选择摘要并在弹层中管理。
 - 潜在超过 100 项的实体结果列表必须虚拟化，只渲染可见行；搜索、上下键、Enter、Escape、当前选中项可见性、结果计数、空结果和失效引用状态属于基础交互，不得因当前测试项目数据较少而省略。选择器始终保存稳定 ID，展示名称、别名、章节路径和类型说明均为派生内容。
-- 剧情工程 AI 使用模型场景 `narrative.assist`，复用 MyAgents 的完整 Agent Session。AI 默认读取当前视图、线路、故事弧、目录、章/节、人物弧投影和叙事检查结果，并输出“发现 / 原因 / 建议动作 / 影响范围”。大纲页的“AI 规划目录”预选卷、篇、组结构规划任务；作者要求实际创建或调整大纲时，AI 必须使用目录候选，不得创建同名故事弧或章节候选冒充目录。目录候选保存父目录、类型、标题、规划说明、状态和顺序，父目录可引用同一草稿候选或已有稳定 ID。“章节与节规划”预选章节创建任务，必须生成章节候选；每个章节候选完整保存目录归属、章级线路/故事弧、至少一个节以及节内可选段规划，章和节可关联线路/故事弧，段不关联。作者明确要求创建线路、故事弧、卷篇组目录或章节与节时，AI 必须先读取已保存事实取得 `sourceHash`，再创建剧情草稿并写入对应候选；线路和故事弧候选必须包含至少一个关键节点，完成校验后提交到 `narrative/proposals/<proposal-id>/proposal.json`。补充既有对象时，候选必须携带既有对象的 `targetId`；更新章节时，保留的节和段也必须携带各自 `targetId`，以维持稳定关联。提案在剧情工程中直接复用 `WorldProposalReview` 逐项审阅；采纳时仍由剧情领域 Repository 使用 `expectedContent` 更新正式 `narrative/index.json`，AI 不得直接写入正式事实源。页面存在未保存草稿或 sourceHash 已失效时禁止提交，避免覆盖作者编辑。当前受控写入可以创建或改写章节、节和段规划，但不创建、覆盖或删除正文 Markdown；新章节的 `manuscriptChapterId` 默认为 `null`，更新章节时保持原正文关联不变。
-- 小说工作台 Agent 可以一次性看到完整内置工具表，并根据任务自主选择时间线、剧情、人物、世界、物品或修行体系的上下文读取工具；不得为了遍历模块而机械调用全部工具。六类事实读取工具允许跨会话领域调用，草稿、校验和提交工具仍只允许当前会话所属领域执行。
+- 剧情工程 AI 使用模型场景 `narrative.assist`，复用 MyAgents 的完整 Agent Session。启动消息只携带当前视图、线路、故事弧、目录、章节的稳定 ID、任务和作者要求，不携带剧情、人物、正文事实或页面草稿；Agent 按需读取 `novel_narrative_get_context` 及其它小说工作台内置读取工具，并输出“发现 / 原因 / 建议动作 / 影响范围”。大纲页的“AI 规划目录”预选卷、篇、组结构规划任务；作者要求实际创建或调整大纲时，AI 必须使用目录候选，不得创建同名故事弧或章节候选冒充目录。目录候选保存父目录、类型、标题、规划说明、状态和顺序，父目录可引用同一草稿候选或已有稳定 ID。“章节与节规划”预选章节创建任务，必须生成章节候选；每个章节候选完整保存目录归属、章级线路/故事弧、至少一个节以及节内可选段规划，章和节可关联线路/故事弧，段不关联。作者明确要求创建线路、故事弧、卷篇组目录或章节与节时，AI 必须先读取已保存事实取得 `sourceHash`，再创建剧情草稿并写入对应候选；线路和故事弧候选必须包含至少一个关键节点，完成校验后提交到 `narrative/proposals/<proposal-id>/proposal.json`。补充既有对象时，候选必须携带既有对象的 `targetId`；更新章节时，保留的节和段也必须携带各自 `targetId`，以维持稳定关联。提案在剧情工程中直接复用 `WorldProposalReview` 逐项审阅；采纳时仍由剧情领域 Repository 使用目录快照 CAS 更新对应正式记录与根索引，AI 不得直接写入正式事实源。页面存在未保存草稿或 sourceHash 已失效时禁止提交，避免覆盖作者编辑。当前受控写入可以创建或改写章节、节和段规划，但不创建、覆盖或删除正文 Markdown；新章节的 `manuscriptChapterId` 默认为 `null`，更新章节时保持原正文关联不变。
+- 小说工作台 Agent 可以一次性看到完整内置工具表，并根据任务自主选择时间线、剧情、人物、世界、物品、灵感或修行体系的上下文读取工具；不得为了遍历模块而机械调用全部工具。上下文事实原则上由工具按需读取，启动消息不得序列化完整项目快照、设定库、时间线、剧情或页面草稿；只保留任务引导、范围约束和稳定目标标识。七类事实读取工具允许跨会话领域调用，草稿、校验和提交工具仍只允许当前会话所属领域执行。
+
+## 21. 世界推演运行存储
+
+- `simulation/scenarios.json` 保存可复用推演方案；`simulation/runs/index.json` 只保存运行摘要和当前运行 ID。一次运行的全部正式数据位于 `simulation/runs/<run-id>/`。
+- `run.json` 使用 `storageVersion: 1` 的 manifest 协议，只保存运行身份、方案、活动分支、分支元数据和规范化文件路径。它不得再次内嵌 `baseline`、分支 `state`、`ledger`、`observations`、`checkpoints`、议会会话或报告。
+- `baseline.json` 是事实投影基线的唯一正式数据；`council.json` 和 `reports/index.json` 分别保存议会会话与报告；每个分支独立保存 `state.json`、`observations.json`、`event-ledger.jsonl` 和 `checkpoints.jsonl`。
+- 事件账本和检查点是追加型 JSONL。Repository 可以追加新行，但不得回退、重排或改写已经保存的行；需要派生不同历史时必须创建新分支。
+- UI 与推演引擎继续使用完整 `WorldSimulationRun` 聚合，不感知目录细节。Repository 加载时递归聚合 manifest 引用的文件，保存时比较整个已读取文件集的有序快照，以 `expectedContent` 对每个变化文件执行事务写入，并在模块文件成功后最后写 `run.json`。
+- 删除分支后，manifest 不再引用的文件可以作为提交后的清理项删除；清理失败只允许留下不可见孤立文件，不得使新的正式运行清单失效。旧式单文件 `run.json` 不兼容、不迁移，也不得在普通加载时自动归档或改写。

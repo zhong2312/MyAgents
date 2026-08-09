@@ -28,9 +28,7 @@ import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
 } from "./modules/characters";
-import {
-  type CharacterRecord,
-} from "./modules/characters";
+import { type CharacterRecord } from "./modules/characters";
 import NarrativeAudit, {
   buildNarrativeAuditFindings,
   type NarrativeAuditFinding,
@@ -137,7 +135,8 @@ export default function NarrativeEngineering({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const characterRepository = createNovelCharacterLibraryRepository(storage);
+      const characterRepository =
+        createNovelCharacterLibraryRepository(storage);
       const [next, characterLibrary] = await Promise.all([
         repository.load(),
         characterRepository.load(),
@@ -328,10 +327,6 @@ export default function NarrativeEngineering({
     const request = buildNarrativeAiAgentRequest({
       task,
       projectTitle,
-      library: draft,
-      characters,
-      manuscriptChapters: chapters,
-      findings,
       selection: {
         view,
         selectedLineId,

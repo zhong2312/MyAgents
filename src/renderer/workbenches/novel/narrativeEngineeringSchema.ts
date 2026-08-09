@@ -1,7 +1,11 @@
 import { z } from "zod";
+import {
+  NARRATIVE_ENGINEERING_INDEX_PATH,
+  NARRATIVE_ENGINEERING_SCHEMA_VERSION,
+} from "../../../shared/workbenches/novel/narrativeEngineeringStorage";
 
-export const NARRATIVE_ENGINEERING_SCHEMA_VERSION = 4 as const;
-export const NARRATIVE_ENGINEERING_PATH = "narrative/index.json";
+export { NARRATIVE_ENGINEERING_SCHEMA_VERSION };
+export const NARRATIVE_ENGINEERING_PATH = NARRATIVE_ENGINEERING_INDEX_PATH;
 
 const idSchema = z
   .string()

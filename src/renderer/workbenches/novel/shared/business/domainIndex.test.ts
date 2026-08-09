@@ -1,26 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { createNarrativeEngineeringFiles } from "../../../../../shared/workbenches/novel/narrativeEngineeringStorage";
+import { createFactionFiles } from "../../../../../shared/workbenches/novel/factionStorage";
+import { createLocationFiles } from "../../../../../shared/workbenches/novel/locationStorage";
+import { createTimelineFiles } from "../../../../../shared/workbenches/novel/timelineStorage";
+import { createInspirationFiles } from "../../../../../shared/workbenches/novel/inspirationStorage";
 
 import { buildDomainIndex, searchDomainIndex } from "./domainIndex";
 import { createEmptyNarrativeEngineering } from "../../narrativeEngineeringSchema";
-import { NovelMemoryProjection, NovelMemoryStorage } from "../infrastructure/testStorage";
+import {
+  NovelMemoryProjection,
+  NovelMemoryStorage,
+} from "../infrastructure/testStorage";
 
-function storageWithFixture(): NovelMemoryStorage {
-  return new NovelMemoryStorage({
-    "characters/index.json": JSON.stringify({
-      schemaVersion: 1,
-      characters: [
-        {
-          id: "char-luoyan",
-          name: "洛言",
-          summary: "出身寒门的少年剑修",
-          raceId: null,
-          groupIds: [],
-          recordPath: "characters/records/char-luoyan.json",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        },
-      ],
-    }),
-    "world/factions/index.json": JSON.stringify({
+function factionFiles(): Record<string, string> {
+  return Object.fromEntries(
+    createFactionFiles({
       schemaVersion: 2,
       factions: [
         {
@@ -29,7 +23,13 @@ function storageWithFixture(): NovelMemoryStorage {
           type: "宗门",
           status: "active",
           summary: "正道魁首",
-          state: { governance: "", military: "", economy: "", publicSupport: "", territorialIntegrity: "" },
+          state: {
+            governance: "",
+            military: "",
+            economy: "",
+            publicSupport: "",
+            territorialIntegrity: "",
+          },
           territories: [],
           members: [],
           assets: [],
@@ -42,8 +42,13 @@ function storageWithFixture(): NovelMemoryStorage {
           updatedAt: "2026-01-01T00:00:00.000Z",
         },
       ],
-    }),
-    "world/locations/index.json": JSON.stringify({
+    }).map((file) => [file.path, file.content]),
+  );
+}
+
+function locationFiles(): Record<string, string> {
+  return Object.fromEntries(
+    createLocationFiles({
       schemaVersion: 1,
       locations: [
         {
@@ -60,13 +65,42 @@ function storageWithFixture(): NovelMemoryStorage {
           order: 0,
         },
       ],
+    }).map((file) => [file.path, file.content]),
+  );
+}
+
+function storageWithFixture(): NovelMemoryStorage {
+  const storage = new NovelMemoryStorage({
+    "characters/index.json": JSON.stringify({
+      schemaVersion: 1,
+      characters: [
+        {
+          id: "char-luoyan",
+          name: "洛言",
+          summary: "出身寒门的少年剑修",
+          raceId: null,
+          groupIds: [],
+          recordPath: "characters/records/char-luoyan.json",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
     }),
+    ...factionFiles(),
+    ...locationFiles(),
     "world/setting-library/spatial-tree.json": JSON.stringify({
       schemaVersion: 1,
-      nodes: [{ id: "node-1", parentId: null, name: "九州", typeId: "continent", order: 0 }],
+      nodes: [
+        {
+          id: "node-1",
+          parentId: null,
+          name: "九州",
+          typeId: "continent",
+          order: 0,
+        },
+      ],
     }),
-    "narrative/index.json": JSON.stringify(
-      {
+    ...Object.fromEntries(
+      createNarrativeEngineeringFiles({
         ...createEmptyNarrativeEngineering("2026-01-01T00:00:00.000Z"),
         chapters: [
           {
@@ -83,68 +117,81 @@ function storageWithFixture(): NovelMemoryStorage {
             sections: [],
           },
         ],
-      },
-      null,
-      2,
+      }).map((file) => [file.path, file.content]),
     ),
-    "timeline/index.json": JSON.stringify({
-      schemaVersion: 1,
-      calendars: [],
-      periods: [],
-      views: [],
-      storyStartEventId: null,
-      factsThroughEventId: null,
-      branches: [{ id: "branch-main", name: "主线", parentBranchId: null, forkEventId: null, description: "", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
-      events: [
-        {
-          id: "event-1",
-          branchId: "branch-main",
-          timeLabel: "第一年",
-          sortKey: 1,
-          sortOrder: 0,
-          endSortKey: null,
-          timePrecision: "exact",
-          timeExpressions: [],
-          periodId: null,
-          scope: "story",
-          knowledgeScope: "public",
-          narrativeOrder: null,
-          title: "剑派大比",
-          kind: "event",
-          summary: "决定外门弟子去留",
-          description: "",
-          characterIds: [],
-          locationIds: [],
-          chapterIds: [],
-          factionIds: [],
-          itemIds: [],
-          causeEventIds: [],
-          stateChanges: [],
-          foreshadowings: [],
-          tags: [],
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        },
-      ],
-    }),
-    "inspiration/index.json": JSON.stringify({
-      schemaVersion: 1,
-      updatedAt: "2026-01-01T00:00:00.000Z",
-      items: [
-        {
-          id: "insp-1",
-          title: "以剑入道",
-          body: "把剑修体系与心性考验结合的点子",
-          state: "inbox",
-          source: { kind: "manual", label: "随手记录", uri: "" },
-          tags: [],
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        },
-      ],
-    }),
+    ...Object.fromEntries(
+      createTimelineFiles({
+        schemaVersion: 1,
+        calendars: [],
+        periods: [],
+        views: [],
+        storyStartEventId: null,
+        factsThroughEventId: null,
+        branches: [
+          {
+            id: "branch-main",
+            name: "主线",
+            parentBranchId: null,
+            forkEventId: null,
+            description: "",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+        events: [
+          {
+            id: "event-1",
+            branchId: "branch-main",
+            timeLabel: "第一年",
+            sortKey: 1,
+            sortOrder: 0,
+            endSortKey: null,
+            timePrecision: "exact",
+            timeExpressions: [],
+            periodId: null,
+            scope: "story",
+            knowledgeScope: "public",
+            narrativeOrder: null,
+            title: "剑派大比",
+            kind: "event",
+            summary: "决定外门弟子去留",
+            description: "",
+            characterIds: [],
+            locationIds: [],
+            chapterIds: [],
+            factionIds: [],
+            itemIds: [],
+            causeEventIds: [],
+            stateChanges: [],
+            foreshadowings: [],
+            tags: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }).map((file) => [file.path, file.content]),
+    ),
+    ...Object.fromEntries(
+      createInspirationFiles({
+        schemaVersion: 1,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        items: [
+          {
+            id: "insp-1",
+            title: "以剑入道",
+            body: "把剑修体系与心性考验结合的点子",
+            state: "inbox",
+            source: { kind: "manual", label: "随手记录", uri: "" },
+            tags: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }).map((file) => [file.path, file.content]),
+    ),
     "research/世界观考据.md": "# 世界观考据\n\n参考设定",
   });
+  return storage;
 }
 
 describe("buildDomainIndex", () => {
@@ -182,26 +229,30 @@ describe("buildDomainIndex", () => {
     const storage = new NovelMemoryStorage({
       "characters/index.json": JSON.stringify({
         schemaVersion: 1,
-        characters: [{
-          id: "char-1",
-          name: "洛言",
-          summary: "寒门剑修",
-          raceId: null,
-          groupIds: [],
-          recordPath: "characters/records/char-1.json",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        }],
+        characters: [
+          {
+            id: "char-1",
+            name: "洛言",
+            summary: "寒门剑修",
+            raceId: null,
+            groupIds: [],
+            recordPath: "characters/records/char-1.json",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
       }),
     });
-    const projection = new NovelMemoryProjection([{
-      id: "char-1",
-      kind: "character",
-      name: "洛言",
-      sourcePath: "characters/records/char-1.json",
-      aliases: [],
-      summary: "寒门剑修",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    }]);
+    const projection = new NovelMemoryProjection([
+      {
+        id: "char-1",
+        kind: "character",
+        name: "洛言",
+        sourcePath: "characters/records/char-1.json",
+        aliases: [],
+        summary: "寒门剑修",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
 
     const [projected, fromFiles] = await Promise.all([
       buildDomainIndex(storage, projection),
@@ -216,8 +267,12 @@ describe("buildDomainIndex", () => {
       storageWithFixture(),
       new NovelMemoryProjection([], [], false),
     );
-    expect(index.entities.some((entity) => entity.kind === "character")).toBe(true);
-    expect(index.entities.some((entity) => entity.kind === "research")).toBe(true);
+    expect(index.entities.some((entity) => entity.kind === "character")).toBe(
+      true,
+    );
+    expect(index.entities.some((entity) => entity.kind === "research")).toBe(
+      true,
+    );
   });
 });
 

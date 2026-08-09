@@ -29,11 +29,7 @@ import {
   type WorkbenchNavigationGuard,
 } from "@/workbench-sdk";
 
-import {
-  inspirationOverview,
-  type InspirationAiAgentRequest,
-  type InspirationAiRunRequest,
-} from "../business/inspirationAi";
+import { type InspirationAiAgentRequest } from "../business/inspirationAi";
 import InspirationAiAssistant from "./InspirationAiAssistant";
 import InspirationHelp from "./InspirationHelp";
 import type {
@@ -44,12 +40,7 @@ import NarrativeMarkdownField from "../../../NarrativeMarkdownField";
 import NarrativeSelect from "../../../NarrativeSelect";
 import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard";
 
-type InspirationFilter =
-  | "all"
-  | "inbox"
-  | "organizing"
-  | "unused"
-  | "archived";
+type InspirationFilter = "all" | "inbox" | "organizing" | "unused" | "archived";
 
 interface InspirationWorkbenchProps {
   readonly storage: WorkbenchStorage;
@@ -59,7 +50,6 @@ interface InspirationWorkbenchProps {
   readonly content: string;
   readonly isSaving: boolean;
   readonly onSave: (value: InspirationLibrary) => Promise<void>;
-  readonly onAiRun?: (request: InspirationAiRunRequest) => Promise<string>;
   readonly onOpenAiAgent?: (
     request: InspirationAiAgentRequest,
   ) => Promise<void>;
@@ -253,7 +243,6 @@ export default function InspirationWorkbench({
   content,
   isSaving,
   onSave,
-  onAiRun,
   onOpenAiAgent,
   onConvertToNarrative,
   focus,
@@ -269,8 +258,9 @@ export default function InspirationWorkbench({
   const [sort, setSort] = useState<"updated" | "source">("updated");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState(library.items[0]?.id ?? "");
-  const [mobilePane, setMobilePane] =
-    useState<"structure" | "content" | "detail">("content");
+  const [mobilePane, setMobilePane] = useState<
+    "structure" | "content" | "detail"
+  >("content");
   const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
@@ -363,7 +353,8 @@ export default function InspirationWorkbench({
   }, [focus, draft.items, selectItem]);
 
   const removeSelected = () => {
-    if (!selected || !window.confirm(`确认删除灵感“${selected.title}”？`)) return;
+    if (!selected || !window.confirm(`确认删除灵感“${selected.title}”？`))
+      return;
     updateDraft({
       ...draft,
       items: draft.items.filter((item) => item.id !== selected.id),
@@ -392,20 +383,18 @@ export default function InspirationWorkbench({
   };
 
   const boardColumns = FILTERS.filter(
-    (item): item is (typeof FILTERS)[number] & { id: Exclude<InspirationFilter, "all"> } =>
-      item.id !== "all",
+    (
+      item,
+    ): item is (typeof FILTERS)[number] & {
+      id: Exclude<InspirationFilter, "all">;
+    } => item.id !== "all",
   );
-  const filterLabel = FILTERS.find((item) => item.id === filter)?.label ?? "灵感";
+  const filterLabel =
+    FILTERS.find((item) => item.id === filter)?.label ?? "灵感";
   const aiContext = {
     projectTitle,
     focusId: selected?.id ?? `filter:${filter}`,
     focusLabel: selected?.title ?? filterLabel,
-    facts: {
-      currentItem: selected ?? null,
-      currentFilter: filterLabel,
-      visibleItemIds: visibleItems.map((item) => item.id),
-      inspirationLibrary: inspirationOverview(draft),
-    },
   };
 
   return (
@@ -421,7 +410,6 @@ export default function InspirationWorkbench({
         <InspirationHelp />
         <InspirationAiAssistant
           context={aiContext}
-          onRun={onAiRun}
           onOpenAgent={onOpenAiAgent}
         />
         <span className="ns-subtitle">记录、整理与归档创作素材</span>
@@ -492,7 +480,8 @@ export default function InspirationWorkbench({
           type="button"
           onClick={() => setCreateOpen(true)}
         >
-          <Plus className="h-4 w-4" />记录
+          <Plus className="h-4 w-4" />
+          记录
         </button>
       </header>
       {(saveError || externalChanged) && (
@@ -573,9 +562,7 @@ export default function InspirationWorkbench({
               className="ns-select max-w-36"
               aria-label="灵感排序"
               value={sort}
-              onChange={(event) =>
-                setSort(event.target.value as typeof sort)
-              }
+              onChange={(event) => setSort(event.target.value as typeof sort)}
             >
               <option value="updated">最近更新</option>
               <option value="source">按来源</option>
@@ -607,7 +594,8 @@ export default function InspirationWorkbench({
                   <span className="ns-list-title">{item.title}</span>
                   <span className="ns-badge">{STATE_LABELS[item.state]}</span>
                   <span className="ns-list-summary">
-                    {item.body || "暂无正文"} · {item.tags.join("、") || item.source.label}
+                    {item.body || "暂无正文"} ·{" "}
+                    {item.tags.join("、") || item.source.label}
                   </span>
                 </button>
               ))}
@@ -681,7 +669,9 @@ export default function InspirationWorkbench({
                   <input
                     className="ns-input"
                     value={selected.title}
-                    onChange={(event) => updateItem({ title: event.target.value })}
+                    onChange={(event) =>
+                      updateItem({ title: event.target.value })
+                    }
                   />
                 </Field>
                 <Field label="整理状态">
@@ -759,7 +749,8 @@ export default function InspirationWorkbench({
                   type="button"
                   onClick={removeSelected}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />删除灵感
+                  <Trash2 className="h-3.5 w-3.5" />
+                  删除灵感
                 </button>
               </section>
             </div>

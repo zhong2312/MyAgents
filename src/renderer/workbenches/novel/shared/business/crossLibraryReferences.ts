@@ -1,36 +1,53 @@
-import type { WorkbenchProjection, WorkbenchProjectionRef, WorkbenchStorage } from "@/workbench-sdk";
+import type {
+  WorkbenchProjection,
+  WorkbenchProjectionRef,
+  WorkbenchStorage,
+} from "@/workbench-sdk";
+import {
+  CULTIVATION_ECOLOGY_INDEX_PATH,
+  loadCultivationEcologyFiles,
+} from "../../../../../shared/workbenches/novel/cultivationEcologyStorage";
+import {
+  NARRATIVE_ENGINEERING_INDEX_PATH,
+  loadNarrativeEngineeringFiles,
+  type NarrativeEngineeringStorageAggregate,
+} from "../../../../../shared/workbenches/novel/narrativeEngineeringStorage";
+import {
+  TIMELINE_INDEX_PATH,
+  loadTimelineFiles,
+} from "../../../../../shared/workbenches/novel/timelineStorage";
+import {
+  FACTION_INDEX_PATH,
+  loadFactionFiles,
+} from "../../../../../shared/workbenches/novel/factionStorage";
+import {
+  LOCATION_INDEX_PATH,
+  loadLocationFiles,
+} from "../../../../../shared/workbenches/novel/locationStorage";
 
 import {
   createNovelCharacterLibraryRepository,
   parseCharacterLibraryIndex,
 } from "../../modules/characters";
 import {
-  FACTION_LIBRARY_PATH,
   parseFactionLibrary,
   type FactionLibrary,
   type FactionRecord,
 } from "../../modules/factions/entities/factionLibrarySchema";
 import { parseItemLibraryIndex } from "../../itemLibrarySchema";
 import { ITEM_LIBRARY_PATHS } from "../../itemLibraryRepository";
-import {
-  LOCATION_LIBRARY_PATH,
-  parseLocationLibraryIndex,
-} from "../../locationLibrarySchema";
 import { parseNovelChapterIndex } from "../../modules/project/entities/projectSchema";
 import {
   parseSettingLibrarySpatialTree,
   type SpatialNode,
 } from "../../settingLibrarySchema";
 import {
-  TIMELINE_LIBRARY_PATH,
   parseTimelineLibrary,
   type TimelineEvent,
   type TimelineLibrary,
 } from "../../timelineLibrarySchema";
 
 const MANUSCRIPT_INDEX_PATH = "manuscript/index.json";
-const CULTIVATION_ECOLOGY_PATH = "world/cultivation-ecology.json";
-const NARRATIVE_ENGINEERING_PATH = "narrative/index.json";
 
 /**
  * 各设定库实体 ID 集合。文件缺失时对应集合为空（引用会因此被判定为悬空）；
@@ -56,7 +73,10 @@ export function createEmptyCrossLibraryIdSets(): CrossLibraryIdSets {
   };
 }
 
-function idsOf<T>(values: readonly T[], pick: (value: T) => string): Set<string> {
+function idsOf<T>(
+  values: readonly T[],
+  pick: (value: T) => string,
+): Set<string> {
   const ids = new Set<string>();
   values.forEach((value) => ids.add(pick(value)));
   return ids;
@@ -72,19 +92,97 @@ async function loadOptionalJson(
   return file.content;
 }
 
+async function loadOptionalNarrative(
+  storage: WorkbenchStorage,
+): Promise<NarrativeEngineeringStorageAggregate | null> {
+  const [entry] = await storage.stat([NARRATIVE_ENGINEERING_INDEX_PATH]);
+  if (!entry?.exists || entry.kind !== "file") return null;
+  try {
+    return (
+      await loadNarrativeEngineeringFiles(
+        async (path) => (await storage.readText(path)).content,
+      )
+    ).library;
+  } catch {
+    return null;
+  }
+}
+
+async function loadOptionalTimeline(
+  storage: WorkbenchStorage,
+): Promise<TimelineLibrary | null> {
+  const [entry] = await storage.stat([TIMELINE_INDEX_PATH]);
+  if (!entry?.exists || entry.kind !== "file") return null;
+  try {
+    const loaded = await loadTimelineFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    return parseTimelineLibrary(JSON.stringify(loaded.library));
+  } catch {
+    return null;
+  }
+}
+
+async function loadOptionalFaction(
+  storage: WorkbenchStorage,
+): Promise<FactionLibrary | null> {
+  const [entry] = await storage.stat([FACTION_INDEX_PATH]);
+  if (!entry?.exists || entry.kind !== "file") return null;
+  try {
+    const loaded = await loadFactionFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    return parseFactionLibrary(JSON.stringify(loaded.library));
+  } catch {
+    return null;
+  }
+}
+
+async function loadOptionalLocation(storage: WorkbenchStorage) {
+  const [entry] = await storage.stat([LOCATION_INDEX_PATH]);
+  if (!entry?.exists || entry.kind !== "file") return null;
+  return (
+    await loadLocationFiles(
+      async (path) => (await storage.readText(path)).content,
+    )
+  ).library;
+}
+
+async function loadCultivationForReferenceCheck(storage: WorkbenchStorage) {
+  const [info] = await storage.stat([CULTIVATION_ECOLOGY_INDEX_PATH]);
+  if (!info?.exists) return { ecology: null, error: null } as const;
+  try {
+    const loaded = await loadCultivationEcologyFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    return { ecology: loaded.ecology, error: null } as const;
+  } catch (error) {
+    return {
+      ecology: null,
+      error: error instanceof Error ? error.message : String(error),
+    } as const;
+  }
+}
+
 /** 并行加载全部库的 ID 集合；某个库文件损坏时抛错（与角色库修行引用校验行为一致）。 */
 export async function loadCrossLibraryIdSets(
   storage: WorkbenchStorage,
 ): Promise<CrossLibraryIdSets> {
-  const [charactersContent, factionsContent, itemsContent, locationsContent, chaptersContent, spatialContent] =
-    await Promise.all([
-      loadOptionalJson(storage, "characters/index.json"),
-      loadOptionalJson(storage, FACTION_LIBRARY_PATH),
-      loadOptionalJson(storage, ITEM_LIBRARY_PATHS.index),
-      loadOptionalJson(storage, LOCATION_LIBRARY_PATH),
-      loadOptionalJson(storage, MANUSCRIPT_INDEX_PATH),
-      loadOptionalJson(storage, "world/setting-library/spatial-tree.json"),
-    ]);
+  const [
+    charactersContent,
+    factionLibrary,
+    itemsContent,
+    locationLibrary,
+    chaptersContent,
+    spatialContent,
+  ] = await Promise.all([
+    loadOptionalJson(storage, "characters/index.json"),
+    loadOptionalFaction(storage),
+    loadOptionalJson(storage, ITEM_LIBRARY_PATHS.index),
+    loadOptionalLocation(storage),
+    loadOptionalJson(storage, MANUSCRIPT_INDEX_PATH),
+    loadOptionalJson(storage, "world/setting-library/spatial-tree.json"),
+  ]);
 
   let characters: ReadonlySet<string> = new Set<string>();
   let factions: ReadonlySet<string> = new Set<string>();
@@ -99,23 +197,14 @@ export async function loadCrossLibraryIdSets(
       (character) => character.id,
     );
   }
-  if (factionsContent !== null) {
-    factions = idsOf(
-      parseFactionLibrary(factionsContent).factions,
-      (faction) => faction.id,
-    );
+  if (factionLibrary !== null) {
+    factions = idsOf(factionLibrary.factions, (faction) => faction.id);
   }
   if (itemsContent !== null) {
-    items = idsOf(
-      parseItemLibraryIndex(itemsContent).items,
-      (item) => item.id,
-    );
+    items = idsOf(parseItemLibraryIndex(itemsContent).items, (item) => item.id);
   }
-  if (locationsContent !== null) {
-    locations = idsOf(
-      parseLocationLibraryIndex(locationsContent).locations,
-      (location) => location.id,
-    );
+  if (locationLibrary !== null) {
+    locations = idsOf(locationLibrary.locations, (location) => location.id);
   }
   if (chaptersContent !== null) {
     chapters = idsOf(
@@ -206,7 +295,9 @@ export async function validateTimelineCrossReferences(
       }
     });
     if (problems.length > 0) {
-      throw new Error(`时间线事件“${event.title}”存在失效的关联：${problems.join("；")}`);
+      throw new Error(
+        `时间线事件“${event.title}”存在失效的关联：${problems.join("；")}`,
+      );
     }
   }
 }
@@ -221,7 +312,9 @@ export async function validateFactionCrossReferences(
     const problems: string[] = [];
     faction.members.forEach((member) => {
       if (member.characterId && !available.characters.has(member.characterId)) {
-        problems.push(`成员“${member.name}”关联了不存在的角色：${member.characterId}`);
+        problems.push(
+          `成员“${member.name}”关联了不存在的角色：${member.characterId}`,
+        );
       }
     });
     faction.territories.forEach((territory) => {
@@ -229,32 +322,57 @@ export async function validateFactionCrossReferences(
         territory.worldNodeId &&
         !available.spatialNodes.has(territory.worldNodeId)
       ) {
-        problems.push(`领地“${territory.name}”关联了不存在的空间节点：${territory.worldNodeId}`);
+        problems.push(
+          `领地“${territory.name}”关联了不存在的空间节点：${territory.worldNodeId}`,
+        );
       }
     });
     faction.resources.forEach((resource) => {
-      if (resource.worldNodeId && !available.spatialNodes.has(resource.worldNodeId)) {
-        problems.push(`资源“${resource.name}”关联了不存在的空间节点：${resource.worldNodeId}`);
+      if (
+        resource.worldNodeId &&
+        !available.spatialNodes.has(resource.worldNodeId)
+      ) {
+        problems.push(
+          `资源“${resource.name}”关联了不存在的空间节点：${resource.worldNodeId}`,
+        );
       }
       if (resource.itemId && !available.items.has(resource.itemId)) {
-        problems.push(`资源“${resource.name}”关联了不存在的物品：${resource.itemId}`);
+        problems.push(
+          `资源“${resource.name}”关联了不存在的物品：${resource.itemId}`,
+        );
       }
     });
     faction.rights.forEach((right) => {
       if (right.worldNodeId && !available.spatialNodes.has(right.worldNodeId)) {
-        problems.push(`权限“${right.name}”关联了不存在的空间节点：${right.worldNodeId}`);
+        problems.push(
+          `权限“${right.name}”关联了不存在的空间节点：${right.worldNodeId}`,
+        );
       }
     });
     faction.links.forEach((link) => {
-      if (link.kind === "character" && link.targetId && !available.characters.has(link.targetId)) {
-        problems.push(`链接“${link.label}”关联了不存在的角色：${link.targetId}`);
+      if (
+        link.kind === "character" &&
+        link.targetId &&
+        !available.characters.has(link.targetId)
+      ) {
+        problems.push(
+          `链接“${link.label}”关联了不存在的角色：${link.targetId}`,
+        );
       }
-      if (link.kind === "item" && link.targetId && !available.items.has(link.targetId)) {
-        problems.push(`链接“${link.label}”关联了不存在的物品：${link.targetId}`);
+      if (
+        link.kind === "item" &&
+        link.targetId &&
+        !available.items.has(link.targetId)
+      ) {
+        problems.push(
+          `链接“${link.label}”关联了不存在的物品：${link.targetId}`,
+        );
       }
     });
     if (problems.length > 0) {
-      throw new Error(`势力“${faction.name}”存在失效的关联：${problems.join("；")}`);
+      throw new Error(
+        `势力“${faction.name}”存在失效的关联：${problems.join("；")}`,
+      );
     }
   }
 }
@@ -269,7 +387,9 @@ function hit(library: string, location: string): InboundReferenceHit {
   return { library, location };
 }
 
-function projectionInboundHit(ref: WorkbenchProjectionRef): InboundReferenceHit {
+function projectionInboundHit(
+  ref: WorkbenchProjectionRef,
+): InboundReferenceHit {
   switch (ref.fromKind) {
     case "event":
       return hit("时间线", `时间线事件“${ref.fromId}”的${ref.field}`);
@@ -303,7 +423,10 @@ function collectTimelineReferenceHits(
             : event.locationIds;
     if (field.includes(id)) {
       hits.push(
-        hit("时间线", `时间线事件“${event.title}”的关联${kind === "character" ? "角色" : kind === "faction" ? "势力" : kind === "item" ? "物品" : "地点"}`),
+        hit(
+          "时间线",
+          `时间线事件“${event.title}”的关联${kind === "character" ? "角色" : kind === "faction" ? "势力" : kind === "item" ? "物品" : "地点"}`,
+        ),
       );
     }
     if (
@@ -344,23 +467,31 @@ function collectFactionReferenceHits(
     if (kind === "character") {
       faction.members.forEach((member) => {
         if (member.characterId === id) {
-          hits.push(hit("势力组织", `势力“${faction.name}”的成员“${member.name}”`));
+          hits.push(
+            hit("势力组织", `势力“${faction.name}”的成员“${member.name}”`),
+          );
         }
       });
       faction.links.forEach((link) => {
         if (link.kind === "character" && link.targetId === id) {
-          hits.push(hit("势力组织", `势力“${faction.name}”的链接“${link.label}”`));
+          hits.push(
+            hit("势力组织", `势力“${faction.name}”的链接“${link.label}”`),
+          );
         }
       });
     } else {
       faction.resources.forEach((resource) => {
         if (resource.itemId === id) {
-          hits.push(hit("势力组织", `势力“${faction.name}”的资源“${resource.name}”`));
+          hits.push(
+            hit("势力组织", `势力“${faction.name}”的资源“${resource.name}”`),
+          );
         }
       });
       faction.links.forEach((link) => {
         if (link.kind === "item" && link.targetId === id) {
-          hits.push(hit("势力组织", `势力“${faction.name}”的链接“${link.label}”`));
+          hits.push(
+            hit("势力组织", `势力“${faction.name}”的链接“${link.label}”`),
+          );
         }
       });
     }
@@ -394,29 +525,29 @@ export async function findInboundReferences(
     }
   }
 
-  const [timelineContent, factionsContent, charactersContent, cultivationContent, narrativeContent] =
-    await Promise.all([
-      loadOptionalJson(storage, TIMELINE_LIBRARY_PATH),
-      loadOptionalJson(storage, FACTION_LIBRARY_PATH),
-      loadOptionalJson(storage, "characters/index.json"),
-      loadOptionalJson(storage, CULTIVATION_ECOLOGY_PATH),
-      loadOptionalJson(storage, NARRATIVE_ENGINEERING_PATH),
-    ]);
+  const [
+    timelineLibrary,
+    factionLibrary,
+    charactersContent,
+    cultivation,
+    narrativeLibrary,
+  ] = await Promise.all([
+    loadOptionalTimeline(storage),
+    loadOptionalFaction(storage),
+    loadOptionalJson(storage, "characters/index.json"),
+    loadCultivationForReferenceCheck(storage),
+    loadOptionalNarrative(storage),
+  ]);
 
   const hits: InboundReferenceHit[] = [];
-  if (timelineContent !== null) {
-    try {
-      const library = parseTimelineLibrary(timelineContent);
-      hits.push(
-        ...collectTimelineReferenceHits(library.events, kind, id),
-      );
-    } catch {
-      // 时间线损坏时无法判断引用，跳过（保存时间线时已有严格校验兜底）。
-    }
+  if (timelineLibrary !== null) {
+    hits.push(
+      ...collectTimelineReferenceHits(timelineLibrary.events, kind, id),
+    );
   }
-  if (factionsContent !== null) {
+  if (factionLibrary !== null) {
     try {
-      const library = parseFactionLibrary(factionsContent);
+      const library = factionLibrary;
       if (kind === "character" || kind === "item") {
         hits.push(...collectFactionReferenceHits(library.factions, kind, id));
       }
@@ -429,8 +560,8 @@ export async function findInboundReferences(
       const index = parseCharacterLibraryIndex(charactersContent);
       const repository = createNovelCharacterLibraryRepository(storage);
       const characters = await Promise.all(
-        index.characters.map(async (entry) =>
-          (await repository.loadCharacter(entry)).record,
+        index.characters.map(
+          async (entry) => (await repository.loadCharacter(entry)).record,
         ),
       );
       characters.forEach((character) => {
@@ -442,43 +573,56 @@ export async function findInboundReferences(
       // 同上。
     }
   }
-  if (kind === "item" && cultivationContent !== null) {
-    try {
-      // 修炼体系的 itemIds 引用（法门/秘籍/阵法）通过对象遍历收集，避免依赖体系版本。
-      const parsed = JSON.parse(cultivationContent) as unknown;
-      collectCultivationItemHits(parsed, id, hits);
-    } catch {
-      // 修炼体系事实源损坏时按“存在潜在引用”处理（fail-closed），
-      // 避免物品在被引用时因检查失效而被误删。
-      hits.push(
-        hit(
-          "修炼体系",
-          "事实源文件无法解析，无法确认物品引用，已阻止删除",
-        ),
-      );
-    }
+  if (kind === "item" && cultivation.ecology !== null) {
+    collectCultivationItemHits(cultivation.ecology, id, hits);
+  } else if (kind === "item" && cultivation.error !== null) {
+    // 任一模块损坏时按“存在潜在引用”处理，避免物品在检查失效时被误删。
+    hits.push(
+      hit("修炼体系", "事实源模块无法解析，无法确认物品引用，已阻止删除"),
+    );
   }
-  if (kind === "character" && narrativeContent !== null) {
+  if (kind === "character" && narrativeLibrary !== null) {
     try {
-      const parsed = JSON.parse(narrativeContent) as {
-        readonly lines?: readonly { readonly title?: unknown; readonly protagonistCharacterId?: unknown }[];
-        readonly arcs?: readonly { readonly title?: unknown; readonly characterId?: unknown }[];
-        readonly chapters?: readonly { readonly title?: unknown; readonly sections?: readonly { readonly povCharacterId?: unknown }[] }[];
+      const parsed = narrativeLibrary as unknown as {
+        readonly lines?: readonly {
+          readonly title?: unknown;
+          readonly protagonistCharacterId?: unknown;
+        }[];
+        readonly arcs?: readonly {
+          readonly title?: unknown;
+          readonly characterId?: unknown;
+        }[];
+        readonly chapters?: readonly {
+          readonly title?: unknown;
+          readonly sections?: readonly { readonly povCharacterId?: unknown }[];
+        }[];
       };
       parsed.lines?.forEach((line) => {
         if (line.protagonistCharacterId === id) {
-          hits.push(hit("剧情工程", `线路“${String(line.title ?? "未命名")}”的主角`));
+          hits.push(
+            hit("剧情工程", `线路“${String(line.title ?? "未命名")}”的主角`),
+          );
         }
       });
       parsed.arcs?.forEach((arc) => {
         if (arc.characterId === id) {
-          hits.push(hit("剧情工程", `故事弧“${String(arc.title ?? "未命名")}”的关联角色`));
+          hits.push(
+            hit(
+              "剧情工程",
+              `故事弧“${String(arc.title ?? "未命名")}”的关联角色`,
+            ),
+          );
         }
       });
       parsed.chapters?.forEach((chapter) => {
         chapter.sections?.forEach((section) => {
           if (section.povCharacterId === id) {
-            hits.push(hit("剧情工程", `章节“${String(chapter.title ?? "未命名")}”的场景视角`));
+            hits.push(
+              hit(
+                "剧情工程",
+                `章节“${String(chapter.title ?? "未命名")}”的场景视角`,
+              ),
+            );
           }
         });
       });
@@ -503,9 +647,7 @@ function collectCultivationItemHits(
   const itemIds = (record as CultivationItemRefShape).itemIds;
   if (Array.isArray(itemIds) && itemIds.includes(id)) {
     const name =
-      typeof record.name === "string" && record.name
-        ? record.name
-        : "未命名";
+      typeof record.name === "string" && record.name ? record.name : "未命名";
     hits.push(hit("修炼体系", `“${name}”的关联物品`));
   }
   Object.values(record).forEach((child) => {
@@ -521,7 +663,5 @@ function collectCultivationItemHits(
 export function formatInboundReferenceHits(
   hits: readonly InboundReferenceHit[],
 ): string {
-  return hits
-    .map((entry) => `${entry.library}：${entry.location}`)
-    .join("；");
+  return hits.map((entry) => `${entry.library}：${entry.location}`).join("；");
 }

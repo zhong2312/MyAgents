@@ -187,8 +187,7 @@ fn managed_codex_provider_ready(cfg: &serde_json::Value) -> bool {
 }
 
 fn workspace_paths_match(agent_path: &str, workspace_path: &std::path::Path) -> bool {
-    crate::cron_task::normalize_path(agent_path)
-        == crate::cron_task::normalize_path(&workspace_path.to_string_lossy())
+    crate::workspace_path::workspace_paths_equal(agent_path, &workspace_path.to_string_lossy())
 }
 
 /// Look up the `runtime` field from session metadata in ~/.myagents/sessions.json.
@@ -207,7 +206,7 @@ pub fn resolve_session_runtime_identity(session_id: &str) -> Option<String> {
 }
 
 pub fn resolve_session_runtime_identity_full(session_id: &str) -> Option<RuntimeIdentity> {
-    let sessions_path = dirs::home_dir()?.join(".myagents").join("sessions.json");
+    let sessions_path = crate::app_dirs::myagents_data_dir()?.join("sessions.json");
     let content = std::fs::read_to_string(&sessions_path).ok()?;
     resolve_session_runtime_identity_full_from_json(session_id, &content)
 }
@@ -239,6 +238,18 @@ pub(super) fn resolve_session_runtime_identity_full_from_json(
     None
 }
 
+fn session_matches_restore_target(
+    session: &serde_json::Value,
+    session_id: &str,
+    agent_dir: &str,
+) -> bool {
+    session.get("id").and_then(|value| value.as_str()) == Some(session_id)
+        && session
+            .get("agentDir")
+            .and_then(|value| value.as_str())
+            .is_some_and(|stored| workspace_paths_match(stored, std::path::Path::new(agent_dir)))
+}
+
 /// Lazy validation for tab restore (Issue #232 / PRD 0.2.25).
 ///
 /// A restored "cold" chat tab is only activatable if (a) its session still
@@ -261,7 +272,8 @@ pub fn cmd_can_restore_session(sessionId: String, agentDir: String) -> bool {
     if crate::workspace_files::path_safety::validate_workspace_root(&agentDir).is_err() {
         return false;
     }
-    let Some(sessions_path) = dirs::home_dir().map(|h| h.join(".myagents").join("sessions.json"))
+    let Some(sessions_path) =
+        crate::app_dirs::myagents_data_dir().map(|dir| dir.join("sessions.json"))
     else {
         return false;
     };
@@ -274,16 +286,12 @@ pub fn cmd_can_restore_session(sessionId: String, agentDir: String) -> bool {
     let Some(arr) = sessions.as_array() else {
         return false;
     };
-    // The session must exist AND belong to this workspace. Cross-checking
-    // agentDir prevents a corrupted/stale localStorage entry from restoring
-    // session A under workspace B (which would apply the wrong workspace / MCP /
-    // model config to an existing conversation). Both agentDir values originate
-    // from the same launch path (persisted tab vs session metadata), so a raw
-    // string compare is correct.
-    arr.iter().any(|s| {
-        s.get("id").and_then(|v| v.as_str()) == Some(&sessionId)
-            && s.get("agentDir").and_then(|v| v.as_str()) == Some(&agentDir)
-    })
+    // The session must exist AND belong to this workspace. Session metadata and
+    // the active Project can legitimately persist different Windows separator,
+    // case, or trailing-slash forms, so use the same canonical identity as the
+    // history-list query instead of a raw string comparison.
+    arr.iter()
+        .any(|session| session_matches_restore_target(session, &sessionId, &agentDir))
 }
 
 /// v0.1.69 T13: Runtime invariant check on Sidecar reuse.
@@ -429,6 +437,30 @@ mod tests {
         assert!(!workspace_paths_match(
             r"/tmp/a\b",
             std::path::Path::new("/tmp/a/b")
+        ));
+    }
+
+    #[test]
+    fn restore_target_match_reuses_canonical_workspace_identity() {
+        let session = serde_json::json!({
+            "id": "session-1",
+            "agentDir": r"F:\\workspace\\小说\\DSXX\\"
+        });
+
+        assert!(session_matches_restore_target(
+            &session,
+            "session-1",
+            "f:/workspace/小说/DSXX"
+        ));
+        assert!(!session_matches_restore_target(
+            &session,
+            "session-2",
+            "F:/workspace/小说/DSXX"
+        ));
+        assert!(!session_matches_restore_target(
+            &session,
+            "session-1",
+            "F:/workspace/小说/OTHER"
         ));
     }
 

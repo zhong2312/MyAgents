@@ -5,10 +5,7 @@ import type {
   WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import type {
-  InspirationAiAgentRequest,
-  InspirationAiRunRequest,
-} from "../business/inspirationAi";
+import type { InspirationAiAgentRequest } from "../business/inspirationAi";
 import type { InspirationItem } from "../entities/inspirationSchema";
 import InspirationWorkbench from "./InspirationWorkbench";
 import "./InspirationStudio.css";
@@ -21,7 +18,6 @@ interface InspirationStudioProps {
   readonly isActive: boolean;
   readonly projectTitle: string;
   readonly focus?: DomainEntityRef | null;
-  readonly onAiRun?: (request: InspirationAiRunRequest) => Promise<string>;
   readonly onOpenAiAgent?: (
     request: InspirationAiAgentRequest,
   ) => Promise<void>;
@@ -34,7 +30,6 @@ export default function InspirationStudio({
   storage,
   isActive,
   projectTitle,
-  onAiRun,
   onOpenAiAgent,
   focus,
   registerNavigationGuard,
@@ -67,7 +62,9 @@ export default function InspirationStudio({
     return (
       <div className="inspiration-studio items-center justify-center">
         <Loader2 className="h-5 w-5 animate-spin text-[var(--accent-warm)]" />
-        <p className="mt-3 text-sm text-[var(--ink-muted)]">正在读取灵感文件…</p>
+        <p className="mt-3 text-sm text-[var(--ink-muted)]">
+          正在读取灵感文件…
+        </p>
       </div>
     );
   }
@@ -100,7 +97,6 @@ export default function InspirationStudio({
       content={controller.project.content}
       isSaving={controller.isSaving}
       onSave={controller.save}
-      onAiRun={onAiRun}
       onOpenAiAgent={onOpenAiAgent}
       onConvertToNarrative={convertToNarrative}
       focus={focus}

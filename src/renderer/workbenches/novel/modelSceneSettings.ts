@@ -191,14 +191,14 @@ export const NOVEL_MODEL_SCENES: readonly NovelModelSceneDefinition[] = [
     id: "inspiration.assist",
     group: "灵感",
     label: "灵感诊断与展开",
-    description: "检查灵感并提供可发展的方向",
-    execution: "run",
+    description: "通过小说工作台工具读取灵感并提供可发展的方向",
+    execution: "agent",
   },
   {
     id: "inspiration.coauthor",
     group: "灵感",
     label: "灵感深度共创",
-    description: "携带当前灵感上下文的完整 MyAgents 会话",
+    description: "通过工作台工具读取当前灵感的完整 MyAgents 会话",
     execution: "agent",
   },
   {

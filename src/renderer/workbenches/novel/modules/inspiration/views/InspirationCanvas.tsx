@@ -22,9 +22,7 @@ import {
   type CanvasEdge,
   type CanvasNode,
 } from "../data-access/inspirationBoard";
-import { parseInspirationLibrary } from "../entities/inspirationSchema";
-
-const INSPIRATION_LIBRARY_PATH = "inspiration/index.json";
+import { createNovelInspirationRepository } from "../data-access/inspirationRepository";
 
 interface InspirationCanvasProps {
   readonly storage: WorkbenchStorage;
@@ -60,7 +58,13 @@ export default function InspirationCanvas({
     () => createInspirationBoardRepository(storage),
     [storage],
   );
-  const [boards, setBoards] = useState<readonly { id: string; name: string }[]>([]);
+  const inspirationRepository = useMemo(
+    () => createNovelInspirationRepository(storage),
+    [storage],
+  );
+  const [boards, setBoards] = useState<readonly { id: string; name: string }[]>(
+    [],
+  );
   const [boardId, setBoardId] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -130,7 +134,10 @@ export default function InspirationCanvas({
         id: edge.id,
         source: edge.source,
         target: edge.target,
-        label: typeof edge.label === "string" && edge.label !== "推演" ? edge.label : "",
+        label:
+          typeof edge.label === "string" && edge.label !== "推演"
+            ? edge.label
+            : "",
       }));
       await repository.saveBoard(loaded, {
         ...loaded.board,
@@ -151,8 +158,7 @@ export default function InspirationCanvas({
       // T18：新增便签 → 后台同步创建一条灵感记录
       const title = window.prompt("便签内容：", "新灵感");
       if (!title?.trim()) return;
-      const inspirationFile = await storage.readText(INSPIRATION_LIBRARY_PATH);
-      const library = parseInspirationLibrary(inspirationFile.content);
+      const current = await inspirationRepository.load();
       const now = new Date().toISOString();
       const inspiration = {
         id: `insp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
@@ -165,28 +171,28 @@ export default function InspirationCanvas({
         updatedAt: now,
       };
       const nextLibrary = {
-        ...library,
+        ...current.library,
         updatedAt: now,
-        items: [inspiration, ...library.items],
+        items: [inspiration, ...current.library.items],
       };
-      await storage.writeText(
-        INSPIRATION_LIBRARY_PATH,
-        `${JSON.stringify(nextLibrary, null, 2)}\n`,
-        { expectedContent: inspirationFile.content },
-      );
+      await inspirationRepository.save(current, nextLibrary);
       const node = buildStickyFromInspiration(inspiration, {
         x: 40 + nodes.length * 20,
         y: 40 + nodes.length * 16,
       });
       const flowNode: Node = {
         ...toFlowNode(node),
-        data: { ...toFlowNode(node).data, kind: "inspiration", entityId: inspiration.id },
+        data: {
+          ...toFlowNode(node).data,
+          kind: "inspiration",
+          entityId: inspiration.id,
+        },
       };
       setNodes((current) => [...current, flowNode]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [boardId, nodes.length, setNodes, storage]);
+  }, [boardId, inspirationRepository, nodes.length, setNodes]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -211,7 +217,9 @@ export default function InspirationCanvas({
         : edge,
     );
     setEdges(nextEdges);
-    setError("已标记为正式关系。请通过 AI 会话（如人物库/势力设计）提交对应领域提案以落库。");
+    setError(
+      "已标记为正式关系。请通过 AI 会话（如人物库/势力设计）提交对应领域提案以落库。",
+    );
   }, [edges, setEdges]);
 
   return (

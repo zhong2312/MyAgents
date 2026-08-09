@@ -3,16 +3,18 @@ import { describe, expect, it } from "vitest";
 import type { CharacterRecord } from "../../../shared/workbenches/novel/characterLibrarySchema";
 
 import { createNovelCharacterLibraryRepository } from "./modules/characters";
+import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
+import type { FactionRecord } from "./modules/factions/entities/factionLibrarySchema";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
 import { createNovelMapRepository } from "./mapRepository";
-import {
-  createEmptyNarrativeEngineering,
-  serializeNarrativeEngineering,
-} from "./narrativeEngineeringSchema";
+import { createEmptyNarrativeEngineering } from "./narrativeEngineeringSchema";
+import { createNarrativeEngineeringRepository } from "./narrativeEngineeringRepository";
 import { createNovelProjectInitialization } from "./projectInitialization";
 import { createNovelRepository } from "./repository";
 import { createNovelSettingLibraryRepository } from "./settingLibraryRepository";
-import { MAIN_TIMELINE_BRANCH_ID, createEmptyTimelineLibrary, serializeTimelineLibrary } from "./timelineLibrarySchema";
+import { MAIN_TIMELINE_BRANCH_ID } from "./timelineLibrarySchema";
+import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
 import { NovelMemoryStorage } from "./testStorage";
 import { buildWorldSimulationBaseline } from "./worldSimulationProjection";
 import { createDefaultWorldSimulationScenario } from "./worldSimulationV2Schema";
@@ -30,14 +32,14 @@ function initializedStorage() {
     chapterWordCount: 3_000,
     createdAt,
   });
-  return new NovelMemoryStorage(Object.fromEntries(initialization.files.map((file) => [file.path, file.content])));
+  return new NovelMemoryStorage(
+    Object.fromEntries(
+      initialization.files.map((file) => [file.path, file.content]),
+    ),
+  );
 }
 
-function character(
-  id: string,
-  name: string,
-  hometown = "",
-): CharacterRecord {
+function character(id: string, name: string, hometown = ""): CharacterRecord {
   return {
     id,
     name,
@@ -96,7 +98,11 @@ function character(
   };
 }
 
-function timelineEvent(id: string, sortKey: number, chapterIds: readonly string[] = []) {
+function timelineEvent(
+  id: string,
+  sortKey: number,
+  chapterIds: readonly string[] = [],
+) {
   return {
     id,
     branchId: MAIN_TIMELINE_BRANCH_ID,
@@ -128,16 +134,113 @@ function timelineEvent(id: string, sortKey: number, chapterIds: readonly string[
   };
 }
 
-async function writeTimeline(storage: ReturnType<typeof initializedStorage>, events: readonly ReturnType<typeof timelineEvent>[], factsThroughEventId: string | null) {
-  const current = createEmptyTimelineLibrary(createdAt);
-  storage.setExternalText("timeline/index.json", serializeTimelineLibrary({
-    ...current,
+function faction(id: string): FactionRecord {
+  return {
+    id,
+    name: "青云宗",
+    type: "宗门",
+    status: "active",
+    summary: "东玄剑修宗门",
+    state: {
+      governance: "",
+      military: "",
+      economy: "",
+      publicSupport: "",
+      territorialIntegrity: "",
+    },
+    territories: [],
+    members: [],
+    assets: [],
+    resources: [],
+    organizationUnits: [],
+    relations: [],
+    rights: [],
+    links: [],
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+async function writeTimeline(
+  storage: ReturnType<typeof initializedStorage>,
+  events: readonly ReturnType<typeof timelineEvent>[],
+  factsThroughEventId: string | null,
+) {
+  const repository = createNovelTimelineLibraryRepository(storage);
+  const current = await repository.load();
+  await repository.save(current, {
+    ...current.library,
     factsThroughEventId,
     events: [...events],
-  }));
+  });
 }
 
 describe("buildWorldSimulationBaseline", () => {
+  it("uses the independent faction record as each faction projection source", async () => {
+    const storage = initializedStorage();
+    const repository = createNovelFactionLibraryRepository(storage);
+    const current = await repository.load();
+    await repository.save(current, {
+      ...current.library,
+      factions: [faction("faction-cloud-sect")],
+    });
+
+    const baseline = await buildWorldSimulationBaseline(storage, {
+      ...createDefaultWorldSimulationScenario(),
+      start: { mode: "custom", sortKey: "0" },
+    });
+
+    expect(baseline.factions[0]?.sourceRefs[0]).toMatchObject({
+      path: "world/factions/records/faction-cloud-sect.json",
+      entityId: "faction-cloud-sect",
+      authority: "canon",
+    });
+  });
+
+  it("uses the independent location record as each region projection source", async () => {
+    const storage = initializedStorage();
+    const repository = createNovelLocationLibraryRepository(storage);
+    const current = await repository.load();
+    await repository.save(current, {
+      ...current.index,
+      locations: [
+        {
+          id: "cloud-city",
+          nodeId: "world-root",
+          parentLocationId: null,
+          name: "云城",
+          aliases: [],
+          type: "城市",
+          status: "appeared",
+          summary: "浮于云海之上的城池",
+          appearanceNote: "",
+          description: "",
+          order: 0,
+        },
+      ],
+    });
+
+    const baseline = await buildWorldSimulationBaseline(storage, {
+      ...createDefaultWorldSimulationScenario(),
+      start: { mode: "custom", sortKey: "0" },
+    });
+    const region = baseline.regions.find((entry) => entry.id === "world-root");
+
+    expect(region?.sourceRefs).toContainEqual(
+      expect.objectContaining({
+        path: "world/locations/records/cloud-city.json",
+        entityId: "cloud-city",
+        authority: "actual",
+      }),
+    );
+    expect(baseline.sourceRefs).toContainEqual(
+      expect.objectContaining({
+        path: "world/locations/index.json",
+        authority: "canon",
+      }),
+    );
+  });
+
   it("blocks a facts-anchor run when no fact endpoint is configured", async () => {
     const storage = initializedStorage();
 
@@ -146,10 +249,12 @@ describe("buildWorldSimulationBaseline", () => {
       createDefaultWorldSimulationScenario(),
     );
 
-    expect(baseline.diagnostics).toContainEqual(expect.objectContaining({
-      id: "timeline-facts-anchor-missing",
-      severity: "blocking",
-    }));
+    expect(baseline.diagnostics).toContainEqual(
+      expect.objectContaining({
+        id: "timeline-facts-anchor-missing",
+        severity: "blocking",
+      }),
+    );
   });
 
   it("keeps a custom-start run explicit about the absence of facts", async () => {
@@ -161,10 +266,12 @@ describe("buildWorldSimulationBaseline", () => {
 
     const baseline = await buildWorldSimulationBaseline(storage, scenario);
 
-    expect(baseline.diagnostics).toContainEqual(expect.objectContaining({
-      id: "timeline-facts-anchor-missing",
-      severity: "warning",
-    }));
+    expect(baseline.diagnostics).toContainEqual(
+      expect.objectContaining({
+        id: "timeline-facts-anchor-missing",
+        severity: "warning",
+      }),
+    );
   });
 
   it("blocks a run with no actionable character or faction even at a custom start", async () => {
@@ -176,10 +283,12 @@ describe("buildWorldSimulationBaseline", () => {
 
     const baseline = await buildWorldSimulationBaseline(storage, scenario);
 
-    expect(baseline.diagnostics).toContainEqual(expect.objectContaining({
-      id: "actionable-subjects-missing",
-      severity: "blocking",
-    }));
+    expect(baseline.diagnostics).toContainEqual(
+      expect.objectContaining({
+        id: "actionable-subjects-missing",
+        severity: "blocking",
+      }),
+    );
   });
 
   it("includes descendants in the actionable-subject preflight scope", async () => {
@@ -218,7 +327,10 @@ describe("buildWorldSimulationBaseline", () => {
     };
     const baseline = await buildWorldSimulationBaseline(storage, scenario);
 
-    expect(baseline.characters.find((item) => item.id === "hero-in-child")?.locationId).toBe("qinyun-city");
+    expect(
+      baseline.characters.find((item) => item.id === "hero-in-child")
+        ?.locationId,
+    ).toBe("qinyun-city");
     expect(baseline.diagnostics).not.toContainEqual(
       expect.objectContaining({ id: "actionable-subjects-missing" }),
     );
@@ -248,45 +360,79 @@ describe("buildWorldSimulationBaseline", () => {
 
   it("only exposes events through factsThroughEventId as actual facts", async () => {
     const storage = initializedStorage();
-    await writeTimeline(storage, [timelineEvent("fact-1", 1), timelineEvent("future-1", 100)], "fact-1");
+    await writeTimeline(
+      storage,
+      [timelineEvent("fact-1", 1), timelineEvent("future-1", 100)],
+      "fact-1",
+    );
     const scenario = createDefaultWorldSimulationScenario();
 
     const baseline = await buildWorldSimulationBaseline(storage, scenario);
 
     expect(baseline.factsThroughEventId).toBe("fact-1");
     expect(baseline.timelineFacts.map((event) => event.id)).toEqual(["fact-1"]);
-    expect(baseline.timelinePlans.map((event) => event.id)).toEqual(["future-1"]);
+    expect(baseline.timelinePlans.map((event) => event.id)).toEqual([
+      "future-1",
+    ]);
     expect(baseline.timelinePlans[0]?.authority).toBe("planned");
     expect(baseline.anchor.sortKey).toBe("1");
   });
 
   it("does not leak later facts when a custom start is earlier than the fact anchor", async () => {
     const storage = initializedStorage();
-    await writeTimeline(storage, [timelineEvent("fact-1", 10), timelineEvent("future-1", 100)], "fact-1");
-    const scenario = { ...createDefaultWorldSimulationScenario(), start: { mode: "custom" as const, sortKey: "0" } };
+    await writeTimeline(
+      storage,
+      [timelineEvent("fact-1", 10), timelineEvent("future-1", 100)],
+      "fact-1",
+    );
+    const scenario = {
+      ...createDefaultWorldSimulationScenario(),
+      start: { mode: "custom" as const, sortKey: "0" },
+    };
 
     const baseline = await buildWorldSimulationBaseline(storage, scenario);
 
     expect(baseline.anchor.sortKey).toBe("0");
     expect(baseline.timelineFacts).toHaveLength(0);
-    expect(baseline.timelinePlans.map((event) => event.id)).toEqual(["fact-1", "future-1"]);
+    expect(baseline.timelinePlans.map((event) => event.id)).toEqual([
+      "fact-1",
+      "future-1",
+    ]);
   });
 
   it("supports before and after chapter anchors without rewriting the fact source", async () => {
     const storage = initializedStorage();
     const project = await createNovelRepository(storage).load();
     const chapter = await createNovelRepository(storage).createChapter(project);
-    await writeTimeline(storage, [timelineEvent("chapter-before", 10, [chapter.id]), timelineEvent("chapter-after", 20, [chapter.id])], "chapter-after");
+    await writeTimeline(
+      storage,
+      [
+        timelineEvent("chapter-before", 10, [chapter.id]),
+        timelineEvent("chapter-after", 20, [chapter.id]),
+      ],
+      "chapter-after",
+    );
 
     const base = createDefaultWorldSimulationScenario();
-    const before = await buildWorldSimulationBaseline(storage, { ...base, chapterContext: { mode: "before", chapterId: chapter.id } });
-    const after = await buildWorldSimulationBaseline(storage, { ...base, chapterContext: { mode: "after", chapterId: chapter.id } });
+    const before = await buildWorldSimulationBaseline(storage, {
+      ...base,
+      chapterContext: { mode: "before", chapterId: chapter.id },
+    });
+    const after = await buildWorldSimulationBaseline(storage, {
+      ...base,
+      chapterContext: { mode: "after", chapterId: chapter.id },
+    });
 
     expect(before.timelineFacts).toHaveLength(0);
     expect(before.anchor.sortKey).toBe("9");
-    expect(after.timelineFacts.map((event) => event.id)).toEqual(["chapter-before", "chapter-after"]);
+    expect(after.timelineFacts.map((event) => event.id)).toEqual([
+      "chapter-before",
+      "chapter-after",
+    ]);
     expect(after.anchor.sortKey).toBe("20");
-    expect(after.timelineFacts.every((event) => event.authority === "actual")).toBe(true);
+    expect(
+      after.timelineFacts.every((event) => event.authority === "actual"),
+    ).toBe(true);
   });
 
   it("does not leak facts that occur after the selected chapter into an after-chapter baseline", async () => {
@@ -354,7 +500,9 @@ describe("buildWorldSimulationBaseline", () => {
     );
     const second = await buildWorldSimulationBaseline(storage, scenario);
 
-    expect(first.sourceRefs.some((ref) => ref.path === chapter.path)).toBe(true);
+    expect(first.sourceRefs.some((ref) => ref.path === chapter.path)).toBe(
+      true,
+    );
     expect(first.sourceRefs.map((ref) => ref.path)).toEqual(
       expect.arrayContaining([
         "manuscript/index.json",
@@ -377,90 +525,89 @@ describe("buildWorldSimulationBaseline", () => {
       character("hero-1", "沈砚"),
     );
     const narrative = createEmptyNarrativeEngineering(createdAt);
-    storage.setExternalText(
-      "narrative/index.json",
-      serializeNarrativeEngineering({
-        ...narrative,
-        lines: [
-          {
-            id: "hero-line",
-            title: "主线",
-            kind: "main",
-            storyRole: "a",
-            status: "active",
-            color: "#123456",
-            premise: "沈砚必须活下去。",
-            protagonistCharacterId: "hero-1",
-            keyNodes: [
-              {
-                id: "line-node",
-                title: "开端",
-                content: "踏入险境。",
-                order: 0,
-                locations: [
-                  {
-                    id: "line-node-location",
-                    chapterId: "chapter-plan-1",
-                    sectionId: "section-plan-1",
-                  },
-                ],
-              },
-            ],
-            content: "主线护栏",
-          },
-        ],
-        arcs: [
-          {
-            id: "hero-arc",
-            title: "人物弧",
-            kind: "character",
-            characterId: "hero-1",
-            characterArcStageId: null,
-            characterArcStageTitle: "",
-            lineIds: ["hero-line"],
-            keyNodes: [],
-            content: "人物成长",
-          },
-        ],
-        directories: [
-          {
-            id: "volume-1",
-            parentId: null,
-            kind: "volume",
-            title: "第一卷",
-            description: "卷纲",
-            status: "planned",
-            order: 0,
-          },
-        ],
-        chapters: [
-          {
-            id: "chapter-plan-1",
-            directoryId: "volume-1",
-            manuscriptChapterId: null,
-            title: "第一章计划",
-            description: "章节约束",
-            status: "planned",
-            order: 0,
-            updatedAt: createdAt,
-            lineIds: ["hero-line"],
-            arcIds: ["hero-arc"],
-            sections: [
-              {
-                id: "section-plan-1",
-                order: 0,
-                title: "开篇",
-                description: "以沈砚视角展开。",
-                povCharacterId: "hero-1",
-                lineIds: ["hero-line"],
-                arcIds: ["hero-arc"],
-                paragraphs: [],
-              },
-            ],
-          },
-        ],
-      }),
-    );
+    const narrativeRepository = createNarrativeEngineeringRepository(storage);
+    const currentNarrative = await narrativeRepository.load();
+    await narrativeRepository.save(currentNarrative, {
+      ...narrative,
+      lines: [
+        {
+          id: "hero-line",
+          title: "主线",
+          kind: "main",
+          storyRole: "a",
+          status: "active",
+          color: "#123456",
+          premise: "沈砚必须活下去。",
+          protagonistCharacterId: "hero-1",
+          keyNodes: [
+            {
+              id: "line-node",
+              title: "开端",
+              content: "踏入险境。",
+              order: 0,
+              locations: [
+                {
+                  id: "line-node-location",
+                  chapterId: "chapter-plan-1",
+                  sectionId: "section-plan-1",
+                },
+              ],
+            },
+          ],
+          content: "主线护栏",
+        },
+      ],
+      arcs: [
+        {
+          id: "hero-arc",
+          title: "人物弧",
+          kind: "character",
+          characterId: "hero-1",
+          characterArcStageId: null,
+          characterArcStageTitle: "",
+          lineIds: ["hero-line"],
+          keyNodes: [],
+          content: "人物成长",
+        },
+      ],
+      directories: [
+        {
+          id: "volume-1",
+          parentId: null,
+          kind: "volume",
+          title: "第一卷",
+          description: "卷纲",
+          status: "planned",
+          order: 0,
+        },
+      ],
+      chapters: [
+        {
+          id: "chapter-plan-1",
+          directoryId: "volume-1",
+          manuscriptChapterId: null,
+          title: "第一章计划",
+          description: "章节约束",
+          status: "planned",
+          order: 0,
+          updatedAt: createdAt,
+          lineIds: ["hero-line"],
+          arcIds: ["hero-arc"],
+          sections: [
+            {
+              id: "section-plan-1",
+              order: 0,
+              title: "开篇",
+              description: "以沈砚视角展开。",
+              povCharacterId: "hero-1",
+              lineIds: ["hero-line"],
+              arcIds: ["hero-arc"],
+              paragraphs: [],
+            },
+          ],
+        },
+      ],
+    });
 
     const scenario = {
       ...createDefaultWorldSimulationScenario(),
@@ -527,10 +674,7 @@ describe("buildWorldSimulationBaseline", () => {
 
     expect(rule.description).toContain("突破失败会损耗寿元");
     expect(rule.sourceRefs.map((ref) => ref.path)).toEqual(
-      expect.arrayContaining([
-        setting.pagePath,
-        setting.entriesPath,
-      ]),
+      expect.arrayContaining([setting.pagePath, setting.entriesPath]),
     );
     expect(rootRegion.summary).toContain("突破失败会损耗寿元");
   });
@@ -575,8 +719,12 @@ describe("buildWorldSimulationBaseline", () => {
 
     expect(baseline.diagnostics).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "setting-page-unavailable-broken-setting" }),
-        expect.objectContaining({ id: "setting-entries-unavailable-broken-setting" }),
+        expect.objectContaining({
+          id: "setting-page-unavailable-broken-setting",
+        }),
+        expect.objectContaining({
+          id: "setting-entries-unavailable-broken-setting",
+        }),
         expect.objectContaining({ id: "map-record-unavailable-broken-map" }),
         expect.objectContaining({ id: "item-record-unavailable-broken-item" }),
       ]),

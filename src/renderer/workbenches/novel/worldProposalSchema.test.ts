@@ -78,12 +78,11 @@ describe("worldProposalSchema", () => {
     ).toThrow("提案只能修改设定库");
   });
 
-  it("向世界架构 Agent 提供完整 settings 条目与成对路径契约", () => {
+  it("向世界架构 Agent 提供增量 settings 与成对路径契约", () => {
     const instructions = buildWorldProposalAgentInstructions();
 
-    expect(instructions).toContain("完整设定索引，不是路径清单或局部补丁");
-    expect(instructions).toContain("原样保留所有未修改条目");
-    expect(instructions).toContain("不得用空对象");
+    expect(instructions).toContain("novel_world_patch_draft_changes");
+    expect(instructions).toContain("未修改条目由工具保留");
     expect(instructions).toContain(
       "id`、`nodeId`、`templateId`、`name`、`group`、`status`、`pagePath`、`entriesPath",
     );

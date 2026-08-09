@@ -42,7 +42,7 @@ import {
 import { createNovelCharacterLibraryRepository } from "../../characters";
 import { createNovelFactionLibraryRepository } from "../../factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "../../../itemLibraryRepository";
-import { createNovelLocationLibraryRepository } from "../../../locationLibraryRepository";
+import { createNovelLocationLibraryRepository } from "../../locations/data-access/locationLibraryRepository";
 import { parseNovelChapterIndex } from "../../../projectSchema";
 import {
   createNovelTimelineLibraryRepository,
@@ -458,7 +458,9 @@ export default function TimelineLibrary({
   // 外部实体定位：焦点事件存在时切到其分支（T3）
   useEffect(() => {
     if (!focus || focus.kind !== "event") return;
-    const target = loaded?.library.events.find((event) => event.id === focus.id);
+    const target = loaded?.library.events.find(
+      (event) => event.id === focus.id,
+    );
     if (target) setSelectedBranchId(target.branchId);
   }, [focus, loaded?.library.events]);
   const [selectedViewId, setSelectedViewId] = useState("universe-history");
@@ -1056,7 +1058,6 @@ export default function TimelineLibrary({
     const request = buildTimelineAiAgentRequest({
       task,
       projectTitle,
-      library: loaded.library,
       selection: {
         branchId: selectedBranchId,
         viewId: selectedViewId,

@@ -1,8 +1,15 @@
-import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
+import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
+  INSPIRATION_INDEX_PATH,
+  createInspirationFiles,
+  inspirationFileMap,
+  loadInspirationFiles,
+  serializeInspirationFileSnapshot,
+} from "../../../../../../shared/workbenches/novel/inspirationStorage";
+import { createStorageTransaction } from "../../../shared/infrastructure/storageTransaction";
+import {
   createEmptyInspirationLibrary,
-  INSPIRATION_LIBRARY_PATH,
   parseInspirationLibrary,
   serializeInspirationLibrary,
   type InspirationLibrary,
@@ -10,7 +17,9 @@ import {
 
 export interface LoadedInspirationProject {
   readonly library: InspirationLibrary;
+  /** 已读取的整个灵感目录快照，用作 sourceHash 输入和保存 CAS。 */
   readonly content: string;
+  readonly files: ReadonlyMap<string, string>;
 }
 
 export interface NovelInspirationRepository {
@@ -21,60 +30,86 @@ export interface NovelInspirationRepository {
   ): Promise<LoadedInspirationProject>;
 }
 
-async function ensureTextFile(
-  storage: WorkbenchStorage,
-  content: string,
-): Promise<WorkbenchTextFile> {
-  const [info] = await storage.stat([INSPIRATION_LIBRARY_PATH]);
-  if (info?.exists) return storage.readText(INSPIRATION_LIBRARY_PATH);
-  try {
-    return await storage.createText(INSPIRATION_LIBRARY_PATH, content, {
-      createParents: true,
-    });
-  } catch {
-    return storage.readText(INSPIRATION_LIBRARY_PATH);
-  }
+export function createInspirationInitializationFiles(
+  createdAt: string,
+): readonly { readonly path: string; readonly content: string }[] {
+  return createInspirationFiles({
+    ...createEmptyInspirationLibrary(createdAt),
+  });
 }
 
-export function createInspirationInitializationFile(createdAt: string): {
-  readonly path: string;
-  readonly content: string;
-} {
-  return {
-    path: INSPIRATION_LIBRARY_PATH,
-    content: serializeInspirationLibrary(createEmptyInspirationLibrary(createdAt)),
-  };
+async function loadFiles(
+  storage: WorkbenchStorage,
+): Promise<LoadedInspirationProject> {
+  const loaded = await loadInspirationFiles(
+    async (path) => (await storage.readText(path)).content,
+  );
+  return Object.freeze({
+    library: parseInspirationLibrary(JSON.stringify(loaded.library)),
+    content: serializeInspirationFileSnapshot(loaded.files),
+    files: loaded.files,
+  });
 }
 
 export function createNovelInspirationRepository(
   storage: WorkbenchStorage,
 ): NovelInspirationRepository {
-  const repository: NovelInspirationRepository = {
+  return Object.freeze({
     async load() {
       if (!storage.isAvailable) {
         throw new Error("灵感仅在 MyAgents 桌面端可用");
       }
-      const initial = createInspirationInitializationFile(
-        new Date().toISOString(),
-      );
-      const file = await ensureTextFile(storage, initial.content);
-      return Object.freeze({
-        library: parseInspirationLibrary(file.content),
-        content: file.content,
-      });
+      const [entry] = await storage.stat([INSPIRATION_INDEX_PATH]);
+      if (!entry?.exists) {
+        const transaction = createStorageTransaction(storage);
+        for (const file of createInspirationInitializationFiles(
+          new Date().toISOString(),
+        )) {
+          transaction.createText(file.path, file.content);
+        }
+        await transaction.commit();
+      } else if (entry.kind !== "file") {
+        throw new Error(`${INSPIRATION_INDEX_PATH} 不是文件`);
+      }
+      return loadFiles(storage);
     },
 
-    async save(current, value) {
-      const nextValue = { ...value, updatedAt: new Date().toISOString() };
-      const content = serializeInspirationLibrary(nextValue);
-      const file = await storage.writeText(INSPIRATION_LIBRARY_PATH, content, {
-        expectedContent: current.content,
+    async save(current: LoadedInspirationProject, value: InspirationLibrary) {
+      const parsed = parseInspirationLibrary(
+        serializeInspirationLibrary({
+          ...value,
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+      const onDisk = await loadInspirationFiles(
+        async (path) => (await storage.readText(path)).content,
+      );
+      if (serializeInspirationFileSnapshot(onDisk.files) !== current.content) {
+        throw new Error("灵感事实源已被外部修改，请重新加载后再保存");
+      }
+      const nextFiles = inspirationFileMap(createInspirationFiles(parsed));
+      const transaction = createStorageTransaction(storage);
+      const orderedPaths = [...nextFiles.keys()].sort((left, right) => {
+        if (left === INSPIRATION_INDEX_PATH) return 1;
+        if (right === INSPIRATION_INDEX_PATH) return -1;
+        return left.localeCompare(right);
       });
-      return Object.freeze({
-        library: parseInspirationLibrary(file.content),
-        content: file.content,
-      });
+      for (const path of orderedPaths) {
+        const content = nextFiles.get(path);
+        if (content === undefined) continue;
+        const previous = onDisk.files.get(path);
+        if (previous === content) continue;
+        if (previous === undefined) transaction.createText(path, content);
+        else transaction.writeText(path, content, previous);
+      }
+      await transaction.commit();
+      const removedPaths = [...onDisk.files.keys()].filter(
+        (path) => !nextFiles.has(path),
+      );
+      await Promise.allSettled(
+        removedPaths.map((path) => storage.remove(path, { permanent: true })),
+      );
+      return loadFiles(storage);
     },
-  };
-  return Object.freeze(repository);
+  });
 }

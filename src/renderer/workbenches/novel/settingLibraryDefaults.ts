@@ -225,7 +225,7 @@ const templates: readonly SettingTemplate[] = [
     skeleton:
       "# 修炼体系\n\n## 力量来源\n\n## 境界划分\n\n## 突破条件与代价\n\n## 与本页空间的关系\n",
     agentGuide:
-      "结构化数据请在修行体系模块（world/cultivation-ecology.json）维护，本页只写叙事层面的说明、例外与作者确认的设定。",
+      "结构化数据请在修行体系模块（world/cultivation/index.json 及其体系目录）维护，本页只写叙事层面的说明、例外与作者确认的设定。",
   },
   {
     id: "sect",
@@ -246,8 +246,7 @@ const templates: readonly SettingTemplate[] = [
     description: "记录灵脉、秘境与特殊地利的分布和规则。",
     source: "builtin",
     version: "1.0.0",
-    skeleton:
-      "# 灵脉秘境\n\n## 灵脉分布\n\n## 秘境规则\n\n## 资源与风险\n",
+    skeleton: "# 灵脉秘境\n\n## 灵脉分布\n\n## 秘境规则\n\n## 资源与风险\n",
     agentGuide: "与时空规则页保持一致，避免规则自相矛盾。",
   },
   {
@@ -257,8 +256,7 @@ const templates: readonly SettingTemplate[] = [
     description: "记录丹药、法宝与天材地宝的类别和流通规则。",
     source: "builtin",
     version: "1.0.0",
-    skeleton:
-      "# 异宝丹药\n\n## 类别概览\n\n## 珍稀度与产出\n\n## 流通与代价\n",
+    skeleton: "# 异宝丹药\n\n## 类别概览\n\n## 珍稀度与产出\n\n## 流通与代价\n",
     agentGuide: "具体物品资料请在物品库维护，本页写分类与流通规则。",
   },
 ] as const;

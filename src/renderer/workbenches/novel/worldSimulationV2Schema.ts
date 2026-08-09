@@ -3,6 +3,7 @@ import { z } from "zod";
 // V3 removes the non-evidenced fallback evolution paths. Historical V2 runs
 // may contain synthetic state changes and therefore must not be replayed.
 export const WORLD_SIMULATION_SCHEMA_VERSION = 3 as const;
+export const WORLD_SIMULATION_RUN_STORAGE_VERSION = 1 as const;
 export const WORLD_SIMULATION_PATHS = Object.freeze({
   scenarios: "simulation/scenarios.json",
   runIndex: "simulation/runs/index.json",
@@ -691,6 +692,41 @@ export interface WorldSimulationRun {
   readonly updatedAt: string;
 }
 
+export interface WorldSimulationRunManifestBranch {
+  readonly id: string;
+  readonly name: string;
+  readonly parentBranchId: string | null;
+  readonly forkEventId: string | null;
+  readonly narrativePolicy: SimulationBranch["narrativePolicy"];
+  readonly seed: string;
+  readonly status: SimulationBranch["status"];
+  readonly warnings: readonly string[];
+  readonly statePath: string;
+  readonly eventLedgerPath: string;
+  readonly observationsPath: string;
+  readonly checkpointsPath: string;
+}
+
+/**
+ * run.json 只负责定位一次推演运行的模块文件。大型基线、状态和历史记录
+ * 分别保存在其声明的文件中，不得再次内嵌到清单。
+ */
+export interface WorldSimulationRunManifest {
+  readonly schemaVersion: typeof WORLD_SIMULATION_SCHEMA_VERSION;
+  readonly storageVersion: typeof WORLD_SIMULATION_RUN_STORAGE_VERSION;
+  readonly id: string;
+  readonly projectId: string;
+  readonly name: string;
+  readonly scenario: WorldSimulationScenario;
+  readonly baselinePath: string;
+  readonly activeBranchId: string;
+  readonly branches: readonly WorldSimulationRunManifestBranch[];
+  readonly councilPath: string;
+  readonly reportsPath: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export interface SimulationScenarioFile {
   readonly schemaVersion: typeof WORLD_SIMULATION_SCHEMA_VERSION;
   readonly scenarios: readonly WorldSimulationScenario[];
@@ -899,11 +935,150 @@ export function parseWorldSimulationRun(content: string): WorldSimulationRun {
   return candidate as WorldSimulationRun;
 }
 
+function assertSimulationPathId(id: string, label: string): string {
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(id)) {
+    throw new Error(`${label} 只能使用小写字母、数字和连字符`);
+  }
+  return id;
+}
+
+export function worldSimulationRunRoot(runId: string): string {
+  return `${WORLD_SIMULATION_PATHS.runRoot}/${assertSimulationPathId(runId, "推演运行 id")}`;
+}
+
+export function worldSimulationRunBaselinePath(runId: string): string {
+  return `${worldSimulationRunRoot(runId)}/baseline.json`;
+}
+
+export function worldSimulationRunCouncilPath(runId: string): string {
+  return `${worldSimulationRunRoot(runId)}/council.json`;
+}
+
+export function worldSimulationRunReportsPath(runId: string): string {
+  return `${worldSimulationRunRoot(runId)}/reports/index.json`;
+}
+
+export function worldSimulationBranchRoot(runId: string, branchId: string): string {
+  return `${worldSimulationRunRoot(runId)}/branches/${assertSimulationPathId(branchId, "推演分支 id")}`;
+}
+
+export function worldSimulationBranchStatePath(runId: string, branchId: string): string {
+  return `${worldSimulationBranchRoot(runId, branchId)}/state.json`;
+}
+
+export function worldSimulationBranchEventLedgerPath(runId: string, branchId: string): string {
+  return `${worldSimulationBranchRoot(runId, branchId)}/${WORLD_SIMULATION_PATHS.branchEventLedgerFile}`;
+}
+
+export function worldSimulationBranchObservationsPath(runId: string, branchId: string): string {
+  return `${worldSimulationBranchRoot(runId, branchId)}/observations.json`;
+}
+
+export function worldSimulationBranchCheckpointsPath(runId: string, branchId: string): string {
+  return `${worldSimulationBranchRoot(runId, branchId)}/${WORLD_SIMULATION_PATHS.branchCheckpointsFile}`;
+}
+
+export function createWorldSimulationRunManifest(run: WorldSimulationRun): WorldSimulationRunManifest {
+  const branches = run.branches.map((branch) => ({
+    id: branch.id,
+    name: branch.name,
+    parentBranchId: branch.parentBranchId,
+    forkEventId: branch.forkEventId,
+    narrativePolicy: branch.narrativePolicy,
+    seed: branch.seed,
+    status: branch.status,
+    warnings: branch.warnings,
+    statePath: worldSimulationBranchStatePath(run.id, branch.id),
+    eventLedgerPath: worldSimulationBranchEventLedgerPath(run.id, branch.id),
+    observationsPath: worldSimulationBranchObservationsPath(run.id, branch.id),
+    checkpointsPath: worldSimulationBranchCheckpointsPath(run.id, branch.id),
+  }));
+  return {
+    schemaVersion: WORLD_SIMULATION_SCHEMA_VERSION,
+    storageVersion: WORLD_SIMULATION_RUN_STORAGE_VERSION,
+    id: run.id,
+    projectId: run.projectId,
+    name: run.name,
+    scenario: run.scenario,
+    baselinePath: worldSimulationRunBaselinePath(run.id),
+    activeBranchId: run.activeBranchId,
+    branches,
+    councilPath: worldSimulationRunCouncilPath(run.id),
+    reportsPath: worldSimulationRunReportsPath(run.id),
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
+}
+
+function assertManifestPath(actual: unknown, expected: string, label: string): void {
+  if (actual !== expected) throw new Error(`${label} 必须是 ${expected}`);
+}
+
+export function parseWorldSimulationRunManifest(content: string): WorldSimulationRunManifest {
+  const value = parseJson(content, "世界推演运行清单");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("世界推演运行清单格式无效：根节点必须是对象");
+  }
+  const candidate = value as Partial<WorldSimulationRunManifest>;
+  if (candidate.schemaVersion !== WORLD_SIMULATION_SCHEMA_VERSION) {
+    throw new Error("世界推演运行清单版本无效；当前版本不读取旧版推演数据");
+  }
+  if (candidate.storageVersion !== WORLD_SIMULATION_RUN_STORAGE_VERSION) {
+    throw new Error("世界推演运行清单存储版本无效；当前版本不读取单文件运行数据");
+  }
+  if (
+    !candidate.id ||
+    !candidate.projectId ||
+    !candidate.name ||
+    !candidate.scenario ||
+    !candidate.activeBranchId ||
+    !Array.isArray(candidate.branches) ||
+    !candidate.createdAt ||
+    !candidate.updatedAt
+  ) {
+    throw new Error("世界推演运行清单格式无效：缺少运行身份、方案或分支目录");
+  }
+  const runId = assertSimulationPathId(candidate.id, "推演运行 id");
+  const scenario = worldSimulationScenarioSchema.safeParse(candidate.scenario);
+  if (!scenario.success) {
+    throw new Error(`世界推演运行清单方案格式无效：${scenario.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("；")}`);
+  }
+  assertManifestPath(candidate.baselinePath, worldSimulationRunBaselinePath(runId), "baselinePath");
+  assertManifestPath(candidate.councilPath, worldSimulationRunCouncilPath(runId), "councilPath");
+  assertManifestPath(candidate.reportsPath, worldSimulationRunReportsPath(runId), "reportsPath");
+  const branchIds = new Set<string>();
+  for (const [index, branch] of candidate.branches.entries()) {
+    if (!branch || typeof branch !== "object" || Array.isArray(branch)) {
+      throw new Error(`世界推演运行清单格式无效：branches.${index} 必须是对象`);
+    }
+    const branchId = assertSimulationPathId(branch.id, `branches.${index}.id`);
+    if (
+      typeof branch.name !== "string" ||
+      typeof branch.seed !== "string" ||
+      !["configured", "disabled"].includes(branch.narrativePolicy) ||
+      !["ready", "running", "paused", "completed", "cancelled"].includes(branch.status) ||
+      !Array.isArray(branch.warnings) ||
+      branch.warnings.some((warning: unknown) => typeof warning !== "string")
+    ) {
+      throw new Error(`世界推演运行清单格式无效：branches.${index} 缺少分支元数据`);
+    }
+    if (branchIds.has(branchId)) throw new Error(`世界推演运行清单包含重复分支：${branchId}`);
+    branchIds.add(branchId);
+    assertManifestPath(branch.statePath, worldSimulationBranchStatePath(runId, branchId), `branches.${index}.statePath`);
+    assertManifestPath(branch.eventLedgerPath, worldSimulationBranchEventLedgerPath(runId, branchId), `branches.${index}.eventLedgerPath`);
+    assertManifestPath(branch.observationsPath, worldSimulationBranchObservationsPath(runId, branchId), `branches.${index}.observationsPath`);
+    assertManifestPath(branch.checkpointsPath, worldSimulationBranchCheckpointsPath(runId, branchId), `branches.${index}.checkpointsPath`);
+  }
+  if (!branchIds.has(candidate.activeBranchId)) {
+    throw new Error("世界推演运行清单的当前分支不存在");
+  }
+  return { ...candidate, scenario: scenario.data } as WorldSimulationRunManifest;
+}
+
 export function serializeWorldSimulation(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 export function worldSimulationRunPath(runId: string): string {
-  if (!/^[a-z0-9][a-z0-9-]*$/u.test(runId)) throw new Error("非法推演运行 id");
-  return `${WORLD_SIMULATION_PATHS.runRoot}/${runId}/run.json`;
+  return `${worldSimulationRunRoot(runId)}/run.json`;
 }

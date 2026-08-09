@@ -86,6 +86,8 @@ const SESSION_EXACT_PATHS = new Set([
   '/api/session-state',
   '/api/session-watch/register',
   '/api/task/poll-background',
+  '/api/workbench-agent/configure',
+  '/api/workbench-ai/run',
   '/cron/execute-sync',
   '/hook/session-start',
   '/sessions/fork',

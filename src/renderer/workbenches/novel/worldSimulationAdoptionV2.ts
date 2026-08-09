@@ -501,7 +501,8 @@ function compareTimelineEventsByWorldTime(
   const leftKey = timelineEventWorldSortKey(left);
   const rightKey = timelineEventWorldSortKey(right);
   if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
-  if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
+  if (left.sortOrder !== right.sortOrder)
+    return left.sortOrder - right.sortOrder;
   return left.id.localeCompare(right.id);
 }
 
@@ -510,19 +511,18 @@ function assertActualAdoptionDoesNotCrossPlans(
   events: readonly SimulationEvent[],
 ): void {
   if (events.length === 0) return;
-  const latestAdoptedSortKey = events.reduce(
-    (latest, event) => {
-      const current = BigInt(event.time.sortKey);
-      return current > latest ? current : latest;
-    },
-    BigInt(events[0]!.time.sortKey),
-  );
+  const latestAdoptedSortKey = events.reduce((latest, event) => {
+    const current = BigInt(event.time.sortKey);
+    return current > latest ? current : latest;
+  }, BigInt(events[0]!.time.sortKey));
   const mainTimeline = getTimelineBranchEvents(
     library,
     MAIN_TIMELINE_BRANCH_ID,
   ).map((entry) => entry.event);
   const factsThroughIndex = library.factsThroughEventId
-    ? mainTimeline.findIndex((event) => event.id === library.factsThroughEventId)
+    ? mainTimeline.findIndex(
+        (event) => event.id === library.factsThroughEventId,
+      )
     : -1;
   const crossedPlan = mainTimeline
     .slice(factsThroughIndex + 1)
@@ -626,14 +626,16 @@ function createTimelineEvents(
     };
   });
   const currentFactsThrough = library.factsThroughEventId
-    ? library.events.find((event) => event.id === library.factsThroughEventId) ?? null
+    ? (library.events.find(
+        (event) => event.id === library.factsThroughEventId,
+      ) ?? null)
     : null;
   const factsThroughEventId =
     authority === "actual"
-      ? [currentFactsThrough, ...created]
+      ? ([currentFactsThrough, ...created]
           .filter((event): event is TimelineEvent => event !== null)
           .sort(compareTimelineEventsByWorldTime)
-          .at(-1)?.id ?? null
+          .at(-1)?.id ?? null)
       : library.factsThroughEventId;
   return {
     ...library,
@@ -738,14 +740,14 @@ export async function createWorldSimulationAdoptionProposal(
       "change-factions",
       FACTION_LIBRARY_PATH,
       "同步势力策略、生命周期、状态摘要与物品资源候选",
-      factions.content,
+      serializeFactionLibrary(factions.library),
       serializeFactionLibrary(nextFactions),
     ),
     proposalChange(
       "change-timeline",
       TIMELINE_LIBRARY_PATH,
       `将推演事件保存为${authorityLabel(authority)}`,
-      timeline.content,
+      serializeTimelineLibrary(timeline.library),
       serializeTimelineLibrary(nextTimeline),
     ),
   ].filter((change): change is AdoptionChange => Boolean(change));
@@ -809,6 +811,18 @@ async function currentContent(
   storage: WorkbenchStorage,
   targetPath: string,
 ): Promise<string | null> {
+  if (targetPath === TIMELINE_LIBRARY_PATH) {
+    const [info] = await storage.stat([TIMELINE_LIBRARY_PATH]);
+    if (!info?.exists) return null;
+    const current = await createNovelTimelineLibraryRepository(storage).load();
+    return serializeTimelineLibrary(current.library);
+  }
+  if (targetPath === FACTION_LIBRARY_PATH) {
+    const [info] = await storage.stat([FACTION_LIBRARY_PATH]);
+    if (!info?.exists) return null;
+    const current = await createNovelFactionLibraryRepository(storage).load();
+    return serializeFactionLibrary(current.library);
+  }
   const [info] = await storage.stat([targetPath]);
   return info?.exists ? (await storage.readText(targetPath)).content : null;
 }
@@ -869,17 +883,15 @@ async function writeValidatedTarget(
     const loaded = await repository.loadCharacter(entry);
     if (loaded.content !== expectedContent)
       throw new Error("人物库在审阅期间发生变化，请重新加载提案");
-    const { schemaVersion: _schemaVersion, ...record } = parseCharacterRecordFile(
-      targetPath,
-      content,
-    );
+    const { schemaVersion: _schemaVersion, ...record } =
+      parseCharacterRecordFile(targetPath, content);
     await repository.saveCharacter(current, record);
     return;
   }
   if (targetPath === FACTION_LIBRARY_PATH) {
     const repository = createNovelFactionLibraryRepository(storage);
     const current = await repository.load();
-    if (current.content !== expectedContent)
+    if (serializeFactionLibrary(current.library) !== expectedContent)
       throw new Error("势力库在审阅期间发生变化，请重新加载提案");
     await repository.save(current, parseFactionLibrary(content));
     return;
@@ -887,7 +899,7 @@ async function writeValidatedTarget(
   if (targetPath === TIMELINE_LIBRARY_PATH) {
     const repository = createNovelTimelineLibraryRepository(storage);
     const current = await repository.load();
-    if (current.content !== expectedContent)
+    if (serializeTimelineLibrary(current.library) !== expectedContent)
       throw new Error("时间线在审阅期间发生变化，请重新加载提案");
     await repository.save(current, parseTimelineLibrary(content));
     return;
@@ -900,6 +912,24 @@ async function rollbackTarget(
   change: AdoptionChange,
   appliedContent: string,
 ): Promise<void> {
+  if (change.targetPath === TIMELINE_LIBRARY_PATH) {
+    const repository = createNovelTimelineLibraryRepository(storage);
+    const current = await repository.load();
+    if (serializeTimelineLibrary(current.library) !== appliedContent) {
+      throw new Error("时间线在回滚前发生变化，不能覆盖当前事实源");
+    }
+    await repository.save(current, parseTimelineLibrary(change.beforeContent));
+    return;
+  }
+  if (change.targetPath === FACTION_LIBRARY_PATH) {
+    const repository = createNovelFactionLibraryRepository(storage);
+    const current = await repository.load();
+    if (serializeFactionLibrary(current.library) !== appliedContent) {
+      throw new Error("势力库在回滚前发生变化，不能覆盖当前事实源");
+    }
+    await repository.save(current, parseFactionLibrary(change.beforeContent));
+    return;
+  }
   await storage.writeText(change.targetPath, change.beforeContent, {
     expectedContent: appliedContent,
   });

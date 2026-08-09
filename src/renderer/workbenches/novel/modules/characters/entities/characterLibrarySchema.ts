@@ -36,13 +36,16 @@ export type {
   RaceDefinition,
 } from "../../../../../../shared/workbenches/novel/characterLibrarySchema";
 
-export const characterLibraryMetaSchema = z
+const characterLibraryMetaFileShape = {
+  schemaVersion: z.literal(CHARACTER_LIBRARY_SCHEMA_VERSION),
+  races: z.array(raceDefinitionSchema),
+  groups: z.array(characterGroupDefinitionSchema),
+  ungroupedGroup: characterGroupDefinitionSchema,
+} as const;
+
+export const characterLibraryMetaFileSchema = z
   .object({
-    schemaVersion: z.literal(CHARACTER_LIBRARY_SCHEMA_VERSION),
-    races: z.array(raceDefinitionSchema),
-    groups: z.array(characterGroupDefinitionSchema),
-    ungroupedGroup: characterGroupDefinitionSchema,
-    souls: z.array(characterSoulDefinitionSchema),
+    ...characterLibraryMetaFileShape,
   })
   .strict()
   .superRefine((meta, context) => {
@@ -50,7 +53,6 @@ export const characterLibraryMetaSchema = z
       [
         ["种族", meta.races],
         ["角色分组", meta.groups],
-        ["角色灵魂", meta.souls],
       ];
     for (const [label, records] of definitions) {
       const ids = new Set<string>();
@@ -58,15 +60,7 @@ export const characterLibraryMetaSchema = z
         if (ids.has(record.id)) {
           context.addIssue({
             code: "custom",
-            path: [
-              label === "种族"
-                ? "races"
-                : label === "角色分组"
-                  ? "groups"
-                  : "souls",
-              index,
-              "id",
-            ],
+            path: [label === "种族" ? "races" : "groups", index, "id"],
             message: `${label} id 不得重复`,
           });
         }
@@ -80,6 +74,45 @@ export const characterLibraryMetaSchema = z
         message: "未分组标签不能与角色分组共用 id",
       });
     }
+  });
+
+export type CharacterLibraryMetaFile = z.infer<
+  typeof characterLibraryMetaFileSchema
+>;
+
+export const characterLibraryMetaSchema = z
+  .object({
+    ...characterLibraryMetaFileShape,
+    souls: z.array(characterSoulDefinitionSchema),
+  })
+  .strict()
+  .superRefine((meta, context) => {
+    const base = characterLibraryMetaFileSchema.safeParse({
+      schemaVersion: meta.schemaVersion,
+      races: meta.races,
+      groups: meta.groups,
+      ungroupedGroup: meta.ungroupedGroup,
+    });
+    if (!base.success) {
+      for (const issue of base.error.issues) {
+        context.addIssue({
+          code: "custom",
+          path: issue.path,
+          message: issue.message,
+        });
+      }
+    }
+    const ids = new Set<string>();
+    meta.souls.forEach((soul, index) => {
+      if (ids.has(soul.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["souls", index, "id"],
+          message: "角色灵魂 id 不得重复",
+        });
+      }
+      ids.add(soul.id);
+    });
   });
 
 export type CharacterLibraryMeta = z.infer<typeof characterLibraryMetaSchema>;
@@ -205,10 +238,24 @@ export function parseCharacterLibraryMeta(
   );
 }
 
+export function parseCharacterLibraryMetaFile(
+  content: string,
+): CharacterLibraryMetaFile {
+  return parseFile(
+    "characters/library.json",
+    characterLibraryMetaFileSchema,
+    content,
+  );
+}
+
 export function parseCharacterLibraryIndex(
   content: string,
 ): CharacterLibraryIndex {
-  return parseFile("characters/index.json", characterLibraryIndexSchema, content);
+  return parseFile(
+    "characters/index.json",
+    characterLibraryIndexSchema,
+    content,
+  );
 }
 
 export function parseCharacterRecordFile(

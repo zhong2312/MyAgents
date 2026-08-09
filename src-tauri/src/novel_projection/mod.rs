@@ -8,6 +8,7 @@ pub mod commands;
 mod schema;
 
 use std::cmp::max;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -23,7 +24,12 @@ use crate::workspace_files::path_safety::{
 const DATABASE_PATH: &str = ".cache/novel-projection.db";
 const CACHE_DIRECTORY: &str = ".cache";
 const FINGERPRINT_META_KEY: &str = "source_fingerprint";
-const CULTIVATION_ECOLOGY_PATH: &str = "world/cultivation-ecology.json";
+const CULTIVATION_ECOLOGY_INDEX_PATH: &str = "world/cultivation/index.json";
+const CULTIVATION_ECOLOGY_PREFIX: &str = "world/cultivation/";
+const FACTION_INDEX_PATH: &str = "world/factions/index.json";
+const LOCATION_INDEX_PATH: &str = "world/locations/index.json";
+const NARRATIVE_ENGINEERING_INDEX_PATH: &str = "narrative/index.json";
+const TIMELINE_INDEX_PATH: &str = "timeline/index.json";
 
 const INDEX_SOURCES: &[IndexSource] = &[
     IndexSource {
@@ -280,10 +286,39 @@ fn read_index_sources(project_root: &Path) -> Result<Vec<LoadedIndexSource>, Str
                 let content = fs::read_to_string(&path).map_err(|error| {
                     format!("无法读取小说投影事实源 {}：{error}", definition.path)
                 })?;
+                let (content, modified_nanos, dependent_count) =
+                    if definition.path == FACTION_INDEX_PATH {
+                        load_faction_projection_source(
+                            project_root,
+                            &content,
+                            modified_nanos(&metadata),
+                        )?
+                    } else if definition.path == LOCATION_INDEX_PATH {
+                        load_location_projection_source(
+                            project_root,
+                            &content,
+                            modified_nanos(&metadata),
+                        )?
+                    } else if definition.path == NARRATIVE_ENGINEERING_INDEX_PATH {
+                        load_narrative_projection_source(
+                            project_root,
+                            &content,
+                            modified_nanos(&metadata),
+                        )?
+                    } else if definition.path == TIMELINE_INDEX_PATH {
+                        load_timeline_projection_source(
+                            project_root,
+                            &content,
+                            modified_nanos(&metadata),
+                        )?
+                    } else {
+                        (content, modified_nanos(&metadata), 0)
+                    };
                 sources.push(LoadedIndexSource {
                     definition,
                     content,
-                    modified_nanos: modified_nanos(&metadata),
+                    modified_nanos,
+                    dependent_count,
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -302,6 +337,7 @@ struct LoadedIndexSource {
     definition: &'static IndexSource,
     content: String,
     modified_nanos: u128,
+    dependent_count: usize,
 }
 
 fn modified_nanos(metadata: &fs::Metadata) -> u128 {
@@ -320,15 +356,19 @@ fn fingerprint_for_sources(
     let mut newest = sources
         .iter()
         .fold(0, |current, source| max(current, source.modified_nanos));
+    source_count += sources
+        .iter()
+        .map(|source| source.dependent_count)
+        .sum::<usize>();
     for (_, path) in character_record_paths(sources)? {
         if let Some(metadata) = workspace_file_metadata(project_root, &path)? {
             source_count += 1;
             newest = max(newest, modified_nanos(&metadata));
         }
     }
-    if let Some(metadata) = workspace_file_metadata(project_root, CULTIVATION_ECOLOGY_PATH)? {
+    for source in load_cultivation_sources(project_root)? {
         source_count += 1;
-        newest = max(newest, modified_nanos(&metadata));
+        newest = max(newest, source.modified_nanos);
     }
     Ok(format!("{source_count}:{newest}"))
 }
@@ -362,6 +402,249 @@ fn read_optional_workspace_file(
     fs::read_to_string(path)
         .map(Some)
         .map_err(|error| format!("无法读取小说投影事实源 {relative}：{error}"))
+}
+
+fn is_storage_id(value: &str) -> bool {
+    let mut characters = value.chars();
+    matches!(characters.next(), Some('a'..='z' | '0'..='9'))
+        && characters.all(|character| matches!(character, 'a'..='z' | '0'..='9' | '-'))
+}
+
+fn load_faction_projection_source(
+    project_root: &Path,
+    index_content: &str,
+    index_modified_nanos: u128,
+) -> Result<(String, u128, usize), String> {
+    let index: Value = serde_json::from_str(index_content)
+        .map_err(|error| format!("无法解析势力库索引：{error}"))?;
+    if index.get("schemaVersion").and_then(Value::as_u64) != Some(2)
+        || index.get("storageVersion").and_then(Value::as_u64) != Some(1)
+    {
+        return Err("势力库索引必须使用 schemaVersion 2、storageVersion 1 的目录格式".to_string());
+    }
+    let entries = index
+        .get("factions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "势力库索引缺少 factions 数组".to_string())?;
+    let mut records = Vec::with_capacity(entries.len());
+    let mut ids = HashSet::new();
+    let mut newest = index_modified_nanos;
+    for entry in entries {
+        let id = string_value(entry, "id").ok_or_else(|| "势力索引缺少 id".to_string())?;
+        if !is_storage_id(id) {
+            return Err(format!("势力 id 只能使用小写字母、数字和连字符：{id}"));
+        }
+        if !ids.insert(id.to_string()) {
+            return Err(format!("势力索引包含重复 id：{id}"));
+        }
+        let expected_path = format!("world/factions/records/{id}.json");
+        let path = string_value(entry, "path").ok_or_else(|| "势力索引缺少 path".to_string())?;
+        if path != expected_path {
+            return Err(format!("势力记录路径必须是 {expected_path}"));
+        }
+        let content = read_optional_workspace_file(project_root, path)?
+            .ok_or_else(|| format!("势力索引引用的记录不存在：{path}"))?;
+        let mut record: Value = serde_json::from_str(&content)
+            .map_err(|error| format!("无法解析势力记录 {path}：{error}"))?;
+        if string_value(&record, "id") != Some(id) {
+            return Err(format!("势力记录 {path} 的 id 与索引不一致"));
+        }
+        let Value::Object(record_object) = &mut record else {
+            return Err(format!("势力记录 {path} 必须是 JSON 对象"));
+        };
+        record_object.insert("recordPath".to_string(), Value::String(path.to_string()));
+        let metadata = workspace_file_metadata(project_root, path)?
+            .ok_or_else(|| format!("势力记录读取后消失：{path}"))?;
+        newest = max(newest, modified_nanos(&metadata));
+        records.push(record);
+    }
+    serde_json::to_string(&serde_json::json!({
+        "schemaVersion": 2,
+        "factions": records,
+    }))
+    .map(|content| (content, newest, entries.len()))
+    .map_err(|error| format!("无法聚合势力库投影来源：{error}"))
+}
+
+fn load_location_projection_source(
+    project_root: &Path,
+    index_content: &str,
+    index_modified_nanos: u128,
+) -> Result<(String, u128, usize), String> {
+    let index: Value = serde_json::from_str(index_content)
+        .map_err(|error| format!("无法解析地点库索引：{error}"))?;
+    if index.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || index.get("storageVersion").and_then(Value::as_u64) != Some(1)
+    {
+        return Err("地点库索引必须使用 schemaVersion 1、storageVersion 1 的目录格式".to_string());
+    }
+    let entries = index
+        .get("locations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "地点库索引缺少 locations 数组".to_string())?;
+    let mut records = Vec::with_capacity(entries.len());
+    let mut ids = HashSet::new();
+    let mut newest = index_modified_nanos;
+    for entry in entries {
+        let id = string_value(entry, "id").ok_or_else(|| "地点索引缺少 id".to_string())?;
+        if !is_storage_id(id) {
+            return Err(format!("地点 id 只能使用小写字母、数字和连字符：{id}"));
+        }
+        if !ids.insert(id.to_string()) {
+            return Err(format!("地点索引包含重复 id：{id}"));
+        }
+        let expected_path = format!("world/locations/records/{id}.json");
+        let path = string_value(entry, "path").ok_or_else(|| "地点索引缺少 path".to_string())?;
+        if path != expected_path {
+            return Err(format!("地点记录路径必须是 {expected_path}"));
+        }
+        let content = read_optional_workspace_file(project_root, path)?
+            .ok_or_else(|| format!("地点索引引用的记录不存在：{path}"))?;
+        let mut record: Value = serde_json::from_str(&content)
+            .map_err(|error| format!("无法解析地点记录 {path}：{error}"))?;
+        if string_value(&record, "id") != Some(id) {
+            return Err(format!("地点记录 {path} 的 id 与索引不一致"));
+        }
+        let Value::Object(record_object) = &mut record else {
+            return Err(format!("地点记录 {path} 必须是 JSON 对象"));
+        };
+        record_object.insert("recordPath".to_string(), Value::String(path.to_string()));
+        let metadata = workspace_file_metadata(project_root, path)?
+            .ok_or_else(|| format!("地点记录读取后消失：{path}"))?;
+        newest = max(newest, modified_nanos(&metadata));
+        records.push(record);
+    }
+    serde_json::to_string(&serde_json::json!({
+        "schemaVersion": 1,
+        "locations": records,
+    }))
+    .map(|content| (content, newest, entries.len()))
+    .map_err(|error| format!("无法聚合地点库投影来源：{error}"))
+}
+
+fn load_narrative_projection_source(
+    project_root: &Path,
+    index_content: &str,
+    index_modified_nanos: u128,
+) -> Result<(String, u128, usize), String> {
+    let index: Value = serde_json::from_str(index_content)
+        .map_err(|error| format!("无法解析剧情工程索引：{error}"))?;
+    if index.get("schemaVersion").and_then(Value::as_u64) != Some(4)
+        || index.get("storageVersion").and_then(Value::as_u64) != Some(1)
+    {
+        return Err(
+            "剧情工程索引必须使用 schemaVersion 4、storageVersion 1 的目录格式".to_string(),
+        );
+    }
+    let mut aggregate = serde_json::Map::new();
+    aggregate.insert("schemaVersion".to_string(), Value::from(4));
+    aggregate.insert(
+        "updatedAt".to_string(),
+        index.get("updatedAt").cloned().unwrap_or(Value::Null),
+    );
+    let mut newest = index_modified_nanos;
+    let mut record_count = 0;
+    for (collection, segment) in [
+        ("lines", "lines"),
+        ("arcs", "arcs"),
+        ("directories", "directories"),
+        ("chapters", "chapters"),
+        ("simulationProposals", "simulation-proposals"),
+    ] {
+        let entries = index
+            .get(collection)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("剧情工程索引缺少 {collection} 数组"))?;
+        let mut records = Vec::with_capacity(entries.len());
+        let mut ids = HashSet::new();
+        for entry in entries {
+            let id = string_value(entry, "id")
+                .ok_or_else(|| format!("剧情工程 {collection} 索引缺少 id"))?;
+            if !ids.insert(id.to_string()) {
+                return Err(format!("剧情工程 {collection} 索引包含重复 id：{id}"));
+            }
+            let expected_path = format!("narrative/{segment}/records/{id}.json");
+            let path = string_value(entry, "path")
+                .ok_or_else(|| format!("剧情工程 {collection} 索引缺少 path"))?;
+            if path != expected_path {
+                return Err(format!("剧情工程记录路径必须是 {expected_path}"));
+            }
+            let content = read_optional_workspace_file(project_root, path)?
+                .ok_or_else(|| format!("剧情工程索引引用的记录不存在：{path}"))?;
+            let mut record: Value = serde_json::from_str(&content)
+                .map_err(|error| format!("无法解析剧情工程记录 {path}：{error}"))?;
+            if string_value(&record, "id") != Some(id) {
+                return Err(format!("剧情工程记录 {path} 的 id 与索引不一致"));
+            }
+            let Value::Object(record_object) = &mut record else {
+                return Err(format!("剧情工程记录 {path} 必须是 JSON 对象"));
+            };
+            record_object.insert("recordPath".to_string(), Value::String(path.to_string()));
+            let metadata = workspace_file_metadata(project_root, path)?
+                .ok_or_else(|| format!("剧情工程记录读取后消失：{path}"))?;
+            newest = max(newest, modified_nanos(&metadata));
+            record_count += 1;
+            records.push(record);
+        }
+        aggregate.insert(collection.to_string(), Value::Array(records));
+    }
+    serde_json::to_string(&Value::Object(aggregate))
+        .map(|content| (content, newest, record_count))
+        .map_err(|error| format!("无法聚合剧情工程投影来源：{error}"))
+}
+
+fn load_timeline_projection_source(
+    project_root: &Path,
+    index_content: &str,
+    index_modified_nanos: u128,
+) -> Result<(String, u128, usize), String> {
+    let index: Value = serde_json::from_str(index_content)
+        .map_err(|error| format!("无法解析时间线索引：{error}"))?;
+    if index.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || index.get("storageVersion").and_then(Value::as_u64) != Some(1)
+    {
+        return Err("时间线索引必须使用 schemaVersion 1、storageVersion 1 的目录格式".to_string());
+    }
+    let entries = index
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "时间线索引缺少 events 数组".to_string())?;
+    let mut records = Vec::with_capacity(entries.len());
+    let mut ids = HashSet::new();
+    let mut newest = index_modified_nanos;
+    for entry in entries {
+        let id = string_value(entry, "id").ok_or_else(|| "时间线事件索引缺少 id".to_string())?;
+        if !ids.insert(id.to_string()) {
+            return Err(format!("时间线事件索引包含重复 id：{id}"));
+        }
+        let expected_path = format!("timeline/events/records/{id}.json");
+        let path =
+            string_value(entry, "path").ok_or_else(|| "时间线事件索引缺少 path".to_string())?;
+        if path != expected_path {
+            return Err(format!("时间线事件记录路径必须是 {expected_path}"));
+        }
+        let content = read_optional_workspace_file(project_root, path)?
+            .ok_or_else(|| format!("时间线索引引用的事件记录不存在：{path}"))?;
+        let mut record: Value = serde_json::from_str(&content)
+            .map_err(|error| format!("无法解析时间线事件记录 {path}：{error}"))?;
+        if string_value(&record, "id") != Some(id) {
+            return Err(format!("时间线事件记录 {path} 的 id 与索引不一致"));
+        }
+        let Value::Object(record_object) = &mut record else {
+            return Err(format!("时间线事件记录 {path} 必须是 JSON 对象"));
+        };
+        record_object.insert("recordPath".to_string(), Value::String(path.to_string()));
+        let metadata = workspace_file_metadata(project_root, path)?
+            .ok_or_else(|| format!("时间线事件记录读取后消失：{path}"))?;
+        newest = max(newest, modified_nanos(&metadata));
+        records.push(record);
+    }
+    serde_json::to_string(&serde_json::json!({
+        "schemaVersion": 1,
+        "events": records,
+    }))
+    .map(|content| (content, newest, entries.len()))
+    .map_err(|error| format!("无法聚合时间线投影来源：{error}"))
 }
 
 fn character_record_paths(sources: &[LoadedIndexSource]) -> Result<Vec<(String, String)>, String> {
@@ -453,8 +736,12 @@ fn entity_summary<'a>(kind: &str, entry: &'a Value) -> &'a str {
 
 fn entity_source_path(source: &IndexSource, entry: &Value) -> String {
     let candidate = string_value(entry, "recordPath").unwrap_or("");
-    if source.kind == "character"
-        && candidate.starts_with("characters/records/")
+    if ((source.kind == "character" && candidate.starts_with("characters/records/"))
+        || (source.kind == "faction" && candidate.starts_with("world/factions/records/"))
+        || (source.kind == "location" && candidate.starts_with("world/locations/records/"))
+        || (source.kind == "event" && candidate.starts_with("timeline/events/records/"))
+        || (source.kind == "narrativeChapter"
+            && candidate.starts_with("narrative/chapters/records/")))
         && candidate.ends_with(".json")
         && !candidate.contains("..")
     {
@@ -510,14 +797,71 @@ fn insert_cultivation_item_references(
     transaction: &rusqlite::Transaction<'_>,
     project_root: &Path,
 ) -> Result<usize, String> {
-    let Some(content) = read_optional_workspace_file(project_root, CULTIVATION_ECOLOGY_PATH)?
-    else {
-        return Ok(0);
-    };
-    let parsed: Value = serde_json::from_str(&content)
-        .map_err(|error| format!("无法解析修炼体系事实源：{error}"))?;
     let mut sequence = 0;
-    collect_cultivation_item_references(transaction, &parsed, &mut sequence)
+    load_cultivation_sources(project_root)?
+        .iter()
+        .try_fold(0, |count, source| {
+            let parsed: Value = serde_json::from_str(&source.content)
+                .map_err(|error| format!("无法解析修炼体系模块 {}：{error}", source.path))?;
+            Ok(count + collect_cultivation_item_references(transaction, &parsed, &mut sequence)?)
+        })
+}
+
+struct LoadedCultivationSource {
+    path: String,
+    content: String,
+    modified_nanos: u128,
+}
+
+fn collect_cultivation_source_paths(value: &Value, queue: &mut VecDeque<String>) {
+    match value {
+        Value::String(path)
+            if path.starts_with(CULTIVATION_ECOLOGY_PREFIX)
+                && path.ends_with(".json")
+                && !path.contains('\\')
+                && !path.split('/').any(|segment| segment == "..") =>
+        {
+            queue.push_back(path.clone());
+        }
+        Value::Array(values) => values
+            .iter()
+            .for_each(|child| collect_cultivation_source_paths(child, queue)),
+        Value::Object(record) => record
+            .values()
+            .for_each(|child| collect_cultivation_source_paths(child, queue)),
+        _ => {}
+    }
+}
+
+fn load_cultivation_sources(project_root: &Path) -> Result<Vec<LoadedCultivationSource>, String> {
+    if workspace_file_metadata(project_root, CULTIVATION_ECOLOGY_INDEX_PATH)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut queue = VecDeque::from([CULTIVATION_ECOLOGY_INDEX_PATH.to_string()]);
+    let mut visited = HashSet::new();
+    let mut sources = Vec::new();
+    while let Some(path) = queue.pop_front() {
+        if !visited.insert(path.clone()) {
+            continue;
+        }
+        if visited.len() > 100_000 {
+            return Err("修炼体系目录引用文件过多，已停止构建投影".to_string());
+        }
+        let Some(content) = read_optional_workspace_file(project_root, &path)? else {
+            return Err(format!("修炼体系索引引用的模块不存在：{path}"));
+        };
+        let parsed: Value = serde_json::from_str(&content)
+            .map_err(|error| format!("无法解析修炼体系模块 {path}：{error}"))?;
+        collect_cultivation_source_paths(&parsed, &mut queue);
+        let metadata = workspace_file_metadata(project_root, &path)?
+            .ok_or_else(|| format!("修炼体系模块读取后消失：{path}"))?;
+        sources.push(LoadedCultivationSource {
+            path,
+            content,
+            modified_nanos: modified_nanos(&metadata),
+        });
+    }
+    Ok(sources)
 }
 
 fn collect_cultivation_item_references(
@@ -839,8 +1183,13 @@ mod tests {
         );
         write_file(
             directory.path(),
-            CULTIVATION_ECOLOGY_PATH,
-            r#"{"systems":[{"id":"system-1","itemIds":["item-1"]}]}"#,
+            CULTIVATION_ECOLOGY_INDEX_PATH,
+            r#"{"systems":[{"path":"world/cultivation/systems/system-1/system.json"}]}"#,
+        );
+        write_file(
+            directory.path(),
+            "world/cultivation/systems/system-1/system.json",
+            r#"{"id":"system-1","itemIds":["item-1"]}"#,
         );
 
         assert_eq!(rebuild(directory.path()).expect("rebuild project"), (1, 2));
@@ -848,6 +1197,182 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert!(refs.iter().any(|entry| entry.from_kind == "character"));
         assert!(refs.iter().any(|entry| entry.from_kind == "cultivation"));
+    }
+
+    #[test]
+    fn rebuild_aggregates_narrative_records_from_manifest() {
+        let directory = tempfile::tempdir().expect("create test workspace");
+        write_file(
+            directory.path(),
+            NARRATIVE_ENGINEERING_INDEX_PATH,
+            r#"{
+                "schemaVersion":4,
+                "storageVersion":1,
+                "updatedAt":"2026-08-09T00:00:00Z",
+                "lines":[{"id":"line-main","path":"narrative/lines/records/line-main.json"}],
+                "arcs":[{"id":"arc-main","path":"narrative/arcs/records/arc-main.json"}],
+                "directories":[],
+                "chapters":[{"id":"chapter-one","path":"narrative/chapters/records/chapter-one.json"}],
+                "simulationProposals":[],
+                "legacyArchivePath":null
+            }"#,
+        );
+        write_file(
+            directory.path(),
+            "narrative/lines/records/line-main.json",
+            r#"{"id":"line-main","title":"主线","protagonistCharacterId":"character-a"}"#,
+        );
+        write_file(
+            directory.path(),
+            "narrative/arcs/records/arc-main.json",
+            r#"{"id":"arc-main","title":"人物弧","characterId":"character-a"}"#,
+        );
+        write_file(
+            directory.path(),
+            "narrative/chapters/records/chapter-one.json",
+            r#"{"id":"chapter-one","title":"第一章","description":"开端","sections":[{"povCharacterId":"character-a"}]}"#,
+        );
+
+        assert_eq!(rebuild(directory.path()).expect("rebuild project"), (1, 3));
+        let entities =
+            list_entities(directory.path(), Some("narrativeChapter")).expect("list narrative");
+        assert_eq!(entities.len(), 1);
+        assert_eq!(
+            entities[0].source_path,
+            "narrative/chapters/records/chapter-one.json"
+        );
+        assert_eq!(
+            inbound_refs(directory.path(), "character", "character-a")
+                .expect("query narrative refs")
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn rebuild_aggregates_timeline_event_records_from_manifest() {
+        let directory = tempfile::tempdir().expect("create test workspace");
+        write_file(
+            directory.path(),
+            TIMELINE_INDEX_PATH,
+            r#"{
+                "schemaVersion":1,
+                "storageVersion":1,
+                "storyStartEventId":null,
+                "factsThroughEventId":null,
+                "calendars":[],
+                "periods":[],
+                "views":[],
+                "branches":[],
+                "events":[{"id":"event-one","path":"timeline/events/records/event-one.json"}]
+            }"#,
+        );
+        write_file(
+            directory.path(),
+            "timeline/events/records/event-one.json",
+            r#"{"id":"event-one","title":"第一战","summary":"开战","characterIds":["character-a"],"factionIds":[],"itemIds":[],"locationIds":[]}"#,
+        );
+
+        assert_eq!(rebuild(directory.path()).expect("rebuild project"), (1, 1));
+        let entities = list_entities(directory.path(), Some("event")).expect("list events");
+        assert_eq!(entities.len(), 1);
+        assert_eq!(
+            entities[0].source_path,
+            "timeline/events/records/event-one.json"
+        );
+        assert_eq!(
+            inbound_refs(directory.path(), "character", "character-a")
+                .expect("query timeline refs")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rebuild_aggregates_faction_records_from_manifest() {
+        let directory = tempfile::tempdir().expect("create test workspace");
+        write_file(
+            directory.path(),
+            FACTION_INDEX_PATH,
+            r#"{
+                "schemaVersion":2,
+                "storageVersion":1,
+                "factions":[{
+                    "id":"faction-cloud-sect",
+                    "path":"world/factions/records/faction-cloud-sect.json"
+                }]
+            }"#,
+        );
+        write_file(
+            directory.path(),
+            "world/factions/records/faction-cloud-sect.json",
+            r#"{
+                "id":"faction-cloud-sect",
+                "name":"青云宗",
+                "summary":"东玄剑修宗门",
+                "members":[{"characterId":"character-a"}],
+                "resources":[{"itemId":"item-one"}],
+                "links":[]
+            }"#,
+        );
+
+        assert_eq!(rebuild(directory.path()).expect("rebuild project"), (1, 2));
+        let entities = list_entities(directory.path(), Some("faction")).expect("list factions");
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "青云宗");
+        assert_eq!(
+            entities[0].source_path,
+            "world/factions/records/faction-cloud-sect.json"
+        );
+        assert_eq!(
+            inbound_refs(directory.path(), "character", "character-a")
+                .expect("query faction member refs")
+                .len(),
+            1
+        );
+        assert_eq!(
+            inbound_refs(directory.path(), "item", "item-one")
+                .expect("query faction resource refs")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rebuild_aggregates_location_records_from_manifest() {
+        let directory = tempfile::tempdir().expect("create test workspace");
+        write_file(
+            directory.path(),
+            LOCATION_INDEX_PATH,
+            r#"{
+                "schemaVersion":1,
+                "storageVersion":1,
+                "locations":[{
+                    "id":"cloud-city",
+                    "path":"world/locations/records/cloud-city.json"
+                }]
+            }"#,
+        );
+        write_file(
+            directory.path(),
+            "world/locations/records/cloud-city.json",
+            r#"{
+                "id":"cloud-city",
+                "name":"云城",
+                "aliases":["云上城"],
+                "summary":"浮于云海之上的城池"
+            }"#,
+        );
+
+        assert_eq!(rebuild(directory.path()).expect("rebuild project"), (1, 0));
+        let entities = list_entities(directory.path(), Some("location")).expect("list locations");
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "云城");
+        assert_eq!(entities[0].aliases, vec!["云上城"]);
+        assert_eq!(
+            entities[0].source_path,
+            "world/locations/records/cloud-city.json"
+        );
     }
 
     #[test]

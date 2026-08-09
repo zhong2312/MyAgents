@@ -57,12 +57,12 @@ import type { KnowledgeSourceRef } from "./knowledgeGraph";
 import {
   createNovelLocationLibraryRepository,
   type LoadedLocationLibrary,
-} from "./locationLibraryRepository";
+} from "./modules/locations/data-access/locationLibraryRepository";
 import {
   validateLocationNodeReferences,
   type LocationStatus,
   type NovelLocation,
-} from "./locationLibrarySchema";
+} from "./modules/locations/entities/locationLibrarySchema";
 import {
   createNovelSettingLibraryRepository,
   getNodeSettingReferences,
@@ -115,6 +115,8 @@ interface SettingLibraryProps {
   ) => Promise<string | null>;
   readonly focusSource?: KnowledgeSourceRef | null;
   readonly focusNodeId?: string | null;
+  /** Bumping this counter forces a reload of the library (e.g. after a proposal apply). */
+  readonly reloadKey?: number;
 }
 
 const LEVEL_ICONS: Readonly<Record<string, LucideIcon>> = {
@@ -418,6 +420,7 @@ export default function SettingLibrary({
   onAiAssist,
   focusSource,
   focusNodeId,
+  reloadKey,
 }: SettingLibraryProps) {
   const repository = useMemo(
     () => createNovelSettingLibraryRepository(storage),
@@ -525,7 +528,7 @@ export default function SettingLibrary({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, reloadKey]);
 
   useEffect(() => {
     if (!focusSource || !library || mode !== "library") return;

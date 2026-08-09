@@ -101,6 +101,14 @@ import {
 const TOOL_RESULT_DISPLAY_CAP = 8 * 1024;
 const TOOL_RESULT_TAIL_KEEP = 1024;
 
+function capToolResultForDisplay(content: string): string {
+    if (content.length <= TOOL_RESULT_DISPLAY_CAP) return content;
+    const marker = '\n...[truncated for display; full result available on completion]...\n';
+    const head = content.slice(0, TOOL_RESULT_DISPLAY_CAP - TOOL_RESULT_TAIL_KEEP - marker.length);
+    const tail = content.slice(-TOOL_RESULT_TAIL_KEEP);
+    return `${head}${marker}${tail}`;
+}
+
 function replaceFinalToolInput(
     message: Message,
     toolId: string,
@@ -1674,10 +1682,7 @@ export default function TabProvider({
             const existing = block.tool.result || '';
             let nextResult = existing + merged;
             if (nextResult.length > TOOL_RESULT_DISPLAY_CAP) {
-                // Keep head + tail; middle is dropped from the *displayed* state.
-                const head = nextResult.slice(0, TOOL_RESULT_DISPLAY_CAP - TOOL_RESULT_TAIL_KEEP);
-                const tail = nextResult.slice(-TOOL_RESULT_TAIL_KEEP);
-                nextResult = `${head}\n…[truncated for display; full result available on completion]…\n${tail}`;
+                nextResult = capToolResultForDisplay(nextResult);
             }
             const updated = [...prev.content];
             updated[idx] = {
@@ -1729,9 +1734,7 @@ export default function TabProvider({
                     const existing = call.result || '';
                     let nextResult = existing + merged;
                     if (nextResult.length > TOOL_RESULT_DISPLAY_CAP) {
-                        const head = nextResult.slice(0, TOOL_RESULT_DISPLAY_CAP - TOOL_RESULT_TAIL_KEEP);
-                        const tail = nextResult.slice(-TOOL_RESULT_TAIL_KEEP);
-                        nextResult = `${head}\n…[truncated for display; full result available on completion]…\n${tail}`;
+                        nextResult = capToolResultForDisplay(nextResult);
                     }
                     return { ...call, result: nextResult, isLoading: true };
                 });
@@ -2728,7 +2731,9 @@ export default function TabProvider({
                         ...block,
                         tool: {
                             ...block.tool,
-                            result: payload.content ?? block.tool.result,
+                            result: payload.content !== undefined
+                                ? capToolResultForDisplay(payload.content)
+                                : block.tool.result,
                             isError: payload.isError,
                             isLoading: eventName !== 'chat:tool-result-complete',
                             resultMeta: payload.metadata ?? block.tool.resultMeta,
@@ -3364,7 +3369,7 @@ export default function TabProvider({
                             call.id === payload.toolUseId
                                 ? {
                                     ...call,
-                                    result: payload.content,
+                                    result: capToolResultForDisplay(payload.content),
                                     resultMeta: payload.metadata,
                                     isError: payload.isError,
                                     isLoading: false,

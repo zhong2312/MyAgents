@@ -13,9 +13,11 @@ export const NOVEL_WORKBENCH_SDK_INSTRUCTIONS = `这些工具是 MyAgents 小说
 向用户描述时统一称为“小说工作台内置工具”，不得暴露 mcp__ 前缀、novel-workbench 适配器名称或底层传输协议。
 不得建议用户前往 MCP 设置、开关 MCP 服务、检查 MCP 连接或通过重启应用恢复这些工具。
 如果工具调用失败，只能如实说明小说工作台内置工具本次执行失败；不要臆测网络连接、服务进程或用户配置原因。
-可根据当前任务自主选择时间线、剧情、人物、世界、物品或修行体系的上下文读取工具，不要为了遍历工具而进行无目的调用。
+可根据当前任务自主选择时间线、剧情、人物、世界、物品或修行体系的上下文读取工具，不要为了遍历工具而进行无目的调用。领域路由必须保持一致：世界架构只调用 novel_world_get_context，修行体系只调用 novel_cultivation_get_context（事实源入口为 world/cultivation/index.json，各体系模块按目录拆分），不要把修行路径传给世界架构工具。
 跨领域上下文工具只用于读取事实；草稿、校验和提交工具仍受当前会话领域约束，不得尝试跨领域写入。
-工具失败或暂时不可用时，仍然不得请求或尝试改用 Write、Edit、Bash、Task、Agent 或其他原始文件路径修改小说项目；只能停止本次写回并说明提案尚未提交。`;
+所有小说工作台写入都必须小批量增量进行：单次默认不超过 32 项、64 KB；优先复用同一草稿多次调用领域 upsert/patch 工具，禁止为了修改少量字段重新上传完整大 JSON。工具返回大小或批次超限时，必须拆分后继续同一草稿。
+普通 SDK 命令和文件工具仍然可用。可按任务需要使用 Read、Glob、Grep、Bash 等工具读取小说项目内外的素材与设定，也可在用户任务需要时使用 Write、Edit 等工具处理文件；不得声称受控小说工作台会话没有文件系统访问权限。
+小说工作台管理的正式结构化事实仍应通过当前领域的“草稿 -> 校验 -> 提案”协议写回。内置工具失败或 sourceHash 冲突时，不得把原始文件操作冒充为提案提交成功；应如实说明提案尚未提交。`;
 
 export type NovelWorkbenchMode =
   | "world"
@@ -71,6 +73,7 @@ const NOVEL_WORKBENCH_CROSS_DOMAIN_READ_TOOLS = new Set([
   "novel_factions_get_context",
   "novel_manuscript_get_context",
   "novel_continuity_get_context",
+  "novel_inspiration_get_context",
 ]);
 
 function normalizeNovelWorkbenchToolName(toolName: string): string {
@@ -186,27 +189,17 @@ export function getNovelWorkbenchContext(): NovelWorkbenchContext | null {
   return context;
 }
 
-const RAW_MUTATION_TOOLS = new Set([
-  "Bash",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
-  "Write",
-  "Task",
-  "Agent",
-]);
-
-export function shouldBlockNovelWorkbenchRawMutation(
-  toolName: string,
-): boolean {
+export function shouldBlockNovelWorkbenchTool(toolName: string): boolean {
   if (!context) return false;
   if (toolName.startsWith(`mcp__${NOVEL_WORKBENCH_SDK_ADAPTER_ID}__`)) {
     return !isNovelWorkbenchToolAllowed(context.mode, toolName);
   }
-  if (toolName.startsWith("mcp__")) return true;
-  return RAW_MUTATION_TOOLS.has(toolName);
+  return toolName.startsWith("mcp__");
 }
 
-export function novelWorkbenchMutationDenyMessage(toolName: string): string {
-  return `受控小说工作台会话禁止直接调用 ${toolName} 修改项目。请使用小说工作台内置提案工具提交变更，待作者审批后再写入正式存储。`;
+export function novelWorkbenchToolDenyMessage(toolName: string): string {
+  if (toolName.startsWith(`mcp__${NOVEL_WORKBENCH_SDK_ADAPTER_ID}__`)) {
+    return `当前小说工作台会话不允许调用 ${toolName} 执行跨领域写入。上下文读取可以跨领域，草稿、校验和提交必须使用当前会话领域的小说工作台内置工具。`;
+  }
+  return `当前小说工作台会话没有装配 ${toolName}。这不会限制 Bash、Read、Glob、Grep、Write、Edit 等普通 SDK 命令和文件工具。`;
 }

@@ -350,6 +350,7 @@ interface TabContentProps {
   onOpenTargetSession: (sessionId: string, agentDir: string, title: string, historyEntrySource?: HistoryEntrySource) => Promise<boolean>;
   // Chat callbacks
   onOpenHistorySession: (tabId: string, sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => Promise<void>;
+  onOpenHistorySessionInCurrentTab: (tabId: string, sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => Promise<boolean>;
   onNewSession: (tabId: string) => Promise<boolean>;
   onUpdateGenerating: (tabId: string, isGenerating: boolean) => void;
   onUpdateTitle: (tabId: string, title: string) => void;
@@ -358,7 +359,7 @@ interface TabContentProps {
   onForkSession: (tabId: string, newSessionId: string, agentDir: string, title: string, initialMessage?: string) => Promise<boolean>;
   onUpdateSessionId: (tabId: string, newSessionId: string, options?: AdoptMigratedSessionOptions) => Promise<boolean>;
   claimSessionOpeningTransition: (sessionId: string, ownerId: string) => (() => void) | null;
-  onClearInitialMessage: (tabId: string) => void;
+  onClearInitialMessage: (tabId: string, result?: { workbenchConfigured?: boolean }) => void;
   onSidecarConfigAdopted: (tabId: string) => void;
   onFilePreviewIntentConsumed?: (tabId: string, intentId: string) => void;
   onUpdateWorkbenchRoute?: (tabId: string, route: string) => void;
@@ -386,7 +387,7 @@ interface TabContentProps {
 // Exported for focused content-mount behavior tests.
 export const MemoizedTabContent = memo(function TabContent({
   tab, isActive, isWindowFocused, isLoading, error, isDeferredMount,
-  onLaunchProject, onOpenTargetSession, onOpenHistorySession, onNewSession,
+  onLaunchProject, onOpenTargetSession, onOpenHistorySession, onOpenHistorySessionInCurrentTab, onNewSession,
   onUpdateGenerating, onUpdateTitle, onUpdateUnread, onRenameSession, onForkSession, onUpdateSessionId, onClearInitialMessage,
   claimSessionOpeningTransition,
   onSidecarConfigAdopted, onFilePreviewIntentConsumed,
@@ -511,13 +512,14 @@ export const MemoizedTabContent = memo(function TabContent({
                   promptId: tab.workbenchAgentSurface.bootstrap?.promptId,
                   title: tab.workbenchAgentSurface.bootstrap?.title,
                   promptContent: tab.workbenchAgentSurface.bootstrap?.systemPrompt,
+                  toolset: tab.workbenchAgentSurface.toolset,
                 }
                 : undefined}
-              onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySession(tab.id, sessionId, title, historyEntrySource)}
+              onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySessionInCurrentTab(tab.id, sessionId, title, historyEntrySource)}
               onOpenSessionInNewTab={(sessionId, title) => onOpenHistorySession(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
               onNewSession={() => onNewSession(tab.id)}
               initialMessage={tab.initialMessage}
-              onInitialMessageConsumed={() => onClearInitialMessage(tab.id)}
+              onInitialMessageConsumed={(result) => onClearInitialMessage(tab.id, result)}
               sidecarConfigDisposition={tab.sidecarConfigDisposition}
               onSidecarConfigAdopted={() => onSidecarConfigAdopted(tab.id)}
               pendingFilePreview={tab.pendingFilePreview}
@@ -723,6 +725,11 @@ export default function App() {
         );
       }
       if (!surface.toolset) continue;
+      // A newly launched workbench surface carries its first turn in
+      // `initialMessage`. Chat owns that turn's tool/system-prompt bind and
+      // must finish it immediately before sending; configuring it here would
+      // race Chat and can restart the SDK underneath the first message.
+      if (tab.initialMessage?.workbenchToolset) continue;
       const configurationKey = `${tab.sessionId}:${JSON.stringify({ toolset: surface.toolset, systemPrompt: surface.bootstrap?.systemPrompt ?? null })}`;
       if (configuredWorkbenchToolsetsRef.current.get(tab.id) === configurationKey) continue;
       configuredWorkbenchToolsetsRef.current.set(tab.id, configurationKey);
@@ -2175,7 +2182,20 @@ export default function App() {
   }, [configProjects, setActiveTabId, t]);
 
   // Clear initialMessage from a tab after it has been consumed by Chat
-  const clearInitialMessage = useCallback((tabId: string) => {
+  const clearInitialMessage = useCallback((tabId: string, result?: { workbenchConfigured?: boolean }) => {
+    const tab = tabsRef.current.find((item) => item.id === tabId);
+    if (result?.workbenchConfigured && tab?.sessionId && tab.workbenchAgentSurface?.toolset) {
+      const configurationKey = `${tab.sessionId}:${JSON.stringify({
+        toolset: tab.workbenchAgentSurface.toolset,
+        systemPrompt: tab.workbenchAgentSurface.bootstrap?.systemPrompt ?? null,
+      })}`;
+      // Chat has already awaited the authoritative workbench configure request
+      // before calling this callback. Remember that fact before removing the
+      // initial message, otherwise the tabs effect below would immediately
+      // configure the same surface a second time and restart the SDK during
+      // the first turn.
+      configuredWorkbenchToolsetsRef.current.set(tabId, configurationKey);
+    }
     setTabs(prev => prev.map(t =>
       t.id === tabId ? { ...t, initialMessage: undefined } : t
     ));
@@ -2600,6 +2620,74 @@ export default function App() {
     );
   }, [handleOpenTargetSession]);
 
+  /**
+   * Open a history session from the Chat surface *in the current window*.
+   *
+   * The Chat history has two distinct actions that must behave differently:
+   *   - row click (onSelectSession)  → open HERE (this tab), never a new top-level tab
+   *   - the "在新 tab 打开" arrow (onOpenInNewTab) → spawn a new top-level tab
+   *
+   * Historically both routed through `handleOpenTargetSession`, which spawns a
+   * brand-new top-level tab for any session not already owned by an existing
+   * tab — so a row click from the AI chat popup jumped the user to a new tab.
+   * This path reuses the same session-open admission (resource transition,
+   * analytics, owner reconcile) but, for an un-owned target, flips THIS tab to
+   * that session instead of spawning a new one. Owned sessions still jump to
+   * their existing tab (preserves the Session:Sidecar 1:1 owner model).
+   */
+  const handleOpenHistorySessionInCurrentTab = useCallback(async (
+    tabId: string,
+    sessionId: string,
+    title: string,
+    historyEntrySource: HistoryEntrySource = 'chat_dropdown',
+  ): Promise<boolean> => {
+    const sourceTab = tabsRef.current.find((tab) => tab.id === tabId);
+    if (!sourceTab?.agentDir) {
+      console.error('[App] Cannot open history session in current tab: source tab has no agentDir');
+      return false;
+    }
+    const agentDir = sourceTab.agentDir;
+    // Do not attach a persisted transcript to a different workspace. This is
+    // especially important for novel workbench sessions: an old transcript
+    // can contain absolute paths from its original project, and rebinding it
+    // under the current project would make the model chase nonexistent files.
+    if (!(await canRestoreSession(sessionId, agentDir))) {
+      toastRef.current.warning('该历史会话不属于当前小说项目，未打开');
+      return false;
+    }
+    const releaseTransition = tryClaimSessionResourceTransition(
+      sessionResourceTransitionsRef.current,
+      sessionId,
+      'opening',
+    );
+    if (!releaseTransition) return false;
+    try {
+      if (historyEntrySource) {
+        trackHistorySessionOpenAsync(sessionId, agentDir, historyEntrySource);
+      }
+      const plan = planSessionOpen({
+        tabs: tabsRef.current,
+        targetSessionId: sessionId,
+      });
+      if (plan.type === 'jump-to-tab') {
+        // Owned by another tab — activate it (keeps the owner model 1:1).
+        setActiveTabId(plan.tabId);
+        return await materializeExistingSessionTab(plan.tabId, sessionId, agentDir);
+      }
+      // Not owned anywhere → open in THIS tab instead of spawning a top-level tab.
+      const patch = buildChatFlipPatch(sourceTab, {
+        agentDir,
+        sessionId,
+        title,
+        sidecarConfigDisposition: 'pending',
+      });
+      setTabs((current) => current.map((tab) => (tab.id === tabId ? patch : tab)));
+      return await materializeExistingSessionTab(tabId, sessionId, agentDir);
+    } finally {
+      releaseTransition();
+    }
+  }, [materializeExistingSessionTab, setActiveTabId, setTabs, trackHistorySessionOpenAsync]);
+
 
   /**
    * Handle "New Session" from Chat component.
@@ -2640,6 +2728,16 @@ export default function App() {
       await ensureSessionSidecar(pendingSessionId, currentTab.agentDir, 'tab', tabId);
       if (!await reconcileSessionTabActivation(pendingSessionId, tabId)) {
         throw new Error(`Rust refused owner reconcile for session ${pendingSessionId} and tab ${tabId}`);
+      }
+
+      if (currentTab.workbenchAgentSurface?.toolset) {
+        await configureWorkbenchAgentToolset(
+          pendingSessionId,
+          tabId,
+          currentTab.workbenchAgentSurface.toolset,
+          currentTab.workbenchAgentSurface.bootstrap?.systemPrompt,
+          () => true,
+        );
       }
 
       // Update tab state → TabProvider will detect sessionId change and reconnect
@@ -3386,6 +3484,26 @@ export default function App() {
               : undefined,
           ).then(() => true);
       if (!opened) return;
+
+      // A resumed workbench session does not carry an InitialMessage through
+      // Chat, so its toolset used to wait for the tabs effect. Bind it here,
+      // after the target Sidecar is ready and before the surface is exposed as
+      // ready for user interaction. This also rebinds sessions created before
+      // workbenchToolset metadata was persisted.
+      if (resumeSession && request.toolset) {
+        const targetTab = tabsRef.current.find(
+          (tab) => tab.sessionId === resumeSession?.id,
+        );
+        if (targetTab) {
+          await configureWorkbenchAgentToolset(
+            resumeSession.id,
+            targetTab.id,
+            request.toolset,
+            request.systemPrompt,
+            () => true,
+          );
+        }
+      }
       if (isSurfacePresentation) setActiveTabId(sourceTabId);
       setTabs((current) => {
         const targetTabId = resumeSession
@@ -4161,6 +4279,7 @@ export default function App() {
             onLaunchProject={handleLaunchProject}
             onOpenTargetSession={handleOpenTargetSession}
             onOpenHistorySession={handleOpenChatHistorySession}
+            onOpenHistorySessionInCurrentTab={handleOpenHistorySessionInCurrentTab}
             onNewSession={handleNewSession}
             onUpdateGenerating={updateTabGenerating}
             onUpdateTitle={updateTabTitle}
@@ -4212,6 +4331,7 @@ export default function App() {
               onLaunchProject={handleLaunchProject}
               onOpenTargetSession={handleOpenTargetSession}
               onOpenHistorySession={handleOpenChatHistorySession}
+              onOpenHistorySessionInCurrentTab={handleOpenHistorySessionInCurrentTab}
               onNewSession={handleNewSession}
               onUpdateGenerating={updateTabGenerating}
               onUpdateTitle={updateTabTitle}

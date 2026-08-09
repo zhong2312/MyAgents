@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const FACTION_LIBRARY_SCHEMA_VERSION = 2 as const;
 export const FACTION_LIBRARY_PATH = "world/factions/index.json";
+export const FACTION_LIBRARY_STORAGE_VERSION = 1 as const;
 
 const idSchema = z
   .string()
@@ -189,6 +190,34 @@ export const factionRecordSchema = z
     updatedAt: z.string().datetime(),
   })
   .strict();
+
+export const factionIndexEntrySchema = z
+  .object({
+    id: idSchema,
+    path: z
+      .string()
+      .regex(/^world\/factions\/records\/[a-z0-9][a-z0-9-]*\.json$/u),
+  })
+  .strict()
+  .superRefine((entry, context) => {
+    if (entry.path !== `world/factions/records/${entry.id}.json`) {
+      context.addIssue({
+        code: "custom",
+        path: ["path"],
+        message: `必须是 world/factions/records/${entry.id}.json`,
+      });
+    }
+  });
+
+export const factionLibraryIndexSchema = z
+  .object({
+    schemaVersion: z.literal(FACTION_LIBRARY_SCHEMA_VERSION),
+    storageVersion: z.literal(FACTION_LIBRARY_STORAGE_VERSION),
+    factions: z.array(factionIndexEntrySchema),
+  })
+  .strict();
+
+export const factionRecordFileSchema = factionRecordSchema;
 
 export type FactionTerritory = z.infer<typeof factionTerritorySchema>;
 export type FactionMember = z.infer<typeof factionMemberSchema>;
@@ -383,39 +412,6 @@ export const factionLibrarySchema = z
 
 export type FactionLibrary = z.infer<typeof factionLibrarySchema>;
 
-const factionLibraryV1Schema = z
-  .object({
-    schemaVersion: z.literal(1),
-    factions: z.array(
-      z
-        .object({
-          id: idSchema,
-          name: z.string().trim().min(1),
-          type: textSchema,
-          status: factionStatusSchema,
-          summary: textSchema,
-          territories: z.array(factionTerritorySchema),
-          members: z.array(factionMemberSchema),
-          assets: z.array(factionAssetSchema),
-          resources: z.array(
-            z
-              .object({
-                id: idSchema,
-                name: z.string().trim().min(1),
-                kind: textSchema,
-                control: textSchema,
-                description: textSchema,
-              })
-              .strict(),
-          ),
-          createdAt: z.string().datetime(),
-          updatedAt: z.string().datetime(),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-
 function normalizeFactionRecord(record: FactionRecord): FactionRecord {
   return {
     ...record,
@@ -427,36 +423,6 @@ function normalizeFactionRecord(record: FactionRecord): FactionRecord {
       ...resource,
       competingFactionIds: [...new Set(resource.competingFactionIds)],
       history: resource.history.map((entry) => ({ ...entry })),
-    })),
-  };
-}
-
-function migrateV1Library(
-  source: z.infer<typeof factionLibraryV1Schema>,
-): FactionLibrary {
-  return {
-    schemaVersion: FACTION_LIBRARY_SCHEMA_VERSION,
-    factions: source.factions.map((faction) => ({
-      ...faction,
-      state: {
-        governance: "",
-        military: "",
-        economy: "",
-        publicSupport: "",
-        territorialIntegrity: "",
-      },
-      resources: faction.resources.map((resource) => ({
-        ...resource,
-        controlLevel: "contested" as const,
-        worldNodeId: null,
-        itemId: null,
-        competingFactionIds: [],
-        history: [],
-      })),
-      organizationUnits: [],
-      relations: [],
-      rights: [],
-      links: [],
     })),
   };
 }
@@ -477,8 +443,6 @@ export function parseFactionLibrary(content: string): FactionLibrary {
       factions: parsed.data.factions.map(normalizeFactionRecord),
     };
   }
-  const legacy = factionLibraryV1Schema.safeParse(source);
-  if (legacy.success) return migrateV1Library(legacy.data);
   throw new Error(
     `势力组织数据格式无效：${parsed.error.issues
       .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)

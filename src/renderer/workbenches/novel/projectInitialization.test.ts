@@ -22,13 +22,29 @@ describe("createNovelProjectInitialization", () => {
     expect(initialization.directories).toEqual(
       expect.arrayContaining([
         "manuscript/chapters",
+        "manuscript/state-ledger",
+        "manuscript/state-ledger/batches",
+        "manuscript/continuity-state",
+        "manuscript/continuity-state/facts",
         "characters",
         "characters/records",
+        "inspiration/records",
+        "characters/souls",
+        "characters/souls/records",
+        "narrative/lines/records",
+        "narrative/chapters/records",
         "world/setting-library/pages",
         "world/setting-library/entries",
         "world/setting-library/proposals",
+        "world/locations/records",
+        "world/factions/records",
         "world/maps",
         "timeline",
+        "timeline/calendars/records",
+        "timeline/periods/records",
+        "timeline/views/records",
+        "timeline/branches/records",
+        "timeline/events/records",
         "simulation",
         "simulation/runs",
         "research/notes",
@@ -41,8 +57,13 @@ describe("createNovelProjectInitialization", () => {
         "novel.json",
         "README.md",
         "manuscript/index.json",
+        "manuscript/state-ledger/index.json",
+        "manuscript/state-ledger/baselines.json",
+        "manuscript/continuity-state/index.json",
+        "narrative/index.json",
         "inspiration/index.json",
         "characters/index.json",
+        "characters/souls/index.json",
         "characters/records/.gitkeep",
         "world/setting-library/meta.json",
         "world/setting-library/spatial-tree.json",
@@ -69,6 +90,13 @@ describe("createNovelProjectInitialization", () => {
       initialization.files.find((file) => file.path === ".gitignore")?.content,
     ).toContain(".cache/");
     expect(
+      JSON.parse(
+        initialization.files.find(
+          (file) => file.path === "world/locations/index.json",
+        )?.content ?? "{}",
+      ),
+    ).toEqual({ schemaVersion: 1, storageVersion: 1, locations: [] });
+    expect(
       paths.filter((path) =>
         path.startsWith(
           "prompts/installations/storyforge.prompt-library/content/",
@@ -92,8 +120,20 @@ describe("createNovelProjectInitialization", () => {
     )) {
       expect(() => JSON.parse(file.content), file.path).not.toThrow();
     }
-    expect(JSON.parse(initialization.files.find((file) => file.path === "simulation/scenarios.json")?.content ?? "{}").schemaVersion).toBe(3);
-    expect(JSON.parse(initialization.files.find((file) => file.path === "simulation/runs/index.json")?.content ?? "{}").schemaVersion).toBe(3);
+    expect(
+      JSON.parse(
+        initialization.files.find(
+          (file) => file.path === "simulation/scenarios.json",
+        )?.content ?? "{}",
+      ).schemaVersion,
+    ).toBe(3);
+    expect(
+      JSON.parse(
+        initialization.files.find(
+          (file) => file.path === "simulation/runs/index.json",
+        )?.content ?? "{}",
+      ).schemaVersion,
+    ).toBe(3);
 
     const metadata = initialization.files.find(
       (file) => file.path === "novel.json",

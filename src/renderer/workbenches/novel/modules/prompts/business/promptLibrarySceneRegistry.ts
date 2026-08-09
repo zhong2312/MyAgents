@@ -75,8 +75,8 @@ export const NOVEL_PROMPT_SCENES: readonly NovelPromptScene[] = Object.freeze([
   },
   {
     id: "novel.inspiration.assist",
-    name: "灵感一次性诊断",
-    description: "单次诊断或发展建议，不写回灵感库。",
+    name: "灵感诊断与展开",
+    description: "灵感诊断或发展建议，不写回灵感库。",
   },
   {
     id: "novel.characters.assist",
@@ -105,6 +105,8 @@ export const NOVEL_PROMPT_SCENES: readonly NovelPromptScene[] = Object.freeze([
   },
 ]);
 
-export function findNovelPromptScene(promptId: string): NovelPromptScene | null {
+export function findNovelPromptScene(
+  promptId: string,
+): NovelPromptScene | null {
   return NOVEL_PROMPT_SCENES.find((scene) => scene.id === promptId) ?? null;
 }

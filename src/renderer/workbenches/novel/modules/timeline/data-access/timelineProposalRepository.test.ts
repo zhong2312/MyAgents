@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { createNovelTimelineProposalRepository } from "./timelineProposalRepository";
 import {
-  createNovelTimelineProposalRepository,
-} from "./timelineProposalRepository";
+  createNovelTimelineLibraryRepository,
+  createTimelineLibraryInitializationFiles,
+} from "./timelineLibraryRepository";
 import {
   serializeTimelineProposalManifest,
   type TimelineProposalManifest,
@@ -64,16 +66,12 @@ function eventValue(id: string, title: string): Record<string, unknown> {
 
 function storageWithProposal(): NovelMemoryStorage {
   return new NovelMemoryStorage({
-    "timeline/index.json": JSON.stringify({
-      schemaVersion: 1,
-      calendars: [],
-      periods: [],
-      views: [],
-      storyStartEventId: null,
-      factsThroughEventId: null,
-      branches: [{ id: "branch-main", name: "主线", parentBranchId: null, forkEventId: null, description: "", createdAt: NOW, updatedAt: NOW }],
-      events: [],
-    }),
+    ...Object.fromEntries(
+      createTimelineLibraryInitializationFiles(NOW).map((file) => [
+        file.path,
+        file.content,
+      ]),
+    ),
     "timeline/proposals/proposal-1/proposal.json":
       serializeTimelineProposalManifest(
         manifest("proposal-1", [
@@ -105,9 +103,10 @@ describe("createNovelTimelineProposalRepository", () => {
 
     await repository.apply("proposal-1", ["candidate-1"]);
 
-    const events = JSON.parse(storage.getText("timeline/index.json")!)
-      .events as { readonly id: string }[];
-    expect(events.map((event) => event.id)).toEqual(["event-1"]);
+    const timeline = await createNovelTimelineLibraryRepository(storage).load();
+    expect(timeline.library.events.map((event) => event.id)).toEqual([
+      "event-1",
+    ]);
     const applied = JSON.parse(
       storage.getText("timeline/proposals/proposal-1/proposal.json")!,
     );
@@ -121,16 +120,12 @@ describe("createNovelTimelineProposalRepository", () => {
 
   it("采纳时执行跨库引用校验，悬空引用被拒绝", async () => {
     const storage = new NovelMemoryStorage({
-      "timeline/index.json": JSON.stringify({
-        schemaVersion: 1,
-        calendars: [],
-        periods: [],
-        views: [],
-        storyStartEventId: null,
-        factsThroughEventId: null,
-        branches: [{ id: "branch-main", name: "主线", parentBranchId: null, forkEventId: null, description: "", createdAt: NOW, updatedAt: NOW }],
-        events: [],
-      }),
+      ...Object.fromEntries(
+        createTimelineLibraryInitializationFiles(NOW).map((file) => [
+          file.path,
+          file.content,
+        ]),
+      ),
       "timeline/proposals/proposal-1/proposal.json":
         serializeTimelineProposalManifest(
           manifest("proposal-1", [
@@ -150,12 +145,12 @@ describe("createNovelTimelineProposalRepository", () => {
     });
     const repository = createNovelTimelineProposalRepository(storage);
 
-    await expect(repository.apply("proposal-1", ["candidate-1"])).rejects.toThrow(
-      /关联了不存在的角色/,
-    );
-    expect(
-      JSON.parse(storage.getText("timeline/index.json")!).events,
-    ).toHaveLength(0);
+    await expect(
+      repository.apply("proposal-1", ["candidate-1"]),
+    ).rejects.toThrow(/关联了不存在的角色/);
+    await expect(
+      createNovelTimelineLibraryRepository(storage).load(),
+    ).resolves.toMatchObject({ library: { events: [] } });
   });
 
   it("拒绝候选只更新提案状态", async () => {
@@ -164,9 +159,9 @@ describe("createNovelTimelineProposalRepository", () => {
 
     await repository.reject("proposal-1", ["candidate-2"]);
 
-    expect(
-      JSON.parse(storage.getText("timeline/index.json")!).events,
-    ).toHaveLength(0);
+    await expect(
+      createNovelTimelineLibraryRepository(storage).load(),
+    ).resolves.toMatchObject({ library: { events: [] } });
     const applied = JSON.parse(
       storage.getText("timeline/proposals/proposal-1/proposal.json")!,
     );

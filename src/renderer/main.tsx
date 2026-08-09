@@ -16,6 +16,7 @@ import {
 import { initFrontendLogger, setLogServerReady, setRendererLogLabel } from './utils/frontendLogger';
 import { installMacFunctionKeyGuard } from './utils/macFunctionKeyGuard';
 import { installTextCorrectionPolicy } from './utils/textCorrectionPolicy';
+import { installReactPerformanceGuard } from './utils/reactPerformanceGuard';
 
 import './i18n';
 import './index.css';
@@ -68,6 +69,7 @@ try {
 // document-level capture handler is attached when the first input fires.
 installMacFunctionKeyGuard();
 installTextCorrectionPolicy();
+installReactPerformanceGuard();
 
 // Block native "Reload / Inspect Element" context menu in production.
 // Keep native menu for: input fields, text selection, contenteditable, links, images, media.

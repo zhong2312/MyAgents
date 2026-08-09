@@ -90,7 +90,7 @@ import {
 } from "./modules/characters";
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
-import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
 import { parseSettingLibrarySettingsIndex } from "./settingLibrarySchema";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
 import {
@@ -4295,9 +4295,9 @@ export default function ManuscriptStudio({
 1. 必须先调用 novel_manuscript_get_context，传 chapterId=${selectedChapter.id}，取得当前章节全文与 sourceHash；不得猜测正文。
 2. 根据实际需要调用人物、时间线、物品、势力、世界架构、剧情工程、修炼体系和连续性只读工具；只读取完成本次写作所需的上下文，不要机械遍历。
 3. 使用 novel_manuscript_create_draft 创建草稿，runId 必须为 ${runId}，chapterId 必须为 ${selectedChapter.id}，mode 必须为 ${mode}，rangeStart/rangeEnd 必须为 ${range.start}/${range.end}，baseSourceHash 使用第一步返回值。
-4. 完成正文后调用 novel_manuscript_upsert_candidate。候选只包含处理范围的替换或插入文本，不要解释，不要 Markdown 代码围栏。
+4. 使用 novel_manuscript_upsert_candidate 小块写入候选；首次调用替换 candidate，后续保持同一 candidateId 并传 append=true 追加，单次不要超过工具限制。候选只包含处理范围的替换或插入文本，不要解释，不要 Markdown 代码围栏。
 5. 依次调用 novel_manuscript_validate_draft、novel_manuscript_submit_draft 和 novel_manuscript_get_proposal_status。工具只会提交候选，不能直接改正文。
-6. ${planningRule} 严格遵守世界设定和连续性状态；保留人物声口，避免模板腔和机械工整感。sourceHash 冲突时停止并说明正文已变化，不得改用原始文件工具。`,
+6. ${planningRule} 严格遵守世界设定和连续性状态；保留人物声口，避免模板腔和机械工整感。sourceHash 冲突时停止本次提案并说明正文已变化；可继续使用原始命令和文件工具读取素材，但不得把绕过提案协议的文件修改冒充为正文候选。`,
             mode === "expand"
               ? selectedChapter.planningMode === "detached"
                 ? "扩写重点：补足动作、感官、对话和因果；只要不违背正文事实和作者指令，可以突破原计划。"

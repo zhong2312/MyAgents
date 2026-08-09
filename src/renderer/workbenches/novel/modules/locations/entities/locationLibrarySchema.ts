@@ -1,15 +1,12 @@
 import { z } from "zod";
 
 export const LOCATION_LIBRARY_SCHEMA_VERSION = 1 as const;
+export const LOCATION_LIBRARY_STORAGE_VERSION = 1 as const;
 export const LOCATION_LIBRARY_PATH = "world/locations/index.json";
 
-const idSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
+const idSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/u);
 
-export const locationStatusSchema = z.enum([
-  "planned",
-  "appeared",
-  "archived",
-]);
+export const locationStatusSchema = z.enum(["planned", "appeared", "archived"]);
 
 export type LocationStatus = z.infer<typeof locationStatusSchema>;
 
@@ -31,6 +28,35 @@ export const locationSchema = z
 
 export type NovelLocation = z.infer<typeof locationSchema>;
 
+export const locationIndexEntrySchema = z
+  .object({
+    id: idSchema,
+    path: z
+      .string()
+      .regex(/^world\/locations\/records\/[a-z0-9][a-z0-9-]*\.json$/u),
+  })
+  .strict()
+  .superRefine((entry, context) => {
+    if (entry.path !== `world/locations/records/${entry.id}.json`) {
+      context.addIssue({
+        code: "custom",
+        path: ["path"],
+        message: `必须是 world/locations/records/${entry.id}.json`,
+      });
+    }
+  });
+
+export const locationLibraryFileIndexSchema = z
+  .object({
+    schemaVersion: z.literal(LOCATION_LIBRARY_SCHEMA_VERSION),
+    storageVersion: z.literal(LOCATION_LIBRARY_STORAGE_VERSION),
+    locations: z.array(locationIndexEntrySchema),
+  })
+  .strict();
+
+export const locationRecordFileSchema = locationSchema;
+
+/** 供业务层和 AI 提案使用的逻辑聚合结构，不等同于物理根索引。 */
 export const locationLibraryIndexSchema = z
   .object({
     schemaVersion: z.literal(LOCATION_LIBRARY_SCHEMA_VERSION),
@@ -113,7 +139,9 @@ export class LocationLibraryFormatError extends Error {
   }
 }
 
-export function parseLocationLibraryIndex(content: string): LocationLibraryIndex {
+export function parseLocationLibraryIndex(
+  content: string,
+): LocationLibraryIndex {
   let value: unknown;
   try {
     value = JSON.parse(content);

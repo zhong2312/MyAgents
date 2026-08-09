@@ -8,28 +8,20 @@ import { createSettingLibraryInitializationFiles } from "./settingLibraryReposit
 import { createPromptLibraryInitializationFiles } from "./promptLibraryRepository";
 import { createItemLibraryInitializationFiles } from "./itemLibraryRepository";
 import { createCharacterLibraryInitializationFiles } from "./modules/characters";
-import { createLocationLibraryInitializationFiles } from "./locationLibraryRepository";
+import { createLocationLibraryInitializationFiles } from "./modules/locations/data-access/locationLibraryRepository";
 import { createTimelineLibraryInitializationFiles } from "./timelineLibraryRepository";
 import { createCultivationEcologyInitializationFiles } from "./cultivationEcologyRepository";
-import { createInspirationInitializationFile } from "./inspirationRepository";
+import { createInspirationInitializationFiles } from "./inspirationRepository";
 import { createNarrativeEngineeringInitializationFiles } from "./narrativeEngineeringRepository";
 import { createWorldSimulationV2InitializationFiles } from "./worldSimulationRepositoryV2";
-import {
-  createEmptyFactionLibrary,
-  serializeFactionLibrary,
-} from "./modules/factions/entities/factionLibrarySchema";
+import { createFactionLibraryInitializationFiles } from "./modules/factions/data-access/factionLibraryRepository";
 import {
   createEmptyNovelChapterIndex,
   serializeNovelChapterIndex,
 } from "./projectSchema";
-import {
-  createEmptyManuscriptTrackingLedger,
-  createEmptyManuscriptContinuityState,
-  MANUSCRIPT_CONTINUITY_PATH,
-  MANUSCRIPT_TRACKING_PATH,
-  serializeManuscriptContinuityState,
-  serializeManuscriptTrackingLedger,
-} from "./manuscriptTrackingSchema";
+import { createEmptyManuscriptContinuityState } from "./manuscriptTrackingSchema";
+import { createManuscriptTrackingInitializationFiles } from "./manuscriptTrackingRepository";
+import { createManuscriptContinuityFiles } from "../../../shared/workbenches/novel/manuscriptContinuityStorage";
 
 export interface NovelProjectInitializationInput {
   readonly projectId: string;
@@ -49,19 +41,38 @@ export interface NovelProjectInitializationInput {
 const DIRECTORIES = [
   "manuscript/chapters",
   "manuscript/trash",
+  "manuscript/state-ledger",
+  "manuscript/state-ledger/batches",
+  "manuscript/continuity-state",
+  "manuscript/continuity-state/facts",
   "narrative",
+  "narrative/lines/records",
+  "narrative/arcs/records",
+  "narrative/directories/records",
+  "narrative/chapters/records",
+  "narrative/simulation-proposals/records",
+  "narrative/legacy",
+  "narrative/proposals",
   "inspiration",
+  "inspiration/records",
   "settings",
   "characters",
   "characters/records",
+  "characters/souls",
+  "characters/souls/records",
   "characters/proposals",
   "world/locations",
+  "world/locations/records",
   "world/factions",
+  "world/factions/records",
   "world/items",
   "world/items/records",
   "world/items/pages",
   "world/items/proposals",
-  "world/cultivation-ecology",
+  "world/cultivation",
+  "world/cultivation/origins/records",
+  "world/cultivation/relations/records",
+  "world/cultivation/systems",
   "world/setting-library/pages",
   "world/setting-library/entries",
   "world/setting-library/proposals",
@@ -71,6 +82,11 @@ const DIRECTORIES = [
   "world/maps/trash",
   "world/cultivation-proposals",
   "timeline",
+  "timeline/calendars/records",
+  "timeline/periods/records",
+  "timeline/views/records",
+  "timeline/branches/records",
+  "timeline/events/records",
   "simulation",
   "simulation/runs",
   "research/notes",
@@ -149,32 +165,21 @@ Thumbs.db
       path: "manuscript/index.json",
       content: serializeNovelChapterIndex(createEmptyNovelChapterIndex()),
     },
-    {
-      path: MANUSCRIPT_TRACKING_PATH,
-      content: serializeManuscriptTrackingLedger(
-        createEmptyManuscriptTrackingLedger(input.createdAt),
-      ),
-    },
-    {
-      path: MANUSCRIPT_CONTINUITY_PATH,
-      content: serializeManuscriptContinuityState(
-        createEmptyManuscriptContinuityState(input.createdAt),
-      ),
-    },
+    ...createManuscriptTrackingInitializationFiles(input.createdAt),
+    ...createManuscriptContinuityFiles(
+      createEmptyManuscriptContinuityState(input.createdAt),
+    ),
     ...createNarrativeEngineeringInitializationFiles(input.createdAt),
     ...createCharacterLibraryInitializationFiles(),
     ...createCultivationEcologyInitializationFiles(),
     ...createLocationLibraryInitializationFiles(),
-    {
-      path: "world/factions/index.json",
-      content: serializeFactionLibrary(createEmptyFactionLibrary()),
-    },
+    ...createFactionLibraryInitializationFiles(input.createdAt),
     ...createItemLibraryInitializationFiles(),
     ...createSettingLibraryInitializationFiles(input.title),
     ...createPromptLibraryInitializationFiles(),
     ...createTimelineLibraryInitializationFiles(input.createdAt),
     ...createWorldSimulationV2InitializationFiles(),
-    createInspirationInitializationFile(input.createdAt),
+    ...createInspirationInitializationFiles(input.createdAt),
     { path: "research/index.json", content: createIndex("sources") },
     { path: "knowledge/entities.json", content: createIndex("entities") },
     { path: "knowledge/relations.json", content: createIndex("relations") },

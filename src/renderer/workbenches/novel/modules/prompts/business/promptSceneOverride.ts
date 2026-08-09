@@ -8,7 +8,11 @@ import {
 } from "./promptLibraryResolver";
 
 export type ScenePromptOverride =
-  | { readonly status: "ready"; readonly content: string }
+  | {
+      readonly status: "ready";
+      readonly content: string;
+      readonly version: string;
+    }
   | { readonly status: "fallback" };
 
 /**
@@ -38,6 +42,7 @@ export async function resolveScenePromptOverride(
   }
   return {
     status: "ready",
+    version: selection.activation.prompt.version,
     content: renderPromptTemplate(
       selection.activation.prompt.content,
       variables,

@@ -1,4 +1,5 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
+import { narrativeRecordPath } from "../../../shared/workbenches/novel/narrativeEngineeringStorage";
 
 import {
   createNarrativeEngineeringRepository,
@@ -127,7 +128,7 @@ function candidateTargetPath(candidate: NarrativeProposalCandidate): string {
         : candidate.kind === "directory"
           ? "directories"
           : "chapters";
-  return `narrative/${collection}/${candidate.value.id}.json`;
+  return narrativeRecordPath(collection, candidate.value.id);
 }
 
 function candidateExistingValue(
@@ -875,7 +876,7 @@ export function createNarrativeProposalRepository(
 /**
  * 将剧情领域的候选提案投影为通用文件变更提案。
  *
- * 剧情事实仍由 NarrativeProposalRepository 校验并写入 narrative/index.json；
+ * 剧情事实仍由 NarrativeProposalRepository 校验并通过目录化 Repository 写入；
  * 此适配器只复用世界架构的提案列表、差异查看和逐项审阅交互。
  */
 export function createNarrativeFileProposalRepository(

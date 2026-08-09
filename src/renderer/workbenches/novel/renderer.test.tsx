@@ -124,12 +124,26 @@ describe("NovelWorkbenchRenderer storage loop", () => {
     expect(navigation).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "simulation", label: "世界推演" }),
-        expect.objectContaining({ id: "simulation-console", label: "运行控制台", parentId: "simulation" }),
-        expect.objectContaining({ id: "simulation-lab", label: "世界实验室", parentId: "simulation" }),
-        expect.objectContaining({ id: "simulation-council", label: "立场会商", parentId: "simulation" }),
+        expect.objectContaining({
+          id: "simulation-console",
+          label: "运行控制台",
+          parentId: "simulation",
+        }),
+        expect.objectContaining({
+          id: "simulation-lab",
+          label: "世界实验室",
+          parentId: "simulation",
+        }),
+        expect.objectContaining({
+          id: "simulation-council",
+          label: "立场会商",
+          parentId: "simulation",
+        }),
       ]),
     );
-    expect(navigation.find((item) => item.id === "simulation")?.parentId).toBeUndefined();
+    expect(
+      navigation.find((item) => item.id === "simulation")?.parentId,
+    ).toBeUndefined();
   });
 
   it("为世界推演启动检查提供可执行的设置入口", async () => {
@@ -146,8 +160,14 @@ describe("NovelWorkbenchRenderer storage loop", () => {
     );
     await waitFor(() => {
       expect(screen.getByDisplayValue("0")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "改用自定义起点" })).not.toBeInTheDocument();
-      expect(screen.getByText("时间线事件不会自动成为事实。当前使用自定义起点，推演不会把任何时间线事件当作既成事实。")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "改用自定义起点" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "时间线事件不会自动成为事实。当前使用自定义起点，推演不会把任何时间线事件当作既成事实。",
+        ),
+      ).toBeInTheDocument();
     });
     fireEvent.click(screen.getByRole("button", { name: "锁定已发生事实" }));
     expect(navigate).toHaveBeenCalledWith("timeline");
@@ -376,7 +396,7 @@ describe("NovelWorkbenchRenderer storage loop", () => {
         }),
       );
     });
-    expect(openAgentSession.mock.calls[0]?.[0].systemPrompt).toContain(
+    expect(openAgentSession.mock.calls[0]?.[0].systemPrompt).not.toContain(
       '"title": "测试小说"',
     );
     expect(openAgentSession.mock.calls[0]?.[0].systemPrompt).toContain(
@@ -416,14 +436,10 @@ describe("NovelWorkbenchRenderer storage loop", () => {
       await screen.findByRole("heading", { name: "世界地图" }),
     ).toBeInTheDocument();
     // 空项目引导：地图库为空，提示新建地图
-    expect(
-      await screen.findByText(/暂无地图/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/暂无地图/)).toBeInTheDocument();
     // 空间节点树视图保留
     fireEvent.click(screen.getByRole("button", { name: "空间节点树" }));
-    expect(
-      await screen.findByText(/尚无空间节点/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/尚无空间节点/)).toBeInTheDocument();
   });
 
   it("persists prompt metadata and Markdown through the formal prompt route", async () => {

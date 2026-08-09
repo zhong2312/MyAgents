@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { WORLD_SIMULATION_SCHEMA_VERSION, type WorldSimulationRun } from "./worldSimulationV2Schema";
+import {
+  WORLD_SIMULATION_SCHEMA_VERSION,
+  createDefaultWorldSimulationScenario,
+  type WorldSimulationRun,
+} from "./worldSimulationV2Schema";
 import { NovelMemoryStorage } from "./testStorage";
 import { createWorldSimulationRepositoryV2 } from "./worldSimulationRepositoryV2";
 
@@ -10,16 +14,22 @@ function runFixture(): WorldSimulationRun {
     id: "run-materialized-files",
     projectId: "project-test",
     name: "物化文件测试",
-    scenario: { id: "scenario-test" },
-    baseline: {},
+    scenario: { ...createDefaultWorldSimulationScenario(), id: "scenario-test" },
+    baseline: { projectId: "project-test" },
     activeBranchId: "branch-main",
     branches: [{
       id: "branch-main",
+      name: "主分支",
+      parentBranchId: null,
+      forkEventId: null,
+      narrativePolicy: "configured",
+      seed: "test-seed",
       status: "ready",
       state: { currentTime: { sortKey: "0" } },
       ledger: [],
       observations: [],
       checkpoints: [],
+      warnings: [],
     }],
     councilSessions: [],
     reports: [],
@@ -29,26 +39,16 @@ function runFixture(): WorldSimulationRun {
 }
 
 describe("WorldSimulationRepositoryV2", () => {
-  it("archives historical scenario and run indexes before starting V3", async () => {
+  it("不迁移或归档旧版方案与运行索引", async () => {
     const storage = new NovelMemoryStorage({
       "simulation/scenarios.json": `${JSON.stringify({ schemaVersion: 2, scenarios: [{ id: "legacy" }] })}\n`,
       "simulation/runs/index.json": `${JSON.stringify({ schemaVersion: 2, runs: [{ id: "legacy-run" }] })}\n`,
     });
     const repository = createWorldSimulationRepositoryV2(storage);
 
-    const scenarios = await repository.loadScenarios();
-    const runs = await repository.loadRunIndex();
-
-    expect(scenarios.value.schemaVersion).toBe(WORLD_SIMULATION_SCHEMA_VERSION);
-    expect(scenarios.value.scenarios).toHaveLength(1);
-    expect(scenarios.value.scenarios[0]?.id).not.toBe("legacy");
-    expect(runs.value).toEqual({ schemaVersion: WORLD_SIMULATION_SCHEMA_VERSION, runs: [], activeRunId: null });
-    await expect(storage.readText("simulation/legacy/schema-v2/scenarios.json")).resolves.toMatchObject({
-      content: expect.stringContaining('"legacy"'),
-    });
-    await expect(storage.readText("simulation/legacy/schema-v2/runs/index.json")).resolves.toMatchObject({
-      content: expect.stringContaining('"legacy-run"'),
-    });
+    await expect(repository.loadScenarios()).rejects.toThrow("世界推演方案格式无效");
+    await expect(repository.loadRunIndex()).rejects.toThrow("世界推演运行索引格式无效");
+    await expect(storage.readText("simulation/legacy/schema-v2/scenarios.json")).rejects.toThrow("File not found");
   });
 
   it("does not replace malformed current-version data as if it were legacy", async () => {
@@ -76,15 +76,35 @@ describe("WorldSimulationRepositoryV2", () => {
     }));
   });
 
-  it("creates run directories before writing its materialized files", async () => {
+  it("以清单和模块文件保存运行，run.json 不再重复内嵌大型数据", async () => {
     const storage = new NovelMemoryStorage({});
     storage.requireExplicitParents = true;
 
-    await expect(createWorldSimulationRepositoryV2(storage).createRun(runFixture())).resolves.toMatchObject({
+    const repository = createWorldSimulationRepositoryV2(storage);
+    await expect(repository.createRun(runFixture())).resolves.toMatchObject({
       run: { value: { id: "run-materialized-files" } },
     });
+    const manifest = JSON.parse((await storage.readText("simulation/runs/run-materialized-files/run.json")).content);
+    expect(manifest).toMatchObject({
+      storageVersion: 1,
+      id: "run-materialized-files",
+      baselinePath: "simulation/runs/run-materialized-files/baseline.json",
+      councilPath: "simulation/runs/run-materialized-files/council.json",
+      reportsPath: "simulation/runs/run-materialized-files/reports/index.json",
+      branches: [{
+        id: "branch-main",
+        statePath: "simulation/runs/run-materialized-files/branches/branch-main/state.json",
+        eventLedgerPath: "simulation/runs/run-materialized-files/branches/branch-main/event-ledger.jsonl",
+      }],
+    });
+    expect(manifest).not.toHaveProperty("baseline");
+    expect(manifest.branches[0]).not.toHaveProperty("state");
+    expect(manifest.branches[0]).not.toHaveProperty("ledger");
     await expect(storage.readText("simulation/runs/run-materialized-files/reports/index.json")).resolves.toBeDefined();
     await expect(storage.readText("simulation/runs/run-materialized-files/branches/branch-main/state.json")).resolves.toBeDefined();
+    await expect(repository.loadRun("run-materialized-files", "project-test")).resolves.toMatchObject({
+      value: { id: "run-materialized-files", branches: [{ id: "branch-main" }] },
+    });
   });
 
   it("将事件账本与检查点以 JSONL 追加，保留既有行字节", async () => {
@@ -127,5 +147,37 @@ describe("WorldSimulationRepositoryV2", () => {
     expect(checkpoints.startsWith(firstCheckpointLine)).toBe(true);
     expect(ledger.trim().split("\n")).toHaveLength(2);
     expect(checkpoints.trim().split("\n")).toHaveLength(2);
+  });
+
+  it("用整个运行目录快照阻止外部修改被覆盖", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createWorldSimulationRepositoryV2(storage);
+    const created = await repository.createRun(runFixture());
+    const statePath = "simulation/runs/run-materialized-files/branches/branch-main/state.json";
+    storage.setExternalText(statePath, `${JSON.stringify({ currentTime: { sortKey: "99" } }, null, 2)}\n`);
+
+    await expect(repository.saveRun(created.run, {
+      ...created.run.value,
+      name: "不应覆盖外部修改",
+    })).rejects.toThrow("推演运行事实源已被外部修改");
+    expect((await storage.readText(statePath)).content).toContain('"99"');
+  });
+
+  it("拒绝回退或改写已保存的事件账本", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createWorldSimulationRepositoryV2(storage);
+    const created = await repository.createRun(runFixture());
+    const withEvent = await repository.saveRun(created.run, {
+      ...created.run.value,
+      branches: [{
+        ...created.run.value.branches[0]!,
+        ledger: [{ id: "event-1", sequence: 1, title: "第一事件" }],
+      }],
+    } as unknown as WorldSimulationRun);
+
+    await expect(repository.saveRun(withEvent.run, {
+      ...withEvent.run.value,
+      branches: [{ ...withEvent.run.value.branches[0]!, ledger: [] }],
+    })).rejects.toThrow("JSONL 账本不能回退或改写");
   });
 });

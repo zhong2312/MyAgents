@@ -434,7 +434,12 @@ interface ChatProps {
   /** Native desktop-window focus projection; independent from internal Tab activity. */
   isWindowFocused: boolean;
   /** Novel workbench sessions replace the generic right workspace with references. */
-  workbenchSurface?: { promptId?: string; title?: string; promptContent?: string };
+  workbenchSurface?: {
+    promptId?: string;
+    title?: string;
+    promptContent?: string;
+    toolset?: InitialMessage['workbenchToolset'];
+  };
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Opens a persisted Session through App's canonical new/jump/revive path. */
@@ -444,7 +449,7 @@ interface ChatProps {
   /** Initial message from Launcher for auto-send on workspace open */
   initialMessage?: InitialMessage;
   /** Called after initialMessage has been consumed */
-  onInitialMessageConsumed?: () => void;
+  onInitialMessageConsumed?: (result?: { workbenchConfigured?: boolean }) => void;
   /** How this chat reconciles config with its sidecar: 'push' (push tab config),
    *  'adopt' (adopt the live sidecar's config), or 'pending' (instant flip before
    *  ensure resolved — do NEITHER until the post-ensure resolver decides). See the
@@ -1738,7 +1743,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
             servers: allServers.filter((server) => globalEnabled.includes(server.id)),
           });
           launcherOwnsInitialMcpRef.current = false;
-          onInitialMessageConsumedRef.current?.();
+          onInitialMessageConsumedRef.current?.({ workbenchConfigured: true });
           return;
         }
 
@@ -1759,7 +1764,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
         // agent-session.ts), so an absent push already yields no MCP — and pushing
         // `[]` after the sidecar pre-warmed with `null` could trip a fingerprint
         // diff → abort/restart for no benefit.
-        if (launchMessage.mcpEnabledServers?.length || launchMessage.workbenchToolset) {
+        if (launchMessage.mcpEnabledServers?.length) {
           const allServers = await getAllMcpServers();
           syncMcpServerNames(allServers);
           const globalEnabled = await getEnabledMcpServerIds();
@@ -1921,7 +1926,9 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
         //    Closing the overlay now produced the "stable idle" gap the user saw.
         //    Overlay closure is now driven by the dedicated effect below — it waits
         //    for the AI to actually start (sessionState='running' or streaming).
-        onInitialMessageConsumedRef.current?.();
+        onInitialMessageConsumedRef.current?.({
+          workbenchConfigured: Boolean(launchMessage.workbenchToolset),
+        });
       } catch (err) {
         console.error('[Chat] Auto-send failed:', err);
         if (launcherOwnsInitialMcpRef.current) {
@@ -1969,7 +1976,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
           // Restore is best-effort; don't double-fail the user.
           console.warn('[Chat] failed to restore launcher draft:', restoreErr);
         }
-        onInitialMessageConsumedRef.current?.();
+        onInitialMessageConsumedRef.current?.({ workbenchConfigured: false });
         toast.error(tRef.current('shell.toasts.autoSendRestoredDraft'));
       }
     };
@@ -4998,12 +5005,23 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
     console.log('[Chat] Starting new session...');
     const success = await resetSession();
     if (success) {
+      // resetSession creates a fresh session inside the same Sidecar. Rebind
+      // the controlled workbench toolset before the user can submit its first
+      // turn; waiting for the App tabs effect leaves a small raw-Read window.
+      if (workbenchSurface?.toolset) {
+        await apiPost('/api/workbench-agent/configure', {
+          toolset: workbenchSurface.toolset,
+          ...(workbenchSurface.promptContent
+            ? { systemPrompt: workbenchSurface.promptContent }
+            : {}),
+        });
+      }
       console.log('[Chat] New session started');
     } else {
       console.error('[Chat] Failed to start new session');
     }
     return success;
-  }, [onNewSession, resetSession, surfaces.channel, sessionId, newSessionKeepingBinding]);
+  }, [apiPost, onNewSession, resetSession, surfaces.channel, sessionId, newSessionKeepingBinding, workbenchSurface]);
 
   return (
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
@@ -5552,6 +5570,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
           promptTitle={workbenchSurface?.title}
           promptContent={workbenchSurface?.promptContent}
           messages={messages}
+          streamingMessage={streamingMessage}
           workspacePath={agentDir}
           currentSessionId={sessionId}
           onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}

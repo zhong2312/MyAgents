@@ -1,4 +1,8 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
+import { factionRecordPath } from "../../../shared/workbenches/novel/factionStorage";
+import { locationRecordPath } from "../../../shared/workbenches/novel/locationStorage";
+import { narrativeRecordPath } from "../../../shared/workbenches/novel/narrativeEngineeringStorage";
+import { timelineRecordPath } from "../../../shared/workbenches/novel/timelineStorage";
 
 import {
   createNovelCharacterLibraryRepository,
@@ -10,7 +14,7 @@ import {
   ITEM_LIBRARY_PATHS,
   createNovelItemLibraryRepository,
 } from "./itemLibraryRepository";
-import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
 import { MAP_LIBRARY_PATH, mapRecordPath } from "./mapSchema";
 import { createNovelMapRepository } from "./mapRepository";
 import { createNovelRepository } from "./repository";
@@ -78,8 +82,13 @@ function fallbackHash(content: string): string {
 
 export async function hashSimulationSource(content: string): Promise<string> {
   if (!globalThis.crypto?.subtle) return fallbackHash(content);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
-  return `sha256:${Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(content),
+  );
+  return `sha256:${Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("")}`;
 }
 
 function ref(
@@ -98,7 +107,9 @@ function ref(
   };
 }
 
-function dedupeRefs(refs: readonly SimulationSourceRef[]): SimulationSourceRef[] {
+function dedupeRefs(
+  refs: readonly SimulationSourceRef[],
+): SimulationSourceRef[] {
   const seen = new Set<string>();
   return refs.filter((item) => {
     const key = `${item.path}:${item.entityId ?? ""}:${item.authority}`;
@@ -113,7 +124,9 @@ function errorDetail(cause: unknown): string {
 }
 
 function uniqueIds(values: readonly (string | null | undefined)[]): string[] {
-  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+  return [
+    ...new Set(values.filter((value): value is string => Boolean(value))),
+  ];
 }
 
 function settingEntriesText(
@@ -126,7 +139,9 @@ function settingEntriesText(
 ): string {
   return entries
     .map((entry) => {
-      const aliases = entry.aliases.length ? `（${entry.aliases.join("、")}）` : "";
+      const aliases = entry.aliases.length
+        ? `（${entry.aliases.join("、")}）`
+        : "";
       return `${entry.category}：${entry.name}${aliases}\n${entry.definition}`;
     })
     .join("\n");
@@ -142,7 +157,15 @@ function timelineProjection(
     id: event.id,
     title: event.title,
     summary: event.summary || event.description,
-    time: createWorldInstant(event.worldSortKey ?? String(Math.trunc(event.sortKey)), calendar, event.timePrecision === "unknown" ? "approximate" : event.timePrecision === "range" ? "approximate" : event.timePrecision),
+    time: createWorldInstant(
+      event.worldSortKey ?? String(Math.trunc(event.sortKey)),
+      calendar,
+      event.timePrecision === "unknown"
+        ? "approximate"
+        : event.timePrecision === "range"
+          ? "approximate"
+          : event.timePrecision,
+    ),
     authority,
     characterIds: [...event.characterIds],
     factionIds: [...event.factionIds],
@@ -157,7 +180,15 @@ function timelineProjection(
       after: change.after,
       note: change.note,
     })),
-    sourceRefs: [ref("timeline/index.json", sourceHash, authority, event.id, event.summary)],
+    sourceRefs: [
+      ref(
+        timelineRecordPath("events", event.id),
+        sourceHash,
+        authority,
+        event.id,
+        event.summary,
+      ),
+    ],
   };
 }
 
@@ -167,7 +198,12 @@ function inferLocationId(
 ): string | null {
   const normalized = name.trim();
   if (!normalized) return null;
-  return available.find((item) => normalized.includes(item.name) || item.name.includes(normalized))?.id ?? null;
+  return (
+    available.find(
+      (item) =>
+        normalized.includes(item.name) || item.name.includes(normalized),
+    )?.id ?? null
+  );
 }
 
 function selected<T extends { readonly id: string }>(
@@ -200,7 +236,16 @@ export async function buildWorldSimulationBaseline(
 
   const project = await novelRepository.load();
   const settingRepository = createNovelSettingLibraryRepository(storage);
-  const [characters, factions, timeline, cultivation, items, locations, maps, settings] = await Promise.all([
+  const [
+    characters,
+    factions,
+    timeline,
+    cultivation,
+    items,
+    locations,
+    maps,
+    settings,
+  ] = await Promise.all([
     characterRepository.load(),
     factionRepository.load(),
     timelineRepository.load(),
@@ -217,49 +262,105 @@ export async function buildWorldSimulationBaseline(
 
   const diagnostics: SimulationDiagnostic[] = [];
   const metadataHash = await hashSimulationSource(project.metadataContent);
-  const chapterIndexHash = await hashSimulationSource(project.chapterIndexContent);
+  const chapterIndexHash = await hashSimulationSource(
+    project.chapterIndexContent,
+  );
   const characterHash = await hashSimulationSource(characters.indexContent);
   const factionHash = await hashSimulationSource(factions.content);
+  const factionRecordHashes = new Map(
+    await Promise.all(
+      factions.library.factions.map(async (faction) => {
+        const path = factionRecordPath(faction.id);
+        const content = factions.files.get(path);
+        if (content === undefined) {
+          throw new Error(`势力记录未进入目录快照：${path}`);
+        }
+        return [faction.id, await hashSimulationSource(content)] as const;
+      }),
+    ),
+  );
   const timelineHash = await hashSimulationSource(timeline.content);
-  const locationHash = await hashSimulationSource(locations.content);
-  const spatialTreeHash = await hashSimulationSource(settings.spatialTreeContent);
+  const locationRecordHashes = new Map(
+    await Promise.all(
+      locations.index.locations.map(async (location) => {
+        const path = locationRecordPath(location.id);
+        const content = locations.files.get(path);
+        if (content === undefined) {
+          throw new Error(`地点记录未进入目录快照：${path}`);
+        }
+        return [location.id, await hashSimulationSource(content)] as const;
+      }),
+    ),
+  );
+  const spatialTreeHash = await hashSimulationSource(
+    settings.spatialTreeContent,
+  );
   const settingMetaHash = await hashSimulationSource(settings.metaContent);
-  const settingsIndexHash = await hashSimulationSource(settings.settingsIndexContent);
+  const settingsIndexHash = await hashSimulationSource(
+    settings.settingsIndexContent,
+  );
   const narrativeHash = await hashSimulationSource(project.narrative.content);
-  const cultivationHash = cultivation ? await hashSimulationSource(cultivation.content) : "missing";
+  const narrativeFileHashes = new Map(
+    await Promise.all(
+      [...project.narrative.files.entries()].map(
+        async ([path, content]) =>
+          [path, await hashSimulationSource(content)] as const,
+      ),
+    ),
+  );
+  const locationHash = await hashSimulationSource(locations.content);
+  const cultivationHash = cultivation
+    ? await hashSimulationSource(cultivation.content)
+    : "missing";
   const itemMetaHash = await hashSimulationSource(items.metaContent);
   const itemIndexHash = await hashSimulationSource(items.indexContent);
   const mapIndexHash = await hashSimulationSource(maps.content);
 
-  const mainTimeline = getTimelineBranchEvents(timeline.library, MAIN_TIMELINE_BRANCH_ID).map((entry) => entry.event);
+  const mainTimeline = getTimelineBranchEvents(
+    timeline.library,
+    MAIN_TIMELINE_BRANCH_ID,
+  ).map((entry) => entry.event);
   const factsThroughIndex = timeline.library.factsThroughEventId
-    ? mainTimeline.findIndex((event) => event.id === timeline.library.factsThroughEventId)
+    ? mainTimeline.findIndex(
+        (event) => event.id === timeline.library.factsThroughEventId,
+      )
     : -1;
   if (factsThroughIndex < 0) {
     diagnostics.push({
       id: "timeline-facts-anchor-missing",
       severity: scenario.start.mode === "facts-anchor" ? "blocking" : "warning",
       title: "尚未设置事实截止点",
-      detail: scenario.start.mode === "facts-anchor"
-        ? "当前方案要求从事实终点开始，但时间线未设置 factsThroughEventId。请先锁定已发生事实，或改用自定义起点。"
-        : "时间线事件不会自动成为事实。当前使用自定义起点，推演不会把任何时间线事件当作既成事实。",
+      detail:
+        scenario.start.mode === "facts-anchor"
+          ? "当前方案要求从事实终点开始，但时间线未设置 factsThroughEventId。请先锁定已发生事实，或改用自定义起点。"
+          : "时间线事件不会自动成为事实。当前使用自定义起点，推演不会把任何时间线事件当作既成事实。",
       sourceRefs: [ref("timeline/index.json", timelineHash, "planned")],
     });
   }
 
   const selectedChapter = scenario.chapterContext.chapterId
-    ? project.chapters.find((chapter) => chapter.id === scenario.chapterContext.chapterId) ?? null
+    ? (project.chapters.find(
+        (chapter) => chapter.id === scenario.chapterContext.chapterId,
+      ) ?? null)
     : null;
   const chapterEvents = selectedChapter
-    ? mainTimeline.filter((event) => event.chapterIds.includes(selectedChapter.id))
+    ? mainTimeline.filter((event) =>
+        event.chapterIds.includes(selectedChapter.id),
+      )
     : [];
   const chapterActualEvents = chapterEvents.filter((event) => {
-    const index = mainTimeline.findIndex((candidate) => candidate.id === event.id);
+    const index = mainTimeline.findIndex(
+      (candidate) => candidate.id === event.id,
+    );
     return index >= 0 && index <= factsThroughIndex;
   });
 
   let effectiveFactsThroughIndex = factsThroughIndex;
-  let anchorSortKey = factsThroughIndex >= 0 ? mainTimeline[factsThroughIndex]!.worldSortKey ?? String(Math.trunc(mainTimeline[factsThroughIndex]!.sortKey)) : "0";
+  let anchorSortKey =
+    factsThroughIndex >= 0
+      ? (mainTimeline[factsThroughIndex]!.worldSortKey ??
+        String(Math.trunc(mainTimeline[factsThroughIndex]!.sortKey)))
+      : "0";
   if (scenario.chapterContext.mode !== "none") {
     if (!selectedChapter) {
       diagnostics.push({
@@ -274,13 +375,23 @@ export async function buildWorldSimulationBaseline(
         id: "chapter-timeline-unlinked",
         severity: "blocking",
         title: "章节没有已发生时间锚点",
-        detail: "章节上下文只能建立在已发生时间线事件上。请把章节关联到事实时间线，或关闭章节上下文后重新运行。",
-        sourceRefs: [ref(selectedChapter.path, await hashSimulationSource(selectedChapter.content), "planned", selectedChapter.id)],
+        detail:
+          "章节上下文只能建立在已发生时间线事件上。请把章节关联到事实时间线，或关闭章节上下文后重新运行。",
+        sourceRefs: [
+          ref(
+            selectedChapter.path,
+            await hashSimulationSource(selectedChapter.content),
+            "planned",
+            selectedChapter.id,
+          ),
+        ],
       });
     } else {
       const first = chapterActualEvents[0]!;
       const last = chapterActualEvents[chapterActualEvents.length - 1]!;
-      const firstIndex = mainTimeline.findIndex((event) => event.id === first.id);
+      const firstIndex = mainTimeline.findIndex(
+        (event) => event.id === first.id,
+      );
       const lastIndex = mainTimeline.findIndex((event) => event.id === last.id);
       if (
         scenario.chapterContext.mode === "before" ||
@@ -289,7 +400,9 @@ export async function buildWorldSimulationBaseline(
         // 重演与分支都必须固定章节开始前的世界状态；目标章节本身只能
         // 作为观察项或替代路径，不能被预先混入基线。
         effectiveFactsThroughIndex = Math.max(-1, firstIndex - 1);
-        anchorSortKey = (BigInt(first.worldSortKey ?? Math.trunc(first.sortKey)) - 1n).toString();
+        anchorSortKey = (
+          BigInt(first.worldSortKey ?? Math.trunc(first.sortKey)) - 1n
+        ).toString();
       } else {
         // 从章节后继续时，章节后的正式事实仍是未来资料，绝不能因为
         // 全局事实截止点更晚而泄漏到较早章节的沙盒状态中。
@@ -303,19 +416,33 @@ export async function buildWorldSimulationBaseline(
     const customSortKey = BigInt(scenario.start.sortKey);
     while (
       effectiveFactsThroughIndex >= 0 &&
-      BigInt(mainTimeline[effectiveFactsThroughIndex]!.worldSortKey ?? Math.trunc(mainTimeline[effectiveFactsThroughIndex]!.sortKey)) > customSortKey
+      BigInt(
+        mainTimeline[effectiveFactsThroughIndex]!.worldSortKey ??
+          Math.trunc(mainTimeline[effectiveFactsThroughIndex]!.sortKey),
+      ) > customSortKey
     ) {
       effectiveFactsThroughIndex -= 1;
     }
   }
 
-  const actualTimelineEvents = mainTimeline.slice(0, Math.max(0, effectiveFactsThroughIndex + 1));
-  const plannedTimelineEvents = mainTimeline.slice(Math.max(0, effectiveFactsThroughIndex + 1));
-  const timelineFacts = actualTimelineEvents.map((event) => timelineProjection(event, "actual", timelineHash, scenario.calendar));
-  const timelinePlans = plannedTimelineEvents.map((event) => timelineProjection(event, "planned", timelineHash, scenario.calendar));
+  const actualTimelineEvents = mainTimeline.slice(
+    0,
+    Math.max(0, effectiveFactsThroughIndex + 1),
+  );
+  const plannedTimelineEvents = mainTimeline.slice(
+    Math.max(0, effectiveFactsThroughIndex + 1),
+  );
+  const timelineFacts = actualTimelineEvents.map((event) =>
+    timelineProjection(event, "actual", timelineHash, scenario.calendar),
+  );
+  const timelinePlans = plannedTimelineEvents.map((event) =>
+    timelineProjection(event, "planned", timelineHash, scenario.calendar),
+  );
 
   const regionNodes = settings.spatialTree.nodes;
-  const locationByNodeId = new Map(locations.index.locations.map((location) => [location.nodeId, location]));
+  const locationByNodeId = new Map(
+    locations.index.locations.map((location) => [location.nodeId, location]),
+  );
   const settingContents = await Promise.all(
     settings.settingsIndex.settings.map(async (setting) => {
       const [page, entries] = await Promise.all([
@@ -447,11 +574,20 @@ export async function buildWorldSimulationBaseline(
       sourceRefs: [ref(mapRecordPath(entry.id), sourceHash, "canon", entry.id)],
     });
   });
-  const locationNodeById = new Map(locations.index.locations.map((location) => [location.id, location.nodeId]));
+  const locationNodeById = new Map(
+    locations.index.locations.map((location) => [location.id, location.nodeId]),
+  );
   const spatialConnections: SpatialConnection[] = [];
   regionNodes.forEach((node) => {
     if (!node.parentId) return;
-    const sourceRefs = [ref("world/setting-library/spatial-tree.json", spatialTreeHash, "canon", node.id)];
+    const sourceRefs = [
+      ref(
+        "world/setting-library/spatial-tree.json",
+        spatialTreeHash,
+        "canon",
+        node.id,
+      ),
+    ];
     spatialConnections.push({
       id: `containment-${node.parentId}-${node.id}`,
       fromRegionId: node.parentId,
@@ -467,24 +603,31 @@ export async function buildWorldSimulationBaseline(
   mapDocuments.forEach(({ loaded, sourceHash }) => {
     if (!loaded) return;
     const markers = loaded.map.features.flatMap((feature) => {
-      if (!feature.entityRef || feature.entityRef.kind !== "location") return [];
+      if (!feature.entityRef || feature.entityRef.kind !== "location")
+        return [];
       const regionId = locationNodeById.get(feature.entityRef.id);
       const point = feature.points[0];
-      return regionId && point ? [{ regionId, point, featureId: feature.id }] : [];
+      return regionId && point
+        ? [{ regionId, point, featureId: feature.id }]
+        : [];
     });
     markers.forEach((marker, index) => {
       const nearest = markers
         .filter((_, candidateIndex) => candidateIndex !== index)
         .map((candidate) => ({
           ...candidate,
-          distance: Math.hypot(candidate.point.x - marker.point.x, candidate.point.y - marker.point.y),
+          distance: Math.hypot(
+            candidate.point.x - marker.point.x,
+            candidate.point.y - marker.point.y,
+          ),
         }))
         .sort((left, right) => left.distance - right.distance)
         .slice(0, 2);
       nearest.forEach((candidate) => {
         const pair = [marker.regionId, candidate.regionId].sort();
         const id = `map-adjacent-${loaded.map.id}-${pair[0]}-${pair[1]}`;
-        if (spatialConnections.some((connection) => connection.id === id)) return;
+        if (spatialConnections.some((connection) => connection.id === id))
+          return;
         spatialConnections.push({
           id,
           fromRegionId: pair[0]!,
@@ -492,9 +635,20 @@ export async function buildWorldSimulationBaseline(
           kind: "adjacent",
           travelDays: String(Math.max(1, Math.round(candidate.distance / 80))),
           capacity: 60,
-          attenuation: Math.min(0.8, candidate.distance / Math.hypot(loaded.map.canvas.width, loaded.map.canvas.height)),
+          attenuation: Math.min(
+            0.8,
+            candidate.distance /
+              Math.hypot(loaded.map.canvas.width, loaded.map.canvas.height),
+          ),
           bidirectional: true,
-          sourceRefs: [ref(mapRecordPath(loaded.map.id), sourceHash, "canon", candidate.featureId)],
+          sourceRefs: [
+            ref(
+              mapRecordPath(loaded.map.id),
+              sourceHash,
+              "canon",
+              candidate.featureId,
+            ),
+          ],
         });
       });
     });
@@ -502,114 +656,182 @@ export async function buildWorldSimulationBaseline(
 
   const factionTerritories = new Map<string, string[]>();
   factions.library.factions.forEach((faction) => {
-    factionTerritories.set(faction.id, faction.territories.flatMap((territory) => territory.worldNodeId ? [territory.worldNodeId] : []));
+    factionTerritories.set(
+      faction.id,
+      faction.territories.flatMap((territory) =>
+        territory.worldNodeId ? [territory.worldNodeId] : [],
+      ),
+    );
   });
   const latestLocationByCharacter = new Map<string, string>();
   actualTimelineEvents.forEach((event) => {
     const locationId = event.locationIds[0];
     if (!locationId) return;
     const regionId = locationNodeById.get(locationId) ?? locationId;
-    event.characterIds.forEach((characterId) => latestLocationByCharacter.set(characterId, regionId));
+    event.characterIds.forEach((characterId) =>
+      latestLocationByCharacter.set(characterId, regionId),
+    );
   });
   const factionIdsByCharacter = new Map<string, string[]>();
-  factions.library.factions.forEach((faction) => faction.members.forEach((member) => {
-    if (!member.characterId) return;
-    factionIdsByCharacter.set(member.characterId, [...(factionIdsByCharacter.get(member.characterId) ?? []), faction.id]);
-  }));
+  factions.library.factions.forEach((faction) =>
+    faction.members.forEach((member) => {
+      if (!member.characterId) return;
+      factionIdsByCharacter.set(member.characterId, [
+        ...(factionIdsByCharacter.get(member.characterId) ?? []),
+        faction.id,
+      ]);
+    }),
+  );
 
   const systems = cultivation?.ecology.systems ?? [];
-  const levelById = new Map(systems.flatMap((system) => system.progressionTracks.flatMap((track) => track.levels.map((level) => [level.id, { level, track }] as const))));
-  const knowledgeByCharacter = new Map<string, CharacterProjection["knowledge"]>();
+  const levelById = new Map(
+    systems.flatMap((system) =>
+      system.progressionTracks.flatMap((track) =>
+        track.levels.map((level) => [level.id, { level, track }] as const),
+      ),
+    ),
+  );
+  const knowledgeByCharacter = new Map<
+    string,
+    CharacterProjection["knowledge"]
+  >();
   characterRecords.forEach((character) => {
     const knowledge = actualTimelineEvents.flatMap((event) => {
-      if (event.knowledgeScope !== "public" && !event.characterIds.includes(character.id)) return [];
-      return [{
-        id: `knowledge-${event.id}`,
-        statement: event.summary || event.title,
-        authority: "fact" as const,
-        confidence: event.knowledgeScope === "public" ? 0.9 : 1,
-        sourceEventId: event.id,
-      }];
+      if (
+        event.knowledgeScope !== "public" &&
+        !event.characterIds.includes(character.id)
+      )
+        return [];
+      return [
+        {
+          id: `knowledge-${event.id}`,
+          statement: event.summary || event.title,
+          authority: "fact" as const,
+          confidence: event.knowledgeScope === "public" ? 0.9 : 1,
+          sourceEventId: event.id,
+        },
+      ];
     });
     knowledgeByCharacter.set(character.id, knowledge);
   });
 
-  const characterProjections: CharacterProjection[] = characterRecords.map((character) => {
-    const level = character.cultivationProfile.levelId ? levelById.get(character.cultivationProfile.levelId) : undefined;
-    const locationId = latestLocationByCharacter.get(character.id) ?? inferLocationId(character.hometown, regionNodes) ?? null;
-    return {
-      id: character.id,
-      name: character.name,
-      summary: character.summary || character.background,
-      status: character.status,
-      locationId,
-      factionIds: factionIdsByCharacter.get(character.id) ?? [],
-      goals: compactText(character.goals),
-      personality: compactText(character.personality),
-      values: compactText(character.values),
-      strengths: compactText(character.strengths),
-      weaknesses: compactText(character.weaknesses),
-      fears: compactText(character.fears),
-      motivation: compactText(character.motivation),
-      innerConflict: compactText(character.innerConflict),
-      relations: character.relations.map((relation) => ({ ...relation })),
-      cultivation: {
-        systemId: character.cultivationProfile.systemId,
-        trackId: character.cultivationProfile.trackId,
-        levelId: character.cultivationProfile.levelId,
-        levelName: level?.level.name ?? character.currentRealm,
-        levelOrder: level?.level.order ?? 0,
-        methodIds: [...character.cultivationProfile.methodIds],
-        abilityIds: [...character.cultivationProfile.abilityIds],
-        resourceBalances: Object.fromEntries(Object.entries(character.cultivationProfile.resourceBalances).map(([id, value]) => [id, value.quantity])),
-        activeConstraintIds: [...character.cultivationProfile.activeConstraintIds],
-      },
-      ageYears: numericText(character.age),
-      lifespanYears: numericText(character.baseLifespan),
-      lifespanLossYears: numericText(character.lifespanLoss) ?? 0,
-      inventoryItemIds: character.inventory.flatMap((item) => item.itemId ? [item.itemId] : []),
-      knowledge: knowledgeByCharacter.get(character.id) ?? [],
-      sourceRefs: [ref("characters/index.json", characterHash, "canon", character.id, character.summary)],
-    };
-  });
+  const characterProjections: CharacterProjection[] = characterRecords.map(
+    (character) => {
+      const level = character.cultivationProfile.levelId
+        ? levelById.get(character.cultivationProfile.levelId)
+        : undefined;
+      const locationId =
+        latestLocationByCharacter.get(character.id) ??
+        inferLocationId(character.hometown, regionNodes) ??
+        null;
+      return {
+        id: character.id,
+        name: character.name,
+        summary: character.summary || character.background,
+        status: character.status,
+        locationId,
+        factionIds: factionIdsByCharacter.get(character.id) ?? [],
+        goals: compactText(character.goals),
+        personality: compactText(character.personality),
+        values: compactText(character.values),
+        strengths: compactText(character.strengths),
+        weaknesses: compactText(character.weaknesses),
+        fears: compactText(character.fears),
+        motivation: compactText(character.motivation),
+        innerConflict: compactText(character.innerConflict),
+        relations: character.relations.map((relation) => ({ ...relation })),
+        cultivation: {
+          systemId: character.cultivationProfile.systemId,
+          trackId: character.cultivationProfile.trackId,
+          levelId: character.cultivationProfile.levelId,
+          levelName: level?.level.name ?? character.currentRealm,
+          levelOrder: level?.level.order ?? 0,
+          methodIds: [...character.cultivationProfile.methodIds],
+          abilityIds: [...character.cultivationProfile.abilityIds],
+          resourceBalances: Object.fromEntries(
+            Object.entries(character.cultivationProfile.resourceBalances).map(
+              ([id, value]) => [id, value.quantity],
+            ),
+          ),
+          activeConstraintIds: [
+            ...character.cultivationProfile.activeConstraintIds,
+          ],
+        },
+        ageYears: numericText(character.age),
+        lifespanYears: numericText(character.baseLifespan),
+        lifespanLossYears: numericText(character.lifespanLoss) ?? 0,
+        inventoryItemIds: character.inventory.flatMap((item) =>
+          item.itemId ? [item.itemId] : [],
+        ),
+        knowledge: knowledgeByCharacter.get(character.id) ?? [],
+        sourceRefs: [
+          ref(
+            "characters/index.json",
+            characterHash,
+            "canon",
+            character.id,
+            character.summary,
+          ),
+        ],
+      };
+    },
+  );
 
-  const factionProjections: FactionProjection[] = factions.library.factions.map((faction) => {
-    const memberById = new Map(faction.members.map((member) => [member.id, member]));
-    const leaderCharacterIds = faction.organizationUnits.flatMap((unit) => {
-      const member = unit.leaderMemberId ? memberById.get(unit.leaderMemberId) : undefined;
-      return member?.characterId ? [member.characterId] : [];
-    });
-    return {
-      id: faction.id,
-      name: faction.name,
-      type: faction.type,
-      status: faction.status,
-      summary: faction.summary,
-      goals: compactText(`${faction.summary}\n${faction.state.governance}\n${faction.state.territorialIntegrity}`),
-      territoryIds: factionTerritories.get(faction.id) ?? [],
-      leaderCharacterIds: [...new Set(leaderCharacterIds)],
-      memberCharacterIds: faction.members.flatMap((member) => member.characterId ? [member.characterId] : []),
-      resources: faction.resources.map((resource) => ({
-        id: resource.id,
-        name: resource.name,
-        kind: resource.kind,
-        control: resource.control,
-        controlLevel: resource.controlLevel,
-        regionId: resource.worldNodeId,
-        itemId: resource.itemId,
-        competingFactionIds: [...resource.competingFactionIds],
-      })),
-      relations: faction.relations.map((relation) => ({
-        targetFactionId: relation.targetFactionId,
-        kind: relation.kind,
-        direction: relation.direction,
-        status: relation.status,
-        description: relation.description,
-      })),
-      stateText: { ...faction.state },
-      sourceRefs: [ref("world/factions/index.json", factionHash, "canon", faction.id, faction.summary)],
-    };
-  });
+  const factionProjections: FactionProjection[] = factions.library.factions.map(
+    (faction) => {
+      const memberById = new Map(
+        faction.members.map((member) => [member.id, member]),
+      );
+      const leaderCharacterIds = faction.organizationUnits.flatMap((unit) => {
+        const member = unit.leaderMemberId
+          ? memberById.get(unit.leaderMemberId)
+          : undefined;
+        return member?.characterId ? [member.characterId] : [];
+      });
+      return {
+        id: faction.id,
+        name: faction.name,
+        type: faction.type,
+        status: faction.status,
+        summary: faction.summary,
+        goals: compactText(
+          `${faction.summary}\n${faction.state.governance}\n${faction.state.territorialIntegrity}`,
+        ),
+        territoryIds: factionTerritories.get(faction.id) ?? [],
+        leaderCharacterIds: [...new Set(leaderCharacterIds)],
+        memberCharacterIds: faction.members.flatMap((member) =>
+          member.characterId ? [member.characterId] : [],
+        ),
+        resources: faction.resources.map((resource) => ({
+          id: resource.id,
+          name: resource.name,
+          kind: resource.kind,
+          control: resource.control,
+          controlLevel: resource.controlLevel,
+          regionId: resource.worldNodeId,
+          itemId: resource.itemId,
+          competingFactionIds: [...resource.competingFactionIds],
+        })),
+        relations: faction.relations.map((relation) => ({
+          targetFactionId: relation.targetFactionId,
+          kind: relation.kind,
+          direction: relation.direction,
+          status: relation.status,
+          description: relation.description,
+        })),
+        stateText: { ...faction.state },
+        sourceRefs: [
+          ref(
+            factionRecordPath(faction.id),
+            factionRecordHashes.get(faction.id) ?? factionHash,
+            "canon",
+            faction.id,
+            faction.summary,
+          ),
+        ],
+      };
+    },
+  );
 
   const loadedItems = await Promise.all(
     items.index.items.map(async (entry) => {
@@ -647,103 +869,170 @@ export async function buildWorldSimulationBaseline(
     });
   });
   const characterOwnerByItem = new Map<string, string>();
-  characterProjections.forEach((character) => character.inventoryItemIds.forEach((itemId) => characterOwnerByItem.set(itemId, character.id)));
+  characterProjections.forEach((character) =>
+    character.inventoryItemIds.forEach((itemId) =>
+      characterOwnerByItem.set(itemId, character.id),
+    ),
+  );
   const factionOwnerByItem = new Map<string, string>();
-  factionProjections.forEach((faction) => faction.resources.forEach((resource) => {
-    if (resource.itemId) factionOwnerByItem.set(resource.itemId, faction.id);
-  }));
+  factionProjections.forEach((faction) =>
+    faction.resources.forEach((resource) => {
+      if (resource.itemId) factionOwnerByItem.set(resource.itemId, faction.id);
+    }),
+  );
   const itemProjections: ItemProjection[] = loadedItems.flatMap(
     ({ entry, loaded, sourceHash }) => {
-    if (!loaded) return [];
-    const fieldLabels = new Map([
-      ...items.meta.fields.map((field) => [field.id, field.label] as const),
-      ...loaded.record.itemFields.map((field) => [field.id, field.label] as const),
-    ]);
-    const values = Object.entries(loaded.record.values).flatMap(([id, value]) => value === null || value === "" ? [] : [`${fieldLabels.get(id) ?? id}：${Array.isArray(value) ? value.join("、") : String(value)}`]);
-    const ownerCharacterId = characterOwnerByItem.get(entry.id) ?? null;
-    const ownerFactionId = factionOwnerByItem.get(entry.id) ?? null;
-    const locationId = Object.values(loaded.record.values).flatMap((value) => typeof value === "string" ? [value] : Array.isArray(value) ? value : []).find((value) => regionNodes.some((region) => region.id === value)) ?? null;
-    return [{
-      id: entry.id,
-      name: entry.name,
-      category: items.meta.categories.find((category) => category.id === entry.categoryId)?.name ?? entry.categoryId,
-      status: entry.status,
-      summary: entry.summary || loaded.record.summary,
-      ownerType: ownerCharacterId ? "character" : ownerFactionId ? "faction" : null,
-      ownerId: ownerCharacterId ?? ownerFactionId,
-      locationId,
-      capabilities: values,
-      sourceRefs: [
-        ref(entry.recordPath, sourceHash, "canon", entry.id, entry.summary),
-      ],
-    }];
+      if (!loaded) return [];
+      const fieldLabels = new Map([
+        ...items.meta.fields.map((field) => [field.id, field.label] as const),
+        ...loaded.record.itemFields.map(
+          (field) => [field.id, field.label] as const,
+        ),
+      ]);
+      const values = Object.entries(loaded.record.values).flatMap(
+        ([id, value]) =>
+          value === null || value === ""
+            ? []
+            : [
+                `${fieldLabels.get(id) ?? id}：${Array.isArray(value) ? value.join("、") : String(value)}`,
+              ],
+      );
+      const ownerCharacterId = characterOwnerByItem.get(entry.id) ?? null;
+      const ownerFactionId = factionOwnerByItem.get(entry.id) ?? null;
+      const locationId =
+        Object.values(loaded.record.values)
+          .flatMap((value) =>
+            typeof value === "string"
+              ? [value]
+              : Array.isArray(value)
+                ? value
+                : [],
+          )
+          .find((value) => regionNodes.some((region) => region.id === value)) ??
+        null;
+      return [
+        {
+          id: entry.id,
+          name: entry.name,
+          category:
+            items.meta.categories.find(
+              (category) => category.id === entry.categoryId,
+            )?.name ?? entry.categoryId,
+          status: entry.status,
+          summary: entry.summary || loaded.record.summary,
+          ownerType: ownerCharacterId
+            ? "character"
+            : ownerFactionId
+              ? "faction"
+              : null,
+          ownerId: ownerCharacterId ?? ownerFactionId,
+          locationId,
+          capabilities: values,
+          sourceRefs: [
+            ref(entry.recordPath, sourceHash, "canon", entry.id, entry.summary),
+          ],
+        },
+      ];
     },
   );
 
-  const cultivationSystems: CultivationSystemProjection[] = systems.map((system) => ({
-    id: system.id,
-    name: system.name,
-    kind: system.kind,
-    summary: system.summary,
-    levels: system.progressionTracks.flatMap((track) => track.levels.map((level) => ({
-      id: level.id,
-      name: level.name,
-      order: level.order,
-      trackId: track.id,
-      breakthroughConditions: [...level.breakthroughConditions],
-      resourceIds: level.resourceRequirements.map((requirement) => requirement.resourceId),
-    }))),
-    transitions: [...system.transitions, ...system.progressionTracks.flatMap((track) => track.transitions)].map((transition) => ({
-      id: transition.id,
-      fromLevelId: transition.fromLevelId,
-      toLevelId: transition.toLevelId,
-      type: transition.transitionType,
-      conditions: [...transition.conditions],
-      result: transition.successResult,
-    })),
-    hardConstraints: [
-      ...system.constraints.flatMap((constraint) => [
-        constraint.summary,
-        constraint.trigger ? `触发：${constraint.trigger}` : "",
-        constraint.consequence ? `后果：${constraint.consequence}` : "",
-      ].filter(Boolean)),
-      ...system.theoryModel.invariants,
-    ],
-    sourceRefs: [ref("world/cultivation-ecology.json", cultivationHash, "canon", system.id, system.summary)],
-  }));
+  const cultivationSystems: CultivationSystemProjection[] = systems.map(
+    (system) => ({
+      id: system.id,
+      name: system.name,
+      kind: system.kind,
+      summary: system.summary,
+      levels: system.progressionTracks.flatMap((track) =>
+        track.levels.map((level) => ({
+          id: level.id,
+          name: level.name,
+          order: level.order,
+          trackId: track.id,
+          breakthroughConditions: [...level.breakthroughConditions],
+          resourceIds: level.resourceRequirements.map(
+            (requirement) => requirement.resourceId,
+          ),
+        })),
+      ),
+      transitions: [
+        ...system.transitions,
+        ...system.progressionTracks.flatMap((track) => track.transitions),
+      ].map((transition) => ({
+        id: transition.id,
+        fromLevelId: transition.fromLevelId,
+        toLevelId: transition.toLevelId,
+        type: transition.transitionType,
+        conditions: [...transition.conditions],
+        result: transition.successResult,
+      })),
+      hardConstraints: [
+        ...system.constraints.flatMap((constraint) =>
+          [
+            constraint.summary,
+            constraint.trigger ? `触发：${constraint.trigger}` : "",
+            constraint.consequence ? `后果：${constraint.consequence}` : "",
+          ].filter(Boolean),
+        ),
+        ...system.theoryModel.invariants,
+      ],
+      sourceRefs: [
+        ref(
+          "world/cultivation/index.json",
+          cultivationHash,
+          "canon",
+          system.id,
+          system.summary,
+        ),
+      ],
+    }),
+  );
 
   const ruleProjections: RuleProjection[] = [];
   settingContents.forEach(
     ({ setting, pageContent, entriesText, pageHash, entriesHash }) => {
-    if (setting.status !== "completed") return;
-    if (!/法则|规则|时空|天道|限制/u.test(`${setting.name} ${setting.group}`)) return;
-    ruleProjections.push({
-      id: `setting-rule-${setting.id}`,
-      title: setting.name,
-      description: clip([pageContent, entriesText].filter(Boolean).join("\n"), 2_000),
-      severity: "hard",
-      regionId: setting.nodeId,
-      sourceRefs: [
-        ref(setting.pagePath, pageHash, "canon", setting.id, pageContent),
-        ref(setting.entriesPath, entriesHash, "canon", setting.id, entriesText),
-      ],
-    });
+      if (setting.status !== "completed") return;
+      if (!/法则|规则|时空|天道|限制/u.test(`${setting.name} ${setting.group}`))
+        return;
+      ruleProjections.push({
+        id: `setting-rule-${setting.id}`,
+        title: setting.name,
+        description: clip(
+          [pageContent, entriesText].filter(Boolean).join("\n"),
+          2_000,
+        ),
+        severity: "hard",
+        regionId: setting.nodeId,
+        sourceRefs: [
+          ref(setting.pagePath, pageHash, "canon", setting.id, pageContent),
+          ref(
+            setting.entriesPath,
+            entriesHash,
+            "canon",
+            setting.id,
+            entriesText,
+          ),
+        ],
+      });
     },
   );
-  cultivationSystems.forEach((system) => system.hardConstraints.forEach((constraint, index) => {
-    ruleProjections.push({
-      id: `cultivation-rule-${system.id}-${index + 1}`,
-      title: `${system.name}约束 ${index + 1}`,
-      description: constraint,
-      severity: "hard",
-      regionId: null,
-      sourceRefs: system.sourceRefs,
-    });
-  }));
+  cultivationSystems.forEach((system) =>
+    system.hardConstraints.forEach((constraint, index) => {
+      ruleProjections.push({
+        id: `cultivation-rule-${system.id}-${index + 1}`,
+        title: `${system.name}约束 ${index + 1}`,
+        description: constraint,
+        severity: "hard",
+        regionId: null,
+        sourceRefs: system.sourceRefs,
+      });
+    }),
+  );
 
   const regions: RegionProjection[] = regionNodes.map((node) => {
     const location = locationByNodeId.get(node.id);
-    const nodeSettings = settingContents.filter((entry) => entry.setting.nodeId === node.id);
+    const nodeSettings = settingContents.filter(
+      (entry) => entry.setting.nodeId === node.id,
+    );
     const pageText = nodeSettings
       .map((entry) =>
         clip(
@@ -752,22 +1041,92 @@ export async function buildWorldSimulationBaseline(
         ),
       )
       .filter(Boolean);
-    const rulerFactionIds = factionProjections.filter((faction) => faction.territoryIds.includes(node.id)).map((faction) => faction.id);
-    const activeFactionIds = factionProjections.filter((faction) => faction.territoryIds.includes(node.id) || faction.resources.some((resource) => resource.regionId === node.id)).map((faction) => faction.id);
-    const sourceRefs = [ref("world/setting-library/spatial-tree.json", spatialTreeHash, "canon", node.id), ...(location ? [ref("world/locations/index.json", locationHash, location.status === "appeared" ? "actual" : "planned", location.id, location.summary)] : []), ...nodeSettings.flatMap((entry) => [ref(entry.setting.pagePath, entry.pageHash, entry.setting.status === "completed" ? "canon" : "author-secret", entry.setting.id, entry.pageContent), ref(entry.setting.entriesPath, entry.entriesHash, entry.setting.status === "completed" ? "canon" : "author-secret", entry.setting.id, entry.entriesText)])];
+    const rulerFactionIds = factionProjections
+      .filter((faction) => faction.territoryIds.includes(node.id))
+      .map((faction) => faction.id);
+    const activeFactionIds = factionProjections
+      .filter(
+        (faction) =>
+          faction.territoryIds.includes(node.id) ||
+          faction.resources.some((resource) => resource.regionId === node.id),
+      )
+      .map((faction) => faction.id);
+    const sourceRefs = [
+      ref(
+        "world/setting-library/spatial-tree.json",
+        spatialTreeHash,
+        "canon",
+        node.id,
+      ),
+      ...(location
+        ? [
+            ref(
+              locationRecordPath(location.id),
+              locationRecordHashes.get(location.id) ?? "missing",
+              location.status === "appeared" ? "actual" : "planned",
+              location.id,
+              location.summary,
+            ),
+          ]
+        : []),
+      ...nodeSettings.flatMap((entry) => [
+        ref(
+          entry.setting.pagePath,
+          entry.pageHash,
+          entry.setting.status === "completed" ? "canon" : "author-secret",
+          entry.setting.id,
+          entry.pageContent,
+        ),
+        ref(
+          entry.setting.entriesPath,
+          entry.entriesHash,
+          entry.setting.status === "completed" ? "canon" : "author-secret",
+          entry.setting.id,
+          entry.entriesText,
+        ),
+      ]),
+    ];
     return {
       id: node.id,
       name: node.name,
-      type: settings.meta.levelTypes.find((type) => type.id === node.typeId)?.name ?? node.typeId,
+      type:
+        settings.meta.levelTypes.find((type) => type.id === node.typeId)
+          ?.name ?? node.typeId,
       parentId: node.parentId,
-      summary: clip([location?.summary, location?.description, ...pageText].filter(Boolean).join("\n"), 2_000),
+      summary: clip(
+        [location?.summary, location?.description, ...pageText]
+          .filter(Boolean)
+          .join("\n"),
+        2_000,
+      ),
       rulerFactionIds,
       activeFactionIds,
-      residentCharacterIds: characterProjections.filter((character) => character.locationId === node.id).map((character) => character.id),
-      itemIds: itemProjections.filter((item) => item.locationId === node.id).map((item) => item.id),
-      culture: nodeSettings.filter((entry) => /文化|信仰|制度|风俗/u.test(`${entry.setting.name} ${entry.setting.group}`)).map((entry) => clip([entry.pageContent, entry.entriesText].filter(Boolean).join("\n"), 300)),
-      rules: ruleProjections.filter((rule) => rule.regionId === node.id).map((rule) => rule.id),
-      connections: spatialConnections.filter((connection) => connection.fromRegionId === node.id || (connection.bidirectional && connection.toRegionId === node.id)),
+      residentCharacterIds: characterProjections
+        .filter((character) => character.locationId === node.id)
+        .map((character) => character.id),
+      itemIds: itemProjections
+        .filter((item) => item.locationId === node.id)
+        .map((item) => item.id),
+      culture: nodeSettings
+        .filter((entry) =>
+          /文化|信仰|制度|风俗/u.test(
+            `${entry.setting.name} ${entry.setting.group}`,
+          ),
+        )
+        .map((entry) =>
+          clip(
+            [entry.pageContent, entry.entriesText].filter(Boolean).join("\n"),
+            300,
+          ),
+        ),
+      rules: ruleProjections
+        .filter((rule) => rule.regionId === node.id)
+        .map((rule) => rule.id),
+      connections: spatialConnections.filter(
+        (connection) =>
+          connection.fromRegionId === node.id ||
+          (connection.bidirectional && connection.toRegionId === node.id),
+      ),
       sourceRefs: dedupeRefs(sourceRefs),
     };
   });
@@ -784,6 +1143,20 @@ export async function buildWorldSimulationBaseline(
     project.narrative.library.arcs.map((arc) => [arc.id, arc]),
   );
   const narrativeReferenceDiagnosticIds = new Set<string>();
+  const narrativeEntityRef = (
+    collection: "lines" | "arcs" | "directories" | "chapters",
+    id: string,
+    excerpt?: string,
+  ) => {
+    const path = narrativeRecordPath(collection, id);
+    return ref(
+      path,
+      narrativeFileHashes.get(path) ?? narrativeHash,
+      narrativeMode === "strict" ? "constraint" : "planned",
+      id,
+      excerpt,
+    );
+  };
   const warnNarrativeReference = (
     id: string,
     title: string,
@@ -860,7 +1233,10 @@ export async function buildWorldSimulationBaseline(
           );
           return;
         }
-        addCharacter(line.protagonistCharacterId, `故事弧“${arc.title}”关联的剧情线“${line.title}”`);
+        addCharacter(
+          line.protagonistCharacterId,
+          `故事弧“${arc.title}”关联的剧情线“${line.title}”`,
+        );
       });
     });
     return uniqueIds(entityIds);
@@ -915,18 +1291,28 @@ export async function buildWorldSimulationBaseline(
         scenario.narrativeContext.selectedPlotLineIds,
         "plot-line",
         "剧情线",
-      ).forEach((line) => narrativeConstraints.push({
-        id: `plot-line-${line.id}`,
-        kind: "plot-line",
-        title: line.title,
-        content: clip([line.premise, line.content, ...line.keyNodes.map((node) => `${node.title}：${node.content}`)].filter(Boolean).join("\n")),
-        mode: narrativeMode,
-        entityIds: resolveNarrativeEntityIds({
-          constraintId: `plot-line-${line.id}`,
-          characterIds: [line.protagonistCharacterId],
+      ).forEach((line) =>
+        narrativeConstraints.push({
+          id: `plot-line-${line.id}`,
+          kind: "plot-line",
+          title: line.title,
+          content: clip(
+            [
+              line.premise,
+              line.content,
+              ...line.keyNodes.map((node) => `${node.title}：${node.content}`),
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          ),
+          mode: narrativeMode,
+          entityIds: resolveNarrativeEntityIds({
+            constraintId: `plot-line-${line.id}`,
+            characterIds: [line.protagonistCharacterId],
+          }),
+          sourceRefs: [narrativeEntityRef("lines", line.id, line.content)],
         }),
-        sourceRefs: [ref("narrative/index.json", narrativeHash, narrativeMode === "strict" ? "constraint" : "planned", line.id, line.content)],
-      }));
+      );
     }
     if (scenario.narrativeContext.useStoryArcs) {
       selectedNarrative(
@@ -934,19 +1320,28 @@ export async function buildWorldSimulationBaseline(
         scenario.narrativeContext.selectedStoryArcIds,
         "story-arc",
         "故事弧",
-      ).forEach((arc) => narrativeConstraints.push({
-        id: `story-arc-${arc.id}`,
-        kind: "story-arc",
-        title: arc.title,
-        content: clip([arc.content, ...arc.keyNodes.map((node) => `${node.title}：${node.content}`)].filter(Boolean).join("\n")),
-        mode: narrativeMode,
-        entityIds: resolveNarrativeEntityIds({
-          constraintId: `story-arc-${arc.id}`,
-          characterIds: [arc.characterId],
-          lineIds: arc.lineIds,
+      ).forEach((arc) =>
+        narrativeConstraints.push({
+          id: `story-arc-${arc.id}`,
+          kind: "story-arc",
+          title: arc.title,
+          content: clip(
+            [
+              arc.content,
+              ...arc.keyNodes.map((node) => `${node.title}：${node.content}`),
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          ),
+          mode: narrativeMode,
+          entityIds: resolveNarrativeEntityIds({
+            constraintId: `story-arc-${arc.id}`,
+            characterIds: [arc.characterId],
+            lineIds: arc.lineIds,
+          }),
+          sourceRefs: [narrativeEntityRef("arcs", arc.id, arc.content)],
         }),
-        sourceRefs: [ref("narrative/index.json", narrativeHash, narrativeMode === "strict" ? "constraint" : "planned", arc.id, arc.content)],
-      }));
+      );
     }
     if (scenario.narrativeContext.useDirectoryOutline) {
       selectedNarrative(
@@ -967,7 +1362,10 @@ export async function buildWorldSimulationBaseline(
         }
         const entityIds = uniqueIds(
           project.narrative.library.chapters
-            .filter((chapter) => chapter.directoryId && directoryIds.has(chapter.directoryId))
+            .filter(
+              (chapter) =>
+                chapter.directoryId && directoryIds.has(chapter.directoryId),
+            )
             .flatMap((chapter) =>
               chapterPlanEntityIds(chapter, `outline-${directory.id}`),
             ),
@@ -979,7 +1377,13 @@ export async function buildWorldSimulationBaseline(
           content: directory.description,
           mode: narrativeMode,
           entityIds,
-          sourceRefs: [ref("narrative/index.json", narrativeHash, narrativeMode === "strict" ? "constraint" : "planned", directory.id, directory.description)],
+          sourceRefs: [
+            narrativeEntityRef(
+              "directories",
+              directory.id,
+              directory.description,
+            ),
+          ],
         });
       });
     }
@@ -989,34 +1393,90 @@ export async function buildWorldSimulationBaseline(
         scenario.narrativeContext.selectedChapterPlanIds,
         "chapter-plan",
         "章节计划",
-      ).forEach((chapter) => narrativeConstraints.push({
-        id: `chapter-plan-${chapter.id}`,
-        kind: "chapter-plan",
-        title: chapter.title,
-        content: clip([chapter.description, ...chapter.sections.map((section) => `${section.title}：${section.description}`)].filter(Boolean).join("\n")),
-        mode: narrativeMode,
-        entityIds: chapterPlanEntityIds(chapter, `chapter-plan-${chapter.id}`),
-        sourceRefs: [ref("narrative/index.json", narrativeHash, narrativeMode === "strict" ? "constraint" : "planned", chapter.id, chapter.description)],
-      }));
+      ).forEach((chapter) =>
+        narrativeConstraints.push({
+          id: `chapter-plan-${chapter.id}`,
+          kind: "chapter-plan",
+          title: chapter.title,
+          content: clip(
+            [
+              chapter.description,
+              ...chapter.sections.map(
+                (section) => `${section.title}：${section.description}`,
+              ),
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          ),
+          mode: narrativeMode,
+          entityIds: chapterPlanEntityIds(
+            chapter,
+            `chapter-plan-${chapter.id}`,
+          ),
+          sourceRefs: [
+            narrativeEntityRef("chapters", chapter.id, chapter.description),
+          ],
+        }),
+      );
     }
   }
 
-  const chapters: ChapterProjection[] = await Promise.all(project.chapters.map(async (chapter) => ({
-    id: chapter.id,
-    title: chapter.title,
-    displayNumber: chapter.displayNumber,
-    status: chapter.status,
-    content: scenario.chapterContext.chapterId === chapter.id ? clip(chapter.content, 12_000) : clip(chapter.content, 600),
-    narrativeChapterId: chapter.narrativeChapterId,
-    linkedTimelineEventIds: mainTimeline.filter((event) => event.chapterIds.includes(chapter.id)).map((event) => event.id),
-    sourceRefs: [ref(chapter.path, await hashSimulationSource(chapter.content), scenario.chapterContext.chapterId === chapter.id ? "constraint" : "planned", chapter.id, chapter.content)],
-  })));
+  const chapters: ChapterProjection[] = await Promise.all(
+    project.chapters.map(async (chapter) => ({
+      id: chapter.id,
+      title: chapter.title,
+      displayNumber: chapter.displayNumber,
+      status: chapter.status,
+      content:
+        scenario.chapterContext.chapterId === chapter.id
+          ? clip(chapter.content, 12_000)
+          : clip(chapter.content, 600),
+      narrativeChapterId: chapter.narrativeChapterId,
+      linkedTimelineEventIds: mainTimeline
+        .filter((event) => event.chapterIds.includes(chapter.id))
+        .map((event) => event.id),
+      sourceRefs: [
+        ref(
+          chapter.path,
+          await hashSimulationSource(chapter.content),
+          scenario.chapterContext.chapterId === chapter.id
+            ? "constraint"
+            : "planned",
+          chapter.id,
+          chapter.content,
+        ),
+      ],
+    })),
+  );
 
-  if (regions.length === 0) diagnostics.push({ id: "regions-empty", severity: "blocking", title: "没有可推演地域", detail: "请先在世界架构中建立至少一个空间节点。", sourceRefs: [] });
-  if (characterProjections.length === 0 && factionProjections.length === 0) diagnostics.push({ id: "actors-empty", severity: "warning", title: "没有人物或势力", detail: "世界过程仍可运行，但不会产生主体决策。", sourceRefs: [] });
-  if (!cultivation) diagnostics.push({ id: "cultivation-missing", severity: "info", title: "修炼体系未初始化", detail: "本次推演不会生成修炼突破和超凡寿命变化。", sourceRefs: [] });
+  if (regions.length === 0)
+    diagnostics.push({
+      id: "regions-empty",
+      severity: "blocking",
+      title: "没有可推演地域",
+      detail: "请先在世界架构中建立至少一个空间节点。",
+      sourceRefs: [],
+    });
+  if (characterProjections.length === 0 && factionProjections.length === 0)
+    diagnostics.push({
+      id: "actors-empty",
+      severity: "warning",
+      title: "没有人物或势力",
+      detail: "世界过程仍可运行，但不会产生主体决策。",
+      sourceRefs: [],
+    });
+  if (!cultivation)
+    diagnostics.push({
+      id: "cultivation-missing",
+      severity: "info",
+      title: "修炼体系未初始化",
+      detail: "本次推演不会生成修炼突破和超凡寿命变化。",
+      sourceRefs: [],
+    });
 
-  const projectedCharacters = new Map(characterProjections.map((character) => [character.id, character]));
+  const projectedCharacters = new Map(
+    characterProjections.map((character) => [character.id, character]),
+  );
   scenario.scope.characterIds.forEach((characterId) => {
     const character = projectedCharacters.get(characterId);
     if (!character) {
@@ -1043,13 +1503,16 @@ export async function buildWorldSimulationBaseline(
         id: `selected-character-location-missing-${character.id}`,
         severity: "blocking",
         title: `${character.name}缺少初始地点`,
-        detail: "人物没有可验证的起始地域，不能生成旅行、感知或地域行动。请在人物资料或事实时间线中补充地点。",
+        detail:
+          "人物没有可验证的起始地域，不能生成旅行、感知或地域行动。请在人物资料或事实时间线中补充地点。",
         sourceRefs: character.sourceRefs,
       });
     }
   });
 
-  const projectedFactions = new Map(factionProjections.map((faction) => [faction.id, faction]));
+  const projectedFactions = new Map(
+    factionProjections.map((faction) => [faction.id, faction]),
+  );
   scenario.scope.factionIds.forEach((factionId) => {
     if (projectedFactions.has(factionId)) return;
     diagnostics.push({
@@ -1061,7 +1524,9 @@ export async function buildWorldSimulationBaseline(
     });
   });
 
-  const projectedRegions = new Map(regions.map((region) => [region.id, region]));
+  const projectedRegions = new Map(
+    regions.map((region) => [region.id, region]),
+  );
   scenario.scope.regionIds.forEach((regionId) => {
     if (projectedRegions.has(regionId)) return;
     diagnostics.push({
@@ -1090,9 +1555,10 @@ export async function buildWorldSimulationBaseline(
   const eligibleFactions = factionProjections.filter((faction) => {
     if (/draft|archived|草稿|归档|dissolved|解散|灭亡/iu.test(faction.status))
       return false;
-    const isInScope = selectedFactionIds.size > 0
-      ? selectedFactionIds.has(faction.id)
-      : faction.territoryIds.some((id) => scopedRegionIds.has(id));
+    const isInScope =
+      selectedFactionIds.size > 0
+        ? selectedFactionIds.has(faction.id)
+        : faction.territoryIds.some((id) => scopedRegionIds.has(id));
     const hasTrigger =
       faction.relations.some(
         (relation) =>
@@ -1111,7 +1577,8 @@ export async function buildWorldSimulationBaseline(
       id: "actionable-subjects-missing",
       severity: "blocking",
       title: "没有可行动的推演主体",
-      detail: "当前范围内没有已启用且具备初始地点的人物，也没有带有明确冲突或资源争夺的势力。请补充人物地点、事实事件，或势力关系与资源后再创建运行。",
+      detail:
+        "当前范围内没有已启用且具备初始地点的人物，也没有带有明确冲突或资源争夺的势力。请补充人物地点、事实事件，或势力关系与资源后再创建运行。",
       sourceRefs: [
         ...characterProjections.flatMap((character) => character.sourceRefs),
         ...factionProjections.flatMap((faction) => faction.sourceRefs),
@@ -1124,7 +1591,12 @@ export async function buildWorldSimulationBaseline(
     ref("manuscript/index.json", chapterIndexHash, "canon"),
     ref("characters/index.json", characterHash, "canon"),
     ref("world/factions/index.json", factionHash, "canon"),
-    ref("timeline/index.json", timelineHash, timeline.library.factsThroughEventId ? "actual" : "planned"),
+    ref("world/locations/index.json", locationHash, "canon"),
+    ref(
+      "timeline/index.json",
+      timelineHash,
+      timeline.library.factsThroughEventId ? "actual" : "planned",
+    ),
     ref(SETTING_LIBRARY_PATHS.meta, settingMetaHash, "canon"),
     ref(SETTING_LIBRARY_PATHS.spatialTree, spatialTreeHash, "canon"),
     ref(SETTING_LIBRARY_PATHS.settings, settingsIndexHash, "canon"),
@@ -1142,11 +1614,17 @@ export async function buildWorldSimulationBaseline(
         entry.setting.id,
       ),
     ]),
-    ref("narrative/index.json", narrativeHash, narrativeMode === "strict" ? "constraint" : "planned"),
+    ref(
+      "narrative/index.json",
+      narrativeHash,
+      narrativeMode === "strict" ? "constraint" : "planned",
+    ),
     ref(ITEM_LIBRARY_PATHS.meta, itemMetaHash, "canon"),
     ref(ITEM_LIBRARY_PATHS.index, itemIndexHash, "canon"),
     ref(MAP_LIBRARY_PATH, mapIndexHash, "canon"),
-    ...(cultivation ? [ref("world/cultivation-ecology.json", cultivationHash, "canon")] : []),
+    ...(cultivation
+      ? [ref("world/cultivation/index.json", cultivationHash, "canon")]
+      : []),
     ...timelineFacts.flatMap((event) => event.sourceRefs),
     ...timelinePlans.flatMap((event) => event.sourceRefs),
     ...characterProjections.flatMap((character) => character.sourceRefs),
@@ -1162,14 +1640,21 @@ export async function buildWorldSimulationBaseline(
     ...chapters.flatMap((chapter) => chapter.sourceRefs),
     ...diagnostics.flatMap((diagnostic) => diagnostic.sourceRefs),
   ]);
-  const sourceRevision = await hashSimulationSource(sourceRefs.map((item) => `${item.path}:${item.sourceHash}:${item.authority}`).sort().join("\n"));
-  const baselineRevision = await hashSimulationSource([
-    sourceRevision,
-    `anchor:${anchorSortKey}`,
-    `facts-through:${effectiveFactsThroughIndex >= 0 ? mainTimeline[effectiveFactsThroughIndex]?.id ?? "none" : "none"}`,
-    `chapter:${scenario.chapterContext.mode}:${scenario.chapterContext.chapterId ?? "none"}`,
-    `start:${scenario.start.mode}:${scenario.start.sortKey}`,
-  ].join("\n"));
+  const sourceRevision = await hashSimulationSource(
+    sourceRefs
+      .map((item) => `${item.path}:${item.sourceHash}:${item.authority}`)
+      .sort()
+      .join("\n"),
+  );
+  const baselineRevision = await hashSimulationSource(
+    [
+      sourceRevision,
+      `anchor:${anchorSortKey}`,
+      `facts-through:${effectiveFactsThroughIndex >= 0 ? (mainTimeline[effectiveFactsThroughIndex]?.id ?? "none") : "none"}`,
+      `chapter:${scenario.chapterContext.mode}:${scenario.chapterContext.chapterId ?? "none"}`,
+      `start:${scenario.start.mode}:${scenario.start.sortKey}`,
+    ].join("\n"),
+  );
   const baselineId = `baseline-${baselineRevision.replace(/^[^:]+:/u, "").slice(0, 16)}`;
 
   return {
@@ -1180,7 +1665,10 @@ export async function buildWorldSimulationBaseline(
     sourceRevision,
     compiledAt: new Date().toISOString(),
     anchor: createWorldInstant(anchorSortKey, scenario.calendar),
-    factsThroughEventId: effectiveFactsThroughIndex >= 0 ? mainTimeline[effectiveFactsThroughIndex]?.id ?? null : null,
+    factsThroughEventId:
+      effectiveFactsThroughIndex >= 0
+        ? (mainTimeline[effectiveFactsThroughIndex]?.id ?? null)
+        : null,
     calendar: scenario.calendar,
     characters: characterProjections,
     factions: factionProjections,

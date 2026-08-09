@@ -6,6 +6,9 @@ import {
 } from "./settingLibraryRepository";
 import { createEmptyNovelStorage } from "./testStorage";
 import { createNovelWorldProposalRepository } from "./worldProposalRepository";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
+import { serializeLocationLibraryIndex } from "./modules/locations/entities/locationLibrarySchema";
+import { locationRecordPath } from "../../../shared/workbenches/novel/locationStorage";
 import {
   serializeWorldProposalManifest,
   worldProposalManifestPath,
@@ -72,6 +75,80 @@ async function seedTreeProposal() {
   return { storage, proposalId, targetPath, afterContent };
 }
 
+async function seedLocationProposal() {
+  const storage = createEmptyNovelStorage();
+  await createNovelSettingLibraryRepository(storage).load("测试小说");
+  const locationRepository = createNovelLocationLibraryRepository(storage);
+  let current = await locationRepository.load();
+  current = await locationRepository.save(current, {
+    ...current.index,
+    locations: [
+      {
+        id: "cloud-city",
+        nodeId: "world-root",
+        parentLocationId: null,
+        name: "云城",
+        aliases: [],
+        type: "城市",
+        status: "planned",
+        summary: "",
+        appearanceNote: "",
+        description: "旧描述",
+        order: 0,
+      },
+    ],
+  });
+  const proposalId = "update-cloud-city";
+  const targetPath = "world/locations/index.json";
+  const beforeContent = serializeLocationLibraryIndex(current.index);
+  const afterContent = serializeLocationLibraryIndex({
+    ...current.index,
+    locations: current.index.locations.map((location) => ({
+      ...location,
+      description: "新描述",
+    })),
+  });
+  const manifest: WorldProposalManifest = {
+    schemaVersion: 1,
+    proposalId,
+    title: "更新云城",
+    description: "补充地点描述",
+    createdAt: "2026-08-09T08:00:00.000Z",
+    source: {
+      kind: "agent",
+      promptId: "novel.world.guide",
+      promptVersion: "1.2.0",
+    },
+    changes: [
+      {
+        id: "update-location",
+        targetPath,
+        operation: "modify",
+        summary: "补充云城描述",
+        status: "pending",
+      },
+    ],
+  };
+  await Promise.all([
+    storage.createText(
+      worldProposalSnapshotPath(proposalId, "before", targetPath),
+      beforeContent,
+      { createParents: true },
+    ),
+    storage.createText(
+      worldProposalSnapshotPath(proposalId, "after", targetPath),
+      afterContent,
+      { createParents: true },
+    ),
+    storage.createText(
+      worldProposalManifestPath(proposalId),
+      serializeWorldProposalManifest(manifest),
+      { createParents: true },
+    ),
+  ]);
+  return { storage, proposalId, targetPath, beforeContent, afterContent };
+}
+
 function createExternalTreeContent(
   storage: ReturnType<typeof createEmptyNovelStorage>,
   targetPath: string,
@@ -108,6 +185,49 @@ function createExternalTreeContent(
 }
 
 describe("createNovelWorldProposalRepository", () => {
+  it("通过地点 Repository 应用逻辑快照并保留轻量根索引", async () => {
+    const { storage, proposalId, targetPath, afterContent } =
+      await seedLocationProposal();
+
+    const applied = await createNovelWorldProposalRepository(storage).apply(
+      proposalId,
+      ["update-location"],
+      "测试小说",
+    );
+    const physicalIndex = JSON.parse(storage.getText(targetPath) ?? "{}") as {
+      storageVersion?: number;
+      locations?: Array<{ id: string; path: string }>;
+    };
+    const record = JSON.parse(
+      storage.getText(locationRecordPath("cloud-city")) ?? "{}",
+    ) as { description?: string };
+
+    expect(physicalIndex.storageVersion).toBe(1);
+    expect(physicalIndex.locations).toEqual([
+      {
+        id: "cloud-city",
+        path: "world/locations/records/cloud-city.json",
+      },
+    ]);
+    expect(record.description).toBe("新描述");
+    expect(applied.changes[0]?.currentContent).toBe(afterContent);
+  });
+
+  it("地点提案审计写入失败时回滚整个地点目录", async () => {
+    const { storage, proposalId, beforeContent } = await seedLocationProposal();
+    storage.failWritePathOnce = worldProposalManifestPath(proposalId);
+
+    await expect(
+      createNovelWorldProposalRepository(storage).apply(
+        proposalId,
+        ["update-location"],
+        "测试小说",
+      ),
+    ).rejects.toThrow("Injected write failure");
+    const current = await createNovelLocationLibraryRepository(storage).load();
+    expect(serializeLocationLibraryIndex(current.index)).toBe(beforeContent);
+  });
+
   it("loads before/after snapshots and applies a selected validated change", async () => {
     const { storage, proposalId, targetPath, afterContent } =
       await seedTreeProposal();

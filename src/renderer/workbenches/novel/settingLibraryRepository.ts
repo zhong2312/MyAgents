@@ -3,8 +3,10 @@ import {
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import { parseFactionLibrary } from "./modules/factions/entities/factionLibrarySchema";
-import { parseLocationLibraryIndex } from "./locationLibrarySchema";
+import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
+import type { FactionLibrary } from "./modules/factions/entities/factionLibrarySchema";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
+import type { LocationLibraryIndex } from "./modules/locations/entities/locationLibrarySchema";
 import {
   createDefaultSettingLibraryMeta,
   createDefaultSettingLibraryTree,
@@ -241,8 +243,8 @@ function withSettingInstance(
 export function findSpatialNodeDeleteBlockers(
   library: LoadedSettingLibrary,
   nodeId: string,
-  locationContent: string | null,
-  factionContent: string | null,
+  locationLibrary: LocationLibraryIndex | null,
+  factionLibrary: FactionLibrary | null,
 ): readonly string[] {
   const blockers: string[] = [];
   const hasChildren = library.spatialTree.nodes.some(
@@ -259,36 +261,24 @@ export function findSpatialNodeDeleteBlockers(
       `该节点仍有 ${materialized.length} 个已落盘设定页面，请先删除这些页面`,
     );
   }
-  if (locationContent !== null) {
-    try {
-      const locationIndex = parseLocationLibraryIndex(locationContent);
-      const referenced = locationIndex.locations.filter(
-        (location) => location.nodeId === nodeId,
+  if (locationLibrary !== null) {
+    const referenced = locationLibrary.locations.filter(
+      (location) => location.nodeId === nodeId,
+    );
+    if (referenced.length > 0) {
+      blockers.push(
+        `地点库仍有 ${referenced.length} 个地点归属该节点（如“${referenced[0].name}”），请先转移或删除`,
       );
-      if (referenced.length > 0) {
-        blockers.push(
-          `地点库仍有 ${referenced.length} 个地点归属该节点（如“${referenced[0].name}”），请先转移或删除`,
-        );
-      }
-    } catch {
-      // 地点文件损坏时不额外阻止删除，避免设定库被其它库拖死
     }
   }
-  if (factionContent !== null) {
-    try {
-      const factionLibrary = parseFactionLibrary(factionContent);
-      const referenced = factionLibrary.factions.filter((faction) =>
-        faction.territories.some(
-          (territory) => territory.worldNodeId === nodeId,
-        ),
+  if (factionLibrary !== null) {
+    const referenced = factionLibrary.factions.filter((faction) =>
+      faction.territories.some((territory) => territory.worldNodeId === nodeId),
+    );
+    if (referenced.length > 0) {
+      blockers.push(
+        `势力库仍有 ${referenced.length} 个势力把该节点作为地盘（如“${referenced[0].name}”），请先在势力模块解除关联`,
       );
-      if (referenced.length > 0) {
-        blockers.push(
-          `势力库仍有 ${referenced.length} 个势力把该节点作为地盘（如“${referenced[0].name}”），请先在势力模块解除关联`,
-        );
-      }
-    } catch {
-      // 同上：势力文件损坏不阻止删除
     }
   }
   if (library.spatialTree.nodes.length <= 1) {
@@ -597,11 +587,16 @@ export function createNovelSettingLibraryRepository(
           (setting) => setting.id !== instance.id,
         ),
       };
-      const nextLibrary = await repository.saveSettingsIndex(library, nextIndex);
+      const nextLibrary = await repository.saveSettingsIndex(
+        library,
+        nextIndex,
+      );
       // 先写索引、后删文件：索引成功而文件残留只是孤儿文件（无害）；
       // 反过来会导致索引仍引用已删除文件，加载页面时失败。
       await Promise.all([
-        storage.remove(instance.pagePath, { permanent: true }).catch(() => false),
+        storage
+          .remove(instance.pagePath, { permanent: true })
+          .catch(() => false),
         storage
           .remove(instance.entriesPath, { permanent: true })
           .catch(() => false),
@@ -630,18 +625,24 @@ export function createNovelSettingLibraryRepository(
       if (!node) {
         throw new Error(`空间节点不存在：${nodeId}`);
       }
-      const [locationFile, factionFile] = await Promise.all([
-        storage.readText("world/locations/index.json").catch(() => null),
-        storage.readText("world/factions/index.json").catch(() => null),
+      const [locationLibrary, factionLibrary] = await Promise.all([
+        createNovelLocationLibraryRepository(storage)
+          .load()
+          .catch(() => null),
+        createNovelFactionLibraryRepository(storage)
+          .load()
+          .catch(() => null),
       ]);
       const blockers = findSpatialNodeDeleteBlockers(
         library,
         nodeId,
-        locationFile?.content ?? null,
-        factionFile?.content ?? null,
+        locationLibrary?.index ?? null,
+        factionLibrary?.library ?? null,
       );
       if (blockers.length > 0) {
-        throw new Error(`无法删除空间节点“${node.name}”：${blockers.join("；")}`);
+        throw new Error(
+          `无法删除空间节点“${node.name}”：${blockers.join("；")}`,
+        );
       }
       const nextTree: SettingLibrarySpatialTree = {
         ...library.spatialTree,

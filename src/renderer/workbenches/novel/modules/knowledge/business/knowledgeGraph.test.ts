@@ -81,9 +81,7 @@ function documents(): readonly KnowledgeDocument[] {
 describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
   it("indexes setting page headings with section body as description", () => {
     const snapshot = buildKnowledgeGraph(documents());
-    const headings = snapshot.nodes.filter(
-      (node) => node.kind === "heading",
-    );
+    const headings = snapshot.nodes.filter((node) => node.kind === "heading");
     expect(headings.some((node) => node.label === "宇宙总览")).toBe(true);
     const featureHeading = headings.find((node) => node.label === "核心特征");
     expect(featureHeading).toBeDefined();
@@ -123,9 +121,7 @@ describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
-          edge.kind === "parent" &&
-          edge.from === h1?.id &&
-          edge.to === h2?.id,
+          edge.kind === "parent" && edge.from === h1?.id && edge.to === h2?.id,
       ),
     ).toBe(true);
   });
@@ -162,9 +158,7 @@ describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
       (edge) => edge.kind === "mentions" && edge.to === character?.id,
     );
     expect(mentions.length).toBeGreaterThan(0);
-    const owner = snapshot.nodes.find(
-      (node) => node.id === mentions[0]?.from,
-    );
+    const owner = snapshot.nodes.find((node) => node.id === mentions[0]?.from);
     expect(owner?.label).toBe("核心特征");
   });
 
@@ -177,6 +171,122 @@ describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
     expect(
       snapshot.edges.some(
         (edge) => edge.kind === "mentions" && edge.to === legacy?.id,
+      ),
+    ).toBe(true);
+  });
+
+  it("indexes timeline directory records without treating manifest refs as entities", () => {
+    const timelineIndex: KnowledgeDocument = {
+      path: "timeline/index.json",
+      content: JSON.stringify({
+        schemaVersion: 1,
+        storageVersion: 1,
+        calendars: [],
+        periods: [],
+        views: [],
+        branches: [],
+        events: [
+          {
+            id: "event-awakening",
+            path: "timeline/events/records/event-awakening.json",
+          },
+        ],
+      }),
+      lineCount: 1,
+    };
+    const eventRecord: KnowledgeDocument = {
+      path: "timeline/events/records/event-awakening.json",
+      content: JSON.stringify({
+        id: "event-awakening",
+        title: "天裂之夜",
+        summary: "灵潮第一次席卷东界。",
+      }),
+      lineCount: 1,
+    };
+    const mention: KnowledgeDocument = {
+      path: "research/timeline-note.md",
+      content: "# 时间线线索\n\n[[event:event-awakening|天裂之夜]]",
+      lineCount: 3,
+    };
+
+    const snapshot = buildKnowledgeGraph([
+      ...documents(),
+      timelineIndex,
+      eventRecord,
+      mention,
+    ]);
+    const event = snapshot.nodes.find(
+      (node) => node.id === "entity:timeline/index.json:event-awakening",
+    );
+
+    expect(event).toMatchObject({
+      label: "天裂之夜",
+      description: "灵潮第一次席卷东界。",
+      sourceRefs: [{ path: "timeline/events/records/event-awakening.json" }],
+    });
+    expect(
+      snapshot.edges.some(
+        (edge) => edge.kind === "mentions" && edge.to === event?.id,
+      ),
+    ).toBe(true);
+  });
+
+  it("indexes faction directory records without treating manifest refs as entities", () => {
+    const factionIndex: KnowledgeDocument = {
+      path: "world/factions/index.json",
+      content: JSON.stringify({
+        schemaVersion: 2,
+        storageVersion: 1,
+        factions: [
+          {
+            id: "faction-cloud-sect",
+            path: "world/factions/records/faction-cloud-sect.json",
+          },
+        ],
+      }),
+      lineCount: 1,
+    };
+    const factionRecord: KnowledgeDocument = {
+      path: "world/factions/records/faction-cloud-sect.json",
+      content: JSON.stringify({
+        id: "faction-cloud-sect",
+        name: "青云宗",
+        summary: "坐镇东玄大陆的剑修宗门。",
+      }),
+      lineCount: 1,
+    };
+    const mention: KnowledgeDocument = {
+      path: "research/faction-note.md",
+      content: "# 势力线索\n\n[[faction:faction-cloud-sect|青云宗]]",
+      lineCount: 3,
+    };
+
+    const snapshot = buildKnowledgeGraph([
+      ...documents(),
+      factionIndex,
+      factionRecord,
+      mention,
+    ]);
+    const faction = snapshot.nodes.find(
+      (node) =>
+        node.id === "entity:world/factions/index.json:faction-cloud-sect",
+    );
+
+    expect(faction).toMatchObject({
+      label: "青云宗",
+      description: "坐镇东玄大陆的剑修宗门。",
+      sourceRefs: [{ path: "world/factions/records/faction-cloud-sect.json" }],
+    });
+    expect(
+      snapshot.nodes.some(
+        (node) =>
+          node.id === "entity:world/factions/index.json:faction-cloud-sect" &&
+          node.label === "faction-cloud-sect",
+      ),
+    ).toBe(false);
+    expect(
+      snapshot.edges.some(
+        (edge) => edge.kind === "mentions" && edge.to === faction?.id,
       ),
     ).toBe(true);
   });

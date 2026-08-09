@@ -35,6 +35,18 @@ describe('normalizeSessionMessageContent', () => {
         expect(normalizeSessionMessageContent(unknown)).toBe(unknown);
         expect(normalizeSessionMessageContent([{ type: 'thinking' }])).toBe('[{"type":"thinking"}]');
     });
+
+    it('caps oversized persisted tool results before they enter renderer state', () => {
+        const content = 'A'.repeat(10 * 1024);
+        const normalized = normalizeSessionMessageContent([{
+            type: 'tool_use' as const,
+            tool: { id: 'tool-1', name: 'Read', input: {}, result: content },
+        }]);
+        expect(Array.isArray(normalized)).toBe(true);
+        const tool = (normalized as Array<{ tool?: { result?: string } }>)[0].tool;
+        expect(tool?.result?.length).toBeLessThanOrEqual(8 * 1024);
+        expect(tool?.result).toContain('truncated for display');
+    });
 });
 
 describe('isRestoredSession', () => {

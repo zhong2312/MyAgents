@@ -158,6 +158,7 @@ import {
   collectCultivationSystemAssetIds as collectSystemAssetIds,
   rebuildCultivationAudits,
 } from "./cultivationEcologyAudit";
+import { mergeCultivationAiPatch } from "./cultivationAiPatch";
 
 import "@xyflow/react/dist/style.css";
 import "./CultivationEcologyWorkbench.css";
@@ -1971,47 +1972,7 @@ export default function CultivationEcologyWorkbench({
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
         throw new Error("AI 完善结果必须是 JSON 对象");
       const patchValue = parsed as Record<string, unknown>;
-      const merge = (
-        base: Record<string, unknown>,
-        patch: Record<string, unknown>,
-      ): Record<string, unknown> => {
-        const next = { ...base };
-        for (const [key, value] of Object.entries(patch)) {
-          if (
-            !(key in base) ||
-            key === "id" ||
-            key === "name" ||
-            key === "audit" ||
-            key === "schemaVersion" ||
-            key === "updatedAt" ||
-            Array.isArray(value)
-          )
-            continue;
-          if (
-            value &&
-            typeof value === "object" &&
-            !Array.isArray(value) &&
-            base[key] &&
-            typeof base[key] === "object" &&
-            !Array.isArray(base[key])
-          ) {
-            next[key] = merge(
-              base[key] as Record<string, unknown>,
-              value as Record<string, unknown>,
-            );
-          } else if (
-            value !== null &&
-            value !== undefined &&
-            base[key] !== null &&
-            typeof value === typeof base[key] &&
-            (typeof value !== "string" || value.trim())
-          ) {
-            next[key] = value;
-          }
-        }
-        return next;
-      };
-      const merged = merge(target.value, patchValue);
+      const merged = mergeCultivationAiPatch(target.value, patchValue);
       if (JSON.stringify(merged) === JSON.stringify(target.value))
         throw new Error("AI 没有返回可应用的字段补全");
       // 过 zod 校验：拒绝 AI 引入的非法枚举、越界数值或结构错误，

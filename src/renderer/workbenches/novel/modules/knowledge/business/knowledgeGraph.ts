@@ -1,5 +1,9 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
+import { TIMELINE_INDEX_PATH } from "../../../../../../shared/workbenches/novel/timelineStorage";
+import { FACTION_INDEX_PATH } from "../../../../../../shared/workbenches/novel/factionStorage";
+import { LOCATION_INDEX_PATH } from "../../../../../../shared/workbenches/novel/locationStorage";
+
 export type KnowledgeNodeKind =
   | "entity"
   | "setting"
@@ -77,6 +81,12 @@ const IGNORED_PREFIXES = [
   "prompts/",
   "world/setting-library/proposals/",
 ];
+const TIMELINE_RECORD_PATH_PATTERN =
+  /^timeline\/(?:calendars|periods|views|branches|events)\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
+const FACTION_RECORD_PATH_PATTERN =
+  /^world\/factions\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
+const LOCATION_RECORD_PATH_PATTERN =
+  /^world\/locations\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
 
 function normalize(value: string): string {
   return value.trim().toLocaleLowerCase("zh-CN");
@@ -125,13 +135,25 @@ function lineAt(content: string, index: number): number {
   return content.slice(0, index).split("\n").length;
 }
 
-function sourceSnippet(document: KnowledgeDocument, source: KnowledgeSourceRef, fallback: string): string {
+function sourceSnippet(
+  document: KnowledgeDocument,
+  source: KnowledgeSourceRef,
+  fallback: string,
+): string {
   if (!source.line) return fallback;
   const lines = document.content.split("\n");
-  return lines.slice(Math.max(0, source.line - 1), source.endLine ?? source.line + 1).join(" ").trim() || fallback;
+  return (
+    lines
+      .slice(Math.max(0, source.line - 1), source.endLine ?? source.line + 1)
+      .join(" ")
+      .trim() || fallback
+  );
 }
 
-async function listFiles(storage: WorkbenchStorage, directory = ""): Promise<readonly string[]> {
+async function listFiles(
+  storage: WorkbenchStorage,
+  directory = "",
+): Promise<readonly string[]> {
   const entries = await storage.list(directory);
   const paths: string[] = [];
   for (const entry of entries) {
@@ -156,11 +178,13 @@ export async function readKnowledgeDocuments(
   for (const path of paths) {
     try {
       const file = await storage.readText(path);
-      documents.push(Object.freeze({
-        path,
-        content: file.content,
-        lineCount: file.content.split("\n").length,
-      }));
+      documents.push(
+        Object.freeze({
+          path,
+          content: file.content,
+          lineCount: file.content.split("\n").length,
+        }),
+      );
     } catch {
       // A file can disappear between list and read; the next build will retry it.
     }
@@ -186,7 +210,10 @@ export function buildKnowledgeGraph(
       if (path === "knowledge/relations.json") return 5;
       return 10;
     };
-    return priority(left.path) - priority(right.path) || left.path.localeCompare(right.path);
+    return (
+      priority(left.path) - priority(right.path) ||
+      left.path.localeCompare(right.path)
+    );
   });
 
   const addNode = (node: KnowledgeNode): string => {
@@ -194,21 +221,30 @@ export function buildKnowledgeGraph(
     if (existing) {
       const aliases = [...new Set([...existing.aliases, ...node.aliases])];
       const sourceRefs = [...existing.sourceRefs, ...node.sourceRefs].filter(
-        (source, index, refs) => refs.findIndex((item) => JSON.stringify(item) === JSON.stringify(source)) === index,
+        (source, index, refs) =>
+          refs.findIndex(
+            (item) => JSON.stringify(item) === JSON.stringify(source),
+          ) === index,
       );
-      nodes.set(node.id, Object.freeze({
-        ...existing,
-        description: existing.description || node.description,
-        aliases: Object.freeze(aliases),
-        sourceRefs: Object.freeze(sourceRefs),
-      }));
+      nodes.set(
+        node.id,
+        Object.freeze({
+          ...existing,
+          description: existing.description || node.description,
+          aliases: Object.freeze(aliases),
+          sourceRefs: Object.freeze(sourceRefs),
+        }),
+      );
       return node.id;
     }
-    nodes.set(node.id, Object.freeze({
-      ...node,
-      aliases: Object.freeze([...new Set(node.aliases)]),
-      sourceRefs: Object.freeze(node.sourceRefs),
-    }));
+    nodes.set(
+      node.id,
+      Object.freeze({
+        ...node,
+        aliases: Object.freeze([...new Set(node.aliases)]),
+        sourceRefs: Object.freeze(node.sourceRefs),
+      }),
+    );
     idByLabel.set(normalize(node.label), node.id);
     for (const alias of node.aliases) idAliases.set(normalize(alias), node.id);
     return node.id;
@@ -216,17 +252,26 @@ export function buildKnowledgeGraph(
 
   const resolveId = (value: string | undefined): string | undefined => {
     if (!value) return undefined;
-    return nodes.has(value) ? value : idByLabel.get(normalize(value)) ?? idAliases.get(normalize(value));
+    return nodes.has(value)
+      ? value
+      : (idByLabel.get(normalize(value)) ?? idAliases.get(normalize(value)));
   };
 
   const addEdge = (edge: KnowledgeEdge): void => {
-    if (edge.from === edge.to || !nodes.has(edge.from) || !nodes.has(edge.to)) return;
+    if (edge.from === edge.to || !nodes.has(edge.from) || !nodes.has(edge.to))
+      return;
     const existing = edges.get(edge.id);
     if (existing) {
-      edges.set(edge.id, Object.freeze({
-        ...existing,
-        sourceRefs: Object.freeze([...existing.sourceRefs, ...edge.sourceRefs]),
-      }));
+      edges.set(
+        edge.id,
+        Object.freeze({
+          ...existing,
+          sourceRefs: Object.freeze([
+            ...existing.sourceRefs,
+            ...edge.sourceRefs,
+          ]),
+        }),
+      );
       return;
     }
     edges.set(edge.id, Object.freeze(edge));
@@ -258,7 +303,12 @@ export function buildKnowledgeGraph(
       readonly line: number;
       readonly label: string;
     }[] = (() => {
-      const collected: { level: number; index: number; line: number; label: string }[] = [];
+      const collected: {
+        level: number;
+        index: number;
+        line: number;
+        label: string;
+      }[] = [];
       let match: RegExpExecArray | null;
       while ((match = headingPattern.exec(document.content))) {
         collected.push({
@@ -300,7 +350,8 @@ export function buildKnowledgeGraph(
       }
       headingStack.push({ level: heading.level, id });
       const lineEnd = document.content.indexOf("\n", heading.index);
-      const sectionStart = lineEnd === -1 ? document.content.length : lineEnd + 1;
+      const sectionStart =
+        lineEnd === -1 ? document.content.length : lineEnd + 1;
       const nextIndex =
         index + 1 < headingMatches.length
           ? headingMatches[index + 1].index
@@ -317,9 +368,80 @@ export function buildKnowledgeGraph(
       }
     }
 
-    const parsed = document.path.endsWith(".json") ? safeJson(document.content) : undefined;
+    const parsed = document.path.endsWith(".json")
+      ? safeJson(document.content)
+      : undefined;
     const root = asRecord(parsed);
     if (!root) continue;
+    const isTimelineRecord = TIMELINE_RECORD_PATH_PATTERN.test(document.path);
+    const isFactionRecord = FACTION_RECORD_PATH_PATTERN.test(document.path);
+    const isLocationRecord = LOCATION_RECORD_PATH_PATTERN.test(document.path);
+
+    if (isTimelineRecord) {
+      const idValue = recordValue(root, ["id"]);
+      const label = recordValue(root, ["name", "title", "label"]) ?? idValue;
+      if (idValue && label) {
+        const nodeId = addNode({
+          id: `entity:${TIMELINE_INDEX_PATH}:${idValue}`,
+          label,
+          kind: "entity",
+          description:
+            recordValue(root, ["description", "summary", "definition"]) ??
+            "时间线记录",
+          aliases: Array.isArray(root.aliases)
+            ? root.aliases.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [],
+          sourceRefs: [{ path: document.path }],
+        });
+        idByLabel.set(normalize(idValue), nodeId);
+      }
+    }
+
+    if (isFactionRecord) {
+      const idValue = recordValue(root, ["id"]);
+      const label = recordValue(root, ["name", "title", "label"]) ?? idValue;
+      if (idValue && label) {
+        const nodeId = addNode({
+          id: `entity:${FACTION_INDEX_PATH}:${idValue}`,
+          label,
+          kind: "entity",
+          description:
+            recordValue(root, ["description", "summary", "definition"]) ??
+            "势力记录",
+          aliases: Array.isArray(root.aliases)
+            ? root.aliases.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [],
+          sourceRefs: [{ path: document.path }],
+        });
+        idByLabel.set(normalize(idValue), nodeId);
+      }
+    }
+
+    if (isLocationRecord) {
+      const idValue = recordValue(root, ["id"]);
+      const label = recordValue(root, ["name", "title", "label"]) ?? idValue;
+      if (idValue && label) {
+        const nodeId = addNode({
+          id: `entity:${LOCATION_INDEX_PATH}:${idValue}`,
+          label,
+          kind: "entity",
+          description:
+            recordValue(root, ["description", "summary", "definition"]) ??
+            "地点记录",
+          aliases: Array.isArray(root.aliases)
+            ? root.aliases.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [],
+          sourceRefs: [{ path: document.path }],
+        });
+        idByLabel.set(normalize(idValue), nodeId);
+      }
+    }
 
     if (document.path === "world/setting-library/spatial-tree.json") {
       for (const [index, item] of asRecords(root.nodes).entries()) {
@@ -332,21 +454,26 @@ export function buildKnowledgeGraph(
           kind: "entity",
           description: recordValue(item, ["typeId"]) ?? "空间节点",
           aliases: [],
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "nodes") }],
+          sourceRefs: [
+            { path: document.path, jsonPointer: pointerFor(index, "nodes") },
+          ],
         });
       }
       for (const item of asRecords(root.nodes)) {
         const child = resolveId(`space:${recordValue(item, ["id"])}`);
         const parentValue = recordValue(item, ["parentId"]);
-        const parent = parentValue ? resolveId(`space:${parentValue}`) : undefined;
-        if (child && parent) addEdge({
-          id: `parent:${parent}:${child}`,
-          from: parent,
-          to: child,
-          label: "包含",
-          kind: "parent",
-          sourceRefs: [{ path: document.path }],
-        });
+        const parent = parentValue
+          ? resolveId(`space:${parentValue}`)
+          : undefined;
+        if (child && parent)
+          addEdge({
+            id: `parent:${parent}:${child}`,
+            from: parent,
+            to: child,
+            label: "包含",
+            kind: "parent",
+            sourceRefs: [{ path: document.path }],
+          });
       }
     }
 
@@ -361,50 +488,82 @@ export function buildKnowledgeGraph(
           kind: "setting",
           description: recordValue(item, ["group", "status"]) ?? "设定页面",
           aliases: [],
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "settings") }],
+          sourceRefs: [
+            { path: document.path, jsonPointer: pointerFor(index, "settings") },
+          ],
         });
         const space = resolveId(`space:${recordValue(item, ["nodeId"])}`);
-        if (space) addEdge({
-          id: `contains:${space}:setting:${idValue}`,
-          from: space,
-          to: `setting:${idValue}`,
-          label: "包含设定",
-          kind: "contains",
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "settings") }],
-        });
+        if (space)
+          addEdge({
+            id: `contains:${space}:setting:${idValue}`,
+            from: space,
+            to: `setting:${idValue}`,
+            label: "包含设定",
+            kind: "contains",
+            sourceRefs: [
+              {
+                path: document.path,
+                jsonPointer: pointerFor(index, "settings"),
+              },
+            ],
+          });
       }
     }
 
-    if (document.path.startsWith("world/setting-library/entries/") && document.path.endsWith(".json")) {
-      const settingId = document.path.split("/").at(-1)?.replace(/\.json$/u, "");
+    if (
+      document.path.startsWith("world/setting-library/entries/") &&
+      document.path.endsWith(".json")
+    ) {
+      const settingId = document.path
+        .split("/")
+        .at(-1)
+        ?.replace(/\.json$/u, "");
       const setting = settingId ? resolveId(`setting:${settingId}`) : undefined;
       for (const [index, item] of asRecords(root.entries).entries()) {
-        const idValue = recordValue(item, ["id"]) ?? `${settingId ?? "entry"}-${index}`;
+        const idValue =
+          recordValue(item, ["id"]) ?? `${settingId ?? "entry"}-${index}`;
         const name = recordValue(item, ["name", "title"]) ?? idValue;
-        const definition = recordValue(item, ["definition", "description"]) ?? "设定词条";
+        const definition =
+          recordValue(item, ["definition", "description"]) ?? "设定词条";
         const nodeId = addNode({
           id: `entry:${document.path}:${idValue}`,
           label: name,
           kind: "entry",
           description: definition,
-          aliases: Array.isArray(item.aliases) ? item.aliases.filter((value): value is string => typeof value === "string") : [],
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "entries") }],
+          aliases: Array.isArray(item.aliases)
+            ? item.aliases.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [],
+          sourceRefs: [
+            { path: document.path, jsonPointer: pointerFor(index, "entries") },
+          ],
         });
-        if (setting) addEdge({
-          id: `defined-in:${nodeId}:${setting}`,
-          from: nodeId,
-          to: setting,
-          label: "属于设定",
-          kind: "defined-in",
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "entries") }],
-        });
+        if (setting)
+          addEdge({
+            id: `defined-in:${nodeId}:${setting}`,
+            from: nodeId,
+            to: setting,
+            label: "属于设定",
+            kind: "defined-in",
+            sourceRefs: [
+              {
+                path: document.path,
+                jsonPointer: pointerFor(index, "entries"),
+              },
+            ],
+          });
       }
     }
 
     if (document.path === "knowledge/relations.json") {
       for (const [index, item] of asRecords(root.relations).entries()) {
-        const from = resolveId(recordValue(item, ["from", "fromId", "source", "sourceId"]));
-        const to = resolveId(recordValue(item, ["to", "toId", "target", "targetId"]));
+        const from = resolveId(
+          recordValue(item, ["from", "fromId", "source", "sourceId"]),
+        );
+        const to = resolveId(
+          recordValue(item, ["to", "toId", "target", "targetId"]),
+        );
         if (!from || !to) continue;
         addEdge({
           id: `relation:${from}:${to}:${index}`,
@@ -412,7 +571,12 @@ export function buildKnowledgeGraph(
           to,
           label: recordValue(item, ["type", "label", "relation"]) ?? "相关",
           kind: "relation",
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "relations") }],
+          sourceRefs: [
+            {
+              path: document.path,
+              jsonPointer: pointerFor(index, "relations"),
+            },
+          ],
         });
       }
     }
@@ -425,9 +589,17 @@ export function buildKnowledgeGraph(
           id: `entity:${idValue}`,
           label,
           kind: "entity",
-          description: recordValue(item, ["description", "definition", "summary"]) ?? "知识实体",
-          aliases: Array.isArray(item.aliases) ? item.aliases.filter((value): value is string => typeof value === "string") : [],
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "entities") }],
+          description:
+            recordValue(item, ["description", "definition", "summary"]) ??
+            "知识实体",
+          aliases: Array.isArray(item.aliases)
+            ? item.aliases.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [],
+          sourceRefs: [
+            { path: document.path, jsonPointer: pointerFor(index, "entities") },
+          ],
         });
         idByLabel.set(normalize(idValue), nodeId);
       }
@@ -436,33 +608,61 @@ export function buildKnowledgeGraph(
     if (document.path === "knowledge/facts.json") {
       for (const [index, item] of asRecords(root.facts).entries()) {
         const idValue = recordValue(item, ["id"]) ?? `fact-${index}`;
-        const label = recordValue(item, ["name", "title", "subject"]) ?? idValue;
+        const label =
+          recordValue(item, ["name", "title", "subject"]) ?? idValue;
         addNode({
           id: `fact:${idValue}`,
           label,
           kind: "fact",
-          description: recordValue(item, ["content", "definition", "description"]) ?? "知识事实",
+          description:
+            recordValue(item, ["content", "definition", "description"]) ??
+            "知识事实",
           aliases: [],
-          sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, "facts") }],
+          sourceRefs: [
+            { path: document.path, jsonPointer: pointerFor(index, "facts") },
+          ],
         });
       }
     }
 
-    if (document.path !== "world/setting-library/settings.json" && document.path !== "world/setting-library/spatial-tree.json" && !document.path.startsWith("world/setting-library/entries/") && !document.path.startsWith("knowledge/")) {
+    if (
+      document.path !== TIMELINE_INDEX_PATH &&
+      !isTimelineRecord &&
+      document.path !== FACTION_INDEX_PATH &&
+      !isFactionRecord &&
+      document.path !== LOCATION_INDEX_PATH &&
+      !isLocationRecord &&
+      document.path !== "world/setting-library/settings.json" &&
+      document.path !== "world/setting-library/spatial-tree.json" &&
+      !document.path.startsWith("world/setting-library/entries/") &&
+      !document.path.startsWith("knowledge/")
+    ) {
       for (const [key, value] of Object.entries(root)) {
         for (const [index, item] of asRecords(value).entries()) {
           const idValue = recordValue(item, ["id", "slug", "key"]);
-          const label = recordValue(item, ["name", "title", "label"]) ?? idValue;
+          const label =
+            recordValue(item, ["name", "title", "label"]) ?? idValue;
           if (!idValue || !label) continue;
           addNode({
             id: `entity:${document.path}:${idValue}`,
             label,
             kind: "entity",
-            description: recordValue(item, ["description", "definition", "summary"]) ?? key,
-            aliases: Array.isArray(item.aliases) ? item.aliases.filter((value): value is string => typeof value === "string") : [],
-            sourceRefs: [{ path: document.path, jsonPointer: pointerFor(index, key) }],
+            description:
+              recordValue(item, ["description", "definition", "summary"]) ??
+              key,
+            aliases: Array.isArray(item.aliases)
+              ? item.aliases.filter(
+                  (value): value is string => typeof value === "string",
+                )
+              : [],
+            sourceRefs: [
+              { path: document.path, jsonPointer: pointerFor(index, key) },
+            ],
           });
-          idByLabel.set(normalize(idValue), `entity:${document.path}:${idValue}`);
+          idByLabel.set(
+            normalize(idValue),
+            `entity:${document.path}:${idValue}`,
+          );
         }
       }
     }
@@ -502,7 +702,8 @@ export function buildKnowledgeGraph(
   }
 
   // 全文档 Markdown 链接提取：稳定链接 [[kind:id|名称]] 与旧式 [[名称]]
-  const stableLinkPattern = /\[\[([a-zA-Z]+):([a-zA-Z0-9-]+)(?:\|([^\]]+))?\]\]/gu;
+  const stableLinkPattern =
+    /\[\[([a-zA-Z]+):([a-zA-Z0-9-]+)(?:\|([^\]]+))?\]\]/gu;
   const legacyLinkPattern = /\[\[([^[\]|:]+)\]\]/gu;
   const stableKindPaths: Readonly<Record<string, string>> = Object.freeze({
     character: "characters/index.json",
@@ -541,8 +742,9 @@ export function buildKnowledgeGraph(
       )
       .map((node) => ({
         node,
-        line: node.sourceRefs.find((source) => source.path === document.path)
-          ?.line ?? 1,
+        line:
+          node.sourceRefs.find((source) => source.path === document.path)
+            ?.line ?? 1,
       }))
       .sort((left, right) => left.line - right.line);
     if (headingLines.length === 0) continue;
@@ -558,8 +760,7 @@ export function buildKnowledgeGraph(
       ) {
         ownerIndex += 1;
       }
-      const owner =
-        ownerIndex >= 0 ? headingLines[ownerIndex].node : undefined;
+      const owner = ownerIndex >= 0 ? headingLines[ownerIndex].node : undefined;
       if (!owner) continue;
       stableLinkPattern.lastIndex = 0;
       let stable: RegExpExecArray | null;
@@ -625,7 +826,10 @@ export async function buildKnowledgeGraphFromStorage(
   return buildKnowledgeGraph(await readKnowledgeDocuments(storage));
 }
 
-function scoreNode(node: KnowledgeNode, query: string): { score: number; matchedBy: KnowledgeSearchResult["matchedBy"] } {
+function scoreNode(
+  node: KnowledgeNode,
+  query: string,
+): { score: number; matchedBy: KnowledgeSearchResult["matchedBy"] } {
   const normalizedQuery = normalize(query);
   if (!normalizedQuery) return { score: 0, matchedBy: [] };
   const matchedBy: ("名称" | "别名" | "内容" | "来源")[] = [];
@@ -634,7 +838,9 @@ function scoreNode(node: KnowledgeNode, query: string): { score: number; matched
     score += normalize(node.label) === normalizedQuery ? 100 : 80;
     matchedBy.push("名称");
   }
-  if (node.aliases.some((alias) => normalize(alias).includes(normalizedQuery))) {
+  if (
+    node.aliases.some((alias) => normalize(alias).includes(normalizedQuery))
+  ) {
     score = Math.max(score, 70);
     matchedBy.push("别名");
   }
@@ -642,7 +848,11 @@ function scoreNode(node: KnowledgeNode, query: string): { score: number; matched
     score = Math.max(score, 45);
     matchedBy.push("内容");
   }
-  if (node.sourceRefs.some((source) => normalize(source.path).includes(normalizedQuery))) {
+  if (
+    node.sourceRefs.some((source) =>
+      normalize(source.path).includes(normalizedQuery),
+    )
+  ) {
     score = Math.max(score, 30);
     matchedBy.push("来源");
   }
@@ -654,7 +864,9 @@ export function searchKnowledgeGraph(
   query: string,
   kind?: KnowledgeNodeKind,
 ): readonly KnowledgeSearchResult[] {
-  const documents = new Map(snapshot.documents.map((document) => [document.path, document]));
+  const documents = new Map(
+    snapshot.documents.map((document) => [document.path, document]),
+  );
   return snapshot.nodes
     .filter((node) => !kind || node.kind === kind)
     .map((node) => {
@@ -665,11 +877,18 @@ export function searchKnowledgeGraph(
         node,
         score: result.score,
         matchedBy: result.matchedBy,
-        snippet: document && source ? sourceSnippet(document, source, node.description) : node.description,
+        snippet:
+          document && source
+            ? sourceSnippet(document, source, node.description)
+            : node.description,
       };
     })
     .filter((result) => result.score > 0)
-    .sort((left, right) => right.score - left.score || left.node.label.localeCompare(right.node.label, "zh-CN"));
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.node.label.localeCompare(right.node.label, "zh-CN"),
+    );
 }
 
 export function getKnowledgeNeighbors(
@@ -679,6 +898,12 @@ export function getKnowledgeNeighbors(
   const nodes = new Map(snapshot.nodes.map((node) => [node.id, node]));
   return snapshot.edges
     .filter((edge) => edge.from === nodeId || edge.to === nodeId)
-    .map((edge) => ({ edge, node: nodes.get(edge.from === nodeId ? edge.to : edge.from) }))
-    .filter((item): item is { edge: KnowledgeEdge; node: KnowledgeNode } => !!item.node);
+    .map((edge) => ({
+      edge,
+      node: nodes.get(edge.from === nodeId ? edge.to : edge.from),
+    }))
+    .filter(
+      (item): item is { edge: KnowledgeEdge; node: KnowledgeNode } =>
+        !!item.node,
+    );
 }

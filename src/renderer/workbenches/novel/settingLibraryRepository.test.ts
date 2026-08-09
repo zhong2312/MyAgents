@@ -5,6 +5,19 @@ import {
   getNodeSettingReferences,
 } from "./settingLibraryRepository";
 import { createEmptyNovelStorage } from "./testStorage";
+import {
+  createLocationFiles,
+  type LocationStorageRecord,
+} from "../../../shared/workbenches/novel/locationStorage";
+
+function replaceLocationFiles(
+  storage: ReturnType<typeof createEmptyNovelStorage>,
+  locations: readonly LocationStorageRecord[],
+): void {
+  for (const file of createLocationFiles({ schemaVersion: 1, locations })) {
+    storage.setExternalText(file.path, file.content);
+  }
+}
 
 describe("createNovelSettingLibraryRepository", () => {
   it("bootstraps metadata and a project-specific root without materializing pages", async () => {
@@ -251,24 +264,37 @@ describe("createNovelSettingLibraryRepository", () => {
         },
       ],
     });
+    replaceLocationFiles(storage, [
+      {
+        id: "loc-1",
+        nodeId: "continent-1",
+        parentLocationId: null,
+        name: "山门",
+        aliases: [],
+        type: "建筑",
+        status: "planned",
+        summary: "",
+        appearanceNote: "",
+        description: "",
+        order: 0,
+      },
+    ]);
+
+    await expect(
+      repository.deleteSpatialNode(library, "continent-1"),
+    ).rejects.toThrow("地点库");
+
+    replaceLocationFiles(storage, []);
     storage.setExternalText(
-      "world/locations/index.json",
+      "world/factions/index.json",
       `${JSON.stringify(
         {
-          schemaVersion: 1,
-          locations: [
+          schemaVersion: 2,
+          storageVersion: 1,
+          factions: [
             {
-              id: "loc-1",
-              nodeId: "continent-1",
-              parentLocationId: null,
-              name: "山门",
-              aliases: [],
-              type: "建筑",
-              status: "planned",
-              summary: "",
-              appearanceNote: "",
-              description: "",
-              order: 0,
+              id: "faction-sect",
+              path: "world/factions/records/faction-sect.json",
             },
           ],
         },
@@ -276,53 +302,39 @@ describe("createNovelSettingLibraryRepository", () => {
         2,
       )}\n`,
     );
-
-    await expect(
-      repository.deleteSpatialNode(library, "continent-1"),
-    ).rejects.toThrow("地点库");
-
     storage.setExternalText(
-      "world/locations/index.json",
-      `${JSON.stringify({ schemaVersion: 1, locations: [] }, null, 2)}\n`,
-    );
-    storage.setExternalText(
-      "world/factions/index.json",
+      "world/factions/records/faction-sect.json",
       `${JSON.stringify(
         {
-          schemaVersion: 2,
-          factions: [
+          id: "faction-sect",
+          name: "青云宗",
+          type: "宗门",
+          status: "active",
+          summary: "",
+          state: {
+            governance: "",
+            military: "",
+            economy: "",
+            publicSupport: "",
+            territorialIntegrity: "",
+          },
+          territories: [
             {
-              id: "faction-sect",
-              name: "青云宗",
-              type: "宗门",
-              status: "active",
-              summary: "",
-              state: {
-                governance: "",
-                military: "",
-                economy: "",
-                publicSupport: "",
-                territorialIntegrity: "",
-              },
-              territories: [
-                {
-                  id: "territory-1",
-                  name: "山门",
-                  worldNodeId: "continent-1",
-                  description: "",
-                },
-              ],
-              members: [],
-              assets: [],
-              resources: [],
-              organizationUnits: [],
-              relations: [],
-              rights: [],
-              links: [],
-              createdAt: "2026-07-14T12:00:00.000Z",
-              updatedAt: "2026-07-14T12:00:00.000Z",
+              id: "territory-1",
+              name: "山门",
+              worldNodeId: "continent-1",
+              description: "",
             },
           ],
+          members: [],
+          assets: [],
+          resources: [],
+          organizationUnits: [],
+          relations: [],
+          rights: [],
+          links: [],
+          createdAt: "2026-07-14T12:00:00.000Z",
+          updatedAt: "2026-07-14T12:00:00.000Z",
         },
         null,
         2,

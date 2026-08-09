@@ -8,9 +8,14 @@ import {
   type LoadedSettingLibrary,
 } from "./settingLibraryRepository";
 import {
+  createNovelLocationLibraryRepository,
+  type LoadedLocationLibrary,
+} from "./modules/locations/data-access/locationLibraryRepository";
+import {
   parseLocationLibraryIndex,
+  serializeLocationLibraryIndex,
   validateLocationNodeReferences,
-} from "./locationLibrarySchema";
+} from "./modules/locations/entities/locationLibrarySchema";
 import {
   parseSettingEntriesFile,
   parseSettingLibraryMeta,
@@ -101,6 +106,19 @@ async function readOptionalText(
 ): Promise<string | null> {
   const [info] = await storage.stat([path]);
   return info?.exists ? (await storage.readText(path)).content : null;
+}
+
+async function readCurrentTargetContent(
+  storage: WorkbenchStorage,
+  path: string,
+): Promise<string | null> {
+  if (path !== WORLD_LOCATION_LIBRARY_PATH) {
+    return readOptionalText(storage, path);
+  }
+  const [info] = await storage.stat([WORLD_LOCATION_LIBRARY_PATH]);
+  if (!info?.exists) return null;
+  const loaded = await createNovelLocationLibraryRepository(storage).load();
+  return serializeLocationLibraryIndex(loaded.index);
 }
 
 function snapshotRoot(proposalId: string, side: "before" | "after"): string {
@@ -207,7 +225,7 @@ async function discoverUnlistedChanges(
     if (declaredTargets.has(targetPath)) continue;
     const [beforeContent, currentContent] = await Promise.all([
       readOptionalProposalSnapshot(storage, proposalId, "before", targetPath),
-      readOptionalText(storage, targetPath),
+      readCurrentTargetContent(storage, targetPath),
     ]);
     discovered.push({
       id: discoveredChangeId(targetPath, usedIds),
@@ -518,7 +536,10 @@ async function validateMaterializedSettingFiles(
 
   if (!allowSelectedSnapshots) {
     for (const change of selectedChanges) {
-      const currentContent = await readOptionalText(storage, change.targetPath);
+      const currentContent = await readCurrentTargetContent(
+        storage,
+        change.targetPath,
+      );
       if (currentContent !== change.afterContent) {
         throw new Error(`提案目标在写入后发生变化：${change.targetPath}`);
       }
@@ -533,6 +554,32 @@ async function rollbackAppliedChanges(
   const failures: string[] = [];
   for (const change of [...changes].reverse()) {
     try {
+      if (change.targetPath === WORLD_LOCATION_LIBRARY_PATH) {
+        const repository = createNovelLocationLibraryRepository(storage);
+        const current = await repository.load();
+        const currentContent = serializeLocationLibraryIndex(current.index);
+        if (currentContent !== change.afterContent) {
+          throw new Error("地点库已在回滚前发生变化，已保留当前内容");
+        }
+        if (change.operation === "create") {
+          const paths = [...current.files.keys()].sort((left, right) =>
+            left === WORLD_LOCATION_LIBRARY_PATH
+              ? 1
+              : right === WORLD_LOCATION_LIBRARY_PATH
+                ? -1
+                : left.localeCompare(right),
+          );
+          for (const path of paths) {
+            await storage.remove(path, { permanent: true });
+          }
+        } else {
+          await repository.save(
+            current,
+            parseLocationLibraryIndex(change.beforeContent),
+          );
+        }
+        continue;
+      }
       if (change.operation === "create") {
         const currentContent = await readOptionalText(
           storage,
@@ -554,6 +601,49 @@ async function rollbackAppliedChanges(
   if (failures.length > 0) {
     throw new Error(`提案回滚失败：${failures.join("；")}`);
   }
+}
+
+async function applyProposalChange(
+  storage: WorkbenchStorage,
+  change: LoadedWorldProposalChange,
+): Promise<void> {
+  if (change.targetPath !== WORLD_LOCATION_LIBRARY_PATH) {
+    if (change.operation === "create") {
+      await storage.createText(change.targetPath, change.afterContent, {
+        createParents: true,
+      });
+    } else {
+      await storage.writeText(change.targetPath, change.afterContent, {
+        expectedContent: change.beforeContent,
+      });
+    }
+    return;
+  }
+
+  const repository = createNovelLocationLibraryRepository(storage);
+  let current: LoadedLocationLibrary;
+  const [info] = await storage.stat([WORLD_LOCATION_LIBRARY_PATH]);
+  if (!info?.exists) {
+    if (change.operation !== "create") {
+      throw new Error("地点库不存在，无法应用修改提案");
+    }
+    current = await repository.load();
+  } else {
+    current = await repository.load();
+    if (change.operation === "create") {
+      throw new Error("地点库已经存在，无法应用创建提案");
+    }
+  }
+  const currentContent = serializeLocationLibraryIndex(current.index);
+  const expectedContent =
+    change.operation === "create" ? "" : change.beforeContent;
+  if (change.operation !== "create" && currentContent !== expectedContent) {
+    throw new Error("地点事实源已被外部修改，请重新加载提案");
+  }
+  await repository.save(
+    current,
+    parseLocationLibraryIndex(change.afterContent),
+  );
 }
 
 export function getWorldProposalStatus(
@@ -620,7 +710,7 @@ export function createNovelWorldProposalRepository(
     const changes = await Promise.all(
       manifest.changes.map(
         async (change): Promise<LoadedWorldProposalChange> => {
-          const currentContent = await readOptionalText(
+          const currentContent = await readCurrentTargetContent(
             storage,
             change.targetPath,
           );
@@ -717,15 +807,7 @@ export function createNovelWorldProposalRepository(
         proposal.changes,
       );
       for (const change of selected) {
-        if (change.operation === "create") {
-          await storage.createText(change.targetPath, change.afterContent, {
-            createParents: true,
-          });
-        } else {
-          await storage.writeText(change.targetPath, change.afterContent, {
-            expectedContent: change.beforeContent,
-          });
-        }
+        await applyProposalChange(storage, change);
         applied.push(change);
       }
 

@@ -233,9 +233,9 @@ describe("createNarrativeProposalRepository", () => {
     expect(
       listed.proposals[0]?.changes.map((change) => change.targetPath),
     ).toEqual([
-      "narrative/directories/directory-volume-one.json",
-      "narrative/directories/directory-part-one.json",
-      "narrative/directories/directory-group-one.json",
+      "narrative/directories/records/directory-volume-one.json",
+      "narrative/directories/records/directory-part-one.json",
+      "narrative/directories/records/directory-group-one.json",
     ]);
     await createNarrativeProposalRepository(storage).apply(proposalId, [
       "directory-volume-one",
@@ -331,7 +331,7 @@ describe("createNarrativeProposalRepository", () => {
 
     const listed = await createNarrativeFileProposalRepository(storage).list();
     expect(listed.proposals[0]?.changes[0]?.targetPath).toBe(
-      "narrative/chapters/chapter-opening.json",
+      "narrative/chapters/records/chapter-opening.json",
     );
     await createNarrativeProposalRepository(storage).apply(proposalId, [
       "chapter-opening-candidate",

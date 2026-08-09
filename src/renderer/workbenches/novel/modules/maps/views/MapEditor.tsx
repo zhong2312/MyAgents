@@ -49,11 +49,9 @@ import {
   type MapProjectionType,
 } from "../entities/mapSchema";
 import { buildDomainIndex, type DomainEntityRef } from "../../../shared/business/domainIndex";
-import {
-  parseTimelineLibrary,
-  TIMELINE_LIBRARY_PATH,
-  type TimelineEvent,
-} from "../../../timelineLibrarySchema";
+import { type TimelineEvent } from "../../../timelineLibrarySchema";
+import { createNovelTimelineLibraryRepository } from "../../../timelineLibraryRepository";
+import { TIMELINE_INDEX_PATH } from "../../../../../../shared/workbenches/novel/timelineStorage";
 
 const FEATURE_KIND_LABELS: Readonly<Record<MapFeatureKind, string>> =
   Object.freeze({
@@ -148,11 +146,11 @@ export default function MapEditor({
   useEffect(() => {
     if (!isActive) return;
     let cancelled = false;
-    void storage.stat([TIMELINE_LIBRARY_PATH])
+    void storage.stat([TIMELINE_INDEX_PATH])
       .then(async ([info]) => {
         if (!info?.exists || info.kind !== "file") return { events: [] as readonly TimelineEvent[] };
-        const file = await storage.readText(TIMELINE_LIBRARY_PATH);
-        return { events: parseTimelineLibrary(file.content).events };
+        const timeline = await createNovelTimelineLibraryRepository(storage).load();
+        return { events: timeline.library.events };
       })
       .then((result) => {
         if (!cancelled) setTimelineEvents(result.events);

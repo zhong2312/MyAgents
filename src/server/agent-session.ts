@@ -91,8 +91,8 @@ import {
   getNovelWorkbenchToolsetSnapshot,
   NOVEL_WORKBENCH_SDK_ADAPTER_ID,
   NOVEL_WORKBENCH_TOOLSET_ID,
-  novelWorkbenchMutationDenyMessage,
-  shouldBlockNovelWorkbenchRawMutation,
+  novelWorkbenchToolDenyMessage,
+  shouldBlockNovelWorkbenchTool,
 } from './novel-workbench-context';
 // Side-effect import — registers META (ids + lazy factories) at cold start.
 // Cheap: just function-ref storage, no SDK/zod eval, no tool module loaded.
@@ -219,6 +219,11 @@ import {
   extractToolResultRenderParts,
   type ExtractedToolResultAttachment,
 } from './utils/tool-result-attachments';
+import { maybeSpill, type LargeValueRef } from './utils/large-value-store';
+import {
+  SubagentLivelockGuard,
+  type SubagentLivelockDecision,
+} from './utils/subagent-livelock-guard';
 import type { ToolAttachment } from '../shared/types/tool-attachment';
 import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
@@ -514,6 +519,46 @@ const isDebugMode = process.env.DEBUG === '1' || process.env.NODE_ENV === 'devel
  * only governs `stream_event` (the noisy path).
  */
 const SUPPRESS_PER_TOKEN_LOG_BROADCAST = true;
+
+// Tool results are persisted in the sidecar transcript in full, but the live
+// renderer only needs a compact preview. Keeping this boundary at 8 KiB avoids
+// large SSE frames and gives the renderer a stable upper bound for tool cards.
+const BUILTIN_TOOL_RESULT_INLINE_MAX_BYTES = 8 * 1024;
+const BUILTIN_TOOL_RESULT_PREVIEW_BYTES = 8 * 1024;
+const BUILTIN_TOOL_RESULT_TAIL_KEEP = 1024;
+
+type BuiltinToolResultTransport = {
+  content: string;
+  metadata?: { largeValueRef: LargeValueRef };
+};
+
+function capBuiltinToolResultPreview(content: string): string {
+  if (content.length <= BUILTIN_TOOL_RESULT_INLINE_MAX_BYTES) return content;
+  const marker = '\n...[middle omitted; full result available in references]...\n';
+  const availableHeadLength = Math.max(0, BUILTIN_TOOL_RESULT_INLINE_MAX_BYTES - BUILTIN_TOOL_RESULT_TAIL_KEEP - marker.length);
+  return `${content.slice(0, availableHeadLength)}${marker}${content.slice(-BUILTIN_TOOL_RESULT_TAIL_KEEP)}`;
+}
+
+async function normalizeBuiltinToolResultForSse(content: string): Promise<BuiltinToolResultTransport> {
+  try {
+    const spilled = await maybeSpill(content, {
+      inlineMaxBytes: BUILTIN_TOOL_RESULT_INLINE_MAX_BYTES,
+      previewBytes: BUILTIN_TOOL_RESULT_PREVIEW_BYTES,
+      mimetype: 'text/plain; charset=utf-8',
+      sessionId: sessionId || undefined,
+    });
+    if ('inline' in spilled) return { content: spilled.inline as string };
+    return {
+      content: capBuiltinToolResultPreview(spilled.preview),
+      metadata: { largeValueRef: spilled },
+    };
+  } catch (error) {
+    // A full disk must not turn into an oversized SSE fallback. The transcript
+    // still retains the authoritative result for the model and session store.
+    console.warn('[agent] failed to spill builtin tool result; sending a bounded preview', error);
+    return { content: capBuiltinToolResultPreview(content) };
+  }
+}
 
 /**
  * Claude Agent SDK reserved MCP server names — using these causes the SDK to
@@ -11512,8 +11557,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           hooks: [
             async (input: HookInput): Promise<HookJSONOutput> => {
               const pre = input as PreToolUseHookInput;
-              if (shouldBlockNovelWorkbenchRawMutation(pre.tool_name)) {
-                const reason = novelWorkbenchMutationDenyMessage(pre.tool_name);
+              if (shouldBlockNovelWorkbenchTool(pre.tool_name)) {
+                const reason = novelWorkbenchToolDenyMessage(pre.tool_name);
                 console.warn(`[permission] novel workbench hard gate denied: ${pre.tool_name}`);
                 return {
                   hookSpecificOutput: {
@@ -11871,6 +11916,58 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // and a single session is realistically bounded to << 1000 background
     // sub-agents.
     const terminalBroadcastedTaskIds = new Map<string, boolean>();
+
+    // A background subagent can remain "active" while repeatedly issuing
+    // tool calls that the SDK rejects as redundant. Track the Task tool's
+    // parent id so the livelock breaker can stop only that child.
+    const subagentLivelockGuard = new SubagentLivelockGuard();
+    const backgroundTaskIdByToolUseId = new Map<string, string>();
+
+    const stopLivelockedSubagent = (decision: SubagentLivelockDecision): void => {
+      const taskId = backgroundTaskIdByToolUseId.get(decision.parentToolUseId);
+      const reason = `子 Agent「${decision.toolName}」连续收到无效工具结果，已自动停止以避免死循环。`;
+      console.error(
+        `[agent] subagent livelock detected parent=${decision.parentToolUseId}`
+        + ` tool=${decision.toolName} repeated=${decision.repeatedCallCount}`
+        + ` wasted=${decision.wastedCallCount}${taskId ? ` task=${taskId}` : ''}`,
+      );
+      broadcast('chat:agent-error', { message: reason });
+
+      const query = activeQuery;
+      if (!taskId || !query) {
+        // Foreground subagents have no independent Task id. The only safe
+        // boundary in that case is the current SDK turn.
+        abortPersistentSession();
+        return;
+      }
+
+      void query.stopTask(taskId).catch((error) => {
+        console.error(`[agent] failed to stop livelocked subagent task=${taskId}`, error);
+        if (lifecycleState.query === query) {
+          broadcast('chat:agent-error', {
+            message: `${reason} SDK 停止请求失败，已终止当前响应。`,
+          });
+          abortPersistentSession();
+        }
+      });
+    };
+
+    const observeSubagentToolUse = (
+      parentToolUseId: string,
+      tool: { id: string; name: string; input?: Record<string, unknown> },
+    ): void => {
+      subagentLivelockGuard.recordToolUse({
+        parentToolUseId,
+        toolUseId: tool.id,
+        toolName: tool.name,
+        toolInput: tool.input ?? {},
+      });
+    };
+
+    const observeSubagentToolResult = (toolUseId: string, content: string): void => {
+      const decision = subagentLivelockGuard.recordToolResult(toolUseId, content);
+      if (decision) stopLivelockedSubagent(decision);
+    };
 
     // ── API response watchdog ──────────────────────────────────────────
     // Detects hung API connections AND hung MCP tool calls.
@@ -12235,6 +12332,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             description: taskMsg.description,
           });
           if (recorded) {
+            if (taskMsg.tool_use_id) {
+              backgroundTaskIdByToolUseId.set(taskMsg.tool_use_id, taskMsg.task_id);
+            }
             broadcast('chat:task-started', {
               sessionId,
               taskId: taskMsg.task_id,
@@ -12273,6 +12373,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             // foreground result already latched a config restart, the last
             // background task is the missing drain trigger.
             const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
+            if (completion.info?.toolUseId) {
+              backgroundTaskIdByToolUseId.delete(completion.info.toolUseId);
+              subagentLivelockGuard.clearParent(completion.info.toolUseId);
+            }
             if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
               applyDeferredRestartIfNeeded();
             }
@@ -12320,6 +12424,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               });
               // Reached terminal — release the exact Query task owner.
               const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
+              if (completion.info?.toolUseId) {
+                backgroundTaskIdByToolUseId.delete(completion.info.toolUseId);
+                subagentLivelockGuard.clearParent(completion.info.toolUseId);
+              }
               if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
                 applyDeferredRestartIfNeeded();
               }
@@ -12559,6 +12667,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             };
             if (sdkMessage.parent_tool_use_id) {
               handleSubagentToolUseStart(sdkMessage.parent_tool_use_id, toolPayload);
+              observeSubagentToolUse(sdkMessage.parent_tool_use_id, toolPayload);
               broadcast('chat:subagent-tool-use', {
                 parentToolUseId: sdkMessage.parent_tool_use_id,
                 tool: toolPayload
@@ -12651,7 +12760,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 broadcast('chat:subagent-tool-result-start', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
-                  content: contentStr,
+                  content: capBuiltinToolResultPreview(contentStr),
                   isError: toolResultBlock.is_error || false
                 });
               } else {
@@ -12667,7 +12776,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 );
                 broadcast('chat:tool-result-start', {
                   toolUseId: toolResultBlock.tool_use_id,
-                  content: shouldStripResult ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
+                  content: shouldStripResult ? PLAYWRIGHT_RESULT_SENTINEL : capBuiltinToolResultPreview(contentStr),
                   isError: toolResultBlock.is_error || false
                 });
               }
@@ -12694,12 +12803,15 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               toolResultIndexToId.delete(streamEvent.index);
               if (finalizeSubagentToolResult(toolResultId)) {
                 const result = getSubagentToolResult(toolResultId) ?? '';
+                observeSubagentToolResult(toolResultId, result);
                 const parentToolUseId = childToolToParent.get(toolResultId);
                 if (parentToolUseId) {
+                  const transport = await normalizeBuiltinToolResultForSse(result);
                   broadcast('chat:subagent-tool-result-complete', {
                     parentToolUseId,
                     toolUseId: toolResultId,
-                    content: result
+                    content: transport.content,
+                    ...(transport.metadata ? { metadata: transport.metadata } : {}),
                   });
                 }
               }
@@ -12882,12 +12994,17 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
                 handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
+                observeSubagentToolResult(toolResultBlock.tool_use_id, contentStr);
+                const transport = await normalizeBuiltinToolResultForSse(
+                  appendOmittedImageNote(contentStr, renderParts.attachments.length),
+                );
                 broadcast('chat:subagent-tool-result-complete', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
                   // Subagent media is not yet attached (pipeline doc §10 residual) —
                   // leave an honest text trace instead of silently dropping the image.
-                  content: appendOmittedImageNote(contentStr, renderParts.attachments.length)
+                  content: transport.content,
+                  ...(transport.metadata ? { metadata: transport.metadata } : {}),
                 });
               } else {
                 // Top-level tool result (e.g., WebSearch without parent)
@@ -12901,9 +13018,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   renderParts.attachments,
                 );
                 handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
+                const transport = stripped
+                  ? undefined
+                  : await normalizeBuiltinToolResultForSse(contentStr);
                 broadcast('chat:tool-result-complete', {
                   toolUseId: toolResultBlock.tool_use_id,
-                  content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
+                  content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : transport?.content ?? contentStr,
+                  ...(transport?.metadata ? { metadata: transport.metadata } : {}),
                   ...(attachments ? { attachments } : {}),
                 });
                 inFlightToolCount = Math.max(0, inFlightToolCount - 1);
@@ -12990,6 +13111,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 input: toolBlock.input || {}
               };
               handleSubagentToolUseStart(sdkMessage.parent_tool_use_id, payload);
+              observeSubagentToolUse(sdkMessage.parent_tool_use_id, payload);
               broadcast('chat:subagent-tool-use', {
                 parentToolUseId: sdkMessage.parent_tool_use_id,
                 tool: payload,
@@ -13003,9 +13125,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           if (text) {
             const next = appendToolResultContent(sdkMessage.parent_tool_use_id, text);
             const stripped = strippedToolResultIds.has(sdkMessage.parent_tool_use_id) || isPlaywrightTool(sdkMessage.parent_tool_use_id);
+            const transport = stripped
+              ? undefined
+              : await normalizeBuiltinToolResultForSse(next);
             broadcast('chat:tool-result-complete', {
               toolUseId: sdkMessage.parent_tool_use_id,
-              content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : next
+              content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : transport?.content ?? next,
+              ...(transport?.metadata ? { metadata: transport.metadata } : {}),
             });
           }
         }
@@ -13044,12 +13170,17 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   contentStr,
                   toolResultBlock.is_error || false
                 );
+                observeSubagentToolResult(toolResultBlock.tool_use_id, contentStr);
+                const transport = await normalizeBuiltinToolResultForSse(
+                  appendOmittedImageNote(contentStr, renderParts.attachments.length),
+                );
                 broadcast('chat:subagent-tool-result-complete', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
                   // Subagent media is not yet attached (pipeline doc §10 residual) —
                   // leave an honest text trace instead of silently dropping the image.
-                  content: appendOmittedImageNote(contentStr, renderParts.attachments.length),
+                  content: transport.content,
+                  ...(transport.metadata ? { metadata: transport.metadata } : {}),
                   isError: toolResultBlock.is_error || false
                 });
               } else {
@@ -13065,9 +13196,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   contentStr,
                   toolResultBlock.is_error || false
                 );
+                const transport = stripped
+                  ? undefined
+                  : await normalizeBuiltinToolResultForSse(contentStr);
                 broadcast('chat:tool-result-complete', {
                   toolUseId: toolResultBlock.tool_use_id,
-                  content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
+                  content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : transport?.content ?? contentStr,
+                  ...(transport?.metadata ? { metadata: transport.metadata } : {}),
                   isError: toolResultBlock.is_error || false,
                   ...(attachments ? { attachments } : {}),
                 });

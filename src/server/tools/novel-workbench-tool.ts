@@ -8,13 +8,69 @@ import {
   characterSoulDefinitionSchema,
   raceDefinitionSchema,
 } from "../../shared/workbenches/novel/characterLibrarySchema";
-import { cultivationEcologySchema, type CultivationSystem } from "../../shared/workbenches/novel/cultivationEcologySchema";
+import {
+  loadCharacterSoulFiles,
+  serializeCharacterSoulSnapshot,
+} from "../../shared/workbenches/novel/characterSoulStorage";
+import {
+  cultivationEcologySchema,
+  type CultivationEcology,
+  type CultivationSystem,
+} from "../../shared/workbenches/novel/cultivationEcologySchema";
+import {
+  CULTIVATION_ECOLOGY_INDEX_PATH,
+  createCultivationEcologyFiles,
+  cultivationFileMap,
+  loadCultivationEcologyFiles,
+  serializeCultivationFileSnapshot,
+  type LoadedCultivationEcologyFiles,
+} from "../../shared/workbenches/novel/cultivationEcologyStorage";
+import { validateCultivationEcology } from "../../shared/workbenches/novel/cultivationEcologyValidation";
+import {
+  FACTION_INDEX_PATH as FACTION_LIBRARY_PATH,
+  loadFactionFiles,
+  serializeFactionFileSnapshot,
+} from "../../shared/workbenches/novel/factionStorage";
+import {
+  LOCATION_INDEX_PATH as LOCATION_LIBRARY_PATH,
+  loadLocationFiles,
+  serializeLocationFileSnapshot,
+} from "../../shared/workbenches/novel/locationStorage";
+import {
+  INSPIRATION_INDEX_PATH,
+  inspirationRecordPath,
+  loadInspirationFiles,
+  serializeInspirationFileSnapshot,
+} from "../../shared/workbenches/novel/inspirationStorage";
 import {
   manuscriptProposalSchema,
   serializeManuscriptProposal,
   type ManuscriptProposal,
   type ManuscriptWritingMode,
 } from "../../shared/workbenches/novel/manuscriptProposalSchema";
+import {
+  MANUSCRIPT_TRACKING_INDEX_PATH,
+  loadManuscriptTrackingFiles,
+  manuscriptTrackingBatchPath,
+  serializeManuscriptTrackingFileSnapshot,
+} from "../../shared/workbenches/novel/manuscriptTrackingStorage";
+import {
+  MANUSCRIPT_CONTINUITY_INDEX_PATH,
+  MANUSCRIPT_CONTINUITY_LEGACY_PATH,
+  loadManuscriptContinuityFiles,
+  serializeManuscriptContinuityFileSnapshot,
+} from "../../shared/workbenches/novel/manuscriptContinuityStorage";
+import {
+  NARRATIVE_ENGINEERING_INDEX_PATH,
+  NARRATIVE_ENGINEERING_SCHEMA_VERSION,
+  loadNarrativeEngineeringFiles,
+  serializeNarrativeFileSnapshot,
+} from "../../shared/workbenches/novel/narrativeEngineeringStorage";
+import {
+  TIMELINE_INDEX_PATH as TIMELINE_LIBRARY_PATH,
+  loadTimelineFiles,
+  serializeTimelineFileSnapshot,
+} from "../../shared/workbenches/novel/timelineStorage";
 import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
@@ -46,6 +102,36 @@ type ProposedChange = {
   content: string;
 };
 
+type WorldDraftPatchOperation =
+  | {
+      targetPath: string;
+      action: "merge";
+      targetId: string;
+      fields: Record<string, unknown>;
+      summary?: string;
+    }
+  | {
+      targetPath: string;
+      action: "append";
+      collection: string;
+      parentId?: string;
+      value: unknown;
+      initial?: Record<string, unknown>;
+      summary?: string;
+    }
+  | {
+      targetPath: string;
+      action: "remove";
+      targetId: string;
+      summary?: string;
+    }
+  | {
+      targetPath: string;
+      action: "text_append";
+      content: string;
+      summary?: string;
+    };
+
 type ItemFieldValue = string | number | boolean | string[] | null;
 
 type ItemBatchCandidate = {
@@ -55,6 +141,7 @@ type ItemBatchCandidate = {
   summary?: string;
   values?: Record<string, ItemFieldValue>;
   description?: string;
+  appendDescription?: boolean;
 };
 
 type ItemCategoryField = {
@@ -74,7 +161,6 @@ type ItemCategoryField = {
 
 const LIBRARY_ROOT = "world/setting-library";
 const PROPOSAL_ROOT = `${LIBRARY_ROOT}/proposals`;
-const LOCATION_LIBRARY_PATH = "world/locations/index.json";
 const LOCATION_SNAPSHOT_PATH = "__locations/index.json";
 const TARGET_PATTERN =
   /^(?:world\/setting-library\/(?:meta\.json|spatial-tree\.json|settings\.json|pages\/[a-z0-9-]+\/[a-z0-9-]+\.md|entries\/[a-z0-9-]+\/[a-z0-9-]+\.json)|world\/locations\/index\.json)$/;
@@ -90,7 +176,8 @@ const TARGET_PATTERN =
  */
 const SETTING_FILE_PATTERNS = {
   pagePath: /^world\/setting-library\/pages\/[a-z0-9-]+\/[a-z0-9-]+\.md$/,
-  entriesPath: /^world\/setting-library\/entries\/[a-z0-9-]+\/[a-z0-9-]+\.json$/,
+  entriesPath:
+    /^world\/setting-library\/entries\/[a-z0-9-]+\/[a-z0-9-]+\.json$/,
 } as const;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const SETTING_STATUS_VALUES = new Set(["draft", "completed"]);
@@ -104,20 +191,17 @@ const MAX_ITEM_DESCRIPTION_BYTES = 512 * 1024;
 const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const CHARACTER_LIBRARY_ROOT = "characters";
 const CHARACTER_PROPOSAL_ROOT = `${CHARACTER_LIBRARY_ROOT}/proposals`;
-const CULTIVATION_ECOLOGY_PATH = "world/cultivation-ecology.json";
 const CULTIVATION_PROPOSAL_ROOT = "world/cultivation-proposals";
+const MAX_CULTIVATION_CONTEXT_BYTES = 1_000_000;
 const MAX_CHARACTER_OPERATIONS = 40;
+const MAX_INCREMENTAL_OPERATIONS = 32;
+const MAX_INCREMENTAL_BATCH_BYTES = 64 * 1024;
 const NARRATIVE_PROPOSAL_ROOT = "narrative/proposals";
 const MAX_NARRATIVE_CANDIDATES = 30;
-const NARRATIVE_ENGINEERING_PATH = "narrative/index.json";
-const NARRATIVE_ENGINEERING_SCHEMA_VERSION = 4;
+const NARRATIVE_ENGINEERING_PATH = NARRATIVE_ENGINEERING_INDEX_PATH;
 const NARRATIVE_PROPOSAL_SCHEMA_VERSION = 4;
-const TIMELINE_LIBRARY_PATH = "timeline/index.json";
 const MANUSCRIPT_INDEX_PATH = "manuscript/index.json";
 const MANUSCRIPT_PROPOSAL_ROOT = "manuscript/proposals";
-const MANUSCRIPT_TRACKING_PATH = "manuscript/state-ledger.json";
-const MANUSCRIPT_CONTINUITY_PATH = "manuscript/continuity-state.json";
-const FACTION_LIBRARY_PATH = "world/factions/index.json";
 const MAX_MANUSCRIPT_CONTENT_BYTES = 4 * 1024 * 1024;
 const NARRATIVE_LINE_COLORS = {
   main: "#b64a3a",
@@ -151,6 +235,7 @@ type NarrativeLineInput = {
   status?: NarrativeLineStatus;
   premise?: string;
   content?: string;
+  appendContent?: boolean;
   protagonistCharacterId?: string | null;
   keyNodes: NarrativeKeyNodeInput[];
 };
@@ -166,6 +251,7 @@ type NarrativeStoryArcInput = {
   characterArcStageTitle?: string;
   lineIds?: string[];
   content?: string;
+  appendContent?: boolean;
   keyNodes: NarrativeKeyNodeInput[];
 };
 
@@ -188,6 +274,7 @@ type NarrativeParagraphInput = {
   targetId?: string;
   order: number;
   content: string;
+  appendContent?: boolean;
 };
 
 type NarrativeSectionInput = {
@@ -251,6 +338,26 @@ type CultivationDraftPayload = {
   content: string;
 };
 
+const MAX_CULTIVATION_PATCH_OPERATIONS = MAX_INCREMENTAL_OPERATIONS;
+const MAX_CULTIVATION_PATCH_BYTES = MAX_INCREMENTAL_BATCH_BYTES;
+
+type CultivationDraftPatchOperation =
+  | {
+      action: "merge";
+      targetId: string;
+      fields: Record<string, unknown>;
+    }
+  | {
+      action: "append";
+      collection: string;
+      parentId?: string;
+      value: unknown;
+    }
+  | {
+      action: "remove";
+      targetId: string;
+    };
+
 type ManuscriptDraftPayload = {
   title: string;
   description: string;
@@ -275,6 +382,22 @@ function result(value: unknown, isError = false): CallToolResult {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function assertIncrementalBatch(
+  value: readonly unknown[],
+  label: string,
+  maxItems = MAX_INCREMENTAL_OPERATIONS,
+): void {
+  if (value.length > maxItems) {
+    throw new Error(`${label}单次最多 ${maxItems} 项，请拆成多次增量调用`);
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+  if (bytes > MAX_INCREMENTAL_BATCH_BYTES) {
+    throw new Error(
+      `${label}单次载荷最多 ${MAX_INCREMENTAL_BATCH_BYTES} 字节，请拆成多次增量调用`,
+    );
+  }
 }
 
 function requireWorkspace(): {
@@ -330,6 +453,57 @@ async function readOptional(path: string): Promise<string | null> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+}
+
+async function loadLocationSource(workspace: string) {
+  const index = await readOptional(
+    workspaceFile(workspace, LOCATION_LIBRARY_PATH),
+  );
+  if (index === null) return null;
+  const loaded = await loadLocationFiles(async (path) => {
+    const content = await readOptional(workspaceFile(workspace, path));
+    if (content === null) throw new Error(`地点记录不存在：${path}`);
+    return content;
+  });
+  return {
+    ...loaded,
+    snapshot: serializeLocationFileSnapshot(loaded.files),
+    aggregateContent: `${JSON.stringify(loaded.library, null, 2)}\n`,
+  };
+}
+
+async function readWorldTarget(
+  workspace: string,
+  targetPath: string,
+): Promise<string | null> {
+  if (targetPath !== LOCATION_LIBRARY_PATH) {
+    return readOptional(workspaceFile(workspace, targetPath));
+  }
+  return (await loadLocationSource(workspace))?.aggregateContent ?? null;
+}
+
+type LoadedCultivationSource = LoadedCultivationEcologyFiles & {
+  readonly snapshot: string;
+  readonly aggregateContent: string;
+};
+
+async function loadCultivationSource(
+  workspace: string,
+): Promise<LoadedCultivationSource | null> {
+  const index = await readOptional(
+    workspaceFile(workspace, CULTIVATION_ECOLOGY_INDEX_PATH),
+  );
+  if (index === null) return null;
+  const loaded = await loadCultivationEcologyFiles(async (path) => {
+    const content = await readOptional(workspaceFile(workspace, path));
+    if (content === null) throw new Error(`修行生态模块不存在：${path}`);
+    return content;
+  });
+  return {
+    ...loaded,
+    snapshot: serializeCultivationFileSnapshot(loaded.files),
+    aggregateContent: `${JSON.stringify(loaded.ecology, null, 2)}\n`,
+  };
 }
 
 function parseJson(path: string, content: string, errors: string[]): unknown {
@@ -483,7 +657,7 @@ async function validateChanges(
     totalBytes += bytes;
     if (bytes > MAX_CHANGE_BYTES) errors.push(`${targetPath} 超过 2 MiB`);
     prospective.set(targetPath, change.content);
-    const current = await readOptional(workspaceFile(workspace, targetPath));
+    const current = await readWorldTarget(workspace, targetPath);
     if (change.operation === "create" && current !== null) {
       errors.push(`create 目标已经存在：${targetPath}`);
     }
@@ -585,7 +759,7 @@ async function validateChanges(
   }
   const locationContent =
     prospective.get(LOCATION_LIBRARY_PATH) ??
-    (await readOptional(workspaceFile(workspace, LOCATION_LIBRARY_PATH)));
+    (await readWorldTarget(workspace, LOCATION_LIBRARY_PATH));
   if (locationContent !== null) {
     const locations = parseJson(LOCATION_LIBRARY_PATH, locationContent, errors);
     if (locations !== null) validateLocationIndex(locations, nodeIds, errors);
@@ -1023,6 +1197,7 @@ async function validateItemBatchHandler(args: {
   items: ItemBatchCandidate[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.items, "物品候选", MAX_BATCH_ITEMS);
     const errors = await validateItemBatch(args.categoryId, args.items);
     return result({ valid: errors.length === 0, errors }, errors.length > 0);
   } catch (error) {
@@ -1040,6 +1215,7 @@ async function submitItemBatchHandler(args: {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
+    assertIncrementalBatch(args.items, "物品候选", MAX_BATCH_ITEMS);
     const { workspace, context } = requireWorkspace();
     const errors = await validateItemBatch(args.categoryId, args.items);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
@@ -1111,17 +1287,25 @@ async function submitItemBatchHandler(args: {
 }
 
 async function readCharacterLibraryState(workspace: string) {
-  const [metaContent, indexContent, itemIndexContent, novelContent] =
-    await Promise.all([
-      readOptional(
-        workspaceFile(workspace, `${CHARACTER_LIBRARY_ROOT}/library.json`),
-      ),
-      readOptional(
-        workspaceFile(workspace, `${CHARACTER_LIBRARY_ROOT}/index.json`),
-      ),
-      readOptional(workspaceFile(workspace, `${ITEM_LIBRARY_ROOT}/index.json`)),
-      readOptional(workspaceFile(workspace, "novel.json")),
-    ]);
+  const [
+    metaContent,
+    indexContent,
+    itemIndexContent,
+    novelContent,
+    soulSource,
+  ] = await Promise.all([
+    readOptional(
+      workspaceFile(workspace, `${CHARACTER_LIBRARY_ROOT}/library.json`),
+    ),
+    readOptional(
+      workspaceFile(workspace, `${CHARACTER_LIBRARY_ROOT}/index.json`),
+    ),
+    readOptional(workspaceFile(workspace, `${ITEM_LIBRARY_ROOT}/index.json`)),
+    readOptional(workspaceFile(workspace, "novel.json")),
+    loadCharacterSoulFiles((path) =>
+      fs.readFile(workspaceFile(workspace, path), "utf8"),
+    ),
+  ]);
   if (metaContent === null || indexContent === null) {
     throw new Error("人物库尚未初始化，请先在小说工作台打开人物库");
   }
@@ -1129,9 +1313,9 @@ async function readCharacterLibraryState(workspace: string) {
   const index = objectValue(JSON.parse(indexContent), "人物库索引");
   const races = arrayField(meta, "races");
   const groups = arrayField(meta, "groups");
-  const souls = arrayField(meta, "souls");
+  const souls = soulSource.souls;
   const characters = arrayField(index, "characters");
-  if (!races || !groups || !souls || !characters) {
+  if (!races || !groups || !characters) {
     throw new Error("人物库配置或索引缺少必要数组");
   }
   const novel = novelContent
@@ -1141,7 +1325,22 @@ async function readCharacterLibraryState(workspace: string) {
     ? objectValue(JSON.parse(itemIndexContent), "物品库索引")
     : {};
   const items = arrayField(itemIndex, "items") ?? [];
-  return { meta, index, races, groups, souls, characters, items, novel };
+  const sourceSnapshot = JSON.stringify({
+    meta: metaContent,
+    index: indexContent,
+    souls: serializeCharacterSoulSnapshot(soulSource.files),
+  });
+  return {
+    meta,
+    index,
+    races,
+    groups,
+    souls,
+    characters,
+    items,
+    novel,
+    sourceSnapshot,
+  };
 }
 
 function operationId(
@@ -1322,6 +1521,8 @@ async function getCharacterContextHandler(args: {
           .find((item) => item.id === args.characterId) ?? null)
       : null;
     return result({
+      sourcePath: `${CHARACTER_LIBRARY_ROOT}/index.json`,
+      sourceHash: hashNovelWorkbenchDraftPayload(state.sourceSnapshot),
       project: {
         title: state.novel.title ?? "",
         genres: state.novel.genres ?? [],
@@ -1375,57 +1576,50 @@ async function validateCharacterCultivationProfiles(
   characters: readonly Record<string, unknown>[],
   errors: string[],
 ): Promise<void> {
-  const content = await readOptional(
-    workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
-  );
-  if (content === null) return;
-  let parsed: unknown;
+  let source: LoadedCultivationSource | null;
   try {
-    parsed = JSON.parse(content);
+    source = await loadCultivationSource(workspace);
   } catch {
     errors.push("修行生态事实源无法解析，不能校验角色修行引用");
     return;
   }
-  const ecology = cultivationEcologySchema.safeParse(parsed);
-  if (!ecology.success) {
-    errors.push("修行生态事实源格式无效，不能校验角色修行引用");
-    return;
-  }
-  const systemIds = new Set(ecology.data.systems.map((system) => system.id));
+  if (!source) return;
+  const ecology = source.ecology;
+  const systemIds = new Set(ecology.systems.map((system) => system.id));
   const trackToSystem = new Map(
-    ecology.data.systems.flatMap((system) =>
+    ecology.systems.flatMap((system) =>
       system.progressionTracks.map((track) => [track.id, system.id] as const),
     ),
   );
   const levelToTrack = new Map(
-    ecology.data.systems.flatMap((system) =>
+    ecology.systems.flatMap((system) =>
       system.progressionTracks.flatMap((track) =>
         track.levels.map((level) => [level.id, track.id] as const),
       ),
     ),
   );
   const methodIds = new Set(
-    ecology.data.systems.flatMap((system) =>
+    ecology.systems.flatMap((system) =>
       system.methods.map((method) => method.id),
     ),
   );
   const abilityIds = new Set(
-    ecology.data.systems.flatMap((system) =>
+    ecology.systems.flatMap((system) =>
       system.abilities.map((ability) => ability.id),
     ),
   );
   const constraintIds = new Set(
-    ecology.data.systems.flatMap((system) =>
+    ecology.systems.flatMap((system) =>
       system.constraints.map((constraint) => constraint.id),
     ),
   );
   const resourceIds = new Set(
-    ecology.data.systems.flatMap((system) =>
+    ecology.systems.flatMap((system) =>
       system.resources.map((resource) => resource.id),
     ),
   );
   const transitionIds = new Set(
-    ecology.data.systems.flatMap((system) => [
+    ecology.systems.flatMap((system) => [
       ...system.transitions.map((transition) => transition.id),
       ...system.progressionTracks.flatMap((track) =>
         track.transitions.map((transition) => transition.id),
@@ -1489,7 +1683,7 @@ async function validateCharacterCultivationProfiles(
       });
     }
     if (systemId) {
-      const system = ecology.data.systems.find(
+      const system = ecology.systems.find(
         (candidate) => candidate.id === systemId,
       );
       if (system) {
@@ -1566,48 +1760,72 @@ async function validateCharacterCultivationProfiles(
   }
 }
 
+type CultivationContextScope =
+  | "all"
+  | "theory"
+  | "progression"
+  | "resources"
+  | "methods"
+  | "abilities"
+  | "formations"
+  | "foundations"
+  | "transitions"
+  | "constraints";
+
 async function getCultivationContextHandler(args: {
   systemId?: string;
+  scope?: CultivationContextScope;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireWorkspace();
-    const content = await readOptional(
-      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
-    );
-    if (content === null)
+    const source = await loadCultivationSource(workspace);
+    if (source === null)
       return result({
-        sourcePath: CULTIVATION_ECOLOGY_PATH,
+        sourcePath: CULTIVATION_ECOLOGY_INDEX_PATH,
         sourceHash: hashNovelWorkbenchDraftPayload(""),
         systems: [],
         worldOrigins: [],
         crossSystemRelations: [],
       });
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      return result({ error: "修行生态事实源无法解析" }, true);
-    }
-    const ecology = cultivationEcologySchema.safeParse(parsed);
-    if (!ecology.success)
-      return result({ error: "修行生态事实源格式无效" }, true);
+    const ecology = source.ecology;
     const selected = args.systemId
-      ? ecology.data.systems.find((system) => system.id === args.systemId)
+      ? ecology.systems.find((system) => system.id === args.systemId)
       : undefined;
     if (args.systemId && !selected)
       return result({ error: `不存在修行体系：${args.systemId}` }, true);
     // 本源摘要：AI 只需要稳定 ID、名称与显化结构，不需要画布坐标等编辑态数据。
-    const summarizeOrigin = (origin: (typeof ecology.data.worldOrigins)[number]) => ({
+    const summarizeOrigin = (
+      origin: (typeof ecology.worldOrigins)[number],
+      detailed: boolean,
+    ) => ({
       id: origin.id,
       name: origin.name,
       kind: origin.kind,
       status: origin.status,
       summary: origin.summary,
+      ...(detailed
+        ? {
+            ontologyStatement: origin.ontologyStatement,
+            scopes: origin.scopes,
+            constraints: origin.constraints,
+          }
+        : {}),
       manifestations: origin.manifestations.map((manifestation) => ({
         id: manifestation.id,
         name: manifestation.name,
         type: manifestation.type,
         summary: manifestation.summary,
+        ...(detailed
+          ? {
+              definition: manifestation.definition,
+              sourceId: manifestation.sourceId,
+              scope: manifestation.scope,
+              access: manifestation.access,
+              generation: manifestation.generation,
+              conversion: manifestation.conversion,
+              risks: manifestation.risks,
+            }
+          : {}),
       })),
       relations: origin.relations.map((relation) => ({
         id: relation.id,
@@ -1615,6 +1833,13 @@ async function getCultivationContextHandler(args: {
         sourceId: relation.sourceId,
         targetId: relation.targetId,
         relation: relation.relation,
+        ...(detailed
+          ? {
+              conditions: relation.conditions,
+              cost: relation.cost,
+              loss: relation.loss,
+            }
+          : {}),
       })),
     });
     // 体系摘要：列表模式下只给结构骨架与资产计数，避免全量大载荷。
@@ -1647,60 +1872,168 @@ async function getCultivationContextHandler(args: {
         constraints: system.constraints.length,
         transitions: system.transitions.length,
       },
-    });
-    const fullSystem = (system: CultivationSystem) => ({
-      id: system.id,
-      name: system.name,
-      kind: system.kind,
-      summary: system.summary,
-      terminology: system.terminology,
-      projection: system.projection,
-      theoryModel: {
-        statement: system.theoryModel.statement,
-        invariants: system.theoryModel.invariants,
-        nodeCatalog: system.theoryModel.nodeCatalog,
+      audit: {
+        errors: system.audit.filter((issue) => issue.severity === "error")
+          .length,
+        warnings: system.audit.filter((issue) => issue.severity === "warning")
+          .length,
+        suggestions: system.audit.filter(
+          (issue) => issue.severity === "suggestion",
+        ).length,
+        unresolved: system.audit.filter((issue) => !issue.resolved).length,
       },
-      progressionTracks: system.progressionTracks.map((track) => ({
-        id: track.id,
-        name: track.name,
-        mode: track.mode,
-        structure: track.structure,
-        metrics: track.metrics,
-        levels: track.levels.map((level) => ({
-          id: level.id,
-          name: level.name,
-          order: level.order,
-          quality: level.quality,
-          entryConditions: level.entryConditions,
-          maintenanceConditions: level.maintenanceConditions,
-          breakthroughConditions: level.breakthroughConditions,
-          resourceRequirements: level.resourceRequirements,
-          naturalAbilityIds: level.naturalAbilityIds,
-          methodIds: level.methodIds,
-          subStages: level.subStages,
-        })),
-        transitions: track.transitions,
-      })),
-      trackInteractions: system.trackInteractions,
-      resources: system.resources,
-      methods: system.methods,
-      abilities: system.abilities,
-      formations: system.formations,
-      foundations: system.foundations,
-      transitions: system.transitions,
-      constraints: system.constraints,
     });
+    const fullSystem = (
+      system: CultivationSystem,
+      scope: CultivationContextScope,
+    ) => {
+      const include = (section: CultivationContextScope) =>
+        scope === "all" || scope === section;
+      const compact = (
+        items: readonly { id: string; name: string; summary: string }[],
+      ) =>
+        items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          summary: item.summary,
+        }));
+      return {
+        id: system.id,
+        name: system.name,
+        kind: system.kind,
+        summary: system.summary,
+        terminology: system.terminology,
+        projection: system.projection,
+        theoryModel: include("theory")
+          ? system.theoryModel
+          : {
+              statement: system.theoryModel.statement,
+              summary: system.theoryModel.summary,
+              invariants: system.theoryModel.invariants,
+              nodeCatalog: compact(system.theoryModel.nodeCatalog),
+            },
+        progressionTracks: include("progression")
+          ? system.progressionTracks.map((track) => ({
+              id: track.id,
+              name: track.name,
+              mode: track.mode,
+              structure: track.structure,
+              metrics: track.metrics,
+              levels: track.levels.map((level) => ({
+                id: level.id,
+                name: level.name,
+                order: level.order,
+                quality: level.quality,
+                entryConditions: level.entryConditions,
+                maintenanceConditions: level.maintenanceConditions,
+                breakthroughConditions: level.breakthroughConditions,
+                resourceRequirements: level.resourceRequirements,
+                naturalAbilityIds: level.naturalAbilityIds,
+                methodIds: level.methodIds,
+                subStages: level.subStages,
+              })),
+              transitions: track.transitions,
+            }))
+          : system.progressionTracks.map((track) => ({
+              id: track.id,
+              name: track.name,
+              summary: track.summary,
+              structure: track.structure,
+              levels: track.levels.map((level) => ({
+                id: level.id,
+                name: level.name,
+                order: level.order,
+              })),
+            })),
+        trackInteractions: include("progression")
+          ? system.trackInteractions
+          : system.trackInteractions.map(({ id, name, summary, kind }) => ({
+              id,
+              name,
+              summary,
+              kind,
+            })),
+        resources: include("resources")
+          ? system.resources
+          : compact(system.resources),
+        methods: include("methods") ? system.methods : compact(system.methods),
+        abilities: include("abilities")
+          ? system.abilities
+          : compact(system.abilities),
+        formations: include("formations")
+          ? system.formations
+          : compact(system.formations),
+        foundations: include("foundations")
+          ? system.foundations
+          : compact(system.foundations),
+        transitions: include("transitions")
+          ? system.transitions
+          : compact(system.transitions),
+        constraints: include("constraints")
+          ? system.constraints
+          : compact(system.constraints),
+        audit: system.audit,
+        counts: {
+          methods: system.methods.length,
+          abilities: system.abilities.length,
+          formations: system.formations.length,
+          resources: system.resources.length,
+          foundations: system.foundations.length,
+          constraints: system.constraints.length,
+          transitions: system.transitions.length,
+        },
+      };
+    };
+    const scope = args.scope ?? "all";
     const systems = selected
-      ? [fullSystem(selected)]
-      : ecology.data.systems.map(summarizeSystem);
-    return result({
-      schemaVersion: ecology.data.schemaVersion,
-      sourcePath: CULTIVATION_ECOLOGY_PATH,
-      sourceHash: hashNovelWorkbenchDraftPayload(content),
-      worldOrigins: ecology.data.worldOrigins.map(summarizeOrigin),
+      ? [fullSystem(selected, scope)]
+      : ecology.systems.map(summarizeSystem);
+    const selectedOriginIds = selected
+      ? new Set([
+          ...selected.projection.originIds,
+          ...ecology.worldOrigins
+            .filter((origin) =>
+              origin.manifestations.some((manifestation) =>
+                selected.projection.manifestationIds.includes(manifestation.id),
+              ),
+            )
+            .map((origin) => origin.id),
+        ])
+      : null;
+    const payload = {
+      schemaVersion: ecology.schemaVersion,
+      sourcePath: CULTIVATION_ECOLOGY_INDEX_PATH,
+      sourceHash: hashNovelWorkbenchDraftPayload(source.snapshot),
+      worldOrigins: ecology.worldOrigins
+        .filter(
+          (origin) => !selectedOriginIds || selectedOriginIds.has(origin.id),
+        )
+        .map((origin) =>
+          summarizeOrigin(origin, Boolean(selected && scope === "all")),
+        ),
       systems,
-      crossSystemRelations: ecology.data.crossSystemRelations,
-    });
+      crossSystemRelations: selected
+        ? ecology.crossSystemRelations.filter(
+            (relation) =>
+              relation.sourceSystemId === selected.id ||
+              relation.targetSystemId === selected.id,
+          )
+        : ecology.crossSystemRelations,
+      ...(selected ? { scope } : {}),
+    };
+    if (
+      Buffer.byteLength(JSON.stringify(payload), "utf8") >
+      MAX_CULTIVATION_CONTEXT_BYTES
+    ) {
+      return result(
+        {
+          error:
+            "修行体系上下文过大，请传入 systemId 并按 theory、progression、methods、abilities、resources、formations、transitions 或 constraints 分模块读取",
+        },
+        true,
+      );
+    }
+    return result(payload);
   } catch (error) {
     return result({ error: message(error) }, true);
   }
@@ -1728,6 +2061,203 @@ function parseCultivationDraftContent(content: string) {
   return { ecology: checked.data, errors: [] as string[] };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeRecord(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...base };
+  Object.entries(patch).forEach(([key, value]) => {
+    next[key] =
+      isRecord(value) && isRecord(base[key])
+        ? mergeRecord(base[key], value)
+        : value;
+  });
+  return next;
+}
+
+function assertCultivationPatchFields(
+  fields: Record<string, unknown>,
+  path: string[] = [],
+): void {
+  for (const [key, value] of Object.entries(fields)) {
+    const keyPath = [...path, key].join(".");
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      throw new Error(`增量修订包含非法字段：${keyPath}`);
+    }
+    if (
+      key === "id" ||
+      key === "audit" ||
+      key === "schemaVersion" ||
+      key === "updatedAt"
+    ) {
+      throw new Error(`增量修订不得修改稳定字段：${keyPath}`);
+    }
+    if (isRecord(value)) assertCultivationPatchFields(value, [...path, key]);
+  }
+}
+
+type CultivationLocatedObject = {
+  value: Record<string, unknown>;
+  parent: unknown[] | null;
+  index: number;
+};
+
+function findCultivationObjectById(
+  root: unknown,
+  targetId: string,
+): CultivationLocatedObject | null {
+  const visited = new Set<object>();
+  const visit = (
+    value: unknown,
+    parent: unknown[] | null,
+    index: number,
+  ): CultivationLocatedObject | null => {
+    if (Array.isArray(value)) {
+      for (let itemIndex = 0; itemIndex < value.length; itemIndex += 1) {
+        const found = visit(value[itemIndex], value, itemIndex);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (!isRecord(value)) return null;
+    if (visited.has(value)) return null;
+    visited.add(value);
+    if (value.id === targetId) return { value, parent, index };
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "__proto__" || key === "constructor" || key === "prototype")
+        continue;
+      const found = visit(child, null, -1);
+      if (found) return found;
+    }
+    return null;
+  };
+  return visit(root, null, -1);
+}
+
+function appendCultivationValue(
+  root: Record<string, unknown>,
+  collection: string,
+  parentId: string | undefined,
+  value: unknown,
+): void {
+  if (!/^[A-Za-z][A-Za-z0-9_.-]*$/u.test(collection))
+    throw new Error(`增量修订的集合名称无效：${collection}`);
+  const owner = parentId
+    ? findCultivationObjectById(root, parentId)?.value
+    : root;
+  if (!owner) throw new Error(`增量修订找不到父对象：${parentId}`);
+  const target = owner[collection];
+  if (!Array.isArray(target))
+    throw new Error(`增量修订目标不是数组：${collection}`);
+  target.push(value);
+}
+
+function applyCultivationDraftPatches(
+  content: string,
+  operations: readonly CultivationDraftPatchOperation[],
+): { content: string; changed: readonly string[] } {
+  if (operations.length === 0) throw new Error("至少需要一项增量修订");
+  if (operations.length > MAX_CULTIVATION_PATCH_OPERATIONS) {
+    throw new Error(
+      `单次最多提交 ${MAX_CULTIVATION_PATCH_OPERATIONS} 项修炼体系增量修订`,
+    );
+  }
+  const inputBytes = Buffer.byteLength(JSON.stringify(operations), "utf8");
+  if (inputBytes > MAX_CULTIVATION_PATCH_BYTES) {
+    throw new Error(
+      `单次增量修订最多 ${MAX_CULTIVATION_PATCH_BYTES} 字节，请拆成多次调用`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`修行生态草稿不是有效 JSON：${message(error)}`);
+  }
+  if (!isRecord(parsed)) throw new Error("修行生态草稿根节点必须是对象");
+  const changed: string[] = [];
+  for (const operation of operations) {
+    if (operation.action === "merge") {
+      const target = findCultivationObjectById(parsed, operation.targetId);
+      if (!target)
+        throw new Error(`增量修订找不到目标对象：${operation.targetId}`);
+      assertCultivationPatchFields(operation.fields);
+      Object.assign(target.value, mergeRecord(target.value, operation.fields));
+      changed.push(`merge:${operation.targetId}`);
+      continue;
+    }
+    if (operation.action === "append") {
+      appendCultivationValue(
+        parsed,
+        operation.collection,
+        operation.parentId,
+        operation.value,
+      );
+      changed.push(
+        `append:${operation.parentId ? `${operation.parentId}/` : ""}${operation.collection}`,
+      );
+      continue;
+    }
+    const target = findCultivationObjectById(parsed, operation.targetId);
+    if (!target || !target.parent)
+      throw new Error(`增量修订找不到可删除的目标对象：${operation.targetId}`);
+    target.parent.splice(target.index, 1);
+    changed.push(`remove:${operation.targetId}`);
+  }
+  const nextContent = `${JSON.stringify(parsed, null, 2)}\n`;
+  if (Buffer.byteLength(nextContent, "utf8") > 8 * 1024 * 1024) {
+    throw new Error("修行体系草稿超过 8 MB 限制");
+  }
+  return { content: nextContent, changed };
+}
+
+function summarizeCultivationDraft(
+  draft: NovelWorkbenchDraft<CultivationDraftPayload>,
+  includeContent = false,
+) {
+  const payload = includeContent
+    ? draft.payload
+    : {
+        title: draft.payload.title,
+        description: draft.payload.description,
+        baseSourceHash: draft.payload.baseSourceHash,
+        contentBytes: Buffer.byteLength(draft.payload.content, "utf8"),
+        contentHash: hashNovelWorkbenchDraftPayload(draft.payload.content),
+      };
+  return {
+    draftId: draft.draftId,
+    domain: draft.domain,
+    revision: draft.revision,
+    validated:
+      draft.validation?.revision === draft.revision
+        ? {
+            token: draft.validation.token,
+            validatedAt: draft.validation.validatedAt,
+          }
+        : null,
+    submittedProposalId: draft.submittedProposalId,
+    updatedAt: draft.updatedAt,
+    payload,
+  };
+}
+
+async function validateCultivationEcologyForWorkspace(
+  workspace: string,
+  ecology: CultivationEcology,
+): Promise<readonly string[]> {
+  const itemIndexContent = await readOptional(
+    workspaceFile(workspace, "world/items/index.json"),
+  );
+  const itemIds = itemIndexContent
+    ? await readIdSet(workspace, "world/items/index.json", "items")
+    : undefined;
+  return validateCultivationEcology(ecology, { itemIds });
+}
+
 async function createCultivationDraftHandler(args: {
   draftId?: string;
   title: string;
@@ -1736,11 +2266,9 @@ async function createCultivationDraftHandler(args: {
 }): Promise<CallToolResult> {
   try {
     const { workspace, context } = requireDraftMode("cultivation");
-    const current = await readOptional(
-      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
-    );
+    const current = await loadCultivationSource(workspace);
     if (current === null) throw new Error("修行体系事实源不存在");
-    const currentHash = hashNovelWorkbenchDraftPayload(current ?? "");
+    const currentHash = hashNovelWorkbenchDraftPayload(current.snapshot);
     if (args.baseSourceHash !== currentHash) {
       throw new Error("修行体系事实源已变化，请重新读取上下文后创建草稿");
     }
@@ -1752,11 +2280,11 @@ async function createCultivationDraftHandler(args: {
         title: args.title.trim(),
         description: args.description?.trim() ?? "",
         baseSourceHash: args.baseSourceHash,
-        content: current ?? "",
+        content: current.aggregateContent,
       },
       args.draftId,
     );
-    return result(summarizeNovelWorkbenchDraft(draft));
+    return result(summarizeCultivationDraft(draft));
   } catch (error) {
     return result({ error: message(error) }, true);
   }
@@ -1764,16 +2292,18 @@ async function createCultivationDraftHandler(args: {
 
 async function getCultivationDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("cultivation");
     return result(
-      summarizeNovelWorkbenchDraft(
+      summarizeCultivationDraft(
         await loadNovelWorkbenchDraft<CultivationDraftPayload>(
           workspace,
           "cultivation",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
   } catch (error) {
@@ -1786,6 +2316,11 @@ async function upsertCultivationDraftHandler(args: {
   content: string;
 }): Promise<CallToolResult> {
   try {
+    if (Buffer.byteLength(args.content, "utf8") > MAX_CULTIVATION_PATCH_BYTES) {
+      throw new Error(
+        `整份修行生态替换内容超过 ${MAX_CULTIVATION_PATCH_BYTES} 字节，请改用 novel_cultivation_patch_draft 分批写入`,
+      );
+    }
     const { workspace } = requireDraftMode("cultivation");
     const draft = await updateNovelWorkbenchDraft<CultivationDraftPayload>(
       workspace,
@@ -1793,7 +2328,33 @@ async function upsertCultivationDraftHandler(args: {
       args.draftId,
       (payload) => ({ ...payload, content: args.content }),
     );
-    return result(summarizeNovelWorkbenchDraft(draft));
+    return result(summarizeCultivationDraft(draft));
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function patchCultivationDraftHandler(args: {
+  draftId: string;
+  operations: CultivationDraftPatchOperation[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("cultivation");
+    let changed: readonly string[] = [];
+    const draft = await updateNovelWorkbenchDraft<CultivationDraftPayload>(
+      workspace,
+      "cultivation",
+      args.draftId,
+      (payload) => {
+        const result = applyCultivationDraftPatches(
+          payload.content,
+          args.operations,
+        );
+        changed = result.changed;
+        return { ...payload, content: result.content };
+      },
+    );
+    return result({ ...summarizeCultivationDraft(draft), changed });
   } catch (error) {
     return result({ error: message(error) }, true);
   }
@@ -1809,10 +2370,8 @@ async function validateCultivationDraftHandler(args: {
       "cultivation",
       args.draftId,
     );
-    const current = await readOptional(
-      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
-    );
-    const currentHash = hashNovelWorkbenchDraftPayload(current ?? "");
+    const current = await loadCultivationSource(workspace);
+    const currentHash = hashNovelWorkbenchDraftPayload(current?.snapshot ?? "");
     if (draft.payload.baseSourceHash !== currentHash) {
       return result(
         {
@@ -1826,24 +2385,44 @@ async function validateCultivationDraftHandler(args: {
     if (parsed.errors.length > 0) {
       return result({ valid: false, errors: parsed.errors }, true);
     }
-    const canonicalContent = `${JSON.stringify(parsed.ecology, null, 2)}\n`;
-    if (canonicalContent !== draft.payload.content) {
+    if (!parsed.ecology)
+      return result({ valid: false, errors: ["修行生态草稿为空"] }, true);
+    const semanticErrors = await validateCultivationEcologyForWorkspace(
+      workspace,
+      parsed.ecology,
+    );
+    if (semanticErrors.length > 0) {
       return result(
-        {
-          valid: false,
-          errors: ["修行生态 JSON 未规范化，请先用规范化内容更新草稿"],
-        },
+        { valid: false, errors: semanticErrors.slice(0, 100) },
         true,
       );
     }
+    const canonicalContent = `${JSON.stringify(parsed.ecology, null, 2)}\n`;
+    let validatedDraft = draft;
+    let normalized = false;
+    if (canonicalContent !== draft.payload.content) {
+      validatedDraft = await updateNovelWorkbenchDraft<CultivationDraftPayload>(
+        workspace,
+        "cultivation",
+        draft.draftId,
+        (payload) => {
+          if (payload.content !== draft.payload.content) {
+            throw new Error("草稿在规范化期间发生变化，请重新校验");
+          }
+          return { ...payload, content: canonicalContent };
+        },
+      );
+      normalized = true;
+    }
     const saved = await saveNovelWorkbenchDraftValidation(
       workspace,
-      draft,
-      hashNovelWorkbenchDraftPayload(draft.payload),
+      validatedDraft,
+      hashNovelWorkbenchDraftPayload(validatedDraft.payload),
     );
     return result({
       valid: true,
-      ...summarizeNovelWorkbenchDraft(saved),
+      normalized,
+      ...summarizeCultivationDraft(saved),
       validationToken: saved.validation?.token,
     });
   } catch (error) {
@@ -1880,18 +2459,35 @@ async function submitCultivationDraftHandler(args: {
     ) {
       throw new Error("校验令牌无效或草稿已经变化，请重新校验");
     }
-    const beforeContent = await readOptional(
-      workspaceFile(workspace, CULTIVATION_ECOLOGY_PATH),
-    );
-    if (beforeContent === null) throw new Error("修行体系事实源不存在");
+    const before = await loadCultivationSource(workspace);
+    if (before === null) throw new Error("修行体系事实源不存在");
     if (
-      hashNovelWorkbenchDraftPayload(beforeContent) !==
+      hashNovelWorkbenchDraftPayload(before.snapshot) !==
       draft.payload.baseSourceHash
     ) {
       throw new Error("修行体系事实源已变化，请重新读取上下文并创建草稿");
     }
     const parsed = parseCultivationDraftContent(draft.payload.content);
     if (parsed.errors.length > 0) throw new Error(parsed.errors.join("；"));
+    if (!parsed.ecology) throw new Error("修行生态草稿为空");
+    const semanticErrors = await validateCultivationEcologyForWorkspace(
+      workspace,
+      parsed.ecology,
+    );
+    if (semanticErrors.length > 0)
+      throw new Error(semanticErrors.slice(0, 100).join("；"));
+    const nextEcology = cultivationEcologySchema.parse({
+      ...parsed.ecology,
+      updatedAt: new Date().toISOString(),
+    });
+    const afterFiles = cultivationFileMap(
+      createCultivationEcologyFiles(nextEcology),
+    );
+    const changedFiles = [...afterFiles.entries()]
+      .filter(([path, content]) => before.files.get(path) !== content)
+      .sort(([left], [right]) => left.localeCompare(right));
+    if (changedFiles.length === 0) throw new Error("修行体系草稿没有产生变更");
+
     const proposalId = `cultivation-${draft.draftId}`;
     proposalDirectory = workspaceFile(
       workspace,
@@ -1925,30 +2521,42 @@ async function submitCultivationDraftHandler(args: {
         promptId: context.promptId,
         promptVersion: context.promptVersion,
       },
-      changes: [
-        {
-          id: `cultivation-change-${draft.draftId}`,
-          targetPath: CULTIVATION_ECOLOGY_PATH,
-          operation: "modify" as const,
-          summary: draft.payload.description || "完善修行体系生态事实源",
-          status: "pending" as const,
-        },
-      ],
+      changes: changedFiles.map(([targetPath], index) => ({
+        id: `cultivation-change-${index + 1}`,
+        targetPath,
+        operation: before.files.has(targetPath)
+          ? ("modify" as const)
+          : ("create" as const),
+        summary: draft.payload.description || `更新修行体系模块 ${targetPath}`,
+        status: "pending" as const,
+      })),
     };
     await fs.writeFile(proposalFile, `${JSON.stringify(manifest, null, 2)}\n`, {
       encoding: "utf8",
       flag: "wx",
     });
-    await fs.writeFile(
-      join(proposalDirectory, "before", "cultivation-ecology.json"),
-      beforeContent,
-      { encoding: "utf8", flag: "wx" },
-    );
-    await fs.writeFile(
-      join(proposalDirectory, "after", "cultivation-ecology.json"),
-      `${JSON.stringify(parsed.ecology, null, 2)}\n`,
-      { encoding: "utf8", flag: "wx" },
-    );
+    for (const [targetPath, afterContent] of changedFiles) {
+      const beforePath = join(
+        proposalDirectory,
+        "before",
+        ...targetPath.split("/"),
+      );
+      const afterPath = join(
+        proposalDirectory,
+        "after",
+        ...targetPath.split("/"),
+      );
+      await fs.mkdir(dirname(beforePath), { recursive: true });
+      await fs.mkdir(dirname(afterPath), { recursive: true });
+      await fs.writeFile(beforePath, before.files.get(targetPath) ?? "", {
+        encoding: "utf8",
+        flag: "wx",
+      });
+      await fs.writeFile(afterPath, afterContent, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+    }
     await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
     return result({
       submitted: true,
@@ -1989,6 +2597,7 @@ async function validateCharacterProposalHandler(args: {
   operations: CharacterProposalOperation[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.operations, "人物库候选");
     const errors = await validateCharacterProposal(args.operations);
     return result({ valid: errors.length === 0, errors }, errors.length > 0);
   } catch (error) {
@@ -2005,6 +2614,7 @@ async function submitCharacterProposalHandler(args: {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
+    assertIncrementalBatch(args.operations, "人物库候选");
     const { workspace, context } = requireWorkspace();
     const errors = await validateCharacterProposal(args.operations);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
@@ -2105,6 +2715,16 @@ const MAX_TIMELINE_OPERATIONS = 40;
 const MAP_PROPOSAL_ROOT = "world/maps/proposals";
 const MAX_MAP_OPERATIONS = 40;
 
+async function loadFactionSource(workspace: string) {
+  const loaded = await loadFactionFiles((path) =>
+    fs.readFile(workspaceFile(workspace, path), "utf8"),
+  );
+  return {
+    library: loaded.library,
+    snapshot: serializeFactionFileSnapshot(loaded.files),
+  };
+}
+
 /** 读取工作区 JSON 文件并返回其 id 集合；文件缺失时返回空集。 */
 export async function readIdSet(
   workspace: string,
@@ -2115,7 +2735,9 @@ export async function readIdSet(
   if (!content) return new Set();
   const document = JSON.parse(content) as unknown;
   const list = arrayField(
-    document && typeof document === "object" ? (document as Record<string, unknown>) : {},
+    document && typeof document === "object"
+      ? (document as Record<string, unknown>)
+      : {},
     field,
   );
   const ids = new Set<string>();
@@ -2141,19 +2763,22 @@ async function validateFactionDraftPayload(
   const errors: string[] = [];
   let existing: Record<string, unknown>[] = [];
   try {
-    const content = await fs.readFile(
-      workspaceFile(workspace, FACTION_LIBRARY_PATH),
-      "utf8",
+    existing = (await loadFactionSource(workspace)).library.factions.map(
+      (item) => objectValue(item, "势力"),
     );
-    existing = (arrayField(JSON.parse(content) as Record<string, unknown>, "factions") ?? [])
-      .map((item) => objectValue(item, "势力"));
   } catch (error) {
     return [`势力库读取失败：${message(error)}`];
   }
   const existingIds = new Set(
-    existing.map((item) => objectValue(item, "势力").id).filter((id) => typeof id === "string"),
+    existing
+      .map((item) => objectValue(item, "势力").id)
+      .filter((id) => typeof id === "string"),
   );
-  const characterIds = await readIdSet(workspace, "characters/index.json", "characters");
+  const characterIds = await readIdSet(
+    workspace,
+    "characters/index.json",
+    "characters",
+  );
   const itemIds = await readIdSet(workspace, "world/items/index.json", "items");
   let spatialNodeIds = new Set<string>();
   try {
@@ -2163,7 +2788,9 @@ async function validateFactionDraftPayload(
     if (content) {
       const document = JSON.parse(content) as unknown;
       const nodes = arrayField(
-        document && typeof document === "object" ? (document as Record<string, unknown>) : {},
+        document && typeof document === "object"
+          ? (document as Record<string, unknown>)
+          : {},
         "nodes",
       );
       const ids = new Set<string>();
@@ -2178,11 +2805,15 @@ async function validateFactionDraftPayload(
   }
   const candidateIds = new Set<string>();
   for (const operation of operations) {
-    if (!ID_PATTERN.test(operation.candidateId) || candidateIds.has(operation.candidateId)) {
+    if (
+      !ID_PATTERN.test(operation.candidateId) ||
+      candidateIds.has(operation.candidateId)
+    ) {
       errors.push(`候选 id 非法或重复：${operation.candidateId}`);
     }
     candidateIds.add(operation.candidateId);
-    if (!operation.summary.trim()) errors.push(`${operation.candidateId}缺少摘要`);
+    if (!operation.summary.trim())
+      errors.push(`${operation.candidateId}缺少摘要`);
     if (operation.action === "update" && !operation.targetId) {
       errors.push(`${operation.candidateId}更新候选缺少 targetId`);
       continue;
@@ -2211,7 +2842,9 @@ async function validateFactionDraftPayload(
         record.characterId &&
         !characterIds.has(record.characterId)
       ) {
-        errors.push(`势力“${id}”的成员“${record.name ?? "未命名"}”关联了不存在的角色：${record.characterId}`);
+        errors.push(
+          `势力“${id}”的成员“${record.name ?? "未命名"}”关联了不存在的角色：${record.characterId}`,
+        );
       }
     }
     for (const resource of arrayField(faction, "resources") ?? []) {
@@ -2221,14 +2854,18 @@ async function validateFactionDraftPayload(
         record.itemId &&
         !itemIds.has(record.itemId)
       ) {
-        errors.push(`势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的物品：${record.itemId}`);
+        errors.push(
+          `势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的物品：${record.itemId}`,
+        );
       }
       if (
         typeof record.worldNodeId === "string" &&
         record.worldNodeId &&
         !spatialNodeIds.has(record.worldNodeId)
       ) {
-        errors.push(`势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`);
+        errors.push(
+          `势力“${id}”的资源“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`,
+        );
       }
     }
     for (const territory of arrayField(faction, "territories") ?? []) {
@@ -2238,7 +2875,9 @@ async function validateFactionDraftPayload(
         record.worldNodeId &&
         !spatialNodeIds.has(record.worldNodeId)
       ) {
-        errors.push(`势力“${id}”的领地“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`);
+        errors.push(
+          `势力“${id}”的领地“${record.name ?? "未命名"}”关联了不存在的空间节点：${record.worldNodeId}`,
+        );
       }
     }
   }
@@ -2246,6 +2885,16 @@ async function validateFactionDraftPayload(
 }
 
 /** 校验时间线候选：结构、正式库存在性、跨库引用（角色/地点/章节/势力/物品）。 */
+async function loadTimelineSource(workspace: string) {
+  const loaded = await loadTimelineFiles((path) =>
+    fs.readFile(workspaceFile(workspace, path), "utf8"),
+  );
+  return {
+    library: loaded.library,
+    snapshot: serializeTimelineFileSnapshot(loaded.files),
+  };
+}
+
 async function validateTimelineDraftPayload(
   operations: readonly TimelineProposalOperation[],
 ): Promise<string[]> {
@@ -2261,37 +2910,55 @@ async function validateTimelineDraftPayload(
   let existingEvents: Record<string, unknown>[] = [];
   let branchIds = new Set<string>();
   try {
-    const content = await fs.readFile(
-      workspaceFile(workspace, TIMELINE_LIBRARY_PATH),
-      "utf8",
-    );
-    const document = JSON.parse(content) as Record<string, unknown>;
-    existingEvents = (arrayField(document, "events") ?? []).map((item) =>
+    const source = await loadTimelineSource(workspace);
+    existingEvents = source.library.events.map((item) =>
       objectValue(item, "事件"),
     );
     branchIds = new Set(
-      (arrayField(document, "branches") ?? []).map((item) =>
-        objectValue(item, "分支").id,
-      ).filter((id): id is string => typeof id === "string"),
+      source.library.branches
+        .map((item) => objectValue(item, "分支").id)
+        .filter((id): id is string => typeof id === "string"),
     );
   } catch (error) {
     return [`时间线读取失败：${message(error)}`];
   }
   const existingIds = new Set(
-    existingEvents.map((item) => objectValue(item, "事件").id).filter((id) => typeof id === "string"),
+    existingEvents
+      .map((item) => objectValue(item, "事件").id)
+      .filter((id) => typeof id === "string"),
   );
-  const characterIds = await readIdSet(workspace, "characters/index.json", "characters");
-  const factionIds = await readIdSet(workspace, FACTION_LIBRARY_PATH, "factions");
+  const characterIds = await readIdSet(
+    workspace,
+    "characters/index.json",
+    "characters",
+  );
+  const factionIds = await readIdSet(
+    workspace,
+    FACTION_LIBRARY_PATH,
+    "factions",
+  );
   const itemIds = await readIdSet(workspace, "world/items/index.json", "items");
-  const locationIds = await readIdSet(workspace, "world/locations/index.json", "locations");
-  const chapterIds = await readIdSet(workspace, MANUSCRIPT_INDEX_PATH, "chapters");
+  const locationIds = await readIdSet(
+    workspace,
+    "world/locations/index.json",
+    "locations",
+  );
+  const chapterIds = await readIdSet(
+    workspace,
+    MANUSCRIPT_INDEX_PATH,
+    "chapters",
+  );
   const candidateIds = new Set<string>();
   for (const operation of operations) {
-    if (!ID_PATTERN.test(operation.candidateId) || candidateIds.has(operation.candidateId)) {
+    if (
+      !ID_PATTERN.test(operation.candidateId) ||
+      candidateIds.has(operation.candidateId)
+    ) {
       errors.push(`候选 id 非法或重复：${operation.candidateId}`);
     }
     candidateIds.add(operation.candidateId);
-    if (!operation.summary.trim()) errors.push(`${operation.candidateId}缺少摘要`);
+    if (!operation.summary.trim())
+      errors.push(`${operation.candidateId}缺少摘要`);
     if (operation.action === "update" && !operation.targetId) {
       errors.push(`${operation.candidateId}更新候选缺少 targetId`);
       continue;
@@ -2316,7 +2983,11 @@ async function validateTimelineDraftPayload(
       errors.push(`事件 id 不存在：${id}`);
       continue;
     }
-    const checkReference = (field: string, available: Set<string>, label: string) => {
+    const checkReference = (
+      field: string,
+      available: Set<string>,
+      label: string,
+    ) => {
       for (const ref of arrayField(event, field) ?? []) {
         if (typeof ref === "string" && ref && !available.has(ref)) {
           errors.push(`事件“${id}”关联了不存在的${label}：${ref}`);
@@ -2341,6 +3012,7 @@ async function submitFactionProposalHandler(args: {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
+    assertIncrementalBatch(args.operations, "势力候选");
     const { workspace, context } = requireWorkspace();
     const errors = await validateFactionDraftPayload(args.operations);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
@@ -2410,11 +3082,13 @@ async function submitTimelineProposalHandler(args: {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
+    assertIncrementalBatch(args.operations, "时间线候选");
     const { workspace, context } = requireWorkspace();
     const errors = await validateTimelineDraftPayload(args.operations);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
     const proposalId =
-      args.proposalId?.trim() || `timeline-proposal-${randomUUID().slice(0, 8)}`;
+      args.proposalId?.trim() ||
+      `timeline-proposal-${randomUUID().slice(0, 8)}`;
     if (!ID_PATTERN.test(proposalId)) {
       throw new Error("proposalId 只能使用小写字母、数字和连字符");
     }
@@ -2508,6 +3182,7 @@ async function createFactionDraftHandler(args: {
 
 async function getFactionDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("factions");
@@ -2518,6 +3193,7 @@ async function getFactionDraftHandler(args: {
           "factions",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
   } catch (error) {
@@ -2530,6 +3206,7 @@ async function upsertFactionDraftOperationsHandler(args: {
   operations: FactionProposalOperation[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.operations, "势力候选");
     const { workspace } = requireDraftMode("factions");
     const draft = await updateNovelWorkbenchDraft<FactionDraftPayload>(
       workspace,
@@ -2543,7 +3220,16 @@ async function upsertFactionDraftOperationsHandler(args: {
           ]),
         );
         for (const operation of args.operations) {
-          operations.set(operation.candidateId, operation);
+          const previous = operations.get(operation.candidateId);
+          operations.set(
+            operation.candidateId,
+            previous
+              ? {
+                  ...operation,
+                  value: mergeRecord(previous.value, operation.value),
+                }
+              : operation,
+          );
         }
         return { ...payload, operations: [...operations.values()] };
       },
@@ -2667,6 +3353,7 @@ async function createTimelineDraftHandler(args: {
 
 async function getTimelineDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("timeline");
@@ -2677,6 +3364,7 @@ async function getTimelineDraftHandler(args: {
           "timeline",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
   } catch (error) {
@@ -2689,6 +3377,7 @@ async function upsertTimelineDraftOperationsHandler(args: {
   operations: TimelineProposalOperation[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.operations, "时间线候选");
     const { workspace } = requireDraftMode("timeline");
     const draft = await updateNovelWorkbenchDraft<TimelineDraftPayload>(
       workspace,
@@ -2702,7 +3391,16 @@ async function upsertTimelineDraftOperationsHandler(args: {
           ]),
         );
         for (const operation of args.operations) {
-          operations.set(operation.candidateId, operation);
+          const previous = operations.get(operation.candidateId);
+          operations.set(
+            operation.candidateId,
+            previous
+              ? {
+                  ...operation,
+                  value: mergeRecord(previous.value, operation.value),
+                }
+              : operation,
+          );
         }
         return { ...payload, operations: [...operations.values()] };
       },
@@ -2800,7 +3498,6 @@ async function getTimelineProposalStatusHandler(args: {
   }
 }
 
-
 /** 校验地图候选：结构（id/name/projectionType/layers/features）与正式库存在性。 */
 async function validateMapDraftPayload(
   operations: readonly MapProposalOperation[],
@@ -2816,11 +3513,15 @@ async function validateMapDraftPayload(
   const errors: string[] = [];
   let existingIds = new Set<string>();
   try {
-    const content = await readOptional(workspaceFile(workspace, "world/maps/index.json"));
+    const content = await readOptional(
+      workspaceFile(workspace, "world/maps/index.json"),
+    );
     if (content) {
       const index = JSON.parse(content) as { maps?: unknown[] };
       existingIds = new Set(
-        (index.maps ?? []).map((entry) => objectValue(entry, "地图").id).filter((id): id is string => typeof id === "string"),
+        (index.maps ?? [])
+          .map((entry) => objectValue(entry, "地图").id)
+          .filter((id): id is string => typeof id === "string"),
       );
     }
   } catch {
@@ -2828,11 +3529,15 @@ async function validateMapDraftPayload(
   }
   const candidateIds = new Set<string>();
   for (const operation of operations) {
-    if (!ID_PATTERN.test(operation.candidateId) || candidateIds.has(operation.candidateId)) {
+    if (
+      !ID_PATTERN.test(operation.candidateId) ||
+      candidateIds.has(operation.candidateId)
+    ) {
       errors.push("候选 id 非法或重复：" + operation.candidateId);
     }
     candidateIds.add(operation.candidateId);
-    if (!operation.summary.trim()) errors.push(operation.candidateId + "缺少摘要");
+    if (!operation.summary.trim())
+      errors.push(operation.candidateId + "缺少摘要");
     if (operation.action === "update" && !operation.targetId) {
       errors.push(operation.candidateId + "更新候选缺少 targetId");
       continue;
@@ -2846,7 +3551,11 @@ async function validateMapDraftPayload(
     if (typeof map.name !== "string" || !map.name.trim()) {
       errors.push("地图“" + id + "”缺少名称");
     }
-    if (!["continent", "planet", "multiverse", "parallel"].includes(String(map.projectionType))) {
+    if (
+      !["continent", "planet", "multiverse", "parallel"].includes(
+        String(map.projectionType),
+      )
+    ) {
       errors.push("地图“" + id + "”投影类型非法");
     }
     if (!Array.isArray(map.layers) || map.layers.length === 0) {
@@ -2874,16 +3583,26 @@ async function submitMapProposalHandler(args: {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
+    assertIncrementalBatch(args.operations, "地图候选");
     const { workspace, context } = requireWorkspace();
     const errors = await validateMapDraftPayload(args.operations);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
-    const proposalId = args.proposalId?.trim() || "map-proposal-" + randomUUID().slice(0, 8);
+    const proposalId =
+      args.proposalId?.trim() || "map-proposal-" + randomUUID().slice(0, 8);
     if (!ID_PATTERN.test(proposalId)) {
       throw new Error("proposalId 只能使用小写字母、数字和连字符");
     }
-    proposalDirectory = workspaceFile(workspace, MAP_PROPOSAL_ROOT + "/" + proposalId);
+    proposalDirectory = workspaceFile(
+      workspace,
+      MAP_PROPOSAL_ROOT + "/" + proposalId,
+    );
     if (await readOptional(join(proposalDirectory, "proposal.json"))) {
-      return result({ submitted: true, proposalId, recovered: true, reviewAction: "请作者在小说工作台的世界地图中审阅并采纳候选。" });
+      return result({
+        submitted: true,
+        proposalId,
+        recovered: true,
+        reviewAction: "请作者在小说工作台的世界地图中审阅并采纳候选。",
+      });
     }
     await fs.mkdir(proposalDirectory, { recursive: true });
     createdProposalDirectory = true;
@@ -2893,14 +3612,33 @@ async function submitMapProposalHandler(args: {
       title: args.title.trim(),
       description: args.description?.trim() ?? "",
       createdAt: new Date().toISOString(),
-      source: { kind: "agent", promptId: context.promptId, promptVersion: context.promptVersion },
-      operations: args.operations.map((operation) => ({ ...operation, summary: operation.summary.trim(), status: "pending" })),
+      source: {
+        kind: "agent",
+        promptId: context.promptId,
+        promptVersion: context.promptVersion,
+      },
+      operations: args.operations.map((operation) => ({
+        ...operation,
+        summary: operation.summary.trim(),
+        status: "pending",
+      })),
     };
-    await fs.writeFile(join(proposalDirectory, "proposal.json"), JSON.stringify(manifest, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
-    return result({ submitted: true, proposalId, operationCount: manifest.operations.length, reviewAction: "请作者在小说工作台的世界地图中审阅并采纳候选。" });
+    await fs.writeFile(
+      join(proposalDirectory, "proposal.json"),
+      JSON.stringify(manifest, null, 2) + "\n",
+      { encoding: "utf8", flag: "wx" },
+    );
+    return result({
+      submitted: true,
+      proposalId,
+      operationCount: manifest.operations.length,
+      reviewAction: "请作者在小说工作台的世界地图中审阅并采纳候选。",
+    });
   } catch (error) {
     if (createdProposalDirectory) {
-      await fs.rm(proposalDirectory, { recursive: true, force: true }).catch(() => {});
+      await fs
+        .rm(proposalDirectory, { recursive: true, force: true })
+        .catch(() => {});
     }
     return result({ submitted: false, error: message(error) }, true);
   }
@@ -2912,67 +3650,149 @@ type MapDraftPayload = {
   operations: MapProposalOperation[];
 };
 
-async function createMapDraftHandler(args: { draftId?: string; title: string; description?: string }): Promise<CallToolResult> {
+async function createMapDraftHandler(args: {
+  draftId?: string;
+  title: string;
+  description?: string;
+}): Promise<CallToolResult> {
   try {
     const { workspace, context } = requireDraftMode("maps");
-    const draft = await createNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", draftSource(context), { title: args.title.trim(), description: args.description?.trim() ?? "", operations: [] }, args.draftId);
+    const draft = await createNovelWorkbenchDraft<MapDraftPayload>(
+      workspace,
+      "maps",
+      draftSource(context),
+      {
+        title: args.title.trim(),
+        description: args.description?.trim() ?? "",
+        operations: [],
+      },
+      args.draftId,
+    );
     return result(summarizeNovelWorkbenchDraft(draft));
   } catch (error) {
     return result({ error: message(error) }, true);
   }
 }
 
-async function getMapDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+async function getMapDraftHandler(args: {
+  draftId: string;
+  includeContent?: boolean;
+}): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("maps");
-    return result(summarizeNovelWorkbenchDraft(await loadNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId)));
+    return result(
+      summarizeNovelWorkbenchDraft(
+        await loadNovelWorkbenchDraft<MapDraftPayload>(
+          workspace,
+          "maps",
+          args.draftId,
+        ),
+        args.includeContent === true,
+      ),
+    );
   } catch (error) {
     return result({ error: message(error) }, true);
   }
 }
 
-async function upsertMapDraftOperationsHandler(args: { draftId: string; operations: MapProposalOperation[] }): Promise<CallToolResult> {
+async function upsertMapDraftOperationsHandler(args: {
+  draftId: string;
+  operations: MapProposalOperation[];
+}): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.operations, "地图候选");
     const { workspace } = requireDraftMode("maps");
-    const draft = await updateNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId, (payload) => {
-      const operations = new Map(payload.operations.map((operation) => [operation.candidateId, operation]));
-      for (const operation of args.operations) {
-        operations.set(operation.candidateId, operation);
-      }
-      return { ...payload, operations: [...operations.values()] };
-    });
+    const draft = await updateNovelWorkbenchDraft<MapDraftPayload>(
+      workspace,
+      "maps",
+      args.draftId,
+      (payload) => {
+        const operations = new Map(
+          payload.operations.map((operation) => [
+            operation.candidateId,
+            operation,
+          ]),
+        );
+        for (const operation of args.operations) {
+          const previous = operations.get(operation.candidateId);
+          operations.set(
+            operation.candidateId,
+            previous
+              ? {
+                  ...operation,
+                  value: mergeRecord(previous.value, operation.value),
+                }
+              : operation,
+          );
+        }
+        return { ...payload, operations: [...operations.values()] };
+      },
+    );
     return result(summarizeNovelWorkbenchDraft(draft));
   } catch (error) {
     return result({ error: message(error) }, true);
   }
 }
 
-async function validateMapDraftHandler(args: { draftId: string }): Promise<CallToolResult> {
+async function validateMapDraftHandler(args: {
+  draftId: string;
+}): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("maps");
-    const draft = await loadNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId);
+    const draft = await loadNovelWorkbenchDraft<MapDraftPayload>(
+      workspace,
+      "maps",
+      args.draftId,
+    );
     const errors = await validateMapDraftPayload(draft.payload.operations);
     if (errors.length > 0) return result({ valid: false, errors }, true);
-    const saved = await saveNovelWorkbenchDraftValidation(workspace, draft, hashNovelWorkbenchDraftPayload(draft.payload));
-    return result({ valid: true, ...summarizeNovelWorkbenchDraft(saved), validationToken: saved.validation?.token });
+    const saved = await saveNovelWorkbenchDraftValidation(
+      workspace,
+      draft,
+      hashNovelWorkbenchDraftPayload(draft.payload),
+    );
+    return result({
+      valid: true,
+      ...summarizeNovelWorkbenchDraft(saved),
+      validationToken: saved.validation?.token,
+    });
   } catch (error) {
     return result({ valid: false, errors: [message(error)] }, true);
   }
 }
 
-async function submitMapDraftHandler(args: { draftId: string; validationToken: string }): Promise<CallToolResult> {
+async function submitMapDraftHandler(args: {
+  draftId: string;
+  validationToken: string;
+}): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("maps");
-    const draft = await loadNovelWorkbenchDraft<MapDraftPayload>(workspace, "maps", args.draftId);
+    const draft = await loadNovelWorkbenchDraft<MapDraftPayload>(
+      workspace,
+      "maps",
+      args.draftId,
+    );
     const hash = hashNovelWorkbenchDraftPayload(draft.payload);
     if (draft.submittedProposalId) {
-      return result(await getProposalStatus(MAP_PROPOSAL_ROOT, draft.submittedProposalId, "operations"));
+      return result(
+        await getProposalStatus(
+          MAP_PROPOSAL_ROOT,
+          draft.submittedProposalId,
+          "operations",
+        ),
+      );
     }
-    if (draft.validation?.token !== args.validationToken || draft.validation.contentHash !== hash) {
+    if (
+      draft.validation?.token !== args.validationToken ||
+      draft.validation.contentHash !== hash
+    ) {
       throw new Error("校验令牌无效或草稿已经变化，请重新校验");
     }
     const proposalId = "maps-" + draft.draftId;
-    const submitted = await submitMapProposalHandler({ proposalId, ...draft.payload });
+    const submitted = await submitMapProposalHandler({
+      proposalId,
+      ...draft.payload,
+    });
     if (submitted.isError) return submitted;
     await markNovelWorkbenchDraftSubmitted(workspace, draft, proposalId);
     return result({ ...decodeToolResult(submitted), draftId: draft.draftId });
@@ -2981,15 +3801,21 @@ async function submitMapDraftHandler(args: { draftId: string; validationToken: s
   }
 }
 
-async function getMapProposalStatusHandler(args: { proposalId: string }): Promise<CallToolResult> {
+async function getMapProposalStatusHandler(args: {
+  proposalId: string;
+}): Promise<CallToolResult> {
   try {
     requireDraftMode("maps");
-    return result(await getProposalStatus(MAP_PROPOSAL_ROOT, args.proposalId, "operations"));
+    return result(
+      await getProposalStatus(MAP_PROPOSAL_ROOT, args.proposalId, "operations"),
+    );
   } catch (error) {
-    return result({ exists: false, proposalId: args.proposalId, error: message(error) }, true);
+    return result(
+      { exists: false, proposalId: args.proposalId, error: message(error) },
+      true,
+    );
   }
 }
-
 
 type NarrativeContextScope =
   | "overview"
@@ -3013,21 +3839,34 @@ function filterNarrativeRecords(
   });
 }
 
+async function loadNarrativeSourceFromWorkspace(workspace: string): Promise<{
+  content: string;
+  library: Record<string, unknown>;
+  files: ReadonlyMap<string, string>;
+}> {
+  const loaded = await loadNarrativeEngineeringFiles(async (path) =>
+    fs.readFile(workspaceFile(workspace, path), "utf8"),
+  );
+  const library = narrativeRecord(loaded.library as unknown, "剧情工程事实源");
+  narrativeRecords(library, "lines");
+  narrativeRecords(library, "arcs");
+  narrativeRecords(library, "directories");
+  narrativeRecords(library, "chapters");
+  return {
+    content: serializeNarrativeFileSnapshot(loaded.files),
+    library,
+    files: loaded.files,
+  };
+}
+
 async function getNarrativeContextHandler(args: {
   scope?: NarrativeContextScope;
   ids?: string[];
 }): Promise<CallToolResult> {
   try {
     const { workspace, context } = requireWorkspace();
-    const content = await fs.readFile(
-      workspaceFile(workspace, NARRATIVE_ENGINEERING_PATH),
-      "utf8",
-    );
-    const document = JSON.parse(content) as unknown;
-    if (!document || typeof document !== "object" || Array.isArray(document)) {
-      throw new Error("剧情工程事实源不是有效 JSON 对象");
-    }
-    const library = document as Record<string, unknown>;
+    const { content, library } =
+      await loadNarrativeSourceFromWorkspace(workspace);
     const lines = arrayField(library, "lines");
     const arcs = arrayField(library, "arcs");
     const directories = arrayField(library, "directories");
@@ -3115,7 +3954,7 @@ async function getNarrativeContextHandler(args: {
       sourceHash: narrativeSourceHash(content),
       scope,
       data,
-      note: "工具返回的是已保存事实；会话初始消息中的未保存界面草稿如有冲突，应以作者当前草稿为准。",
+      note: "工具只返回已保存事实，不包含工作台页面中尚未保存的草稿。",
     });
   } catch (error) {
     return result({ error: message(error) }, true);
@@ -3149,15 +3988,8 @@ async function getTimelineContextHandler(args: {
 }): Promise<CallToolResult> {
   try {
     const { workspace, context } = requireWorkspace();
-    const content = await fs.readFile(
-      workspaceFile(workspace, TIMELINE_LIBRARY_PATH),
-      "utf8",
-    );
-    const document = JSON.parse(content) as unknown;
-    if (!document || typeof document !== "object" || Array.isArray(document)) {
-      throw new Error("时间线事实源不是有效 JSON 对象");
-    }
-    const library = document as Record<string, unknown>;
+    const source = await loadTimelineSource(workspace);
+    const library = source.library as unknown as Record<string, unknown>;
     const calendars = arrayField(library, "calendars");
     const periods = arrayField(library, "periods");
     const views = arrayField(library, "views");
@@ -3248,7 +4080,7 @@ async function getTimelineContextHandler(args: {
       mode: context.mode,
       sourcePath: TIMELINE_LIBRARY_PATH,
       source: "saved-facts",
-      sourceHash: createHash("sha256").update(content).digest("hex"),
+      sourceHash: createHash("sha256").update(source.snapshot).digest("hex"),
       scope,
       data,
       note: "工具返回的是已保存事实；会话初始消息中的当前页面草稿如有冲突，应以作者当前草稿为准。",
@@ -4044,17 +4876,11 @@ async function readNarrativeSource(): Promise<{
   library: Record<string, unknown>;
 }> {
   const { workspace } = requireDraftMode("narrative");
-  const content = await fs.readFile(
-    workspaceFile(workspace, NARRATIVE_ENGINEERING_PATH),
-    "utf8",
-  );
-  const library = narrativeRecord(JSON.parse(content), "剧情工程事实源");
-  narrativeRecords(library, "lines");
-  narrativeRecords(library, "arcs");
-  narrativeRecords(library, "directories");
-  narrativeRecords(library, "chapters");
-  if (library.schemaVersion !== NARRATIVE_ENGINEERING_SCHEMA_VERSION)
-    throw new Error("请先在剧情工程页面保存一次，以完成旧数据迁移");
+  const { content, library } =
+    await loadNarrativeSourceFromWorkspace(workspace);
+  if (library.schemaVersion !== NARRATIVE_ENGINEERING_SCHEMA_VERSION) {
+    throw new Error("剧情工程事实源版本无效");
+  }
   return { workspace, content, library };
 }
 
@@ -4093,6 +4919,7 @@ async function createNarrativeDraftHandler(args: {
 
 async function getNarrativeDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("narrative");
@@ -4103,6 +4930,7 @@ async function getNarrativeDraftHandler(args: {
           "narrative",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
   } catch (error) {
@@ -4110,11 +4938,81 @@ async function getNarrativeDraftHandler(args: {
   }
 }
 
+function mergeNarrativeKeyNodes(
+  previous: readonly NarrativeKeyNodeInput[],
+  next: readonly NarrativeKeyNodeInput[],
+): NarrativeKeyNodeInput[] {
+  const nodes = new Map(previous.map((node) => [node.nodeId, node]));
+  for (const node of next) {
+    const existing = nodes.get(node.nodeId);
+    nodes.set(node.nodeId, existing ? { ...existing, ...node } : node);
+  }
+  return [...nodes.values()];
+}
+
+function mergeNarrativeParagraphs(
+  previous: readonly NarrativeParagraphInput[],
+  next: readonly NarrativeParagraphInput[],
+): NarrativeParagraphInput[] {
+  const paragraphs = new Map(
+    previous.map((paragraph) => [
+      paragraph.targetId ?? paragraph.candidateId,
+      paragraph,
+    ]),
+  );
+  for (const paragraph of next) {
+    const key = paragraph.targetId ?? paragraph.candidateId;
+    const existing = paragraphs.get(key);
+    const content = paragraph.appendContent
+      ? `${existing?.content ?? ""}${paragraph.content}`
+      : paragraph.content;
+    const { appendContent: _appendContent, ...value } = paragraph;
+    paragraphs.set(
+      key,
+      existing ? { ...existing, ...value, content } : { ...value, content },
+    );
+  }
+  return [...paragraphs.values()];
+}
+
+function mergeNarrativeSections(
+  previous: readonly NarrativeSectionInput[],
+  next: readonly NarrativeSectionInput[],
+): NarrativeSectionInput[] {
+  const sections = new Map(
+    previous.map((section) => [
+      section.targetId ?? section.candidateId,
+      section,
+    ]),
+  );
+  for (const section of next) {
+    const key = section.targetId ?? section.candidateId;
+    const existing = sections.get(key);
+    const value = existing
+      ? {
+          ...existing,
+          ...section,
+          paragraphs: mergeNarrativeParagraphs(
+            existing.paragraphs,
+            section.paragraphs,
+          ),
+        }
+      : section;
+    sections.set(key, value);
+  }
+  return [...sections.values()];
+}
+
 async function upsertNarrativeDraftLinesHandler(args: {
   draftId: string;
   lines: NarrativeLineInput[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(
+      args.lines,
+      "剧情线路候选",
+      MAX_NARRATIVE_CANDIDATES,
+    );
     const { workspace } = requireDraftMode("narrative");
     const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
       workspace,
@@ -4124,7 +5022,26 @@ async function upsertNarrativeDraftLinesHandler(args: {
         const lines = new Map(
           payload.lines.map((line) => [line.candidateId, line]),
         );
-        args.lines.forEach((line) => lines.set(line.candidateId, line));
+        args.lines.forEach((line) => {
+          const previous = lines.get(line.candidateId);
+          const { appendContent, ...value } = line;
+          lines.set(
+            line.candidateId,
+            previous
+              ? {
+                  ...previous,
+                  ...value,
+                  content: appendContent
+                    ? `${previous.content ?? ""}${line.content ?? ""}`
+                    : (line.content ?? previous.content),
+                  keyNodes: mergeNarrativeKeyNodes(
+                    previous.keyNodes,
+                    line.keyNodes,
+                  ),
+                }
+              : value,
+          );
+        });
         return { ...payload, lines: [...lines.values()] };
       },
     );
@@ -4139,6 +5056,7 @@ async function upsertNarrativeDraftArcsHandler(args: {
   arcs: NarrativeStoryArcInput[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.arcs, "故事弧候选", MAX_NARRATIVE_CANDIDATES);
     const { workspace } = requireDraftMode("narrative");
     const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
       workspace,
@@ -4146,7 +5064,26 @@ async function upsertNarrativeDraftArcsHandler(args: {
       args.draftId,
       (payload) => {
         const arcs = new Map(payload.arcs.map((arc) => [arc.candidateId, arc]));
-        args.arcs.forEach((arc) => arcs.set(arc.candidateId, arc));
+        args.arcs.forEach((arc) => {
+          const previous = arcs.get(arc.candidateId);
+          const { appendContent, ...value } = arc;
+          arcs.set(
+            arc.candidateId,
+            previous
+              ? {
+                  ...previous,
+                  ...value,
+                  content: appendContent
+                    ? `${previous.content ?? ""}${arc.content ?? ""}`
+                    : (arc.content ?? previous.content),
+                  keyNodes: mergeNarrativeKeyNodes(
+                    previous.keyNodes,
+                    arc.keyNodes,
+                  ),
+                }
+              : value,
+          );
+        });
         return { ...payload, arcs: [...arcs.values()] };
       },
     );
@@ -4161,6 +5098,11 @@ async function upsertNarrativeDraftDirectoriesHandler(args: {
   directories: NarrativeDirectoryInput[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(
+      args.directories,
+      "剧情目录候选",
+      MAX_NARRATIVE_CANDIDATES,
+    );
     const { workspace } = requireDraftMode("narrative");
     const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
       workspace,
@@ -4190,6 +5132,11 @@ async function upsertNarrativeDraftChaptersHandler(args: {
   chapters: NarrativeChapterInput[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(
+      args.chapters,
+      "剧情章节候选",
+      MAX_NARRATIVE_CANDIDATES,
+    );
     const { workspace } = requireDraftMode("narrative");
     const draft = await updateNovelWorkbenchDraft<NarrativeDraftPayload>(
       workspace,
@@ -4202,9 +5149,22 @@ async function upsertNarrativeDraftChaptersHandler(args: {
             chapter,
           ]),
         );
-        args.chapters.forEach((chapter) =>
-          chapters.set(chapter.candidateId, chapter),
-        );
+        args.chapters.forEach((chapter) => {
+          const previous = chapters.get(chapter.candidateId);
+          chapters.set(
+            chapter.candidateId,
+            previous
+              ? {
+                  ...previous,
+                  ...chapter,
+                  sections: mergeNarrativeSections(
+                    previous.sections,
+                    chapter.sections,
+                  ),
+                }
+              : chapter,
+          );
+        });
         return { ...payload, chapters: [...chapters.values()] };
       },
     );
@@ -4468,13 +5428,79 @@ async function getContextHandler(args: {
       `${LIBRARY_ROOT}/settings.json`,
       LOCATION_LIBRARY_PATH,
     ]);
-    for (const requested of args.paths ?? [])
-      paths.add(normalizeTargetPath(requested));
+    for (const requested of args.paths ?? []) {
+      try {
+        paths.add(normalizeTargetPath(requested));
+      } catch (error) {
+        if (
+          /^world\/cultivation(?:-ecology\.(?:json|md)|\/)/i.test(requested)
+        ) {
+          throw new Error(
+            "修行体系不是世界架构目标；请改用 novel_cultivation_get_context 读取 world/cultivation/index.json 及其模块",
+          );
+        }
+        throw error;
+      }
+    }
     if (paths.size > 30) throw new Error("单次最多读取 30 个设定文件");
     const files: Record<string, string | null> = {};
-    for (const path of paths)
-      files[path] = await readOptional(workspaceFile(workspace, path));
-    return result({ mode: context.mode, files });
+    let locationSourceHash: string | null = null;
+    for (const path of paths) {
+      if (path === LOCATION_LIBRARY_PATH) {
+        const source = await loadLocationSource(workspace);
+        files[path] = source?.aggregateContent ?? null;
+        locationSourceHash = source
+          ? hashNovelWorkbenchDraftPayload(source.snapshot)
+          : null;
+      } else {
+        files[path] = await readOptional(workspaceFile(workspace, path));
+      }
+    }
+    return result({ mode: context.mode, files, locationSourceHash });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function getInspirationContextHandler(args: {
+  focusId?: string;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireWorkspace();
+    const loaded = await loadInspirationFiles((path) =>
+      fs.readFile(workspaceFile(workspace, path), "utf8"),
+    );
+    const focusId = args.focusId?.trim();
+    const focus = focusId
+      ? (loaded.library.items.find((item) => item.id === focusId) ?? null)
+      : null;
+    return result({
+      mode: context.mode,
+      sourcePath: focus
+        ? inspirationRecordPath(focus.id)
+        : INSPIRATION_INDEX_PATH,
+      source: "saved-facts",
+      sourceHash: hashNovelWorkbenchDraftPayload(
+        serializeInspirationFileSnapshot(loaded.files),
+      ),
+      focusId: focusId ?? null,
+      data: focus
+        ? { item: focus }
+        : {
+            schemaVersion: loaded.library.schemaVersion,
+            updatedAt: loaded.library.updatedAt,
+            items: loaded.library.items.map((item) => {
+              return {
+                id: item.id,
+                title: item.title,
+                state: item.state,
+                tags: item.tags,
+                updatedAt: item.updatedAt,
+              };
+            }),
+          },
+      note: "工具返回的是已保存灵感事实；不存在的 focusId 不得臆测内容。",
+    });
   } catch (error) {
     return result({ error: message(error) }, true);
   }
@@ -4484,6 +5510,7 @@ async function validateHandler(args: {
   changes: ProposedChange[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.changes, "世界架构变更");
     const { context } = requireWorkspace();
     if (!["world", "template", "assist"].includes(context.mode)) {
       throw new Error("当前受控会话不是世界架构设计会话");
@@ -4504,6 +5531,7 @@ async function submitHandler(args: {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
+    assertIncrementalBatch(args.changes, "世界架构变更");
     const { workspace, context } = requireWorkspace();
     if (!["world", "template", "assist"].includes(context.mode)) {
       throw new Error("当前受控会话不是世界架构设计会话");
@@ -4546,10 +5574,10 @@ async function submitHandler(args: {
         flag: "wx",
       });
       if (change.operation === "modify") {
-        const beforeContent = await fs.readFile(
-          workspaceFile(workspace, targetPath),
-          "utf8",
-        );
+        const beforeContent = await readWorldTarget(workspace, targetPath);
+        if (beforeContent === null) {
+          throw new Error(`modify 目标不存在：${targetPath}`);
+        }
         const beforePath = join(
           proposalDirectory,
           "before",
@@ -4788,6 +5816,7 @@ async function createWorldDraftHandler(args: {
 
 async function getWorldDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("world");
@@ -4798,8 +5827,136 @@ async function getWorldDraftHandler(args: {
           "world",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
+async function applyWorldDraftPatchOperations(
+  workspace: string,
+  payload: WorldDraftPayload,
+  operations: readonly WorldDraftPatchOperation[],
+): Promise<{ payload: WorldDraftPayload; changed: readonly string[] }> {
+  assertIncrementalBatch(operations, "世界架构增量修订");
+  const changes = new Map(
+    payload.changes.map((change) => [change.targetPath, change]),
+  );
+  const changed: string[] = [];
+  for (const operation of operations) {
+    const targetPath = normalizeTargetPath(operation.targetPath);
+    const previous = changes.get(targetPath);
+    const sourceContent = previous
+      ? previous.content
+      : await readWorldTarget(workspace, targetPath);
+    const sourceOperation =
+      previous?.operation ?? (sourceContent === null ? "create" : "modify");
+    let nextContent: string;
+    if (operation.action === "text_append") {
+      if (targetPath.endsWith(".json")) {
+        throw new Error(`文本追加不能用于 JSON 文件：${targetPath}`);
+      }
+      nextContent = `${sourceContent ?? ""}${operation.content}`;
+    } else {
+      if (!targetPath.endsWith(".json")) {
+        throw new Error(`结构化增量修订只能用于 JSON 文件：${targetPath}`);
+      }
+      let parsed: unknown;
+      if (sourceContent === null) {
+        if (operation.action !== "append" || operation.parentId) {
+          throw new Error(`目标 JSON 文件不存在，无法修订：${targetPath}`);
+        }
+        parsed = { ...(operation.initial ?? {}) };
+      } else {
+        try {
+          parsed = JSON.parse(sourceContent);
+        } catch (error) {
+          throw new Error(`${targetPath} 不是有效 JSON：${message(error)}`);
+        }
+      }
+      if (!isRecord(parsed)) {
+        throw new Error(`${targetPath} 的根节点必须是对象`);
+      }
+      if (operation.action === "merge") {
+        const target = findCultivationObjectById(parsed, operation.targetId);
+        if (!target) {
+          throw new Error(
+            `${targetPath} 找不到增量修订目标：${operation.targetId}`,
+          );
+        }
+        assertCultivationPatchFields(operation.fields);
+        Object.assign(
+          target.value,
+          mergeRecord(target.value, operation.fields),
+        );
+      } else if (operation.action === "append") {
+        if (
+          !operation.parentId &&
+          !Array.isArray(parsed[operation.collection])
+        ) {
+          parsed[operation.collection] = [];
+        }
+        appendCultivationValue(
+          parsed,
+          operation.collection,
+          operation.parentId,
+          operation.value,
+        );
+      } else {
+        const target = findCultivationObjectById(parsed, operation.targetId);
+        if (!target || !target.parent) {
+          throw new Error(
+            `${targetPath} 找不到可删除的目标：${operation.targetId}`,
+          );
+        }
+        target.parent.splice(target.index, 1);
+      }
+      nextContent = `${JSON.stringify(parsed, null, 2)}\n`;
+    }
+    if (Buffer.byteLength(nextContent, "utf8") > MAX_CHANGE_BYTES) {
+      throw new Error(
+        `${targetPath} 生成后超过 ${MAX_CHANGE_BYTES} 字节，请拆分文件或缩小本次内容`,
+      );
+    }
+    changes.set(targetPath, {
+      id:
+        previous?.id ??
+        `world-change-${hashNovelWorkbenchDraftPayload(targetPath).slice(0, 16)}`,
+      targetPath,
+      operation: sourceOperation,
+      summary:
+        operation.summary?.trim() || previous?.summary || "世界架构增量修订",
+      content: nextContent,
+    });
+    changed.push(`${operation.action}:${targetPath}`);
+  }
+  return { payload: { ...payload, changes: [...changes.values()] }, changed };
+}
+
+async function patchWorldDraftChangesHandler(args: {
+  draftId: string;
+  operations: WorldDraftPatchOperation[];
+}): Promise<CallToolResult> {
+  try {
+    const { workspace } = requireDraftMode("world");
+    let changed: readonly string[] = [];
+    const draft = await updateNovelWorkbenchDraft<WorldDraftPayload>(
+      workspace,
+      "world",
+      args.draftId,
+      async (payload) => {
+        const result = await applyWorldDraftPatchOperations(
+          workspace,
+          payload,
+          args.operations,
+        );
+        changed = result.changed;
+        return result.payload;
+      },
+    );
+    return result({ ...summarizeNovelWorkbenchDraft(draft), changed });
   } catch (error) {
     return result({ error: message(error) }, true);
   }
@@ -4810,6 +5967,7 @@ async function upsertWorldDraftChangesHandler(args: {
   changes: ProposedChange[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.changes, "世界架构变更");
     const { workspace } = requireDraftMode("world");
     const draft = await updateNovelWorkbenchDraft<WorldDraftPayload>(
       workspace,
@@ -4936,6 +6094,7 @@ async function createCharacterDraftHandler(args: {
 
 async function getCharacterDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("characters");
@@ -4946,6 +6105,7 @@ async function getCharacterDraftHandler(args: {
           "characters",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
   } catch (error) {
@@ -4958,6 +6118,7 @@ async function upsertCharacterDraftOperationsHandler(args: {
   operations: CharacterProposalOperation[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.operations, "人物库候选");
     const { workspace } = requireDraftMode("characters");
     const draft = await updateNovelWorkbenchDraft<CharacterDraftPayload>(
       workspace,
@@ -5099,6 +6260,7 @@ async function createItemDraftHandler(args: {
 
 async function getItemDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("items");
@@ -5109,6 +6271,7 @@ async function getItemDraftHandler(args: {
           "items",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
   } catch (error) {
@@ -5121,6 +6284,7 @@ async function upsertItemDraftItemsHandler(args: {
   items: ItemBatchCandidate[];
 }): Promise<CallToolResult> {
   try {
+    assertIncrementalBatch(args.items, "物品候选", MAX_BATCH_ITEMS);
     const { workspace } = requireDraftMode("items");
     const draft = await updateNovelWorkbenchDraft<ItemDraftPayload>(
       workspace,
@@ -5133,8 +6297,27 @@ async function upsertItemDraftItemsHandler(args: {
             item,
           ]),
         );
-        for (const item of args.items)
-          items.set(item.name.trim().toLocaleLowerCase("zh-CN"), item);
+        for (const item of args.items) {
+          const key = item.name.trim().toLocaleLowerCase("zh-CN");
+          const previous = items.get(key);
+          const { appendDescription, ...nextItem } = item;
+          const merged: ItemBatchCandidate = {
+            ...previous,
+            ...nextItem,
+            aliases: item.aliases ?? previous?.aliases,
+            tags: item.tags ?? previous?.tags,
+            summary: item.summary ?? previous?.summary,
+            values:
+              item.values || previous?.values
+                ? { ...(previous?.values ?? {}), ...(item.values ?? {}) }
+                : undefined,
+            description:
+              appendDescription && previous?.description
+                ? `${previous.description}${item.description ?? ""}`
+                : (item.description ?? previous?.description),
+          };
+          items.set(key, merged);
+        }
         return { ...payload, items: [...items.values()] };
       },
     );
@@ -5285,14 +6468,12 @@ async function getManuscriptContextHandler(args: {
       : null;
     let narrativePlan: Record<string, unknown> | null = null;
     if (selected && typeof selected.narrativeChapterId === "string") {
-      const narrativeContent = await readOptional(
+      const narrativeIndex = await readOptional(
         workspaceFile(workspace, NARRATIVE_ENGINEERING_PATH),
       );
-      if (narrativeContent) {
-        const narrative = objectValue(
-          JSON.parse(narrativeContent),
-          "剧情工程事实源",
-        );
+      if (narrativeIndex) {
+        const narrative = (await loadNarrativeSourceFromWorkspace(workspace))
+          .library;
         narrativePlan =
           (arrayField(narrative, "chapters") ?? [])
             .map((value) => objectValue(value, "剧情章节"))
@@ -5332,17 +6513,13 @@ async function getFactionContextHandler(args: {
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireWorkspace();
-    const content = await fs.readFile(
-      workspaceFile(workspace, FACTION_LIBRARY_PATH),
-      "utf8",
-    );
-    const library = objectValue(JSON.parse(content), "势力组织事实源");
-    const factions = (arrayField(library, "factions") ?? []).map((value) =>
+    const source = await loadFactionSource(workspace);
+    const factions = source.library.factions.map((value) =>
       objectValue(value, "势力组织"),
     );
     return result({
       sourcePath: FACTION_LIBRARY_PATH,
-      sourceHash: manuscriptSourceHash(content),
+      sourceHash: manuscriptSourceHash(source.snapshot),
       factions: args.factionId
         ? factions.filter((faction) => faction.id === args.factionId)
         : factions,
@@ -5352,18 +6529,93 @@ async function getFactionContextHandler(args: {
   }
 }
 
-async function getContinuityContextHandler(): Promise<CallToolResult> {
+async function getContinuityContextHandler(args: {
+  chapterId?: string;
+  batchId?: string;
+}): Promise<CallToolResult> {
   try {
     const { workspace } = requireWorkspace();
-    const [tracking, continuity] = await Promise.all([
-      readOptional(workspaceFile(workspace, MANUSCRIPT_TRACKING_PATH)),
-      readOptional(workspaceFile(workspace, MANUSCRIPT_CONTINUITY_PATH)),
-    ]);
+    const [trackingIndex, continuityIndex, continuityLegacy] =
+      await Promise.all([
+        readOptional(workspaceFile(workspace, MANUSCRIPT_TRACKING_INDEX_PATH)),
+        readOptional(
+          workspaceFile(workspace, MANUSCRIPT_CONTINUITY_INDEX_PATH),
+        ),
+        readOptional(
+          workspaceFile(workspace, MANUSCRIPT_CONTINUITY_LEGACY_PATH),
+        ),
+      ]);
+    if (continuityIndex === null && continuityLegacy !== null) {
+      throw new Error(
+        `${MANUSCRIPT_CONTINUITY_LEGACY_PATH} 是旧单文件正文连续性状态；当前目录协议不兼容且不迁移`,
+      );
+    }
+    const tracking = trackingIndex
+      ? await loadManuscriptTrackingFiles((path) =>
+          fs.readFile(workspaceFile(workspace, path), "utf8"),
+        )
+      : null;
+    const continuity = continuityIndex
+      ? await loadManuscriptContinuityFiles((path) =>
+          fs.readFile(workspaceFile(workspace, path), "utf8"),
+        )
+      : null;
+    const requestedBatch = args.batchId
+      ? (tracking?.ledger.batches.find((batch) => batch.id === args.batchId) ??
+        null)
+      : null;
+    if (args.batchId && !requestedBatch) {
+      throw new Error(`正文状态批次不存在：${args.batchId}`);
+    }
+    const batches = tracking?.ledger.batches.filter(
+      (batch) => !args.chapterId || batch.chapterId === args.chapterId,
+    );
+    const continuityState = continuity
+      ? {
+          ...continuity.state,
+          facts: continuity.state.facts.filter(
+            (fact) => !args.chapterId || fact.chapterId === args.chapterId,
+          ),
+        }
+      : null;
+    const trackingPath = requestedBatch
+      ? manuscriptTrackingBatchPath(requestedBatch.id)
+      : MANUSCRIPT_TRACKING_INDEX_PATH;
     return result({
-      trackingPath: MANUSCRIPT_TRACKING_PATH,
-      continuityPath: MANUSCRIPT_CONTINUITY_PATH,
-      tracking: tracking ? JSON.parse(tracking) : null,
-      continuity: continuity ? JSON.parse(continuity) : null,
+      trackingPath,
+      continuityPath: MANUSCRIPT_CONTINUITY_INDEX_PATH,
+      trackingSourceHash: tracking
+        ? hashNovelWorkbenchDraftPayload(
+            serializeManuscriptTrackingFileSnapshot(tracking.files),
+          )
+        : null,
+      continuitySourceHash: continuity
+        ? hashNovelWorkbenchDraftPayload(
+            serializeManuscriptContinuityFileSnapshot(continuity.files),
+          )
+        : null,
+      tracking: tracking
+        ? requestedBatch
+          ? { batch: requestedBatch }
+          : {
+              schemaVersion: tracking.ledger.schemaVersion,
+              updatedAt: tracking.ledger.updatedAt,
+              baselinesCount: Object.keys(tracking.ledger.baselines).length,
+              batches: batches?.map((batch) => ({
+                id: batch.id,
+                chapterId: batch.chapterId,
+                summary: batch.summary,
+                status: batch.status,
+                createdAt: batch.createdAt,
+                appliedAt: batch.appliedAt,
+                revertedAt: batch.revertedAt,
+                changeCount: Array.isArray(batch.changes)
+                  ? batch.changes.length
+                  : 0,
+              })),
+            }
+        : null,
+      continuity: continuityState,
     });
   } catch (error) {
     return result({ error: message(error) }, true);
@@ -5427,6 +6679,7 @@ async function createManuscriptDraftHandler(args: {
 
 async function getManuscriptDraftHandler(args: {
   draftId: string;
+  includeContent?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("manuscript");
@@ -5437,6 +6690,7 @@ async function getManuscriptDraftHandler(args: {
           "manuscript",
           args.draftId,
         ),
+        args.includeContent === true,
       ),
     );
   } catch (error) {
@@ -5448,22 +6702,33 @@ async function upsertManuscriptCandidateHandler(args: {
   draftId: string;
   candidateId: string;
   content: string;
+  append?: boolean;
 }): Promise<CallToolResult> {
   try {
     const { workspace } = requireDraftMode("manuscript");
-    if (
-      Buffer.byteLength(args.content, "utf8") > MAX_MANUSCRIPT_CONTENT_BYTES
-    ) {
-      throw new Error("正文候选超过 4 MiB 限制");
+    if (Buffer.byteLength(args.content, "utf8") > MAX_INCREMENTAL_BATCH_BYTES) {
+      throw new Error(
+        `正文单次增量最多 ${MAX_INCREMENTAL_BATCH_BYTES} 字节，请分块调用`,
+      );
     }
     const draft = await updateNovelWorkbenchDraft<ManuscriptDraftPayload>(
       workspace,
       "manuscript",
       args.draftId,
-      (payload) => ({
-        ...payload,
-        candidate: { id: args.candidateId, content: args.content },
-      }),
+      (payload) => {
+        const previous =
+          args.append && payload.candidate?.id === args.candidateId
+            ? payload.candidate.content
+            : "";
+        const content = `${previous}${args.content}`;
+        if (Buffer.byteLength(content, "utf8") > MAX_MANUSCRIPT_CONTENT_BYTES) {
+          throw new Error("正文候选累计超过 4 MiB 限制");
+        }
+        return {
+          ...payload,
+          candidate: { id: args.candidateId, content },
+        };
+      },
     );
     return result(summarizeNovelWorkbenchDraft(draft));
   } catch (error) {
@@ -5700,8 +6965,38 @@ export async function createNovelWorkbenchServer() {
     targetPath: z.string(),
     operation: z.enum(["create", "modify"]),
     summary: z.string().min(1),
-    content: z.string(),
+    content: z.string().max(MAX_INCREMENTAL_BATCH_BYTES),
   });
+  const worldDraftPatchOperationSchema = z.discriminatedUnion("action", [
+    z.object({
+      targetPath: z.string(),
+      action: z.literal("merge"),
+      targetId: z.string().regex(ID_PATTERN),
+      fields: z.record(z.string(), z.unknown()),
+      summary: z.string().trim().max(200).optional(),
+    }),
+    z.object({
+      targetPath: z.string(),
+      action: z.literal("append"),
+      collection: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]*$/u),
+      parentId: z.string().regex(ID_PATTERN).optional(),
+      value: z.unknown(),
+      initial: z.record(z.string(), z.unknown()).optional(),
+      summary: z.string().trim().max(200).optional(),
+    }),
+    z.object({
+      targetPath: z.string(),
+      action: z.literal("remove"),
+      targetId: z.string().regex(ID_PATTERN),
+      summary: z.string().trim().max(200).optional(),
+    }),
+    z.object({
+      targetPath: z.string(),
+      action: z.literal("text_append"),
+      content: z.string().max(MAX_INCREMENTAL_BATCH_BYTES),
+      summary: z.string().trim().max(200).optional(),
+    }),
+  ]);
   const narrativeExpectedSourceHashSchema = z
     .string()
     .regex(/^[a-f0-9]{64}$/u)
@@ -5735,6 +7030,7 @@ export async function createNovelWorkbenchServer() {
     status: z.enum(["idea", "active", "resolved", "paused"]).optional(),
     premise: z.string().max(20_000).optional(),
     content: z.string().max(160_000).optional(),
+    appendContent: z.boolean().optional(),
     protagonistCharacterId: z.string().regex(ID_PATTERN).nullable().optional(),
     keyNodes: z.array(narrativeKeyNodeInputSchema).min(1).max(30),
   });
@@ -5754,6 +7050,7 @@ export async function createNovelWorkbenchServer() {
     characterArcStageTitle: z.string().max(160).optional(),
     lineIds: z.array(z.string().regex(ID_PATTERN)).max(100).optional(),
     content: z.string().max(160_000).optional(),
+    appendContent: z.boolean().optional(),
     keyNodes: z.array(narrativeKeyNodeInputSchema).min(1).max(30),
   });
   const narrativeDirectoryInputSchema = z.object({
@@ -5786,6 +7083,7 @@ export async function createNovelWorkbenchServer() {
       .describe("更新既有段时填写其稳定 ID"),
     order: z.number().int().nonnegative().max(100_000),
     content: z.string().trim().min(1).max(160_000),
+    appendContent: z.boolean().optional(),
   });
   const narrativeSectionInputSchema = z.object({
     candidateId: z.string().regex(ID_PATTERN).describe("本草稿内的节候选 ID"),
@@ -5836,6 +7134,7 @@ export async function createNovelWorkbenchServer() {
     summary: z.string().optional(),
     values: z.record(z.string(), itemFieldValueSchema).optional(),
     description: z.string().optional(),
+    appendDescription: z.boolean().optional(),
   });
   const characterProposalOperationSchema = z.object({
     candidateId: z.string().regex(ID_PATTERN),
@@ -5862,18 +7161,33 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_world_get_draft",
-        "读取世界架构草稿的当前内容、revision、校验令牌和提交状态。会话恢复或工具报错后必须先调用。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取世界架构草稿状态。默认只返回候选计数、ID、大小和哈希；确实需要完整候选时才传 includeContent=true。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getWorldDraftHandler,
       ),
       tool(
         "novel_world_upsert_draft_changes",
-        "将已确认的世界架构变更增量写入草稿；同一目标文件只保留最后一次变更。不得直接提交完整提案。",
+        "将不超过 64 KB 的小批量世界架构变更写入草稿；同一目标文件只保留最后一次变更。大文件必须使用 novel_world_patch_draft_changes 分多次增量修订，不得一次提交完整大 JSON。",
         {
           draftId: z.string().regex(ID_PATTERN),
-          changes: z.array(changeSchema).min(1).max(100),
+          changes: z.array(changeSchema).min(1).max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertWorldDraftChangesHandler,
+      ),
+      tool(
+        "novel_world_patch_draft_changes",
+        "按目标 JSON 中的稳定 ID 增量合并、追加或删除对象；也可按小块追加 Markdown。每次最多 32 项、64 KB，适合多次小量写入，不会把完整 settings.json 重新传给模型。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          operations: z
+            .array(worldDraftPatchOperationSchema)
+            .min(1)
+            .max(MAX_INCREMENTAL_OPERATIONS),
+        },
+        patchWorldDraftChangesHandler,
       ),
       tool(
         "novel_world_validate_draft",
@@ -5908,8 +7222,11 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_characters_get_draft",
-        "读取人物库草稿及其 revision、校验令牌、提交状态。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取人物库草稿状态。默认返回摘要；确实需要完整候选时才传 includeContent=true。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getCharacterDraftHandler,
       ),
       tool(
@@ -5920,7 +7237,7 @@ export async function createNovelWorkbenchServer() {
           operations: z
             .array(characterProposalOperationSchema)
             .min(1)
-            .max(MAX_CHARACTER_OPERATIONS),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertCharacterDraftOperationsHandler,
       ),
@@ -5958,8 +7275,11 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_items_get_draft",
-        "读取物品批量草稿及其 revision、校验令牌和提交状态。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取物品批量草稿状态。默认返回摘要；确实需要完整候选时才传 includeContent=true。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getItemDraftHandler,
       ),
       tool(
@@ -6016,17 +7336,21 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_manuscript_get_draft",
-        "读取正文 AI 草稿、revision、候选内容、校验令牌和提交状态。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取正文 AI 草稿状态。默认只返回正文与候选大小、哈希；确实需要全文时才传 includeContent=true。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getManuscriptDraftHandler,
       ),
       tool(
         "novel_manuscript_upsert_candidate",
-        "向正文草稿写入或替换一个候选正文。只提交处理范围对应的替换或插入文本，不要包含解释或 Markdown 围栏。",
+        "向正文草稿分块写入候选正文。默认替换候选；传 append=true 可把小块追加到同一 candidateId，单次最多 64 KB、累计最多 4 MiB。不要包含解释或 Markdown 围栏。",
         {
           draftId: z.string().regex(ID_PATTERN),
           candidateId: z.string().regex(ID_PATTERN),
-          content: z.string().min(1).max(MAX_MANUSCRIPT_CONTENT_BYTES),
+          content: z.string().min(1).max(MAX_INCREMENTAL_BATCH_BYTES),
+          append: z.boolean().optional(),
         },
         upsertManuscriptCandidateHandler,
       ),
@@ -6069,8 +7393,11 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_factions_get_draft",
-        "读取势力组织草稿及其 revision、校验令牌和提交状态。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取势力组织草稿状态。默认返回摘要；确实需要完整候选时才传 includeContent=true。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getFactionDraftHandler,
       ),
       tool(
@@ -6090,7 +7417,7 @@ export async function createNovelWorkbenchServer() {
               }),
             )
             .min(1)
-            .max(MAX_FACTION_OPERATIONS),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertFactionDraftOperationsHandler,
       ),
@@ -6117,13 +7444,19 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_continuity_get_context",
-        "读取正文已应用状态批次和连续性事实，供正文生成判断人物状态、关系、物品、地点和未结事项。该工具只读。",
-        {},
+        "读取正文连续性状态和状态批次摘要，供正文生成判断人物状态、关系、物品、地点和未结事项。默认不展开批次中的证据和回滚快照；传 chapterId 可筛选章节批次，确需详情时再传 batchId 读取单个完整批次。返回账本目录 sourceHash。该工具只读。",
+        {
+          chapterId: z
+            .string()
+            .regex(/^chapter-[0-9]{6}$/u)
+            .optional(),
+          batchId: z.string().regex(ID_PATTERN).optional(),
+        },
         getContinuityContextHandler,
       ),
       tool(
         "novel_timeline_get_context",
-        "按总览、事件、纪元或分支范围读取已保存的时间线事实。默认只返回总览；需要完整字段时指定 scope，必要时用 ids 限定对象。初始消息里的当前页面草稿仍优先于这里的已保存事实。",
+        "按总览、事件、纪元或分支范围读取已保存的时间线事实。默认只返回总览；需要完整字段时指定 scope，必要时用 ids 限定对象。",
         {
           scope: z
             .enum(["overview", "events", "periods", "branches", "all"])
@@ -6144,8 +7477,11 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_timeline_get_draft",
-        "读取时间线草稿及其 revision、校验令牌和提交状态。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取时间线草稿状态。默认返回摘要；确实需要完整候选时才传 includeContent=true。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getTimelineDraftHandler,
       ),
       tool(
@@ -6165,7 +7501,7 @@ export async function createNovelWorkbenchServer() {
               }),
             )
             .min(1)
-            .max(MAX_TIMELINE_OPERATIONS),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertTimelineDraftOperationsHandler,
       ),
@@ -6202,8 +7538,11 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_maps_get_draft",
-        "读取世界地图草稿及其 revision、校验令牌和提交状态。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取世界地图草稿状态。默认返回摘要；确实需要完整候选时才传 includeContent=true。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getMapDraftHandler,
       ),
       tool(
@@ -6223,7 +7562,7 @@ export async function createNovelWorkbenchServer() {
               }),
             )
             .min(1)
-            .max(MAX_MAP_OPERATIONS),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertMapDraftOperationsHandler,
       ),
@@ -6250,7 +7589,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_get_context",
-        "按总览、线路、故事弧、目录或章节范围读取已保存的剧情工程事实。默认只返回总览；需要完整字段时指定 scope，必要时用 ids 限定对象。初始消息里的未保存界面草稿仍优先于这里的已保存事实。",
+        "按总览、线路、故事弧、目录或章节范围读取已保存的剧情工程事实。默认只返回总览；需要完整字段时指定 scope，必要时用 ids 限定对象。",
         {
           scope: z
             .enum(["overview", "lines", "arcs", "outline", "chapters", "all"])
@@ -6272,9 +7611,10 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_get_draft",
-        "读取剧情工程 AI 草稿及其线路、故事弧、目录、章节候选、revision、校验令牌和提交状态。",
+        "读取剧情工程 AI 草稿状态。默认返回候选计数与 ID；确实需要完整候选时才传 includeContent=true。",
         {
           draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
         },
         getNarrativeDraftHandler,
       ),
@@ -6286,7 +7626,7 @@ export async function createNovelWorkbenchServer() {
           lines: z
             .array(narrativeLineInputSchema)
             .min(1)
-            .max(MAX_NARRATIVE_CANDIDATES),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertNarrativeDraftLinesHandler,
       ),
@@ -6298,7 +7638,7 @@ export async function createNovelWorkbenchServer() {
           arcs: z
             .array(narrativeStoryArcInputSchema)
             .min(1)
-            .max(MAX_NARRATIVE_CANDIDATES),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertNarrativeDraftArcsHandler,
       ),
@@ -6310,7 +7650,7 @@ export async function createNovelWorkbenchServer() {
           directories: z
             .array(narrativeDirectoryInputSchema)
             .min(1)
-            .max(MAX_NARRATIVE_CANDIDATES),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertNarrativeDraftDirectoriesHandler,
       ),
@@ -6322,7 +7662,7 @@ export async function createNovelWorkbenchServer() {
           chapters: z
             .array(narrativeChapterInputSchema)
             .min(1)
-            .max(MAX_NARRATIVE_CANDIDATES),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         upsertNarrativeDraftChaptersHandler,
       ),
@@ -6334,7 +7674,7 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_narrative_submit_draft",
-        "使用最近一次校验返回的 validationToken 提交剧情草稿为待审提案；只写 narrative/proposals，不修改正式 narrative/index.json。",
+        "使用最近一次校验返回的 validationToken 提交剧情草稿为待审提案；只写 narrative/proposals，不修改正式剧情事实目录。",
         {
           draftId: z.string().regex(ID_PATTERN),
           validationToken: z.string().min(1),
@@ -6349,14 +7689,24 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_world_get_context",
-        "读取小说工作台当前世界架构。默认返回 meta、空间树、设定索引和地点索引；需要查看具体页面时传入受支持的项目相对路径。",
+        "读取小说工作台当前世界架构。默认返回 meta、空间树、设定索引和地点逻辑聚合；需要查看具体设定页面时传入受支持的设定库或地点库路径。地点逻辑聚合由 world/locations/index.json 及其 records 内部装配，模型不应读取或写入 records 路径。仅允许 world/setting-library/** 与 world/locations/index.json；修行体系不得传入本工具，必须改用 novel_cultivation_get_context（事实源入口为 world/cultivation/index.json）。",
         { paths: z.array(z.string()).max(27).optional() },
         getContextHandler,
       ),
       tool(
+        "novel_inspiration_get_context",
+        "读取已保存的灵感目录事实。根索引只返回条目摘要；传 focusId 才返回对应 records/<id>.json 的完整内容。返回覆盖根索引和已读取记录的 sourceHash。该工具只读。",
+        {
+          focusId: z.string().trim().min(1).max(200).optional(),
+        },
+        getInspirationContextHandler,
+      ),
+      tool(
         "novel_world_validate_changes",
         "校验世界架构与地点变更的路径、JSON、层级引用、地点层级、模板关联和设定文件闭合性。提交提案前必须调用。",
-        { changes: z.array(changeSchema).min(1).max(100) },
+        {
+          changes: z.array(changeSchema).min(1).max(MAX_INCREMENTAL_OPERATIONS),
+        },
         validateHandler,
       ),
       tool(
@@ -6366,7 +7716,7 @@ export async function createNovelWorkbenchServer() {
           proposalId: z.string().regex(ID_PATTERN).optional(),
           title: z.string().min(1),
           description: z.string().optional(),
-          changes: z.array(changeSchema).min(1).max(100),
+          changes: z.array(changeSchema).min(1).max(MAX_INCREMENTAL_OPERATIONS),
         },
         submitHandler,
       ),
@@ -6405,8 +7755,24 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_cultivation_get_context",
-        "读取修行体系事实源。默认返回各体系摘要与本源摘要；传 systemId 限定单个体系时返回该体系完整结构。返回绑定当前事实源的 sourceHash。该工具只读，不会修改正式设定。",
-        { systemId: z.string().regex(ID_PATTERN).optional() },
+        "读取修行体系事实源。省略 systemId 返回体系与本源摘要；传 systemId 后可用 scope 按 theory、progression、resources、methods、abilities、formations、foundations、transitions 或 constraints 分模块读取，避免一次返回过大。返回绑定当前事实源的 sourceHash 和审计结果。该工具只读，不会修改正式设定。",
+        {
+          systemId: z.string().regex(ID_PATTERN).optional(),
+          scope: z
+            .enum([
+              "all",
+              "theory",
+              "progression",
+              "resources",
+              "methods",
+              "abilities",
+              "formations",
+              "foundations",
+              "transitions",
+              "constraints",
+            ])
+            .optional(),
+        },
         getCultivationContextHandler,
       ),
       tool(
@@ -6422,31 +7788,61 @@ export async function createNovelWorkbenchServer() {
       ),
       tool(
         "novel_cultivation_get_draft",
-        "读取修行体系草稿的完整 JSON、revision、校验令牌和提交状态。",
-        { draftId: z.string().regex(ID_PATTERN) },
+        "读取修行体系草稿状态。默认只返回标题、版本、大小和哈希；只有确实需要原文时才传 includeContent=true，避免把整份大 JSON 放入上下文。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          includeContent: z.boolean().optional(),
+        },
         getCultivationDraftHandler,
       ),
       tool(
         "novel_cultivation_upsert_draft",
-        "把完整的修行生态 JSON 写入草稿。不会直接写入正式事实源；更新后必须重新校验。",
+        "小内容整份替换接口（最大 64 KB）：仅用于确实需要整体替换的小草稿。常规编辑必须使用 novel_cultivation_patch_draft，超过限制会要求分批写入。不会直接写入正式事实源；更新后必须重新校验。",
         {
           draftId: z.string().regex(ID_PATTERN),
-          content: z
-            .string()
-            .min(2)
-            .max(8 * 1024 * 1024),
+          content: z.string().min(2).max(MAX_CULTIVATION_PATCH_BYTES),
         },
         upsertCultivationDraftHandler,
       ),
       tool(
+        "novel_cultivation_patch_draft",
+        "按稳定 ID 对修行体系草稿做小批量增量修改。merge 修改目标对象字段但不能修改对象自身 id，append 追加新对象，remove 删除对象；每次最多 32 项、64 KB。超过限制必须拆成多次调用。不会直接写入正式事实源，完成后必须调用 novel_cultivation_validate_draft。",
+        {
+          draftId: z.string().regex(ID_PATTERN),
+          operations: z
+            .array(
+              z.discriminatedUnion("action", [
+                z.object({
+                  action: z.literal("merge"),
+                  targetId: z.string().regex(ID_PATTERN),
+                  fields: z.record(z.string(), z.unknown()),
+                }),
+                z.object({
+                  action: z.literal("append"),
+                  collection: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]*$/u),
+                  parentId: z.string().regex(ID_PATTERN).optional(),
+                  value: z.unknown(),
+                }),
+                z.object({
+                  action: z.literal("remove"),
+                  targetId: z.string().regex(ID_PATTERN),
+                }),
+              ]),
+            )
+            .min(1)
+            .max(MAX_CULTIVATION_PATCH_OPERATIONS),
+        },
+        patchCultivationDraftHandler,
+      ),
+      tool(
         "novel_cultivation_validate_draft",
-        "校验修行生态草稿的 Schema、稳定 ID、引用关系和当前事实源版本；成功后返回 validationToken。",
+        "校验修行生态草稿的 Schema、稳定 ID、引用关系和当前事实源版本；工具会自动规范化通过校验的 JSON，成功后返回 validationToken，无需重新上传整份内容。",
         { draftId: z.string().regex(ID_PATTERN) },
         validateCultivationDraftHandler,
       ),
       tool(
         "novel_cultivation_submit_draft",
-        "使用 validationToken 提交修行体系草稿为待作者审批的 before/after 提案，不修改正式事实源。",
+        "使用 validationToken 提交修行体系草稿。工具只为实际变化的体系模块文件生成 before/after 提案，不修改正式事实源。",
         {
           draftId: z.string().regex(ID_PATTERN),
           validationToken: z.string().min(1),
@@ -6466,7 +7862,7 @@ export async function createNovelWorkbenchServer() {
           operations: z
             .array(characterProposalOperationSchema)
             .min(1)
-            .max(MAX_CHARACTER_OPERATIONS),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         validateCharacterProposalHandler,
       ),
@@ -6480,7 +7876,7 @@ export async function createNovelWorkbenchServer() {
           operations: z
             .array(characterProposalOperationSchema)
             .min(1)
-            .max(MAX_CHARACTER_OPERATIONS),
+            .max(MAX_INCREMENTAL_OPERATIONS),
         },
         submitCharacterProposalHandler,
       ),

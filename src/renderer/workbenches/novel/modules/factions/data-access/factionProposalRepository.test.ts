@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  createNovelFactionProposalRepository,
-} from "./factionProposalRepository";
+import { createNovelFactionProposalRepository } from "./factionProposalRepository";
 import {
   serializeFactionProposalManifest,
   type FactionProposalManifest,
@@ -32,6 +30,7 @@ function storageWithProposal(): NovelMemoryStorage {
   return new NovelMemoryStorage({
     "world/factions/index.json": JSON.stringify({
       schemaVersion: 2,
+      storageVersion: 1,
       factions: [],
     }),
     "world/factions/proposals/proposal-1/proposal.json":
@@ -111,14 +110,11 @@ describe("createNovelFactionProposalRepository", () => {
 
     await repository.apply("proposal-1", ["candidate-1"]);
 
-    const factions = JSON.parse(
-      storage.getText("world/factions/index.json")!,
-    ).factions as { readonly id: string }[];
+    const factions = JSON.parse(storage.getText("world/factions/index.json")!)
+      .factions as { readonly id: string }[];
     expect(factions.map((faction) => faction.id)).toEqual(["faction-1"]);
     const applied = JSON.parse(
-      storage.getText(
-        "world/factions/proposals/proposal-1/proposal.json",
-      )!,
+      storage.getText("world/factions/proposals/proposal-1/proposal.json")!,
     );
     expect(
       applied.operations.find(
@@ -138,6 +134,7 @@ describe("createNovelFactionProposalRepository", () => {
     const storage = new NovelMemoryStorage({
       "world/factions/index.json": JSON.stringify({
         schemaVersion: 2,
+        storageVersion: 1,
         factions: [],
       }),
       "world/factions/proposals/proposal-1/proposal.json":
@@ -188,9 +185,9 @@ describe("createNovelFactionProposalRepository", () => {
     });
     const repository = createNovelFactionProposalRepository(storage);
 
-    await expect(repository.apply("proposal-1", ["candidate-1"])).rejects.toThrow(
-      /成员“首席弟子”关联了不存在的角色/,
-    );
+    await expect(
+      repository.apply("proposal-1", ["candidate-1"]),
+    ).rejects.toThrow(/成员“首席弟子”关联了不存在的角色/);
     // 正式库未被写入
     expect(
       JSON.parse(storage.getText("world/factions/index.json")!).factions,
@@ -207,9 +204,7 @@ describe("createNovelFactionProposalRepository", () => {
       JSON.parse(storage.getText("world/factions/index.json")!).factions,
     ).toHaveLength(0);
     const applied = JSON.parse(
-      storage.getText(
-        "world/factions/proposals/proposal-1/proposal.json",
-      )!,
+      storage.getText("world/factions/proposals/proposal-1/proposal.json")!,
     );
     expect(
       applied.operations.find(

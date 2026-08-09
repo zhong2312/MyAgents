@@ -22,6 +22,9 @@
 
 import type { ContentBlock } from '@/types/chat';
 
+const RESTORE_TOOL_RESULT_CAP = 8 * 1024;
+const RESTORE_TOOL_RESULT_TAIL_KEEP = 1024;
+
 export function isRestoreActionBlocked(
     phase: 'inactive' | 'restoring' | 'ready' | 'failed',
 ): boolean {
@@ -52,11 +55,48 @@ function isContentBlock(value: unknown): value is ContentBlock {
     }
 }
 
+function capRestoredToolResult(value: string): string {
+    if (value.length <= RESTORE_TOOL_RESULT_CAP) return value;
+    const marker = '\n...[truncated for display; full result is stored by the session]...\n';
+    const head = value.slice(0, RESTORE_TOOL_RESULT_CAP - RESTORE_TOOL_RESULT_TAIL_KEEP - marker.length);
+    const tail = value.slice(-RESTORE_TOOL_RESULT_TAIL_KEEP);
+    return `${head}${marker}${tail}`;
+}
+
+function capRestoredToolResults(blocks: ContentBlock[]): ContentBlock[] {
+    let changed = false;
+    const next = blocks.map((block) => {
+        if (!block.tool) return block;
+        const result = typeof block.tool.result === 'string'
+            ? capRestoredToolResult(block.tool.result)
+            : block.tool.result;
+        let subagentChanged = false;
+        const subagentCalls = block.tool.subagentCalls?.map((call) => {
+            if (typeof call.result !== 'string') return call;
+            const capped = capRestoredToolResult(call.result);
+            if (capped === call.result) return call;
+            subagentChanged = true;
+            return { ...call, result: capped };
+        });
+        if (result === block.tool.result && !subagentChanged) return block;
+        changed = true;
+        return {
+            ...block,
+            tool: {
+                ...block.tool,
+                result,
+                ...(subagentCalls ? { subagentCalls } : {}),
+            },
+        };
+    });
+    return changed ? next : blocks;
+}
+
 export function normalizeSessionMessageContent(
     content: unknown,
 ): string | ContentBlock[] {
     if (Array.isArray(content)) {
-        return content.every(isContentBlock) ? content : JSON.stringify(content);
+        return content.every(isContentBlock) ? capRestoredToolResults(content) : JSON.stringify(content);
     }
     if (typeof content !== 'string') return '';
     if (!content.startsWith('[') || !content.includes('"type"')) return content;
@@ -67,7 +107,7 @@ export function normalizeSessionMessageContent(
             Array.isArray(parsed)
             && parsed.every(isContentBlock)
         ) {
-            return parsed as ContentBlock[];
+            return capRestoredToolResults(parsed as ContentBlock[]);
         }
     } catch {
         // Persisted plain text is allowed to resemble JSON.

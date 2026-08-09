@@ -2,15 +2,14 @@ import { z } from "zod";
 
 export const INSPIRATION_SCHEMA_VERSION = 1 as const;
 export const INSPIRATION_LIBRARY_PATH = "inspiration/index.json";
+export const INSPIRATION_STORAGE_VERSION = 1 as const;
+export const INSPIRATION_RECORDS_DIRECTORY = "inspiration/records";
 
 const idSchema = z
   .string()
   .trim()
   .min(1)
-  .regex(
-    /^[a-z0-9][a-z0-9._-]*$/u,
-    "id 只能包含小写字母、数字、点、下划线和连字符",
-  );
+  .regex(/^[a-z0-9][a-z0-9-]*$/u, "id 只能包含小写字母、数字和连字符");
 const nonEmptyTextSchema = z.string().trim().min(1);
 
 export const inspirationSourceSchema = z
@@ -22,19 +21,52 @@ export const inspirationSourceSchema = z
   .strict();
 export type InspirationSource = z.infer<typeof inspirationSourceSchema>;
 
-// The outer objects intentionally strip retired planning fields when an older
-// inspiration file is loaded and saved again.
-export const inspirationItemSchema = z.object({
-  id: idSchema,
-  title: nonEmptyTextSchema,
-  body: z.string(),
-  state: z.enum(["inbox", "organizing", "unused", "archived"]),
-  source: inspirationSourceSchema,
-  tags: z.array(nonEmptyTextSchema),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-});
+export const inspirationItemSchema = z
+  .object({
+    id: idSchema,
+    title: nonEmptyTextSchema,
+    body: z.string(),
+    state: z.enum(["inbox", "organizing", "unused", "archived"]),
+    source: inspirationSourceSchema,
+    tags: z.array(nonEmptyTextSchema),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
 export type InspirationItem = z.infer<typeof inspirationItemSchema>;
+
+export function inspirationRecordPath(id: string): string {
+  return `${INSPIRATION_RECORDS_DIRECTORY}/${idSchema.parse(id)}.json`;
+}
+
+export const inspirationIndexEntrySchema = z
+  .object({
+    id: idSchema,
+    path: z.string(),
+  })
+  .strict()
+  .superRefine((entry, context) => {
+    const expected = inspirationRecordPath(entry.id);
+    if (entry.path !== expected) {
+      context.addIssue({
+        code: "custom",
+        path: ["path"],
+        message: `必须是 ${expected}`,
+      });
+    }
+  });
+
+export const inspirationLibraryIndexSchema = z
+  .object({
+    schemaVersion: z.literal(INSPIRATION_SCHEMA_VERSION),
+    storageVersion: z.literal(INSPIRATION_STORAGE_VERSION),
+    updatedAt: z.string().min(1),
+    items: z.array(inspirationIndexEntrySchema),
+  })
+  .strict();
+export type InspirationLibraryIndex = z.infer<
+  typeof inspirationLibraryIndexSchema
+>;
 
 export const inspirationLibrarySchema = z
   .object({
@@ -42,6 +74,7 @@ export const inspirationLibrarySchema = z
     items: z.array(inspirationItemSchema),
     updatedAt: z.string().datetime(),
   })
+  .strict()
   .superRefine((library, context) => {
     const seen = new Set<string>();
     library.items.forEach((item, index) => {

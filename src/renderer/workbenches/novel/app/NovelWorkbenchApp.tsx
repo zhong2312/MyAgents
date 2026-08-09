@@ -45,9 +45,7 @@ import {
 } from "../modules/characters";
 import NovelModelScenarioSettings from "../NovelModelScenarioSettings";
 import PromptManager from "../PromptManager";
-import {
-  createNovelPromptLibraryRepository,
-} from "../promptLibraryRepository";
+import { createNovelPromptLibraryRepository } from "../promptLibraryRepository";
 import { resolveScenePromptOverride } from "../promptSceneOverride";
 import ResearchLibrary from "../ResearchLibrary";
 import {
@@ -58,8 +56,9 @@ import {
 import type { LoadedNovelChapter, LoadedNovelProject } from "../repository";
 import SettingLibrary from "../SettingLibrary";
 import ItemLibrary from "../ItemLibrary";
-import FactionLibrary, { type FactionAiTarget } from "../modules/factions/views/FactionLibrary";
-import { createNovelFactionLibraryRepository } from "../modules/factions/data-access/factionLibraryRepository";
+import FactionLibrary, {
+  type FactionAiTarget,
+} from "../modules/factions/views/FactionLibrary";
 import CultivationEcologyWorkbench, {
   type CultivationAiRunRequest,
 } from "../CultivationEcologyWorkbench";
@@ -79,10 +78,6 @@ import ManuscriptStudio, {
   type ManuscriptAiAgentRequest,
 } from "../ManuscriptStudio";
 import { createManuscriptAiSettingsRepository } from "../manuscriptAiSettingsRepository";
-import {
-  createNovelSettingLibraryRepository,
-  type LoadedSettingLibrary,
-} from "../settingLibraryRepository";
 import MapEditor from "../MapEditor";
 import WorldSimulationWorkbench, {
   type WorldSimulationView,
@@ -95,6 +90,7 @@ import {
   type NovelModelSceneId,
 } from "../modelSceneSettings";
 import { createNovelModelSceneSettingsRepository } from "../modelSceneSettingsRepository";
+import { appendCultivationPlatformProtocol } from "../cultivationPromptProtocol";
 
 const STATUS_LABELS: Record<NovelMetadata["status"], string> = {
   planning: "规划中",
@@ -116,99 +112,6 @@ function SectionLabel({ children }: { children: ReactNode }) {
       {children}
     </h2>
   );
-}
-
-const AI_CONTEXT_TEXT_LIMIT = 24_000;
-
-function clipAiContextText(
-  value: string,
-  limit = AI_CONTEXT_TEXT_LIMIT,
-): string {
-  if (value.length <= limit) return value;
-  return `${value.slice(0, limit)}\n\n[内容已截断，请基于已有部分生成候选]`;
-}
-
-function withoutCurrentDraft(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-  const copy = { ...(value as Record<string, unknown>) };
-  delete copy.currentDraft;
-  return copy;
-}
-
-function buildAiSettingLibraryContext(
-  library: LoadedSettingLibrary,
-  target: NovelAiAssistTarget,
-): {
-  readonly schemaVersion: LoadedSettingLibrary["meta"]["schemaVersion"];
-  readonly levelTypes: readonly unknown[];
-  readonly settingTemplates: readonly unknown[];
-  readonly profiles: LoadedSettingLibrary["meta"]["profiles"];
-  spatialTree: unknown;
-  settings: unknown;
-} {
-  const targetSetting =
-    target.kind === "setting-page"
-      ? library.settingsIndex.settings.find(
-          (item) =>
-            item.nodeId === target.nodeId && item.id === target.settingId,
-        )
-      : undefined;
-  const targetTemplateId =
-    target.kind === "setting-page"
-      ? (targetSetting?.templateId ??
-        target.settingId.replace(`page-${target.nodeId}-`, ""))
-      : target.kind === "setting-template"
-        ? target.entityId
-        : undefined;
-
-  return {
-    schemaVersion: library.meta.schemaVersion,
-    levelTypes: library.meta.levelTypes.map((levelType) => ({
-      ...levelType,
-      description: clipAiContextText(levelType.description, 600),
-    })),
-    settingTemplates: library.meta.settingTemplates.map((template) => {
-      const relevant = template.id === targetTemplateId;
-      return relevant
-        ? {
-            ...template,
-            description: clipAiContextText(template.description, 800),
-            skeleton: clipAiContextText(template.skeleton, 4_000),
-            agentGuide: clipAiContextText(template.agentGuide, 3_000),
-          }
-        : {
-            id: template.id,
-            name: template.name,
-            group: template.group,
-            description: clipAiContextText(template.description, 300),
-            version: template.version,
-            source: template.source,
-            ...(template.archived ? { archived: true } : {}),
-          };
-    }),
-    profiles: library.meta.profiles,
-    spatialTree: library.spatialTree.nodes.map((node) => ({
-      id: node.id,
-      parentId: node.parentId,
-      name: node.name,
-      typeId: node.typeId,
-      order: node.order,
-    })),
-    settings: library.settingsIndex.settings.map((setting) =>
-      setting.id === targetSetting?.id
-        ? setting
-        : {
-            id: setting.id,
-            nodeId: setting.nodeId,
-            templateId: setting.templateId,
-            name: setting.name,
-            group: setting.group,
-            status: setting.status,
-          },
-    ),
-  };
 }
 
 function WorldAgentButton({
@@ -892,7 +795,11 @@ export default function NovelWorkbenchRenderer({
 }: WorkbenchRendererProps) {
   const controller = useNovelProject(context.storage, context.isActive);
   const [selectedChapterId, setSelectedChapterId] = useState("");
-  const domainIndex = useDomainIndex(context.storage, context.isActive, context.projection);
+  const domainIndex = useDomainIndex(
+    context.storage,
+    context.isActive,
+    context.projection,
+  );
   const [entityFocus, setEntityFocus] = useState<DomainEntityRef | null>(null);
   const [isProjectSettingsOpen, setIsProjectSettingsOpen] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -906,6 +813,7 @@ export default function NovelWorkbenchRenderer({
     "single" | "batch" | null
   >(null);
   const [isProposalReviewOpen, setIsProposalReviewOpen] = useState(false);
+  const [settingLibraryReloadKey, setSettingLibraryReloadKey] = useState(0);
   const [isItemProposalReviewOpen, setIsItemProposalReviewOpen] =
     useState(false);
   const [isCharacterProposalReviewOpen, setIsCharacterProposalReviewOpen] =
@@ -995,6 +903,7 @@ export default function NovelWorkbenchRenderer({
       promptId: string,
       variables: Readonly<Record<string, string>>,
       buildFallback: () => Promise<string>,
+      onResolvedVersion?: (version: string) => void,
     ): Promise<string> => {
       // 提示词库解析失败（如注册表损坏）时回退内置提示词，不阻断 AI 功能
       const override = await resolveScenePromptOverride(
@@ -1002,10 +911,22 @@ export default function NovelWorkbenchRenderer({
         promptId,
         project?.metadata.genres ?? [],
         variables,
-      ).catch(() => null);
-      return override?.status === "ready"
-        ? override.content
-        : buildFallback();
+      ).catch((error) => {
+        // 提示词库损坏时保留内置回退，但启用副本冲突必须阻断请求，
+        // 否则作者以为正在使用自定义提示词，实际却执行了另一套规则。
+        if (
+          error instanceof Error &&
+          error.message.includes("存在多个启用副本")
+        ) {
+          throw error;
+        }
+        return null;
+      });
+      if (override?.status === "ready") {
+        onResolvedVersion?.(override.version);
+        return override.content;
+      }
+      return buildFallback();
     },
     [context.storage, project?.metadata.genres],
   );
@@ -1150,36 +1071,16 @@ export default function NovelWorkbenchRenderer({
           outputSchema: isTemplateMode
             ? "先逐步澄清模板覆盖范围，最终给出可审阅的 meta.json 变更方案"
             : "先逐步澄清作者选择，最终给出可审阅的层级类型、模板配置、空间树、区域地点与设定页变更方案",
-          context: JSON.stringify(
-            {
-              title: project.metadata.title,
-              genres: project.metadata.genres,
-              projectRoot: ".",
-              settingLibrary: "world/setting-library/",
-              locationLibrary: "world/locations/index.json",
-              promptId: selection.activation.prompt.id,
-              promptVersion: selection.activation.prompt.version,
-            },
-            null,
-            2,
-          ),
+          context:
+            "正式世界事实不在提示词中展开；请按需调用小说工作台内置工具 novel_world_get_context 读取。",
           userInstruction: isTemplateMode
             ? "先请作者说明模板服务的世界层级或创作目标。一次只推进必要的关键决定；未获得作者确认前不要提交提案。"
             : "先请作者用一句话描述世界。一次只推进必要的关键决定；未获得作者确认前不要提交提案。",
           projectName: project.metadata.title,
           genres: project.metadata.genres.join("、"),
           dimension: isTemplateMode ? "设定模板配置" : "完整世界架构",
-          worldContext: JSON.stringify(
-            {
-              title: project.metadata.title,
-              genres: project.metadata.genres,
-              projectRoot: ".",
-              settingLibrary: "world/setting-library/",
-              locationLibrary: "world/locations/index.json",
-            },
-            null,
-            2,
-          ),
+          worldContext:
+            "正式世界事实不在提示词中展开；请按需调用小说工作台内置工具 novel_world_get_context 读取。",
           worldRulesContext: "",
           userHint: isTemplateMode
             ? "围绕层级类型、模板骨架和默认关联逐步完善配置。一次只推进必要的关键决定。"
@@ -1272,7 +1173,7 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
 4. 每次只处理少量候选。新角色、种族、分组和灵魂可先提交本次确认的字段，服务端会补齐可编辑的基础骨架；如需补充同一候选，使用同一个 candidateId 再次写入草稿。提交前仍必须补齐关系和物品引用：raceId、soulId、groupIds、关系 targetId 只能引用已有记录或同一草稿候选；物品栏关联物品库时 itemId 必须存在，不关联时设为 null。
 5. 角色灵魂只能提供表达、心智模型和决策倾向；不得覆盖人物硬设定、当前剧情、角色认知和因果。发现冲突时，人物设定优先。
 6. 作者确认后先调用 novel_characters_create_draft；再用 novel_characters_upsert_draft_operations 分批写入候选。工具中断或会话恢复时先调用 novel_characters_get_draft，继续同一草稿。
-7. 完成后调用 novel_characters_validate_draft；只能使用返回的 validationToken 调用 novel_characters_submit_draft。随后调用 novel_characters_get_proposal_status，只有 exists=true 才能告知作者已提交。不得调用 Bash、Write、Edit 等工具写入正式角色文件。`,
+7. 完成后调用 novel_characters_validate_draft；只能使用返回的 validationToken 调用 novel_characters_submit_draft。随后调用 novel_characters_get_proposal_status，只有 exists=true 才能告知作者已提交。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式角色变更仍必须通过上述提案协议。`,
       );
       const targetKey = `${target.scope}:${target.targetCharacterId ?? "library"}`;
       const modelSelection = await resolveSceneModelSelection(
@@ -1313,7 +1214,8 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
     setOperationError(null);
     setIsCultivationAgentLaunching(true);
     try {
-      const initialMessage = await applyScenePromptOverride(
+      let cultivationPromptVersion = "1.0.0";
+      const cultivationPrompt = await applyScenePromptOverride(
         "novel.cultivation.assist",
         {
           projectName: project.metadata.title,
@@ -1322,17 +1224,19 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
         },
         async () => `## 小说工作台修行体系逻辑审查与提案任务
 
-你正在协助作者审查和共创修行生态。修行生态正式事实源是 world/cultivation-ecology.json；你不能直接修改正式文件，只能通过修行草稿和待审批提案协议写回。
+你正在协助作者审查和共创修行生态。请把提示词当作工作方法引导，把正式事实和当前状态交给小说工作台内置工具读取。
 
-执行协议：
+执行引导：
 1. 首先调用 novel_cultivation_get_context，读取当前修行生态和 sourceHash；不要用自由文本臆造体系、轨道、阶段、法门、能力、资源、阵法、跃迁或约束 ID。
 2. 按“世界本源投影 -> 理论节点 -> 成长轨道/阶段 -> 资源与法门课程 -> 能力训练与释放 -> 阵法部署 -> 突破/转换 -> 体系约束 -> 角色引用”的逻辑链检查闭合关系。
 3. 明确区分事实、结构问题、语义冲突和可选创作建议；每条问题写清影响对象、稳定 ID、原因和建议动作。
 4. 重点检查阶段侧法门/能力/资源关联与资产侧 coverage、unlock、usableLevelIds 是否一致，运行拓扑是否只引用理论节点，跨体系关系是否声明转换规则、边界和风险。
-5. 作者确认修改范围后，调用 novel_cultivation_create_draft 创建草稿，再用 novel_cultivation_upsert_draft 写入完整且规范化的生态 JSON；调用 novel_cultivation_validate_draft 成功后，只能使用返回的 validationToken 调用 novel_cultivation_submit_draft。
-6. 提交后必须调用 novel_cultivation_get_proposal_status 确认 exists=true，再告知作者点击“审阅提案”审批；在审批前不得声称正式事实源已经更新。
-7. 禁止调用 Bash、Write、Edit 等原始文件工具修改小说项目。`,
+5. 需要项目设定或外部素材时，先明确要解决的问题，再按需读取相关内容；不要为了遍历工具而无目的地扫描文件。`,
+        (version) => {
+          cultivationPromptVersion = version;
+        },
       );
+      const initialMessage = appendCultivationPlatformProtocol(cultivationPrompt);
       const modelSelection =
         await resolveSceneModelSelection("cultivation.assist");
       await context.agentSessions.open({
@@ -1350,7 +1254,7 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
           context: {
             mode: "cultivation",
             promptId: "novel.cultivation.assist",
-            promptVersion: "1.0.0",
+            promptVersion: cultivationPromptVersion,
           },
         },
         ...(modelSelection ? { modelSelection } : {}),
@@ -1446,21 +1350,6 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
     setOperationError(null);
     setFactionAgentLaunchMode("batch");
     try {
-      const factionLibrary = await createNovelFactionLibraryRepository(
-        context.storage,
-      ).load();
-      const existingFactions = factionLibrary.library.factions.map(
-        (faction) => ({
-          id: faction.id,
-          name: faction.name,
-          type: faction.type,
-          status: faction.status,
-          summary: clipAiContextText(faction.summary, 500),
-        }),
-      );
-      const existingFactionContext = clipAiContextText(
-        JSON.stringify(existingFactions, null, 2),
-      );
       const initialMessage = await applyScenePromptOverride(
         "novel.factions.batch",
         {
@@ -1474,14 +1363,13 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
 
 项目：${project.metadata.title}
 创作题材：${project.metadata.genres.join("、") || "未设置"}
-现有势力摘要：${existingFactionContext}
 
 执行协议：
-1. 先通过简洁对话确认本批需要新增或补充的势力类型、数量（1 至 10）、叙事阶段、地域范围和冲突方向；一次只追问影响结果的关键问题。
+1. 首先调用 novel_factions_get_context 读取现有势力摘要；再通过简洁对话确认本批需要新增或补充的势力类型、数量（1 至 10）、叙事阶段、地域范围和冲突方向；一次只追问影响结果的关键问题。
 2. 设计时必须避开现有势力与同批候选的名称、功能和资源控制重复；优先补足世界格局中的空位，而不是机械堆叠组织。
 3. 每个候选至少提供：名称、势力类型、当前状态、势力概要、核心目标、组织层级、关键成员类别、控制地盘或资源、对外关系、权限或名分，以及可接入时间线的演化钩子。
 4. 势力内部单元与独立势力关系必须区分：堂口、官署、分号、支脉属于组织层级；隶属、联盟、敌对、竞争、依附属于势力关系。禁止做全库 N×N 关系或冲突分析。
-5. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。不得调用 Bash、Write、Edit 等工具修改正式项目文件。`,
+5. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式势力变更仍必须通过上述提案协议。`,
       );
       const modelSelection = await resolveSceneModelSelection("factions.batch");
       await context.agentSessions.open({
@@ -1541,7 +1429,7 @@ ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}
 4. 候选名称不得与已有物品或同批候选重复；字段只能使用返回的 fieldId，并遵守类型、选项和必填约束。
 5. 每件候选应包含名称、别名、标签、一句话摘要、适用字段和完整 Markdown 描述。
 6. 作者确认生成方向后，先调用 novel_items_create_draft，再用 novel_items_upsert_draft_items 分批写入候选。工具中断或会话恢复时必须先调用 novel_items_get_draft，继续同一草稿。
-7. 完成后调用 novel_items_validate_draft；只能使用返回的 validationToken 调用 novel_items_submit_draft。随后调用 novel_items_get_proposal_status，只有 exists=true 才能说明候选已经提交，并提示作者回到物品库点击“审阅批量物品提案”。不得调用 Bash、Write、Edit 等工具写入正式文件。`,
+7. 完成后调用 novel_items_validate_draft；只能使用返回的 validationToken 调用 novel_items_submit_draft。随后调用 novel_items_get_proposal_status，只有 exists=true 才能说明候选已经提交，并提示作者回到物品库点击“审阅批量物品提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式物品变更仍必须通过上述提案协议。`,
       );
       const modelSelection = await resolveSceneModelSelection("items.batch");
       await context.agentSessions.open({
@@ -1578,53 +1466,13 @@ ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}
     }
     setOperationError(null);
     try {
-      const library = await createNovelSettingLibraryRepository(
-        context.storage,
-      ).load(project.metadata.title);
-      let currentPage: { path: string; content: string } | null = null;
-      if (target.kind === "setting-page") {
-        const setting = library.settingsIndex.settings.find(
-          (item) =>
-            item.nodeId === target.nodeId && item.id === target.settingId,
-        );
-        currentPage = {
-          path:
-            setting?.pagePath ??
-            `world/setting-library/pages/${target.nodeId}/${target.settingId}.md`,
-          content: setting
-            ? (await context.storage.readText(setting.pagePath)).content
-            : "",
-        };
-      }
-      const injectedContext = {
-        project: {
-          title: project.metadata.title,
-          genres: project.metadata.genres,
-        },
-        target,
-        world: buildAiSettingLibraryContext(library, target),
-        currentPage: currentPage
-          ? {
-              path: currentPage.path,
-              content: clipAiContextText(
-                (() => {
-                  if (
-                    localContext &&
-                    typeof localContext === "object" &&
-                    !Array.isArray(localContext) &&
-                    typeof (localContext as Record<string, unknown>)
-                      .currentDraft === "string"
-                  ) {
-                    return (localContext as Record<string, string>)
-                      .currentDraft;
-                  }
-                  return currentPage.content;
-                })(),
-              ),
-            }
-          : null,
-        localContext: withoutCurrentDraft(localContext),
-      };
+      const hasUnsavedDraft = Boolean(
+        localContext &&
+          typeof localContext === "object" &&
+          !Array.isArray(localContext) &&
+          typeof (localContext as Record<string, unknown>).currentDraft ===
+            "string",
+      );
       const targetKey =
         target.kind === "setting-page" || target.kind === "spatial-children"
           ? `${target.kind}:${target.nodeId}${
@@ -1645,16 +1493,16 @@ ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}
 作者已点击“AI 写作”，请直接为当前目标生成可审批候选，不要再次询问是否开始。
 
 目标：${target.label}
-
-必要上下文：
-${JSON.stringify(injectedContext, null, 2)}
+目标标识：${JSON.stringify(target)}
+${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读取到该草稿，先请作者保存或明确放弃。" : "当前页面没有由工作台传入的未保存草稿。"}
 
 执行规则：
-1. 只处理当前目标以及保证 settings.json 引用闭合所必需的关联文件，不扩展无关设定。
-2. 现有文件使用 modify；虚拟设定页尚未落盘时，同时创建页面、词条文件并修改 settings.json 登记引用。
-3. 先调用 novel_world_create_draft，再用 novel_world_upsert_draft_changes 写入候选；会话恢复或失败后先调用 novel_world_get_draft。
-4. 生成完成后必须先调用 novel_world_validate_draft，再使用 validationToken 调用 novel_world_submit_draft，最后调用 novel_world_get_proposal_status 确认 exists=true。
-5. 不得直接修改正式文件。提交成功后简要说明结果，并提示作者在小说工作台审阅提案。`,
+1. 先调用 novel_world_get_context，按目标标识读取已保存的世界架构事实；只读取当前目标以及保证 settings.json 引用闭合所必需的关联文件，不扩展无关设定。
+2. 如果当前页面存在未保存草稿，禁止继续创建草稿覆盖页面修改；请作者先保存页面或明确放弃草稿。
+3. 现有文件使用 modify；虚拟设定页尚未落盘时，同时创建页面、词条文件并修改 settings.json 登记引用。
+4. 先调用 novel_world_create_draft，再用 novel_world_upsert_draft_changes 写入候选；会话恢复或失败后先调用 novel_world_get_draft。
+5. 生成完成后必须先调用 novel_world_validate_draft，再使用 validationToken 调用 novel_world_submit_draft，最后调用 novel_world_get_proposal_status 确认 exists=true。
+6. 不得直接修改正式文件。提交成功后简要说明结果，并提示作者在小说工作台审阅提案。`,
       );
       const runId = `${Date.now().toString(36)}-${Math.random()
         .toString(36)
@@ -1861,42 +1709,25 @@ ${JSON.stringify(injectedContext, null, 2)}
           focus={entityFocus}
           isActive={context.isActive}
           projectTitle={project.metadata.title}
-          onAiRun={
-            context.aiRuns.isAvailable
-              ? async (request) => {
-                  const modelSelection = await resolveSceneModelSelection(
-                    request.sceneId,
-                  );
-                  return (
-                    await context.aiRuns.run({
-                      version: WORKBENCH_AI_RUN_REQUEST_VERSION,
-                      label: request.label,
-                      prompt: request.prompt,
-                      systemPrompt: request.systemPrompt,
-                      ...(modelSelection ? { modelSelection } : {}),
-                    })
-                  ).output;
-                }
-              : undefined
-          }
           onOpenAiAgent={
             context.agentSessions.isAvailable
               ? async (request) => {
+                  const scenePromptId = `novel.${request.sceneId}`;
                   const modelSelection = await resolveSceneModelSelection(
-                    "inspiration.coauthor",
+                    request.sceneId,
                   );
                   await context.agentSessions.open({
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
-                    promptId: "novel.inspiration.coauthor",
+                    promptId: scenePromptId,
                     systemPrompt: await applyScenePromptOverride(
-                      "novel.inspiration.coauthor",
+                      scenePromptId,
                       {
                         projectName: project.metadata.title,
                         genres: project.metadata.genres.join("、") || "未设置",
                         requirement: request.title,
                       },
-                      async () => request.initialMessage,
+                      async () => request.systemPrompt,
                     ),
                     initialMessage: request.initialMessage,
                     presentation: "dialog",
@@ -1907,7 +1738,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                       id: "novel-world",
                       context: {
                         mode: "inspiration",
-                        promptId: "novel.inspiration.coauthor",
+                        promptId: scenePromptId,
                         promptVersion: "1.0.0",
                       },
                     },
@@ -1945,7 +1776,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                         genres: project.metadata.genres.join("、") || "未设置",
                         requirement: request.title,
                       },
-                      async () => request.initialMessage,
+                      async () => request.systemPrompt,
                     ),
                     initialMessage: request.initialMessage,
                     presentation: "dock",
@@ -1980,12 +1811,16 @@ ${JSON.stringify(injectedContext, null, 2)}
             onAiAssist={runAiAssist}
             focusSource={knowledgeSourceFocus}
             focusNodeId={factionWorldNodeFocusId}
+            reloadKey={settingLibraryReloadKey}
           />
           {isProposalReviewOpen && (
             <WorldProposalReview
               storage={context.storage}
               projectTitle={project.metadata.title}
               onClose={() => setIsProposalReviewOpen(false)}
+              onApplied={() =>
+                setSettingLibraryReloadKey((key) => key + 1)
+              }
             />
           )}
         </div>
@@ -2000,12 +1835,16 @@ ${JSON.stringify(injectedContext, null, 2)}
             mode="meta"
             headerActions={worldToolbarActions}
             onAiAssist={runAiAssist}
+            reloadKey={settingLibraryReloadKey}
           />
           {isProposalReviewOpen && (
             <WorldProposalReview
               storage={context.storage}
               projectTitle={project.metadata.title}
               onClose={() => setIsProposalReviewOpen(false)}
+              onApplied={() =>
+                setSettingLibraryReloadKey((key) => key + 1)
+              }
             />
           )}
         </div>
@@ -2216,7 +2055,7 @@ ${JSON.stringify(injectedContext, null, 2)}
                         genres: project.metadata.genres.join("、") || "未设置",
                         requirement: request.title,
                       },
-                      async () => request.initialMessage,
+                      async () => request.systemPrompt,
                     ),
                     initialMessage: request.initialMessage,
                     presentation: "dock",

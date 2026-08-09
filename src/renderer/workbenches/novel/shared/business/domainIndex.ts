@@ -1,9 +1,34 @@
 import type { WorkbenchProjection, WorkbenchStorage } from "@/workbench-sdk";
+import {
+  NARRATIVE_ENGINEERING_INDEX_PATH,
+  loadNarrativeEngineeringFiles,
+  narrativeRecordPath,
+} from "../../../../../shared/workbenches/novel/narrativeEngineeringStorage";
+import {
+  TIMELINE_INDEX_PATH,
+  loadTimelineFiles,
+  timelineRecordPath,
+} from "../../../../../shared/workbenches/novel/timelineStorage";
+import {
+  FACTION_INDEX_PATH,
+  factionRecordPath,
+  loadFactionFiles,
+} from "../../../../../shared/workbenches/novel/factionStorage";
+import {
+  LOCATION_INDEX_PATH,
+  loadLocationFiles,
+  locationRecordPath,
+} from "../../../../../shared/workbenches/novel/locationStorage";
+import {
+  INSPIRATION_INDEX_PATH,
+  inspirationRecordPath,
+  loadInspirationFiles,
+} from "../../../../../shared/workbenches/novel/inspirationStorage";
 
 import { parseCharacterLibraryIndex } from "../../modules/characters";
 import { parseFactionLibrary } from "../../modules/factions/entities/factionLibrarySchema";
 import { parseItemLibraryIndex } from "../../itemLibrarySchema";
-import { parseLocationLibraryIndex } from "../../locationLibrarySchema";
+import { parseLocationLibraryIndex } from "../../modules/locations/entities/locationLibrarySchema";
 import { parseNovelChapterIndex } from "../../modules/project/entities/projectSchema";
 import { parseNarrativeEngineering } from "../../narrativeEngineeringSchema";
 import { parseInspirationLibrary } from "../../inspirationSchema";
@@ -73,6 +98,35 @@ async function loadOptional(
   return (await storage.readText(path)).content;
 }
 
+async function loadOptionalFaction(
+  storage: WorkbenchStorage,
+): Promise<ReturnType<typeof parseFactionLibrary> | null> {
+  const [info] = await storage.stat([FACTION_INDEX_PATH]);
+  if (!info?.exists || info.kind !== "file") return null;
+  const loaded = await loadFactionFiles(
+    async (path) => (await storage.readText(path)).content,
+  );
+  return parseFactionLibrary(JSON.stringify(loaded.library));
+}
+
+async function loadOptionalLocation(storage: WorkbenchStorage) {
+  const [info] = await storage.stat([LOCATION_INDEX_PATH]);
+  if (!info?.exists || info.kind !== "file") return null;
+  const loaded = await loadLocationFiles(
+    async (path) => (await storage.readText(path)).content,
+  );
+  return parseLocationLibraryIndex(JSON.stringify(loaded.library));
+}
+
+async function loadOptionalInspiration(storage: WorkbenchStorage) {
+  const [info] = await storage.stat([INSPIRATION_INDEX_PATH]);
+  if (!info?.exists || info.kind !== "file") return null;
+  const loaded = await loadInspirationFiles(
+    async (path) => (await storage.readText(path)).content,
+  );
+  return parseInspirationLibrary(JSON.stringify(loaded.library));
+}
+
 async function appendNonProjectedEntities(
   storage: WorkbenchStorage,
   entities: DomainEntityRef[],
@@ -112,16 +166,16 @@ async function appendNonProjectedEntities(
     }
   }
 
-  const inspiration = await loadOptional(storage, "inspiration/index.json");
+  const inspiration = await loadOptionalInspiration(storage);
   if (inspiration) {
-    for (const item of parseInspirationLibrary(inspiration).items) {
+    for (const item of inspiration.items) {
       entities.push({
         kind: "inspiration",
         id: item.id,
         name: item.title,
         aliases: [],
         summary: clip(item.body),
-        sourcePath: "inspiration/index.json",
+        sourcePath: inspirationRecordPath(item.id),
         route: "inspiration",
         focus: { inspirationId: item.id },
       });
@@ -154,17 +208,71 @@ function projectionEntityToDomainRef(
 ): DomainEntityRef | null {
   switch (entity.kind) {
     case "character":
-      return { kind: "character", id: entity.id, name: entity.name, aliases: entity.aliases, summary: clip(entity.summary), sourcePath: entity.sourcePath, route: "characters", focus: { characterId: entity.id } };
+      return {
+        kind: "character",
+        id: entity.id,
+        name: entity.name,
+        aliases: entity.aliases,
+        summary: clip(entity.summary),
+        sourcePath: entity.sourcePath,
+        route: "characters",
+        focus: { characterId: entity.id },
+      };
     case "faction":
-      return { kind: "faction", id: entity.id, name: entity.name, aliases: entity.aliases, summary: clip(entity.summary), sourcePath: entity.sourcePath, route: "factions", focus: { factionId: entity.id } };
+      return {
+        kind: "faction",
+        id: entity.id,
+        name: entity.name,
+        aliases: entity.aliases,
+        summary: clip(entity.summary),
+        sourcePath: entity.sourcePath,
+        route: "factions",
+        focus: { factionId: entity.id },
+      };
     case "item":
-      return { kind: "item", id: entity.id, name: entity.name, aliases: entity.aliases, summary: clip(entity.summary), sourcePath: entity.sourcePath, route: "items", focus: { itemId: entity.id } };
+      return {
+        kind: "item",
+        id: entity.id,
+        name: entity.name,
+        aliases: entity.aliases,
+        summary: clip(entity.summary),
+        sourcePath: entity.sourcePath,
+        route: "items",
+        focus: { itemId: entity.id },
+      };
     case "location":
-      return { kind: "location", id: entity.id, name: entity.name, aliases: entity.aliases, summary: clip(entity.summary), sourcePath: entity.sourcePath, route: "lore", focus: { locationId: entity.id } };
+      return {
+        kind: "location",
+        id: entity.id,
+        name: entity.name,
+        aliases: entity.aliases,
+        summary: clip(entity.summary),
+        sourcePath: entity.sourcePath,
+        route: "lore",
+        focus: { locationId: entity.id },
+      };
     case "event":
-      return { kind: "event", id: entity.id, name: entity.name, aliases: entity.aliases, summary: clip(entity.summary), sourcePath: entity.sourcePath, route: "timeline", focus: { eventId: entity.id } };
+      return {
+        kind: "event",
+        id: entity.id,
+        name: entity.name,
+        aliases: entity.aliases,
+        summary: clip(entity.summary),
+        sourcePath: entity.sourcePath,
+        route: "timeline",
+        focus: { eventId: entity.id },
+      };
     case "narrativeChapter":
-      return { kind: "narrativeChapter", id: entity.id, name: entity.name, aliases: entity.aliases, summary: clip(entity.summary), sourcePath: entity.sourcePath, route: "narrative", focus: { narrativeChapterId: entity.id } };
+      return {
+        kind: "narrativeChapter",
+        id: entity.id,
+        name: entity.name,
+        aliases: entity.aliases,
+        summary: clip(entity.summary),
+        sourcePath: entity.sourcePath,
+        route: "narrative",
+        focus: { narrativeChapterId: entity.id },
+      };
     default:
       return null;
   }
@@ -204,16 +312,16 @@ export async function buildDomainIndex(
     }
   }
 
-  const factions = await loadOptional(storage, "world/factions/index.json");
+  const factions = await loadOptionalFaction(storage);
   if (factions) {
-    for (const faction of parseFactionLibrary(factions).factions) {
+    for (const faction of factions.factions) {
       entities.push({
         kind: "faction",
         id: faction.id,
         name: faction.name,
         aliases: [],
         summary: clip(faction.summary),
-        sourcePath: "world/factions/index.json",
+        sourcePath: factionRecordPath(faction.id),
         route: "factions",
         focus: { factionId: faction.id },
       });
@@ -236,48 +344,60 @@ export async function buildDomainIndex(
     }
   }
 
-  const locations = await loadOptional(storage, "world/locations/index.json");
+  const locations = await loadOptionalLocation(storage);
   if (locations) {
-    for (const location of parseLocationLibraryIndex(locations).locations) {
+    for (const location of locations.locations) {
       entities.push({
         kind: "location",
         id: location.id,
         name: location.name,
         aliases: [...location.aliases],
         summary: clip(location.summary),
-        sourcePath: "world/locations/index.json",
+        sourcePath: locationRecordPath(location.id),
         route: "lore",
         focus: { locationId: location.id },
       });
     }
   }
 
-  const narrative = await loadOptional(storage, "narrative/index.json");
-  if (narrative) {
-    for (const plan of parseNarrativeEngineering(narrative).chapters) {
+  const narrativeIndex = await loadOptional(
+    storage,
+    NARRATIVE_ENGINEERING_INDEX_PATH,
+  );
+  if (narrativeIndex) {
+    const narrative = await loadNarrativeEngineeringFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    for (const plan of parseNarrativeEngineering(
+      JSON.stringify(narrative.library),
+    ).chapters) {
       entities.push({
         kind: "narrativeChapter",
         id: plan.id,
         name: plan.title,
         aliases: [],
         summary: clip(plan.description),
-        sourcePath: "narrative/index.json",
+        sourcePath: narrativeRecordPath("chapters", plan.id),
         route: "narrative",
         focus: { narrativeChapterId: plan.id },
       });
     }
   }
 
-  const timeline = await loadOptional(storage, "timeline/index.json");
-  if (timeline) {
-    for (const event of parseTimelineLibrary(timeline).events) {
+  const timelineIndex = await loadOptional(storage, TIMELINE_INDEX_PATH);
+  if (timelineIndex) {
+    const timeline = await loadTimelineFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    for (const event of parseTimelineLibrary(JSON.stringify(timeline.library))
+      .events) {
       entities.push({
         kind: "event",
         id: event.id,
         name: event.title,
         aliases: [],
         summary: clip(event.summary),
-        sourcePath: "timeline/index.json",
+        sourcePath: timelineRecordPath("events", event.id),
         route: "timeline",
         focus: { eventId: event.id },
       });
@@ -309,9 +429,7 @@ export function searchDomainIndex(
       continue;
     }
     const name = ref.name.toLocaleLowerCase("zh-CN");
-    const aliases = ref.aliases
-      .join(" ")
-      .toLocaleLowerCase("zh-CN");
+    const aliases = ref.aliases.join(" ").toLocaleLowerCase("zh-CN");
     const summary = ref.summary.toLocaleLowerCase("zh-CN");
     let score = 0;
     if (name === needle) score = 100;
@@ -325,7 +443,5 @@ export function searchDomainIndex(
     (left, right) =>
       right.score - left.score || left.ref.name.localeCompare(right.ref.name),
   );
-  return Object.freeze(
-    scored.slice(0, limit).map(({ ref }) => ref),
-  );
+  return Object.freeze(scored.slice(0, limit).map(({ ref }) => ref));
 }

@@ -267,7 +267,62 @@ export async function markNovelWorkbenchDraftSubmitted<T>(
   });
 }
 
-export function summarizeNovelWorkbenchDraft<T>(draft: NovelWorkbenchDraft<T>) {
+function compactDraftPayload(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { valueType: typeof payload };
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === "content" || key === "sourceContent") {
+      const text = typeof value === "string" ? value : JSON.stringify(value);
+      output[`${key}Bytes`] = Buffer.byteLength(text, "utf8");
+      output[`${key}Hash`] = hashNovelWorkbenchDraftPayload(text);
+      continue;
+    }
+    if (Array.isArray(value)) {
+      output[`${key}Count`] = value.length;
+      const ids = value
+        .slice(0, 32)
+        .map((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) {
+            return null;
+          }
+          const record = item as Record<string, unknown>;
+          return record.id ?? record.candidateId ?? null;
+        })
+        .filter((id): id is string => typeof id === "string");
+      if (ids.length > 0) output[`${key}Ids`] = ids;
+      continue;
+    }
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const id = record.id ?? record.candidateId;
+      if (typeof id === "string") output[`${key}Id`] = id;
+      if (typeof record.content === "string") {
+        output[`${key}ContentBytes`] = Buffer.byteLength(
+          record.content,
+          "utf8",
+        );
+        output[`${key}ContentHash`] = hashNovelWorkbenchDraftPayload(
+          record.content,
+        );
+      }
+      continue;
+    }
+    if (typeof value === "string" && value.length > 2_000) {
+      output[`${key}Bytes`] = Buffer.byteLength(value, "utf8");
+      output[`${key}Hash`] = hashNovelWorkbenchDraftPayload(value);
+      continue;
+    }
+    output[key] = value;
+  }
+  return output;
+}
+
+export function summarizeNovelWorkbenchDraft<T>(
+  draft: NovelWorkbenchDraft<T>,
+  includePayload = false,
+) {
   return {
     draftId: draft.draftId,
     domain: draft.domain,
@@ -278,6 +333,6 @@ export function summarizeNovelWorkbenchDraft<T>(draft: NovelWorkbenchDraft<T>) {
         : null,
     submittedProposalId: draft.submittedProposalId,
     updatedAt: draft.updatedAt,
-    payload: draft.payload,
+    payload: includePayload ? draft.payload : compactDraftPayload(draft.payload),
   };
 }

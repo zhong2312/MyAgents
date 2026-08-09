@@ -34,3 +34,28 @@ pub(crate) fn normalize_workspace_path_identity(path: &str) -> String {
     }
     normalized
 }
+
+pub(crate) fn workspace_paths_equal(left: &str, right: &str) -> bool {
+    normalize_workspace_path_identity(left) == normalize_workspace_path_identity(right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_paths_equal;
+
+    #[test]
+    fn windows_workspace_identity_ignores_separator_case_and_trailing_slash() {
+        assert!(workspace_paths_equal(
+            r"F:\workspace\小说\DSXX\",
+            "f:/workspace/小说/DSXX"
+        ));
+    }
+
+    #[test]
+    fn different_workspaces_remain_distinct() {
+        assert!(!workspace_paths_equal(
+            r"F:\workspace\小说\DSXX",
+            "F:/workspace/小说/OTHER"
+        ));
+    }
+}

@@ -5491,6 +5491,11 @@ async function normalizeExternalToolResultForSse(
   event: Extract<UnifiedEvent, { kind: 'tool_result' }>,
 ): Promise<Extract<UnifiedEvent, { kind: 'tool_result' }>> {
   const spilled = await maybeSpill(event.content, {
+    // Keep the live renderer transport bounded even for results below the
+    // generic large-value store threshold. The full body remains available via
+    // the reference and is never needed in the SSE payload.
+    inlineMaxBytes: 8 * 1024,
+    previewBytes: 8 * 1024,
     mimetype: 'text/plain; charset=utf-8',
     sessionId: getExternalLifecycleSessionId() || undefined,
   });

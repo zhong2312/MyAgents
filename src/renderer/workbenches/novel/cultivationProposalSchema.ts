@@ -1,8 +1,37 @@
 import { z } from "zod";
 
+import { normalizeWorkbenchStoragePath } from "@/workbench-sdk";
+
+import { CULTIVATION_ECOLOGY_INDEX_PATH } from "../../../shared/workbenches/novel/cultivationEcologyStorage";
+
 export const CULTIVATION_PROPOSALS_DIRECTORY = "world/cultivation-proposals";
-export const CULTIVATION_ECOLOGY_PATH = "world/cultivation-ecology.json";
+export { CULTIVATION_ECOLOGY_INDEX_PATH };
+
 const idSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/u);
+const TARGET_PATTERN =
+  /^world\/cultivation\/(?:index\.json|origins\/records\/[a-z0-9-]+\.json|relations\/(?:index\.json|records\/[a-z0-9-]+\.json)|systems\/[a-z0-9-]+\/(?:system\.json|projection\.json|audit\.json|theory\/(?:index\.json|nodes\/[a-z0-9-]+\.json)|(?:progression|track-interactions|resources|methods|abilities|formations|foundations|transitions|constraints)\/(?:index\.json|records\/[a-z0-9-]+\.json)))$/u;
+
+export function normalizeCultivationProposalTargetPath(path: string): string {
+  const normalized = normalizeWorkbenchStoragePath(path);
+  if (!TARGET_PATTERN.test(normalized)) {
+    throw new Error(`不是受支持的修行体系模块路径：${path}`);
+  }
+  return normalized;
+}
+
+function targetPathSchema() {
+  return z.string().transform((path, context) => {
+    try {
+      return normalizeCultivationProposalTargetPath(path);
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return z.NEVER;
+    }
+  });
+}
 
 export const cultivationProposalManifestSchema = z
   .object({
@@ -23,16 +52,38 @@ export const cultivationProposalManifestSchema = z
         z
           .object({
             id: idSchema,
-            targetPath: z.literal(CULTIVATION_ECOLOGY_PATH),
-            operation: z.literal("modify"),
+            targetPath: targetPathSchema(),
+            operation: z.enum(["create", "modify"]),
             summary: z.string().trim().min(1),
             status: z.enum(["pending", "applied", "rejected"]),
           })
           .strict(),
       )
-      .length(1),
+      .min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((manifest, context) => {
+    const ids = new Set<string>();
+    const paths = new Set<string>();
+    manifest.changes.forEach((change, index) => {
+      if (ids.has(change.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["changes", index, "id"],
+          message: "变更 id 不得重复",
+        });
+      }
+      if (paths.has(change.targetPath)) {
+        context.addIssue({
+          code: "custom",
+          path: ["changes", index, "targetPath"],
+          message: "同一提案不能重复修改同一模块文件",
+        });
+      }
+      ids.add(change.id);
+      paths.add(change.targetPath);
+    });
+  });
 
 export type CultivationProposalManifest = z.infer<
   typeof cultivationProposalManifestSchema
@@ -45,8 +96,9 @@ export function cultivationProposalManifestPath(proposalId: string): string {
 export function cultivationProposalSnapshotPath(
   proposalId: string,
   side: "before" | "after",
+  targetPath: string,
 ): string {
-  return `${CULTIVATION_PROPOSALS_DIRECTORY}/${proposalId}/${side}/cultivation-ecology.json`;
+  return `${CULTIVATION_PROPOSALS_DIRECTORY}/${proposalId}/${side}/${normalizeCultivationProposalTargetPath(targetPath)}`;
 }
 
 export function serializeCultivationProposalManifest(
@@ -54,4 +106,3 @@ export function serializeCultivationProposalManifest(
 ): string {
   return `${JSON.stringify(cultivationProposalManifestSchema.parse(manifest), null, 2)}\n`;
 }
-

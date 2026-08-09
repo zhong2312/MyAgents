@@ -44,6 +44,8 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/admin/mcp/remove', 'common'],
     ['POST', '/api/cc-plugin/session-enable', 'session'],
     ['GET', '/api/cc-plugin/list', 'common'],
+    ['POST', '/api/workbench-agent/configure', 'session'],
+    ['POST', '/api/workbench-ai/run', 'session'],
   ] as const)('%s %s is owned by %s', (method, path, capability) => {
     expect(classifySidecarRequest(request(path, method))).toBe(capability);
   });
@@ -62,6 +64,8 @@ describe('Sidecar production composition', () => {
     ['session', 'POST', '/api/provider/verify'],
     ['session', 'POST', '/api/mcp/oauth/start'],
     ['session', 'PATCH', '/sessions/session-1'],
+    ['global', 'POST', '/api/workbench-agent/configure'],
+    ['global', 'POST', '/api/workbench-ai/run'],
   ] as const)('%s rejects wrong-role %s %s before the real handler', async (role, method, path) => {
     const realHandler = vi.fn(async () => new Response('handled'));
     const handler = composeSidecarRequestHandler(
@@ -83,6 +87,8 @@ describe('Sidecar production composition', () => {
     ['session', 'POST', '/goal/execute-sync'],
     ['session', 'POST', '/api/im/enqueue'],
     ['session', 'POST', '/api/inbox/drain'],
+    ['session', 'POST', '/api/workbench-agent/configure'],
+    ['session', 'POST', '/api/workbench-ai/run'],
   ] as const)('%s dispatches real-role %s %s', async (role, method, path) => {
     const realHandler = vi.fn(async () => new Response('handled', { status: 202 }));
     const handler = composeSidecarRequestHandler(

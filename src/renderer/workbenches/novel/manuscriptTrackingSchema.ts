@@ -1,8 +1,19 @@
 import { z } from "zod";
 
+import {
+  MANUSCRIPT_TRACKING_INDEX_PATH,
+  MANUSCRIPT_TRACKING_STORAGE_VERSION,
+} from "../../../shared/workbenches/novel/manuscriptTrackingStorage";
+import {
+  MANUSCRIPT_CONTINUITY_INDEX_PATH,
+  MANUSCRIPT_CONTINUITY_STORAGE_VERSION,
+} from "../../../shared/workbenches/novel/manuscriptContinuityStorage";
+
 export const MANUSCRIPT_TRACKING_SCHEMA_VERSION = 3 as const;
-export const MANUSCRIPT_TRACKING_PATH = "manuscript/state-ledger.json";
-export const MANUSCRIPT_CONTINUITY_PATH = "manuscript/continuity-state.json";
+export const MANUSCRIPT_TRACKING_PATH = MANUSCRIPT_TRACKING_INDEX_PATH;
+export const MANUSCRIPT_CONTINUITY_PATH = MANUSCRIPT_CONTINUITY_INDEX_PATH;
+export { MANUSCRIPT_TRACKING_STORAGE_VERSION };
+export { MANUSCRIPT_CONTINUITY_STORAGE_VERSION };
 
 const stableIdSchema = z
   .string()
@@ -254,74 +265,6 @@ export function createEmptyManuscriptTrackingLedger(
   };
 }
 
-function migrateTrackingLedger(source: Record<string, unknown>): unknown {
-  const rawBatches = Array.isArray(source.batches) ? source.batches : [];
-  const batches = rawBatches.map((batch) => {
-    if (!batch || typeof batch !== "object") return batch;
-    const record = batch as Record<string, unknown>;
-    return {
-      ...record,
-      mutations: Array.isArray(record.mutations) ? record.mutations : [],
-      changes: Array.isArray(record.changes)
-        ? record.changes.map((change) => {
-            if (!change || typeof change !== "object") return change;
-            const changeRecord = change as Record<string, unknown>;
-            const operation = changeRecord.operation;
-            return {
-              ...changeRecord,
-              operation:
-                operation &&
-                typeof operation === "object" &&
-                !Array.isArray(operation) &&
-                (operation as Record<string, unknown>).kind === "foreshadow"
-                  ? {
-                      ...(operation as Record<string, unknown>),
-                      foreshadowingId:
-                        (operation as Record<string, unknown>)
-                          .foreshadowingId ?? null,
-                    }
-                  : source.schemaVersion === 1
-                    ? null
-                    : operation,
-            };
-          })
-        : record.changes,
-    };
-  });
-  const baselines: Record<string, unknown | null> = {};
-  const orderedBatches = [...batches]
-    .filter((batch): batch is Record<string, unknown> =>
-      Boolean(batch && typeof batch === "object"),
-    )
-    .sort(
-      (left, right) =>
-        String(left.appliedAt ?? left.createdAt ?? "").localeCompare(
-          String(right.appliedAt ?? right.createdAt ?? ""),
-        ) ||
-        String(left.createdAt ?? "").localeCompare(
-          String(right.createdAt ?? ""),
-        ),
-    );
-  for (const batch of orderedBatches) {
-    if (!Array.isArray(batch.mutations)) continue;
-    for (const candidate of batch.mutations) {
-      if (!candidate || typeof candidate !== "object") continue;
-      const mutation = candidate as Record<string, unknown>;
-      const targetKey =
-        typeof mutation.targetKey === "string" ? mutation.targetKey : "";
-      if (targetKey && !(targetKey in baselines)) {
-        baselines[targetKey] = mutation.before ?? null;
-      }
-    }
-  }
-  return {
-    ...source,
-    schemaVersion: MANUSCRIPT_TRACKING_SCHEMA_VERSION,
-    baselines,
-    batches,
-  };
-}
-
 export function parseManuscriptTrackingLedger(
   content: string,
 ): ManuscriptTrackingLedger {
@@ -334,21 +277,6 @@ export function parseManuscriptTrackingLedger(
     );
   }
   const parsed = manuscriptTrackingLedgerSchema.safeParse(source);
-  if (!parsed.success && source && typeof source === "object") {
-    const legacy = source as {
-      schemaVersion?: unknown;
-      batches?: unknown;
-    };
-    if (
-      (legacy.schemaVersion === 1 || legacy.schemaVersion === 2) &&
-      Array.isArray(legacy.batches)
-    ) {
-      const migrated = manuscriptTrackingLedgerSchema.safeParse(
-        migrateTrackingLedger(source as Record<string, unknown>),
-      );
-      if (migrated.success) return migrated.data;
-    }
-  }
   if (!parsed.success) {
     throw new Error(
       `正文状态账本格式错误：${parsed.error.issues

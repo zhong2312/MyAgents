@@ -1,8 +1,15 @@
 import type { WorkbenchStorage } from "@/workbench-sdk";
 
 import {
+  MANUSCRIPT_TRACKING_INDEX_PATH,
+  MANUSCRIPT_TRACKING_LEGACY_PATH,
+  createManuscriptTrackingFiles,
+  loadManuscriptTrackingFiles,
+  manuscriptTrackingFileMap,
+  serializeManuscriptTrackingFileSnapshot,
+} from "../../../shared/workbenches/novel/manuscriptTrackingStorage";
+import {
   createEmptyManuscriptTrackingLedger,
-  MANUSCRIPT_TRACKING_PATH,
   parseManuscriptTrackingLedger,
   serializeManuscriptTrackingLedger,
   type ManuscriptTrackingBatch,
@@ -10,6 +17,7 @@ import {
   type ManuscriptTrackingLedger,
   type ManuscriptTrackingMutation,
 } from "./manuscriptTrackingSchema";
+import { createStorageTransaction } from "./shared/infrastructure/storageTransaction";
 import {
   createManuscriptTrackingProjection,
   type ManuscriptProjectionChapter,
@@ -26,7 +34,9 @@ type ChapterOrder = ReadonlyMap<string, number>;
 
 export interface LoadedManuscriptTrackingLedger {
   readonly ledger: ManuscriptTrackingLedger;
+  /** 已读取的完整账本目录快照，用于保存时的 CAS。 */
   readonly content: string;
+  readonly files: ReadonlyMap<string, string>;
 }
 
 export interface CreateTrackingBatchInput {
@@ -53,33 +63,48 @@ export function hashManuscriptContent(content: string): string {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+export function createManuscriptTrackingInitializationFiles(
+  now = new Date().toISOString(),
+): readonly { readonly path: string; readonly content: string }[] {
+  return createManuscriptTrackingFiles(
+    createEmptyManuscriptTrackingLedger(now),
+  );
+}
+
 export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
   const projection = createManuscriptTrackingProjection(storage);
-  const load = async (): Promise<LoadedManuscriptTrackingLedger> => {
-    const [info] = await storage.stat([MANUSCRIPT_TRACKING_PATH]);
-    if (!info?.exists) {
-      const content = serializeManuscriptTrackingLedger(
-        createEmptyManuscriptTrackingLedger(),
-      );
-      try {
-        const file = await storage.createText(
-          MANUSCRIPT_TRACKING_PATH,
-          content,
-          { createParents: true },
-        );
-        return Object.freeze({
-          ledger: parseManuscriptTrackingLedger(file.content),
-          content: file.content,
-        });
-      } catch {
-        // 另一个页面可能同时完成了初始化。
-      }
-    }
-    const file = await storage.readText(MANUSCRIPT_TRACKING_PATH);
+
+  const loadFiles = async (): Promise<LoadedManuscriptTrackingLedger> => {
+    const loaded = await loadManuscriptTrackingFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
     return Object.freeze({
-      ledger: parseManuscriptTrackingLedger(file.content),
-      content: file.content,
+      ledger: parseManuscriptTrackingLedger(JSON.stringify(loaded.ledger)),
+      content: serializeManuscriptTrackingFileSnapshot(loaded.files),
+      files: loaded.files,
     });
+  };
+
+  const load = async (): Promise<LoadedManuscriptTrackingLedger> => {
+    const [index, legacy] = await storage.stat([
+      MANUSCRIPT_TRACKING_INDEX_PATH,
+      MANUSCRIPT_TRACKING_LEGACY_PATH,
+    ]);
+    if (!index?.exists) {
+      if (legacy?.exists) {
+        throw new Error(
+          `${MANUSCRIPT_TRACKING_LEGACY_PATH} 是旧单文件正文状态账本；当前目录协议不兼容且不迁移`,
+        );
+      }
+      const transaction = createStorageTransaction(storage);
+      for (const file of createManuscriptTrackingInitializationFiles()) {
+        transaction.createText(file.path, file.content);
+      }
+      await transaction.commit();
+    } else if (index.kind !== "file") {
+      throw new Error(`${MANUSCRIPT_TRACKING_INDEX_PATH} 不是文件`);
+    }
+    return loadFiles();
   };
 
   const save = async (
@@ -90,14 +115,42 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
       ...ledger,
       updatedAt: new Date().toISOString(),
     };
-    const content = serializeManuscriptTrackingLedger(normalized);
-    const file = await storage.writeText(MANUSCRIPT_TRACKING_PATH, content, {
-      expectedContent: current.content,
+    const parsed = parseManuscriptTrackingLedger(
+      serializeManuscriptTrackingLedger(normalized),
+    );
+    const onDisk = await loadManuscriptTrackingFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    if (
+      serializeManuscriptTrackingFileSnapshot(onDisk.files) !== current.content
+    ) {
+      throw new Error("正文状态账本已被外部修改，请重新加载后再保存");
+    }
+    const nextFiles = manuscriptTrackingFileMap(
+      createManuscriptTrackingFiles(parsed),
+    );
+    const transaction = createStorageTransaction(storage);
+    const orderedPaths = [...nextFiles.keys()].sort((left, right) => {
+      if (left === MANUSCRIPT_TRACKING_INDEX_PATH) return 1;
+      if (right === MANUSCRIPT_TRACKING_INDEX_PATH) return -1;
+      return left.localeCompare(right);
     });
-    return Object.freeze({
-      ledger: parseManuscriptTrackingLedger(file.content),
-      content: file.content,
-    });
+    for (const path of orderedPaths) {
+      const content = nextFiles.get(path);
+      if (content === undefined) continue;
+      const previous = onDisk.files.get(path);
+      if (previous === content) continue;
+      if (previous === undefined) transaction.createText(path, content);
+      else transaction.writeText(path, content, previous);
+    }
+    await transaction.commit();
+    const removedPaths = [...onDisk.files.keys()].filter(
+      (path) => !nextFiles.has(path),
+    );
+    await Promise.allSettled(
+      removedPaths.map((path) => storage.remove(path, { permanent: true })),
+    );
+    return loadFiles();
   };
 
   const loadChapterOrder = async (): Promise<ChapterOrder> => {

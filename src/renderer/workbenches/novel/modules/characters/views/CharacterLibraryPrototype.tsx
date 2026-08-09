@@ -66,10 +66,7 @@ import {
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
-import {
-  cultivationEcologySchema,
-  type CultivationEcology,
-} from "../../../../../../shared/workbenches/novel/cultivationEcologySchema";
+import type { CultivationEcology } from "../../../../../../shared/workbenches/novel/cultivationEcologySchema";
 
 import {
   createNovelCharacterLibraryRepository,
@@ -85,6 +82,7 @@ import {
 import type { DomainEntityRef } from "../../../shared/business/domainIndex";
 import { createNovelItemLibraryRepository } from "../../items/data-access/itemLibraryRepository";
 import type { ItemIndexEntry } from "../../items/entities/itemLibrarySchema";
+import { createCultivationEcologyRepository } from "../../../cultivationEcologyRepository";
 
 type RoleWeight = "main" | "secondary" | "npc" | "extra";
 type DetailTab =
@@ -1364,7 +1362,9 @@ function CultivationReferenceField({
     return (
       <ReadField
         label={label}
-        value={options.find((option) => option.value === value)?.label ?? value ?? ""}
+        value={
+          options.find((option) => option.value === value)?.label ?? value ?? ""
+        }
         editing={false}
         multiline={false}
         onChange={() => undefined}
@@ -1372,7 +1372,9 @@ function CultivationReferenceField({
     );
   return (
     <label className="grid gap-1.5 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
-      <span className="pt-1 text-xs font-medium text-[var(--ink-muted)]">{label}</span>
+      <span className="pt-1 text-xs font-medium text-[var(--ink-muted)]">
+        {label}
+      </span>
       <CustomSelect
         value={value ?? ""}
         options={[{ value: "", label: "未绑定" }, ...options]}
@@ -1397,7 +1399,9 @@ function CultivationIdListField({
   readonly editing: boolean;
   readonly onChange: (ids: string[]) => void;
 }) {
-  const optionMap = new Map(options.map((option) => [option.value, option.label]));
+  const optionMap = new Map(
+    options.map((option) => [option.value, option.label]),
+  );
   if (!editing)
     return (
       <ReadField
@@ -1413,16 +1417,23 @@ function CultivationIdListField({
   const available = options.filter((option) => !ids.includes(option.value));
   return (
     <div className="grid gap-1.5 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
-      <span className="pt-1 text-xs font-medium text-[var(--ink-muted)]">{label}</span>
+      <span className="pt-1 text-xs font-medium text-[var(--ink-muted)]">
+        {label}
+      </span>
       <div className="space-y-2">
         {ids.map((id) => (
-          <div key={id} className="flex items-center justify-between gap-2 rounded-md border border-[var(--line-subtle)] bg-[var(--paper-inset)] px-2.5 py-1.5 text-sm">
+          <div
+            key={id}
+            className="flex items-center justify-between gap-2 rounded-md border border-[var(--line-subtle)] bg-[var(--paper-inset)] px-2.5 py-1.5 text-sm"
+          >
             <span className="min-w-0 truncate text-[var(--ink-secondary)]">
               {optionMap.get(id) ?? `${id}（失效引用）`}
             </span>
             <button
               type="button"
-              onClick={() => onChange(ids.filter((candidate) => candidate !== id))}
+              onClick={() =>
+                onChange(ids.filter((candidate) => candidate !== id))
+              }
               aria-label={`移除${label}${optionMap.get(id) ?? id}`}
               title="移除"
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--ink-subtle)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
@@ -1438,7 +1449,9 @@ function CultivationIdListField({
             if (id) onChange([...ids, id]);
           }}
           ariaLabel={`添加${label}`}
-          placeholder={available.length > 0 ? `添加${label}` : "没有可添加的选项"}
+          placeholder={
+            available.length > 0 ? `添加${label}` : "没有可添加的选项"
+          }
           disabled={available.length === 0}
           size="md"
         />
@@ -1944,7 +1957,10 @@ function CultivationTab({
   const selectedTrack = tracks.find((track) => track.id === profile.trackId);
   const levels = selectedTrack?.levels ?? [];
   const reference = (items: readonly { id: string; name: string }[]) =>
-    items.map((item) => ({ value: item.id, label: `${item.name} · ${item.id}` }));
+    items.map((item) => ({
+      value: item.id,
+      label: `${item.name} · ${item.id}`,
+    }));
   const systemOptions = reference(ecology?.systems ?? []);
   const trackOptions = reference(tracks);
   const levelOptions = reference(levels);
@@ -2072,7 +2088,9 @@ function CultivationTab({
           ids={profile.activeConstraintIds}
           options={constraintOptions}
           editing={editing}
-          onChange={(activeConstraintIds) => updateProfile({ activeConstraintIds })}
+          onChange={(activeConstraintIds) =>
+            updateProfile({ activeConstraintIds })
+          }
         />
       </section>
     </div>
@@ -4481,24 +4499,27 @@ export default function CharacterLibraryPrototype({
     isDirtyRef.current = isDirty;
   }, [isDirty]);
 
-  const applyLibrary = useCallback((
-    next: LoadedCharacterLibrary,
-    nextCharacters: readonly CharacterRecord[],
-  ) => {
-    libraryRef.current = next;
-    charactersRef.current = [...nextCharacters];
-    setLibrary(next);
-    setCharacters([...nextCharacters]);
-    setRaces(next.meta.races);
-    setSouls(next.meta.souls);
-    setGroups(next.meta.groups);
-    setUngroupedGroup(next.meta.ungroupedGroup);
-    setSelectedId((current) =>
-      next.index.characters.some((character) => character.id === current)
-        ? current
-        : (next.index.characters[0]?.id ?? ""),
-    );
-  }, []);
+  const applyLibrary = useCallback(
+    (
+      next: LoadedCharacterLibrary,
+      nextCharacters: readonly CharacterRecord[],
+    ) => {
+      libraryRef.current = next;
+      charactersRef.current = [...nextCharacters];
+      setLibrary(next);
+      setCharacters([...nextCharacters]);
+      setRaces(next.meta.races);
+      setSouls(next.meta.souls);
+      setGroups(next.meta.groups);
+      setUngroupedGroup(next.meta.ungroupedGroup);
+      setSelectedId((current) =>
+        next.index.characters.some((character) => character.id === current)
+          ? current
+          : (next.index.characters[0]?.id ?? ""),
+      );
+    },
+    [],
+  );
 
   // 外部实体定位：焦点角色存在时自动选中（T3）
   useEffect(() => {
@@ -4627,20 +4648,9 @@ export default function CharacterLibraryPrototype({
         disposed = true;
       };
     }
-    void storage
-      .stat(["world/cultivation-ecology.json"])
-      .then(async ([entry]) => {
-        if (!entry?.exists) return null;
-        const file = await storage.readText("world/cultivation-ecology.json");
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(file.content);
-        } catch {
-          return null;
-        }
-        const result = cultivationEcologySchema.safeParse(parsed);
-        return result.success ? result.data : null;
-      })
+    void createCultivationEcologyRepository(storage)
+      .load()
+      .then((loaded) => loaded?.ecology ?? null)
       .then((next) => {
         if (!disposed) setCultivationEcology(next);
       })

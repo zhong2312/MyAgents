@@ -7,29 +7,16 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
-import { CompactAiRunWindow } from "@/workbench-sdk";
-
 import {
   createInspirationAiAgentRequest,
-  createInspirationAiRunRequest,
   type InspirationAiAgentRequest,
   type InspirationAiContext,
   type InspirationAiRunMode,
-  type InspirationAiRunRequest,
 } from "../business/inspirationAi";
 
 interface InspirationAiAssistantProps {
   readonly context: InspirationAiContext;
-  readonly onRun?: (request: InspirationAiRunRequest) => Promise<string>;
   readonly onOpenAgent?: (request: InspirationAiAgentRequest) => Promise<void>;
-}
-
-interface ActiveRun {
-  readonly mode: InspirationAiRunMode;
-  readonly label: string;
-  readonly status: "running" | "ready" | "error";
-  readonly output?: string;
-  readonly error?: string;
 }
 
 const RUN_ACTIONS = [
@@ -49,16 +36,14 @@ const RUN_ACTIONS = [
 
 export default function InspirationAiAssistant({
   context,
-  onRun,
   onOpenAgent,
 }: InspirationAiAssistantProps) {
   const menuId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
-  const runTokenRef = useRef(0);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [agentOpening, setAgentOpening] = useState(false);
-  const available = Boolean(onRun || onOpenAgent);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  const available = Boolean(onOpenAgent);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -77,48 +62,21 @@ export default function InspirationAiAssistant({
   }, [menuOpen]);
 
   const run = async (mode: InspirationAiRunMode) => {
-    if (!onRun) return;
-    const request = createInspirationAiRunRequest(mode, context);
-    const token = runTokenRef.current + 1;
-    runTokenRef.current = token;
-    setMenuOpen(false);
-    setActiveRun({ mode, label: request.label, status: "running" });
-    try {
-      const output = await onRun(request);
-      if (runTokenRef.current !== token) return;
-      setActiveRun({ mode, label: request.label, status: "ready", output });
-    } catch (error) {
-      if (runTokenRef.current !== token) return;
-      setActiveRun({
-        mode,
-        label: request.label,
-        status: "error",
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    await openAgent(mode);
   };
 
-  const openAgent = async (seedOutput?: string) => {
+  const openAgent = async (mode?: InspirationAiRunMode) => {
     if (!onOpenAgent || agentOpening) return;
     setMenuOpen(false);
+    setAgentError(null);
     setAgentOpening(true);
     try {
-      await onOpenAgent(createInspirationAiAgentRequest(context, seedOutput));
+      await onOpenAgent(createInspirationAiAgentRequest(context, mode));
     } catch (error) {
-      setActiveRun({
-        mode: "diagnose",
-        label: `灵感共创 · ${context.focusLabel}`,
-        status: "error",
-        error: error instanceof Error ? error.message : String(error),
-      });
+      setAgentError(error instanceof Error ? error.message : String(error));
     } finally {
       setAgentOpening(false);
     }
-  };
-
-  const closeRun = () => {
-    runTokenRef.current += 1;
-    setActiveRun(null);
   };
 
   return (
@@ -144,7 +102,9 @@ export default function InspirationAiAssistant({
             className="absolute left-1/2 top-full z-50 mt-1 w-72 max-w-[calc(100vw-24px)] -translate-x-1/2 overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] py-1 shadow-lg"
           >
             <div className="border-b border-[var(--line)] px-3 py-2">
-              <span className="block text-xs text-[var(--ink-muted)]">当前处理</span>
+              <span className="block text-xs text-[var(--ink-muted)]">
+                当前处理
+              </span>
               <strong className="mt-0.5 block truncate text-sm font-medium">
                 {context.focusLabel}
               </strong>
@@ -156,13 +116,15 @@ export default function InspirationAiAssistant({
                   key={action.id}
                   type="button"
                   role="menuitem"
-                  disabled={!onRun}
+                  disabled={!onOpenAgent}
                   className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-[var(--hover-bg)] disabled:opacity-45"
                   onClick={() => void run(action.id)}
                 >
                   <Icon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent-warm)]" />
                   <span className="min-w-0">
-                    <strong className="block text-sm font-medium">{action.label}</strong>
+                    <strong className="block text-sm font-medium">
+                      {action.label}
+                    </strong>
                     <span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">
                       {action.description}
                     </span>
@@ -182,27 +144,17 @@ export default function InspirationAiAssistant({
               <span className="min-w-0">
                 <strong className="block text-sm font-medium">深度共创</strong>
                 <span className="mt-0.5 block text-xs leading-5 text-[var(--ink-muted)]">
-                  带当前灵感上下文打开完整 MyAgents 会话
+                  通过工作台工具读取灵感并打开完整会话
                 </span>
               </span>
             </button>
           </div>
         )}
       </div>
-      {activeRun && (
-        <CompactAiRunWindow
-          label={activeRun.label}
-          status={activeRun.status}
-          output={activeRun.output}
-          error={activeRun.error}
-          onRetry={() => void run(activeRun.mode)}
-          onExpand={
-            onOpenAgent && activeRun.status === "ready"
-              ? () => void openAgent(activeRun.output)
-              : undefined
-          }
-          onClose={closeRun}
-        />
+      {agentError && (
+        <span className="text-xs text-[var(--error)]" role="alert">
+          {agentError}
+        </span>
       )}
     </>
   );

@@ -11,20 +11,36 @@ import {
   type NovelChapterRecord,
 } from "../../modules/project/entities/projectSchema";
 import {
-  serializeFactionLibrary,
   type FactionLibrary,
   type FactionMember,
   type FactionRecord,
 } from "../../modules/factions/entities/factionLibrarySchema";
-import { NovelMemoryProjection, NovelMemoryStorage } from "../infrastructure/testStorage";
+import {
+  NovelMemoryProjection,
+  NovelMemoryStorage,
+} from "../infrastructure/testStorage";
 import {
   createEmptyTimelineLibrary,
   serializeTimelineLibrary,
   type TimelineEvent,
   type TimelineLibrary,
 } from "../../timelineLibrarySchema";
+import { cultivationEcologySchema } from "../../../../../shared/workbenches/novel/cultivationEcologySchema";
+import { createCultivationEcologyFiles } from "../../../../../shared/workbenches/novel/cultivationEcologyStorage";
+import { createNarrativeEngineeringFiles } from "../../../../../shared/workbenches/novel/narrativeEngineeringStorage";
+import { createFactionFiles } from "../../../../../shared/workbenches/novel/factionStorage";
+import { createLocationFiles } from "../../../../../shared/workbenches/novel/locationStorage";
+import { createTimelineFiles } from "../../../../../shared/workbenches/novel/timelineStorage";
 
 const NOW = "2026-01-01T00:00:00.000Z";
+
+function cultivationFiles(value: unknown): Record<string, string> {
+  return Object.fromEntries(
+    createCultivationEcologyFiles(cultivationEcologySchema.parse(value)).map(
+      (file) => [file.path, file.content],
+    ),
+  );
+}
 
 function characterFiles(
   characters: readonly {
@@ -34,59 +50,59 @@ function characterFiles(
   }[],
 ): Record<string, string> {
   const records = characters.map((character) => ({
-      id: character.id,
-      name: character.name,
-      alias: "",
-      roleWeight: "npc",
-      archetype: "",
-      alignment: "",
-      status: "active",
-      summary: "",
-      identities: [],
-      age: "",
-      currentRealm: "",
-      realmProgressNodes: [],
-      baseLifespan: "",
-      lifespanLoss: "",
-      spiritRoot: "",
-      daoBody: "",
-      cultivationMethod: "",
-      gender: "",
-      raceId: "",
-      soulId: "",
-      groupIds: [],
-      hometown: "",
-      appearance: "",
-      personality: "",
-      values: "",
-      strengths: "",
-      weaknesses: "",
-      fears: "",
-      motivation: "",
-      goals: "",
-      innerConflict: "",
-      background: "",
-      abilities: "",
-      speechStyle: "",
-      habits: "",
-      signatureItem: "",
-      storyRole: "",
-      arc: "",
-      firstAppearance: "",
-      completeness: 0,
-      relations: [],
-      appearances: [],
-      arcStages: [],
-      inventory:
-        character.inventory?.map((entry, index) => ({
-          id: `inv-${index}`,
-          itemId: entry.itemId,
-          name: "物品",
-          quantity: 1,
-          unit: "",
-          description: "",
-        })) ?? [],
-    }));
+    id: character.id,
+    name: character.name,
+    alias: "",
+    roleWeight: "npc",
+    archetype: "",
+    alignment: "",
+    status: "active",
+    summary: "",
+    identities: [],
+    age: "",
+    currentRealm: "",
+    realmProgressNodes: [],
+    baseLifespan: "",
+    lifespanLoss: "",
+    spiritRoot: "",
+    daoBody: "",
+    cultivationMethod: "",
+    gender: "",
+    raceId: "",
+    soulId: "",
+    groupIds: [],
+    hometown: "",
+    appearance: "",
+    personality: "",
+    values: "",
+    strengths: "",
+    weaknesses: "",
+    fears: "",
+    motivation: "",
+    goals: "",
+    innerConflict: "",
+    background: "",
+    abilities: "",
+    speechStyle: "",
+    habits: "",
+    signatureItem: "",
+    storyRole: "",
+    arc: "",
+    firstAppearance: "",
+    completeness: 0,
+    relations: [],
+    appearances: [],
+    arcStages: [],
+    inventory:
+      character.inventory?.map((entry, index) => ({
+        id: `inv-${index}`,
+        itemId: entry.itemId,
+        name: "物品",
+        quantity: 1,
+        unit: "",
+        description: "",
+      })) ?? [],
+  }));
   return {
     "characters/index.json": JSON.stringify({
       schemaVersion: 1,
@@ -137,11 +153,15 @@ function factionRecord(overrides: Partial<FactionRecord>): FactionRecord {
   };
 }
 
-function factionFile(factions: readonly FactionRecord[]): string {
-  return serializeFactionLibrary({
-    schemaVersion: 2,
-    factions: [...factions],
-  });
+function factionFiles(
+  factions: readonly FactionRecord[],
+): Record<string, string> {
+  return Object.fromEntries(
+    createFactionFiles({ schemaVersion: 2, factions }).map((file) => [
+      file.path,
+      file.content,
+    ]),
+  );
 }
 
 function itemFile(
@@ -163,34 +183,34 @@ function itemFile(
   });
 }
 
-function locationFile(
+function locationFiles(
   locations: readonly { readonly id: string; readonly name: string }[],
-): string {
-  return JSON.stringify({
-    schemaVersion: 1,
-    locations: locations.map((location) => ({
-      id: location.id,
-      nodeId: "node-root",
-      parentLocationId: null,
-      name: location.name,
-      aliases: [],
-      type: "区域",
-      status: "planned",
-      summary: "",
-      appearanceNote: "",
-      description: "",
-      order: 0,
-    })),
-  });
+): Record<string, string> {
+  return Object.fromEntries(
+    createLocationFiles({
+      schemaVersion: 1,
+      locations: locations.map((location) => ({
+        id: location.id,
+        nodeId: "node-root",
+        parentLocationId: null,
+        name: location.name,
+        aliases: [],
+        type: "区域",
+        status: "planned",
+        summary: "",
+        appearanceNote: "",
+        description: "",
+        order: 0,
+      })),
+    }).map((file) => [file.path, file.content]),
+  );
 }
 
 function chapterFile(chapters: readonly NovelChapterRecord[]): string {
   return serializeNovelChapterIndex({
     ...createEmptyNovelChapterIndex(),
-    nextChapterNumber: Math.max(
-      ...chapters.map((chapter) => chapter.number),
-      0,
-    ) + 1,
+    nextChapterNumber:
+      Math.max(...chapters.map((chapter) => chapter.number), 0) + 1,
     chapters: [...chapters],
   });
 }
@@ -213,9 +233,7 @@ function chapterRecord(id: string): NovelChapterRecord {
   };
 }
 
-function timelineWithEvent(
-  event: Partial<TimelineEvent>,
-): TimelineLibrary {
+function timelineWithEvent(event: Partial<TimelineEvent>): TimelineLibrary {
   const library = createEmptyTimelineLibrary(NOW);
   return {
     ...library,
@@ -254,8 +272,12 @@ function timelineWithEvent(
   };
 }
 
-function timelineFile(library: TimelineLibrary): string {
-  return serializeTimelineLibrary(library);
+function timelineFiles(library: TimelineLibrary): Record<string, string> {
+  return Object.fromEntries(
+    createTimelineFiles(
+      JSON.parse(serializeTimelineLibrary(library)) as TimelineLibrary,
+    ).map((file) => [file.path, file.content]),
+  );
 }
 
 function storageWith(files: Record<string, string>): NovelMemoryStorage {
@@ -287,9 +309,7 @@ describe("validateTimelineCrossReferences", () => {
 
   it("拒绝关联不存在势力/物品/地点/正文章节的事件", async () => {
     const storage = storageWith({
-      ...characterFiles([
-        { id: "char-1", name: "张三" },
-      ]),
+      ...characterFiles([{ id: "char-1", name: "张三" }]),
     });
     const library = timelineWithEvent({
       factionIds: ["faction-missing"],
@@ -304,12 +324,10 @@ describe("validateTimelineCrossReferences", () => {
 
   it("全部引用存在时保存通过", async () => {
     const storage = storageWith({
-      ...characterFiles([
-        { id: "char-1", name: "张三" },
-      ]),
-      "world/factions/index.json": factionFile([factionRecord({})]),
+      ...characterFiles([{ id: "char-1", name: "张三" }]),
+      ...factionFiles([factionRecord({})]),
       "world/items/index.json": itemFile([{ id: "item-1", name: "剑" }]),
-      "world/locations/index.json": locationFile([{ id: "loc-1", name: "山门" }]),
+      ...locationFiles([{ id: "loc-1", name: "山门" }]),
       "manuscript/index.json": chapterFile([chapterRecord("chapter-000001")]),
     });
     const library = timelineWithEvent({
@@ -426,27 +444,32 @@ describe("validateFactionCrossReferences", () => {
 
 describe("findInboundReferences", () => {
   it("投影可用时通过反向引用查询返回删除保护命中", async () => {
-    const projection = new NovelMemoryProjection([], [{
-      fromKind: "event",
-      fromId: "event-1",
-      toKind: "faction",
-      toId: "faction-1",
-      field: "关联势力",
-    }]);
+    const projection = new NovelMemoryProjection(
+      [],
+      [
+        {
+          fromKind: "event",
+          fromId: "event-1",
+          toKind: "faction",
+          toId: "faction-1",
+          field: "关联势力",
+        },
+      ],
+    );
     const hits = await findInboundReferences(
       storageWith({}),
       "faction",
       "faction-1",
       projection,
     );
-    expect(hits).toEqual([{ library: "时间线", location: "时间线事件“event-1”的关联势力" }]);
+    expect(hits).toEqual([
+      { library: "时间线", location: "时间线事件“event-1”的关联势力" },
+    ]);
   });
 
   it("投影不可用时保留文件扫描路径", async () => {
     const storage = storageWith({
-      "timeline/index.json": timelineFile(
-        timelineWithEvent({ factionIds: ["faction-1"] }),
-      ),
+      ...timelineFiles(timelineWithEvent({ factionIds: ["faction-1"] })),
     });
     const hits = await findInboundReferences(
       storage,
@@ -460,9 +483,7 @@ describe("findInboundReferences", () => {
 
   it("势力被时间线事件引用时命中", async () => {
     const storage = storageWith({
-      "timeline/index.json": timelineFile(
-        timelineWithEvent({ factionIds: ["faction-1"] }),
-      ),
+      ...timelineFiles(timelineWithEvent({ factionIds: ["faction-1"] })),
     });
     const hits = await findInboundReferences(storage, "faction", "faction-1");
     expect(hits).toHaveLength(1);
@@ -471,7 +492,7 @@ describe("findInboundReferences", () => {
 
   it("角色被势力成员引用时命中", async () => {
     const storage = storageWith({
-      "world/factions/index.json": factionFile([
+      ...factionFiles([
         factionRecord({
           members: [
             {
@@ -491,6 +512,37 @@ describe("findInboundReferences", () => {
     expect(hits[0].library).toBe("势力组织");
   });
 
+  it("角色被目录化剧情记录引用时命中", async () => {
+    const storage = storageWith(
+      Object.fromEntries(
+        createNarrativeEngineeringFiles({
+          schemaVersion: 4,
+          updatedAt: NOW,
+          lines: [
+            {
+              id: "line-main",
+              title: "主线",
+              protagonistCharacterId: "char-1",
+            },
+          ],
+          arcs: [],
+          directories: [],
+          chapters: [],
+          simulationProposals: [],
+        }).map((file) => [file.path, file.content]),
+      ),
+    );
+
+    const hits = await findInboundReferences(storage, "character", "char-1");
+
+    expect(hits).toContainEqual(
+      expect.objectContaining({
+        library: "剧情工程",
+        location: expect.stringContaining("主线"),
+      }),
+    );
+  });
+
   it("物品被角色物品栏引用时命中", async () => {
     const storage = storageWith({
       ...characterFiles([
@@ -504,7 +556,7 @@ describe("findInboundReferences", () => {
 
   it("物品被修炼体系深层 itemIds 引用时命中", async () => {
     const storage = storageWith({
-      "world/cultivation-ecology.json": JSON.stringify({
+      ...cultivationFiles({
         schemaVersion: 6,
         updatedAt: NOW,
         worldOrigins: [],
@@ -516,9 +568,24 @@ describe("findInboundReferences", () => {
             summary: "",
             kind: "修仙",
             terminology: { energy: "", stage: "", method: "", ability: "" },
-            projection: { originIds: [], manifestationIds: [] },
-            theoryModel: { statement: "", summary: "", nodeTypes: [], invariants: [], validationRules: [], nodeCatalog: [] },
+            projection: {
+              originIds: [],
+              manifestationIds: [],
+              access: "",
+              translation: "",
+              medium: "",
+              attenuation: "",
+            },
+            theoryModel: {
+              statement: "",
+              summary: "",
+              nodeTypes: [],
+              invariants: [],
+              validationRules: [],
+              nodeCatalog: [],
+            },
             progressionTracks: [],
+            trackInteractions: [],
             resources: [],
             methods: [
               {
@@ -529,8 +596,19 @@ describe("findInboundReferences", () => {
                 theoryReference: "",
                 script: [],
                 formula: "",
-                coverage: { startLevelId: null, stableLimitId: null, theoryLimitId: null, absoluteLimitId: null },
-                effects: { speed: "", conversion: "", quality: "", breakthrough: "", loss: "" },
+                coverage: {
+                  startLevelId: null,
+                  stableLimitId: null,
+                  theoryLimitId: null,
+                  absoluteLimitId: null,
+                },
+                effects: {
+                  speed: "",
+                  conversion: "",
+                  quality: "",
+                  breakthrough: "",
+                  loss: "",
+                },
                 compatibility: [],
                 risks: [],
                 itemIds: ["item-1"],
@@ -556,7 +634,7 @@ describe("findInboundReferences", () => {
 
   it("修炼体系事实源损坏时按 fail-closed 阻止删除", async () => {
     const storage = storageWith({
-      "world/cultivation-ecology.json": "{ not valid json",
+      "world/cultivation/index.json": "{ not valid json",
     });
     const hits = await findInboundReferences(storage, "item", "item-1");
     expect(hits).toHaveLength(1);

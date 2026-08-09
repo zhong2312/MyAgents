@@ -1,12 +1,18 @@
-import {
-  ensureWorkbenchTextFile,
-  type WorkbenchStorage,
-} from "@/workbench-sdk";
+import type { WorkbenchStorage } from "@/workbench-sdk";
 
+import type { CultivationEcology } from "../../../../../../shared/workbenches/novel/cultivationEcologySchema";
 import {
-  cultivationEcologySchema,
-  type CultivationEcology,
-} from "../../../../../../shared/workbenches/novel/cultivationEcologySchema";
+  CULTIVATION_ECOLOGY_INDEX_PATH,
+  loadCultivationEcologyFiles,
+} from "../../../../../../shared/workbenches/novel/cultivationEcologyStorage";
+import {
+  CHARACTER_SOUL_INDEX_PATH,
+  CHARACTER_SOUL_RECORDS_DIRECTORY,
+  characterSoulFileMap,
+  createCharacterSoulFiles,
+  loadCharacterSoulFiles,
+  serializeCharacterSoulSnapshot,
+} from "../../../../../../shared/workbenches/novel/characterSoulStorage";
 
 import {
   createDefaultCharacterLibraryMeta,
@@ -15,11 +21,13 @@ import {
 import {
   parseCharacterLibraryIndex,
   parseCharacterLibraryMeta,
+  parseCharacterLibraryMetaFile,
   parseCharacterRecordFile,
   serializeCharacterLibraryFile,
   type CharacterIndexEntry,
   type CharacterLibraryIndex,
   type CharacterLibraryMeta,
+  type CharacterLibraryMetaFile,
   type CharacterRecord,
 } from "../entities/characterLibrarySchema";
 import { createStorageTransaction } from "../../../shared/infrastructure/storageTransaction";
@@ -28,15 +36,18 @@ export const CHARACTER_LIBRARY_PATHS = Object.freeze({
   index: "characters/index.json",
   meta: "characters/library.json",
   records: "characters/records",
+  soulIndex: CHARACTER_SOUL_INDEX_PATH,
+  soulRecords: CHARACTER_SOUL_RECORDS_DIRECTORY,
 });
-
-const CULTIVATION_ECOLOGY_PATH = "world/cultivation-ecology.json";
 
 export interface LoadedCharacterLibrary {
   readonly index: CharacterLibraryIndex;
   readonly indexContent: string;
   readonly meta: CharacterLibraryMeta;
   readonly metaContent: string;
+  /** 已读取的完整角色灵魂目录快照，用于保存时的 CAS。 */
+  readonly soulContent: string;
+  readonly soulFiles: ReadonlyMap<string, string>;
 }
 
 export interface LoadedCharacterRecord {
@@ -65,8 +76,24 @@ function serializeIndex(index: CharacterLibraryIndex): string {
   return serializeCharacterLibraryFile(index);
 }
 
-function serializeMeta(meta: CharacterLibraryMeta): string {
+function serializeMeta(meta: CharacterLibraryMetaFile): string {
   return serializeCharacterLibraryFile(meta);
+}
+
+function metaFileFromAggregate(
+  meta: CharacterLibraryMeta,
+): CharacterLibraryMetaFile {
+  const { souls: _souls, ...file } = meta;
+  return parseCharacterLibraryMetaFile(serializeMeta(file));
+}
+
+function aggregateMeta(
+  meta: CharacterLibraryMetaFile,
+  souls: Readonly<CharacterLibraryMeta["souls"]>,
+): CharacterLibraryMeta {
+  return parseCharacterLibraryMeta(
+    serializeCharacterLibraryFile({ ...meta, souls: [...souls] }),
+  );
 }
 
 function replaceLibrary(
@@ -120,20 +147,18 @@ async function ensureCultivationReferences(
   storage: WorkbenchStorage,
   character: CharacterRecord,
 ): Promise<void> {
-  const [entry] = await storage.stat([CULTIVATION_ECOLOGY_PATH]);
+  const [entry] = await storage.stat([CULTIVATION_ECOLOGY_INDEX_PATH]);
   if (!entry?.exists) return;
-  const file = await storage.readText(CULTIVATION_ECOLOGY_PATH);
-  let parsed: unknown;
+  let ecology: CultivationEcology;
   try {
-    parsed = JSON.parse(file.content);
+    ecology = (
+      await loadCultivationEcologyFiles(
+        async (path) => (await storage.readText(path)).content,
+      )
+    ).ecology;
   } catch {
     throw new Error("修行生态数据无法解析，暂不能保存角色修行引用。");
   }
-  const result = cultivationEcologySchema.safeParse(parsed);
-  if (!result.success) {
-    throw new Error("修行生态数据格式无效，暂不能保存角色修行引用。");
-  }
-  const ecology: CultivationEcology = result.data;
   const systems = new Map(ecology.systems.map((system) => [system.id, system]));
   const tracks = new Map(
     ecology.systems.flatMap((system) =>
@@ -322,6 +347,7 @@ export function createCharacterLibraryInitializationFiles(): readonly {
   readonly path: string;
   readonly content: string;
 }[] {
+  const defaults = createDefaultCharacterLibraryMeta();
   return [
     {
       path: CHARACTER_LIBRARY_PATHS.index,
@@ -329,9 +355,36 @@ export function createCharacterLibraryInitializationFiles(): readonly {
     },
     {
       path: CHARACTER_LIBRARY_PATHS.meta,
-      content: serializeMeta(createDefaultCharacterLibraryMeta()),
+      content: serializeMeta(metaFileFromAggregate(defaults)),
     },
+    ...createCharacterSoulFiles(defaults.souls),
   ];
+}
+
+async function loadLibraryFiles(
+  storage: WorkbenchStorage,
+): Promise<LoadedCharacterLibrary> {
+  const [indexFile, metaFile, soulFiles] = await Promise.all([
+    storage.readText(CHARACTER_LIBRARY_PATHS.index),
+    storage.readText(CHARACTER_LIBRARY_PATHS.meta),
+    loadCharacterSoulFiles(
+      async (path) => (await storage.readText(path)).content,
+    ),
+  ]);
+  const meta = aggregateMeta(
+    parseCharacterLibraryMetaFile(metaFile.content),
+    soulFiles.souls,
+  );
+  const library: LoadedCharacterLibrary = Object.freeze({
+    index: parseCharacterLibraryIndex(indexFile.content),
+    indexContent: indexFile.content,
+    meta,
+    metaContent: metaFile.content,
+    soulContent: serializeCharacterSoulSnapshot(soulFiles.files),
+    soulFiles: soulFiles.files,
+  });
+  ensureUniqueReferences(library.index.characters, null, library.meta);
+  return library;
 }
 
 export function createNovelCharacterLibraryRepository(
@@ -342,20 +395,31 @@ export function createNovelCharacterLibraryRepository(
       if (!storage.isAvailable) {
         throw new Error("人物库存储仅在 MyAgents 桌面端可用");
       }
-      const initialFiles = createCharacterLibraryInitializationFiles();
-      const [indexFile, metaFile] = await Promise.all(
-        initialFiles.map((file) =>
-          ensureWorkbenchTextFile(storage, file.path, file.content),
-        ),
-      );
-      const library: LoadedCharacterLibrary = Object.freeze({
-        index: parseCharacterLibraryIndex(indexFile.content),
-        indexContent: indexFile.content,
-        meta: parseCharacterLibraryMeta(metaFile.content),
-        metaContent: metaFile.content,
-      });
-      ensureUniqueReferences(library.index.characters, null, library.meta);
-      return library;
+      const requiredPaths = [
+        CHARACTER_LIBRARY_PATHS.index,
+        CHARACTER_LIBRARY_PATHS.meta,
+        CHARACTER_LIBRARY_PATHS.soulIndex,
+      ];
+      const statuses = await storage.stat(requiredPaths);
+      if (statuses.every((entry) => !entry.exists)) {
+        const transaction = createStorageTransaction(storage);
+        for (const file of createCharacterLibraryInitializationFiles()) {
+          transaction.createText(file.path, file.content);
+        }
+        await transaction.commit();
+      } else {
+        const missing = statuses
+          .filter((entry) => !entry.exists)
+          .map((entry) => entry.path);
+        if (missing.length > 0) {
+          throw new Error(
+            `人物库目录结构不完整，缺少 ${missing.join("、")}；旧内嵌灵魂数据不兼容且不迁移`,
+          );
+        }
+        const invalid = statuses.find((entry) => entry.kind !== "file");
+        if (invalid) throw new Error(`${invalid.path} 不是文件`);
+      }
+      return loadLibraryFiles(storage);
     },
 
     async loadCharacter(entry: CharacterIndexEntry) {
@@ -460,20 +524,75 @@ export function createNovelCharacterLibraryRepository(
       library: LoadedCharacterLibrary,
       meta: CharacterLibraryMeta,
     ) {
-      const content = serializeMeta(meta);
-      const parsedMeta = parseCharacterLibraryMeta(content);
-      ensureUniqueReferences(library.index.characters, null, parsedMeta);
-      const file = await storage.writeText(
-        CHARACTER_LIBRARY_PATHS.meta,
-        content,
-        {
-          expectedContent: library.metaContent,
-        },
+      const parsedMeta = parseCharacterLibraryMeta(
+        serializeCharacterLibraryFile(meta),
       );
-      return replaceLibrary(library, {
-        meta: parseCharacterLibraryMeta(file.content),
-        metaContent: file.content,
-      });
+      ensureUniqueReferences(library.index.characters, null, parsedMeta);
+      const [onDiskMeta, onDiskSouls] = await Promise.all([
+        storage.readText(CHARACTER_LIBRARY_PATHS.meta),
+        loadCharacterSoulFiles(
+          async (path) => (await storage.readText(path)).content,
+        ),
+      ]);
+      const onDiskSoulContent = serializeCharacterSoulSnapshot(
+        onDiskSouls.files,
+      );
+      if (
+        onDiskMeta.content !== library.metaContent ||
+        onDiskSoulContent !== library.soulContent
+      ) {
+        throw new Error(
+          "人物库元数据或角色灵魂已被外部修改，请重新加载后再保存",
+        );
+      }
+
+      const nextMetaContent = serializeMeta(metaFileFromAggregate(parsedMeta));
+      const nextSoulFiles = characterSoulFileMap(
+        createCharacterSoulFiles(parsedMeta.souls),
+      );
+      const transaction = createStorageTransaction(storage);
+      const recordPaths = [...nextSoulFiles.keys()]
+        .filter((path) => path !== CHARACTER_SOUL_INDEX_PATH)
+        .sort((left, right) => left.localeCompare(right));
+      for (const path of recordPaths) {
+        const content = nextSoulFiles.get(path);
+        if (content === undefined) continue;
+        const previous = onDiskSouls.files.get(path);
+        if (previous === content) continue;
+        if (previous === undefined) transaction.createText(path, content);
+        else transaction.writeText(path, content, previous);
+      }
+      if (nextMetaContent !== onDiskMeta.content) {
+        transaction.writeText(
+          CHARACTER_LIBRARY_PATHS.meta,
+          nextMetaContent,
+          onDiskMeta.content,
+        );
+      }
+      const nextSoulIndex = nextSoulFiles.get(CHARACTER_SOUL_INDEX_PATH);
+      const previousSoulIndex = onDiskSouls.files.get(
+        CHARACTER_SOUL_INDEX_PATH,
+      );
+      if (nextSoulIndex === undefined || previousSoulIndex === undefined) {
+        throw new Error("角色灵魂索引快照不完整");
+      }
+      if (nextSoulIndex !== previousSoulIndex) {
+        transaction.writeText(
+          CHARACTER_SOUL_INDEX_PATH,
+          nextSoulIndex,
+          previousSoulIndex,
+        );
+      }
+      await transaction.commit();
+
+      const removedPaths = [...onDiskSouls.files.keys()].filter(
+        (path) =>
+          path !== CHARACTER_SOUL_INDEX_PATH && !nextSoulFiles.has(path),
+      );
+      await Promise.allSettled(
+        removedPaths.map((path) => storage.remove(path, { permanent: true })),
+      );
+      return loadLibraryFiles(storage);
     },
   });
 }
@@ -484,8 +603,8 @@ export async function loadCharacterRecords(
   library: LoadedCharacterLibrary,
 ): Promise<readonly CharacterRecord[]> {
   const records = await Promise.all(
-    library.index.characters.map(async (entry) =>
-      (await repository.loadCharacter(entry)).record,
+    library.index.characters.map(
+      async (entry) => (await repository.loadCharacter(entry)).record,
     ),
   );
   return Object.freeze(records);

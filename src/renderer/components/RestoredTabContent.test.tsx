@@ -85,6 +85,7 @@ const noopProps = {
   onLaunchProject: vi.fn(),
   onOpenTargetSession: vi.fn(async () => true),
   onOpenHistorySession: vi.fn(async () => {}),
+  onOpenHistorySessionInCurrentTab: vi.fn(async () => true),
   onNewSession: vi.fn(async () => true),
   onUpdateGenerating: vi.fn(),
   onUpdateTitle: vi.fn(),

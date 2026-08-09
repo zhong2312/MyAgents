@@ -863,7 +863,9 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         const attachments = mergeAttachmentsByPendingId(tool.attachments, payload?.attachments);
                         return {
                             ...tool,
-                            result: incoming ?? tool.result,
+                            result: incoming !== undefined
+                                ? clampToolResult('', incoming)
+                                : tool.result,
                             isError: payload?.isError,
                             isLoading: eventName !== 'chat:tool-result-complete',
                             resultMeta: payload?.metadata ?? tool.resultMeta,

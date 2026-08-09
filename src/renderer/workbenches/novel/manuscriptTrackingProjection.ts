@@ -1,4 +1,13 @@
-import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
+import type { WorkbenchStorage } from "@/workbench-sdk";
+
+import {
+  MANUSCRIPT_CONTINUITY_INDEX_PATH,
+  MANUSCRIPT_CONTINUITY_LEGACY_PATH,
+  createManuscriptContinuityFiles,
+  loadManuscriptContinuityFiles,
+  manuscriptContinuityFileMap,
+  serializeManuscriptContinuityFileSnapshot,
+} from "../../../shared/workbenches/novel/manuscriptContinuityStorage";
 
 import {
   createNovelCharacterLibraryRepository,
@@ -13,13 +22,11 @@ import type {
 import { createNovelFactionLibraryRepository } from "./modules/factions/data-access/factionLibraryRepository";
 import type { FactionRecord } from "./modules/factions/entities/factionLibrarySchema";
 import { createNovelItemLibraryRepository } from "./itemLibraryRepository";
-import { createNovelLocationLibraryRepository } from "./locationLibraryRepository";
-import type { NovelLocation } from "./locationLibrarySchema";
+import { createNovelLocationLibraryRepository } from "./modules/locations/data-access/locationLibraryRepository";
+import type { NovelLocation } from "./modules/locations/entities/locationLibrarySchema";
 import {
   createEmptyManuscriptContinuityState,
-  MANUSCRIPT_CONTINUITY_PATH,
   parseManuscriptContinuityState,
-  serializeManuscriptContinuityState,
   type ManuscriptContinuityFact,
   type ManuscriptContinuityState,
   type ManuscriptTrackingBatch,
@@ -27,6 +34,7 @@ import {
   type ManuscriptTrackingMutation,
 } from "./manuscriptTrackingSchema";
 import { createNovelTimelineLibraryRepository } from "./timelineLibraryRepository";
+import { createStorageTransaction } from "./shared/infrastructure/storageTransaction";
 import {
   MAIN_TIMELINE_BRANCH_ID,
   type TimelineEvent,
@@ -45,7 +53,9 @@ export interface ManuscriptProjectionChapter {
 
 interface LoadedContinuityState {
   readonly state: ManuscriptContinuityState;
+  /** 已读取的完整连续性目录快照，用于保存时的 CAS。 */
   readonly content: string;
+  readonly files: ReadonlyMap<string, string>;
 }
 
 interface ProjectionState {
@@ -101,28 +111,78 @@ function stableSuffix(value: string): string {
     .replace(/^-+|-+$/gu, "");
 }
 
-function continuityContent(state: ManuscriptContinuityState): string {
-  return serializeManuscriptContinuityState({
-    ...state,
-    updatedAt: new Date().toISOString(),
+async function loadContinuity(
+  storage: WorkbenchStorage,
+): Promise<LoadedContinuityState> {
+  const [index, legacy] = await storage.stat([
+    MANUSCRIPT_CONTINUITY_INDEX_PATH,
+    MANUSCRIPT_CONTINUITY_LEGACY_PATH,
+  ]);
+  if (!index?.exists) {
+    if (legacy?.exists) {
+      throw new Error(
+        `${MANUSCRIPT_CONTINUITY_LEGACY_PATH} 是旧单文件正文连续性状态；当前目录协议不兼容且不迁移`,
+      );
+    }
+    const transaction = createStorageTransaction(storage);
+    for (const file of createManuscriptContinuityFiles(
+      createEmptyManuscriptContinuityState(),
+    )) {
+      transaction.createText(file.path, file.content);
+    }
+    await transaction.commit();
+  } else if (index.kind !== "file") {
+    throw new Error(`${MANUSCRIPT_CONTINUITY_INDEX_PATH} 不是文件`);
+  }
+
+  const loaded = await loadManuscriptContinuityFiles(
+    async (path) => (await storage.readText(path)).content,
+  );
+  return Object.freeze({
+    state: parseManuscriptContinuityState(JSON.stringify(loaded.state)),
+    content: serializeManuscriptContinuityFileSnapshot(loaded.files),
+    files: loaded.files,
   });
 }
 
-async function ensureContinuityFile(
+async function saveContinuity(
   storage: WorkbenchStorage,
-): Promise<WorkbenchTextFile> {
-  const [info] = await storage.stat([MANUSCRIPT_CONTINUITY_PATH]);
-  if (info?.exists) return storage.readText(MANUSCRIPT_CONTINUITY_PATH);
-  const content = serializeManuscriptContinuityState(
-    createEmptyManuscriptContinuityState(),
-  );
-  try {
-    return await storage.createText(MANUSCRIPT_CONTINUITY_PATH, content, {
-      createParents: true,
-    });
-  } catch {
-    return storage.readText(MANUSCRIPT_CONTINUITY_PATH);
+  current: LoadedContinuityState,
+  next: ManuscriptContinuityState,
+  updatedAt = new Date().toISOString(),
+): Promise<LoadedContinuityState> {
+  const onDisk = await loadContinuity(storage);
+  if (onDisk.content !== current.content) {
+    throw new Error("正文连续性状态已被外部修改，请重新加载后再保存");
   }
+  const normalized = parseManuscriptContinuityState(
+    JSON.stringify({ ...next, updatedAt }),
+  );
+  const nextFiles = manuscriptContinuityFileMap(
+    createManuscriptContinuityFiles(normalized),
+  );
+  const transaction = createStorageTransaction(storage);
+  const orderedPaths = [...nextFiles.keys()].sort((left, right) => {
+    if (left === MANUSCRIPT_CONTINUITY_INDEX_PATH) return 1;
+    if (right === MANUSCRIPT_CONTINUITY_INDEX_PATH) return -1;
+    return left.localeCompare(right);
+  });
+  for (const path of orderedPaths) {
+    const content = nextFiles.get(path);
+    if (content === undefined) continue;
+    const previous = onDisk.files.get(path);
+    if (previous === content) continue;
+    if (previous === undefined) transaction.createText(path, content);
+    else transaction.writeText(path, content, previous);
+  }
+  await transaction.commit();
+  const removedPaths = [...onDisk.files.keys()].filter(
+    (path) => !nextFiles.has(path),
+  );
+  await Promise.allSettled(
+    removedPaths.map((path) => storage.remove(path, { permanent: true })),
+  );
+  return loadContinuity(storage);
 }
 
 function findCharacter(
@@ -504,14 +564,14 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
   const factionRepository = createNovelFactionLibraryRepository(storage);
 
   const load = async (): Promise<ProjectionState> => {
-    const [timeline, characterLibrary, items, locations, factions, continuityFile] =
+    const [timeline, characterLibrary, items, locations, factions, continuity] =
       await Promise.all([
         timelineRepository.load(),
         characterRepository.load(),
         itemRepository.load(),
         locationRepository.load(),
         factionRepository.load(),
-        ensureContinuityFile(storage),
+        loadContinuity(storage),
       ]);
     return {
       timeline,
@@ -525,10 +585,7 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       items,
       locations,
       factions,
-      continuity: {
-        state: parseManuscriptContinuityState(continuityFile.content),
-        content: continuityFile.content,
-      },
+      continuity,
     };
   };
 
@@ -550,9 +607,14 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
       if (!jsonEqual(state.characters.records, next.characters)) {
         let written = state.characters.library;
         const beforeById = new Map(
-          state.characters.records.map((character) => [character.id, character]),
+          state.characters.records.map((character) => [
+            character.id,
+            character,
+          ]),
         );
-        const nextIds = new Set(next.characters.map((character) => character.id));
+        const nextIds = new Set(
+          next.characters.map((character) => character.id),
+        );
         for (const character of next.characters) {
           if (jsonEqual(beforeById.get(character.id), character)) continue;
           written = await characterRepository.saveCharacter(written, character);
@@ -565,8 +627,13 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
         }
         for (const character of state.characters.records) {
           if (nextIds.has(character.id)) continue;
-          written = await characterRepository.deleteCharacter(written, character.id);
-          rollback.push(() => characterRepository.saveCharacter(written, character));
+          written = await characterRepository.deleteCharacter(
+            written,
+            character.id,
+          );
+          rollback.push(() =>
+            characterRepository.saveCharacter(written, character),
+          );
         }
       }
       if (!jsonEqual(state.locations.index.locations, next.locations)) {
@@ -588,17 +655,17 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
         );
       }
       if (!jsonEqual(state.continuity.state, next.continuity)) {
-        const content = continuityContent(next.continuity);
-        const written = await storage.writeText(
-          MANUSCRIPT_CONTINUITY_PATH,
-          content,
-          { expectedContent: state.continuity.content },
+        const written = await saveContinuity(
+          storage,
+          state.continuity,
+          next.continuity,
         );
         rollback.push(() =>
-          storage.writeText(
-            MANUSCRIPT_CONTINUITY_PATH,
-            state.continuity.content,
-            { expectedContent: written.content },
+          saveContinuity(
+            storage,
+            written,
+            state.continuity.state,
+            state.continuity.state.updatedAt,
           ),
         );
       }
@@ -757,10 +824,7 @@ export function createManuscriptTrackingProjection(storage: WorkbenchStorage) {
           state.characters.records,
           change.entityId,
         );
-        findCharacter(
-          state.characters.records,
-          operation.targetCharacterId,
-        );
+        findCharacter(state.characters.records, operation.targetCharacterId);
         const before =
           character.relations.find(
             (relation) => relation.targetId === operation.targetCharacterId,
