@@ -367,15 +367,17 @@ function summarizeZodIssues(issues: readonly z.ZodIssue[]): string {
       typeof root === "string" &&
       typeof index === "number" &&
       typeof field === "string";
-    const isMissingOrBadEnum =
-      /received undefined$/.test(issue.message) ||
-      /^Invalid option: expected one of/.test(issue.message);
-    if (isArrayItemField && isMissingOrBadEnum) {
+    const isMissing = /received undefined$/.test(issue.message);
+    if (isArrayItemField && isMissing) {
       missingByField.set(field, (missingByField.get(field) ?? 0) + 1);
       continue;
     }
     const path = issue.path.join(".") || "root";
-    const message = humanizeIssueMessage(issue.message);
+    const message =
+      field === "source" &&
+      /^Invalid option: expected one of/.test(issue.message)
+        ? "source 只能为 builtin 或 project"
+        : humanizeIssueMessage(issue.message);
     // 归并键去掉“当前为 xxx”这类随条目变化的尾部，使同类问题落到同一桶。
     const reasonKey = `${isArrayItemField ? field : path}::${message.replace(/，当前为.*$/, "")}`;
     const existing = otherByReason.get(reasonKey);

@@ -20,6 +20,7 @@ license does not automatically license them.
 | sharp | Apache License 2.0 |
 | libvips distributed with sharp platform packages | LGPL-3.0-or-later |
 | SheetJS `xlsx` | Apache License 2.0 |
+| Azgaar Fantasy Map Generator | MIT License; Copyright © 2017-2026 Azgaar |
 | Tauri, React, and other npm or Cargo dependencies | Licenses declared by the respective packages |
 | User-installed Skills, plugins, MCP servers, and external runtimes | Licenses or service terms specified by their respective publishers |
 
@@ -64,6 +65,7 @@ MyAgents 包含、分发或集成第三方软件、SDK、运行时、Skills、�
 | sharp | Apache License 2.0 |
 | 随 sharp 平台包分发的 libvips | LGPL-3.0-or-later |
 | SheetJS `xlsx` | Apache License 2.0 |
+| Azgaar Fantasy Map Generator | MIT License；Copyright © 2017-2026 Azgaar |
 | Tauri、React 及其他 npm 或 Cargo 依赖 | 各软件包声明的许可 |
 | 用户安装的 Skills、插件、MCP servers 及外部运行时 | 各发布者声明的许可或服务条款 |
 

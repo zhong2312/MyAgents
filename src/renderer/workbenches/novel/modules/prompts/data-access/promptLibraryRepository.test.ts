@@ -4,9 +4,17 @@ import {
   createNovelPromptLibraryRepository,
   createPromptLibraryInitializationFiles,
 } from "./promptLibraryRepository";
-import { STORYFORGE_PROMPT_COUNT } from "../business/promptLibraryDefaults";
+import {
+  NOVEL_WORKBENCH_PROMPT_COUNT,
+  NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+  STORYFORGE_PROMPT_COUNT,
+  STORYFORGE_PROMPT_INSTALLATION_ID,
+} from "../business/promptLibraryDefaults";
 import { PROMPT_LIBRARY_REGISTRY_PATH } from "../entities/promptLibrarySchema";
-import { createEmptyNovelStorage } from "../../../shared/infrastructure/testStorage";
+import {
+  createEmptyNovelStorage,
+  NovelMemoryStorage,
+} from "../../../shared/infrastructure/testStorage";
 
 describe("createNovelPromptLibraryRepository", () => {
   it("bootstraps a complete editable StoryForge skill-pack copy", async () => {
@@ -16,9 +24,12 @@ describe("createNovelPromptLibraryRepository", () => {
     const library = await repository.load();
 
     expect(library.model.packs.map((pack) => pack.id)).toEqual([
-      "storyforge.prompt-library",
+      STORYFORGE_PROMPT_INSTALLATION_ID,
+      NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
     ]);
-    expect(library.model.prompts).toHaveLength(STORYFORGE_PROMPT_COUNT);
+    expect(library.model.prompts).toHaveLength(
+      STORYFORGE_PROMPT_COUNT + NOVEL_WORKBENCH_PROMPT_COUNT,
+    );
     expect(library.model.prompts[0]?.content).toContain("资深的世界设计师");
     expect(library.model.prompts[0]?.content).toContain("模板元数据");
     const registryText = storage.getText(PROMPT_LIBRARY_REGISTRY_PATH) ?? "";
@@ -169,13 +180,75 @@ describe("createNovelPromptLibraryRepository", () => {
     expect(paths.at(-1)).toBe(PROMPT_LIBRARY_REGISTRY_PATH);
     expect(new Set(paths).size).toBe(paths.length);
     expect(paths.filter((path) => path.endsWith(".md"))).toHaveLength(
-      STORYFORGE_PROMPT_COUNT,
+      STORYFORGE_PROMPT_COUNT + NOVEL_WORKBENCH_PROMPT_COUNT,
+    );
+    expect(paths).toContain(
+      "prompts/installations/myagents.novel.base/content/prompts/characters/assist.md",
     );
     expect(paths).toContain(
       "prompts/installations/storyforge.prompt-library/content/prompts/general/worldview/dimension/generate.md",
     );
     expect(paths).toContain(
       "prompts/installations/storyforge.prompt-library/content/prompts/genre-packs/xianxia/chapter/content/generate.md",
+    );
+  });
+
+  it("adds the built-in人物库 prompt to an existing StoryForge-only project", async () => {
+    const initializationFiles = createPromptLibraryInitializationFiles();
+    const registryFile = initializationFiles.find(
+      (file) => file.path === PROMPT_LIBRARY_REGISTRY_PATH,
+    )!;
+    const registry = JSON.parse(registryFile.content) as {
+      installations: Array<{ installationId: string }>;
+      groups: Array<{ installationId: string }>;
+      prompts: Array<{ installationId: string }>;
+    };
+    const oldRegistry = JSON.stringify(
+      {
+        ...registry,
+        installations: registry.installations.filter(
+          (record) =>
+            record.installationId !== NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+        ),
+        groups: registry.groups.filter(
+          (record) =>
+            record.installationId !== NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+        ),
+        prompts: registry.prompts.filter(
+          (record) =>
+            record.installationId !== NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+        ),
+      },
+      null,
+      2,
+    ) + "\n";
+    const oldFiles = Object.fromEntries(
+      initializationFiles
+        .filter(
+          (file) =>
+            file.path === PROMPT_LIBRARY_REGISTRY_PATH ||
+            !file.path.startsWith(
+              "prompts/installations/myagents.novel.base/",
+            ),
+        )
+        .map((file) => [
+          file.path,
+          file.path === PROMPT_LIBRARY_REGISTRY_PATH ? oldRegistry : file.content,
+        ]),
+    );
+    const storage = new NovelMemoryStorage(oldFiles);
+    const library = await createNovelPromptLibraryRepository(storage).load();
+
+    expect(library.model.prompts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "novel.characters.assist",
+          skillPackId: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+        }),
+      ]),
+    );
+    expect(storage.getText("prompts/registry.json")).toContain(
+      '"installationId": "myagents.novel.base"',
     );
   });
 });

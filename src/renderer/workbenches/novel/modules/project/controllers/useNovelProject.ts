@@ -7,6 +7,7 @@ import {
   type CreateNovelChapterOptions,
   type LoadedNovelChapter,
   type LoadedNovelProject,
+  type NarrativeChapterExtraction,
   type NovelRepository,
   type UpdateNovelProjectSettingsInput,
   type UpdateNovelChapterInput,
@@ -77,16 +78,7 @@ export interface NovelProjectController {
   saveManuscriptVersionLimit(maxVersions: number): Promise<void>;
   restoreManuscriptVersion(chapterId: string, versionId: string): Promise<void>;
   extractChaptersToNarrative(input: {
-    readonly extractions: readonly {
-      readonly chapterId: string;
-      readonly targetNarrativeChapterId: string | null;
-      readonly title: string;
-      readonly description: string;
-      readonly sections: readonly {
-        readonly title: string;
-        readonly description: string;
-      }[];
-    }[];
+    readonly extractions: readonly NarrativeChapterExtraction[];
   }): Promise<void>;
   adoptSimulationPath(input: {
     readonly title: string;
@@ -119,22 +111,6 @@ function createProposalId(): string {
       ? crypto.randomUUID().replaceAll("-", "")
       : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   return `simulation-proposal-${random.toLowerCase()}`;
-}
-
-function createNarrativeChapterId(): string {
-  const random =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID().replaceAll("-", "")
-      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-  return `narrative-chapter-${random.toLowerCase()}`;
-}
-
-function createNarrativeSectionId(): string {
-  const random =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID().replaceAll("-", "")
-      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-  return `narrative-section-${random.toLowerCase()}`;
 }
 
 function boundedScore(value: number): number {
@@ -276,7 +252,14 @@ export function useNovelProject(
   const updateChapter = useCallback(
     async (chapterId: string, input: UpdateNovelChapterInput) => {
       if (!project) throw new Error("小说项目尚未加载");
-      const updated = await repository.updateChapter(project, chapterId, input);
+      // 长任务会在开始、完成和失败时多次更新同一章节。不能复用调用开始时
+      // 捕获的 React 快照，否则第一次更新索引后，后续 CAS 会把自身视为外部冲突。
+      const currentProject = await repository.load();
+      const updated = await repository.updateChapter(
+        currentProject,
+        chapterId,
+        input,
+      );
       // 正文状态变更回流剧情工程：保持章计划状态与正文一致，
       // 消除"正文已写完但剧情工程仍显示规划中"的断点。
       const record = updated.chapterIndex.chapters.find(
@@ -289,9 +272,8 @@ export function useNovelProject(
             : input.status === "planned"
               ? ("planned" as const)
               : ("drafting" as const);
-        const narrativeRepository = createNarrativeEngineeringRepository(
-          storage,
-        );
+        const narrativeRepository =
+          createNarrativeEngineeringRepository(storage);
         const currentNarrative = await narrativeRepository.load();
         const targetPlan = currentNarrative.library.chapters.find(
           (plan) => plan.id === record.narrativeChapterId,
@@ -301,7 +283,11 @@ export function useNovelProject(
             ...currentNarrative.library,
             chapters: currentNarrative.library.chapters.map((plan) =>
               plan.id === record.narrativeChapterId
-                ? { ...plan, status: planStatus, updatedAt: new Date().toISOString() }
+                ? {
+                    ...plan,
+                    status: planStatus,
+                    updatedAt: new Date().toISOString(),
+                  }
                 : plan,
             ),
           });
@@ -312,7 +298,7 @@ export function useNovelProject(
         if (
           !current ||
           !record ||
-          current.chapterIndexContent !== project.chapterIndexContent
+          current.chapterIndexContent !== currentProject.chapterIndexContent
         )
           return current;
         const chapters = current.chapters.map((chapter) =>
@@ -558,165 +544,14 @@ export function useNovelProject(
 
   const extractChaptersToNarrative = useCallback(
     async (input: {
-      readonly extractions: readonly {
-        readonly chapterId: string;
-        readonly targetNarrativeChapterId: string | null;
-        readonly title: string;
-        readonly description: string;
-        readonly sections: readonly {
-          readonly title: string;
-          readonly description: string;
-        }[];
-      }[];
+      readonly extractions: readonly NarrativeChapterExtraction[];
     }) => {
       if (!project) throw new Error("小说项目尚未加载");
-      if (!input.extractions.length) throw new Error("请选择需要提炼的正文");
-      const chapterIds = new Set<string>();
-      input.extractions.forEach((item) => {
-        if (!item.chapterId || chapterIds.has(item.chapterId)) {
-          throw new Error("同一正文只能在本次抽纲中出现一次");
-        }
-        chapterIds.add(item.chapterId);
-        if (
-          !project.chapters.some((chapter) => chapter.id === item.chapterId)
-        ) {
-          throw new Error("待提炼正文不存在或已被删除");
-        }
-        if (!item.title.trim()) throw new Error("提炼后的剧情章节标题不能为空");
-      });
-
-      const narrativeRepository = createNarrativeEngineeringRepository(storage);
-      const currentNarrative = await narrativeRepository.load();
-      const targetIds = input.extractions
-        .map((item) => item.targetNarrativeChapterId)
-        .filter((id): id is string => Boolean(id));
-      if (new Set(targetIds).size !== targetIds.length) {
-        throw new Error("同一剧情章节不能同时接收多篇正文，请分别提炼");
-      }
-      const availableTargetIds = new Set(
-        currentNarrative.library.chapters.map((plan) => plan.id),
-      );
-      if (targetIds.some((id) => !availableTargetIds.has(id))) {
-        throw new Error("目标剧情章节不存在或已被删除，请重新提炼");
-      }
-
-      const sourceById = new Map(
-        project.chapters.map((chapter) => [chapter.id, chapter]),
-      );
-      const nextPlanIdByChapter = new Map<string, string>();
-      const now = new Date().toISOString();
-      const updatedPlans = currentNarrative.library.chapters.map((plan) => {
-        const extraction = input.extractions.find(
-          (item) => item.targetNarrativeChapterId === plan.id,
-        );
-        if (!extraction) return plan;
-        const source = sourceById.get(extraction.chapterId)!;
-        if (
-          plan.manuscriptChapterId &&
-          plan.manuscriptChapterId !== source.id
-        ) {
-          throw new Error(`剧情章节“${plan.title}”已经关联其它正文`);
-        }
-        nextPlanIdByChapter.set(source.id, plan.id);
-        return {
-          ...plan,
-          title: extraction.title.trim(),
-          description: extraction.description.trim(),
-          status:
-            source.status === "complete"
-              ? ("complete" as const)
-              : ("drafting" as const),
-          updatedAt: now,
-          sections: extraction.sections
-            .map((section, index) => ({
-              id: createNarrativeSectionId(),
-              order: index,
-              title: section.title.trim() || `场景 ${index + 1}`,
-              description: section.description.trim(),
-              povCharacterId: null,
-              lineIds: [],
-              arcIds: [],
-              paragraphs: [],
-            }))
-            .slice(0, 12),
-        };
-      });
-
-      const nextOrderByDirectory = new Map<string, number>();
-      const createdPlans = input.extractions.flatMap((extraction) => {
-        if (extraction.targetNarrativeChapterId) return [];
-        const source = sourceById.get(extraction.chapterId)!;
-        const planId = createNarrativeChapterId();
-        nextPlanIdByChapter.set(source.id, planId);
-        const manuscriptDirectory = source.directoryId
-          ? project.chapterIndex.directories.find(
-              (directory) => directory.id === source.directoryId,
-            )
-          : undefined;
-        const narrativeDirectoryId =
-          manuscriptDirectory?.narrativeDirectoryId ?? null;
-        const directoryKey = narrativeDirectoryId ?? "root";
-        const order =
-          nextOrderByDirectory.get(directoryKey) ??
-          currentNarrative.library.chapters.filter(
-            (plan) => plan.directoryId === narrativeDirectoryId,
-          ).length;
-        nextOrderByDirectory.set(directoryKey, order + 1);
-        return [
-          {
-            id: planId,
-            directoryId: narrativeDirectoryId,
-            manuscriptChapterId: null,
-            title: extraction.title.trim(),
-            description: extraction.description.trim(),
-            status:
-              source.status === "complete"
-                ? ("complete" as const)
-                : ("drafting" as const),
-            order,
-            updatedAt: now,
-            lineIds: [],
-            arcIds: [],
-            sections: extraction.sections
-              .map((section, index) => ({
-                id: createNarrativeSectionId(),
-                order: index,
-                title: section.title.trim() || `场景 ${index + 1}`,
-                description: section.description.trim(),
-                povCharacterId: null,
-                lineIds: [],
-                arcIds: [],
-                paragraphs: [],
-              }))
-              .slice(0, 12),
-          },
-        ];
-      });
-
-      await narrativeRepository.save(currentNarrative, {
-        ...currentNarrative.library,
-        chapters: [...updatedPlans, ...createdPlans],
-      });
-
-      let workingProject = project;
-      for (const extraction of input.extractions) {
-        const narrativeChapterId = nextPlanIdByChapter.get(
-          extraction.chapterId,
-        );
-        if (!narrativeChapterId) {
-          throw new Error("剧情章节提炼失败，未生成关联目标");
-        }
-        await repository.linkChapterToNarrative(
-          workingProject,
-          extraction.chapterId,
-          narrativeChapterId,
-        );
-        workingProject = await repository.load();
-      }
+      await repository.extractChaptersToNarrative(project, input.extractions);
       if (!(await load(true)))
-        throw new Error("正文已提炼，但项目重新加载失败");
+        throw new Error("正文提炼已写入，但项目重新加载失败");
     },
-    [load, project, repository, storage],
+    [load, project, repository],
   );
 
   const adoptSimulationPath = useCallback(

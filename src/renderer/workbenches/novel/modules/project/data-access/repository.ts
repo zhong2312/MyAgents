@@ -26,7 +26,11 @@ import {
   type NovelChapterStatus,
   type NovelMetadata,
 } from "../entities/projectSchema";
-import { createManuscriptTrackingRepository } from "../../../manuscriptTrackingRepository";
+import type { NovelWritingPerspective } from "../business/writingPerspective";
+import {
+  createManuscriptTrackingRepository,
+  hashManuscriptContent,
+} from "../../../manuscriptTrackingRepository";
 
 const NOVEL_METADATA_PATH = "novel.json";
 const CHAPTER_INDEX_PATH = "manuscript/index.json";
@@ -78,6 +82,7 @@ export interface UpdateNovelProjectSettingsInput {
   readonly targetWordCountMin: number;
   readonly targetWordCountMax: number;
   readonly chapterWordCount: number;
+  readonly writingPerspective?: NovelWritingPerspective;
   readonly language?: string;
   readonly description?: string;
 }
@@ -90,6 +95,22 @@ interface UpdatedChapterIndex {
 export interface NarrativeSynchronizationResult {
   /** 本次同步是否产生了任何写盘（索引、正文文件、批次顺序或剧情工程）。 */
   readonly changed: boolean;
+}
+
+/**
+ * 已经经过作者审阅的正文提炼结果。sourceContentHash 将 AI 结果绑定到
+ * 生成时的正文快照，Repository 提交前会重新读取磁盘并复验该值。
+ */
+export interface NarrativeChapterExtraction {
+  readonly chapterId: string;
+  readonly sourceContentHash: string;
+  readonly targetNarrativeChapterId: string | null;
+  readonly title: string;
+  readonly description: string;
+  readonly sections: readonly {
+    readonly title: string;
+    readonly description: string;
+  }[];
 }
 
 export interface NovelRepository {
@@ -120,6 +141,10 @@ export interface NovelRepository {
     project: LoadedNovelProject,
     chapterId: string,
     narrativeChapterId: string | null,
+  ): Promise<void>;
+  extractChaptersToNarrative(
+    project: LoadedNovelProject,
+    extractions: readonly NarrativeChapterExtraction[],
   ): Promise<void>;
   createDirectory(
     project: LoadedNovelProject,
@@ -193,6 +218,14 @@ function createStableId(prefix: string): string {
       ? crypto.randomUUID().replaceAll("-", "")
       : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   return `${prefix}-${random.toLowerCase()}`;
+}
+
+function createNarrativeChapterId(): string {
+  return createStableId("narrative-chapter");
+}
+
+function createNarrativeSectionId(): string {
+  return createStableId("narrative-section");
 }
 
 function sourceSchemaVersion(content: string): number | null {
@@ -498,8 +531,11 @@ export function createNovelRepository(
         raw.targetWordCountMin = input.targetWordCountMin;
         raw.targetWordCountMax = input.targetWordCountMax;
         raw.chapterWordCount = input.chapterWordCount;
+        raw.writingPerspective =
+          input.writingPerspective ?? project.metadata.writingPerspective;
         if (input.language?.trim()) raw.language = input.language.trim();
-        if (input.description?.trim()) raw.description = input.description.trim();
+        if (input.description?.trim())
+          raw.description = input.description.trim();
         else delete raw.description;
         delete raw.targetWordCount;
       });
@@ -885,6 +921,251 @@ export function createNovelRepository(
       }
     },
 
+    async extractChaptersToNarrative(project, extractions) {
+      if (!extractions.length) throw new Error("请选择需要提炼的正文");
+
+      const extractionByChapterId = new Map<
+        string,
+        NarrativeChapterExtraction
+      >();
+      for (const extraction of extractions) {
+        const chapterId = extraction.chapterId.trim();
+        if (!chapterId || extractionByChapterId.has(chapterId)) {
+          throw new Error("同一正文只能在本次抽纲中出现一次");
+        }
+        if (!extraction.sourceContentHash.trim()) {
+          throw new Error("正文提炼结果缺少来源版本，请重新运行提炼");
+        }
+        if (!extraction.title.trim()) {
+          throw new Error("提炼后的剧情章节标题不能为空");
+        }
+        extractionByChapterId.set(chapterId, extraction);
+      }
+
+      // 不信任 Renderer 的内存快照。提炼结果最终必须对当前磁盘正文、索引和
+      // 剧情工程同时成立，才能进入任何一个正式事实源。
+      const currentProject = await repository.load();
+      const sourceById = new Map(
+        currentProject.chapters.map((chapter) => [chapter.id, chapter]),
+      );
+      for (const [chapterId, extraction] of extractionByChapterId) {
+        const source = sourceById.get(chapterId);
+        if (!source) throw new Error("待提炼正文不存在或已被删除");
+        if (
+          hashManuscriptContent(source.content) !== extraction.sourceContentHash
+        ) {
+          throw new Error("正文在提炼结果生成后发生变化，请重新运行提炼");
+        }
+      }
+
+      const currentNarrative = await narrativeRepository.load();
+      const targetIds = [...extractionByChapterId.values()]
+        .map((item) => item.targetNarrativeChapterId)
+        .filter((id): id is string => Boolean(id));
+      if (new Set(targetIds).size !== targetIds.length) {
+        throw new Error("同一剧情章节不能同时接收多篇正文，请分别提炼");
+      }
+      const narrativePlanById = new Map(
+        currentNarrative.library.chapters.map((plan) => [plan.id, plan]),
+      );
+      if (targetIds.some((id) => !narrativePlanById.has(id))) {
+        throw new Error("目标剧情章节不存在或已被删除，请重新提炼");
+      }
+
+      const selectedChapterIds = new Set(extractionByChapterId.keys());
+      const targetNarrativeIdByChapterId = new Map<string, string>();
+      for (const [chapterId, extraction] of extractionByChapterId) {
+        targetNarrativeIdByChapterId.set(
+          chapterId,
+          extraction.targetNarrativeChapterId ?? createNarrativeChapterId(),
+        );
+      }
+      for (const [
+        chapterId,
+        narrativeChapterId,
+      ] of targetNarrativeIdByChapterId) {
+        const occupied = currentProject.chapterIndex.chapters.find(
+          (chapter) =>
+            chapter.narrativeChapterId === narrativeChapterId &&
+            chapter.id !== chapterId,
+        );
+        if (occupied) {
+          throw new Error(`剧情章节已经关联其它正文：${occupied.title}`);
+        }
+      }
+
+      const now = new Date().toISOString();
+      const sectionsFor = (extraction: NarrativeChapterExtraction) =>
+        extraction.sections
+          .map((section, index) => ({
+            id: createNarrativeSectionId(),
+            order: index,
+            title: section.title.trim() || `场景 ${index + 1}`,
+            description: section.description.trim(),
+            povCharacterId: null,
+            lineIds: [],
+            arcIds: [],
+            paragraphs: [],
+          }))
+          .slice(0, 12);
+      const nextOrderByDirectory = new Map<string, number>();
+      const createdPlans: NarrativeChapterPlan[] = [];
+      const nextNarrativePlans: NarrativeChapterPlan[] =
+        currentNarrative.library.chapters.map((plan) => {
+          const sourceChapterId = [
+            ...targetNarrativeIdByChapterId.entries(),
+          ].find(
+            ([, narrativeChapterId]) => narrativeChapterId === plan.id,
+          )?.[0];
+          if (!sourceChapterId) {
+            return selectedChapterIds.has(plan.manuscriptChapterId ?? "")
+              ? { ...plan, manuscriptChapterId: null }
+              : plan;
+          }
+          const extraction = extractionByChapterId.get(sourceChapterId)!;
+          if (
+            plan.manuscriptChapterId &&
+            plan.manuscriptChapterId !== sourceChapterId
+          ) {
+            throw new Error(`剧情章节“${plan.title}”已经关联其它正文`);
+          }
+          const source = sourceById.get(sourceChapterId)!;
+          return {
+            ...plan,
+            manuscriptChapterId: source.id,
+            title: extraction.title.trim(),
+            description: extraction.description.trim(),
+            status:
+              source.status === "complete"
+                ? ("complete" as const)
+                : ("drafting" as const),
+            updatedAt: now,
+            sections: sectionsFor(extraction),
+          };
+        });
+      for (const [chapterId, extraction] of extractionByChapterId) {
+        if (extraction.targetNarrativeChapterId) continue;
+        const source = sourceById.get(chapterId)!;
+        const manuscriptDirectory = source.directoryId
+          ? currentProject.chapterIndex.directories.find(
+              (directory) => directory.id === source.directoryId,
+            )
+          : undefined;
+        const directoryId = manuscriptDirectory?.narrativeDirectoryId ?? null;
+        const directoryKey = directoryId ?? "root";
+        const order =
+          nextOrderByDirectory.get(directoryKey) ??
+          currentNarrative.library.chapters.filter(
+            (plan) => plan.directoryId === directoryId,
+          ).length;
+        nextOrderByDirectory.set(directoryKey, order + 1);
+        createdPlans.push({
+          id: targetNarrativeIdByChapterId.get(chapterId)!,
+          directoryId,
+          manuscriptChapterId: source.id,
+          title: extraction.title.trim(),
+          description: extraction.description.trim(),
+          status:
+            source.status === "complete"
+              ? ("complete" as const)
+              : ("drafting" as const),
+          order,
+          updatedAt: now,
+          lineIds: [],
+          arcIds: [],
+          sections: sectionsFor(extraction),
+        });
+      }
+      const nextNarrative: NarrativeEngineering = {
+        ...currentNarrative.library,
+        chapters: [...nextNarrativePlans, ...createdPlans],
+      };
+      const nextNarrativePlanById = new Map(
+        nextNarrative.chapters.map((plan) => [plan.id, plan]),
+      );
+
+      let nextNarrativeDisplayNumber = nextDisplayNumber(
+        currentProject.chapterIndex.chapters,
+        "narrative",
+      );
+      let nextChapters = [...currentProject.chapterIndex.chapters];
+      for (const [chapterId] of extractionByChapterId) {
+        const source = nextChapters.find(
+          (chapter) => chapter.id === chapterId,
+        )!;
+        const narrativeChapterId = targetNarrativeIdByChapterId.get(chapterId)!;
+        const targetPlan = nextNarrativePlanById.get(narrativeChapterId)!;
+        const directoryId = targetPlan.directoryId
+          ? (currentProject.chapterIndex.directories.find(
+              (directory) =>
+                directory.narrativeDirectoryId === targetPlan.directoryId,
+            )?.id ??
+            (() => {
+              throw new Error("剧情目录尚未同步到正文目录，请先同步剧情工程");
+            })())
+          : source.directoryId;
+        const targetOrder =
+          directoryId === source.directoryId
+            ? source.order
+            : nextChapters.filter(
+                (chapter) =>
+                  chapter.id !== chapterId &&
+                  chapter.directoryId === directoryId,
+              ).length;
+        const displayNumber =
+          chapterDisplayScope(source) === "narrative"
+            ? source.displayNumber
+            : nextNarrativeDisplayNumber++;
+        nextChapters = nextChapters.map((chapter) =>
+          chapter.id === chapterId
+            ? {
+                ...chapter,
+                narrativeChapterId,
+                directoryId,
+                order: targetOrder,
+                displayNumber,
+              }
+            : chapter,
+        );
+      }
+      const nextIndex = {
+        ...currentProject.chapterIndex,
+        chapters: normalizeChapterOrders(nextChapters),
+      };
+      const nextIndexContent = serializeNovelChapterIndex(nextIndex);
+
+      let indexCommitted = false;
+      let trackingReordered = false;
+      try {
+        if (nextIndexContent !== currentProject.chapterIndexContent) {
+          await storage.writeText(CHAPTER_INDEX_PATH, nextIndexContent, {
+            expectedContent: currentProject.chapterIndexContent,
+          });
+          indexCommitted = true;
+        }
+        await trackingRepository.reorderAppliedBatches(
+          currentProject.chapterIndex,
+          nextIndex,
+        );
+        trackingReordered = true;
+        await narrativeRepository.save(currentNarrative, nextNarrative);
+      } catch (error) {
+        const recoveryErrors: unknown[] = [];
+        if (trackingReordered) {
+          await trackingRepository
+            .reorderAppliedBatches(nextIndex, currentProject.chapterIndex)
+            .catch((cause) => recoveryErrors.push(cause));
+        }
+        if (
+          indexCommitted &&
+          !(await rollbackIndex(currentProject, nextIndexContent))
+        ) {
+          recoveryErrors.push(new Error("正文索引未能回滚"));
+        }
+        throwWithRecovery(error, recoveryErrors);
+      }
+    },
+
     async createDirectory(project, parentId, kind, title) {
       assertMutableStructure(project);
       const normalizedTitle = title.trim();
@@ -1140,7 +1421,11 @@ export function createNovelRepository(
             ? undefined
             : existingByNarrativeId.get(plan.id));
         // 显式取消关联的规划不参与正文同步：既不保留旧关联，也不创建新章节。
-        if (!existing && effectiveMode !== "locked" && plan.manuscriptChapterId === null) {
+        if (
+          !existing &&
+          effectiveMode !== "locked" &&
+          plan.manuscriptChapterId === null
+        ) {
           return;
         }
         let record: NovelChapterRecord;

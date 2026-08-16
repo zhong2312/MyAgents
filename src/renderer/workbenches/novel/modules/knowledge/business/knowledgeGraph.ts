@@ -3,6 +3,14 @@ import type { WorkbenchStorage } from "@/workbench-sdk";
 import { TIMELINE_INDEX_PATH } from "../../../../../../shared/workbenches/novel/timelineStorage";
 import { FACTION_INDEX_PATH } from "../../../../../../shared/workbenches/novel/factionStorage";
 import { LOCATION_INDEX_PATH } from "../../../../../../shared/workbenches/novel/locationStorage";
+import {
+  KNOWLEDGE_COLLECTIONS,
+  KNOWLEDGE_DIRECTORY,
+  KNOWLEDGE_LEGACY_PATHS,
+  knowledgeIndexPath,
+  loadKnowledgeFiles,
+  type KnowledgeCollection,
+} from "../../../../../../shared/workbenches/novel/knowledgeStorage";
 
 export type KnowledgeNodeKind =
   | "entity"
@@ -63,6 +71,8 @@ export interface KnowledgeDocument {
 
 export interface KnowledgeGraphSnapshot {
   readonly builtAt: string;
+  /** 派生快照对应的事实源哈希，仅用于缓存失效判断。 */
+  readonly sourceHash?: string;
   readonly nodes: readonly KnowledgeNode[];
   readonly edges: readonly KnowledgeEdge[];
   readonly documents: readonly KnowledgeDocument[];
@@ -80,6 +90,7 @@ const IGNORED_PREFIXES = [
   ".git/",
   "prompts/",
   "world/setting-library/proposals/",
+  "knowledge/derived/",
 ];
 const TIMELINE_RECORD_PATH_PATTERN =
   /^timeline\/(?:calendars|periods|views|branches|events)\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
@@ -87,9 +98,38 @@ const FACTION_RECORD_PATH_PATTERN =
   /^world\/factions\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
 const LOCATION_RECORD_PATH_PATTERN =
   /^world\/locations\/records\/[a-z0-9][a-z0-9-]*\.json$/u;
+const KNOWLEDGE_RECORD_PATH_PATTERN =
+  /^knowledge\/(entities|relations|facts)\/records\/([a-z0-9][a-z0-9-]*)\.json$/u;
+
+function knowledgeRecordDescriptor(
+  path: string,
+): { readonly collection: KnowledgeCollection; readonly id: string } | null {
+  const match = KNOWLEDGE_RECORD_PATH_PATTERN.exec(path);
+  if (!match) return null;
+  return {
+    collection: match[1] as KnowledgeCollection,
+    id: match[2],
+  };
+}
 
 function normalize(value: string): string {
   return value.trim().toLocaleLowerCase("zh-CN");
+}
+
+const DERIVED_GRAPH_PATH = "knowledge/derived/graph.json";
+
+function knowledgeSourceHash(documents: readonly KnowledgeDocument[]): string {
+  let hash = 0x811c9dc5;
+  const source = documents
+    .slice()
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map((document) => `${document.path}\u0000${document.content}`)
+    .join("\u0001");
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function safeJson(content: string): unknown {
@@ -175,7 +215,39 @@ export async function readKnowledgeDocuments(
 ): Promise<readonly KnowledgeDocument[]> {
   const paths = await listFiles(storage);
   const documents: KnowledgeDocument[] = [];
-  for (const path of paths) {
+  const pathSet = new Set(paths);
+  const legacyPath = KNOWLEDGE_LEGACY_PATHS.find((path) => pathSet.has(path));
+  if (legacyPath) {
+    throw new Error(
+      `${legacyPath} 是旧单文件知识库；当前目录协议不兼容且不迁移`,
+    );
+  }
+  const knowledgePaths = paths.filter((path) =>
+    path.startsWith(`${KNOWLEDGE_DIRECTORY}/`),
+  );
+  if (knowledgePaths.length) {
+    const missingIndexes = KNOWLEDGE_COLLECTIONS.map(knowledgeIndexPath).filter(
+      (path) => !pathSet.has(path),
+    );
+    if (missingIndexes.length) {
+      throw new Error(`知识库缺少根索引：${missingIndexes.join("、")}`);
+    }
+    const loaded = await loadKnowledgeFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    for (const [path, content] of loaded.files) {
+      documents.push(
+        Object.freeze({
+          path,
+          content,
+          lineCount: content.split("\n").length,
+        }),
+      );
+    }
+  }
+  for (const path of paths.filter(
+    (path) => !path.startsWith(`${KNOWLEDGE_DIRECTORY}/`),
+  )) {
     try {
       const file = await storage.readText(path);
       documents.push(
@@ -201,13 +273,14 @@ export function buildKnowledgeGraph(
   const idAliases = new Map<string, string>();
   const orderedDocuments = [...documents].sort((left, right) => {
     const priority = (path: string): number => {
-      if (path === "knowledge/entities.json") return 0;
+      const knowledgeRecord = knowledgeRecordDescriptor(path);
+      if (knowledgeRecord?.collection === "entities") return 0;
       if (path === "world/setting-library/spatial-tree.json") return 1;
       if (path === "world/setting-library/settings.json") return 2;
       if (path.startsWith("world/setting-library/entries/")) return 3;
       if (path.startsWith("world/setting-library/pages/")) return 6;
-      if (path === "knowledge/facts.json") return 4;
-      if (path === "knowledge/relations.json") return 5;
+      if (knowledgeRecord?.collection === "facts") return 4;
+      if (knowledgeRecord?.collection === "relations") return 5;
       return 10;
     };
     return (
@@ -556,73 +629,59 @@ export function buildKnowledgeGraph(
       }
     }
 
-    if (document.path === "knowledge/relations.json") {
-      for (const [index, item] of asRecords(root.relations).entries()) {
-        const from = resolveId(
-          recordValue(item, ["from", "fromId", "source", "sourceId"]),
-        );
-        const to = resolveId(
-          recordValue(item, ["to", "toId", "target", "targetId"]),
-        );
-        if (!from || !to) continue;
+    const knowledgeRecord = knowledgeRecordDescriptor(document.path);
+    if (knowledgeRecord?.collection === "relations") {
+      const from = resolveId(
+        recordValue(root, ["from", "fromId", "source", "sourceId"]),
+      );
+      const to = resolveId(
+        recordValue(root, ["to", "toId", "target", "targetId"]),
+      );
+      if (from && to) {
         addEdge({
-          id: `relation:${from}:${to}:${index}`,
+          id: `relation:${knowledgeRecord.id}`,
           from,
           to,
-          label: recordValue(item, ["type", "label", "relation"]) ?? "相关",
+          label: recordValue(root, ["type", "label", "relation"]) ?? "相关",
           kind: "relation",
-          sourceRefs: [
-            {
-              path: document.path,
-              jsonPointer: pointerFor(index, "relations"),
-            },
-          ],
+          sourceRefs: [{ path: document.path }],
         });
       }
     }
 
-    if (document.path === "knowledge/entities.json") {
-      for (const [index, item] of asRecords(root.entities).entries()) {
-        const idValue = recordValue(item, ["id", "key"]) ?? `entity-${index}`;
-        const label = recordValue(item, ["name", "title", "label"]) ?? idValue;
-        const nodeId = addNode({
-          id: `entity:${idValue}`,
-          label,
-          kind: "entity",
-          description:
-            recordValue(item, ["description", "definition", "summary"]) ??
-            "知识实体",
-          aliases: Array.isArray(item.aliases)
-            ? item.aliases.filter(
-                (value): value is string => typeof value === "string",
-              )
-            : [],
-          sourceRefs: [
-            { path: document.path, jsonPointer: pointerFor(index, "entities") },
-          ],
-        });
-        idByLabel.set(normalize(idValue), nodeId);
-      }
+    if (knowledgeRecord?.collection === "entities") {
+      const idValue = recordValue(root, ["id", "key"]) ?? knowledgeRecord.id;
+      const label = recordValue(root, ["name", "title", "label"]) ?? idValue;
+      const nodeId = addNode({
+        id: `entity:${idValue}`,
+        label,
+        kind: "entity",
+        description:
+          recordValue(root, ["description", "definition", "summary"]) ??
+          "知识实体",
+        aliases: Array.isArray(root.aliases)
+          ? root.aliases.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [],
+        sourceRefs: [{ path: document.path }],
+      });
+      idByLabel.set(normalize(idValue), nodeId);
     }
 
-    if (document.path === "knowledge/facts.json") {
-      for (const [index, item] of asRecords(root.facts).entries()) {
-        const idValue = recordValue(item, ["id"]) ?? `fact-${index}`;
-        const label =
-          recordValue(item, ["name", "title", "subject"]) ?? idValue;
-        addNode({
-          id: `fact:${idValue}`,
-          label,
-          kind: "fact",
-          description:
-            recordValue(item, ["content", "definition", "description"]) ??
-            "知识事实",
-          aliases: [],
-          sourceRefs: [
-            { path: document.path, jsonPointer: pointerFor(index, "facts") },
-          ],
-        });
-      }
+    if (knowledgeRecord?.collection === "facts") {
+      const idValue = recordValue(root, ["id"]) ?? knowledgeRecord.id;
+      const label = recordValue(root, ["name", "title", "subject"]) ?? idValue;
+      addNode({
+        id: `fact:${idValue}`,
+        label,
+        kind: "fact",
+        description:
+          recordValue(root, ["content", "definition", "description"]) ??
+          "知识事实",
+        aliases: [],
+        sourceRefs: [{ path: document.path }],
+      });
     }
 
     if (
@@ -814,6 +873,7 @@ export function buildKnowledgeGraph(
 
   return Object.freeze({
     builtAt: new Date().toISOString(),
+    sourceHash: knowledgeSourceHash(documents),
     nodes: Object.freeze([...nodes.values()]),
     edges: Object.freeze([...edges.values()]),
     documents: Object.freeze([...documents]),
@@ -823,7 +883,42 @@ export function buildKnowledgeGraph(
 export async function buildKnowledgeGraphFromStorage(
   storage: WorkbenchStorage,
 ): Promise<KnowledgeGraphSnapshot> {
-  return buildKnowledgeGraph(await readKnowledgeDocuments(storage));
+  const documents = await readKnowledgeDocuments(storage);
+  const sourceHash = knowledgeSourceHash(documents);
+  try {
+    const cached = JSON.parse(
+      (await storage.readText(DERIVED_GRAPH_PATH)).content,
+    ) as { readonly sourceHash?: unknown; readonly snapshot?: unknown };
+    if (
+      cached.sourceHash === sourceHash &&
+      cached.snapshot &&
+      typeof cached.snapshot === "object"
+    ) {
+      const snapshot = cached.snapshot as KnowledgeGraphSnapshot;
+      if (
+        Array.isArray(snapshot.nodes) &&
+        Array.isArray(snapshot.edges) &&
+        Array.isArray(snapshot.documents)
+      ) {
+        return Object.freeze({ ...snapshot, sourceHash });
+      }
+    }
+  } catch {
+    // 缓存不存在、损坏或版本不兼容时重建派生图谱；事实源不受影响。
+  }
+
+  const snapshot = buildKnowledgeGraph(documents);
+  try {
+    await storage.createDirectory("knowledge").catch(() => undefined);
+    await storage.createDirectory("knowledge/derived").catch(() => undefined);
+    const content = `${JSON.stringify({ schemaVersion: 1, sourceHash, snapshot }, null, 2)}\n`;
+    const [info] = await storage.stat([DERIVED_GRAPH_PATH]);
+    if (info?.exists) await storage.writeText(DERIVED_GRAPH_PATH, content);
+    else await storage.createText(DERIVED_GRAPH_PATH, content);
+  } catch {
+    // 派生缓存写入失败不应阻断当前检索；下一次读取会重新构建。
+  }
+  return Object.freeze({ ...snapshot, sourceHash });
 }
 
 function scoreNode(

@@ -14,16 +14,27 @@ import {
   SYSTEM_PROMPT_SEEDS,
   type PromptSeed,
 } from "./storyforge-prompt-seeds/prompt-seeds";
+import {
+  NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
+  NOVEL_CHARACTERS_ASSIST_PROMPT_SOURCE_PATH,
+  NOVEL_CHARACTERS_ASSIST_PROMPT_TEMPLATE,
+  NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION,
+} from "../../characters/business/characterAgentPrompt";
 
 export const STORYFORGE_PROMPT_INSTALLATION_ID = "storyforge.prompt-library";
 export const STORYFORGE_WORLD_GUIDE_PROMPT_ID = "novel.world.guide";
 export const STORYFORGE_PROMPT_COUNT = 89;
+export const NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID = "myagents.novel.base";
+export const NOVEL_WORKBENCH_PROMPT_COUNT = 1;
 
 const STORYFORGE_VERSION = "3.7.5";
 const ROOT_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:root`;
 const PROMPTS_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:prompts`;
 const GENERAL_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:general`;
 const GENRE_PACKS_GROUP_ID = `${STORYFORGE_PROMPT_INSTALLATION_ID}:genre-packs`;
+const NOVEL_ROOT_GROUP_ID = `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:root`;
+const NOVEL_PROMPTS_GROUP_ID = `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:prompts`;
+const NOVEL_CHARACTERS_GROUP_ID = `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:characters`;
 
 const GENRE_SCOPES: Readonly<Record<string, readonly string[]>> = {
   lishi: [
@@ -246,6 +257,7 @@ function createGroup(
   sourcePath: string,
   scope: PromptScope,
   description = sourcePath,
+  skillPackId = STORYFORGE_PROMPT_INSTALLATION_ID,
 ): PromptGroup {
   return Object.freeze({
     id,
@@ -253,7 +265,7 @@ function createGroup(
     description,
     parentId,
     nodeKind,
-    skillPackId: STORYFORGE_PROMPT_INSTALLATION_ID,
+    skillPackId,
     sourcePath,
     userCreated: false,
     modified: false,
@@ -400,7 +412,85 @@ function createStoryForgeModel(): PromptLibraryModel {
 }
 
 const STORYFORGE_MODEL = createStoryForgeModel();
+const NOVEL_WORKBENCH_MODEL: PromptLibraryModel = Object.freeze({
+  packs: Object.freeze([
+    Object.freeze({
+      id: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+      packageId: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+      name: "MyAgents 小说工作台提示词",
+      source: "builtin" as const,
+      version: NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION,
+      enabled: true,
+      updatedAt: "2026-08-10",
+      description: "小说工作台人物库 Agent 的受控设计协议。",
+      copyNumber: 1,
+      modified: false,
+    }),
+  ]),
+  groups: Object.freeze([
+    createGroup(
+      NOVEL_ROOT_GROUP_ID,
+      "MyAgents 小说工作台提示词",
+      null,
+      "pack-root",
+      "",
+      { kind: "global" },
+      "小说工作台内置 Agent 场景提示词",
+      NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+    ),
+    createGroup(
+      NOVEL_PROMPTS_GROUP_ID,
+      "prompts",
+      NOVEL_ROOT_GROUP_ID,
+      "directory",
+      "prompts",
+      { kind: "global" },
+      "prompts",
+      NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+    ),
+    createGroup(
+      NOVEL_CHARACTERS_GROUP_ID,
+      "人物库",
+      NOVEL_PROMPTS_GROUP_ID,
+      "directory",
+      "prompts/characters",
+      { kind: "global" },
+      "角色、关系、灵魂、种族与分组设计",
+      NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+    ),
+  ]),
+  prompts: Object.freeze([
+    Object.freeze({
+      instanceId: `${NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID}:${NOVEL_CHARACTERS_ASSIST_PROMPT_ID}`,
+      id: NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
+      name: "人物库设计",
+      groupId: NOVEL_CHARACTERS_GROUP_ID,
+      version: NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION,
+      enabled: true,
+      overridden: false,
+      skillPackId: NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+      scopeOverride: null,
+      content: NOVEL_CHARACTERS_ASSIST_PROMPT_TEMPLATE,
+      sourcePath: NOVEL_CHARACTERS_ASSIST_PROMPT_SOURCE_PATH,
+    }),
+  ]),
+});
+
+const DEFAULT_PROMPT_LIBRARY_MODEL: PromptLibraryModel = Object.freeze({
+  packs: Object.freeze([
+    ...STORYFORGE_MODEL.packs,
+    ...NOVEL_WORKBENCH_MODEL.packs,
+  ]),
+  groups: Object.freeze([
+    ...STORYFORGE_MODEL.groups,
+    ...NOVEL_WORKBENCH_MODEL.groups,
+  ]),
+  prompts: Object.freeze([
+    ...STORYFORGE_MODEL.prompts,
+    ...NOVEL_WORKBENCH_MODEL.prompts,
+  ]),
+});
 
 export function createDefaultPromptLibraryModel(): PromptLibraryModel {
-  return STORYFORGE_MODEL;
+  return DEFAULT_PROMPT_LIBRARY_MODEL;
 }

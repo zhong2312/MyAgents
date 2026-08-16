@@ -12,6 +12,7 @@ describe("createNovelProjectInitialization", () => {
       targetWordCountMin: 800_000,
       targetWordCountMax: 1_200_000,
       chapterWordCount: 3_000,
+      writingPerspective: "multiple-perspective",
       createdAt: "2026-07-14T12:00:00.000Z",
     });
 
@@ -48,7 +49,11 @@ describe("createNovelProjectInitialization", () => {
         "simulation",
         "simulation/runs",
         "research/notes",
+        "research/trash",
         "knowledge",
+        "knowledge/entities/records",
+        "knowledge/relations/records",
+        "knowledge/facts/records",
         "prompts/installations",
       ]),
     );
@@ -72,9 +77,11 @@ describe("createNovelProjectInitialization", () => {
         "timeline/index.json",
         "simulation/scenarios.json",
         "simulation/runs/index.json",
-        "knowledge/entities.json",
-        "knowledge/relations.json",
-        "knowledge/facts.json",
+        "research/index.json",
+        "research/trash/index.json",
+        "knowledge/entities/index.json",
+        "knowledge/relations/index.json",
+        "knowledge/facts/index.json",
         "prompts/registry.json",
       ]),
     );
@@ -103,6 +110,25 @@ describe("createNovelProjectInitialization", () => {
         ),
       ),
     ).toHaveLength(89);
+    expect(
+      paths.filter((path) =>
+        path.startsWith("prompts/installations/myagents.novel.base/content/"),
+      ),
+    ).toHaveLength(1);
+    const soulIndex = JSON.parse(
+      initialization.files.find(
+        (file) => file.path === "characters/souls/index.json",
+      )?.content ?? "{}",
+    ) as {
+      entries?: Array<{ builtIn?: boolean; path?: string }>;
+    };
+    expect(soulIndex.entries).toHaveLength(106);
+    expect(soulIndex.entries?.every((entry) => entry.builtIn === true)).toBe(
+      true,
+    );
+    expect(
+      paths.filter((path) => path.startsWith("characters/souls/records/")),
+    ).toHaveLength(soulIndex.entries?.length ?? 0);
     const encodedSizes = initialization.files.map(
       (file) => new TextEncoder().encode(file.content).byteLength,
     );
@@ -111,6 +137,8 @@ describe("createNovelProjectInitialization", () => {
         ?.content ?? "",
     ).byteLength;
     expect(registrySize).toBeGreaterThan(64 * 1024);
+    expect(initialization.directories.length).toBeLessThanOrEqual(256);
+    expect(initialization.files.length).toBeLessThanOrEqual(256);
     expect(Math.max(...encodedSizes)).toBeLessThanOrEqual(256 * 1024);
     expect(
       encodedSizes.reduce((total, size) => total + size, 0),
@@ -148,6 +176,7 @@ describe("createNovelProjectInitialization", () => {
       targetWordCountMin: 800_000,
       targetWordCountMax: 1_200_000,
       chapterWordCount: 3_000,
+      writingPerspective: "multiple-perspective",
       status: "planning",
       language: "zh-CN",
       createdAt: "2026-07-14T12:00:00.000Z",

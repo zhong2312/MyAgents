@@ -93,6 +93,8 @@ describe("worldProposalSchema", () => {
       "world/setting-library/entries/great-universe/page-great-universe-universe-overview.json",
     );
     expect(instructions).toContain("严禁把 Markdown");
+    expect(instructions).toContain('"source": "project"');
+    expect(instructions).toContain("严禁使用 `custom`");
     expect(instructions).toContain("只有 `valid=true`");
   });
 });

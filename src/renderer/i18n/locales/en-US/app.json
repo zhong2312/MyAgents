@@ -123,6 +123,23 @@
     "loading": "Loading...",
     "selectPlaceholder": "Select"
   },
+  "workbench": {
+    "loading": "Loading workbench",
+    "navigation": "Workbench navigation",
+    "expandNavigation": "Expand workbench navigation",
+    "collapseNavigation": "Collapse workbench navigation",
+    "version": "Version {{version}}",
+    "invalidTab": "Invalid workbench tab",
+    "invalidTabDetail": "This tab has no workbench target and cannot be loaded.",
+    "notInstalled": "Workbench is not registered",
+    "notInstalledDetail": "The workbench \"{{id}}\" is not installed or registered in this application.",
+    "incompatible": "Workbench version is incompatible",
+    "apiMajorMismatch": "This workbench requires API major version {{required}}, but the host is {{host}}.",
+    "apiHostTooOld": "This workbench requires API {{required}} or later, but the host is {{host}}.",
+    "apiHostTooNew": "This workbench supports API {{required}} at most, but the host is {{host}}.",
+    "rendererFailed": "Failed to load workbench",
+    "rendererFailedDetail": "The workbench UI encountered an error. Retry or check its installation."
+  },
   "workspaceNameValidation": {
     "empty": "Name cannot be empty",
     "trim": "Name cannot start or end with a space",

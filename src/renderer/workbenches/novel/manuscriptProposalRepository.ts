@@ -23,7 +23,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function nextChapterContent(
+export function buildNextManuscriptChapterContent(
   proposal: ManuscriptProposal,
   replacement: string,
 ): string {
@@ -101,7 +101,10 @@ export function createManuscriptProposalRepository(storage: WorkbenchStorage) {
       }
       const replacement = contentOverride ?? loaded.proposal.candidate.content;
       if (!replacement.trim()) throw new Error("至少保留一个候选段落");
-      const nextContent = nextChapterContent(loaded.proposal, replacement);
+      const nextContent = buildNextManuscriptChapterContent(
+        loaded.proposal,
+        replacement,
+      );
       await storage.writeText(loaded.proposal.source.chapterPath, nextContent, {
         expectedContent: current.content,
       });

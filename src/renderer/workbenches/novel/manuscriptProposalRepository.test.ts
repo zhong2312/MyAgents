@@ -103,9 +103,8 @@ describe("createManuscriptProposalRepository", () => {
 
     await repository.apply(loaded!);
 
-    const versions = await createManuscriptVersionRepository(
-      storage,
-    ).list("chapter-000001");
+    const versions =
+      await createManuscriptVersionRepository(storage).list("chapter-000001");
     expect(versions).toHaveLength(1);
     expect(versions[0]).toMatchObject({
       chapterId: "chapter-000001",

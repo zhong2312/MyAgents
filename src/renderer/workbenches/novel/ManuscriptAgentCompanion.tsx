@@ -18,9 +18,13 @@ import {
 } from "react";
 
 import { useWorkbenchStorage } from "@/workbench-host/useWorkbenchStorage";
-import type { WorkbenchAgentCompanionProps } from "@/workbench-sdk";
+import {
+  dispatchWorkbenchHostAction,
+  type WorkbenchAgentCompanionProps,
+} from "@/workbench-sdk";
 
 import {
+  buildNextManuscriptChapterContent,
   createManuscriptProposalRepository,
   type LoadedManuscriptProposal,
 } from "./manuscriptProposalRepository";
@@ -32,6 +36,11 @@ function splitParagraphs(content: string): string[] {
     .split(/\n\s*\n/u)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean);
+}
+
+function countNonWhitespaceCharacters(content: string): number {
+  return Array.from(content).filter((character) => !/\s/u.test(character))
+    .length;
 }
 
 function errorMessage(error: unknown): string {
@@ -121,7 +130,19 @@ export default function ManuscriptAgentCompanion({
             .filter((_, index) => selectedParagraphs.has(index))
             .join("\n\n")
         : undefined;
-      setLoaded(await repository.apply(loaded, selectedContent));
+      const applied = await repository.apply(loaded, selectedContent);
+      setLoaded(applied);
+      if (applied.currentChapterContent !== null && chapterId) {
+        dispatchWorkbenchHostAction({
+          workbenchId: "io.myagents.novel",
+          workspacePath,
+          action: "manuscript-chapter-applied",
+          payload: {
+            chapterId,
+            content: applied.currentChapterContent,
+          },
+        });
+      }
     } catch (cause) {
       setError(errorMessage(cause));
       await load();
@@ -198,6 +219,33 @@ export default function ManuscriptAgentCompanion({
     proposal.source.rangeEnd,
   );
   const status = proposal.candidate.status;
+  const requestedTargetWordCount = Number(context.targetWordCount);
+  const targetWordCount =
+    Number.isFinite(requestedTargetWordCount) && requestedTargetWordCount > 0
+      ? Math.round(requestedTargetWordCount)
+      : null;
+  const selectedCandidateContent = partialMode
+    ? paragraphs
+        .filter((_, index) => selectedParagraphs.has(index))
+        .join("\n\n")
+    : proposal.candidate.content;
+  const projectedChapterContent = buildNextManuscriptChapterContent(
+    proposal,
+    selectedCandidateContent,
+  );
+  const projectedCharacterCount = countNonWhitespaceCharacters(
+    projectedChapterContent,
+  );
+  const minimumCharacterCount = targetWordCount
+    ? Math.ceil(targetWordCount * 0.9)
+    : null;
+  const maximumCharacterCount = targetWordCount
+    ? Math.floor(targetWordCount * 1.1)
+    : null;
+  const withinTargetRange =
+    !targetWordCount ||
+    (projectedCharacterCount >= minimumCharacterCount! &&
+      projectedCharacterCount <= maximumCharacterCount!);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
@@ -220,6 +268,19 @@ export default function ManuscriptAgentCompanion({
             <X className="h-3.5 w-3.5" /> 已放弃
           </span>
         ) : null}
+        {status === "pending" && targetWordCount && (
+          <span
+            className={
+              withinTargetRange
+                ? "text-xs text-[var(--success)]"
+                : "text-xs text-[var(--warning)]"
+            }
+            aria-label={`应用后正文 ${projectedCharacterCount.toLocaleString()} 字，本章目标 ${targetWordCount.toLocaleString()} 字`}
+          >
+            {projectedCharacterCount.toLocaleString()} /{" "}
+            {targetWordCount.toLocaleString()} 字
+          </span>
+        )}
       </header>
 
       {error && (
@@ -232,6 +293,17 @@ export default function ManuscriptAgentCompanion({
         <div className="flex items-start gap-2 border-b border-[var(--line)] bg-[var(--warning-bg)] px-4 py-2 text-xs text-[var(--warning)]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>正文已在生成后变化，当前候选不能直接应用。</span>
+        </div>
+      )}
+      {!withinTargetRange && targetWordCount && (
+        <div className="flex items-start gap-2 border-b border-[var(--line)] bg-[var(--warning-bg)] px-4 py-2 text-xs text-[var(--warning)]">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            应用后正文为 {projectedCharacterCount.toLocaleString()}{" "}
+            字；本章目标为 {targetWordCount.toLocaleString()} 字，需调整到{" "}
+            {minimumCharacterCount?.toLocaleString()}～{" "}
+            {maximumCharacterCount?.toLocaleString()} 字后才能应用。
+          </span>
         </div>
       )}
 
@@ -313,6 +385,7 @@ export default function ManuscriptAgentCompanion({
               disabled={
                 Boolean(acting) ||
                 loaded.conflict ||
+                !withinTargetRange ||
                 (partialMode && selectedParagraphs.size === 0)
               }
               className="flex h-8 items-center gap-1.5 bg-[var(--accent-warm)] px-3 text-xs font-semibold text-white hover:brightness-95 disabled:opacity-40"

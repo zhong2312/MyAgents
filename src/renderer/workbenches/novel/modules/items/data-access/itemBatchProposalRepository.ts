@@ -163,6 +163,15 @@ function uniqueItemId(existingIds: Set<string>): string {
   throw new Error("无法生成唯一物品 id");
 }
 
+function stableItemId(candidateId: string, existingIds: Set<string>): string {
+  const normalized = `item-${candidateId}`.toLocaleLowerCase("en-US");
+  if (/^[a-z0-9][a-z0-9-]*$/u.test(normalized) && !existingIds.has(normalized)) {
+    existingIds.add(normalized);
+    return normalized;
+  }
+  return uniqueItemId(existingIds);
+}
+
 async function writeManifest(
   storage: WorkbenchStorage,
   proposal: LoadedItemBatchProposal,
@@ -237,7 +246,7 @@ export function createNovelItemBatchProposalRepository(
       const created = await itemRepository.createItems(
         library,
         candidates.map((candidate) => ({
-          id: uniqueItemId(existingIds),
+          id: stableItemId(candidate.candidateId, existingIds),
           name: candidate.name,
           categoryId: proposal.manifest.categoryId,
           aliases: candidate.aliases,

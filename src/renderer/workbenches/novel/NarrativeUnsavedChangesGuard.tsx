@@ -9,6 +9,8 @@ import {
 
 interface NarrativeUnsavedChangesGuardProps {
   readonly dirty: boolean;
+  /** 正在执行的任务不能在离页时被保存或放弃，必须等待其完成。 */
+  readonly blockLeave?: boolean;
   readonly label: string;
   readonly registerNavigationGuard: (
     guard: WorkbenchNavigationGuard,
@@ -18,22 +20,26 @@ interface NarrativeUnsavedChangesGuardProps {
 
 export default function NarrativeUnsavedChangesGuard({
   dirty,
+  blockLeave = false,
   label,
   registerNavigationGuard,
   onSave,
 }: NarrativeUnsavedChangesGuardProps) {
   const dirtyRef = useRef(dirty);
+  const blockLeaveRef = useRef(blockLeave);
   const saveRef = useRef(onSave);
   const pendingPromiseRef = useRef<Promise<boolean> | null>(null);
   const pendingResolveRef = useRef<((allowed: boolean) => void) | null>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [leaveBlocked, setLeaveBlocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     dirtyRef.current = dirty;
+    blockLeaveRef.current = blockLeave;
     saveRef.current = onSave;
-  }, [dirty, onSave]);
+  }, [blockLeave, dirty, onSave]);
 
   const complete = useCallback((allowed: boolean) => {
     const resolve = pendingResolveRef.current;
@@ -41,6 +47,7 @@ export default function NarrativeUnsavedChangesGuard({
     pendingPromiseRef.current = null;
     setOpen(false);
     setSaving(false);
+    setLeaveBlocked(false);
     setError(null);
     resolve?.(allowed);
   }, []);
@@ -51,13 +58,16 @@ export default function NarrativeUnsavedChangesGuard({
   }, 210);
 
   const confirmLeave = useCallback(() => {
-    if (!dirtyRef.current) return Promise.resolve(true);
+    if (!dirtyRef.current && !blockLeaveRef.current) {
+      return Promise.resolve(true);
+    }
     if (pendingPromiseRef.current) return pendingPromiseRef.current;
     const pending = new Promise<boolean>((resolve) => {
       pendingResolveRef.current = resolve;
     });
     pendingPromiseRef.current = pending;
     setError(null);
+    setLeaveBlocked(blockLeaveRef.current);
     setOpen(true);
     return pending;
   }, []);
@@ -68,14 +78,14 @@ export default function NarrativeUnsavedChangesGuard({
   );
 
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !blockLeave) return;
     const preventUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", preventUnload);
     return () => window.removeEventListener("beforeunload", preventUnload);
-  }, [dirty]);
+  }, [blockLeave, dirty]);
 
   useEffect(
     () => () => {
@@ -104,9 +114,16 @@ export default function NarrativeUnsavedChangesGuard({
   };
 
   if (!open) return null;
+  const taskStillRunning = leaveBlocked && blockLeave;
   return (
     <DraggableDialogFrame
-      ariaLabel="未保存修改"
+      ariaLabel={
+        taskStillRunning
+          ? "任务正在运行"
+          : dirty
+            ? "未保存修改"
+            : `离开${label}`
+      }
       className="w-[min(520px,calc(100vw-24px))]"
       overlayClassName="bg-black/35"
       headerClassName="border-b border-[var(--line)] bg-[var(--paper-elevated)]"
@@ -114,7 +131,11 @@ export default function NarrativeUnsavedChangesGuard({
         <div className="flex h-12 items-center gap-2 px-4">
           <AlertTriangle className="h-4 w-4 shrink-0 text-[var(--warning)]" />
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
-            {label}有未保存修改
+            {taskStillRunning
+              ? `${label}任务正在运行`
+              : dirty
+                ? `${label}有未保存修改`
+                : `离开${label}`}
           </h2>
           <button
             type="button"
@@ -131,7 +152,11 @@ export default function NarrativeUnsavedChangesGuard({
     >
       <div className="px-5 py-5">
         <p className="text-sm leading-6 text-[var(--ink-muted)]">
-          离开后，本页尚未保存的修改将不会写入项目。你可以先保存，也可以明确放弃这些修改。
+          {taskStillRunning
+            ? "当前 AI 任务仍在执行。离开会中断来源校验与审阅流程，请等待任务完成后再继续。"
+            : dirty
+              ? "离开后，本页尚未保存的修改将不会写入项目。你可以先保存，也可以明确放弃这些修改。"
+              : "AI 任务已完成，本页没有未保存修改。确认后即可离开正文。"}
         </p>
         {error && (
           <div className="mt-4 rounded-md border border-[var(--error)]/30 bg-[var(--error)]/5 px-3 py-2 text-sm text-[var(--error)]">
@@ -146,30 +171,43 @@ export default function NarrativeUnsavedChangesGuard({
           disabled={saving}
           onClick={() => complete(false)}
         >
-          继续编辑
+          {taskStillRunning ? "继续等待" : dirty ? "继续编辑" : "留在正文"}
         </button>
-        <button
-          type="button"
-          className="ns-button is-danger"
-          disabled={saving}
-          onClick={() => complete(true)}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          放弃修改
-        </button>
-        <button
-          type="button"
-          className="ns-button is-primary"
-          disabled={saving}
-          onClick={() => void saveAndLeave()}
-        >
-          {saving ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Save className="h-3.5 w-3.5" />
-          )}
-          {saving ? "保存中" : "保存并离开"}
-        </button>
+        {!taskStillRunning && dirty && (
+          <>
+            <button
+              type="button"
+              className="ns-button is-danger"
+              disabled={saving}
+              onClick={() => complete(true)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              放弃修改
+            </button>
+            <button
+              type="button"
+              className="ns-button is-primary"
+              disabled={saving}
+              onClick={() => void saveAndLeave()}
+            >
+              {saving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              {saving ? "保存中" : "保存并离开"}
+            </button>
+          </>
+        )}
+        {!taskStillRunning && !dirty && (
+          <button
+            type="button"
+            className="ns-button is-primary"
+            onClick={() => complete(true)}
+          >
+            离开正文
+          </button>
+        )}
       </footer>
     </DraggableDialogFrame>
   );

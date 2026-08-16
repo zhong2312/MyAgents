@@ -39,7 +39,7 @@ import type {
 import { createNovelWorldProposalRepository } from "./worldProposalRepository";
 
 const DiffViewer = lazy(() => import("@/workbench-sdk/DiffViewer"));
-const MonacoEditor = lazy(() => import("@/components/MonacoEditor"));
+const MonacoEditor = lazy(() => import("@/workbench-sdk/MonacoEditor"));
 
 export type {
   FileProposal,
@@ -54,13 +54,15 @@ export interface WorldProposalReviewProps {
   readonly storage: WorkbenchStorage;
   readonly projectTitle: string;
   readonly onClose: () => void;
+  /** Flushes the owning editor before mutating proposal or formal files. */
+  readonly beforeMutate?: () => Promise<boolean>;
   readonly repositoryFactory?: (
     storage: WorkbenchStorage,
   ) => FileProposalRepository;
   readonly reviewTitle?: string;
   readonly proposalSubject?: string;
   /** Runs after the domain repository has durably applied selected changes. */
-  readonly onApplied?: () => void;
+  readonly onApplied?: () => void | Promise<void>;
 }
 
 const STATUS_LABELS: Record<FileProposalStatus, string> = {
@@ -74,15 +76,6 @@ function languageForPath(path: string): string {
   if (path.endsWith(".json")) return "json";
   if (path.endsWith(".md")) return "markdown";
   return "plaintext";
-}
-
-function replaceProposal(
-  proposals: readonly FileProposal[],
-  next: FileProposal,
-): readonly FileProposal[] {
-  return proposals.map((proposal) =>
-    proposal.manifest.proposalId === next.manifest.proposalId ? next : proposal,
-  );
 }
 
 function errorMessage(error: unknown): string {
@@ -457,7 +450,7 @@ function ConflictMergeDialog({
 
 function ChangeStatus({ change }: { readonly change: FileProposalChange }) {
   if (change.loadError) {
-    return <span className="text-[var(--error)]">快照缺失</span>;
+    return <span className="text-[var(--error)]">不可应用</span>;
   }
   if (change.conflict) {
     return <span className="text-[var(--error)]">文件冲突</span>;
@@ -475,6 +468,7 @@ export default function WorldProposalReview({
   storage,
   projectTitle,
   onClose,
+  beforeMutate,
   repositoryFactory = createNovelWorldProposalRepository,
   reviewTitle = "世界架构提案",
   proposalSubject = "世界架构",
@@ -676,6 +670,7 @@ export default function WorldProposalReview({
 
   const handleDeleteProposals = async () => {
     if (selectedProposalIds.size === 0) return;
+    if (beforeMutate && !(await beforeMutate())) return;
     setAction("delete-proposals");
     setError(null);
     try {
@@ -692,16 +687,17 @@ export default function WorldProposalReview({
 
   const handleApply = async () => {
     if (!selectedProposal || selectedApplicableIds.length === 0) return;
+    if (beforeMutate && !(await beforeMutate())) return;
     setAction("apply");
     setError(null);
     try {
-      const next = await repository.apply(
+      await repository.apply(
         selectedProposal.manifest.proposalId,
         selectedApplicableIds,
         projectTitle,
       );
-      setProposals((current) => replaceProposal(current, next));
-      onApplied?.();
+      await onApplied?.();
+      await load();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -711,14 +707,15 @@ export default function WorldProposalReview({
 
   const handleReject = async () => {
     if (!selectedProposal || selectedPendingIds.length === 0) return;
+    if (beforeMutate && !(await beforeMutate())) return;
     setAction("reject");
     setError(null);
     try {
-      const next = await repository.reject(
+      await repository.reject(
         selectedProposal.manifest.proposalId,
         selectedPendingIds,
       );
-      setProposals((current) => replaceProposal(current, next));
+      await load();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -728,26 +725,16 @@ export default function WorldProposalReview({
 
   const handleDelete = async () => {
     if (!selectedProposal || selectedPendingIds.length === 0) return;
+    if (beforeMutate && !(await beforeMutate())) return;
     setAction("delete");
     setError(null);
     try {
-      const next = await repository.delete(
+      await repository.delete(
         selectedProposal.manifest.proposalId,
         selectedPendingIds,
       );
-      if (next) {
-        setProposals((current) => replaceProposal(current, next));
-      } else {
-        setProposals((current) =>
-          current.filter(
-            (proposal) =>
-              proposal.manifest.proposalId !==
-              selectedProposal.manifest.proposalId,
-          ),
-        );
-        setSelectedProposalId("");
-      }
       setDeleteConfirmOpen(false);
+      await load();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -757,15 +744,15 @@ export default function WorldProposalReview({
 
   const handleKeepCurrent = async () => {
     if (!selectedProposal || !selectedChange?.conflict) return;
+    if (beforeMutate && !(await beforeMutate())) return;
     setAction("resolve");
     setError(null);
     try {
-      const next = await repository.reject(
-        selectedProposal.manifest.proposalId,
-        [selectedChange.id],
-      );
-      setProposals((current) => replaceProposal(current, next));
+      await repository.reject(selectedProposal.manifest.proposalId, [
+        selectedChange.id,
+      ]);
       setConflictConfirm(null);
+      await load();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -777,19 +764,20 @@ export default function WorldProposalReview({
     resolution: FileProposalConflictResolution,
   ) => {
     if (!selectedProposal || !selectedChange?.conflict) return;
+    if (beforeMutate && !(await beforeMutate())) return;
     setAction("resolve");
     setError(null);
     try {
-      const next = await repository.resolveConflict(
+      await repository.resolveConflict(
         selectedProposal.manifest.proposalId,
         selectedChange.id,
         resolution,
         projectTitle,
       );
-      setProposals((current) => replaceProposal(current, next));
       setConflictConfirm(null);
       setMergeChangeId("");
-      onApplied?.();
+      await onApplied?.();
+      await load();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -1028,7 +1016,7 @@ export default function WorldProposalReview({
                           (change) => change.loadError,
                         ).length
                       }{" "}
-                      个缺失
+                      个异常
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
@@ -1153,14 +1141,14 @@ export default function WorldProposalReview({
                         <div className="max-w-2xl rounded-md border border-[var(--error)]/30 bg-[var(--error-bg)] p-4 text-sm text-[var(--error)]">
                           <div className="flex items-center gap-2 font-medium">
                             <AlertTriangle className="h-4 w-4 shrink-0" />
-                            该变更缺少提案快照
+                            该变更当前不可应用
                           </div>
                           <p className="mt-2 break-all font-mono text-xs leading-5">
                             {selectedChange.loadError}
                           </p>
                           <p className="mt-3 text-xs text-[var(--ink-muted)]">
-                            其他有效变更仍可继续审阅；此项需要 Agent
-                            补齐文件，或由作者拒绝。
+                            其他有效变更仍可继续审阅；请根据上方错误修正提案，
+                            或由作者拒绝此项。
                           </p>
                         </div>
                       </div>

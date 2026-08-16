@@ -11,6 +11,7 @@ export const timelineProposalOperationSchema = z
     action: z.enum(["create", "update"]),
     targetId: idSchema.optional(),
     summary: z.string().trim().min(1),
+    baseValue: z.record(z.string(), z.unknown()).nullable().optional(),
     value: z.record(z.string(), z.unknown()),
     status: z.enum(["pending", "applied", "rejected"]),
   })

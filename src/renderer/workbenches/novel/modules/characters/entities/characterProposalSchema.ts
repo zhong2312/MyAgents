@@ -10,6 +10,8 @@ export const characterProposalOperationSchema = z
     kind: z.enum(["character", "race", "group", "soul"]),
     action: z.enum(["create", "update"]),
     targetId: idSchema.optional(),
+    /** 更新候选生成时读取到的正式对象快照；缺失表示旧提案，审阅时必须显式核对。 */
+    baseValue: z.record(z.string(), z.unknown()).optional(),
     summary: z.string().trim().min(1),
     value: z.record(z.string(), z.unknown()),
     status: z.enum(["pending", "applied", "rejected"]),

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -51,7 +51,10 @@ vi.mock("@/workbench-registry", async () => {
 import type { Tab } from "@/types/tab";
 import WorkbenchAgentSurfaceHost from "./WorkbenchAgentSurfaceHost";
 
-function createSurface(presentation: "dialog" | "compact-review"): Tab {
+function createSurface(
+  presentation: "dialog" | "compact-review" | "embedded-review",
+  options: { readonly embedded?: boolean } = {},
+): Tab {
   return {
     id: "agent-1",
     agentDir: "F:/novels/test",
@@ -66,6 +69,9 @@ function createSurface(presentation: "dialog" | "compact-review"): Tab {
       workbenchId: "io.myagents.novel",
       workspacePath: "F:/novels/test",
       conversationKey: "chapter-000001.generate.run-1",
+      ...(presentation === "embedded-review" || options.embedded
+        ? { embeddedSurfaceId: "full-generation-test" }
+        : {}),
       toolset: {
         id: "novel-world",
         context: { mode: "manuscript" },
@@ -78,10 +84,10 @@ function createSurface(presentation: "dialog" | "compact-review"): Tab {
   };
 }
 
-function renderHost(tab: Tab) {
+function renderHost(tab: Tab | readonly Tab[]) {
   return render(
     <WorkbenchAgentSurfaceHost
-      surfaces={[tab]}
+      surfaces={Array.isArray(tab) ? tab : [tab]}
       activeSourceTabId="source-1"
       renderSurface={() => <div data-testid="agent-conversation" />}
       onMinimize={vi.fn()}
@@ -113,6 +119,18 @@ describe("WorkbenchAgentSurfaceHost", () => {
         dispatchEvent: vi.fn(),
       })),
     });
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+      configurable: true,
+      value: vi.fn(() => true),
+    });
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+      configurable: true,
+      value: vi.fn(),
+    });
   });
 
   it("renders the real Agent conversation beside the workbench companion", async () => {
@@ -139,6 +157,77 @@ describe("WorkbenchAgentSurfaceHost", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("mounts the full Agent conversation and companion into workbench-owned regions", async () => {
+    const conversationTarget = document.createElement("div");
+    conversationTarget.id = "full-generation-test-conversation";
+    const companionTarget = document.createElement("div");
+    companionTarget.id = "full-generation-test-companion";
+    document.body.append(conversationTarget, companionTarget);
+
+    renderHost(createSurface("embedded-review"));
+
+    expect(conversationTarget.querySelector("[data-testid='agent-conversation']")).not.toBeNull();
+    // Loading placeholders can coexist briefly with the Portal while a new
+    // session is created. The Portal must overlay that placeholder rather than
+    // become a second flex item and compress the embedded Chat into a narrow
+    // vertical strip.
+    const conversationSection = conversationTarget.querySelector(
+      "section[aria-label='AI 执行过程']",
+    );
+    expect(conversationSection).toHaveClass("absolute", "inset-0", "z-10");
+    const companionSection = companionTarget.querySelector(
+      "section[aria-label='正文候选审阅']",
+    );
+    expect(companionSection).toHaveClass("absolute", "inset-0", "z-10");
+    expect(await screen.findByTestId("agent-companion")).toHaveTextContent(
+      "manuscript-review",
+    );
+    expect(companionTarget.querySelector("[data-testid='agent-companion']")).not.toBeNull();
+    expect(screen.queryByLabelText("AI 任务坞")).not.toBeInTheDocument();
+
+    conversationTarget.remove();
+    companionTarget.remove();
+  });
+
+  it("keeps a workbench-owned embedded mount out of generic review dialogs", async () => {
+    const conversationTarget = document.createElement("div");
+    conversationTarget.id = "full-generation-test-conversation";
+    const companionTarget = document.createElement("div");
+    companionTarget.id = "full-generation-test-companion";
+    document.body.append(conversationTarget, companionTarget);
+
+    renderHost(createSurface("compact-review", { embedded: true }));
+
+    expect(conversationTarget.querySelector("[data-testid='agent-conversation']")).not.toBeNull();
+    expect(companionTarget.querySelector("[data-testid='agent-companion']")).not.toBeNull();
+    expect(screen.queryByLabelText("AI 任务坞")).not.toBeInTheDocument();
+
+    conversationTarget.remove();
+    companionTarget.remove();
+  });
+
+  it("keeps only the latest session in a shared embedded mount", async () => {
+    const conversationTarget = document.createElement("div");
+    conversationTarget.id = "full-generation-test-conversation";
+    const companionTarget = document.createElement("div");
+    companionTarget.id = "full-generation-test-companion";
+    document.body.append(conversationTarget, companionTarget);
+
+    const stale = { ...createSurface("embedded-review"), id: "agent-stale" };
+    const newest = { ...createSurface("embedded-review"), id: "agent-newest" };
+    renderHost([stale, newest]);
+
+    expect(
+      conversationTarget.querySelectorAll("[data-testid='agent-conversation']"),
+    ).toHaveLength(1);
+    expect(
+      companionTarget.querySelectorAll("[data-testid='agent-companion']"),
+    ).toHaveLength(1);
+
+    conversationTarget.remove();
+    companionTarget.remove();
+  });
+
   it("stacks execution and review vertically in a narrow window", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
@@ -150,5 +239,49 @@ describe("WorkbenchAgentSurfaceHost", () => {
     expect(
       screen.getByTestId("workbench-agent-review-agent-1"),
     ).toHaveAttribute("data-orientation", "vertical");
+  });
+
+  it("allows the AI task dock to be moved without turning its buttons into drag handles", () => {
+    renderHost(createSurface("dialog"));
+
+    const dock = screen.getByLabelText("AI 任务坞");
+    const dragHandle = screen.getByLabelText("拖动 AI 任务坞");
+    fireEvent.pointerDown(dragHandle, {
+      button: 0,
+      pointerId: 8,
+      clientX: 40,
+      clientY: 60,
+    });
+    fireEvent.pointerMove(dragHandle, {
+      pointerId: 8,
+      clientX: 160,
+      clientY: 140,
+    });
+
+    expect(dock).toHaveStyle("transform: translate3d(120px, 80px, 0)");
+
+    fireEvent.pointerUp(dragHandle, { pointerId: 8 });
+    expect(HTMLElement.prototype.releasePointerCapture).toHaveBeenCalledWith(8);
+
+    const collapseButton = screen.getByRole("button", {
+      name: "收起 AI 任务",
+    });
+    fireEvent.pointerDown(collapseButton, {
+      button: 0,
+      pointerId: 9,
+      clientX: 160,
+      clientY: 140,
+    });
+    fireEvent.pointerMove(collapseButton, {
+      pointerId: 9,
+      clientX: 280,
+      clientY: 220,
+    });
+    expect(dock).toHaveStyle("transform: translate3d(120px, 80px, 0)");
+
+    fireEvent.click(collapseButton);
+    expect(
+      screen.queryByRole("button", { name: /第一章 · 完整生成/ }),
+    ).not.toBeInTheDocument();
   });
 });

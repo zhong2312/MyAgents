@@ -45,6 +45,7 @@ export interface WorldSimulationRepositoryV2 {
   saveScenario(current: LoadedSimulationScenarios, scenario: WorldSimulationScenario): Promise<LoadedSimulationScenarios>;
   removeScenario(current: LoadedSimulationScenarios, scenarioId: string): Promise<LoadedSimulationScenarios>;
   loadRunIndex(): Promise<LoadedSimulationRunIndex>;
+  activateRun(runId: string): Promise<LoadedSimulationRunIndex>;
   createRun(run: WorldSimulationRun): Promise<{ readonly run: LoadedWorldSimulationRun; readonly index: LoadedSimulationRunIndex }>;
   loadRun(runId: string, expectedProjectId?: string): Promise<LoadedWorldSimulationRun>;
   saveRun(current: LoadedWorldSimulationRun, run: WorldSimulationRun): Promise<{ readonly run: LoadedWorldSimulationRun; readonly index: LoadedSimulationRunIndex }>;
@@ -58,6 +59,10 @@ interface LoadedRunFiles {
 
 function isContentVersionConflict(cause: unknown): boolean {
   return cause instanceof Error && cause.message.includes("File changed externally");
+}
+
+function errorText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 async function ensureDirectory(storage: WorkbenchStorage, path: string): Promise<void> {
@@ -375,6 +380,17 @@ export function createWorldSimulationRepositoryV2(storage: WorkbenchStorage): Wo
 
     loadRunIndex,
 
+    async activateRun(runId) {
+      const current = await loadRunIndex();
+      if (!current.value.runs.some((run) => run.id === runId)) {
+        throw new Error("推演运行记录不存在");
+      }
+      return saveIndex(current, {
+        ...current.value,
+        activeRunId: runId,
+      });
+    },
+
     async createRun(run) {
       const parsed = parseWorldSimulationRun(serializeWorldSimulation(run));
       await writeRunFiles(storage, parsed);
@@ -416,13 +432,31 @@ export function createWorldSimulationRepositoryV2(storage: WorkbenchStorage): Wo
       const current = await loadRunIndex();
       const entry = current.value.runs.find((item) => item.id === runId);
       if (!entry) return current;
-      await storage.remove(worldSimulationRunRoot(runId), { permanent: true });
       const runs = current.value.runs.filter((item) => item.id !== runId);
-      return saveIndex(current, {
+      const next = await saveIndex(current, {
         schemaVersion: WORLD_SIMULATION_SCHEMA_VERSION,
         runs,
         activeRunId: current.value.activeRunId === runId ? runs[0]?.id ?? null : current.value.activeRunId,
       });
+      // 先提交索引 CAS，再清理运行目录。索引写失败时保留完整运行，
+      // 避免留下指向已删除目录的正式记录。
+      try {
+        await storage.remove(worldSimulationRunRoot(runId), { permanent: true });
+      } catch (cause) {
+        try {
+          await storage.writeText(WORLD_SIMULATION_PATHS.runIndex, current.content, {
+            expectedContent: next.content,
+          });
+        } catch (rollbackCause) {
+          throw new Error(
+            `删除推演运行目录失败（${errorText(cause)}），且无法恢复运行索引：${errorText(rollbackCause)}`,
+          );
+        }
+        throw new Error(
+          `删除推演运行目录失败，已恢复运行索引：${errorText(cause)}`,
+        );
+      }
+      return next;
     },
   };
   return Object.freeze(repository);

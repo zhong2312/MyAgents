@@ -75,6 +75,7 @@ describe("NovelProjectCreator", () => {
       targetWordCountMin: 505_000,
       targetWordCountMax: 605_000,
       chapterWordCount: 2_500,
+      writingPerspective: "third-person-limited",
       workbenchId: "io.myagents.novel",
     });
     expect(parsedMetadata).not.toHaveProperty("targetWordCount");

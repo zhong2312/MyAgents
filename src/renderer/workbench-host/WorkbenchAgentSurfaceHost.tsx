@@ -13,7 +13,17 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -42,6 +52,36 @@ const PROPOSAL_REVIEW_MODES = new Set([
   "characters",
   "manuscript",
 ]);
+const DOCK_VIEWPORT_MARGIN = 12;
+
+interface Point {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface DockDragState {
+  readonly pointerId: number;
+  readonly startPointer: Point;
+  readonly startOffset: Point;
+  readonly bounds: {
+    readonly minX: number;
+    readonly maxX: number;
+    readonly minY: number;
+    readonly maxY: number;
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    target.closest("button, a, input, textarea, select, [role='button']") !==
+      null
+  );
+}
 
 function supportsProposalReview(tab: Tab): boolean {
   const surface = tab.workbenchAgentSurface;
@@ -49,6 +89,15 @@ function supportsProposalReview(tab: Tab): boolean {
     surface?.toolset?.id === "novel-world" &&
       PROPOSAL_REVIEW_MODES.has(surface.toolset.context?.mode ?? ""),
   );
+}
+
+/**
+ * An embedded surface belongs to a workbench-owned DOM region. Its mount target
+ * is the stable identity: generic review and restore actions must never turn it
+ * back into an independent dialog merely by changing its presentation value.
+ */
+function isEmbeddedReviewSurface(tab: Tab): boolean {
+  return Boolean(tab.workbenchAgentSurface?.embeddedSurfaceId);
 }
 
 function SurfaceStatus({ tab }: { readonly tab: Tab }) {
@@ -69,6 +118,117 @@ function SurfaceStatus({ tab }: { readonly tab: Tab }) {
   return <span className="text-xs text-[var(--ink-muted)]">会话已就绪</span>;
 }
 
+interface EmbeddedAgentSurfaceProps {
+  readonly tab: Tab;
+  readonly renderSurface: (tab: Tab, isActive: boolean) => ReactNode;
+}
+
+/**
+ * The workbench owns these mounts and can replace them whenever its dialog
+ * moves between workflow steps. Subscribe to DOM changes instead of updating
+ * React state from an effect, so an embedded Agent never gets a transient
+ * generic-dialog render while its target is appearing.
+ */
+function useEmbeddedSurfaceTarget(
+  embeddedSurfaceId: string | undefined,
+  suffix: "conversation" | "companion",
+): HTMLElement | null {
+  const getSnapshot = useMemo(
+    () => () => {
+      if (!embeddedSurfaceId || typeof document === "undefined") return null;
+      return document.getElementById(`${embeddedSurfaceId}-${suffix}`);
+    },
+    [embeddedSurfaceId, suffix],
+  );
+  const subscribe = useMemo(
+    () => (notify: () => void) => {
+      if (!embeddedSurfaceId || typeof document === "undefined") {
+        return () => undefined;
+      }
+      const observer = new MutationObserver(notify);
+      observer.observe(document.body, { childList: true, subtree: true });
+      return () => observer.disconnect();
+    },
+    [embeddedSurfaceId],
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, () => null);
+}
+
+function EmbeddedAgentSurface({
+  tab,
+  renderSurface,
+}: EmbeddedAgentSurfaceProps) {
+  const surface = tab.workbenchAgentSurface;
+  const embeddedSurfaceId = surface?.embeddedSurfaceId;
+  const conversationTarget = useEmbeddedSurfaceTarget(
+    embeddedSurfaceId,
+    "conversation",
+  );
+  const companionTarget = useEmbeddedSurfaceTarget(
+    embeddedSurfaceId,
+    "companion",
+  );
+  const companionRequest = surface?.companion;
+  const AgentCompanion = workbenchRegistry.get(surface?.workbenchId ?? "")
+    ?.AgentCompanion;
+
+  if (!embeddedSurfaceId) return null;
+
+  return (
+    <>
+      {conversationTarget &&
+        createPortal(
+          <section
+            aria-label="AI 执行过程"
+            className="absolute inset-0 z-10 min-h-0 min-w-0 overflow-hidden bg-[var(--paper)]"
+          >
+            {tab.view === "chat" ? (
+              renderSurface(tab, true)
+            ) : (
+              <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在启动 Agent 会话
+              </div>
+            )}
+          </section>,
+          conversationTarget,
+        )}
+      {companionTarget &&
+        createPortal(
+          <section
+            aria-label="正文候选审阅"
+            className="absolute inset-0 z-10 min-h-0 min-w-0 overflow-hidden bg-[var(--paper)]"
+          >
+            {AgentCompanion && companionRequest ? (
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center gap-2 text-sm text-[var(--ink-muted)]">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    正在载入正文候选
+                  </div>
+                }
+              >
+                <AgentCompanion
+                  workspacePath={surface?.workspacePath ?? ""}
+                  conversationKey={surface?.conversationKey ?? ""}
+                  companionId={companionRequest.id}
+                  context={companionRequest.context ?? {}}
+                  isAgentRunning={tab.isGenerating === true}
+                />
+              </Suspense>
+            ) : (
+              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[var(--ink-muted)]">
+                当前工作台没有提供正文候选审阅区
+              </div>
+            )}
+          </section>,
+          companionTarget,
+        )}
+    </>
+  );
+}
+
 export default function WorkbenchAgentSurfaceHost({
   surfaces,
   activeSourceTabId,
@@ -85,6 +245,10 @@ export default function WorkbenchAgentSurfaceHost({
     null,
   );
   const [isDockCollapsed, setIsDockCollapsed] = useState(false);
+  const [dockOffset, setDockOffset] = useState<Point>({ x: 0, y: 0 });
+  const [isDockDragging, setIsDockDragging] = useState(false);
+  const dockRef = useRef<HTMLElement | null>(null);
+  const dockDragRef = useRef<DockDragState | null>(null);
   const [compactVertical, setCompactVertical] = useState(() =>
     typeof window === "undefined" ? false : window.innerWidth < 900,
   );
@@ -112,14 +276,39 @@ export default function WorkbenchAgentSurfaceHost({
         .reverse()
         .find((tab) => {
           const presentation = tab.workbenchAgentSurface?.presentation;
-          return presentation === "dialog" || presentation === "compact-review";
+          return (
+            !isEmbeddedReviewSurface(tab) &&
+            (presentation === "dialog" || presentation === "compact-review")
+          );
         }),
+    [visibleSurfaces],
+  );
+  const embeddedSurfaces = useMemo(
+    () => {
+      // A mount target is a single-slot surface. Lifecycle cleanup normally
+      // removes prior runs before a replacement starts; selecting the newest
+      // surface here also prevents a stale session from splitting the same
+      // conversation/output regions during any asynchronous overlap.
+      const mountedSurfaceIds = new Set<string>();
+      return [...visibleSurfaces]
+        .reverse()
+        .filter((tab) => {
+          const surfaceId = tab.workbenchAgentSurface?.embeddedSurfaceId;
+          if (!surfaceId || mountedSurfaceIds.has(surfaceId)) return false;
+          mountedSurfaceIds.add(surfaceId);
+          return true;
+        })
+        .reverse();
+    },
     [visibleSurfaces],
   );
   const taskSurfaces = useMemo(
     () =>
       surfaces.filter(
-        (tab) => tab.workbenchAgentSurface?.presentation !== "hidden",
+        (tab) => {
+          const presentation = tab.workbenchAgentSurface?.presentation;
+          return presentation !== "hidden" && !isEmbeddedReviewSurface(tab);
+        },
       ),
     [surfaces],
   );
@@ -141,6 +330,72 @@ export default function WorkbenchAgentSurfaceHost({
       : completedTaskCount > 0
         ? `${completedTaskCount} 个待查看`
         : `${taskSurfaces.length} 个任务`;
+
+  const handleDockPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || isInteractiveTarget(event.target)) return;
+    const dock = dockRef.current;
+    if (!dock) return;
+
+    const boundary =
+      dock.offsetParent instanceof HTMLElement
+        ? dock.offsetParent.getBoundingClientRect()
+        : {
+            left: 0,
+            top: 0,
+            right: window.innerWidth,
+            bottom: window.innerHeight,
+            width: window.innerWidth,
+            height: window.innerHeight,
+          };
+    const rect = dock.getBoundingClientRect();
+    const margin = Math.min(
+      DOCK_VIEWPORT_MARGIN,
+      Math.max(0, (boundary.width - rect.width) / 2),
+      Math.max(0, (boundary.height - rect.height) / 2),
+    );
+
+    dockDragRef.current = {
+      pointerId: event.pointerId,
+      startPointer: { x: event.clientX, y: event.clientY },
+      startOffset: dockOffset,
+      bounds: {
+        minX: dockOffset.x + boundary.left + margin - rect.left,
+        maxX: dockOffset.x + boundary.right - margin - rect.right,
+        minY: dockOffset.y + boundary.top + margin - rect.top,
+        maxY: dockOffset.y + boundary.bottom - margin - rect.bottom,
+      },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsDockDragging(true);
+    event.preventDefault();
+  };
+
+  const handleDockPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dockDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setDockOffset({
+      x: clamp(
+        drag.startOffset.x + event.clientX - drag.startPointer.x,
+        drag.bounds.minX,
+        drag.bounds.maxX,
+      ),
+      y: clamp(
+        drag.startOffset.y + event.clientY - drag.startPointer.y,
+        drag.bounds.minY,
+        drag.bounds.maxY,
+      ),
+    });
+  };
+
+  const finishDockDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dockDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dockDragRef.current = null;
+    setIsDockDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
 
   const visiblePendingRestart = pendingRestart;
   const isCompactReview =
@@ -345,8 +600,20 @@ export default function WorkbenchAgentSurfaceHost({
         </DraggableDialogFrame>
       )}
 
+      {embeddedSurfaces.map((tab) => (
+        <EmbeddedAgentSurface
+          key={`embedded-${tab.id}`}
+          tab={tab}
+          renderSurface={renderSurface}
+        />
+      ))}
+
       {surfaces
-        .filter((tab) => tab.id !== dialog?.id)
+        .filter(
+          (tab) =>
+            tab.id !== dialog?.id &&
+            !isEmbeddedReviewSurface(tab),
+        )
         .map((tab) => (
           <div
             key={`mounted-${tab.id}`}
@@ -364,10 +631,30 @@ export default function WorkbenchAgentSurfaceHost({
 
       {taskSurfaces.length > 0 && (
         <aside
+          ref={dockRef}
           aria-label="AI 任务坞"
+          style={{
+            transform: `translate3d(${dockOffset.x}px, ${dockOffset.y}px, 0)`,
+          }}
           className="absolute bottom-5 right-5 z-[190] w-96 max-w-[calc(100%-2rem)] overflow-hidden rounded-md border border-[var(--line-strong)] bg-[var(--paper-elevated)] shadow-xl"
         >
-          <header className="flex min-h-12 items-center gap-2 border-b border-[var(--line)] px-3 py-2">
+          <header
+            aria-label="拖动 AI 任务坞"
+            title="拖动任务坞"
+            onPointerDown={handleDockPointerDown}
+            onPointerMove={handleDockPointerMove}
+            onPointerUp={finishDockDrag}
+            onPointerCancel={finishDockDrag}
+            className={`flex min-h-12 touch-none select-none items-center gap-2 border-b border-[var(--line)] px-3 py-2 [&_button]:cursor-pointer ${
+              isDockDragging ? "cursor-grabbing" : "cursor-grab"
+            }`}
+          >
+            <span
+              aria-hidden="true"
+              className="flex h-4 w-3 shrink-0 items-center justify-center text-[var(--ink-subtle)]"
+            >
+              <GripVertical className="h-4 w-4" />
+            </span>
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--accent-cool)] text-white">
               {runningTaskCount > 0 ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />

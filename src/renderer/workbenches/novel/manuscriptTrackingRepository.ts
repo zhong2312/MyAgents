@@ -20,7 +20,6 @@ import {
 import { createStorageTransaction } from "./shared/infrastructure/storageTransaction";
 import {
   createManuscriptTrackingProjection,
-  type ManuscriptProjectionChapter,
   type ProjectionSnapshotUpdate,
 } from "./manuscriptTrackingProjection";
 import {
@@ -139,7 +138,10 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
       const content = nextFiles.get(path);
       if (content === undefined) continue;
       const previous = onDisk.files.get(path);
-      if (previous === content) continue;
+      // 根索引是本次多文件更新的提交边界：即使同一毫秒导致
+      // updatedAt 序列化结果不变，也必须在子记录之后执行一次 CAS 写入。
+      if (previous === content && path !== MANUSCRIPT_TRACKING_INDEX_PATH)
+        continue;
       if (previous === undefined) transaction.createText(path, content);
       else transaction.writeText(path, content, previous);
     }
@@ -157,6 +159,33 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
     const file = await storage.readText(MANUSCRIPT_INDEX_PATH);
     const index = parseNovelChapterIndex(file.content);
     return manuscriptChapterOrderMap(index.directories, index.chapters);
+  };
+
+  /**
+   * 连续性批次必须以磁盘正文为准。Renderer 草稿只用于展示，不能作为
+   * 确认事实状态变更时的来源，否则外部编辑会让旧分析结果落入资料库。
+   */
+  const loadPersistedChapter = async (chapterId: string) => {
+    const indexFile = await storage.readText(MANUSCRIPT_INDEX_PATH);
+    const index = parseNovelChapterIndex(indexFile.content);
+    const chapter = index.chapters.find((item) => item.id === chapterId);
+    if (!chapter) {
+      throw new Error("连续性批次对应的章节已不存在，无法确认状态变化");
+    }
+    const content = (await storage.readText(chapter.path)).content;
+    const order = manuscriptChapterOrderMap(index.directories, index.chapters);
+    const sequence =
+      (order.get(chapter.id) ?? fallbackChapterOrder(chapter.id, order)) + 1;
+    return {
+      chapter: {
+        id: chapter.id,
+        number: chapter.displayNumber,
+        sequence,
+        title: chapter.title,
+        content,
+      },
+      order,
+    };
   };
 
   const fallbackChapterOrder = (
@@ -433,7 +462,6 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
       current: LoadedManuscriptTrackingLedger,
       batchId: string,
       selectedChangeIds: readonly string[],
-      chapter: ManuscriptProjectionChapter,
     ) {
       const selected = new Set(selectedChangeIds);
       const batch = current.ledger.batches.find((item) => item.id === batchId);
@@ -442,18 +470,15 @@ export function createManuscriptTrackingRepository(storage: WorkbenchStorage) {
       if (!batch.changes.some((change) => selected.has(change.id))) {
         throw new Error("请至少选择一项状态变化");
       }
+      const { chapter, order } = await loadPersistedChapter(batch.chapterId);
       if (batch.chapterContentHash !== hashManuscriptContent(chapter.content)) {
         throw new Error("章节正文已经变化，请重新执行连续性分析");
       }
       const selectedChanges = batch.changes.filter((change) =>
         selected.has(change.id),
       );
-      const order = await loadChapterOrder();
-      const sequence =
-        (order.get(chapter.id) ?? fallbackChapterOrder(chapter.id, order)) + 1;
       const mutations = await projection.prepareBatch(batch, selectedChanges, {
         ...chapter,
-        sequence,
       });
       const now = new Date().toISOString();
       const nextLedger: ManuscriptTrackingLedger = {

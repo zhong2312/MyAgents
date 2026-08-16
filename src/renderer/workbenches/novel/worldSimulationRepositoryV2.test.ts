@@ -180,4 +180,25 @@ describe("WorldSimulationRepositoryV2", () => {
       branches: [{ ...withEvent.run.value.branches[0]!, ledger: [] }],
     })).rejects.toThrow("JSONL 账本不能回退或改写");
   });
+
+  it("运行目录删除失败时恢复带 CAS 的运行索引", async () => {
+    const storage = new NovelMemoryStorage({});
+    const repository = createWorldSimulationRepositoryV2(storage);
+    await repository.createRun(runFixture());
+    storage.failRemovePathOnce = "simulation/runs/run-materialized-files";
+
+    await expect(repository.removeRun("run-materialized-files")).rejects.toThrow(
+      "删除推演运行目录失败，已恢复运行索引",
+    );
+
+    await expect(repository.loadRun("run-materialized-files")).resolves.toMatchObject({
+      value: { id: "run-materialized-files" },
+    });
+    await expect(repository.loadRunIndex()).resolves.toMatchObject({
+      value: {
+        runs: [expect.objectContaining({ id: "run-materialized-files" })],
+        activeRunId: "run-materialized-files",
+      },
+    });
+  });
 });

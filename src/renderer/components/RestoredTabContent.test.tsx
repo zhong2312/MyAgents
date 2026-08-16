@@ -55,6 +55,29 @@ vi.mock('@/pages/TaskCenter', () => ({ default: () => <div data-testid="taskcent
 vi.mock('@/components/ChatBootOverlay', () => ({
   default: () => <div data-testid="chat-boot-overlay" />,
 }));
+vi.mock('@/workbench-sdk/WorkbenchShell', () => ({
+  default: ({
+    onOpenAgentSession,
+  }: {
+    onOpenAgentSession?: (
+      workspacePath: string,
+      request: { version: 1; title: string; initialMessage: string },
+    ) => Promise<void>;
+  }) => (
+    <button
+      type="button"
+      onClick={() => {
+        void onOpenAgentSession?.('/ws/a', {
+          version: 1,
+          title: '完整生成',
+          initialMessage: '生成本章正文。',
+        });
+      }}
+    >
+      启动工作台 Agent
+    </button>
+  ),
+}));
 
 import { MemoizedTabContent } from '@/App';
 
@@ -182,6 +205,36 @@ describe('restored live chat tab', () => {
     expect(chat).toHaveAttribute('data-workbench-prompt-id', 'novel.characters.assist');
     expect(chat).toHaveAttribute('data-workbench-title', '人物设计');
     expect(chat).toHaveAttribute('data-workbench-prompt-content', '你是小说人物设计助手。');
+  });
+
+  it('binds an Agent request to the workbench tab that issued it', async () => {
+    const onOpenWorkbenchAgentSession = vi.fn(async () => undefined);
+    render(
+      <MemoizedTabContent
+        tab={restoredTab({
+          id: 'novel-workbench-source',
+          view: 'workbench',
+          sessionId: null,
+          workbench: {
+            workbenchId: 'io.myagents.novel',
+            route: 'manuscript',
+          },
+        })}
+        isActive
+        {...noopProps}
+        onOpenWorkbenchAgentSession={onOpenWorkbenchAgentSession}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '启动工作台 Agent' }));
+
+    await waitFor(() => {
+      expect(onOpenWorkbenchAgentSession).toHaveBeenCalledWith(
+        '/ws/a',
+        expect.objectContaining({ title: '完整生成' }),
+        'novel-workbench-source',
+      );
+    });
   });
 
   it('keeps Settings and Capabilities UI state in their own mounted Tab slots', async () => {

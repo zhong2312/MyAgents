@@ -72,6 +72,20 @@ import {
   serializeTimelineFileSnapshot,
 } from "../../shared/workbenches/novel/timelineStorage";
 import {
+  generateFantasyMapCandidate,
+  type FantasyFeature,
+} from "../../shared/workbenches/novel/fantasyMapGenerator";
+import {
+  convertAzgaarExportToFeatures,
+  selectAzgaarMapDocumentFeatures,
+  type AzgaarMapFeature,
+} from "../../shared/workbenches/novel/azgaarExportAdapter";
+import {
+  azgaarRuntimeConfigured,
+  createAzgaarRuntimeClient,
+} from "../maps/azgaar-runtime";
+import { retrieveKnowledgeDocuments } from "../knowledge-retriever";
+import {
   bindNovelWorkbenchRuntime,
   getNovelWorkbenchContext,
   NOVEL_WORKBENCH_SDK_ADAPTER_ID,
@@ -181,6 +195,7 @@ const SETTING_FILE_PATTERNS = {
 } as const;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const SETTING_STATUS_VALUES = new Set(["draft", "completed"]);
+const SETTING_LIBRARY_SOURCE_VALUES = new Set(["builtin", "project"]);
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
 const MAX_CHANGE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024;
@@ -196,6 +211,7 @@ const MAX_CULTIVATION_CONTEXT_BYTES = 1_000_000;
 const MAX_CHARACTER_OPERATIONS = 40;
 const MAX_INCREMENTAL_OPERATIONS = 32;
 const MAX_INCREMENTAL_BATCH_BYTES = 64 * 1024;
+const MAX_MAP_PROPOSAL_BYTES = 24 * 1024 * 1024;
 const NARRATIVE_PROPOSAL_ROOT = "narrative/proposals";
 const MAX_NARRATIVE_CANDIDATES = 30;
 const NARRATIVE_ENGINEERING_PATH = NARRATIVE_ENGINEERING_INDEX_PATH;
@@ -327,6 +343,7 @@ type CharacterProposalOperation = {
   kind: "character" | "race" | "group" | "soul";
   action: "create" | "update";
   targetId?: string;
+  baseValue?: Record<string, unknown>;
   summary: string;
   value: Record<string, unknown>;
 };
@@ -396,6 +413,20 @@ function assertIncrementalBatch(
   if (bytes > MAX_INCREMENTAL_BATCH_BYTES) {
     throw new Error(
       `${label}单次载荷最多 ${MAX_INCREMENTAL_BATCH_BYTES} 字节，请拆成多次增量调用`,
+    );
+  }
+}
+
+function assertMapProposalPayload(
+  operations: readonly MapProposalOperation[],
+): void {
+  if (operations.length > MAX_MAP_OPERATIONS) {
+    throw new Error(`地图候选单次最多 ${MAX_MAP_OPERATIONS} 项`);
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(operations), "utf8");
+  if (bytes > MAX_MAP_PROPOSAL_BYTES) {
+    throw new Error(
+      `地图提案最多 ${MAX_MAP_PROPOSAL_BYTES} 字节，请缩小底图或拆分地图`,
     );
   }
 }
@@ -519,6 +550,27 @@ function arrayField(value: unknown, field: string): unknown[] | null {
   if (!value || typeof value !== "object") return null;
   const candidate = (value as Record<string, unknown>)[field];
   return Array.isArray(candidate) ? candidate : null;
+}
+
+function validateSettingLibraryRecordSources(
+  records: readonly unknown[],
+  label: "层级类型" | "设定模板",
+  errors: string[],
+): void {
+  for (const record of records) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      continue;
+    }
+    const item = record as Record<string, unknown>;
+    const id = typeof item.id === "string" ? item.id : "<unknown>";
+    if (typeof item.source !== "string") {
+      errors.push(`${label} ${id} 缺少 source`);
+    } else if (!SETTING_LIBRARY_SOURCE_VALUES.has(item.source)) {
+      errors.push(
+        `${label} ${id} 的 source 必须为 builtin 或 project，当前为 ${item.source}`,
+      );
+    }
+  }
 }
 
 function validateLocationIndex(
@@ -725,6 +777,8 @@ async function validateChanges(
   const typeIds = idsOf(levelTypes!, "levelTypes");
   const templateIds = idsOf(templates!, "settingTemplates");
   const nodeIds = idsOf(nodes!, "nodes");
+  validateSettingLibraryRecordSources(levelTypes!, "层级类型", errors);
+  validateSettingLibraryRecordSources(templates!, "设定模板", errors);
   const parentByNode = new Map<string, string | null>();
   for (const node of nodes!) {
     if (!node || typeof node !== "object") continue;
@@ -2618,6 +2672,24 @@ async function submitCharacterProposalHandler(args: {
     const { workspace, context } = requireWorkspace();
     const errors = await validateCharacterProposal(args.operations);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
+    const state = await readCharacterLibraryState(workspace);
+    const recordsByKind = new Map<
+      CharacterProposalOperation["kind"],
+      Map<string, Record<string, unknown>>
+    >();
+    const mapRecords = (values: readonly unknown[]) =>
+      new Map(
+        values.flatMap((value) => {
+          const record = objectValue(value, "人物提案基线");
+          return typeof record.id === "string"
+            ? [[record.id, record] as const]
+            : [];
+        }),
+      );
+    recordsByKind.set("character", mapRecords(state.characters));
+    recordsByKind.set("race", mapRecords(state.races));
+    recordsByKind.set("group", mapRecords(state.groups));
+    recordsByKind.set("soul", mapRecords(state.souls));
     const proposalId =
       args.proposalId?.trim() ||
       `character-proposal-${randomUUID().slice(0, 8)}`;
@@ -2656,6 +2728,13 @@ async function submitCharacterProposalHandler(args: {
       },
       operations: args.operations.map((operation) => ({
         ...operation,
+        ...(operation.action === "update" && operation.targetId
+          ? {
+              baseValue: recordsByKind
+                .get(operation.kind)
+                ?.get(operation.targetId),
+            }
+          : {}),
         summary: operation.summary.trim(),
         status: "pending",
       })),
@@ -2687,6 +2766,7 @@ type FactionProposalOperation = {
   action: "create" | "update";
   targetId?: string;
   summary: string;
+  baseValue?: Record<string, unknown> | null;
   value: Record<string, unknown>;
 };
 
@@ -2696,6 +2776,7 @@ type TimelineProposalOperation = {
   action: "create" | "update";
   targetId?: string;
   summary: string;
+  baseValue?: Record<string, unknown> | null;
   value: Record<string, unknown>;
 };
 
@@ -2711,6 +2792,24 @@ type MapProposalOperation = {
 const FACTION_PROPOSAL_ROOT = "world/factions/proposals";
 const TIMELINE_PROPOSAL_ROOT = "timeline/proposals";
 const MAX_FACTION_OPERATIONS = 40;
+const FACTION_RECORD_FIELDS = new Set([
+  "id",
+  "name",
+  "type",
+  "status",
+  "summary",
+  "state",
+  "territories",
+  "members",
+  "assets",
+  "resources",
+  "organizationUnits",
+  "relations",
+  "rights",
+  "links",
+  "createdAt",
+  "updatedAt",
+]);
 const MAX_TIMELINE_OPERATIONS = 40;
 const MAP_PROPOSAL_ROOT = "world/maps/proposals";
 const MAX_MAP_OPERATIONS = 40;
@@ -2819,6 +2918,14 @@ async function validateFactionDraftPayload(
       continue;
     }
     const faction = operation.value;
+    const unknownFields = Object.keys(faction).filter(
+      (field) => !FACTION_RECORD_FIELDS.has(field),
+    );
+    if (unknownFields.length > 0) {
+      errors.push(
+        `势力候选“${operation.candidateId}”包含非正式字段：${unknownFields.join("、")}。核心目标和演化钩子请写入 links，层级写入 organizationUnits，关键成员写入 members，权利写入 rights，地域写入 territories`,
+      );
+    }
     const id = faction.id;
     if (typeof id !== "string" || !ID_PATTERN.test(id)) {
       errors.push(`${operation.candidateId}的势力 id 非法`);
@@ -2833,6 +2940,12 @@ async function validateFactionDraftPayload(
     }
     if (operation.action === "update" && !existingIds.has(id)) {
       errors.push(`势力 id 不存在：${id}`);
+      continue;
+    }
+    if (operation.action === "update" && operation.targetId !== id) {
+      errors.push(
+        `${operation.candidateId}的 value.id 必须与 targetId 保持一致`,
+      );
       continue;
     }
     for (const member of arrayField(faction, "members") ?? []) {
@@ -2884,6 +2997,29 @@ async function validateFactionDraftPayload(
   return errors;
 }
 
+async function attachFactionGenerationBaselines(
+  workspace: string,
+  operations: readonly FactionProposalOperation[],
+): Promise<FactionProposalOperation[]> {
+  const current = await loadFactionSource(workspace);
+  const byId = new Map(
+    current.library.factions.map((faction) => [faction.id, faction] as const),
+  );
+  return operations.map((operation) => {
+    if (operation.action === "create") {
+      return { ...operation, baseValue: null };
+    }
+    const targetId = operation.targetId;
+    const baseValue = targetId ? byId.get(targetId) : undefined;
+    if (!baseValue) {
+      throw new Error(
+        `无法为更新候选“${operation.candidateId}”保存生成基准：目标势力不存在`,
+      );
+    }
+    return { ...operation, baseValue: { ...baseValue } };
+  });
+}
+
 /** 校验时间线候选：结构、正式库存在性、跨库引用（角色/地点/章节/势力/物品）。 */
 async function loadTimelineSource(workspace: string) {
   const loaded = await loadTimelineFiles((path) =>
@@ -2893,6 +3029,29 @@ async function loadTimelineSource(workspace: string) {
     library: loaded.library,
     snapshot: serializeTimelineFileSnapshot(loaded.files),
   };
+}
+
+async function attachTimelineGenerationBaselines(
+  workspace: string,
+  operations: readonly TimelineProposalOperation[],
+): Promise<TimelineProposalOperation[]> {
+  const current = await loadTimelineSource(workspace);
+  const byId = new Map(
+    current.library.events.map((event) => [event.id, event] as const),
+  );
+  return operations.map((operation) => {
+    if (operation.action === "create") {
+      return { ...operation, baseValue: null };
+    }
+    const targetId = operation.targetId;
+    const baseValue = targetId ? byId.get(targetId) : undefined;
+    if (!baseValue) {
+      throw new Error(
+        `无法为更新候选“${operation.candidateId}”保存生成基准：目标事件不存在`,
+      );
+    }
+    return { ...operation, baseValue: { ...baseValue } };
+  });
 }
 
 async function validateTimelineDraftPayload(
@@ -2983,6 +3142,12 @@ async function validateTimelineDraftPayload(
       errors.push(`事件 id 不存在：${id}`);
       continue;
     }
+    if (operation.action === "update" && operation.targetId !== id) {
+      errors.push(
+        `${operation.candidateId}的 value.id 必须与 targetId 保持一致`,
+      );
+      continue;
+    }
     const checkReference = (
       field: string,
       available: Set<string>,
@@ -3035,6 +3200,10 @@ async function submitFactionProposalHandler(args: {
     }
     await fs.mkdir(proposalDirectory, { recursive: true });
     createdProposalDirectory = true;
+    const operations = await attachFactionGenerationBaselines(
+      workspace,
+      args.operations,
+    );
     const manifest = {
       schemaVersion: 1,
       proposalId,
@@ -3046,7 +3215,7 @@ async function submitFactionProposalHandler(args: {
         promptId: context.promptId,
         promptVersion: context.promptVersion,
       },
-      operations: args.operations.map((operation) => ({
+      operations: operations.map((operation) => ({
         ...operation,
         summary: operation.summary.trim(),
         status: "pending",
@@ -3106,6 +3275,10 @@ async function submitTimelineProposalHandler(args: {
     }
     await fs.mkdir(proposalDirectory, { recursive: true });
     createdProposalDirectory = true;
+    const operations = await attachTimelineGenerationBaselines(
+      workspace,
+      args.operations,
+    );
     const manifest = {
       schemaVersion: 1,
       proposalId,
@@ -3117,7 +3290,7 @@ async function submitTimelineProposalHandler(args: {
         promptId: context.promptId,
         promptVersion: context.promptVersion,
       },
-      operations: args.operations.map((operation) => ({
+      operations: operations.map((operation) => ({
         ...operation,
         summary: operation.summary.trim(),
         status: "pending",
@@ -3583,7 +3756,11 @@ async function submitMapProposalHandler(args: {
   let proposalDirectory = "";
   let createdProposalDirectory = false;
   try {
-    assertIncrementalBatch(args.operations, "地图候选");
+    // A validated generator draft can contain a self-contained SVG preview
+    // plus thousands of structured features. Keep the 64 KiB limit on the
+    // Agent-facing incremental tool, but allow the persisted draft to enter
+    // review under the map document budget.
+    assertMapProposalPayload(args.operations);
     const { workspace, context } = requireWorkspace();
     const errors = await validateMapDraftPayload(args.operations);
     if (errors.length > 0) return result({ submitted: false, errors }, true);
@@ -3606,8 +3783,67 @@ async function submitMapProposalHandler(args: {
     }
     await fs.mkdir(proposalDirectory, { recursive: true });
     createdProposalDirectory = true;
+    const candidateDirectory = join(proposalDirectory, "candidates");
+    const assetDirectory = join(proposalDirectory, "assets");
+    await fs.mkdir(candidateDirectory, { recursive: true });
+    const operations: Array<{
+      candidateId: string;
+      kind: "map";
+      action: "create" | "update";
+      targetId?: string;
+      summary: string;
+      valuePath: string;
+      status: "pending";
+    }> = [];
+    for (const operation of args.operations) {
+      const value = structuredClone(operation.value);
+      const canvas = objectValue(value.canvas, "地图画布");
+      const backgroundImage = canvas.backgroundImage;
+      if (
+        typeof backgroundImage === "string" &&
+        backgroundImage.startsWith("data:image/svg+xml;base64,")
+      ) {
+        const svg = Buffer.from(
+          backgroundImage.slice("data:image/svg+xml;base64,".length),
+          "base64",
+        ).toString("utf8");
+        if (!/<svg[\s>]/iu.test(svg))
+          throw new Error("地图候选内嵌的 SVG 底图无效");
+        await fs.mkdir(assetDirectory, { recursive: true });
+        await fs.writeFile(
+          join(assetDirectory, `${operation.candidateId}.svg`),
+          svg,
+          {
+            encoding: "utf8",
+            flag: "wx",
+          },
+        );
+        canvas.backgroundImage = null;
+        canvas.backgroundAssetPath = `${MAP_PROPOSAL_ROOT}/${proposalId}/assets/${operation.candidateId}.svg`;
+      }
+      const valuePath = `candidates/${operation.candidateId}.json`;
+      const candidateContent = JSON.stringify(value, null, 2) + "\n";
+      if (Buffer.byteLength(candidateContent, "utf8") > MAX_CHANGE_BYTES) {
+        throw new Error(
+          `地图候选 ${operation.candidateId} 拆分底图后仍超过 2 MiB，请减少结构化要素`,
+        );
+      }
+      await fs.writeFile(join(proposalDirectory, valuePath), candidateContent, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+      operations.push({
+        candidateId: operation.candidateId,
+        kind: operation.kind,
+        action: operation.action,
+        ...(operation.targetId ? { targetId: operation.targetId } : {}),
+        summary: operation.summary.trim(),
+        valuePath,
+        status: "pending",
+      });
+    }
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       proposalId,
       title: args.title.trim(),
       description: args.description?.trim() ?? "",
@@ -3617,11 +3853,7 @@ async function submitMapProposalHandler(args: {
         promptId: context.promptId,
         promptVersion: context.promptVersion,
       },
-      operations: args.operations.map((operation) => ({
-        ...operation,
-        summary: operation.summary.trim(),
-        status: "pending",
-      })),
+      operations,
     };
     await fs.writeFile(
       join(proposalDirectory, "proposal.json"),
@@ -3649,6 +3881,681 @@ type MapDraftPayload = {
   description: string;
   operations: MapProposalOperation[];
 };
+
+type FantasyMapGenerateArgs = {
+  draftId?: string;
+  title?: string;
+  description?: string;
+  seed?: string;
+  mapName?: string;
+  width?: number;
+  height?: number;
+  layerId?: string;
+  landmassCount: number;
+  regionCount: number;
+  riverCount: number;
+  worldNodeId?: string;
+  generationLevelTypeId?: string;
+  worldSourceHash: string;
+  azgaarTemplate: string;
+  azgaarStates: number;
+  azgaarCultures: number;
+  azgaarReligions: number;
+  azgaarTemperatureEquator?: number;
+  azgaarTemperatureNorthPole?: number;
+  azgaarTemperatureSouthPole?: number;
+  azgaarPrecipitation: number;
+};
+
+type FantasyMapScope = {
+  readonly nodeId: string | null;
+  readonly nodeIds: ReadonlySet<string>;
+  readonly nodeName: string;
+  readonly nodePath: string;
+  readonly generationLevelTypeId: string | null;
+  readonly generationLevelName: string | null;
+  readonly generationMapKind: string | null;
+};
+
+type AzgaarGenerationPlan = {
+  readonly heightmapTemplate: string;
+  readonly landmassCount: number;
+  readonly regionCount: number;
+  readonly riverCount: number;
+  readonly states: number;
+  readonly cultures: number;
+  readonly religions: number;
+  readonly precipitation: number;
+  readonly temperatureEquator?: number;
+  readonly temperatureNorthPole?: number;
+  readonly temperatureSouthPole?: number;
+};
+
+const AZGAAR_HEIGHTMAP_TEMPLATES = [
+  "africa-centric",
+  "arabia",
+  "atlantics",
+  "britain",
+  "caribbean",
+  "east-asia",
+  "eurasia",
+  "europe-accented",
+  "europe-and-central-asia",
+  "europe-central",
+  "europe-north",
+  "europe",
+  "greenland",
+  "hellenica",
+  "iceland",
+  "indian-ocean",
+  "mediterranean-sea",
+  "middle-east",
+  "north-america",
+  "us-centric",
+  "us-mainland",
+  "world-from-pacific",
+  "world",
+] as const;
+
+const FANTASY_MAP_GENERATION_KINDS = new Set([
+  "planet-point",
+  "geographic-area",
+  "settlement-point",
+]);
+
+function textList(value: unknown, fields: readonly string[]): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (typeof entry === "string" && entry.trim()) return [entry.trim()];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    for (const field of fields) {
+      if (typeof record[field] === "string" && record[field].trim()) {
+        return [record[field].trim()];
+      }
+    }
+    return [];
+  });
+}
+
+function recordList(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (entry): entry is Record<string, unknown> =>
+          !!entry && typeof entry === "object" && !Array.isArray(entry),
+      )
+    : [];
+}
+
+function resolveFantasyMapScope(
+  files: Record<string, string | null>,
+  args: FantasyMapGenerateArgs,
+): FantasyMapScope {
+  const metaPath = `${LIBRARY_ROOT}/meta.json`;
+  const treePath = `${LIBRARY_ROOT}/spatial-tree.json`;
+  const parseRecord = (path: string): Record<string, unknown> => {
+    const content = files[path];
+    if (!content) throw new Error(`地图生成缺少世界架构文件：${path}`);
+    try {
+      const value = JSON.parse(content);
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("根节点必须是对象");
+      }
+      return value as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`地图生成无法解析 ${path}：${message(error)}`);
+    }
+  };
+  const meta = parseRecord(metaPath);
+  const tree = parseRecord(treePath);
+  const levelTypes = recordList(meta.levelTypes).filter(
+    (type): type is Record<string, unknown> & { id: string; name: string } =>
+      typeof type.id === "string" && typeof type.name === "string",
+  );
+  const nodes = recordList(tree.nodes).filter(
+    (
+      node,
+    ): node is Record<string, unknown> & {
+      id: string;
+      name: string;
+      parentId: string | null;
+    } =>
+      typeof node.id === "string" &&
+      typeof node.name === "string" &&
+      (typeof node.parentId === "string" || node.parentId === null),
+  );
+  if (args.worldNodeId && nodes.length === 0) {
+    throw new Error("世界架构空间树没有可用节点");
+  }
+  const nodesById = new Map(nodes.map((node) => [node.id, node] as const));
+  const selectedNode = args.worldNodeId
+    ? nodesById.get(args.worldNodeId)
+    : null;
+  if (args.worldNodeId && !selectedNode) {
+    throw new Error(`选定的世界架构范围不存在：${args.worldNodeId}`);
+  }
+  const nodeIds = new Set<string>();
+  if (selectedNode) {
+    const childrenByParent = new Map<string, string[]>();
+    nodes.forEach((node) => {
+      if (node.parentId === null) return;
+      const children = childrenByParent.get(node.parentId) ?? [];
+      children.push(node.id);
+      childrenByParent.set(node.parentId, children);
+    });
+    const pending = [selectedNode.id];
+    while (pending.length > 0) {
+      const nodeId = pending.pop()!;
+      if (nodeIds.has(nodeId)) continue;
+      nodeIds.add(nodeId);
+      pending.push(...(childrenByParent.get(nodeId) ?? []));
+    }
+  } else {
+    nodes.forEach((node) => nodeIds.add(node.id));
+  }
+  const pathParts: string[] = [];
+  const visited = new Set<string>();
+  let current = selectedNode ?? null;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    pathParts.unshift(current.name);
+    current = current.parentId
+      ? (nodesById.get(current.parentId) ?? null)
+      : null;
+  }
+  const selectedLevel = args.generationLevelTypeId
+    ? levelTypes.find((type) => type.id === args.generationLevelTypeId)
+    : undefined;
+  if (args.generationLevelTypeId && !selectedLevel) {
+    throw new Error(`选定的地图生成层级不存在：${args.generationLevelTypeId}`);
+  }
+  const generationMapKind =
+    selectedLevel && typeof selectedLevel.mapKind === "string"
+      ? selectedLevel.mapKind
+      : null;
+  if (
+    generationMapKind !== null &&
+    !FANTASY_MAP_GENERATION_KINDS.has(generationMapKind)
+  ) {
+    throw new Error("地图生成层级必须是行星、地理区域或聚落层级");
+  }
+  return {
+    nodeId: selectedNode?.id ?? null,
+    nodeIds,
+    nodeName: selectedNode?.name ?? "整个世界架构",
+    nodePath: pathParts.join(" / ") || "整个世界架构",
+    generationLevelTypeId: selectedLevel?.id ?? null,
+    generationLevelName: selectedLevel?.name ?? null,
+    generationMapKind,
+  };
+}
+
+function mapSlug(value: string): string {
+  return (
+    value
+      .toLocaleLowerCase("en-US")
+      .replace(/[^a-z0-9]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 32) || "world"
+  );
+}
+
+const TERRAIN_CONTEXT_PATTERN =
+  /山脉|山峰|森林|林地|草原|沙漠|荒漠|旱地|赤地|红土|峡谷|冻土|苔原|冰原|雪原|冰川|雪岭|冰封|沼泽|湿地|泥沼|火山|熔岩|岩浆|河流|湖泊|海洋|岛屿|desert|arid|badlands|canyon|tundra|snow|glacier|ice|swamp|wetland|marsh|volcanic|lava|forest|woodland/giu;
+
+function extractTerrainKeywords(content: string): string[] {
+  const matches = content.match(TERRAIN_CONTEXT_PATTERN) ?? [];
+  const legacyMatches =
+    content.match(/[山峰岭森林草原沙漠河流湖泊海洋岛屿湿地冰原]{1,4}/gu) ?? [];
+  return [...matches, ...legacyMatches];
+}
+
+function collectSettingContext(
+  files: Record<string, string | null>,
+  scope?: FantasyMapScope,
+): {
+  spatialNames: string[];
+  placeNames: string[];
+  factionNames: string[];
+  terrainKeywords: string[];
+  sourceHash: string;
+  fileCount: number;
+} {
+  const spatialNames: string[] = [];
+  const placeNames: string[] = [];
+  const factionNames: string[] = [];
+  const terrainKeywords: string[] = [];
+  const scopedSettingPaths = new Set<string>();
+  if (scope) {
+    const settingsContent = files[`${LIBRARY_ROOT}/settings.json`];
+    if (settingsContent) {
+      try {
+        const settings = JSON.parse(settingsContent) as Record<string, unknown>;
+        recordList(settings.settings)
+          .filter(
+            (setting) =>
+              typeof setting.nodeId === "string" &&
+              scope.nodeIds.has(setting.nodeId),
+          )
+          .forEach((setting) => {
+            for (const key of ["pagePath", "entriesPath"] as const) {
+              if (typeof setting[key] === "string") {
+                scopedSettingPaths.add(setting[key]);
+              }
+            }
+          });
+      } catch {
+        // 格式异常仍交给世界架构读取工具和草稿校验报告；本工具只使用可读部分。
+      }
+    }
+  }
+  for (const [path, content] of Object.entries(files)) {
+    if (!content) continue;
+    if (
+      scope &&
+      (path.startsWith(`${LIBRARY_ROOT}/pages/`) ||
+        path.startsWith(`${LIBRARY_ROOT}/entries/`)) &&
+      !scopedSettingPaths.has(path)
+    ) {
+      continue;
+    }
+    terrainKeywords.push(...extractTerrainKeywords(content));
+    let value: unknown = null;
+    try {
+      value = JSON.parse(content);
+    } catch {
+      const headings = [...content.matchAll(/^#{1,3}\s+(.+)$/gmu)].map(
+        (match) => match[1]?.trim(),
+      );
+      terrainKeywords.push(
+        ...headings.filter((heading): heading is string => Boolean(heading)),
+      );
+      const namedPlaces = [
+        ...content.matchAll(
+          /([\p{Script=Han}]{2,16})(?:城|关|镇|港|山|河|湖|海|岛|原|谷)/gu,
+        ),
+      ].map((match) => match[1]?.trim());
+      placeNames.push(
+        ...namedPlaces.filter((name): name is string => Boolean(name)),
+      );
+      continue;
+    }
+    const record =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    if (path.endsWith("spatial-tree.json")) {
+      const nodes = scope
+        ? recordList(record.nodes).filter(
+            (node) => typeof node.id === "string" && scope.nodeIds.has(node.id),
+          )
+        : record.nodes;
+      spatialNames.push(...textList(nodes, ["name", "title"]));
+    }
+    if (path.endsWith("settings.json")) {
+      const settings = recordList(record.settings).filter(
+        (setting) =>
+          !scope ||
+          (typeof setting.nodeId === "string" &&
+            scope.nodeIds.has(setting.nodeId)),
+      );
+      placeNames.push(
+        ...settings.flatMap((setting) =>
+          typeof setting.name === "string" ? [setting.name] : [],
+        ),
+      );
+    }
+    if (path.includes("locations/index.json"))
+      placeNames.push(...textList(record.locations, ["name", "title"]));
+    if (path.includes("factions"))
+      factionNames.push(...textList(record.factions, ["name", "title"]));
+    const serialized = JSON.stringify(value);
+    terrainKeywords.push(...extractTerrainKeywords(serialized));
+  }
+  return {
+    spatialNames: [...new Set(spatialNames)],
+    placeNames: [...new Set(placeNames)],
+    factionNames: [...new Set(factionNames)],
+    terrainKeywords: [...new Set(terrainKeywords)],
+    sourceHash: hashNovelWorkbenchDraftPayload(files),
+    fileCount: Object.keys(files).length,
+  };
+}
+
+/**
+ * Azgaar cannot accept an arbitrary coast-outline count. The Agent therefore
+ * selects a native heightmap template and the remaining native controls after
+ * reading saved world facts; this records the mapping for audit and review.
+ */
+function deriveAzgaarGenerationPlan(
+  args: FantasyMapGenerateArgs,
+): AzgaarGenerationPlan {
+  return {
+    heightmapTemplate: args.azgaarTemplate,
+    landmassCount: args.landmassCount,
+    regionCount: args.regionCount,
+    riverCount: args.riverCount,
+    states: args.azgaarStates,
+    cultures: args.azgaarCultures,
+    religions: args.azgaarReligions,
+    precipitation: args.azgaarPrecipitation,
+    ...(args.azgaarTemperatureEquator === undefined
+      ? {}
+      : { temperatureEquator: args.azgaarTemperatureEquator }),
+    ...(args.azgaarTemperatureNorthPole === undefined
+      ? {}
+      : { temperatureNorthPole: args.azgaarTemperatureNorthPole }),
+    ...(args.azgaarTemperatureSouthPole === undefined
+      ? {}
+      : { temperatureSouthPole: args.azgaarTemperatureSouthPole }),
+  };
+}
+
+async function generateFantasyMapHandler(
+  args: FantasyMapGenerateArgs,
+): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireDraftMode("maps");
+    const basePaths = [
+      `${LIBRARY_ROOT}/meta.json`,
+      `${LIBRARY_ROOT}/spatial-tree.json`,
+      `${LIBRARY_ROOT}/settings.json`,
+      LOCATION_LIBRARY_PATH,
+      FACTION_LIBRARY_PATH,
+    ];
+    const paths = new Set<string>(basePaths);
+    const files: Record<string, string | null> = {};
+    const readPath = async (path: string) => {
+      if (path === LOCATION_LIBRARY_PATH) {
+        files[path] =
+          (await loadLocationSource(workspace))?.aggregateContent ?? null;
+      } else if (path === FACTION_LIBRARY_PATH) {
+        const source = await loadFactionSource(workspace).catch(() => null);
+        files[path] = source
+          ? `${JSON.stringify(source.library, null, 2)}\n`
+          : null;
+      } else {
+        files[path] = await readOptional(workspaceFile(workspace, path));
+      }
+    };
+    for (const path of paths) await readPath(path);
+    const settingsContent = files[`${LIBRARY_ROOT}/settings.json`];
+    if (settingsContent) {
+      try {
+        const settings = JSON.parse(settingsContent) as {
+          settings?: unknown[];
+        };
+        for (const setting of recordList(settings.settings)) {
+          for (const key of ["pagePath", "entriesPath"] as const) {
+            const path = setting[key];
+            if (
+              typeof path === "string" &&
+              SETTING_FILE_PATTERNS[
+                key === "pagePath" ? "pagePath" : "entriesPath"
+              ].test(path)
+            ) {
+              paths.add(path);
+            }
+          }
+        }
+      } catch {
+        // The existing world context validator reports malformed settings. The
+        // generator can still use the readable portions of the architecture.
+      }
+    }
+    for (const path of paths) {
+      if (!(path in files)) await readPath(path);
+    }
+    const scope = resolveFantasyMapScope(files, args);
+    const settingContext = collectSettingContext(files, scope);
+    const worldSourceHash = settingContext.sourceHash;
+    if (args.worldSourceHash !== worldSourceHash) {
+      throw new Error(
+        `世界架构正文或词条在生成前已发生变化（sourceHash ${args.worldSourceHash} → ${worldSourceHash}），请重新调用 novel_world_get_context 并传入新的 sourceHash。`,
+      );
+    }
+    const generationPlan = deriveAzgaarGenerationPlan(args);
+    const width = Math.max(
+      240,
+      Math.min(100_000, Math.round(args.width ?? 1600)),
+    );
+    const height = Math.max(
+      240,
+      Math.min(100_000, Math.round(args.height ?? 1000)),
+    );
+    const seed =
+      args.seed?.trim() ||
+      `${context.promptId}-${settingContext.sourceHash.slice(0, 10)}`;
+    let generator = "fantasy-map-compatibility-adapter";
+    let generatedFeatures: readonly (AzgaarMapFeature | FantasyFeature)[] = [];
+    let generatedSummary = "";
+    let generatedTitle = "世界地图候选";
+    let generatedBackgroundImage: string | null = null;
+    let runtimeFailure: string | null = null;
+    const useCompatibilityCandidate = (reason: string) => {
+      const generated = generateFantasyMapCandidate({
+        seed,
+        width,
+        height,
+        layerId: args.layerId?.trim() || "layer-main",
+        landmassCount: generationPlan.landmassCount,
+        regionCount: generationPlan.regionCount,
+        riverCount: generationPlan.riverCount,
+        ...settingContext,
+      });
+      generator = "fantasy-map-compatibility-adapter";
+      generatedFeatures = generated.features;
+      generatedTitle = generated.title;
+      generatedBackgroundImage = null;
+      generatedSummary = `${generated.summary} ${reason}`;
+    };
+    if (azgaarRuntimeConfigured()) {
+      try {
+        const runtime = createAzgaarRuntimeClient();
+        let exported;
+        try {
+          exported = await runtime.generate({
+            seed,
+            width,
+            height,
+            world: {
+              sourceHash: settingContext.sourceHash,
+              files,
+              summary: `${args.mapName?.trim() || "小说工作台世界地图"} · ${scope.nodePath}${scope.generationLevelName ? ` · ${scope.generationLevelName}` : ""}`,
+              constraints: {
+                spatialNames: settingContext.spatialNames,
+                placeNames: settingContext.placeNames,
+                factionNames: settingContext.factionNames,
+                terrainKeywords: settingContext.terrainKeywords,
+              },
+            },
+            options: {
+              heightmapTemplate: generationPlan.heightmapTemplate,
+              states: generationPlan.states,
+              cultures: generationPlan.cultures,
+              religions: generationPlan.religions,
+              precipitation: generationPlan.precipitation,
+              ...(generationPlan.temperatureEquator === undefined
+                ? {}
+                : { temperatureEquator: generationPlan.temperatureEquator }),
+              ...(generationPlan.temperatureNorthPole === undefined
+                ? {}
+                : {
+                    temperatureNorthPole: generationPlan.temperatureNorthPole,
+                  }),
+              ...(generationPlan.temperatureSouthPole === undefined
+                ? {}
+                : {
+                    temperatureSouthPole: generationPlan.temperatureSouthPole,
+                  }),
+            },
+          });
+        } finally {
+          await runtime.dispose?.().catch(() => {});
+        }
+        if (exported.format === "svg") {
+          if (!/<svg[\s>]/iu.test(exported.content))
+            throw new Error("Azgaar Runtime 返回的 SVG 无效");
+          generatedFeatures = [];
+          generatedBackgroundImage = `data:image/svg+xml;base64,${Buffer.from(exported.content, "utf8").toString("base64")}`;
+          generatedSummary =
+            "已调用独立 Azgaar Runtime，SVG 作为不可破坏底图候选进入草稿。";
+        } else {
+          let exportedValue: unknown;
+          try {
+            exportedValue = JSON.parse(exported.content);
+          } catch (error) {
+            throw new Error(
+              `Azgaar Runtime ${exported.format} 导出不是有效 JSON：${message(error)}`,
+            );
+          }
+          const convertedFeatures = convertAzgaarExportToFeatures({
+            value: exportedValue,
+            width,
+            height,
+            layerId: args.layerId?.trim() || "layer-main",
+          });
+          if (convertedFeatures.length === 0)
+            throw new Error("Azgaar Runtime 导出未包含可转换的地图要素");
+          const editableSelection = selectAzgaarMapDocumentFeatures({
+            features: convertedFeatures,
+            preserveNames: [
+              ...settingContext.spatialNames,
+              ...settingContext.factionNames,
+              ...settingContext.placeNames,
+            ],
+          });
+          generatedFeatures = editableSelection.features;
+          if (exported.previewSvg && /<svg[\s>]/iu.test(exported.previewSvg)) {
+            generatedBackgroundImage = `data:image/svg+xml;base64,${Buffer.from(exported.previewSvg, "utf8").toString("base64")}`;
+          }
+          generatedSummary = `已调用独立 Azgaar Runtime，从 Full JSON 转换 ${editableSelection.sourceCount} 个官方要素；保留 ${generatedFeatures.length} 个可编辑对象，${editableSelection.omittedCount} 个细节保留在 SVG 底图中。`;
+        }
+        generator = runtime.id;
+        generatedTitle = `${args.mapName?.trim() || "Azgaar 世界地图"}`;
+      } catch (error) {
+        runtimeFailure = message(error);
+        useCompatibilityCandidate(
+          `Azgaar Runtime 调用失败（${runtimeFailure}），已自动降级为设定驱动兼容候选。`,
+        );
+      }
+    } else {
+      useCompatibilityCandidate(
+        "当前未配置独立 Azgaar Runtime，使用设定驱动兼容候选。",
+      );
+    }
+    const requestedLayerId = args.layerId?.trim() || "layer-main";
+    const hasAzgaarEditableOverlay = generatedFeatures.some(
+      (feature) => typeof feature.props.azgaarLayer === "string",
+    );
+    const azgaarOverlayLayerId = "layer-azgaar-boundaries";
+    const authorLayerId =
+      hasAzgaarEditableOverlay && requestedLayerId === azgaarOverlayLayerId
+        ? "layer-main"
+        : requestedLayerId;
+    const features = hasAzgaarEditableOverlay
+      ? generatedFeatures.map((feature) => ({
+          ...feature,
+          layerId: azgaarOverlayLayerId,
+        }))
+      : generatedFeatures;
+    const layers = hasAzgaarEditableOverlay
+      ? [
+          {
+            id: authorLayerId,
+            name: "作者要素",
+            visible: true,
+            locked: false,
+            opacity: 1,
+          },
+          {
+            id: azgaarOverlayLayerId,
+            name: "Azgaar 可编辑边界",
+            visible: true,
+            locked: false,
+            opacity: 1,
+          },
+        ]
+      : [
+          {
+            id: requestedLayerId,
+            name: "Fantasy Map 地形",
+            visible: true,
+            locked: false,
+            opacity: 1,
+          },
+        ];
+    const value = {
+      id: `map-${mapSlug(args.mapName || generatedTitle)}-${settingContext.sourceHash.slice(0, 8)}`,
+      name: args.mapName?.trim() || generatedTitle,
+      projectionType:
+        scope.generationMapKind === "planet-point" ? "planet" : "continent",
+      canvas: {
+        width,
+        height,
+        backgroundColor: "#9bb9c4",
+        backgroundImage: generatedBackgroundImage,
+        backgroundOpacity: 1,
+        ...(generatedBackgroundImage
+          ? {
+              backgroundImageWidth: width,
+              backgroundImageHeight: height,
+            }
+          : {}),
+        showGrid: false,
+      },
+      layers,
+      features,
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const draft = await createNovelWorkbenchDraft<MapDraftPayload>(
+      workspace,
+      "maps",
+      draftSource(context),
+      {
+        title: args.title?.trim() || `${value.name} · Fantasy Map 候选`,
+        description: `${args.description?.trim() ?? ""}\n生成范围：${scope.nodePath}${scope.generationLevelName ? `；生成层级：${scope.generationLevelName}` : ""}。已读取世界架构 ${settingContext.fileCount} 个事实文件，sourceHash=${settingContext.sourceHash}。生成方案：高度图 ${generationPlan.heightmapTemplate}，${generationPlan.landmassCount} 个陆块意图、${generationPlan.regionCount} 个区域、${generationPlan.riverCount} 条河流意图；Azgaar 国家 ${generationPlan.states}、文化 ${generationPlan.cultures}、宗教 ${generationPlan.religions}、降水 ${generationPlan.precipitation}。`,
+        operations: [
+          {
+            candidateId: `fantasy-${settingContext.sourceHash.slice(0, 12)}`,
+            kind: "map",
+            action: "create",
+            summary: generatedSummary,
+            value,
+          },
+        ],
+      },
+      args.draftId,
+    );
+    const response = {
+      ...summarizeNovelWorkbenchDraft(draft),
+      sourceHash: settingContext.sourceHash,
+      worldSourceHash,
+      contextFiles: settingContext.fileCount,
+      generationPlan,
+      scope: {
+        worldNodeId: scope.nodeId,
+        worldNodeName: scope.nodeName,
+        worldNodePath: scope.nodePath,
+        generationLevelTypeId: scope.generationLevelTypeId,
+        generationLevelName: scope.generationLevelName,
+      },
+      generator: "fantasy-map-tool",
+      generatorAdapter: generator,
+      runtime:
+        generator === "fantasy-map-compatibility-adapter"
+          ? "compatibility-adapter"
+          : "azgaar-http",
+      ...(runtimeFailure ? { runtimeError: runtimeFailure } : {}),
+      next: "调用 novel_maps_validate_draft，再用返回的 validationToken 调用 novel_maps_submit_draft；作者随后在地图提案审阅中确认。",
+    };
+    return result(response);
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
 
 async function createMapDraftHandler(args: {
   draftId?: string;
@@ -5427,6 +6334,7 @@ async function getContextHandler(args: {
       `${LIBRARY_ROOT}/spatial-tree.json`,
       `${LIBRARY_ROOT}/settings.json`,
       LOCATION_LIBRARY_PATH,
+      FACTION_LIBRARY_PATH,
     ]);
     for (const requested of args.paths ?? []) {
       try {
@@ -5442,7 +6350,26 @@ async function getContextHandler(args: {
         throw error;
       }
     }
-    if (paths.size > 30) throw new Error("单次最多读取 30 个设定文件");
+    const settingsIndex = await readOptional(
+      workspaceFile(workspace, `${LIBRARY_ROOT}/settings.json`),
+    );
+    if (settingsIndex) {
+      try {
+        const parsed = JSON.parse(settingsIndex) as { settings?: unknown[] };
+        for (const setting of recordList(parsed.settings)) {
+          for (const key of ["pagePath", "entriesPath"] as const) {
+            const target = setting[key];
+            if (
+              typeof target === "string" &&
+              SETTING_FILE_PATTERNS[key].test(target)
+            )
+              paths.add(target);
+          }
+        }
+      } catch {
+        // 世界架构验证工具会报告坏索引；读取上下文仍保留已存在的可读文件。
+      }
+    }
     const files: Record<string, string | null> = {};
     let locationSourceHash: string | null = null;
     for (const path of paths) {
@@ -5452,11 +6379,22 @@ async function getContextHandler(args: {
         locationSourceHash = source
           ? hashNovelWorkbenchDraftPayload(source.snapshot)
           : null;
+      } else if (path === FACTION_LIBRARY_PATH) {
+        const source = await loadFactionSource(workspace).catch(() => null);
+        files[path] = source
+          ? `${JSON.stringify(source.library, null, 2)}\n`
+          : null;
       } else {
         files[path] = await readOptional(workspaceFile(workspace, path));
       }
     }
-    return result({ mode: context.mode, files, locationSourceHash });
+    return result({
+      mode: context.mode,
+      files,
+      locationSourceHash,
+      sourceHash: hashNovelWorkbenchDraftPayload(files),
+      source: "saved-world-architecture",
+    });
   } catch (error) {
     return result({ error: message(error) }, true);
   }
@@ -6716,10 +7654,16 @@ async function upsertManuscriptCandidateHandler(args: {
       "manuscript",
       args.draftId,
       (payload) => {
-        const previous =
-          args.append && payload.candidate?.id === args.candidateId
-            ? payload.candidate.content
-            : "";
+        if (payload.candidate && payload.candidate.id !== args.candidateId) {
+          throw new Error("同一正文草稿不能混用不同的候选 ID");
+        }
+        if (payload.candidate && !args.append) {
+          throw new Error("正文候选已创建，后续内容必须使用 append=true 追加");
+        }
+        if (!payload.candidate && args.append) {
+          throw new Error("正文候选尚未创建，首块不能使用 append=true");
+        }
+        const previous = payload.candidate?.content ?? "";
         const content = `${previous}${args.content}`;
         if (Buffer.byteLength(content, "utf8") > MAX_MANUSCRIPT_CONTENT_BYTES) {
           throw new Error("正文候选累计超过 4 MiB 限制");
@@ -6955,6 +7899,89 @@ async function getManuscriptProposalStatusHandler(args: {
   }
 }
 
+type NovelKnowledgeSearchHit = {
+  readonly id: string;
+  readonly path: string;
+  readonly score: number;
+  readonly snippet: string;
+  readonly citations: readonly {
+    readonly path: string;
+    readonly line: number;
+  }[];
+  readonly retrieval: {
+    readonly lexicalScore: number;
+    readonly semanticScore: number;
+    readonly rerankScore: number;
+  };
+};
+
+async function listNovelKnowledgeDocuments(
+  workspace: string,
+  directory = "",
+): Promise<readonly { readonly path: string; readonly content: string }[]> {
+  const absolute = workspaceFile(workspace, directory);
+  const entries = await fs.readdir(absolute, { withFileTypes: true });
+  const result: { path: string; content: string }[] = [];
+  for (const entry of entries) {
+    const relative = directory ? `${directory}/${entry.name}` : entry.name;
+    if (
+      entry.name === ".git" ||
+      relative.startsWith("prompts/") ||
+      relative.startsWith("knowledge/derived/") ||
+      relative.includes("/proposals/")
+    ) {
+      continue;
+    }
+    if (entry.isDirectory()) {
+      result.push(...(await listNovelKnowledgeDocuments(workspace, relative)));
+      continue;
+    }
+    if (!/\.(?:md|json)$/iu.test(entry.name)) continue;
+    const content = await fs.readFile(
+      workspaceFile(workspace, relative),
+      "utf8",
+    );
+    if (Buffer.byteLength(content, "utf8") > 2 * 1024 * 1024) continue;
+    result.push({ path: relative.replace(/\\/g, "/"), content });
+  }
+  return result;
+}
+
+async function searchNovelKnowledgeHandler(args: {
+  query: string;
+  limit?: number;
+}): Promise<CallToolResult> {
+  try {
+    const { workspace, context } = requireWorkspace();
+    const query = args.query.trim();
+    if (!query) throw new Error("知识检索 query 不能为空");
+    const documents = [...(await listNovelKnowledgeDocuments(workspace))].sort(
+      (a, b) => a.path.localeCompare(b.path),
+    );
+    const source = documents
+      .map((document) => `${document.path}\u0000${document.content}`)
+      .join("\u0001");
+    const sourceHash = createHash("sha256")
+      .update(source, "utf8")
+      .digest("hex");
+    const hits: readonly NovelKnowledgeSearchHit[] = retrieveKnowledgeDocuments(
+      documents,
+      query,
+      Math.min(Math.max(args.limit ?? 8, 1), 30),
+    );
+    return result({
+      mode: context.mode,
+      retrieverVersion: "hybrid-ngram-rerank-v2",
+      query,
+      sourceHash,
+      results: hits,
+      note: "结果来自已保存项目事实源，snippet 仅用于引用定位；Agent 需要时应依据 citations 重新读取原文。",
+    });
+  } catch (error) {
+    return result({ error: message(error) }, true);
+  }
+}
+
 export async function createNovelWorkbenchServer() {
   const { createSdkMcpServer, tool } = await import(
     "@anthropic-ai/claude-agent-sdk"
@@ -7141,6 +8168,7 @@ export async function createNovelWorkbenchServer() {
     kind: z.enum(["character", "race", "group", "soul"]),
     action: z.enum(["create", "update"]),
     targetId: z.string().regex(ID_PATTERN).optional(),
+    baseValue: z.record(z.string(), z.unknown()).optional(),
     summary: z.string().min(1),
     value: z.record(z.string(), z.unknown()),
   });
@@ -7546,6 +8574,74 @@ export async function createNovelWorkbenchServer() {
         getMapDraftHandler,
       ),
       tool(
+        "novel_maps_generate_fantasy_map",
+        "先用 novel_world_get_context 取得 sourceHash，再按 worldNodeId 及其后代读取当前小说世界架构的空间树、设定索引、Markdown、词条、地点聚合和势力聚合。worldSourceHash、陆块/区域/河流意图和所有 Azgaar 原生参数均为必填，缺少任一项会拒绝生成；Agent 必须根据范围内事实自己决定它们，不能让工具补猜。azgaarTemplate 只能使用工具 Schema 列出的内置高度图模板。若已配置独立 Azgaar Runtime，则把 sourceHash 校验后的世界快照交给 Runtime 并转换官方 JSON/GeoJSON，Runtime 调用或导出失败时自动保留诊断并生成设定驱动 compatibility-adapter 候选，否则明确使用 compatibility-adapter 候选。结果只写入地图草稿，不会直接修改正式地图；随后必须校验、提交并由作者审阅。",
+        {
+          draftId: z.string().regex(ID_PATTERN).optional(),
+          title: z.string().min(1).max(160).optional(),
+          description: z.string().max(20_000).optional(),
+          seed: z.string().max(200).optional(),
+          mapName: z.string().max(120).optional(),
+          width: z.number().int().min(240).max(100_000).optional(),
+          height: z.number().int().min(240).max(100_000).optional(),
+          layerId: z.string().regex(ID_PATTERN).optional(),
+          worldNodeId: z.string().regex(ID_PATTERN).optional(),
+          generationLevelTypeId: z.string().regex(ID_PATTERN).optional(),
+          landmassCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(4)
+            .describe("Agent 根据世界架构决定的陆块数量意图"),
+          regionCount: z
+            .number()
+            .int()
+            .min(3)
+            .max(12)
+            .describe("Agent 根据地点、势力和空间层级决定的区域数量"),
+          riverCount: z
+            .number()
+            .int()
+            .min(2)
+            .max(14)
+            .describe("Agent 根据水系、气候和地貌决定的河流密度意图"),
+          worldSourceHash: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/u)
+            .describe("必须原样传入 novel_world_get_context 返回的 sourceHash"),
+          azgaarTemplate: z
+            .enum(AZGAAR_HEIGHTMAP_TEMPLATES)
+            .describe("Agent 选择的 Azgaar 原生高度图模板"),
+          azgaarStates: z
+            .number()
+            .int()
+            .min(0)
+            .max(100)
+            .describe("Agent 根据势力格局决定的 Azgaar 国家数"),
+          azgaarCultures: z
+            .number()
+            .int()
+            .min(1)
+            .max(100)
+            .describe("Agent 根据文明与族群设定决定的 Azgaar 文化数"),
+          azgaarReligions: z
+            .number()
+            .int()
+            .min(0)
+            .max(50)
+            .describe("Agent 根据宗教设定决定的 Azgaar 宗教数"),
+          azgaarTemperatureEquator: z.number().min(20).max(35).optional(),
+          azgaarTemperatureNorthPole: z.number().min(-40).max(10).optional(),
+          azgaarTemperatureSouthPole: z.number().min(-40).max(10).optional(),
+          azgaarPrecipitation: z
+            .number()
+            .min(0)
+            .max(500)
+            .describe("Agent 根据气候、水系和生境设定决定的年降水参数"),
+        },
+        generateFantasyMapHandler,
+      ),
+      tool(
         "novel_maps_upsert_draft_operations",
         "按候选 id 增量新增或替换地图候选；可分批生成，不需要一次提供整份地图。",
         {
@@ -7688,9 +8784,18 @@ export async function createNovelWorkbenchServer() {
         getNarrativeProposalStatusHandler,
       ),
       tool(
+        "novel_knowledge_search",
+        "在已保存小说事实源上执行可引用的知识检索。返回 sourceHash、命中片段和精确文件行号；结果不是事实副本，写入仍必须经过当前领域提案协议。",
+        {
+          query: z.string().trim().min(1).max(400),
+          limit: z.number().int().min(1).max(30).optional(),
+        },
+        searchNovelKnowledgeHandler,
+      ),
+      tool(
         "novel_world_get_context",
-        "读取小说工作台当前世界架构。默认返回 meta、空间树、设定索引和地点逻辑聚合；需要查看具体设定页面时传入受支持的设定库或地点库路径。地点逻辑聚合由 world/locations/index.json 及其 records 内部装配，模型不应读取或写入 records 路径。仅允许 world/setting-library/** 与 world/locations/index.json；修行体系不得传入本工具，必须改用 novel_cultivation_get_context（事实源入口为 world/cultivation/index.json）。",
-        { paths: z.array(z.string()).max(27).optional() },
+        "读取小说工作台当前世界架构。默认返回 meta、空间树、设定索引、地点逻辑聚合和势力逻辑聚合；需要查看具体设定页面时传入受支持的设定库路径。地点和势力聚合分别由其根索引及 records 内部装配，模型不应读取或写入 records 路径。地图生成必须使用返回的 sourceHash；仅允许 world/setting-library/**、world/locations/index.json 与 world/factions/index.json；修行体系不得传入本工具，必须改用 novel_cultivation_get_context（事实源入口为 world/cultivation/index.json）。",
+        { paths: z.array(z.string()).optional() },
         getContextHandler,
       ),
       tool(

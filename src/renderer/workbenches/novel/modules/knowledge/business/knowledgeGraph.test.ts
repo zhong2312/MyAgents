@@ -2,9 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildKnowledgeGraph,
+  buildKnowledgeGraphFromStorage,
+  readKnowledgeDocuments,
   searchKnowledgeGraph,
   type KnowledgeDocument,
 } from "./knowledgeGraph";
+import {
+  createKnowledgeFiles,
+  knowledgeRecordPath,
+} from "../../../../../../shared/workbenches/novel/knowledgeStorage";
+import { NovelMemoryStorage } from "../../../shared/infrastructure/testStorage";
 
 const SETTING_PAGE_PATH =
   "world/setting-library/pages/world-root/page-world-root-universe-overview.md";
@@ -175,6 +182,97 @@ describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
     ).toBe(true);
   });
 
+  it("indexes directory-backed knowledge entities, facts and relations", () => {
+    const knowledgeFiles = createKnowledgeFiles({
+      schemaVersion: 1,
+      entities: [
+        { id: "entity-hero", name: "洛言", description: "故事主角" },
+        { id: "entity-sect", name: "青云宗", description: "修行宗门" },
+      ],
+      facts: [
+        {
+          id: "fact-hero-awake",
+          title: "主角苏醒",
+          content: "洛言已经苏醒。",
+        },
+      ],
+      relations: [
+        {
+          id: "relation-hero-sect",
+          fromId: "entity-hero",
+          toId: "entity-sect",
+          type: "隶属",
+        },
+      ],
+    });
+    const snapshot = buildKnowledgeGraph([
+      ...documents(),
+      ...knowledgeFiles.map((file) => ({
+        ...file,
+        lineCount: file.content.split("\n").length,
+      })),
+    ]);
+
+    expect(snapshot.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "entity:entity-hero", label: "洛言" }),
+        expect.objectContaining({
+          id: "fact:fact-hero-awake",
+          description: "洛言已经苏醒。",
+        }),
+      ]),
+    );
+    expect(snapshot.edges).toContainEqual(
+      expect.objectContaining({
+        id: "relation:relation-hero-sect",
+        from: "entity:entity-hero",
+        to: "entity:entity-sect",
+        label: "隶属",
+      }),
+    );
+  });
+
+  it("reads only records referenced by knowledge indexes and rejects legacy files", async () => {
+    const files = createKnowledgeFiles({
+      schemaVersion: 1,
+      entities: [{ id: "entity-hero", name: "洛言" }],
+      relations: [],
+      facts: [],
+    });
+    const storage = new NovelMemoryStorage(
+      Object.fromEntries([
+        ...files.map((file) => [file.path, file.content] as const),
+        [
+          knowledgeRecordPath("entities", "entity-orphan"),
+          JSON.stringify({ id: "entity-orphan", name: "孤立实体" }),
+        ],
+      ]),
+    );
+    const loaded = await readKnowledgeDocuments(storage);
+    expect(
+      loaded.some(
+        (document) =>
+          document.path === knowledgeRecordPath("entities", "entity-hero"),
+      ),
+    ).toBe(true);
+    expect(
+      loaded.some(
+        (document) =>
+          document.path === knowledgeRecordPath("entities", "entity-orphan"),
+      ),
+    ).toBe(false);
+
+    const legacy = new NovelMemoryStorage({
+      "knowledge/entities.json": JSON.stringify({
+        schemaVersion: 1,
+        entities: [],
+      }),
+    });
+    await expect(readKnowledgeDocuments(legacy)).rejects.toThrow(
+      "不兼容且不迁移",
+    );
+  });
+
   it("indexes timeline directory records without treating manifest refs as entities", () => {
     const timelineIndex: KnowledgeDocument = {
       path: "timeline/index.json",
@@ -289,5 +387,17 @@ describe("buildKnowledgeGraph（设定页 Markdown 派生）", () => {
         (edge) => edge.kind === "mentions" && edge.to === faction?.id,
       ),
     ).toBe(true);
+  });
+
+  it("persists and reuses a derived graph cache keyed by fact-source hash", async () => {
+    const storage = new NovelMemoryStorage({
+      "research/cache-note.md": "# 灵潮\n\n东界的灵气正在复苏。\n",
+    });
+    const first = await buildKnowledgeGraphFromStorage(storage);
+    const cache = storage.getText("knowledge/derived/graph.json");
+    expect(cache).toContain(first.sourceHash);
+    const second = await buildKnowledgeGraphFromStorage(storage);
+    expect(second.sourceHash).toBe(first.sourceHash);
+    expect(second.nodes).toEqual(first.nodes);
   });
 });

@@ -97,6 +97,10 @@ mkdir -p "${PROJECT_DIR}/src-tauri/resources/tsx-runtime"
 echo "dev mode: tsx loads from top-level node_modules/tsx via find_tsx_runtime_loader fallback" \
     > "${PROJECT_DIR}/src-tauri/resources/tsx-runtime/.dev-placeholder"
 
+if [ ! -f "${PROJECT_DIR}/src-tauri/resources/azgaar/index.html" ]; then
+    npm run prepare:azgaar-runtime
+fi
+
 # 确保 Node.js 运行时已下载且架构匹配当前主机。download_nodejs.sh 使用
 # per-arch cache，resources/nodejs 只是当前 build 的 staging 目录。
 NODEJS_DIR="${PROJECT_DIR}/src-tauri/resources/nodejs"

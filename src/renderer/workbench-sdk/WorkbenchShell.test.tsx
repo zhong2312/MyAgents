@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import "@/i18n";
+import { i18n } from "@/i18n";
 import { defineWorkbench } from "./defineWorkbench";
 import { createWorkbenchRegistry } from "./registry";
 import WorkbenchShell from "./WorkbenchShell";
@@ -123,6 +123,57 @@ describe("WorkbenchShell", () => {
     expect(
       screen.getByRole("button", { name: "收起工作台导航" }).closest("aside"),
     ).toHaveClass("w-60");
+  });
+
+  it("renders workbench shell controls in English when the app locale changes", async () => {
+    await i18n.changeLanguage("en-US");
+    const registry = createWorkbenchRegistry([
+      defineWorkbench(manifest, async () => ({ default: () => null }), {
+        shell: { defaultNavigationCollapsed: true },
+      }),
+    ]);
+    render(
+      <WorkbenchShell
+        target={{ workbenchId: manifest.id, route: "overview" }}
+        workspacePath="C:\\Work\\Novel"
+        isActive
+        onNavigate={vi.fn()}
+        registry={registry}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Expand workbench navigation" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a direct return-to-manuscript action visible in collapsed novel navigation", () => {
+    const onNavigate = vi.fn();
+    const novelManifest = {
+      ...manifest,
+      id: "io.myagents.novel-test",
+      navigation: [
+        ...manifest.navigation,
+        { id: "manuscript", label: "正文", icon: "file-text", order: 20 },
+      ],
+    };
+    const registry = createWorkbenchRegistry([
+      defineWorkbench(novelManifest, async () => ({ default: () => null }), {
+        shell: { defaultNavigationCollapsed: true },
+      }),
+    ]);
+    render(
+      <WorkbenchShell
+        target={{ workbenchId: novelManifest.id, route: "documents" }}
+        workspacePath="C:\\Work\\Novel"
+        isActive
+        onNavigate={onNavigate}
+        registry={registry}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "返回正文" }));
+    expect(onNavigate).toHaveBeenCalledWith("manuscript");
   });
 
   it("contains unknown and incompatible workbenches inside the shell", () => {

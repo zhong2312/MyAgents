@@ -6,8 +6,8 @@ import {
 } from "./protocol";
 
 describe("checkWorkbenchApiCompatibility", () => {
-  it("publishes the SQLite projection capability as host API 1.8", () => {
-    expect(WORKBENCH_HOST_API_VERSION).toEqual({ major: 1, minor: 8 });
+  it("publishes bounded extended AI runs as host API 1.10", () => {
+    expect(WORKBENCH_HOST_API_VERSION).toEqual({ major: 1, minor: 10 });
   });
 
   it("accepts the same major when the host satisfies the minor floor", () => {

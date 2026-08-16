@@ -19,6 +19,13 @@ export interface WorkbenchTextFile {
   readonly content: string;
 }
 
+/** 二进制资产的轻量文件描述；内容始终由调用方保留，不回传给宿主。 */
+export interface WorkbenchBinaryFile {
+  readonly path: string;
+  readonly name: string;
+  readonly size: number;
+}
+
 export interface WorkbenchStorageTransfer {
   readonly sourcePath: string;
   readonly targetPath: string;
@@ -38,6 +45,11 @@ export interface WorkbenchStorageSubscription {
 }
 
 export interface WorkbenchCreateTextOptions {
+  readonly createParents?: boolean;
+}
+
+export interface WorkbenchCreateBinaryOptions {
+  /** 在创建目标文件前递归创建其父目录。 */
   readonly createParents?: boolean;
 }
 
@@ -70,6 +82,15 @@ export interface WorkbenchStorage {
     content?: string,
     options?: WorkbenchCreateTextOptions,
   ): Promise<WorkbenchTextFile>;
+  /**
+   * 原子创建一个二进制文件。用于项目内图片、附件等事实资产；调用方不得
+   * 以 base64 或 data URL 的形式把同一内容再写进 JSON 事实源。
+   */
+  createBinary(
+    path: string,
+    content: ArrayBuffer,
+    options?: WorkbenchCreateBinaryOptions,
+  ): Promise<WorkbenchBinaryFile>;
   writeText(
     path: string,
     content: string,

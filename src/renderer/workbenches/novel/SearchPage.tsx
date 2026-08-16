@@ -1,10 +1,14 @@
 import {
   AlertTriangle,
+  Atom,
   BookOpen,
   FileText,
+  FolderTree,
+  GitBranch,
   Landmark,
   Lightbulb,
   Loader2,
+  Map as MapIcon,
   Network,
   Package,
   Route,
@@ -26,50 +30,61 @@ import {
 import type { DomainIndex } from "./domainIndex";
 import type { WorkbenchSearch } from "@/workbench-sdk";
 
-const KIND_ICONS: Readonly<Record<DomainEntityKind, LucideIcon>> = Object.freeze({
-  character: Users,
-  faction: Swords,
-  item: Package,
-  location: Landmark,
-  setting: Network,
-  event: Sparkles,
-  narrativeChapter: Route,
-  chapter: BookOpen,
-  inspiration: Lightbulb,
-  research: FileText,
-});
+const KIND_ICONS: Readonly<Record<DomainEntityKind, LucideIcon>> =
+  Object.freeze({
+    character: Users,
+    faction: Swords,
+    item: Package,
+    location: Landmark,
+    setting: Network,
+    event: Sparkles,
+    narrativeChapter: Route,
+    chapter: BookOpen,
+    inspiration: Lightbulb,
+    research: FileText,
+    map: MapIcon,
+    cultivationSystem: Atom,
+    plotLine: Route,
+    storyArc: GitBranch,
+    narrativeDirectory: FolderTree,
+  });
 
-const KIND_FILTERS: readonly { readonly id: DomainEntityKind | "all"; readonly label: string }[] =
-  Object.freeze([
-    { id: "all", label: "全部" },
-    ...Object.entries(DOMAIN_ENTITY_KIND_LABELS).map(([id, label]) => ({
-      id: id as DomainEntityKind,
-      label,
-    })),
-  ]);
+const KIND_FILTERS: readonly {
+  readonly id: DomainEntityKind | "all";
+  readonly label: string;
+}[] = Object.freeze([
+  { id: "all", label: "全部" },
+  ...Object.entries(DOMAIN_ENTITY_KIND_LABELS).map(([id, label]) => ({
+    id: id as DomainEntityKind,
+    label,
+  })),
+]);
 
 interface SearchPageProps {
   readonly index: DomainIndex | null;
   readonly search: WorkbenchSearch;
   readonly onOpen: (ref: DomainEntityRef) => void;
+  readonly onOpenFile?: (path: string) => void;
 }
 
-export default function SearchPage({ index, search, onOpen }: SearchPageProps) {
+export default function SearchPage({
+  index,
+  search,
+  onOpen,
+  onOpenFile,
+}: SearchPageProps) {
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<DomainEntityKind | "all">("all");
   const [selected, setSelected] = useState<DomainEntityRef | null>(null);
-  const [fileHits, setFileHits] = useState<
-    | {
-        readonly hits: readonly {
-          readonly path: string;
-          readonly name: string;
-          readonly matchCount: number;
-        }[];
-        readonly totalMatches: number;
-        readonly queryTimeMs: number;
-      }
-    | null
-  >(null);
+  const [fileHits, setFileHits] = useState<{
+    readonly hits: readonly {
+      readonly path: string;
+      readonly name: string;
+      readonly matchCount: number;
+    }[];
+    readonly totalMatches: number;
+    readonly queryTimeMs: number;
+  } | null>(null);
   const [fileSearching, setFileSearching] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
 
@@ -170,9 +185,10 @@ export default function SearchPage({ index, search, onOpen }: SearchPageProps) {
                 {filter.label}
                 <span className="ml-auto text-xs text-[var(--ink-subtle)]">
                   {filter.id === "all"
-                    ? index?.entities.length ?? 0
-                    : (index?.entities.filter((entity) => entity.kind === filter.id)
-                        .length ?? 0)}
+                    ? (index?.entities.length ?? 0)
+                    : (index?.entities.filter(
+                        (entity) => entity.kind === filter.id,
+                      ).length ?? 0)}
                 </span>
               </button>
             ))}
@@ -193,7 +209,8 @@ export default function SearchPage({ index, search, onOpen }: SearchPageProps) {
               <ul className="space-y-1">
                 {results.map((ref) => {
                   const Icon = KIND_ICONS[ref.kind];
-                  const active = selected?.id === ref.id && selected?.kind === ref.kind;
+                  const active =
+                    selected?.id === ref.id && selected?.kind === ref.kind;
                   return (
                     <li key={`${ref.kind}:${ref.id}`}>
                       <button
@@ -262,7 +279,9 @@ export default function SearchPage({ index, search, onOpen }: SearchPageProps) {
                         <button
                           type="button"
                           onClick={() => {
-                            if (hit.path.startsWith("research/")) {
+                            if (onOpenFile) {
+                              onOpenFile(hit.path);
+                            } else if (hit.path.startsWith("research/")) {
                               onOpen({
                                 kind: "research",
                                 id: hit.path,

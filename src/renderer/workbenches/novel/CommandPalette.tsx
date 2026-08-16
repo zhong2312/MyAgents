@@ -1,6 +1,9 @@
 import {
+  Atom,
   BookOpen,
   FileText,
+  FolderTree,
+  GitBranch,
   Landmark,
   Lightbulb,
   Loader2,
@@ -27,18 +30,24 @@ import {
 } from "./domainIndex";
 import type { DomainIndex } from "./domainIndex";
 
-const KIND_ICONS: Readonly<Record<DomainEntityKind, LucideIcon>> = Object.freeze({
-  character: Users,
-  faction: Swords,
-  item: Package,
-  location: Landmark,
-  setting: Network,
-  event: Sparkles,
-  narrativeChapter: Route,
-  chapter: BookOpen,
-  inspiration: Lightbulb,
-  research: FileText,
-});
+const KIND_ICONS: Readonly<Record<DomainEntityKind, LucideIcon>> =
+  Object.freeze({
+    character: Users,
+    faction: Swords,
+    item: Package,
+    location: Landmark,
+    setting: Network,
+    event: Sparkles,
+    narrativeChapter: Route,
+    chapter: BookOpen,
+    inspiration: Lightbulb,
+    research: FileText,
+    map: MapIcon,
+    cultivationSystem: Atom,
+    plotLine: Route,
+    storyArc: GitBranch,
+    narrativeDirectory: FolderTree,
+  });
 
 export type QuickCreateKind =
   | "chapter"
@@ -57,12 +66,32 @@ interface QuickCommand {
 }
 
 const QUICK_COMMANDS: readonly QuickCommand[] = Object.freeze([
-  { id: "new-chapter", label: "新建章节", icon: BookOpen, createKind: "chapter" },
-  { id: "new-character", label: "新建人物", icon: Users, createKind: "character" },
+  {
+    id: "new-chapter",
+    label: "新建章节",
+    icon: BookOpen,
+    createKind: "chapter",
+  },
+  {
+    id: "new-character",
+    label: "新建人物",
+    icon: Users,
+    createKind: "character",
+  },
   { id: "new-faction", label: "新建势力", icon: Swords, createKind: "faction" },
   { id: "new-item", label: "新建物品", icon: Package, createKind: "item" },
-  { id: "new-event", label: "新建时间线事件", icon: Sparkles, createKind: "event" },
-  { id: "new-inspiration", label: "新建灵感", icon: Lightbulb, createKind: "inspiration" },
+  {
+    id: "new-event",
+    label: "新建时间线事件",
+    icon: Sparkles,
+    createKind: "event",
+  },
+  {
+    id: "new-inspiration",
+    label: "新建灵感",
+    icon: Lightbulb,
+    createKind: "inspiration",
+  },
   { id: "new-map", label: "新建世界地图", icon: MapIcon, createKind: "map" },
   { id: "search-all", label: "查看全部搜索结果", icon: Search },
 ]);
@@ -96,7 +125,10 @@ export default function CommandPalette({
     };
     window.addEventListener("myagents:novel-palette", handlePaletteRequest);
     return () =>
-      window.removeEventListener("myagents:novel-palette", handlePaletteRequest);
+      window.removeEventListener(
+        "myagents:novel-palette",
+        handlePaletteRequest,
+      );
   }, []);
 
   useEffect(() => {
@@ -158,7 +190,9 @@ export default function CommandPalette({
   };
 
   useEffect(() => {
-    const active = listRef.current?.querySelector<HTMLElement>("[data-active='true']");
+    const active = listRef.current?.querySelector<HTMLElement>(
+      "[data-active='true']",
+    );
     active?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
@@ -259,9 +293,7 @@ export default function CommandPalette({
                     onMouseEnter={() => setActiveIndex(resultIndex)}
                     onClick={() => openEntity(ref)}
                     className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left ${
-                      resultIndex === activeIndex
-                        ? "bg-[var(--hover-bg)]"
-                        : ""
+                      resultIndex === activeIndex ? "bg-[var(--hover-bg)]" : ""
                     }`}
                   >
                     <Icon className="h-4 w-4 shrink-0 text-[var(--accent-warm)]" />

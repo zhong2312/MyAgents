@@ -34,6 +34,7 @@ describe("novel project schema", () => {
       targetWordCountMin: 800_000,
       targetWordCountMax: 1_200_000,
       chapterWordCount: 3_000,
+      writingPerspective: "third-person-limited",
     });
     expect(
       parseNovelChapterIndex(
@@ -69,6 +70,7 @@ describe("novel project schema", () => {
       targetWordCountMin: null,
       targetWordCountMax: null,
       chapterWordCount: null,
+      writingPerspective: "third-person-limited",
     });
   });
 

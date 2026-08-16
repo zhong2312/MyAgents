@@ -29,7 +29,13 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { CustomSelect, Popover, type WorkbenchProjection, type WorkbenchStorage } from "@/workbench-sdk";
+import {
+  CustomSelect,
+  Popover,
+  type WorkbenchNavigationGuard,
+  type WorkbenchProjection,
+  type WorkbenchStorage,
+} from "@/workbench-sdk";
 
 import {
   createNovelCharacterLibraryRepository,
@@ -59,6 +65,7 @@ import {
 import type { CharacterRecord } from "../../characters";
 import { createNovelTimelineLibraryRepository } from "../../../timelineLibraryRepository";
 import { createNovelSettingLibraryRepository } from "../../../settingLibraryRepository";
+import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard";
 
 interface FactionLibraryProps {
   readonly storage: WorkbenchStorage;
@@ -72,6 +79,13 @@ interface FactionLibraryProps {
   readonly isBatchAgentLaunching?: boolean;
   /** 外部实体定位请求（T3 消费：自动选中对应势力）。 */
   readonly focus?: DomainEntityRef | null;
+  readonly quickCreateRequest?: {
+    readonly kind: "faction";
+    readonly token: number;
+  };
+  readonly registerNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
 }
 
 interface WorldNode {
@@ -446,7 +460,9 @@ export default function FactionLibrary({
   isAiAgentLaunching = false,
   onOpenBatchAgent,
   focus,
+  quickCreateRequest,
   isBatchAgentLaunching = false,
+  registerNavigationGuard,
 }: FactionLibraryProps) {
   const repository = useMemo(
     () => createNovelFactionLibraryRepository(storage),
@@ -479,11 +495,13 @@ export default function FactionLibrary({
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [factionProposalReviewOpen, setFactionProposalReviewOpen] = useState(false);
+  const [factionProposalReviewOpen, setFactionProposalReviewOpen] =
+    useState(false);
   const [fieldErrors, setFieldErrors] = useState<
     Readonly<Record<string, string>>
   >({});
   const selectedIdRef = useRef(selectedId);
+  const quickCreateHandledRef = useRef<number | null>(null);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -553,14 +571,14 @@ export default function FactionLibrary({
     if (isActive) void load();
   }, [isActive, load]);
 
-  const applyFactionSelection = (faction: FactionRecord) => {
+  const applyFactionSelection = useCallback((faction: FactionRecord) => {
     selectedIdRef.current = faction.id;
     setSelectedId(faction.id);
     setDraft(structuredClone(faction));
     setSelectedEntryId("");
     setError(null);
     setFieldErrors({});
-  };
+  }, []);
 
   const selectFaction = (faction: FactionRecord) => {
     if (faction.id === selectedId || isSaving) return;
@@ -588,6 +606,18 @@ export default function FactionLibrary({
     setError(null);
     setFieldErrors({});
   };
+
+  useEffect(() => {
+    if (
+      !isActive ||
+      !loaded ||
+      quickCreateRequest?.kind !== "faction" ||
+      quickCreateHandledRef.current === quickCreateRequest.token
+    )
+      return;
+    quickCreateHandledRef.current = quickCreateRequest.token;
+    startNewFaction();
+  }, [isActive, loaded, quickCreateRequest]);
 
   const update = (patch: Partial<FactionRecord>) => {
     setDraft((current) => (current ? { ...current, ...patch } : current));
@@ -934,6 +964,14 @@ export default function FactionLibrary({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--paper)]">
+      {registerNavigationGuard && (
+        <NarrativeUnsavedChangesGuard
+          dirty={isDirty}
+          label={draft?.name || "势力档案"}
+          registerNavigationGuard={registerNavigationGuard}
+          onSave={save}
+        />
+      )}
       <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
         <div className="flex min-w-0 items-center gap-3">
           <Building2 className="h-5 w-5 shrink-0 text-[var(--accent-warm)]" />
@@ -945,31 +983,48 @@ export default function FactionLibrary({
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void onOpenBatchAgent?.()}
-          disabled={
-            !onOpenBatchAgent || isBatchAgentLaunching || isAiAgentLaunching
-          }
-          aria-label={
-            isBatchAgentLaunching ? "正在启动 Agent" : "AI 批量设计势力"
-          }
-          title={
-            onOpenBatchAgent
-              ? "打开势力批量设计 Agent"
-              : "MyAgents Agent Session 当前不可用"
-          }
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {isBatchAgentLaunching ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Sparkles className="h-4 w-4" />
-          )}
-          <span className="max-lg:hidden">
-            {isBatchAgentLaunching ? "正在启动" : "AI 批量设计"}
-          </span>
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFactionProposalReviewOpen(true)}
+            disabled={isSaving || isDirty}
+            aria-label="审阅势力提案"
+            title={
+              isDirty
+                ? "请先保存当前势力变更，再审阅 AI 提案"
+                : "审阅 AI 提交的势力提案"
+            }
+            className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <GitCompareArrows className="h-4 w-4" />
+            <span className="max-lg:hidden">审阅提案</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void onOpenBatchAgent?.()}
+            disabled={
+              !onOpenBatchAgent || isBatchAgentLaunching || isAiAgentLaunching
+            }
+            aria-label={
+              isBatchAgentLaunching ? "正在启动 Agent" : "AI 批量设计势力"
+            }
+            title={
+              onOpenBatchAgent
+                ? "打开势力批量设计 Agent"
+                : "MyAgents Agent Session 当前不可用"
+            }
+            className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent-warm)] px-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isBatchAgentLaunching ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="h-4 w-4" />
+            )}
+            <span className="max-lg:hidden">
+              {isBatchAgentLaunching ? "正在启动" : "AI 批量设计"}
+            </span>
+          </button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -1115,16 +1170,6 @@ export default function FactionLibrary({
                     <span className="max-lg:hidden">
                       {isAiAgentLaunching ? "正在启动" : "AI 完善"}
                     </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setFactionProposalReviewOpen(true)}
-                    disabled={isSaving}
-                    title="审阅 AI 提交的势力提案"
-                    className="flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <GitCompareArrows className="h-4 w-4" />
-                    <span className="max-lg:hidden">审阅提案</span>
                   </button>
                   <button
                     type="button"

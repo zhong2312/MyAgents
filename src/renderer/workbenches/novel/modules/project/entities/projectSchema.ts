@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import { normalizeWorkbenchStoragePath } from "@/workbench-sdk";
+import {
+  DEFAULT_NOVEL_WRITING_PERSPECTIVE,
+  NOVEL_WRITING_PERSPECTIVES,
+} from "../business/writingPerspective";
 
 export const NOVEL_SCHEMA_VERSION = 1 as const;
 export const MANUSCRIPT_SCHEMA_VERSION = 4 as const;
@@ -27,6 +31,7 @@ const rawNovelMetadataSchema = z
     targetWordCountMin: z.number().int().positive().optional(),
     targetWordCountMax: z.number().int().positive().optional(),
     chapterWordCount: z.number().int().positive().optional(),
+    writingPerspective: z.enum(NOVEL_WRITING_PERSPECTIVES).optional(),
     genre: z.string().trim().min(1).optional(),
     form: z.enum(["blank", "long", "short"]).optional(),
     status: z.enum(["planning", "writing", "completed", "paused"]),
@@ -89,6 +94,8 @@ export const novelMetadataSchema = rawNovelMetadataSchema.transform(
     targetWordCountMax:
       metadata.targetWordCountMax ?? metadata.targetWordCount ?? null,
     chapterWordCount: metadata.chapterWordCount ?? null,
+    writingPerspective:
+      metadata.writingPerspective ?? DEFAULT_NOVEL_WRITING_PERSPECTIVE,
     knowledgeGraph: metadata.knowledgeGraph ?? { enabled: false },
   }),
 );

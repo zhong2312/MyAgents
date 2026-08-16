@@ -115,13 +115,33 @@ export default function NarrativeEngineering({
     useState<NarrativeDirectorySelection>("all");
   const [selectedChapterId, setSelectedChapterId] = useState("");
 
-  // 外部实体定位：焦点剧情规划章节存在时自动选中（T3）
+  // 外部实体定位：搜索结果应直接落到对应的剧情工程工作面。
   useEffect(() => {
-    if (!focus || focus.kind !== "narrativeChapter") return;
-    const target = draft?.chapters.find((plan) => plan.id === focus.id);
-    if (target) {
+    if (!focus || !draft) return;
+    if (
+      focus.kind === "narrativeChapter" &&
+      draft.chapters.some((plan) => plan.id === focus.id)
+    ) {
       setView("chapters");
-      setSelectedChapterId(target.id);
+      setSelectedChapterId(focus.id);
+    } else if (
+      focus.kind === "plotLine" &&
+      draft.lines.some((line) => line.id === focus.id)
+    ) {
+      setView("lines");
+      setSelectedLineId(focus.id);
+    } else if (
+      focus.kind === "storyArc" &&
+      draft.arcs.some((arc) => arc.id === focus.id)
+    ) {
+      setView("arcs");
+      setSelectedArcId(focus.id);
+    } else if (
+      focus.kind === "narrativeDirectory" &&
+      draft.directories.some((directory) => directory.id === focus.id)
+    ) {
+      setView("outline");
+      setSelectedDirectoryId(focus.id);
     }
   }, [focus, draft]);
   const [loading, setLoading] = useState(false);

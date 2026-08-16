@@ -72,6 +72,8 @@ interface MessageListProps {
   isStreaming?: boolean;
   /** Use the real streaming event trace instead of the generic waiting copy. */
   executionMode?: boolean;
+  /** Embedded workbench surfaces already expose native execution details elsewhere. */
+  showExecutionTrace?: boolean;
   /**
    * (issue #174) Pulled in so the loading footer can swap the random
    * "苦思冥想中…" thinking line for an explicit "AI 启动中…" hint while the
@@ -338,6 +340,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
   pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel,
   showStatus, statusMessage,
   executionMode, executionSteps,
+  showExecutionTrace,
   systemNotice, onDismissSystemNotice,
   bottomSpacerPx,
 }: {
@@ -350,6 +353,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
   statusMessage: string;
   executionMode?: boolean;
   executionSteps?: readonly ExecutionTraceStep[];
+  showExecutionTrace?: boolean;
   systemNotice?: SystemNotice | null;
   onDismissSystemNotice?: () => void;
   bottomSpacerPx?: number;
@@ -371,7 +375,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
           <AskUserQuestionPrompt request={pendingAskUserQuestion} onSubmit={onAskUserQuestionSubmit} onCancel={onAskUserQuestionCancel} />
         </div>
       )}
-      {showStatus && (executionMode && executionSteps?.length
+      {showStatus && (showExecutionTrace && executionMode && executionSteps?.length
         ? <ExecutionTrace steps={executionSteps} />
         : <StatusTimer message={statusMessage} />)}
       {!showStatus && systemNotice && (
@@ -422,6 +426,7 @@ const MessageList = memo(function MessageList({
   isStreaming,
   sessionState,
   executionMode = false,
+  showExecutionTrace = true,
   onRewind,
   onRetry,
   onFork,
@@ -477,6 +482,7 @@ const MessageList = memo(function MessageList({
     streamingMessage,
     t,
   }), [isLoading, sessionState, systemStatus, streamingMessage, t]);
+  const showExecutionStatus = showExecutionTrace || !!systemStatus;
 
   // Scroll to bottom after session load / switch. Runs synchronously before
   // the next paint so there's no visible top→bottom jump when the new session's
@@ -785,17 +791,18 @@ const MessageList = memo(function MessageList({
           pendingAskUserQuestion={pendingAskUserQuestion}
           onAskUserQuestionSubmit={onAskUserQuestionSubmit}
           onAskUserQuestionCancel={onAskUserQuestionCancel}
-          showStatus={showStatus}
+          showStatus={showStatus && showExecutionStatus}
           statusMessage={statusMessage}
           executionMode={executionMode}
           executionSteps={executionSteps}
+          showExecutionTrace={showExecutionTrace}
           systemNotice={systemNotice}
           onDismissSystemNotice={onDismissSystemNotice}
           bottomSpacerPx={bottomSpacerPx}
         />
       );
     };
-  }, [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, executionMode, executionSteps, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
+  }, [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, executionMode, executionSteps, showExecutionTrace, showExecutionStatus, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
 
   // ── Stable components object ──
   const components = useMemo(() => ({ Footer: FooterComponent }), [FooterComponent]);

@@ -6,6 +6,10 @@ import NovelGenrePicker from "./NovelGenrePicker";
 import { novelLanguageOptions } from "./novelGenres";
 import NovelPlanningFields from "./NovelPlanningFields";
 import {
+  NOVEL_WRITING_PERSPECTIVE_OPTIONS,
+  type NovelWritingPerspective,
+} from "./modules/project/business/writingPerspective";
+import {
   DEFAULT_CHAPTER_WORD_COUNT,
   DEFAULT_TARGET_WORD_COUNT_MAX_WAN,
   DEFAULT_TARGET_WORD_COUNT_MIN_WAN,
@@ -45,6 +49,8 @@ export default function NovelProjectSettingsDialog({
       : String(metadata.chapterWordCount),
   );
   const [language, setLanguage] = useState(metadata.language ?? "zh-CN");
+  const [writingPerspective, setWritingPerspective] =
+    useState<NovelWritingPerspective>(metadata.writingPerspective);
   const [description, setDescription] = useState(metadata.description ?? "");
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -88,6 +94,7 @@ export default function NovelProjectSettingsDialog({
         genres,
         ...planning,
         language: language.trim() || "zh-CN",
+        writingPerspective,
         description: description.trim(),
       });
       onClose();
@@ -202,18 +209,41 @@ export default function NovelProjectSettingsDialog({
               onTargetWordCountMaxWanChange={setTargetWordCountMaxWan}
               onChapterWordCountChange={setChapterWordCount}
             />
-            <span className="mt-4 block text-sm font-medium text-[var(--ink)]">
-              创作语言
-            </span>
-            <CustomSelect
-              value={language}
-              options={novelLanguageOptions()}
-              onChange={setLanguage}
-              ariaLabel="创作语言"
-              size="toolbar"
-              disabled={isSaving}
-              className="mt-2"
-            />
+            <div className="mt-4 grid grid-cols-2 gap-4 max-sm:grid-cols-1">
+              <div>
+                <span className="block text-sm font-medium text-[var(--ink)]">
+                  创作语言
+                </span>
+                <CustomSelect
+                  value={language}
+                  options={novelLanguageOptions()}
+                  onChange={setLanguage}
+                  ariaLabel="创作语言"
+                  size="toolbar"
+                  disabled={isSaving}
+                  className="mt-2"
+                />
+              </div>
+              <div>
+                <span className="block text-sm font-medium text-[var(--ink)]">
+                  写作视角
+                </span>
+                <CustomSelect
+                  value={writingPerspective}
+                  options={NOVEL_WRITING_PERSPECTIVE_OPTIONS.map((item) => ({
+                    value: item.value,
+                    label: item.label,
+                  }))}
+                  onChange={(value) =>
+                    setWritingPerspective(value as NovelWritingPerspective)
+                  }
+                  ariaLabel="写作视角"
+                  size="toolbar"
+                  disabled={isSaving}
+                  className="mt-2"
+                />
+              </div>
+            </div>
           </div>
 
           <div className="border-t border-[var(--line-subtle)] pt-5">

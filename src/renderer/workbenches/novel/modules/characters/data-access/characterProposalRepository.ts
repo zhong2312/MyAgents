@@ -11,6 +11,7 @@ import {
 import {
   createNovelCharacterLibraryRepository,
   loadCharacterRecords,
+  validateCharacterLibraryReferences,
   type LoadedCharacterLibrary,
 } from "./characterLibraryRepository";
 import {
@@ -90,14 +91,14 @@ function buildCandidateLibrary(
   readonly meta: LoadedCharacterLibrary["meta"];
   readonly characters: readonly CharacterRecord[];
   readonly hasMetaChanges: boolean;
-  readonly hasCharacterChanges: boolean;
+  readonly changedCharacters: readonly CharacterRecord[];
 } {
   let races: readonly RaceDefinition[] = library.meta.races;
   let groups: readonly CharacterGroupDefinition[] = library.meta.groups;
   let souls: readonly CharacterSoulDefinition[] = library.meta.souls;
   let characters: readonly CharacterRecord[] = sourceCharacters;
   let hasMetaChanges = false;
-  let hasCharacterChanges = false;
+  const changedCharacterIds = new Set<string>();
 
   for (const operation of operations) {
     if (operation.kind === "race") {
@@ -111,12 +112,51 @@ function buildCandidateLibrary(
       hasMetaChanges = true;
     } else {
       characters = applyDefinition(characters, operation);
-      hasCharacterChanges = true;
+      const changedId =
+        operation.action === "update" ? operation.targetId : operation.value.id;
+      if (typeof changedId === "string") changedCharacterIds.add(changedId);
     }
   }
 
   const meta = parseMeta({ ...library.meta, races, groups, souls });
-  return { meta, characters, hasMetaChanges, hasCharacterChanges };
+  return {
+    meta,
+    characters,
+    hasMetaChanges,
+    changedCharacters: characters.filter((character) =>
+      changedCharacterIds.has(character.id),
+    ),
+  };
+}
+
+function characterOperationTargetId(
+  operation: CharacterProposalOperation,
+): string | null {
+  const value = operation.action === "update" ? operation.targetId : operation.value.id;
+  return typeof value === "string" ? value : null;
+}
+
+function characterOperationConflicts(
+  operation: CharacterProposalOperation,
+  library: LoadedCharacterLibrary,
+  current: readonly CharacterRecord[],
+): boolean {
+  const targetId = characterOperationTargetId(operation);
+  if (!targetId) return true;
+  const record =
+    operation.kind === "character"
+      ? current.find((item) => item.id === targetId)
+      : operation.kind === "race"
+        ? library.meta.races.find((item) => item.id === targetId)
+        : operation.kind === "group"
+          ? library.meta.groups.find((item) => item.id === targetId)
+          : library.meta.souls.find((item) => item.id === targetId);
+  if (operation.action === "create") return record !== undefined;
+  if (!record || operation.baseValue === undefined) return true;
+  return (
+    JSON.stringify(record) !==
+    JSON.stringify({ ...operation.baseValue, id: targetId })
+  );
 }
 
 function updateOperations(
@@ -205,24 +245,32 @@ export function createNovelCharacterProposalRepository(
         characterRepository,
         library,
       );
+      const conflict = operations.find((operation) =>
+        characterOperationConflicts(operation, library, sourceCharacters),
+      );
+      if (conflict) {
+        throw new Error(`角色候选“${conflict.summary}”的正式内容已变化，请先解决冲突`);
+      }
       const candidate = buildCandidateLibrary(
         library,
         sourceCharacters,
         operations,
       );
+      validateCharacterLibraryReferences(candidate.meta, candidate.characters);
       let saved = library;
       let metaSaved = false;
-      const savedCharacterIds = new Set<string>();
+      let charactersSaved = false;
       try {
         if (candidate.hasMetaChanges) {
           saved = await characterRepository.saveMeta(saved, candidate.meta);
           metaSaved = true;
         }
-        if (candidate.hasCharacterChanges) {
-          for (const character of candidate.characters) {
-            saved = await characterRepository.saveCharacter(saved, character);
-            savedCharacterIds.add(character.id);
-          }
+        if (candidate.changedCharacters.length > 0) {
+          saved = await characterRepository.saveCharacters(
+            saved,
+            candidate.changedCharacters,
+          );
+          charactersSaved = true;
         }
         return await writeManifest(
           storage,
@@ -235,13 +283,30 @@ export function createNovelCharacterProposalRepository(
         );
       } catch (error) {
         try {
-          for (const id of savedCharacterIds) {
-            const source = sourceCharacters.find(
-              (character) => character.id === id,
+          if (charactersSaved) {
+            const changedIds = new Set(
+              candidate.changedCharacters.map((character) => character.id),
             );
-            saved = source
-              ? await characterRepository.saveCharacter(saved, source)
-              : await characterRepository.deleteCharacter(saved, id);
+            const previousCharacters = sourceCharacters.filter((character) =>
+              changedIds.has(character.id),
+            );
+            if (previousCharacters.length > 0) {
+              saved = await characterRepository.saveCharacters(
+                saved,
+                previousCharacters,
+              );
+            }
+            const previousIds = new Set(
+              previousCharacters.map((character) => character.id),
+            );
+            for (const character of candidate.changedCharacters) {
+              if (!previousIds.has(character.id)) {
+                saved = await characterRepository.deleteCharacter(
+                  saved,
+                  character.id,
+                );
+              }
+            }
           }
           if (metaSaved) {
             await characterRepository.saveMeta(saved, library.meta);

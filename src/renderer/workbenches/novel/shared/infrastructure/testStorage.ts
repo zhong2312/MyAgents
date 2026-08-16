@@ -22,12 +22,19 @@ export class NovelMemoryProjection implements WorkbenchProjection {
     this.isAvailable = isAvailable;
   }
 
-  async listEntities(kind?: string): Promise<readonly WorkbenchProjectionEntity[]> {
+  async listEntities(
+    kind?: string,
+  ): Promise<readonly WorkbenchProjectionEntity[]> {
     if (!this.isAvailable) return [];
-    return kind ? this.entities.filter((entity) => entity.kind === kind) : this.entities;
+    return kind
+      ? this.entities.filter((entity) => entity.kind === kind)
+      : this.entities;
   }
 
-  async inboundRefs(kind: string, id: string): Promise<readonly WorkbenchProjectionRef[]> {
+  async inboundRefs(
+    kind: string,
+    id: string,
+  ): Promise<readonly WorkbenchProjectionRef[]> {
     if (!this.isAvailable) return [];
     return this.refs.filter((ref) => ref.toKind === kind && ref.toId === id);
   }
@@ -46,12 +53,14 @@ export class NovelMemoryStorage implements WorkbenchStorage {
   readonly rootPath = "F:/novels/test";
   readonly isAvailable = true;
   private readonly files = new Map<string, string>();
+  private readonly binaryFiles = new Map<string, Uint8Array>();
   private readonly directories = new Set<string>([""]);
   private readonly listeners = new Set<
     (change: WorkbenchStorageChange) => void
   >();
   failNextIndexWrite = false;
   failWritePathOnce: string | null = null;
+  failRemovePathOnce: string | null = null;
   afterWriteOnce: ((path: string) => void) | null = null;
   requireExplicitParents = false;
 
@@ -70,6 +79,10 @@ export class NovelMemoryStorage implements WorkbenchStorage {
     return this.files.get(path);
   }
 
+  private hasFile(path: string): boolean {
+    return this.files.has(path) || this.binaryFiles.has(path);
+  }
+
   setExternalText(path: string, content: string): void {
     this.files.set(path, content);
     this.emitChange();
@@ -84,7 +97,7 @@ export class NovelMemoryStorage implements WorkbenchStorage {
     paths: readonly string[],
   ): Promise<readonly WorkbenchStoragePathInfo[]> {
     return paths.map((path) =>
-      this.files.has(path)
+      this.hasFile(path)
         ? { path, exists: true, kind: "file" as const }
         : this.directories.has(path)
           ? { path, exists: true, kind: "directory" as const }
@@ -95,11 +108,15 @@ export class NovelMemoryStorage implements WorkbenchStorage {
   async list(directory = ""): Promise<readonly WorkbenchStorageEntry[]> {
     const prefix = directory ? `${directory}/` : "";
     const entries = new Map<string, WorkbenchStorageEntry>();
-    for (const path of [...this.directories, ...this.files.keys()]) {
+    for (const path of [
+      ...this.directories,
+      ...this.files.keys(),
+      ...this.binaryFiles.keys(),
+    ]) {
       if (!path.startsWith(prefix) || path === directory) continue;
       const remainder = path.slice(prefix.length);
       if (!remainder || remainder.includes("/")) continue;
-      const kind = this.files.has(path)
+      const kind = this.hasFile(path)
         ? ("file" as const)
         : ("directory" as const);
       entries.set(path, { path, name: remainder, kind });
@@ -119,6 +136,8 @@ export class NovelMemoryStorage implements WorkbenchStorage {
   }
 
   async readBinary(path: string): Promise<ArrayBuffer> {
+    const binary = this.binaryFiles.get(path);
+    if (binary) return binary.slice().buffer;
     const content = (await this.readText(path)).content;
     return Uint8Array.from(new TextEncoder().encode(content)).buffer;
   }
@@ -133,7 +152,7 @@ export class NovelMemoryStorage implements WorkbenchStorage {
     content = "",
     options: { createParents?: boolean } = {},
   ) {
-    if (this.files.has(path) || this.directories.has(path))
+    if (this.hasFile(path) || this.directories.has(path))
       throw new Error(`Already exists: ${path}`);
     const parent = path.split("/").slice(0, -1).join("/");
     if (parent && !this.directories.has(parent)) {
@@ -150,6 +169,33 @@ export class NovelMemoryStorage implements WorkbenchStorage {
       name: path.split("/").at(-1) ?? path,
       size: textSize(content),
       content,
+    };
+  }
+
+  async createBinary(
+    path: string,
+    content: ArrayBuffer,
+    options: { createParents?: boolean } = {},
+  ) {
+    if (this.hasFile(path) || this.directories.has(path)) {
+      throw new Error(`Already exists: ${path}`);
+    }
+    const parent = path.split("/").slice(0, -1).join("/");
+    if (parent && !this.directories.has(parent)) {
+      if (this.requireExplicitParents || !options.createParents) {
+        throw new Error(`Parent not found: ${parent}`);
+      }
+      const segments = parent.split("/");
+      for (let length = 1; length <= segments.length; length += 1) {
+        this.directories.add(segments.slice(0, length).join("/"));
+      }
+    }
+    const bytes = new Uint8Array(content).slice();
+    this.binaryFiles.set(path, bytes);
+    return {
+      path,
+      name: path.split("/").at(-1) ?? path,
+      size: bytes.byteLength,
     };
   }
 
@@ -186,8 +232,36 @@ export class NovelMemoryStorage implements WorkbenchStorage {
     };
   }
 
-  async copy() {
-    return { transfers: [], errors: [] };
+  async copy(
+    paths: readonly string[],
+    targetDirectory: string,
+  ): Promise<WorkbenchStorageTransferResult> {
+    const transfers: WorkbenchStorageTransfer[] = [];
+    const errors: string[] = [];
+    for (const source of paths) {
+      const content = this.files.get(source);
+      const binary = this.binaryFiles.get(source);
+      if (content === undefined && binary === undefined) {
+        errors.push(`File not found: ${source}`);
+        continue;
+      }
+      const fileName = source.split("/").at(-1) ?? "";
+      let target = targetDirectory
+        ? `${targetDirectory}/${fileName}`
+        : fileName;
+      let suffix = 1;
+      while (this.hasFile(target)) {
+        const dot = fileName.lastIndexOf(".");
+        const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
+        const extension = dot > 0 ? fileName.slice(dot) : "";
+        target = `${targetDirectory}/${stem}_${suffix}${extension}`;
+        suffix += 1;
+      }
+      if (content !== undefined) this.files.set(target, content);
+      else if (binary) this.binaryFiles.set(target, binary.slice());
+      transfers.push({ sourcePath: source, targetPath: target });
+    }
+    return { transfers, errors };
   }
 
   async move(
@@ -198,14 +272,19 @@ export class NovelMemoryStorage implements WorkbenchStorage {
     const errors: string[] = [];
     for (const source of paths) {
       const content = this.files.get(source);
-      if (content === undefined) {
+      const binary = this.binaryFiles.get(source);
+      if (content === undefined && binary === undefined) {
         errors.push(`File not found: ${source}`);
         continue;
       }
       const fileName = source.split("/").at(-1) ?? "";
-      const target = targetDirectory ? `${targetDirectory}/${fileName}` : fileName;
+      const target = targetDirectory
+        ? `${targetDirectory}/${fileName}`
+        : fileName;
       this.files.delete(source);
-      this.files.set(target, content);
+      this.binaryFiles.delete(source);
+      if (content !== undefined) this.files.set(target, content);
+      else if (binary) this.binaryFiles.set(target, binary);
       const segments = target.split("/");
       segments.pop();
       for (let length = 1; length <= segments.length; length += 1) {
@@ -218,16 +297,25 @@ export class NovelMemoryStorage implements WorkbenchStorage {
 
   async rename(path: string, newName: string): Promise<WorkbenchStorageEntry> {
     const content = this.files.get(path);
-    if (content === undefined) throw new Error(`File not found: ${path}`);
+    const binary = this.binaryFiles.get(path);
+    if (content === undefined && binary === undefined)
+      throw new Error(`File not found: ${path}`);
     const parent = path.split("/").slice(0, -1).join("/");
     const nextPath = parent ? `${parent}/${newName}` : newName;
     this.files.delete(path);
-    this.files.set(nextPath, content);
+    this.binaryFiles.delete(path);
+    if (content !== undefined) this.files.set(nextPath, content);
+    else if (binary) this.binaryFiles.set(nextPath, binary);
     return { path: nextPath, name: newName, kind: "file" };
   }
 
   async remove(path: string): Promise<boolean> {
-    const removedFile = this.files.delete(path);
+    if (path === this.failRemovePathOnce) {
+      this.failRemovePathOnce = null;
+      throw new Error(`Injected remove failure: ${path}`);
+    }
+    const removedFile =
+      this.files.delete(path) || this.binaryFiles.delete(path);
     let removedDirectory = false;
     if (this.directories.has(path)) {
       removedDirectory = true;
@@ -235,6 +323,9 @@ export class NovelMemoryStorage implements WorkbenchStorage {
       const prefix = path ? `${path}/` : "";
       for (const filePath of [...this.files.keys()]) {
         if (filePath.startsWith(prefix)) this.files.delete(filePath);
+      }
+      for (const filePath of [...this.binaryFiles.keys()]) {
+        if (filePath.startsWith(prefix)) this.binaryFiles.delete(filePath);
       }
       for (const directoryPath of [...this.directories]) {
         if (directoryPath !== path && directoryPath.startsWith(prefix)) {

@@ -623,6 +623,7 @@ pub fn run() {
             workspace_files::attachment_export::cmd_export_tool_attachment,
             workspace_files::attachment_export::cmd_read_tool_attachment_bytes,
             workspace_files::save_file::cmd_workspace_save_file,
+            workspace_files::save_binary::cmd_workspace_save_binary_file,
             novel_projection::commands::cmd_novel_projection_rebuild,
             novel_projection::commands::cmd_novel_projection_list_entities,
             novel_projection::commands::cmd_novel_projection_inbound_refs,

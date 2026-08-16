@@ -44,7 +44,9 @@ function textFile(path: string, content: string): WorkbenchTextFile {
 }
 
 function storageForEnsureTextFile(
-  overrides: Partial<Pick<WorkbenchStorage, "stat" | "readText" | "createText">>,
+  overrides: Partial<
+    Pick<WorkbenchStorage, "stat" | "readText" | "createText">
+  >,
 ): WorkbenchStorage {
   return {
     rootPath: "F:/workspace",
@@ -55,6 +57,7 @@ function storageForEnsureTextFile(
     readBinary: vi.fn(),
     createDirectory: vi.fn(),
     createText: vi.fn(),
+    createBinary: vi.fn(),
     writeText: vi.fn(),
     copy: vi.fn(),
     move: vi.fn(),
@@ -75,7 +78,9 @@ describe("ensureWorkbenchTextFile", () => {
       readText: vi.fn().mockResolvedValue(existing),
     });
 
-    await expect(ensureWorkbenchTextFile(storage, path, "fallback")).resolves.toEqual(existing);
+    await expect(
+      ensureWorkbenchTextFile(storage, path, "fallback"),
+    ).resolves.toEqual(existing);
     expect(storage.createText).not.toHaveBeenCalled();
   });
 
@@ -86,7 +91,9 @@ describe("ensureWorkbenchTextFile", () => {
       createText: vi.fn().mockResolvedValue(created),
     });
 
-    await expect(ensureWorkbenchTextFile(storage, path, "fallback")).resolves.toEqual(created);
+    await expect(
+      ensureWorkbenchTextFile(storage, path, "fallback"),
+    ).resolves.toEqual(created);
     expect(storage.createText).toHaveBeenCalledWith(path, "fallback", {
       createParents: true,
     });
@@ -100,7 +107,9 @@ describe("ensureWorkbenchTextFile", () => {
       readText: vi.fn().mockResolvedValue(existing),
     });
 
-    await expect(ensureWorkbenchTextFile(storage, path, "fallback")).resolves.toEqual(existing);
+    await expect(
+      ensureWorkbenchTextFile(storage, path, "fallback"),
+    ).resolves.toEqual(existing);
     expect(storage.readText).toHaveBeenCalledWith(path);
   });
 });

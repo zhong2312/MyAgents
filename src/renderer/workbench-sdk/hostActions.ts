@@ -2,6 +2,7 @@ export interface WorkbenchHostActionDetail {
   readonly workbenchId: string;
   readonly workspacePath: string;
   readonly action: string;
+  readonly payload?: Readonly<Record<string, string>>;
 }
 
 export type WorkbenchHostActionFilter = WorkbenchHostActionDetail;
@@ -20,7 +21,7 @@ export function dispatchWorkbenchHostAction(
 
 export function subscribeWorkbenchHostAction(
   filter: WorkbenchHostActionFilter,
-  listener: () => void,
+  listener: (detail: WorkbenchHostActionDetail) => void,
 ): () => void {
   const handleAction = (event: Event) => {
     const detail = (event as CustomEvent<WorkbenchHostActionDetail>).detail;
@@ -31,7 +32,7 @@ export function subscribeWorkbenchHostAction(
     ) {
       return;
     }
-    listener();
+    listener(detail);
   };
   window.addEventListener(WORKBENCH_HOST_ACTION_EVENT, handleAction);
   return () =>

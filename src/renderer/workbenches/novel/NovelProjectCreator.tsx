@@ -10,6 +10,11 @@ import { novelLanguageOptions } from "./novelGenres";
 import NovelPlanningFields from "./NovelPlanningFields";
 import { createNovelProjectInitialization } from "./projectInitialization";
 import {
+  DEFAULT_NOVEL_WRITING_PERSPECTIVE,
+  NOVEL_WRITING_PERSPECTIVE_OPTIONS,
+  type NovelWritingPerspective,
+} from "./modules/project/business/writingPerspective";
+import {
   DEFAULT_CHAPTER_WORD_COUNT,
   DEFAULT_TARGET_WORD_COUNT_MAX_WAN,
   DEFAULT_TARGET_WORD_COUNT_MIN_WAN,
@@ -52,6 +57,8 @@ export default function NovelProjectCreator({
     DEFAULT_CHAPTER_WORD_COUNT,
   );
   const [language, setLanguage] = useState("zh-CN");
+  const [writingPerspective, setWritingPerspective] =
+    useState<NovelWritingPerspective>(DEFAULT_NOVEL_WRITING_PERSPECTIVE);
   const [synopsis, setSynopsis] = useState("");
   const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
@@ -119,6 +126,7 @@ export default function NovelProjectCreator({
           genres,
           ...planning,
           language,
+          writingPerspective,
           description: synopsis.trim(),
           createdAt,
         }),
@@ -256,7 +264,7 @@ export default function NovelProjectCreator({
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
+          <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-2 max-sm:grid-cols-1">
             <NovelGenrePicker
               id="novel-genre"
               genres={genres}
@@ -275,6 +283,24 @@ export default function NovelProjectCreator({
                 options={novelLanguageOptions()}
                 onChange={setLanguage}
                 ariaLabel="创作语言"
+                size="toolbar"
+                disabled={isCreating}
+              />
+            </div>
+            <div>
+              <span className="mb-2 block text-sm font-medium text-[var(--ink)]">
+                写作视角
+              </span>
+              <CustomSelect
+                value={writingPerspective}
+                options={NOVEL_WRITING_PERSPECTIVE_OPTIONS.map((item) => ({
+                  value: item.value,
+                  label: item.label,
+                }))}
+                onChange={(value) =>
+                  setWritingPerspective(value as NovelWritingPerspective)
+                }
+                ariaLabel="写作视角"
                 size="toolbar"
                 disabled={isCreating}
               />

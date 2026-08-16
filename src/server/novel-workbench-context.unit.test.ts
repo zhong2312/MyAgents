@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearNovelWorkbenchContext,
   configureNovelWorkbenchRequest,
+  getNovelWorkbenchContext,
   isNovelWorkbenchToolAllowed,
+  NOVEL_WORKBENCH_READ_TOOL_NAMES,
   NOVEL_WORKBENCH_SDK_INSTRUCTIONS,
   novelWorkbenchToolDenyMessage,
+  runWithNovelWorkbenchToolset,
   shouldBlockNovelWorkbenchTool,
 } from "./novel-workbench-context";
 
@@ -99,5 +102,62 @@ describe("novel manuscript workbench context", () => {
         "mcp__novel-workbench__novel_cultivation_get_context",
       ),
     ).toBe(false);
+  });
+
+  it("exposes the complete read-only context set for one-shot workbench agents", () => {
+    expect(NOVEL_WORKBENCH_READ_TOOL_NAMES).toEqual(
+      expect.arrayContaining([
+        "novel_world_get_context",
+        "novel_characters_get_context",
+        "novel_narrative_get_context",
+        "novel_timeline_get_context",
+        "novel_manuscript_get_context",
+        "novel_continuity_get_context",
+      ]),
+    );
+    expect(
+      NOVEL_WORKBENCH_READ_TOOL_NAMES.some((name) => name.includes("submit")),
+    ).toBe(false);
+  });
+
+  it("isolates concurrent one-shot workbench contexts from Session state", async () => {
+    configureNovelWorkbenchRequest(
+      {
+        mode: "world",
+        promptId: "novel.world.session",
+        promptVersion: "1.0.0",
+      },
+      { sessionId: "session-root", workspace: "F:/novels/root" },
+    );
+    const toolset = {
+      id: "novel-world",
+      context: {
+        mode: "manuscript",
+        promptId: "novel.manuscript.full-generation",
+        promptVersion: "1.0.0",
+      },
+    };
+
+    const workspaces = await Promise.all([
+      runWithNovelWorkbenchToolset(
+        toolset,
+        { sessionId: "run-a", workspace: "F:/novels/a" },
+        async () => {
+          await Promise.resolve();
+          return getNovelWorkbenchContext()?.workspace;
+        },
+      ),
+      runWithNovelWorkbenchToolset(
+        toolset,
+        { sessionId: "run-b", workspace: "F:/novels/b" },
+        async () => {
+          await Promise.resolve();
+          return getNovelWorkbenchContext()?.workspace;
+        },
+      ),
+    ]);
+
+    expect(workspaces).toEqual(["F:/novels/a", "F:/novels/b"]);
+    expect(getNovelWorkbenchContext()?.workspace).toBe("F:/novels/root");
   });
 });

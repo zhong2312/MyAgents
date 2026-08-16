@@ -183,7 +183,8 @@ export function buildWorldProposalAgentInstructions(): string {
 2. 通过对话逐步确认作者选择。未获得作者明确确认前，不得提交提案。
 3. 作者确认后先调用 \`novel_world_create_draft\`；已有 JSON 文件优先使用 \`novel_world_patch_draft_changes\` 按稳定 ID 逐项 merge、append 或 remove，Markdown 使用小块 \`text_append\`。每次最多 32 项、64 KB，工具中断、会话恢复或校验失败时先调用 \`novel_world_get_draft\`，不得重新生成另一份提案。
 4. \`novel_world_upsert_draft_changes\` 只用于不超过 64 KB 的新建或小文件整份候选。\`world/setting-library/settings.json\` 是完整设定索引，禁止为了修改少量条目重新上传完整 JSON；应对 \`settings\` 数组中的目标稳定 ID 使用 patch，未修改条目由工具保留。
-5. \`settings\` 中每个条目必须完整包含 \`id\`、\`nodeId\`、\`templateId\`、\`name\`、\`group\`、\`status\`、\`pagePath\`、\`entriesPath\`；已知模板版本时还要包含 \`templateVersion\`。\`status\` 只能是 \`draft\` 或 \`completed\`。合法示例：
+5. 新增 \`meta.json\` 的层级类型或设定模板时必须保留其全部字段，\`source\` 只允许 \`builtin\` 或 \`project\`。Agent 新建的项目内容一律写 \`"source": "project"\`，严禁使用 \`custom\`、\`user\` 等自定义枚举值。
+6. \`settings\` 中每个条目必须完整包含 \`id\`、\`nodeId\`、\`templateId\`、\`name\`、\`group\`、\`status\`、\`pagePath\`、\`entriesPath\`；已知模板版本时还要包含 \`templateVersion\`。\`status\` 只能是 \`draft\` 或 \`completed\`。合法示例：
 
 \`\`\`json
 {
@@ -199,10 +200,10 @@ export function buildWorldProposalAgentInstructions(): string {
 }
 \`\`\`
 
-6. \`id\`、\`nodeId\`、\`templateId\` 和路径片段只能使用小写字母、数字和连字符。每个设定条目的两条路径必须使用该条目自己的 \`nodeId/id\`：正文固定为 \`world/setting-library/pages/<nodeId>/<id>.md\`，词条固定为 \`world/setting-library/entries/<nodeId>/<id>.json\`。严禁把 Markdown 的 \`pages/.../*.md\` 路径填入 \`entriesPath\`。新增任一设定时，必须在同一草稿中同时创建 Markdown 正文和对应的词条 JSON；词条文件至少是 \`{"schemaVersion":1,"entries":[]}\`。
-7. 新增或修改地点时，使用逻辑聚合路径 \`world/locations/index.json\`，其 schemaVersion 固定为 1，且每条地点必须包含 id、nodeId、parentLocationId、name、aliases、type、status、summary、appearanceNote、description、order。物理 records 路径由工作台 Repository 内部管理，模型不得直接操作。地点名称允许重复；地点必须归属现有或同一草稿中的空间节点，上级地点只能在同一空间节点内且不得形成循环。
-8. 完成后调用 \`novel_world_validate_draft\`。若返回任何错误，必须修改同一草稿并重新校验；只有 \`valid=true\` 且实际返回 \`validationToken\` 时，才能用这次令牌调用 \`novel_world_submit_draft\`。草稿变化后必须重新校验。该工具只创建待审批快照，不修改正式设定。
-9. 最后调用 \`novel_world_get_proposal_status\`。仅当 \`exists=true\` 时说明提交成功，并请作者在小说工作台点击“审阅提案”逐项审批。
+7. \`id\`、\`nodeId\`、\`templateId\` 和路径片段只能使用小写字母、数字和连字符。每个设定条目的两条路径必须使用该条目自己的 \`nodeId/id\`：正文固定为 \`world/setting-library/pages/<nodeId>/<id>.md\`，词条固定为 \`world/setting-library/entries/<nodeId>/<id>.json\`。严禁把 Markdown 的 \`pages/.../*.md\` 路径填入 \`entriesPath\`。新增任一设定时，必须在同一草稿中同时创建 Markdown 正文和对应的词条 JSON；词条文件至少是 \`{"schemaVersion":1,"entries":[]}\`。
+8. 新增或修改地点时，使用逻辑聚合路径 \`world/locations/index.json\`，其 schemaVersion 固定为 1，且每条地点必须包含 id、nodeId、parentLocationId、name、aliases、type、status、summary、appearanceNote、description、order。物理 records 路径由工作台 Repository 内部管理，模型不得直接操作。地点名称允许重复；地点必须归属现有或同一草稿中的空间节点，上级地点只能在同一空间节点内且不得形成循环。
+9. 完成后调用 \`novel_world_validate_draft\`。若返回任何错误，必须修改同一草稿并重新校验；只有 \`valid=true\` 且实际返回 \`validationToken\` 时，才能用这次令牌调用 \`novel_world_submit_draft\`。草稿变化后必须重新校验。该工具只创建待审批快照，不修改正式设定。
+10. 最后调用 \`novel_world_get_proposal_status\`。仅当 \`exists=true\` 时说明提交成功，并请作者在小说工作台点击“审阅提案”逐项审批。
 
 你没有应用提案的工具。只有作者在审批界面采纳变更后，小说工作台才能写入正式存储。`;
 }

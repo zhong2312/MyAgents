@@ -47,10 +47,12 @@ import {
   ConfirmDialog,
   CustomSelect,
   type SelectOption,
+  type WorkbenchNavigationGuard,
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
 import MarkdownVisualEditor from "./MarkdownVisualEditor";
+import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
 import SettingLibraryMetaEditor from "./SettingLibraryMeta";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
 import type { KnowledgeSourceRef } from "./knowledgeGraph";
@@ -117,6 +119,9 @@ interface SettingLibraryProps {
   readonly focusNodeId?: string | null;
   /** Bumping this counter forces a reload of the library (e.g. after a proposal apply). */
   readonly reloadKey?: number;
+  readonly registerNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
 }
 
 const LEVEL_ICONS: Readonly<Record<string, LucideIcon>> = {
@@ -421,6 +426,7 @@ export default function SettingLibrary({
   focusSource,
   focusNodeId,
   reloadKey,
+  registerNavigationGuard,
 }: SettingLibraryProps) {
   const repository = useMemo(
     () => createNovelSettingLibraryRepository(storage),
@@ -467,9 +473,8 @@ export default function SettingLibrary({
   const [locationPendingDeleteId, setLocationPendingDeleteId] = useState<
     string | null
   >(null);
-  const [settingPendingDelete, setSettingPendingDelete] = useState<
-    SettingPageReference | null
-  >(null);
+  const [settingPendingDelete, setSettingPendingDelete] =
+    useState<SettingPageReference | null>(null);
   const [nodePendingDelete, setNodePendingDelete] = useState<string | null>(
     null,
   );
@@ -480,6 +485,7 @@ export default function SettingLibrary({
   const pageRef = useRef(page);
   const libraryRef = useRef(library);
   const locationLibraryRef = useRef(locationLibrary);
+  const loadGenerationRef = useRef(0);
   const metaSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const metaSaveCountRef = useRef(0);
 
@@ -500,6 +506,8 @@ export default function SettingLibrary({
   }, [locationLibrary]);
 
   const load = useCallback(async () => {
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
     setIsLoading(true);
     setError(null);
     try {
@@ -511,6 +519,7 @@ export default function SettingLibrary({
         nextLocations.index,
         next.spatialTree.nodes.map((node) => node.id),
       );
+      if (generation !== loadGenerationRef.current) return;
       setLibrary(next);
       setLocationLibrary(nextLocations);
       setLocationDrafts(nextLocations.index.locations);
@@ -520,9 +529,13 @@ export default function SettingLibrary({
           : (next.spatialTree.nodes[0]?.id ?? ""),
       );
     } catch (cause) {
-      setError(toError(cause));
+      if (generation === loadGenerationRef.current) {
+        setError(toError(cause));
+      }
     } finally {
-      setIsLoading(false);
+      if (generation === loadGenerationRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [locationRepository, projectTitle, repository]);
 
@@ -679,7 +692,8 @@ export default function SettingLibrary({
     useCallback(async (): Promise<LoadedSettingPage | null> => {
       const activeLibrary = libraryRef.current;
       const activePage = pageRef.current;
-      if (!activeLibrary || !activePage || isSaving) return activePage;
+      if (!activeLibrary || !activePage) return null;
+      if (isSaving) return dirtyRef.current ? null : activePage;
       if (!dirtyRef.current && activePage.reference.kind === "instance")
         return activePage;
       const content = draftRef.current;
@@ -714,7 +728,7 @@ export default function SettingLibrary({
   }, [draft, isDirty, isSaving, page, saveCurrentPage]);
 
   const selectNode = async (id: string) => {
-    if (dirtyRef.current) await saveCurrentPage();
+    if (dirtyRef.current && !(await saveCurrentPage())) return;
     setSelectedNodeId(id);
     setSelectedReferenceId("");
     setSettingsDrawer(false);
@@ -722,14 +736,14 @@ export default function SettingLibrary({
   };
 
   const selectSetting = async (reference: SettingPageReference) => {
-    if (dirtyRef.current) await saveCurrentPage();
+    if (dirtyRef.current && !(await saveCurrentPage())) return;
     setSelectedReferenceId(settingReferenceId(reference));
     setSettingsDrawer(false);
   };
 
   const saveMeta = useCallback(
     async (meta: SettingLibraryMeta) => {
-      if (!libraryRef.current) return;
+      if (!libraryRef.current) return false;
       metaSaveCountRef.current += 1;
       setIsSaving(true);
       setError(null);
@@ -745,8 +759,10 @@ export default function SettingLibrary({
 
       try {
         await operation;
+        return true;
       } catch (cause) {
         setError(toError(cause));
+        return false;
       } finally {
         metaSaveCountRef.current -= 1;
         if (metaSaveCountRef.current === 0) setIsSaving(false);
@@ -1093,31 +1109,39 @@ export default function SettingLibrary({
     }
   };
 
-  const saveLocations = async (locations = locationDrafts) => {
-    const activeLocationLibrary = locationLibraryRef.current;
-    const activeSettingLibrary = libraryRef.current;
-    if (!activeLocationLibrary || !activeSettingLibrary) return;
-    setIsSaving(true);
-    setError(null);
-    try {
-      const index = {
-        ...activeLocationLibrary.index,
-        locations: [...locations],
-      };
-      validateLocationNodeReferences(
-        index,
-        activeSettingLibrary.spatialTree.nodes.map((node) => node.id),
-      );
-      const next = await locationRepository.save(activeLocationLibrary, index);
-      locationLibraryRef.current = next;
-      setLocationLibrary(next);
-      setLocationDrafts(next.index.locations);
-    } catch (cause) {
-      setError(toError(cause));
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const saveLocations = useCallback(
+    async (locations = locationDrafts): Promise<boolean> => {
+      const activeLocationLibrary = locationLibraryRef.current;
+      const activeSettingLibrary = libraryRef.current;
+      if (!activeLocationLibrary || !activeSettingLibrary) return false;
+      setIsSaving(true);
+      setError(null);
+      try {
+        const index = {
+          ...activeLocationLibrary.index,
+          locations: [...locations],
+        };
+        validateLocationNodeReferences(
+          index,
+          activeSettingLibrary.spatialTree.nodes.map((node) => node.id),
+        );
+        const next = await locationRepository.save(
+          activeLocationLibrary,
+          index,
+        );
+        locationLibraryRef.current = next;
+        setLocationLibrary(next);
+        setLocationDrafts(next.index.locations);
+        return true;
+      } catch (cause) {
+        setError(toError(cause));
+        return false;
+      } finally {
+        setIsSaving(false);
+      }
+    },
+    [locationDrafts, locationRepository],
+  );
 
   const addLocation = async () => {
     if (!currentNode || !locationLibraryRef.current) return;
@@ -1179,6 +1203,20 @@ export default function SettingLibrary({
     await saveLocations(next);
   };
 
+  const hasLocationChanges = Boolean(
+    locationLibrary &&
+      JSON.stringify(locationDrafts) !==
+        JSON.stringify(locationLibrary.index.locations),
+  );
+  const saveForNavigation = useCallback(async (): Promise<boolean> => {
+    if (isDirty) {
+      const savedPage = await saveCurrentPage();
+      if (!savedPage) return false;
+    }
+    if (hasLocationChanges && !(await saveLocations())) return false;
+    return true;
+  }, [hasLocationChanges, isDirty, saveCurrentPage, saveLocations]);
+
   if (isLoading && !library) return <LoadingState />;
   if (!library)
     return (
@@ -1204,6 +1242,7 @@ export default function SettingLibrary({
         onSave={saveMeta}
         onAiAssist={onAiAssist}
         headerActions={headerActions}
+        registerNavigationGuard={registerNavigationGuard}
       />
     );
   }
@@ -1247,9 +1286,6 @@ export default function SettingLibrary({
           })),
       ]
     : [];
-  const hasLocationChanges =
-    JSON.stringify(locationDrafts) !==
-    JSON.stringify(locationLibrary.index.locations);
   const parentOptions: SelectOption[] = [
     {
       value: ROOT_PARENT_VALUE,
@@ -1319,6 +1355,14 @@ export default function SettingLibrary({
   const panelBase = "min-h-0 bg-[var(--paper-elevated)]";
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--paper)]">
+      {registerNavigationGuard && (
+        <NarrativeUnsavedChangesGuard
+          dirty={isDirty || hasLocationChanges}
+          label="设定库"
+          registerNavigationGuard={registerNavigationGuard}
+          onSave={saveForNavigation}
+        />
+      )}
       <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
         <div className="flex min-w-0 items-center gap-3">
           <Globe2 className="h-5 w-5 shrink-0 text-[var(--accent-warm)]" />
@@ -1638,8 +1682,7 @@ export default function SettingLibrary({
                 const selected = id === selectedReferenceId;
                 const isVirtual = reference.kind === "virtual";
                 const template =
-                  reference.kind === "instance" &&
-                  reference.instance.templateId
+                  reference.kind === "instance" && reference.instance.templateId
                     ? library.meta.settingTemplates.find(
                         (item) => item.id === reference.instance.templateId,
                       )
@@ -1845,262 +1888,264 @@ export default function SettingLibrary({
                   <MapPin className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
                   地点库记录故事中实际登场的地点并归属当前空间节点；世界结构层级请在空间树中维护。
                 </div>
-              <div className="grid min-h-0 flex-1 grid-cols-[17rem_minmax(0,1fr)] max-md:grid-cols-1">
-                <aside className="min-h-0 overflow-y-auto border-r border-[var(--line)] max-md:hidden">
-                  <header className="flex h-13 items-center gap-2 border-b border-[var(--line)] px-3 py-2">
-                    <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--paper)] px-2">
-                      <Search className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
-                      <input
-                        value={locationQuery}
-                        onChange={(event) =>
-                          setLocationQuery(event.target.value)
-                        }
-                        placeholder="搜索当前区域地点"
-                        aria-label="搜索当前区域地点"
-                        className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => void addLocation()}
-                      disabled={!currentNode || isSaving}
-                      aria-label="新增地点"
-                      title="新增地点"
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--accent-warm)] text-white disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </button>
-                  </header>
-                  {filteredNodeLocations.map((location) => {
-                    const parent = nodeLocations.find(
-                      (item) => item.id === location.parentLocationId,
-                    );
-                    return (
-                      <button
-                        key={location.id}
-                        type="button"
-                        onClick={() => setSelectedLocationId(location.id)}
-                        className={`w-full border-b border-[var(--line-subtle)] px-4 py-3 text-left ${
-                          selectedLocationId === location.id
-                            ? "bg-[var(--accent-warm-subtle)] shadow-[inset_3px_0_0_var(--accent-warm)]"
-                            : "hover:bg-[var(--hover-bg)]"
-                        }`}
-                      >
-                        <span className="flex items-center gap-2">
-                          <MapPin className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
-                          <strong className="min-w-0 flex-1 truncate text-sm">
-                            {location.name}
-                          </strong>
-                          <span className="shrink-0 text-xs text-[var(--ink-muted)]">
-                            {LOCATION_STATUS_LABELS[location.status]}
-                          </span>
-                        </span>
-                        <span className="mt-1 block truncate text-xs text-[var(--ink-muted)]">
-                          {parent ? `${parent.name} · ` : ""}
-                          {location.type}
-                          {location.summary ? ` · ${location.summary}` : ""}
-                        </span>
-                      </button>
-                    );
-                  })}
-                  {!filteredNodeLocations.length && (
-                    <div className="px-4 py-10 text-center text-xs text-[var(--ink-muted)]">
-                      {locationQuery.trim()
-                        ? "没有匹配的地点"
-                        : "当前区域还没有地点"}
-                    </div>
-                  )}
-                </aside>
-
-                {activeLocation ? (
-                  <section className="min-h-0 overflow-y-auto px-7 pt-6 pb-24 max-md:px-4">
-                    <header className="flex items-start justify-between gap-4 border-b border-[var(--line-subtle)] pb-4">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
-                          <MapPin className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
-                          <span className="truncate">{currentNode?.name}</span>
-                        </div>
-                        <h2 className="mt-1 truncate text-xl font-semibold">
-                          {activeLocation.name}
-                        </h2>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void saveLocations()}
-                        disabled={isSaving || !hasLocationChanges}
-                        className="flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-[var(--button-primary-bg)] px-3 text-sm font-medium text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        <Save className="h-4 w-4" /> 保存地点
-                      </button>
-                    </header>
-                    <div className="grid max-w-3xl grid-cols-2 gap-5 py-5 max-md:grid-cols-1">
-                      <label>
-                        <FieldLabel>地点名称</FieldLabel>
+                <div className="grid min-h-0 flex-1 grid-cols-[17rem_minmax(0,1fr)] max-md:grid-cols-1">
+                  <aside className="min-h-0 overflow-y-auto border-r border-[var(--line)] max-md:hidden">
+                    <header className="flex h-13 items-center gap-2 border-b border-[var(--line)] px-3 py-2">
+                      <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-[var(--line)] bg-[var(--paper)] px-2">
+                        <Search className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
                         <input
-                          value={activeLocation.name}
+                          value={locationQuery}
                           onChange={(event) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              name: event.target.value,
-                            }))
+                            setLocationQuery(event.target.value)
                           }
-                          className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
+                          placeholder="搜索当前区域地点"
+                          aria-label="搜索当前区域地点"
+                          className="min-w-0 flex-1 bg-transparent text-sm outline-none"
                         />
                       </label>
-                      <label>
-                        <FieldLabel>地点类型</FieldLabel>
-                        <input
-                          list="novel-location-types"
-                          value={activeLocation.type}
-                          onChange={(event) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              type: event.target.value,
-                            }))
-                          }
-                          className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
-                        />
-                        <datalist id="novel-location-types">
-                          {LOCATION_TYPE_OPTIONS.map((type) => (
-                            <option key={type} value={type} />
-                          ))}
-                        </datalist>
-                      </label>
-                      <label>
-                        <FieldLabel>出场状态</FieldLabel>
-                        <CustomSelect
-                          value={activeLocation.status}
-                          options={(
-                            Object.keys(
-                              LOCATION_STATUS_LABELS,
-                            ) as LocationStatus[]
-                          ).map((status) => ({
-                            value: status,
-                            label: LOCATION_STATUS_LABELS[status],
-                          }))}
-                          onChange={(status) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              status: status as LocationStatus,
-                            }))
-                          }
-                        />
-                      </label>
-                      <label>
-                        <FieldLabel>所属区域</FieldLabel>
-                        <CustomSelect
-                          value={activeLocation.nodeId}
-                          options={locationNodeOptions}
-                          onChange={(nodeId) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              nodeId,
-                              parentLocationId: null,
-                            }))
-                          }
-                        />
-                      </label>
-                      <label className="col-span-2 max-md:col-span-1">
-                        <FieldLabel>上级地点</FieldLabel>
-                        <CustomSelect
-                          value={activeLocation.parentLocationId ?? ""}
-                          options={locationParentOptions}
-                          onChange={(parentLocationId) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              parentLocationId: parentLocationId || null,
-                            }))
-                          }
-                        />
-                      </label>
-                      <label className="col-span-2 max-md:col-span-1">
-                        <FieldLabel>别名</FieldLabel>
-                        <input
-                          value={activeLocation.aliases.join("、")}
-                          placeholder="使用顿号分隔多个别名"
-                          onChange={(event) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              aliases: event.target.value
-                                .split(/[、,，]/u)
-                                .map((alias) => alias.trim())
-                                .filter(Boolean),
-                            }))
-                          }
-                          className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
-                        />
-                      </label>
-                      <label className="col-span-2 max-md:col-span-1">
-                        <FieldLabel>一句话定位</FieldLabel>
-                        <input
-                          value={activeLocation.summary}
-                          placeholder="例如：青石城最繁华的商业长街"
-                          onChange={(event) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              summary: event.target.value,
-                            }))
-                          }
-                          className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
-                        />
-                      </label>
-                      <label className="col-span-2 max-md:col-span-1">
-                        <FieldLabel>出场说明</FieldLabel>
-                        <input
-                          value={activeLocation.appearanceNote}
-                          placeholder="例如：第 12 章首次出现，主角在此与林家冲突"
-                          onChange={(event) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              appearanceNote: event.target.value,
-                            }))
-                          }
-                          className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
-                        />
-                      </label>
-                      <label className="col-span-2 max-md:col-span-1">
-                        <FieldLabel>地点描述</FieldLabel>
-                        <textarea
-                          rows={10}
-                          value={activeLocation.description}
-                          onChange={(event) =>
-                            updateLocation(activeLocation.id, (location) => ({
-                              ...location,
-                              description: event.target.value,
-                            }))
-                          }
-                          className="w-full resize-y rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm leading-6 outline-none"
-                        />
-                      </label>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setLocationPendingDeleteId(activeLocation.id)
-                      }
-                      className="flex items-center gap-1.5 text-sm text-[var(--error)]"
-                    >
-                      <Trash2 className="h-4 w-4" /> 删除地点
-                    </button>
-                  </section>
-                ) : (
-                  <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center">
-                    <div>
-                      <MapPin className="mx-auto h-7 w-7 text-[var(--ink-subtle)]" />
-                      <h2 className="mt-3 text-sm font-semibold">
-                        当前区域还没有地点
-                      </h2>
                       <button
                         type="button"
                         onClick={() => void addLocation()}
-                        className="mx-auto mt-4 flex h-9 items-center gap-1.5 rounded-md border border-[var(--line)] px-3 text-sm font-medium"
+                        disabled={!currentNode || isSaving}
+                        aria-label="新增地点"
+                        title="新增地点"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--accent-warm)] text-white disabled:cursor-not-allowed disabled:opacity-45"
                       >
-                        <Plus className="h-4 w-4" /> 新增地点
+                        <Plus className="h-4 w-4" />
                       </button>
+                    </header>
+                    {filteredNodeLocations.map((location) => {
+                      const parent = nodeLocations.find(
+                        (item) => item.id === location.parentLocationId,
+                      );
+                      return (
+                        <button
+                          key={location.id}
+                          type="button"
+                          onClick={() => setSelectedLocationId(location.id)}
+                          className={`w-full border-b border-[var(--line-subtle)] px-4 py-3 text-left ${
+                            selectedLocationId === location.id
+                              ? "bg-[var(--accent-warm-subtle)] shadow-[inset_3px_0_0_var(--accent-warm)]"
+                              : "hover:bg-[var(--hover-bg)]"
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <MapPin className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
+                            <strong className="min-w-0 flex-1 truncate text-sm">
+                              {location.name}
+                            </strong>
+                            <span className="shrink-0 text-xs text-[var(--ink-muted)]">
+                              {LOCATION_STATUS_LABELS[location.status]}
+                            </span>
+                          </span>
+                          <span className="mt-1 block truncate text-xs text-[var(--ink-muted)]">
+                            {parent ? `${parent.name} · ` : ""}
+                            {location.type}
+                            {location.summary ? ` · ${location.summary}` : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {!filteredNodeLocations.length && (
+                      <div className="px-4 py-10 text-center text-xs text-[var(--ink-muted)]">
+                        {locationQuery.trim()
+                          ? "没有匹配的地点"
+                          : "当前区域还没有地点"}
+                      </div>
+                    )}
+                  </aside>
+
+                  {activeLocation ? (
+                    <section className="min-h-0 overflow-y-auto px-7 pt-6 pb-24 max-md:px-4">
+                      <header className="flex items-start justify-between gap-4 border-b border-[var(--line-subtle)] pb-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
+                            <MapPin className="h-3.5 w-3.5 text-[var(--accent-warm)]" />
+                            <span className="truncate">
+                              {currentNode?.name}
+                            </span>
+                          </div>
+                          <h2 className="mt-1 truncate text-xl font-semibold">
+                            {activeLocation.name}
+                          </h2>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void saveLocations()}
+                          disabled={isSaving || !hasLocationChanges}
+                          className="flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-[var(--button-primary-bg)] px-3 text-sm font-medium text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          <Save className="h-4 w-4" /> 保存地点
+                        </button>
+                      </header>
+                      <div className="grid max-w-3xl grid-cols-2 gap-5 py-5 max-md:grid-cols-1">
+                        <label>
+                          <FieldLabel>地点名称</FieldLabel>
+                          <input
+                            value={activeLocation.name}
+                            onChange={(event) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                name: event.target.value,
+                              }))
+                            }
+                            className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
+                          />
+                        </label>
+                        <label>
+                          <FieldLabel>地点类型</FieldLabel>
+                          <input
+                            list="novel-location-types"
+                            value={activeLocation.type}
+                            onChange={(event) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                type: event.target.value,
+                              }))
+                            }
+                            className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
+                          />
+                          <datalist id="novel-location-types">
+                            {LOCATION_TYPE_OPTIONS.map((type) => (
+                              <option key={type} value={type} />
+                            ))}
+                          </datalist>
+                        </label>
+                        <label>
+                          <FieldLabel>出场状态</FieldLabel>
+                          <CustomSelect
+                            value={activeLocation.status}
+                            options={(
+                              Object.keys(
+                                LOCATION_STATUS_LABELS,
+                              ) as LocationStatus[]
+                            ).map((status) => ({
+                              value: status,
+                              label: LOCATION_STATUS_LABELS[status],
+                            }))}
+                            onChange={(status) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                status: status as LocationStatus,
+                              }))
+                            }
+                          />
+                        </label>
+                        <label>
+                          <FieldLabel>所属区域</FieldLabel>
+                          <CustomSelect
+                            value={activeLocation.nodeId}
+                            options={locationNodeOptions}
+                            onChange={(nodeId) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                nodeId,
+                                parentLocationId: null,
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="col-span-2 max-md:col-span-1">
+                          <FieldLabel>上级地点</FieldLabel>
+                          <CustomSelect
+                            value={activeLocation.parentLocationId ?? ""}
+                            options={locationParentOptions}
+                            onChange={(parentLocationId) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                parentLocationId: parentLocationId || null,
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="col-span-2 max-md:col-span-1">
+                          <FieldLabel>别名</FieldLabel>
+                          <input
+                            value={activeLocation.aliases.join("、")}
+                            placeholder="使用顿号分隔多个别名"
+                            onChange={(event) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                aliases: event.target.value
+                                  .split(/[、,，]/u)
+                                  .map((alias) => alias.trim())
+                                  .filter(Boolean),
+                              }))
+                            }
+                            className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
+                          />
+                        </label>
+                        <label className="col-span-2 max-md:col-span-1">
+                          <FieldLabel>一句话定位</FieldLabel>
+                          <input
+                            value={activeLocation.summary}
+                            placeholder="例如：青石城最繁华的商业长街"
+                            onChange={(event) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                summary: event.target.value,
+                              }))
+                            }
+                            className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
+                          />
+                        </label>
+                        <label className="col-span-2 max-md:col-span-1">
+                          <FieldLabel>出场说明</FieldLabel>
+                          <input
+                            value={activeLocation.appearanceNote}
+                            placeholder="例如：第 12 章首次出现，主角在此与林家冲突"
+                            onChange={(event) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                appearanceNote: event.target.value,
+                              }))
+                            }
+                            className="h-9 w-full rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm outline-none"
+                          />
+                        </label>
+                        <label className="col-span-2 max-md:col-span-1">
+                          <FieldLabel>地点描述</FieldLabel>
+                          <textarea
+                            rows={10}
+                            value={activeLocation.description}
+                            onChange={(event) =>
+                              updateLocation(activeLocation.id, (location) => ({
+                                ...location,
+                                description: event.target.value,
+                              }))
+                            }
+                            className="w-full resize-y rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm leading-6 outline-none"
+                          />
+                        </label>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLocationPendingDeleteId(activeLocation.id)
+                        }
+                        className="flex items-center gap-1.5 text-sm text-[var(--error)]"
+                      >
+                        <Trash2 className="h-4 w-4" /> 删除地点
+                      </button>
+                    </section>
+                  ) : (
+                    <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center">
+                      <div>
+                        <MapPin className="mx-auto h-7 w-7 text-[var(--ink-subtle)]" />
+                        <h2 className="mt-3 text-sm font-semibold">
+                          当前区域还没有地点
+                        </h2>
+                        <button
+                          type="button"
+                          onClick={() => void addLocation()}
+                          className="mx-auto mt-4 flex h-9 items-center gap-1.5 rounded-md border border-[var(--line)] px-3 text-sm font-medium"
+                        >
+                          <Plus className="h-4 w-4" /> 新增地点
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
+                  )}
+                </div>
               </>
             ) : isPageLoading ? (
               <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-[var(--ink-muted)]">

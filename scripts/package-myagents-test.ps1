@@ -321,6 +321,7 @@ $directoryMappings = @(
     @{ Source = 'src-tauri\resources\nodejs'; Name = 'nodejs' },
     @{ Source = 'src-tauri\resources\sharp-runtime'; Name = 'sharp-runtime' },
     @{ Source = 'src-tauri\resources\tsx-runtime'; Name = 'tsx-runtime' },
+    @{ Source = 'src-tauri\resources\azgaar'; Name = 'azgaar' },
     @{ Source = 'src\server\plugin-bridge\sdk-shim'; Name = 'plugin-bridge-sdk-shim' },
     @{ Source = 'src\shared'; Name = 'shared' },
     @{ Source = 'mino'; Name = 'mino' },
@@ -452,7 +453,7 @@ try {
         Copy-FileResource -SourceRelativePath $mapping.Source -DestinationName $mapping.Name
     }
 
-    foreach ($relative in @('myagents.exe', 'server-dist.js', 'plugin-bridge-dist.mjs', 'nodejs\node.exe', 'cli\myagents.js', 'cuse.exe')) {
+    foreach ($relative in @('myagents.exe', 'server-dist.js', 'plugin-bridge-dist.mjs', 'nodejs\node.exe', 'cli\myagents.js', 'cuse.exe', 'azgaar\index.html', 'azgaar\LICENSE')) {
         if (-not (Test-Path -LiteralPath (Join-Path $script:StagingPath $relative) -PathType Leaf)) {
             throw "Staging validation failed: $relative"
         }

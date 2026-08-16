@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   BUILTIN_TITLE_TIMEOUT_MS,
+  OneShotTextTimeoutError,
   buildExternalTitleSessionOptions,
   extractTitleTextFromSdkMessage,
+  extractOneShotSdkError,
+  extractOneShotToolContextFromSdkMessage,
+  isOneShotMaxTurnsError,
+  resolveOneShotReadToolCallLimit,
+  resolveOneShotTextMaxTurns,
 } from './title-generator';
 
 describe('extractTitleTextFromSdkMessage', () => {
@@ -67,6 +73,58 @@ describe('extractTitleTextFromSdkMessage', () => {
 describe('BUILTIN_TITLE_TIMEOUT_MS', () => {
   it('keeps builtin title generation within the same 30s budget as external title generation', () => {
     expect(BUILTIN_TITLE_TIMEOUT_MS).toBe(30_000);
+  });
+});
+
+describe('OneShotTextTimeoutError', () => {
+  it('preserves the bounded one-shot deadline for the API error response', () => {
+    const error = new OneShotTextTimeoutError(150_000);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('OneShotTextTimeoutError');
+    expect(error.timeoutMs).toBe(150_000);
+  });
+});
+
+describe('resolveOneShotTextMaxTurns', () => {
+  it('applies the extended tool budget while keeping tool-free runs single-turn', () => {
+    expect(resolveOneShotTextMaxTurns(16, true)).toBe(16);
+    expect(resolveOneShotTextMaxTurns(999, true)).toBe(16);
+    expect(resolveOneShotTextMaxTurns(16, false)).toBe(1);
+  });
+});
+
+describe('one-shot max-turn recovery', () => {
+  it('recognizes the SDK terminal error and keeps only successful tool returns', () => {
+    expect(extractOneShotSdkError({
+      type: 'result',
+      subtype: 'error_max_turns',
+      errors: ['Claude Code returned an error result: Reached maximum number of turns (16)'],
+    })).toContain('Reached maximum number of turns');
+    expect(isOneShotMaxTurnsError(new Error('error_max_turns'))).toBe(true);
+    expect(extractOneShotToolContextFromSdkMessage({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', content: [{ type: 'text', text: '世界架构资料' }] },
+          { type: 'tool_result', is_error: true, content: [{ type: 'text', text: '不要保留' }] },
+        ],
+      },
+    })).toBe('世界架构资料');
+  });
+});
+
+describe('resolveOneShotReadToolCallLimit', () => {
+  it('accepts a bounded declarative recovery limit', () => {
+    expect(resolveOneShotReadToolCallLimit('5')).toBe(5);
+    expect(resolveOneShotReadToolCallLimit(3.6)).toBe(4);
+    expect(resolveOneShotReadToolCallLimit('0')).toBe(1);
+    expect(resolveOneShotReadToolCallLimit('99')).toBe(10);
+  });
+
+  it('ignores malformed limits', () => {
+    expect(resolveOneShotReadToolCallLimit(undefined)).toBeUndefined();
+    expect(resolveOneShotReadToolCallLimit('five')).toBeUndefined();
+    expect(resolveOneShotReadToolCallLimit('5.5')).toBeUndefined();
   });
 });
 

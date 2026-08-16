@@ -70,7 +70,7 @@ import {
   type ProviderVerifyStatus,
 } from '@/config/types';
 import { type Tab, type InitialMessage, type LaunchSessionBirthHint, type SidecarConfigDisposition, type FilePreviewIntent, createNewTab, getFolderName, buildChatFlipPatch, generateTabId, isWorkbenchAgentSurfaceTab, MAX_TABS } from '@/types/tab';
-import type { OpenWorkbenchRequest, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchProjection, WorkbenchProjectionEntity, WorkbenchProjectionRef, WorkbenchSearch } from '../shared/workbench-sdk';
+import type { OpenWorkbenchRequest, WorkbenchAiRunProgress, WorkbenchAiRunRequest, WorkbenchAiRunResult, WorkbenchAgentSessionRequest, WorkbenchModelSelection, WorkbenchProjection, WorkbenchProjectionEntity, WorkbenchProjectionRef, WorkbenchSearch } from '../shared/workbench-sdk';
 import { WORKBENCH_AGENT_SESSION_REQUEST_VERSION } from '../shared/workbench-sdk';
 import { dispatchWorkbenchHostAction, type WorkbenchNavigationGuard } from '@/workbench-sdk';
 import { createWorkbenchTab, isSameWorkbenchTab } from '@/workbench-sdk/tab';
@@ -364,8 +364,16 @@ interface TabContentProps {
   onFilePreviewIntentConsumed?: (tabId: string, intentId: string) => void;
   onUpdateWorkbenchRoute?: (tabId: string, route: string) => void;
   onRegisterWorkbenchNavigationGuard?: (tabId: string, guard: WorkbenchNavigationGuard | null) => void;
-  onOpenWorkbenchAgentSession?: (workspacePath: string, request: WorkbenchAgentSessionRequest) => Promise<void>;
+  onOpenWorkbenchAgentSession?: (
+    workspacePath: string,
+    request: WorkbenchAgentSessionRequest,
+    sourceWorkbenchTabId?: string,
+  ) => Promise<void>;
   onRunWorkbenchAi?: (workspacePath: string, request: WorkbenchAiRunRequest) => Promise<WorkbenchAiRunResult>;
+  onSubscribeWorkbenchAiRunProgress?: (
+    runId: string,
+    listener: (progress: WorkbenchAiRunProgress) => void,
+  ) => () => void;
   onProvideWorkbenchSearch?: (workspacePath: string) => WorkbenchSearch | null;
   onProvideWorkbenchProjection?: (workspacePath: string) => WorkbenchProjection | null;
   onSettingsSectionChange: () => void;
@@ -392,7 +400,7 @@ export const MemoizedTabContent = memo(function TabContent({
   claimSessionOpeningTransition,
   onSidecarConfigAdopted, onFilePreviewIntentConsumed,
   onUpdateWorkbenchRoute, onRegisterWorkbenchNavigationGuard,
-  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onProvideWorkbenchSearch, onProvideWorkbenchProjection,
+  onOpenWorkbenchAgentSession, onRunWorkbenchAi, onSubscribeWorkbenchAiRunProgress, onProvideWorkbenchSearch, onProvideWorkbenchProjection,
   onLauncherWorkspaceSelectionChange,
   settingsInitialSection,
   capabilityInitialSection,
@@ -421,6 +429,15 @@ export const MemoizedTabContent = memo(function TabContent({
   const claimTabSessionOpeningTransition = useCallback(
     (sessionId: string) => claimSessionOpeningTransition(sessionId, tab.id),
     [claimSessionOpeningTransition, tab.id],
+  );
+  const openWorkbenchAgentSession = useCallback(
+    async (workspacePath: string, request: WorkbenchAgentSessionRequest) => {
+      if (!onOpenWorkbenchAgentSession) {
+        throw new Error('MyAgents Agent Session host is unavailable');
+      }
+      await onOpenWorkbenchAgentSession(workspacePath, request, tab.id);
+    },
+    [onOpenWorkbenchAgentSession, tab.id],
   );
   return (
     <div
@@ -484,8 +501,11 @@ export const MemoizedTabContent = memo(function TabContent({
             isActive={isActive}
             onNavigate={(route) => onUpdateWorkbenchRoute?.(tab.id, route)}
             onNavigationGuardChange={(guard) => onRegisterWorkbenchNavigationGuard?.(tab.id, guard)}
-            onOpenAgentSession={onOpenWorkbenchAgentSession}
+            onOpenAgentSession={
+              onOpenWorkbenchAgentSession ? openWorkbenchAgentSession : undefined
+            }
             onRunAi={onRunWorkbenchAi}
+            onSubscribeAiRunProgress={onSubscribeWorkbenchAiRunProgress}
             onProvideSearch={onProvideWorkbenchSearch}
             onProvideProjection={onProvideWorkbenchProjection}
           />
@@ -505,7 +525,10 @@ export const MemoizedTabContent = memo(function TabContent({
         >
           <Suspense fallback={<ChatBootOverlay />}>
             <Chat
-              compactAgentSurface={tab.workbenchAgentSurface?.presentation === 'compact-review'}
+              compactAgentSurface={
+                tab.workbenchAgentSurface?.presentation === 'compact-review' ||
+                tab.workbenchAgentSurface?.presentation === 'embedded-review'
+              }
               isWindowFocused={isWindowFocused}
               workbenchSurface={tab.workbenchAgentSurface?.workbenchId === NOVEL_WORKBENCH_ID
                 ? {
@@ -513,6 +536,7 @@ export const MemoizedTabContent = memo(function TabContent({
                   title: tab.workbenchAgentSurface.bootstrap?.title,
                   promptContent: tab.workbenchAgentSurface.bootstrap?.systemPrompt,
                   toolset: tab.workbenchAgentSurface.toolset,
+                  embedded: tab.workbenchAgentSurface.embeddedSurfaceId !== undefined,
                 }
                 : undefined}
               onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySessionInCurrentTab(tab.id, sessionId, title, historyEntrySource)}
@@ -668,6 +692,9 @@ export default function App() {
 
   const configuredWorkbenchToolsetsRef = useRef(new Map<string, string>());
   const persistedWorkbenchHistoryGroupsRef = useRef(new Map<string, string>());
+  const workbenchAiRunProgressListenersRef = useRef(
+    new Map<string, Set<(progress: WorkbenchAiRunProgress) => void>>(),
+  );
 
   useEffect(() => {
     const liveSurfaceIds = new Set<string>();
@@ -1862,6 +1889,8 @@ export default function App() {
     sessionBirthHint?: LaunchSessionBirthHint,
     launchOptions?: {
       readonly launchTabId?: string;
+      /** Keep the workbench that owns an embedded Agent surface visible. */
+      readonly preserveActiveTabId?: string;
     },
   ) => {
     // Agent surfaces are launched from an existing workbench tab. Bind the
@@ -1869,6 +1898,7 @@ export default function App() {
     // workbench active, so a cold sidecar never replaces the workbench with a
     // blank launcher/chat view during startup.
     const activeTabId = launchOptions?.launchTabId ?? activeTabIdRef.current;
+    const preservedActiveTabId = launchOptions?.preserveActiveTabId ?? null;
     if (!activeTabId) return;
 
     // Per-tab launch guard: prevent concurrent launches on the same tab
@@ -2111,7 +2141,7 @@ export default function App() {
               : t
           )
         );
-        if (targetTabId !== activeTabId) {
+        if (targetTabId !== activeTabId && !preservedActiveTabId) {
           setActiveTabId(targetTabId);
         }
       });
@@ -2178,6 +2208,12 @@ export default function App() {
     } finally {
       launchingTabRef.current = null;
       setLoadingTabs((prev) => ({ ...prev, [activeTabId]: false, [targetTabId]: false }));
+      if (
+        preservedActiveTabId &&
+        tabsRef.current.some((tab) => tab.id === preservedActiveTabId)
+      ) {
+        setActiveTabId(preservedActiveTabId);
+      }
     }
   }, [configProjects, setActiveTabId, t]);
 
@@ -3142,6 +3178,24 @@ export default function App() {
     return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_WORKBENCH, handler);
   }, [handleOpenWorkbench]);
 
+  const handleSubscribeWorkbenchAiRunProgress = useCallback(
+    (
+      runId: string,
+      listener: (progress: WorkbenchAiRunProgress) => void,
+    ) => {
+      const listeners = workbenchAiRunProgressListenersRef.current.get(runId) ?? new Set();
+      listeners.add(listener);
+      workbenchAiRunProgressListenersRef.current.set(runId, listeners);
+      return () => {
+        const current = workbenchAiRunProgressListenersRef.current.get(runId);
+        if (!current) return;
+        current.delete(listener);
+        if (!current.size) workbenchAiRunProgressListenersRef.current.delete(runId);
+      };
+    },
+    [],
+  );
+
   const handleRunWorkbenchAi = useCallback(async (
     workspacePath: string,
     request: WorkbenchAiRunRequest,
@@ -3181,13 +3235,56 @@ export default function App() {
       throw new Error('工作台一次性 AI 生成暂不支持运行时托管的模型服务');
     }
 
+    let runPending = true;
+    let latestRevision = 0;
+    const pollProgress = async () => {
+      if (!request.runId) return;
+      while (runPending) {
+        try {
+          const progressResponse = await globalSidecarFetch(
+            `/api/workbench-ai/run/${encodeURIComponent(request.runId)}`,
+          );
+          if (progressResponse.ok) {
+            const progressPayload = await progressResponse.json() as {
+              success?: boolean;
+              progress?: WorkbenchAiRunProgress;
+            };
+            const progress = progressPayload.progress;
+            if (
+              progressPayload.success &&
+              progress &&
+              progress.runId === request.runId &&
+              progress.revision > latestRevision
+            ) {
+              latestRevision = progress.revision;
+              for (const listener of workbenchAiRunProgressListenersRef.current.get(request.runId) ?? []) {
+                listener(progress);
+              }
+            }
+          }
+        } catch {
+          // The final request retains error authority; a transient status read
+          // must not interrupt the one-shot generation already in progress.
+        }
+        if (!runPending) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 350));
+      }
+    };
+    void pollProgress();
+    try {
     const response = await globalSidecarFetch('/api/workbench-ai/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         workspacePath,
+        runId: request.runId,
+        label: request.label,
         prompt: request.prompt,
         systemPrompt: request.systemPrompt,
+        executionProfile: request.executionProfile,
+        timeoutMs: request.timeoutMs,
+        maxTurns: request.maxTurns,
+        toolset: request.toolset,
         providerId: selection.provider.id,
         model: selection.model,
       }),
@@ -3197,6 +3294,9 @@ export default function App() {
       throw new Error(payload.error ?? 'AI 生成失败');
     }
     return { output: payload.output };
+    } finally {
+      runPending = false;
+    }
   }, []);
 
   /** 宿主工作台搜索提供者：Tauri 桌面端复用 Tantivy 工作区索引，浏览器模式不可用。 */
@@ -3251,6 +3351,7 @@ export default function App() {
   const handleOpenWorkbenchAgentSession = useCallback(async (
     workspacePath: string,
     request: WorkbenchAgentSessionRequest,
+    sourceWorkbenchTabId?: string,
   ) => {
     const presentation = request.presentation ?? 'tab';
     const isSurfacePresentation = presentation !== 'tab';
@@ -3258,12 +3359,20 @@ export default function App() {
       ? 'dock' as const
       : presentation === 'compact-review'
         ? 'compact-review' as const
+        : presentation === 'embedded-review'
+          ? 'embedded-review' as const
         : 'dialog' as const;
-    const sourceTabId = activeTabIdRef.current;
+    // Surface ownership belongs to the workbench that invoked this request.
+    // Never infer it from the globally active tab: session startup is async,
+    // and the active tab can already be a previous Agent conversation.
+    const sourceTabId = sourceWorkbenchTabId ?? activeTabIdRef.current;
     const sourceTab = tabsRef.current.find((tab) => tab.id === sourceTabId);
     const workbenchId = sourceTab?.workbench?.workbenchId;
-    if (!sourceTabId || !workbenchId) {
+    if (!sourceTabId || sourceTab?.view !== 'workbench' || !workbenchId) {
       throw new Error('工作台 Agent 会话必须从已打开的工作台中发起');
+    }
+    if (!workspacePathsEqual(sourceTab.agentDir, workspacePath)) {
+      throw new Error('工作台 Agent 会话的项目归属已变化，请返回当前项目后重试');
     }
     const project = configProjectsRef.current.find((candidate) =>
       workspacePathsEqual(candidate.path, workspacePath),
@@ -3285,9 +3394,14 @@ export default function App() {
       tab.workbenchAgentSurface?.workbenchId === workbenchId &&
       tab.workbenchAgentSurface.conversationKey === conversationKey &&
       workspacePathsEqual(tab.workbenchAgentSurface.workspacePath, workspacePath);
+    const matchesEmbeddedSurface = (tab: Tab): boolean =>
+      Boolean(request.embeddedSurfaceId) &&
+      tab.workbenchAgentSurface?.workbenchId === workbenchId &&
+      tab.workbenchAgentSurface.embeddedSurfaceId === request.embeddedSurfaceId &&
+      workspacePathsEqual(tab.workbenchAgentSurface.workspacePath, workspacePath);
 
-    const closeConversationSurfaces = () => {
-      const closingTabs = tabsRef.current.filter(matchesConversation);
+    const closeAgentSurfaces = (matches: (tab: Tab) => boolean) => {
+      const closingTabs = tabsRef.current.filter(matches);
       if (closingTabs.length === 0) return;
       const closingIds = new Set(closingTabs.map((tab) => tab.id));
       const nextTabs = tabsRef.current.filter((tab) => !closingIds.has(tab.id));
@@ -3306,12 +3420,19 @@ export default function App() {
         })();
       }
     };
+    const closeConversationSurfaces = () => closeAgentSurfaces(matchesConversation);
 
     let resumeSession: { id: string } | null = null;
     if (isSurfacePresentation) {
       if (request.forceNew) {
         clearWorkbenchAgentConversation(workbenchId, workspacePath, conversationKey);
         closeConversationSurfaces();
+        // A workbench mount can only host one live session. Full generation
+        // uses a chapter-stable mount id, so clear a prior run before the new
+        // Agent is allowed to attach to the same pair of DOM regions.
+        if (request.embeddedSurfaceId) {
+          closeAgentSurfaces(matchesEmbeddedSurface);
+        }
       } else {
         const existing = tabsRef.current.find(matchesConversation);
         if (existing) {
@@ -3351,6 +3472,7 @@ export default function App() {
                   ...tab.workbenchAgentSurface,
                   presentation: surfacePresentation,
                   sourceTabId,
+                  embeddedSurfaceId: request.embeddedSurfaceId,
                   toolset: request.toolset,
                   companion: request.companion,
                   bootstrap: surfaceBootstrap,
@@ -3448,6 +3570,7 @@ export default function App() {
       workbenchAgentSurface: {
         presentation: surfacePresentation,
         sourceTabId,
+        embeddedSurfaceId: request.embeddedSurfaceId,
         workbenchId,
         workspacePath,
         conversationKey,
@@ -3480,7 +3603,10 @@ export default function App() {
             { surface: 'agent_card', entryIntent: 'send_message' },
             undefined,
             isSurfacePresentation && launchTab
-              ? { launchTabId: launchTab.id }
+              ? {
+                  launchTabId: launchTab.id,
+                  preserveActiveTabId: sourceTabId,
+                }
               : undefined,
           ).then(() => true);
       if (!opened) return;
@@ -3519,6 +3645,7 @@ export default function App() {
               workbenchAgentSurface: {
                 presentation: surfacePresentation,
                 sourceTabId,
+                embeddedSurfaceId: request.embeddedSurfaceId,
                 workbenchId,
                 workspacePath,
                 conversationKey,
@@ -4138,7 +4265,12 @@ export default function App() {
       title: surface.bootstrap.title,
       initialMessage: surface.bootstrap.initialMessage,
       ...(surface.bootstrap.systemPrompt ? { systemPrompt: surface.bootstrap.systemPrompt } : {}),
-      presentation: surface.companion ? 'compact-review' : 'dialog',
+      presentation: surface.presentation === 'embedded-review'
+        ? 'embedded-review'
+        : surface.companion
+          ? 'compact-review'
+          : 'dialog',
+      ...(surface.embeddedSurfaceId ? { embeddedSurfaceId: surface.embeddedSurfaceId } : {}),
       conversationKey: surface.conversationKey,
       forceNew: true,
       ...(surface.bootstrap.promptId ? { promptId: surface.bootstrap.promptId } : {}),
@@ -4153,7 +4285,11 @@ export default function App() {
       setActiveTabId(surface.sourceTabId);
     }
     try {
-      await handleOpenWorkbenchAgentSession(surface.workspacePath, restartRequest);
+      await handleOpenWorkbenchAgentSession(
+        surface.workspacePath,
+        restartRequest,
+        surface.sourceTabId,
+      );
     } catch (error) {
       toastRef.current.error(error instanceof Error ? error.message : String(error));
     }
@@ -4165,6 +4301,7 @@ export default function App() {
     if (tabsRef.current.some((tab) => tab.id === surface.sourceTabId)) {
       setActiveTabId(surface.sourceTabId);
     }
+    if (surface.embeddedSurfaceId) return;
     if (surface.companion) {
       setTabs((current) => current.map((tab) =>
         tab.id === tabId && tab.workbenchAgentSurface
@@ -4295,6 +4432,7 @@ export default function App() {
             onRegisterWorkbenchNavigationGuard={registerWorkbenchNavigationGuard}
             onOpenWorkbenchAgentSession={handleOpenWorkbenchAgentSession}
             onRunWorkbenchAi={handleRunWorkbenchAi}
+            onSubscribeWorkbenchAiRunProgress={handleSubscribeWorkbenchAiRunProgress}
             sessionNotificationBadgeCounts={tab.id === activeTabId ? sessionNotificationBadgeCounts : undefined}
             taskCenterPendingIntent={taskCenterPendingIntent}
             taskCenterCurrentSessionId={taskCenterCurrentSessionId}
@@ -4347,6 +4485,7 @@ export default function App() {
               onRegisterWorkbenchNavigationGuard={registerWorkbenchNavigationGuard}
               onOpenWorkbenchAgentSession={handleOpenWorkbenchAgentSession}
               onRunWorkbenchAi={handleRunWorkbenchAi}
+              onSubscribeWorkbenchAiRunProgress={handleSubscribeWorkbenchAiRunProgress}
               onProvideWorkbenchSearch={provideWorkbenchSearch}
               onProvideWorkbenchProjection={provideWorkbenchProjection}
               sessionNotificationBadgeCounts={undefined}
@@ -4368,9 +4507,11 @@ export default function App() {
                 hasUnread: false,
                 workbenchAgentSurface: {
                   ...tab.workbenchAgentSurface,
-                  presentation: tab.workbenchAgentSurface.companion
-                    ? 'compact-review'
-                    : 'dialog',
+                  presentation: tab.workbenchAgentSurface.embeddedSurfaceId
+                    ? 'embedded-review'
+                    : tab.workbenchAgentSurface.companion
+                      ? 'compact-review'
+                      : 'dialog',
                 },
               }
               : tab,

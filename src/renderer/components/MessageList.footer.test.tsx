@@ -120,6 +120,29 @@ describe('MessageList footer status positioning', () => {
     expect(trace).toHaveTextContent('正在调用工具：Read');
   });
 
+  it('hides the duplicate execution trace for embedded workbenches while keeping system status visible', () => {
+    const { rerender } = renderList({
+      isLoading: true,
+      executionMode: true,
+      showExecutionTrace: false,
+      sessionState: 'running',
+    });
+
+    expect(document.querySelector('[data-agent-execution-trace]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-chat-status-row]')).not.toBeInTheDocument();
+
+    const props: React.ComponentProps<typeof MessageList> = createBaseProps({
+      isLoading: true,
+      executionMode: true,
+      showExecutionTrace: false,
+      systemStatus: 'api_retry:1:3',
+    });
+    rerender(<MessageList {...props} />);
+
+    expect(document.querySelector('[data-agent-execution-trace]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-chat-status-row]')).toBeInTheDocument();
+  });
+
   it('uses the same footer slot for idle system notices', () => {
     renderList({
       systemNotice: { kind: 'compact', level: 'success', message: 'Saved' },

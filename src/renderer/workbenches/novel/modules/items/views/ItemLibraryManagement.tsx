@@ -25,7 +25,9 @@ import {
   CustomSelect,
   DraggableDialogFrame,
   type SelectOption,
+  type WorkbenchNavigationGuard,
 } from "@/workbench-sdk";
+import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard";
 
 import type { LoadedItemLibrary } from "../data-access/itemLibraryRepository";
 import {
@@ -427,6 +429,9 @@ interface ItemLibraryManagementProps {
   readonly isSaving: boolean;
   readonly onSave: (meta: ItemLibraryMeta) => Promise<void>;
   readonly onClose: () => void;
+  readonly registerNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
 }
 
 export default function ItemLibraryManagement({
@@ -434,6 +439,7 @@ export default function ItemLibraryManagement({
   isSaving,
   onSave,
   onClose,
+  registerNavigationGuard,
 }: ItemLibraryManagementProps) {
   const [draft, setDraft] = useState(library.meta);
   const [selectedCategoryId, setSelectedCategoryId] = useState(
@@ -653,6 +659,14 @@ export default function ItemLibraryManagement({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
+      {registerNavigationGuard && (
+        <NarrativeUnsavedChangesGuard
+          dirty={dirty}
+          label="物品分类与字段"
+          registerNavigationGuard={registerNavigationGuard}
+          onSave={save}
+        />
+      )}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4">
         <div className="flex min-w-0 items-center gap-3">
           <button

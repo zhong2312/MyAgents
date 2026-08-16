@@ -37,6 +37,10 @@ import RuntimeDiagnosticsBanner from '@/components/RuntimeDiagnosticsBanner';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import WorkspaceConfigPanel, { type Tab as WorkspaceTab } from '@/components/WorkspaceConfigPanel';
 import WorkbenchReferencePanel from '@/components/WorkbenchReferencePanel';
+import {
+  shouldRenderWorkbenchReferencePanel,
+  type ChatWorkbenchSurface,
+} from '@/pages/chatWorkbenchSurface';
 import CronTaskSettingsModal, {
   GOAL_SLASH_PRESET,
   type CronInitialConfig,
@@ -434,10 +438,7 @@ interface ChatProps {
   /** Native desktop-window focus projection; independent from internal Tab activity. */
   isWindowFocused: boolean;
   /** Novel workbench sessions replace the generic right workspace with references. */
-  workbenchSurface?: {
-    promptId?: string;
-    title?: string;
-    promptContent?: string;
+  workbenchSurface?: ChatWorkbenchSurface & {
     toolset?: InitialMessage['workbenchToolset'];
   };
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
@@ -5344,6 +5345,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
               isStreaming={isLoading || sessionState === 'running' || sessionState === 'starting'}
               sessionState={sessionState}
               executionMode={compactAgentSurface}
+              showExecutionTrace={!workbenchSurface?.embedded}
               onRewind={isExternalRuntime
                 ? (codexConversationBranchSupported
                   && !isLoading
@@ -5564,7 +5566,7 @@ export default function Chat({ compactAgentSurface = false, isWindowFocused, wor
       )}
       </div>{/* End left-side wrapper */}
 
-      {isNovelWorkbenchSurface && (
+      {shouldRenderWorkbenchReferencePanel(workbenchSurface) && (
         <WorkbenchReferencePanel
           promptId={workbenchSurface?.promptId}
           promptTitle={workbenchSurface?.title}

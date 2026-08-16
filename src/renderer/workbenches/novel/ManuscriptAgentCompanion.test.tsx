@@ -54,7 +54,11 @@ function createProposal(): ManuscriptProposal {
   };
 }
 
-function renderCompanion(storage: NovelMemoryStorage, isAgentRunning = false) {
+function renderCompanion(
+  storage: NovelMemoryStorage,
+  isAgentRunning = false,
+  targetWordCount?: number,
+) {
   useWorkbenchStorageMock.mockReturnValue(storage);
   return render(
     <ManuscriptAgentCompanion
@@ -64,6 +68,9 @@ function renderCompanion(storage: NovelMemoryStorage, isAgentRunning = false) {
       context={{
         runId: "manuscript-run-1",
         chapterId: "chapter-000001",
+        ...(targetWordCount
+          ? { targetWordCount: String(targetWordCount) }
+          : {}),
       }}
       isAgentRunning={isAgentRunning}
     />,
@@ -103,5 +110,35 @@ describe("ManuscriptAgentCompanion", () => {
       expect(storage.getText(proposal.source.chapterPath)).toBe("新段二");
       expect(screen.getByText("已应用")).toBeInTheDocument();
     });
+  });
+
+  it("按逐段选择后的实际内容执行章节字数约束", async () => {
+    const proposal = createProposal();
+    const replacementStart = "前缀\n\n".length;
+    const replacementEnd = replacementStart + "旧段一".length;
+    const rangedProposal: ManuscriptProposal = {
+      ...proposal,
+      source: {
+        ...proposal.source,
+        sourceContent: "前缀\n\n旧段一\n\n后缀",
+        rangeStart: replacementStart,
+        rangeEnd: replacementEnd,
+      },
+    };
+    const storage = new NovelMemoryStorage({
+      [rangedProposal.source.chapterPath]: rangedProposal.source.sourceContent,
+      [`manuscript/proposals/${rangedProposal.proposalId}/proposal.json`]:
+        serializeManuscriptProposal(rangedProposal),
+    });
+    renderCompanion(storage, false, 7);
+
+    await screen.findByTestId("manuscript-diff");
+    fireEvent.click(screen.getByRole("button", { name: "逐段选择" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "新段一" }));
+
+    expect(
+      screen.getByLabelText("应用后正文 7 字，本章目标 7 字"),
+    ).toHaveTextContent("7 / 7 字");
+    expect(screen.getByRole("button", { name: "应用为新修订" })).toBeEnabled();
   });
 });

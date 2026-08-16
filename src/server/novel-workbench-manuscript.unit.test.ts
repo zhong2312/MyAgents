@@ -222,6 +222,70 @@ describe("novel manuscript proposal submission", () => {
     });
   });
 
+  it("拒绝混用候选 ID 或跳过首块追加，避免覆盖正文草稿", async () => {
+    const payload = {
+      title: "候选一致性",
+      description: "",
+      runId: "manuscript-run-candidate-contract",
+      chapterId: "chapter-000001",
+      chapterTitle: "第一章",
+      chapterPath: "manuscript/chapters/000001.md",
+      baseSourceHash: "0".repeat(64),
+      sourceContent: "",
+      mode: "generate" as const,
+      rangeStart: 0,
+      rangeEnd: 0,
+      candidate: null,
+    };
+    const draft = await createNovelWorkbenchDraft(
+      workspace,
+      "manuscript",
+      {
+        promptId: "novel.manuscript.generate",
+        promptVersion: "1.0.0",
+        sessionId: "session-1",
+      },
+      payload,
+      "draft-manuscript-candidate-contract",
+    );
+    const upsert = mocks.handlers.get("novel_manuscript_upsert_candidate")!;
+
+    const missingFirstChunk = (await upsert({
+      draftId: draft.draftId,
+      candidateId: "candidate-contract",
+      content: "不应写入",
+      append: true,
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(missingFirstChunk.isError).toBe(true);
+    expect(JSON.parse(missingFirstChunk.content[0]!.text).error).toContain(
+      "首块不能使用 append=true",
+    );
+
+    await upsert({
+      draftId: draft.draftId,
+      candidateId: "candidate-contract",
+      content: "首块正文。",
+    });
+    const mixedCandidateId = (await upsert({
+      draftId: draft.draftId,
+      candidateId: "candidate-other",
+      content: "不应覆盖",
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(mixedCandidateId.isError).toBe(true);
+    expect(JSON.parse(mixedCandidateId.content[0]!.text).error).toContain(
+      "不能混用不同的候选 ID",
+    );
+    expect(
+      (
+        await loadNovelWorkbenchDraft<typeof payload>(
+          workspace,
+          "manuscript",
+          draft.draftId,
+        )
+      ).payload.candidate,
+    ).toEqual({ id: "candidate-contract", content: "首块正文。" });
+  });
+
   it("连续性工具默认只返回批次摘要，按 batchId 才展开记录", async () => {
     const trackingFiles = createManuscriptTrackingFiles({
       schemaVersion: 3,

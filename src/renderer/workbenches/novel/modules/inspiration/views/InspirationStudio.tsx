@@ -18,6 +18,10 @@ interface InspirationStudioProps {
   readonly isActive: boolean;
   readonly projectTitle: string;
   readonly focus?: DomainEntityRef | null;
+  readonly quickCreateRequest?: {
+    readonly kind: "inspiration";
+    readonly token: number;
+  };
   readonly onOpenAiAgent?: (
     request: InspirationAiAgentRequest,
   ) => Promise<void>;
@@ -32,6 +36,7 @@ export default function InspirationStudio({
   projectTitle,
   onOpenAiAgent,
   focus,
+  quickCreateRequest,
   registerNavigationGuard,
 }: InspirationStudioProps) {
   const controller = useInspirationProject(storage, isActive);
@@ -100,6 +105,7 @@ export default function InspirationStudio({
       onOpenAiAgent={onOpenAiAgent}
       onConvertToNarrative={convertToNarrative}
       focus={focus}
+      quickCreateRequest={quickCreateRequest}
       registerNavigationGuard={registerNavigationGuard}
     />
   );

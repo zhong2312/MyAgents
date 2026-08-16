@@ -15,12 +15,12 @@
 //   - No React state lives in here; stable reference identity comes from
 //     useCallback so consumers can put it in effect deps without churn.
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from "react";
 
-import { i18n } from '@/i18n';
-import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
-import { apiPostJson } from '@/api/apiFetch';
-import type { WorkbenchProjectInitialization } from '../../shared/workbench-sdk';
+import { i18n } from "@/i18n";
+import { isBrowserDevMode, isTauriEnvironment } from "@/utils/browserMock";
+import { apiPostJson } from "@/api/apiFetch";
+import type { WorkbenchProjectInitialization } from "../../shared/workbench-sdk";
 
 function workspaceFileText(key: string): string {
   return String(i18n.t(`app:workspaceFile.${key}`));
@@ -40,7 +40,7 @@ interface DirectoryTreeNode {
   id: string;
   name: string;
   path: string;
-  type: 'file' | 'dir';
+  type: "file" | "dir";
   children?: DirectoryTreeNode[];
   loaded?: boolean;
 }
@@ -151,14 +151,14 @@ interface PrepareUserImageAttachmentsResponse {
 interface FileSearchResult {
   path: string;
   name: string;
-  type: 'file' | 'dir';
+  type: "file" | "dir";
 }
 
 interface SlashCommand {
   name: string;
   description: string;
-  source: 'builtin' | 'custom' | 'skill';
-  scope?: 'user' | 'project';
+  source: "builtin" | "custom" | "skill";
+  scope?: "user" | "project";
   path?: string;
   folderName?: string;
   fileName?: string;
@@ -173,7 +173,7 @@ interface SlashCommandsResponse {
 // Phase D.5 — batch existence check for inline-code paths in AI output.
 interface PathInfo {
   exists: boolean;
-  type: 'file' | 'dir';
+  type: "file" | "dir";
 }
 
 interface CheckPathsResult {
@@ -276,7 +276,10 @@ export interface WorkspaceFileService {
    *  broken symlink). Default goes to the OS trash; `permanent: true` keeps
    *  unlink semantics for scratch-file cleanup (don't pollute the trash with
    *  files the user never saw). */
-  deleteFile(args: { path: string; permanent?: boolean }): Promise<DeleteResult>;
+  deleteFile(args: {
+    path: string;
+    permanent?: boolean;
+  }): Promise<DeleteResult>;
   /** [requires workspace] List slash-command picker entries — global + project skills + builtins. */
   listSlashCommands(): Promise<SlashCommandsResponse>;
   // ─── Phase D: DirectoryPanel ops ───
@@ -296,11 +299,17 @@ export interface WorkspaceFileService {
   /** [requires workspace] */
   newFile(args: { parentDir: string; name: string }): Promise<CreatePathResult>;
   /** [requires workspace] */
-  newFolder(args: { parentDir: string; name: string }): Promise<CreatePathResult>;
+  newFolder(args: {
+    parentDir: string;
+    name: string;
+  }): Promise<CreatePathResult>;
   /** [requires workspace] */
   rename(args: { oldPath: string; newName: string }): Promise<RenameResult>;
   /** [requires workspace] */
-  movePaths(args: { sourcePaths: string[]; targetDir: string }): Promise<MoveResult>;
+  movePaths(args: {
+    sourcePaths: string[];
+    targetDir: string;
+  }): Promise<MoveResult>;
   /** [requires workspace] */
   openInFinder(args: { path: string }): Promise<void>;
   /** [requires workspace] */
@@ -314,19 +323,37 @@ export interface WorkspaceFileService {
    *  callers whose path may live under `<project>/.claude/skills/...` on a
    *  non-system drive (issue #125 follow-up — Windows workspaces on `D:\`).
    *  Credential blacklist still applies. */
-  openPathExternal(args: { fullPath: string; workspace?: string | null }): Promise<void>;
+  openPathExternal(args: {
+    fullPath: string;
+    workspace?: string | null;
+  }): Promise<void>;
   /** [workspace-free] Open an absolute path with the OS default app (hand off like
    *  `open <path>`). Same safety surface as `openPathExternal` (home/tmp prefix +
    *  credential blacklist). Used by the audio attachment "more" menu (PRD 0.2.30). */
-  openPathWithDefault(args: { fullPath: string; workspace?: string | null }): Promise<void>;
+  openPathWithDefault(args: {
+    fullPath: string;
+    workspace?: string | null;
+  }): Promise<void>;
   /** [workspace-free] Batch existence check for absolute local paths. */
-  checkLocalPaths(args: { paths: string[]; workspace?: string | null }): Promise<CheckPathsResult>;
+  checkLocalPaths(args: {
+    paths: string[];
+    workspace?: string | null;
+  }): Promise<CheckPathsResult>;
   /** [workspace-free] Read an absolute local text file for preview. */
-  readLocalPreview(args: { fullPath: string; workspace?: string | null }): Promise<PreviewResult>;
+  readLocalPreview(args: {
+    fullPath: string;
+    workspace?: string | null;
+  }): Promise<PreviewResult>;
   /** [workspace-free] Read an absolute local file as base64 for image preview. */
-  downloadLocalFile(args: { fullPath: string; workspace?: string | null }): Promise<DownloadResult>;
+  downloadLocalFile(args: {
+    fullPath: string;
+    workspace?: string | null;
+  }): Promise<DownloadResult>;
   /** [workspace-free] Read an absolute local file as raw bytes for rich-doc preview. */
-  downloadLocalFileBytes(args: { fullPath: string; workspace?: string | null }): Promise<ArrayBuffer>;
+  downloadLocalFileBytes(args: {
+    fullPath: string;
+    workspace?: string | null;
+  }): Promise<ArrayBuffer>;
   /** [requires workspace] Batch existence check — input order is preserved in the returned map. */
   checkPaths(args: { paths: string[] }): Promise<CheckPathsResult>;
   /** [requires workspace] Read a workspace file as a Blob URL (for `<img src=...>`
@@ -335,11 +362,20 @@ export interface WorkspaceFileService {
    *  object URL. */
   readFileAsBlobUrl(args: { path: string }): Promise<BlobUrlHandle>;
   /** [workspace-free] Read an absolute local file as a Blob URL (for image preview). */
-  readLocalFileAsBlobUrl(args: { fullPath: string; workspace?: string | null }): Promise<BlobUrlHandle>;
+  readLocalFileAsBlobUrl(args: {
+    fullPath: string;
+    workspace?: string | null;
+  }): Promise<BlobUrlHandle>;
   /** [requires workspace] Save edited content back to a workspace file.
    *  The file MUST already exist (no create-on-save). 2MB content cap.
    *  Atomic via tmp + rename. Resolves on success; rejects on failure. */
-  saveFile(args: { path: string; content: string; expectedContent?: string }): Promise<void>;
+  saveFile(args: {
+    path: string;
+    content: string;
+    expectedContent?: string;
+  }): Promise<void>;
+  /** [requires workspace] 原子写入既有二进制文件，内容以 base64 通过宿主边界。 */
+  saveBinaryFile(args: { path: string; contentBase64: string }): Promise<void>;
   /** [requires workspace] Read `<workspace>/CLAUDE.md`. `exists:false` is
    *  not an error — Settings UI shows an empty editor in that case. */
   readClaudeMd(): Promise<ReadClaudeMdResult>;
@@ -372,58 +408,68 @@ interface BlobUrlHandle {
   revoke: () => void;
 }
 
-export function useWorkspaceFileService(workspacePath: string | null): WorkspaceFileService {
+export function useWorkspaceFileService(
+  workspacePath: string | null,
+): WorkspaceFileService {
   const tauri = isTauriEnvironment();
   const browserDev = isBrowserDevMode();
 
-  const invokeIfTauri = useCallback(async <T,>(cmd: string, args: Record<string, unknown>): Promise<T> => {
-    if (!tauri) {
-      if (!browserDev || !workspacePath) {
-        throw new Error(workspaceFileText('desktopOnly'));
+  const invokeIfTauri = useCallback(
+    async <T>(cmd: string, args: Record<string, unknown>): Promise<T> => {
+      if (!tauri) {
+        if (!browserDev || !workspacePath) {
+          throw new Error(workspaceFileText("desktopOnly"));
+        }
+        const response = await apiPostJson<{ success: true; data: T }>(
+          "/api/workbench-dev-storage/request",
+          { workspacePath, command: cmd, args },
+        );
+        return response.data;
       }
-      const response = await apiPostJson<{ success: true; data: T }>(
-        '/api/workbench-dev-storage/request',
-        { workspacePath, command: cmd, args },
-      );
-      return response.data;
-    }
-    const { invoke } = await import('@tauri-apps/api/core');
-    return invoke<T>(cmd, args);
-  }, [browserDev, tauri, workspacePath]);
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<T>(cmd, args);
+    },
+    [browserDev, tauri, workspacePath],
+  );
 
   const requireWorkspace = useCallback(() => {
     if (!workspacePath) {
-      throw new Error(workspaceFileText('selectWorkspaceFirst'));
+      throw new Error(workspaceFileText("selectWorkspaceFirst"));
     }
     return workspacePath;
   }, [workspacePath]);
 
-  const initializeProject: WorkspaceFileService['initializeProject'] = useCallback(
-    async ({ workspacePath: targetPath, initialization }) => {
-      return invokeIfTauri<InitializeWorkspaceProjectResult>('cmd_workspace_initialize_project', {
-        workspacePath: targetPath,
-        initialization,
-      });
-    },
-    [invokeIfTauri],
-  );
+  const initializeProject: WorkspaceFileService["initializeProject"] =
+    useCallback(
+      async ({ workspacePath: targetPath, initialization }) => {
+        return invokeIfTauri<InitializeWorkspaceProjectResult>(
+          "cmd_workspace_initialize_project",
+          {
+            workspacePath: targetPath,
+            initialization,
+          },
+        );
+      },
+      [invokeIfTauri],
+    );
 
-  const importBase64Files: WorkspaceFileService['importBase64Files'] = useCallback(
-    async ({ files, targetDir }) => {
-      const ws = requireWorkspace();
-      return invokeIfTauri<ImportResult>('cmd_workspace_import_files_b64', {
-        workspace: ws,
-        files,
-        targetDir,
-      });
-    },
-    [requireWorkspace, invokeIfTauri],
-  );
+  const importBase64Files: WorkspaceFileService["importBase64Files"] =
+    useCallback(
+      async ({ files, targetDir }) => {
+        const ws = requireWorkspace();
+        return invokeIfTauri<ImportResult>("cmd_workspace_import_files_b64", {
+          workspace: ws,
+          files,
+          targetDir,
+        });
+      },
+      [requireWorkspace, invokeIfTauri],
+    );
 
-  const copyPaths: WorkspaceFileService['copyPaths'] = useCallback(
+  const copyPaths: WorkspaceFileService["copyPaths"] = useCallback(
     async ({ sourcePaths, targetDir, autoRename }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<CopyResult>('cmd_workspace_copy_paths', {
+      return invokeIfTauri<CopyResult>("cmd_workspace_copy_paths", {
         workspace: ws,
         sourcePaths,
         targetDir,
@@ -433,10 +479,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const copyInternal: WorkspaceFileService['copyInternal'] = useCallback(
+  const copyInternal: WorkspaceFileService["copyInternal"] = useCallback(
     async ({ sourcePaths, targetDir }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<InternalCopyResult>('cmd_workspace_copy_internal', {
+      return invokeIfTauri<InternalCopyResult>("cmd_workspace_copy_internal", {
         workspace: ws,
         sourcePaths,
         targetDir,
@@ -445,29 +491,37 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const readPathsAsBase64: WorkspaceFileService['readPathsAsBase64'] = useCallback(
-    async ({ paths }) => {
-      // Doesn't need a workspace — paths are absolute.
-      return invokeIfTauri<ReadAsBase64Response>('cmd_workspace_read_files_b64', { paths });
-    },
-    [invokeIfTauri],
-  );
+  const readPathsAsBase64: WorkspaceFileService["readPathsAsBase64"] =
+    useCallback(
+      async ({ paths }) => {
+        // Doesn't need a workspace — paths are absolute.
+        return invokeIfTauri<ReadAsBase64Response>(
+          "cmd_workspace_read_files_b64",
+          { paths },
+        );
+      },
+      [invokeIfTauri],
+    );
 
-  const prepareUserImageAttachments: WorkspaceFileService['prepareUserImageAttachments'] = useCallback(
-    async ({ sessionId, paths }) => {
-      // Doesn't need a workspace — paths are absolute and destination is app-owned.
-      return invokeIfTauri<PrepareUserImageAttachmentsResponse>('cmd_prepare_user_image_attachments', {
-        sessionId,
-        paths,
-      });
-    },
-    [invokeIfTauri],
-  );
+  const prepareUserImageAttachments: WorkspaceFileService["prepareUserImageAttachments"] =
+    useCallback(
+      async ({ sessionId, paths }) => {
+        // Doesn't need a workspace — paths are absolute and destination is app-owned.
+        return invokeIfTauri<PrepareUserImageAttachmentsResponse>(
+          "cmd_prepare_user_image_attachments",
+          {
+            sessionId,
+            paths,
+          },
+        );
+      },
+      [invokeIfTauri],
+    );
 
-  const addGitignore: WorkspaceFileService['addGitignore'] = useCallback(
+  const addGitignore: WorkspaceFileService["addGitignore"] = useCallback(
     async ({ pattern }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<GitignoreResult>('cmd_workspace_add_gitignore', {
+      return invokeIfTauri<GitignoreResult>("cmd_workspace_add_gitignore", {
         workspace: ws,
         pattern,
       });
@@ -475,21 +529,24 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const searchFiles: WorkspaceFileService['searchFiles'] = useCallback(
+  const searchFiles: WorkspaceFileService["searchFiles"] = useCallback(
     async ({ query }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<FileSearchResult[]>('cmd_workspace_search_files_fuzzy', {
-        workspace: ws,
-        query,
-      });
+      return invokeIfTauri<FileSearchResult[]>(
+        "cmd_workspace_search_files_fuzzy",
+        {
+          workspace: ws,
+          query,
+        },
+      );
     },
     [requireWorkspace, invokeIfTauri],
   );
 
-  const deleteFile: WorkspaceFileService['deleteFile'] = useCallback(
+  const deleteFile: WorkspaceFileService["deleteFile"] = useCallback(
     async ({ path, permanent }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<DeleteResult>('cmd_workspace_delete', {
+      return invokeIfTauri<DeleteResult>("cmd_workspace_delete", {
         workspace: ws,
         path,
         permanent,
@@ -498,25 +555,25 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const listSlashCommands: WorkspaceFileService['listSlashCommands'] = useCallback(
-    async () => {
+  const listSlashCommands: WorkspaceFileService["listSlashCommands"] =
+    useCallback(async () => {
       const ws = requireWorkspace();
-      return invokeIfTauri<SlashCommandsResponse>('cmd_list_slash_commands', {
+      return invokeIfTauri<SlashCommandsResponse>("cmd_list_slash_commands", {
         workspace: ws,
       });
-    },
-    [requireWorkspace, invokeIfTauri],
-  );
+    }, [requireWorkspace, invokeIfTauri]);
 
-  const dirTree: WorkspaceFileService['dirTree'] = useCallback(async () => {
+  const dirTree: WorkspaceFileService["dirTree"] = useCallback(async () => {
     const ws = requireWorkspace();
-    return invokeIfTauri<DirectoryTreeResult>('cmd_workspace_dir_tree', { workspace: ws });
+    return invokeIfTauri<DirectoryTreeResult>("cmd_workspace_dir_tree", {
+      workspace: ws,
+    });
   }, [requireWorkspace, invokeIfTauri]);
 
-  const dirExpand: WorkspaceFileService['dirExpand'] = useCallback(
+  const dirExpand: WorkspaceFileService["dirExpand"] = useCallback(
     async ({ path }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<ExpandDirectoryResult>('cmd_workspace_dir_expand', {
+      return invokeIfTauri<ExpandDirectoryResult>("cmd_workspace_dir_expand", {
         workspace: ws,
         path,
       });
@@ -524,10 +581,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const readPreview: WorkspaceFileService['readPreview'] = useCallback(
+  const readPreview: WorkspaceFileService["readPreview"] = useCallback(
     async ({ path }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<PreviewResult>('cmd_workspace_read_preview', {
+      return invokeIfTauri<PreviewResult>("cmd_workspace_read_preview", {
         workspace: ws,
         path,
       });
@@ -535,10 +592,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const downloadFile: WorkspaceFileService['downloadFile'] = useCallback(
+  const downloadFile: WorkspaceFileService["downloadFile"] = useCallback(
     async ({ path }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<DownloadResult>('cmd_workspace_download_file', {
+      return invokeIfTauri<DownloadResult>("cmd_workspace_download_file", {
         workspace: ws,
         path,
       });
@@ -546,22 +603,38 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const downloadFileBytes: WorkspaceFileService['downloadFileBytes'] = useCallback(
-    async ({ path }) => {
-      const ws = requireWorkspace();
-      // Raw bytes via `tauri::ipc::Response` → invoke resolves to an ArrayBuffer.
-      return invokeIfTauri<ArrayBuffer>('cmd_workspace_download_bytes', {
-        workspace: ws,
-        path,
-      });
-    },
-    [requireWorkspace, invokeIfTauri],
-  );
+  const downloadFileBytes: WorkspaceFileService["downloadFileBytes"] =
+    useCallback(
+      async ({ path }) => {
+        const ws = requireWorkspace();
+        if (browserDev && !tauri) {
+          const response = await apiPostJson<{
+            success: true;
+            data: { content: string };
+          }>("/api/workbench-dev-storage/request", {
+            workspacePath: ws,
+            command: "cmd_workspace_download_bytes",
+            args: { workspace: ws, path },
+          });
+          const binary = atob(response.data.content);
+          const bytes = Uint8Array.from(binary, (character) =>
+            character.charCodeAt(0),
+          );
+          return bytes.buffer;
+        }
+        // Raw bytes via `tauri::ipc::Response` → invoke resolves to an ArrayBuffer.
+        return invokeIfTauri<ArrayBuffer>("cmd_workspace_download_bytes", {
+          workspace: ws,
+          path,
+        });
+      },
+      [browserDev, invokeIfTauri, requireWorkspace, tauri],
+    );
 
-  const newFile: WorkspaceFileService['newFile'] = useCallback(
+  const newFile: WorkspaceFileService["newFile"] = useCallback(
     async ({ parentDir, name }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<CreatePathResult>('cmd_workspace_new_file', {
+      return invokeIfTauri<CreatePathResult>("cmd_workspace_new_file", {
         workspace: ws,
         parentDir,
         name,
@@ -570,10 +643,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const newFolder: WorkspaceFileService['newFolder'] = useCallback(
+  const newFolder: WorkspaceFileService["newFolder"] = useCallback(
     async ({ parentDir, name }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<CreatePathResult>('cmd_workspace_new_folder', {
+      return invokeIfTauri<CreatePathResult>("cmd_workspace_new_folder", {
         workspace: ws,
         parentDir,
         name,
@@ -582,10 +655,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const rename: WorkspaceFileService['rename'] = useCallback(
+  const rename: WorkspaceFileService["rename"] = useCallback(
     async ({ oldPath, newName }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<RenameResult>('cmd_workspace_rename', {
+      return invokeIfTauri<RenameResult>("cmd_workspace_rename", {
         workspace: ws,
         oldPath,
         newName,
@@ -594,10 +667,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const movePaths: WorkspaceFileService['movePaths'] = useCallback(
+  const movePaths: WorkspaceFileService["movePaths"] = useCallback(
     async ({ sourcePaths, targetDir }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<MoveResult>('cmd_workspace_move', {
+      return invokeIfTauri<MoveResult>("cmd_workspace_move", {
         workspace: ws,
         sourcePaths,
         targetDir,
@@ -606,10 +679,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const openInFinder: WorkspaceFileService['openInFinder'] = useCallback(
+  const openInFinder: WorkspaceFileService["openInFinder"] = useCallback(
     async ({ path }) => {
       const ws = requireWorkspace();
-      await invokeIfTauri<void>('cmd_workspace_open_in_finder', {
+      await invokeIfTauri<void>("cmd_workspace_open_in_finder", {
         workspace: ws,
         path,
       });
@@ -617,10 +690,10 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const openWithDefault: WorkspaceFileService['openWithDefault'] = useCallback(
+  const openWithDefault: WorkspaceFileService["openWithDefault"] = useCallback(
     async ({ path }) => {
       const ws = requireWorkspace();
-      await invokeIfTauri<void>('cmd_workspace_open_with_default', {
+      await invokeIfTauri<void>("cmd_workspace_open_with_default", {
         workspace: ws,
         path,
       });
@@ -628,34 +701,36 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const openPathExternal: WorkspaceFileService['openPathExternal'] = useCallback(
-    async ({ fullPath, workspace }) => {
-      // No workspace required — this command takes an absolute path.
-      // `workspace` is optional: when present (project-scope skill/command
-      // on a non-system drive), Rust adds it to the trusted-prefix list.
-      await invokeIfTauri<void>('cmd_open_path_external', {
-        fullPath,
-        workspace: workspace?.trim() || null,
-      });
-    },
-    [invokeIfTauri],
-  );
+  const openPathExternal: WorkspaceFileService["openPathExternal"] =
+    useCallback(
+      async ({ fullPath, workspace }) => {
+        // No workspace required — this command takes an absolute path.
+        // `workspace` is optional: when present (project-scope skill/command
+        // on a non-system drive), Rust adds it to the trusted-prefix list.
+        await invokeIfTauri<void>("cmd_open_path_external", {
+          fullPath,
+          workspace: workspace?.trim() || null,
+        });
+      },
+      [invokeIfTauri],
+    );
 
-  const openPathWithDefault: WorkspaceFileService['openPathWithDefault'] = useCallback(
-    async ({ fullPath, workspace }) => {
-      // No workspace required — absolute path. Mirrors openPathExternal but hands
-      // off to the OS default app (cmd_open_path_with_default → spawn_default_open).
-      await invokeIfTauri<void>('cmd_open_path_with_default', {
-        fullPath,
-        workspace: workspace?.trim() || null,
-      });
-    },
-    [invokeIfTauri],
-  );
+  const openPathWithDefault: WorkspaceFileService["openPathWithDefault"] =
+    useCallback(
+      async ({ fullPath, workspace }) => {
+        // No workspace required — absolute path. Mirrors openPathExternal but hands
+        // off to the OS default app (cmd_open_path_with_default → spawn_default_open).
+        await invokeIfTauri<void>("cmd_open_path_with_default", {
+          fullPath,
+          workspace: workspace?.trim() || null,
+        });
+      },
+      [invokeIfTauri],
+    );
 
-  const checkLocalPaths: WorkspaceFileService['checkLocalPaths'] = useCallback(
+  const checkLocalPaths: WorkspaceFileService["checkLocalPaths"] = useCallback(
     async ({ paths, workspace }) => {
-      return invokeIfTauri<CheckPathsResult>('cmd_check_local_paths', {
+      return invokeIfTauri<CheckPathsResult>("cmd_check_local_paths", {
         paths,
         workspace: workspace?.trim() || null,
       });
@@ -663,40 +738,43 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [invokeIfTauri],
   );
 
-  const readLocalPreview: WorkspaceFileService['readLocalPreview'] = useCallback(
-    async ({ fullPath, workspace }) => {
-      return invokeIfTauri<PreviewResult>('cmd_read_local_preview', {
-        fullPath,
-        workspace: workspace?.trim() || null,
-      });
-    },
-    [invokeIfTauri],
-  );
+  const readLocalPreview: WorkspaceFileService["readLocalPreview"] =
+    useCallback(
+      async ({ fullPath, workspace }) => {
+        return invokeIfTauri<PreviewResult>("cmd_read_local_preview", {
+          fullPath,
+          workspace: workspace?.trim() || null,
+        });
+      },
+      [invokeIfTauri],
+    );
 
-  const downloadLocalFile: WorkspaceFileService['downloadLocalFile'] = useCallback(
-    async ({ fullPath, workspace }) => {
-      return invokeIfTauri<DownloadResult>('cmd_download_local_file', {
-        fullPath,
-        workspace: workspace?.trim() || null,
-      });
-    },
-    [invokeIfTauri],
-  );
+  const downloadLocalFile: WorkspaceFileService["downloadLocalFile"] =
+    useCallback(
+      async ({ fullPath, workspace }) => {
+        return invokeIfTauri<DownloadResult>("cmd_download_local_file", {
+          fullPath,
+          workspace: workspace?.trim() || null,
+        });
+      },
+      [invokeIfTauri],
+    );
 
-  const downloadLocalFileBytes: WorkspaceFileService['downloadLocalFileBytes'] = useCallback(
-    async ({ fullPath, workspace }) => {
-      return invokeIfTauri<ArrayBuffer>('cmd_download_local_bytes', {
-        fullPath,
-        workspace: workspace?.trim() || null,
-      });
-    },
-    [invokeIfTauri],
-  );
+  const downloadLocalFileBytes: WorkspaceFileService["downloadLocalFileBytes"] =
+    useCallback(
+      async ({ fullPath, workspace }) => {
+        return invokeIfTauri<ArrayBuffer>("cmd_download_local_bytes", {
+          fullPath,
+          workspace: workspace?.trim() || null,
+        });
+      },
+      [invokeIfTauri],
+    );
 
-  const checkPaths: WorkspaceFileService['checkPaths'] = useCallback(
+  const checkPaths: WorkspaceFileService["checkPaths"] = useCallback(
     async ({ paths }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<CheckPathsResult>('cmd_workspace_check_paths', {
+      return invokeIfTauri<CheckPathsResult>("cmd_workspace_check_paths", {
         workspace: ws,
         paths,
       });
@@ -704,55 +782,74 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const readFileAsBlobUrl: WorkspaceFileService['readFileAsBlobUrl'] = useCallback(
-    async ({ path }) => {
-      const ws = requireWorkspace();
-      const result = await invokeIfTauri<DownloadResult>('cmd_workspace_download_file', {
-        workspace: ws,
-        path,
-      });
-      // Decode base64 → Uint8Array → Blob → object URL. The Rust side caps
-      // payload at 25MB so this can't blow up the renderer heap. The decoded
-      // intermediate buffer is freed once the Blob takes ownership.
-      const binary = atob(result.data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: result.mimeType || 'application/octet-stream' });
-      const blobUrl = URL.createObjectURL(blob);
-      let revoked = false;
-      const revoke = () => {
-        if (revoked) return;
-        revoked = true;
-        URL.revokeObjectURL(blobUrl);
-      };
-      return { blobUrl, mimeType: result.mimeType, name: result.name, revoke };
-    },
-    [requireWorkspace, invokeIfTauri],
-  );
+  const readFileAsBlobUrl: WorkspaceFileService["readFileAsBlobUrl"] =
+    useCallback(
+      async ({ path }) => {
+        const ws = requireWorkspace();
+        const result = await invokeIfTauri<DownloadResult>(
+          "cmd_workspace_download_file",
+          {
+            workspace: ws,
+            path,
+          },
+        );
+        // Decode base64 → Uint8Array → Blob → object URL. The Rust side caps
+        // payload at 25MB so this can't blow up the renderer heap. The decoded
+        // intermediate buffer is freed once the Blob takes ownership.
+        const binary = atob(result.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], {
+          type: result.mimeType || "application/octet-stream",
+        });
+        const blobUrl = URL.createObjectURL(blob);
+        let revoked = false;
+        const revoke = () => {
+          if (revoked) return;
+          revoked = true;
+          URL.revokeObjectURL(blobUrl);
+        };
+        return {
+          blobUrl,
+          mimeType: result.mimeType,
+          name: result.name,
+          revoke,
+        };
+      },
+      [requireWorkspace, invokeIfTauri],
+    );
 
-  const readLocalFileAsBlobUrl: WorkspaceFileService['readLocalFileAsBlobUrl'] = useCallback(
-    async ({ fullPath, workspace }) => {
-      const result = await downloadLocalFile({ fullPath, workspace });
-      const binary = atob(result.data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: result.mimeType || 'application/octet-stream' });
-      const blobUrl = URL.createObjectURL(blob);
-      let revoked = false;
-      const revoke = () => {
-        if (revoked) return;
-        revoked = true;
-        URL.revokeObjectURL(blobUrl);
-      };
-      return { blobUrl, mimeType: result.mimeType, name: result.name, revoke };
-    },
-    [downloadLocalFile],
-  );
+  const readLocalFileAsBlobUrl: WorkspaceFileService["readLocalFileAsBlobUrl"] =
+    useCallback(
+      async ({ fullPath, workspace }) => {
+        const result = await downloadLocalFile({ fullPath, workspace });
+        const binary = atob(result.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], {
+          type: result.mimeType || "application/octet-stream",
+        });
+        const blobUrl = URL.createObjectURL(blob);
+        let revoked = false;
+        const revoke = () => {
+          if (revoked) return;
+          revoked = true;
+          URL.revokeObjectURL(blobUrl);
+        };
+        return {
+          blobUrl,
+          mimeType: result.mimeType,
+          name: result.name,
+          revoke,
+        };
+      },
+      [downloadLocalFile],
+    );
 
-  const saveFile: WorkspaceFileService['saveFile'] = useCallback(
+  const saveFile: WorkspaceFileService["saveFile"] = useCallback(
     async ({ path, content, expectedContent }) => {
       const ws = requireWorkspace();
-      await invokeIfTauri<void>('cmd_workspace_save_file', {
+      await invokeIfTauri<void>("cmd_workspace_save_file", {
         workspace: ws,
         path,
         content,
@@ -762,20 +859,30 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const readClaudeMd: WorkspaceFileService['readClaudeMd'] = useCallback(
-    async () => {
+  const saveBinaryFile: WorkspaceFileService["saveBinaryFile"] = useCallback(
+    async ({ path, contentBase64 }) => {
       const ws = requireWorkspace();
-      return invokeIfTauri<ReadClaudeMdResult>('cmd_workspace_read_claude_md', {
+      await invokeIfTauri<void>("cmd_workspace_save_binary_file", {
         workspace: ws,
+        path,
+        contentBase64,
       });
     },
     [requireWorkspace, invokeIfTauri],
   );
 
-  const writeClaudeMd: WorkspaceFileService['writeClaudeMd'] = useCallback(
+  const readClaudeMd: WorkspaceFileService["readClaudeMd"] =
+    useCallback(async () => {
+      const ws = requireWorkspace();
+      return invokeIfTauri<ReadClaudeMdResult>("cmd_workspace_read_claude_md", {
+        workspace: ws,
+      });
+    }, [requireWorkspace, invokeIfTauri]);
+
+  const writeClaudeMd: WorkspaceFileService["writeClaudeMd"] = useCallback(
     async ({ content }) => {
       const ws = requireWorkspace();
-      await invokeIfTauri<void>('cmd_workspace_write_claude_md', {
+      await invokeIfTauri<void>("cmd_workspace_write_claude_md", {
         workspace: ws,
         content,
       });
@@ -783,20 +890,25 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
     [requireWorkspace, invokeIfTauri],
   );
 
-  const gitBranch: WorkspaceFileService['gitBranch'] = useCallback(async () => {
+  const gitBranch: WorkspaceFileService["gitBranch"] = useCallback(async () => {
     const ws = requireWorkspace();
-    return invokeIfTauri<GitBranchResult>('cmd_workspace_git_branch', { workspace: ws });
+    return invokeIfTauri<GitBranchResult>("cmd_workspace_git_branch", {
+      workspace: ws,
+    });
   }, [requireWorkspace, invokeIfTauri]);
 
-  const watchStart: WorkspaceFileService['watchStart'] = useCallback(async () => {
-    const ws = requireWorkspace();
-    return invokeIfTauri<WatchHandle>('cmd_workspace_watch_start', { workspace: ws });
-  }, [requireWorkspace, invokeIfTauri]);
+  const watchStart: WorkspaceFileService["watchStart"] =
+    useCallback(async () => {
+      const ws = requireWorkspace();
+      return invokeIfTauri<WatchHandle>("cmd_workspace_watch_start", {
+        workspace: ws,
+      });
+    }, [requireWorkspace, invokeIfTauri]);
 
-  const watchStop: WorkspaceFileService['watchStop'] = useCallback(
+  const watchStop: WorkspaceFileService["watchStop"] = useCallback(
     async ({ token }) => {
       // No workspace required — token is the registry key on the Rust side.
-      await invokeIfTauri<void>('cmd_workspace_watch_stop', { token });
+      await invokeIfTauri<void>("cmd_workspace_watch_stop", { token });
     },
     [invokeIfTauri],
   );
@@ -841,6 +953,7 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       readFileAsBlobUrl,
       readLocalFileAsBlobUrl,
       saveFile,
+      saveBinaryFile,
       readClaudeMd,
       writeClaudeMd,
       gitBranch,
@@ -881,6 +994,7 @@ export function useWorkspaceFileService(workspacePath: string | null): Workspace
       readFileAsBlobUrl,
       readLocalFileAsBlobUrl,
       saveFile,
+      saveBinaryFile,
       readClaudeMd,
       writeClaudeMd,
       gitBranch,

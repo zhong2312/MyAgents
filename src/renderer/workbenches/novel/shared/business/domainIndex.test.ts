@@ -4,6 +4,11 @@ import { createFactionFiles } from "../../../../../shared/workbenches/novel/fact
 import { createLocationFiles } from "../../../../../shared/workbenches/novel/locationStorage";
 import { createTimelineFiles } from "../../../../../shared/workbenches/novel/timelineStorage";
 import { createInspirationFiles } from "../../../../../shared/workbenches/novel/inspirationStorage";
+import {
+  createEmptyCultivationEcology,
+  cultivationEcologySchema,
+} from "../../../../../shared/workbenches/novel/cultivationEcologySchema";
+import { createCultivationEcologyFiles } from "../../../../../shared/workbenches/novel/cultivationEcologyStorage";
 
 import { buildDomainIndex, searchDomainIndex } from "./domainIndex";
 import { createEmptyNarrativeEngineering } from "../../narrativeEngineeringSchema";
@@ -69,6 +74,58 @@ function locationFiles(): Record<string, string> {
   );
 }
 
+function cultivationFiles(): Record<string, string> {
+  const ecology = cultivationEcologySchema.parse({
+    ...createEmptyCultivationEcology(),
+    systems: [
+      {
+        id: "system-1",
+        name: "玄门",
+        summary: "以灵气淬炼根基的修行体系",
+        kind: "修仙",
+        terminology: {
+          energy: "灵气",
+          stage: "境界",
+          method: "功法",
+          ability: "术法",
+        },
+        projection: {
+          originIds: [],
+          manifestationIds: [],
+          access: "",
+          translation: "",
+          medium: "",
+          attenuation: "",
+        },
+        theoryModel: {
+          statement: "",
+          summary: "",
+          nodeTypes: [],
+          invariants: [],
+          validationRules: [],
+          nodeCatalog: [],
+        },
+        progressionTracks: [],
+        trackInteractions: [],
+        resources: [],
+        methods: [],
+        abilities: [],
+        formations: [],
+        foundations: [],
+        transitions: [],
+        constraints: [],
+        audit: [],
+      },
+    ],
+  });
+  return Object.fromEntries(
+    createCultivationEcologyFiles(ecology).map((file) => [
+      file.path,
+      file.content,
+    ]),
+  );
+}
+
 function storageWithFixture(): NovelMemoryStorage {
   const storage = new NovelMemoryStorage({
     "characters/index.json": JSON.stringify({
@@ -87,6 +144,18 @@ function storageWithFixture(): NovelMemoryStorage {
     }),
     ...factionFiles(),
     ...locationFiles(),
+    ...cultivationFiles(),
+    "world/maps/index.json": JSON.stringify({
+      schemaVersion: 1,
+      maps: [
+        {
+          id: "map-1",
+          name: "九州舆图",
+          projectionType: "continent",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }),
     "world/setting-library/spatial-tree.json": JSON.stringify({
       schemaVersion: 1,
       nodes: [
@@ -102,10 +171,48 @@ function storageWithFixture(): NovelMemoryStorage {
     ...Object.fromEntries(
       createNarrativeEngineeringFiles({
         ...createEmptyNarrativeEngineering("2026-01-01T00:00:00.000Z"),
+        lines: [
+          {
+            id: "line-main",
+            title: "复仇主线",
+            kind: "main",
+            storyRole: "a",
+            status: "idea",
+            color: "#1f6feb",
+            premise: "主角追查家族灭门真相。",
+            protagonistCharacterId: null,
+            keyNodes: [],
+            content: "从线索到真相的推进。",
+          },
+        ],
+        arcs: [
+          {
+            id: "arc-main",
+            title: "从逃避到承担",
+            kind: "character",
+            characterId: null,
+            characterArcStageId: null,
+            characterArcStageTitle: "",
+            lineIds: ["line-main"],
+            keyNodes: [],
+            content: "主角最终选择面对责任。",
+          },
+        ],
+        directories: [
+          {
+            id: "dir-volume-1",
+            parentId: null,
+            kind: "volume",
+            title: "第一卷",
+            description: "初入江湖",
+            status: "idea",
+            order: 0,
+          },
+        ],
         chapters: [
           {
             id: "narrative-chapter-1",
-            directoryId: null,
+            directoryId: "dir-volume-1",
             manuscriptChapterId: null,
             title: "初入江湖",
             description: "洛言下山后的第一场遭遇",
@@ -207,6 +314,11 @@ describe("buildDomainIndex", () => {
     expect(kinds).toContain("event");
     expect(kinds).toContain("inspiration");
     expect(kinds).toContain("research");
+    expect(kinds).toContain("map");
+    expect(kinds).toContain("cultivationSystem");
+    expect(kinds).toContain("plotLine");
+    expect(kinds).toContain("storyArc");
+    expect(kinds).toContain("narrativeDirectory");
 
     const character = index.entities.find(
       (entity) => entity.id === "char-luoyan",
@@ -223,6 +335,19 @@ describe("buildDomainIndex", () => {
     )!;
     expect(research.name).toBe("世界观考据");
     expect(research.sourcePath).toBe("research/世界观考据.md");
+
+    expect(
+      index.entities.find((entity) => entity.id === "map-1"),
+    ).toMatchObject({
+      route: "map",
+      focus: { mapId: "map-1" },
+    });
+    expect(
+      index.entities.find((entity) => entity.id === "system-1"),
+    ).toMatchObject({ route: "powers", focus: { systemId: "system-1" } });
+    expect(
+      index.entities.find((entity) => entity.id === "line-main"),
+    ).toMatchObject({ route: "narrative", focus: { lineId: "line-main" } });
   });
 
   it("投影可用时用单次实体查询构建与文件路径一致的索引", async () => {

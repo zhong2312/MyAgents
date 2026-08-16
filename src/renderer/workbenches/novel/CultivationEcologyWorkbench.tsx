@@ -35,6 +35,8 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   Atom,
   BookOpen,
   Boxes,
@@ -69,7 +71,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -131,6 +135,9 @@ import {
   parseCharacterLibraryIndex,
 } from "./modules/characters";
 import { createCultivationEcologyRepository } from "./cultivationEcologyRepository";
+import CultivationProgressionPrototype, {
+  type CultivationProgressionViewSelection,
+} from "./CultivationProgressionPrototype";
 import FormationBackdropArt from "./FormationBackdropArt";
 import {
   createDefaultFormationBackdropLayer,
@@ -149,6 +156,7 @@ import {
 import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
 import WorldProposalReview from "./WorldProposalReview";
 import { createNovelCultivationProposalRepository } from "./cultivationProposalRepository";
+import type { DomainEntityRef } from "./shared/business/domainIndex";
 
 function newEcologyId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -185,6 +193,15 @@ type Selection = {
   parentKind?: string;
   grandParentId?: string;
 } | null;
+
+interface InspectorHeaderAction {
+  readonly label: string;
+  readonly onClick: () => void;
+}
+
+const InspectorHeaderActionContext = createContext<
+  ((action: InspectorHeaderAction | null) => void) | null
+>(null);
 
 export interface CultivationAiRunRequest {
   readonly sceneId: "cultivation.module";
@@ -600,6 +617,21 @@ function Section({
   );
 }
 
+function ContentToolbar({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="ce-content-toolbar">
+      <strong>{label}</strong>
+      <div>{children}</div>
+    </div>
+  );
+}
+
 function Empty({ text }: { text: string }) {
   return (
     <div className="ce-empty">
@@ -671,18 +703,7 @@ function getModuleSelection(
   }
   if (module === "progression") {
     const track = system.progressionTracks[0];
-    if (track) {
-      const transition = track.transitions[0];
-      return transition
-        ? {
-            kind: "transition",
-            id: transition.id,
-            parentId: track.id,
-            parentKind: "track",
-          }
-        : { kind: "track", id: track.id };
-    }
-    return systemSelection;
+    return track ? { kind: "track", id: track.id } : systemSelection;
   }
   if (module === "resources") {
     const resource = system.resources[0];
@@ -716,6 +737,50 @@ function getModuleSelection(
         parentKind: "track",
       }
     : systemSelection;
+}
+
+function getSelectionTrackId(
+  system: CultivationSystem,
+  selection: Selection,
+): string | null {
+  if (!selection) return null;
+  if (selection.kind === "track") {
+    return system.progressionTracks.some((track) => track.id === selection.id)
+      ? selection.id
+      : null;
+  }
+  if (selection.kind === "track-interaction") {
+    return (
+      system.trackInteractions.find(
+        (interaction) => interaction.id === selection.id,
+      )?.sourceTrackId ?? null
+    );
+  }
+  for (const track of system.progressionTracks) {
+    if (
+      selection.kind === "metric" &&
+      track.metrics.some((metric) => metric.id === selection.id)
+    )
+      return track.id;
+    if (
+      selection.kind === "level" &&
+      track.levels.some((level) => level.id === selection.id)
+    )
+      return track.id;
+    if (
+      selection.kind === "level-stage" &&
+      track.levels.some((level) =>
+        level.subStages.some((stage) => stage.id === selection.id),
+      )
+    )
+      return track.id;
+    if (
+      selection.kind === "transition" &&
+      track.transitions.some((transition) => transition.id === selection.id)
+    )
+      return track.id;
+  }
+  return null;
 }
 
 function updateById<T extends { id: string }>(
@@ -1068,7 +1133,7 @@ function createSystem(): CultivationSystem {
             resourceRequirements: [],
             naturalAbilityIds: [],
             methodIds: [],
-            subStages: createDefaultLevelSubStages(),
+            subStages: [],
           },
         ],
         transitions: [],
@@ -1117,7 +1182,7 @@ function createLevel(order: number): CultivationLevel {
     resourceRequirements: [],
     naturalAbilityIds: [],
     methodIds: [],
-    subStages: createDefaultLevelSubStages(),
+    subStages: [],
   };
 }
 
@@ -1136,12 +1201,6 @@ function createLevelSubStage(order: number): CultivationLevelSubStage {
   };
 }
 
-function createDefaultLevelSubStages(): CultivationLevelSubStage[] {
-  return ["前期", "中期", "后期"].map((name, order) => ({
-    ...createLevelSubStage(order),
-    name,
-  }));
-}
 function createTrack(): ProgressionTrack {
   return {
     id: newEcologyId("track"),
@@ -1533,6 +1592,7 @@ export default function CultivationEcologyWorkbench({
   onAiRun,
   proposalReviewOpen = false,
   onCloseProposalReview,
+  focus,
   registerNavigationGuard,
   isActive = true,
 }: {
@@ -1542,6 +1602,7 @@ export default function CultivationEcologyWorkbench({
   readonly onAiRun?: (request: CultivationAiRunRequest) => Promise<string>;
   readonly proposalReviewOpen?: boolean;
   readonly onCloseProposalReview?: () => void;
+  readonly focus?: DomainEntityRef | null;
   readonly registerNavigationGuard: (
     guard: WorkbenchNavigationGuard,
   ) => () => void;
@@ -1563,6 +1624,8 @@ export default function CultivationEcologyWorkbench({
   const [module, setModule] = useState<ModuleId>("overview");
   const [selection, setSelection] = useState<Selection>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorHeaderAction, setInspectorHeaderAction] =
+    useState<InspectorHeaderAction | null>(null);
   const [formationEditorId, setFormationEditorId] = useState<string | null>(
     null,
   );
@@ -1642,6 +1705,21 @@ export default function CultivationEcologyWorkbench({
   useEffect(() => {
     ecologyRef.current = ecology;
   }, [ecology]);
+
+  useEffect(() => {
+    if (
+      focus?.kind !== "cultivationSystem" ||
+      !ecology?.systems.some((system) => system.id === focus.id)
+    ) {
+      return;
+    }
+    setActiveSystemId(focus.id);
+    setScope("system");
+    setModule("overview");
+    setSelection({ kind: "system", id: focus.id });
+    setInspectorOpen(false);
+    setFormationEditorId(null);
+  }, [ecology, focus]);
 
   // 首次挂载或 storage 引用变化时加载；若已有未保存编辑则保留本地修改，避免静默覆盖。
   useEffect(() => {
@@ -1835,9 +1913,7 @@ export default function CultivationEcologyWorkbench({
         }
         // progression 模块的 target 可能是轨道 / 境界 / 境内阶段 / 跃迁，按 id 归属判断。
         if (
-          activeSystem.progressionTracks.some(
-            (track) => track.id === target.id,
-          )
+          activeSystem.progressionTracks.some((track) => track.id === target.id)
         )
           return progressionTrackSchema;
         if (
@@ -1981,10 +2057,7 @@ export default function CultivationEcologyWorkbench({
       if (!validated.success) {
         const detail = validated.error.issues
           .slice(0, 3)
-          .map(
-            (issue) =>
-              `${issue.path.join(".") || "root"}: ${issue.message}`,
-          )
+          .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
           .join("；");
         throw new Error(`AI 完善结果未通过数据校验：${detail}`);
       }
@@ -2098,16 +2171,17 @@ export default function CultivationEcologyWorkbench({
           const characterIndex = parseCharacterLibraryIndex(
             characterFile.content,
           );
-          const characterRepository = createNovelCharacterLibraryRepository(
-            storage,
-          );
+          const characterRepository =
+            createNovelCharacterLibraryRepository(storage);
           const characterRecords = await Promise.all(
-            characterIndex.characters.map(async (entry) =>
-              (await characterRepository.loadCharacter(entry)).record,
+            characterIndex.characters.map(
+              async (entry) =>
+                (await characterRepository.loadCharacter(entry)).record,
             ),
           );
           const boundCharacters = characterRecords.filter(
-            (character) => character.cultivationProfile.systemId === deletedSystemId,
+            (character) =>
+              character.cultivationProfile.systemId === deletedSystemId,
           );
           if (boundCharacters.length > 0) {
             setError("");
@@ -2165,12 +2239,27 @@ export default function CultivationEcologyWorkbench({
     setSystemDeleteTarget(null);
   };
   const selectAndOpenInspector = (nextSelection: Selection) => {
+    setInspectorHeaderAction(null);
     setSelection(nextSelection);
     setInspectorOpen(Boolean(nextSelection));
     // inspector 与 formation 编辑器互斥，打开 inspector 时关闭全屏编辑器。
     setFormationEditorId(null);
   };
-  const closeInspector = () => setInspectorOpen(false);
+  const selectWithoutInspector = (nextSelection: Selection) => {
+    setInspectorHeaderAction(null);
+    setSelection(nextSelection);
+    setInspectorOpen(false);
+    setFormationEditorId(null);
+  };
+  const selectInsideFormationEditor = (nextSelection: Selection) => {
+    setInspectorHeaderAction(null);
+    setSelection(nextSelection);
+    setInspectorOpen(false);
+  };
+  const closeInspector = () => {
+    setInspectorHeaderAction(null);
+    setInspectorOpen(false);
+  };
   const openModule = (nextModule: ModuleId, nextSelection?: Selection) => {
     setScope("system");
     setModule(nextModule);
@@ -2426,7 +2515,7 @@ export default function CultivationEcologyWorkbench({
               </div>
             )}
             <div
-              className={`ce-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""} ${scope === "system" && module === "overview" ? "ce-main-scroll-overview" : ""}`}
+              className={`ce-main-scroll ${scope === "origins" ? "ce-main-scroll-world-origin" : ""} ${scope === "system" && module === "overview" ? "ce-main-scroll-overview" : ""} ${scope === "system" && module === "progression" ? "ce-main-scroll-progression" : ""}`}
             >
               {scope === "origins" ? (
                 <WorldOriginWorkspace
@@ -2449,6 +2538,22 @@ export default function CultivationEcologyWorkbench({
                   selection={selection}
                   onChange={updateSystem}
                   onSelect={selectAndOpenInspector}
+                  onActivate={selectWithoutInspector}
+                  renderProgressionDetails={(detailSelection) => (
+                    <ProgressionInlineInspector
+                      key={`${detailSelection?.kind ?? "none"}:${detailSelection?.id ?? ""}`}
+                      ecology={ecology}
+                      system={activeSystem}
+                      selection={detailSelection}
+                      onChange={commit}
+                      onChangeSystem={updateSystem}
+                      onDeleteSystem={() => requestDeleteSystem(activeSystem)}
+                      onSelect={selectWithoutInspector}
+                      itemEntries={itemEntries}
+                      itemLibraryLoading={itemLibraryLoading}
+                      itemLibraryError={itemLibraryError}
+                    />
+                  )}
                   onOpenModule={openModule}
                   onOpenRelations={openRelations}
                   onOpenFormationEditor={(formationId) => {
@@ -2488,7 +2593,7 @@ export default function CultivationEcologyWorkbench({
                     system={activeSystem}
                     formation={formationEditor}
                     onChange={updateSystem}
-                    onSelect={selectAndOpenInspector}
+                    onSelect={selectInsideFormationEditor}
                   />
                 </div>
               </section>
@@ -2515,29 +2620,46 @@ export default function CultivationEcologyWorkbench({
                           ? "关系检查"
                           : "对象检查"}
                     </h2>
-                    <Button
-                      variant="ghost"
-                      onClick={closeInspector}
-                      title="关闭检查器"
-                      ariaLabel="关闭检查器"
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
+                    <div className="ce-inspector-drawer-actions">
+                      {inspectorHeaderAction && (
+                        <Button
+                          variant="danger"
+                          onClick={inspectorHeaderAction.onClick}
+                          title={inspectorHeaderAction.label}
+                          ariaLabel={inspectorHeaderAction.label}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          {inspectorHeaderAction.label}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        onClick={closeInspector}
+                        title="关闭检查器"
+                        ariaLabel="关闭检查器"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="ce-inspector-drawer-body">
-                    <InspectorV2
-                      scope={scope}
-                      ecology={ecology}
-                      system={activeSystem}
-                      selection={selection}
-                      onChange={commit}
-                      onChangeSystem={updateSystem}
-                      onDeleteSystem={requestDeleteSystem}
-                      onSelect={selectAndOpenInspector}
-                      itemEntries={itemEntries}
-                      itemLibraryLoading={itemLibraryLoading}
-                      itemLibraryError={itemLibraryError}
-                    />
+                    <InspectorHeaderActionContext.Provider
+                      value={setInspectorHeaderAction}
+                    >
+                      <InspectorV2
+                        scope={scope}
+                        ecology={ecology}
+                        system={activeSystem}
+                        selection={selection}
+                        onChange={commit}
+                        onChangeSystem={updateSystem}
+                        onDeleteSystem={requestDeleteSystem}
+                        onSelect={selectAndOpenInspector}
+                        itemEntries={itemEntries}
+                        itemLibraryLoading={itemLibraryLoading}
+                        itemLibraryError={itemLibraryError}
+                      />
+                    </InspectorHeaderActionContext.Provider>
                   </div>
                 </aside>
               </div>
@@ -2602,7 +2724,9 @@ function PageHeader({
   compact?: boolean;
 }) {
   return (
-    <div className={`ce-page-header${compact ? " ce-page-header-compact" : ""}`}>
+    <div
+      className={`ce-page-header${compact ? " ce-page-header-compact" : ""}`}
+    >
       <div>
         {eyebrow && <div className="ce-eyebrow">{eyebrow}</div>}
         <h1>{title}</h1>
@@ -2646,6 +2770,8 @@ function SystemModule({
   selection,
   onChange,
   onSelect,
+  onActivate,
+  renderProgressionDetails,
   onOpenModule,
   onOpenRelations,
   onOpenFormationEditor,
@@ -2656,6 +2782,8 @@ function SystemModule({
   selection: Selection;
   onChange: (system: CultivationSystem) => void;
   onSelect: (selection: Selection) => void;
+  onActivate: (selection: Selection) => void;
+  renderProgressionDetails: (selection: Selection) => ReactNode;
   onOpenModule: (module: ModuleId, selection?: Selection) => void;
   onOpenRelations: (selection?: Selection) => void;
   onOpenFormationEditor: (formationId: string) => void;
@@ -2675,7 +2803,14 @@ function SystemModule({
     return <Theory system={system} onChange={onChange} onSelect={onSelect} />;
   if (module === "progression")
     return (
-      <Progression system={system} onChange={onChange} onSelect={onSelect} />
+      <Progression
+        system={system}
+        selection={selection}
+        onChange={onChange}
+        onSelect={onActivate}
+        onActivate={onActivate}
+        renderDetails={renderProgressionDetails}
+      />
     );
   if (module === "resources")
     return (
@@ -2757,15 +2892,6 @@ function Overview({
   const completeness = calculateCultivationCompleteness(system);
   return (
     <>
-      <PageHeader
-        compact
-        eyebrow={`修行体系 / ${system.kind}`}
-        title={system.name}
-        description={
-          system.summary ||
-          "把本源投影、理论节点、法门拓扑、境界、资源、能力和阵法组织在同一套可审查模型中。"
-        }
-      />
       <StatStrip system={system} />
       <div className="ce-completeness-card">
         <div>
@@ -2918,10 +3044,9 @@ function Projection({
     onChange({ ...system, projection: { ...projection, [key]: value } });
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 01 本源投影"
-        title="体系本源投影"
-        description="声明该体系从哪些世界本源和显化节点取得力量，以及如何完成本地化翻译。"
+      <Section
+        title="接入与翻译"
+        eyebrow="投影合同"
         action={
           <Button
             variant="secondary"
@@ -2931,8 +3056,7 @@ function Projection({
             编辑投影合同
           </Button>
         }
-      />
-      <Section title="接入与翻译" eyebrow="投影合同">
+      >
         <div className="ce-form-grid">
           <Field
             label="接入方式"
@@ -3004,29 +3128,18 @@ function Theory({
   };
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 02 理论模型"
-        title="体系共有结构"
-        description="理论模型定义经脉、丹田、关窍、魔网、符文或神经节点等共同结构；具体运行线路必须由法门单独声明。"
-        action={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => onSelect({ kind: "theory", id: system.id })}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              编辑理论模型
-            </Button>
-            <Button variant="primary" onClick={add}>
-              <Plus className="h-3.5 w-3.5" />
-              新增理论节点
-            </Button>
-          </>
-        }
-      />
       <Section
         title={system.theoryModel.statement || "未命名理论模型"}
         eyebrow="理论陈述"
+        action={
+          <Button
+            variant="secondary"
+            onClick={() => onSelect({ kind: "theory", id: system.id })}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            编辑理论模型
+          </Button>
+        }
       >
         <div className="ce-callout">
           <Atom className="h-4 w-4" />
@@ -3036,6 +3149,12 @@ function Theory({
       <Section
         title="节点库"
         eyebrow={`${system.theoryModel.nodeCatalog.length} 个共有节点`}
+        action={
+          <Button variant="primary" onClick={add}>
+            <Plus className="h-3.5 w-3.5" />
+            新增理论节点
+          </Button>
+        }
       >
         <div className="ce-table-wrap">
           <table className="ce-table">
@@ -3100,21 +3219,28 @@ function Theory({
 
 function Progression({
   system,
+  selection,
   onChange,
   onSelect,
+  onActivate,
+  renderDetails,
 }: {
   system: CultivationSystem;
+  selection: Selection;
   onChange: (system: CultivationSystem) => void;
   onSelect: (selection: Selection) => void;
+  onActivate: (selection: Selection) => void;
+  renderDetails?: (selection: Selection) => ReactNode;
 }) {
-  const [trackId, setTrackId] = useState(system.progressionTracks[0]?.id ?? "");
+  const selectedTrackId = getSelectionTrackId(system, selection);
   const [levelInsertAnchor, setLevelInsertAnchor] = useState("end");
   const [interactionTargetTrackId, setInteractionTargetTrackId] = useState("");
   const firstTrackId = system.progressionTracks[0]?.id ?? "";
+  const requestedTrackId = selectedTrackId ?? firstTrackId;
   const trackExists = system.progressionTracks.some(
-    (item) => item.id === trackId,
+    (item) => item.id === requestedTrackId,
   );
-  const resolvedTrackId = trackExists ? trackId : firstTrackId;
+  const resolvedTrackId = trackExists ? requestedTrackId : firstTrackId;
   const track =
     system.progressionTracks.find((item) => item.id === resolvedTrackId) ??
     system.progressionTracks[0];
@@ -3124,23 +3250,17 @@ function Progression({
       ...system,
       progressionTracks: [...system.progressionTracks, item],
     });
-    setTrackId(item.id);
     onSelect({ kind: "track", id: item.id });
   };
   if (!track)
     return (
       <>
-        <PageHeader
-          eyebrow="体系内部 / 03 成长轨道"
-          title="境界层级与数值模型"
-          description="一套体系可以有多条成长轨道；每个境界定义突破与退化规则，境界内可继续划分前期、中期、后期等阶段。"
-          action={
-            <Button variant="primary" onClick={addTrack}>
-              <Plus className="h-3.5 w-3.5" />
-              新增轨道
-            </Button>
-          }
-        />
+        <ContentToolbar label="并行成长轨道">
+          <Button variant="primary" onClick={addTrack}>
+            <Plus className="h-3.5 w-3.5" />
+            创建第一条轨道
+          </Button>
+        </ContentToolbar>
         <Empty text="尚未建立成长轨道" />
       </>
     );
@@ -3193,6 +3313,36 @@ function Progression({
       id: item.id,
       parentId: track.id,
       parentKind: "track",
+    });
+  };
+  const reorderLevels = (
+    trackId: string,
+    activeLevelId: string,
+    overLevelId: string,
+  ) => {
+    const targetTrack = system.progressionTracks.find(
+      (candidate) => candidate.id === trackId,
+    );
+    if (!targetTrack) return;
+    const oldIndex = targetTrack.levels.findIndex(
+      (level) => level.id === activeLevelId,
+    );
+    const newIndex = targetTrack.levels.findIndex(
+      (level) => level.id === overLevelId,
+    );
+    if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
+    onChange({
+      ...system,
+      progressionTracks: updateById(
+        system.progressionTracks,
+        trackId,
+        (current) => ({
+          ...current,
+          levels: arrayMove(current.levels, oldIndex, newIndex).map(
+            (level, order) => ({ ...level, order }),
+          ),
+        }),
+      ),
     });
   };
   const addSubStage = (level: CultivationLevel) => {
@@ -3281,199 +3431,155 @@ function Progression({
       parentKind: "track",
     });
   };
+  const toWorkbenchSelection = (
+    next: CultivationProgressionViewSelection,
+  ): Selection => {
+    if (next.kind === "track") return { kind: "track", id: next.track.id };
+    if (next.kind === "level")
+      return {
+        kind: "level",
+        id: next.level.id,
+        parentId: next.track.id,
+        parentKind: "track",
+      };
+    if (next.kind === "stage")
+      return {
+        kind: "level-stage",
+        id: next.stage.id,
+        parentId: next.level.id,
+        parentKind: "level",
+        grandParentId: next.track.id,
+      };
+    if (next.kind === "metric")
+      return {
+        kind: "metric",
+        id: next.metric.id,
+        parentId: next.track.id,
+        parentKind: "track",
+      };
+    if (next.kind === "transition")
+      return {
+        kind: "transition",
+        id: next.transition.id,
+        parentId: next.track.id,
+        parentKind: "track",
+      };
+    return { kind: "track-interaction", id: next.interaction.id };
+  };
+  const toPrototypeSelection = (
+    current: Selection,
+  ): CultivationProgressionViewSelection => {
+    if (!current || current.kind === "track") return { kind: "track", track };
+    if (current.kind === "level") {
+      const level = track.levels.find((item) => item.id === current.id);
+      return level ? { kind: "level", track, level } : { kind: "track", track };
+    }
+    if (current.kind === "level-stage") {
+      const level = track.levels.find((item) => item.id === current.parentId);
+      const stage = level?.subStages.find((item) => item.id === current.id);
+      return level && stage
+        ? { kind: "stage", track, level, stage }
+        : { kind: "track", track };
+    }
+    if (current.kind === "metric") {
+      const metric = track.metrics.find((item) => item.id === current.id);
+      return metric
+        ? { kind: "metric", track, metric }
+        : { kind: "track", track };
+    }
+    if (current.kind === "transition") {
+      const transition = track.transitions.find(
+        (item) => item.id === current.id,
+      );
+      return transition
+        ? { kind: "transition", track, transition }
+        : { kind: "track", track };
+    }
+    if (current.kind === "track-interaction") {
+      const interaction = (system.trackInteractions ?? []).find(
+        (item) => item.id === current.id,
+      );
+      return interaction
+        ? { kind: "interaction", track, interaction }
+        : { kind: "track", track };
+    }
+    return { kind: "track", track };
+  };
+  const selectedLevel =
+    selection?.kind === "level"
+      ? track.levels.find((level) => level.id === selection.id)
+      : selection?.kind === "level-stage"
+        ? track.levels.find((level) => level.id === selection.parentId)
+        : selection?.kind === "track"
+          ? track.levels[0]
+          : undefined;
   return (
-    <>
-      <PageHeader
-        eyebrow="体系内部 / 03 成长轨道"
-        title="境界层级与数值模型"
-        description="一套体系可以有多条成长轨道；每个境界定义突破与退化规则，境界内可继续划分前期、中期、后期等阶段。"
-        action={
-          <>
-            <Button variant="secondary" onClick={addTrack}>
-              <Plus className="h-3.5 w-3.5" />
-              新增轨道
-            </Button>
-            <div className="ce-level-create-control">
-              <CustomSelect
-                value={resolvedLevelInsertAnchor}
-                options={levelInsertOptions}
-                onChange={setLevelInsertAnchor}
-                ariaLabel="新境界插入位置"
-                className="ce-inline-select"
-                size="toolbar"
-              />
-              <Button variant="primary" onClick={addLevel}>
-                <Plus className="h-3.5 w-3.5" />
-                插入境界
-              </Button>
-            </div>
-          </>
-        }
-      />
-      <div className="ce-tabs">
-        {system.progressionTracks.map((item) => (
-          <button
-            type="button"
-            key={item.id}
-            className={item.id === track.id ? "is-active" : ""}
-            onClick={() => {
-              setTrackId(item.id);
-              onSelect({ kind: "track", id: item.id });
-            }}
-          >
-            {item.name}
-            <small>{item.levels.length} 个境界</small>
-          </button>
-        ))}
-      </div>
-      <Section
-        title={track.name}
-        eyebrow={`${track.mode} · ${track.structure}`}
-      >
-        <div className="ce-level-rail">
-          {track.levels.map((item, index) => (
-            <article key={item.id} className="ce-level-card">
-              <button
-                type="button"
-                className="ce-level-card-main"
-                onClick={() =>
-                  onSelect({
-                    kind: "level",
-                    id: item.id,
-                    parentId: track.id,
-                    parentKind: "track",
-                  })
+    <CultivationProgressionPrototype
+      key={track.id}
+      mode="embedded"
+      system={system}
+      selectedTrackId={track.id}
+      selectedSelection={toPrototypeSelection(selection)}
+      onSelect={(next) => onActivate(toWorkbenchSelection(next))}
+      onReorderLevels={reorderLevels}
+      renderDetails={
+        renderDetails
+          ? (next) => renderDetails(toWorkbenchSelection(next))
+          : undefined
+      }
+      sidebarAction={
+        <Button variant="ghost" onClick={addTrack} title="新增并行轨道">
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
+      }
+      renderViewActions={(view) => {
+        if (view === "levels")
+          return (
+            <>
+              <div className="ce-level-create-control">
+                <CustomSelect
+                  value={resolvedLevelInsertAnchor}
+                  options={levelInsertOptions}
+                  onChange={setLevelInsertAnchor}
+                  ariaLabel="新境界插入位置"
+                  className="ce-inline-select"
+                  size="toolbar"
+                />
+                <Button variant="primary" onClick={addLevel}>
+                  <Plus className="h-3.5 w-3.5" />
+                  新增境界
+                </Button>
+              </div>
+              <Button
+                variant="secondary"
+                disabled={!selectedLevel}
+                onClick={() => selectedLevel && addSubStage(selectedLevel)}
+                title={
+                  selectedLevel
+                    ? `为「${selectedLevel.name}」新增阶段`
+                    : "请先选择一个境界"
                 }
               >
-                <span className="ce-level-card-head">
-                  <span>境界 {String(index + 1).padStart(2, "0")}</span>
-                  {index < track.levels.length - 1 && (
-                    <ChevronRight className="ce-level-arrow" />
-                  )}
-                </span>
-                <strong>{item.name}</strong>
-                <small>
-                  {item.quality || "质量未定义"} · {item.subStages.length}{" "}
-                  个阶段
-                </small>
-              </button>
-              <div className="ce-level-stage-panel">
-                <div className="ce-level-stage-heading">
-                  <span>境内阶段</span>
-                  <button
-                    type="button"
-                    title={`为${item.name}新增阶段`}
-                    aria-label={`为${item.name}新增阶段`}
-                    onClick={() => addSubStage(item)}
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <div className="ce-level-stage-list">
-                  {[...item.subStages]
-                    .sort((left, right) => left.order - right.order)
-                    .map((stage) => (
-                      <button
-                        type="button"
-                        key={stage.id}
-                        title={`编辑${item.name} · ${stage.name}`}
-                        onClick={() =>
-                          onSelect({
-                            kind: "level-stage",
-                            id: stage.id,
-                            parentId: item.id,
-                            parentKind: "level",
-                            grandParentId: track.id,
-                          })
-                        }
-                      >
-                        {stage.name}
-                      </button>
-                    ))}
-                </div>
-                {item.subStages.length === 0 && (
-                  <span className="ce-level-stage-empty">尚未划分阶段</span>
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
-        {track.levels.length === 0 && <Empty text="当前轨道尚未建立境界" />}
-      </Section>
-      <Section
-        title="指标定义"
-        eyebrow={`${track.metrics.length} 个自定义指标`}
-        action={
-          <Button variant="secondary" onClick={addMetric}>
-            <Plus className="h-3.5 w-3.5" />
-            新增指标
-          </Button>
-        }
-      >
-        <div className="ce-metric-grid">
-          {track.metrics.map((metric) => (
-            <button
-              type="button"
-              key={metric.id}
-              onClick={() =>
-                onSelect({
-                  kind: "metric",
-                  id: metric.id,
-                  parentId: track.id,
-                  parentKind: "track",
-                })
-              }
-            >
-              <span>{metric.name}</span>
-              <strong>{metric.baseline || "未设置"}</strong>
-              <small>
-                {metric.unit} · {metric.model}
-              </small>
-            </button>
-          ))}
-        </div>
-      </Section>
-      <Section
-        title="突破关系"
-        eyebrow={`${track.transitions.length} 条转换`}
-        action={
-          <Button variant="secondary" onClick={addTransition}>
-            <Plus className="h-3.5 w-3.5" />
-            新增转换
-          </Button>
-        }
-      >
-        <div className="ce-transition-list">
-          {track.transitions.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              onClick={() =>
-                onSelect({
-                  kind: "transition",
-                  id: item.id,
-                  parentId: track.id,
-                  parentKind: "track",
-                })
-              }
-            >
-              <GitBranch className="h-4 w-4" />
-              <span>
-                <strong>{item.name}</strong>
-                <small>{item.successResult || "未定义成功结果"}</small>
-              </span>
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-          ))}
-        </div>
-        {track.transitions.length === 0 && (
-          <Empty text="当前轨道尚未定义转换" />
-        )}
-      </Section>
-      <Section
-        title="多轨道交叉规则"
-        eyebrow={`${system.trackInteractions?.length ?? 0} 条同步 / 协同 / 竞争规则`}
-        action={
+                <Plus className="h-3.5 w-3.5" />
+                新增境内阶段
+              </Button>
+            </>
+          );
+        if (view === "metrics")
+          return (
+            <Button variant="secondary" onClick={addMetric}>
+              <Plus className="h-3.5 w-3.5" />
+              新增指标
+            </Button>
+          );
+        if (view === "transitions")
+          return (
+            <Button variant="secondary" onClick={addTransition}>
+              <Plus className="h-3.5 w-3.5" />
+              新增转换
+            </Button>
+          );
+        return (
           <div className="ce-interaction-create-control">
             <CustomSelect
               value={
@@ -3511,42 +3617,12 @@ function Progression({
               }
             >
               <Plus className="h-3.5 w-3.5" />
-              新增规则
+              新增交叉规则
             </Button>
           </div>
-        }
-      >
-        <div className="ce-transition-list">
-          {(system.trackInteractions ?? []).map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              onClick={() =>
-                onSelect({ kind: "track-interaction", id: item.id })
-              }
-            >
-              <GitBranch className="h-4 w-4" />
-              <span>
-                <strong>{item.name}</strong>
-                <small>
-                  {item.kind} · {item.rule || "尚未定义规则"}
-                </small>
-              </span>
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-          ))}
-        </div>
-        {(system.trackInteractions?.length ?? 0) === 0 && (
-          <Empty
-            text={
-              system.progressionTracks.length < 2
-                ? "建立第二条轨道后才能配置交叉规则"
-                : "尚未定义轨道交叉规则"
-            }
-          />
-        )}
-      </Section>
-    </>
+        );
+      }}
+    />
   );
 }
 
@@ -3646,17 +3722,12 @@ function ResourceDirectory({
   };
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 04 资源库"
-        title="修炼资源"
-        description="定义能量、材料、环境、知识、权限和替代关系；消耗应由境界、境内阶段、法门、技能或阵法明确引用。"
-        action={
-          <Button variant="primary" onClick={add}>
-            <Plus className="h-3.5 w-3.5" />
-            新增资源
-          </Button>
-        }
-      />
+      <ContentToolbar label={`资源目录 · ${system.resources.length} 项`}>
+        <Button variant="primary" onClick={add}>
+          <Plus className="h-3.5 w-3.5" />
+          新增资源
+        </Button>
+      </ContentToolbar>
       <div className="ce-directory">
         {system.resources.map((item) => (
           <button
@@ -3736,17 +3807,12 @@ function MethodWorkspace({
   if (!method)
     return (
       <>
-        <PageHeader
-          eyebrow="体系内部 / 05 修行法门"
-          title="修行法门"
-          description="每一部法门都包含修炼法诀、课程、适用区间和独立的运行拓扑。"
-          action={
-            <Button variant="primary" onClick={add}>
-              <Plus className="h-3.5 w-3.5" />
-              新增法门
-            </Button>
-          }
-        />
+        <ContentToolbar label="法门目录">
+          <Button variant="primary" onClick={add}>
+            <Plus className="h-3.5 w-3.5" />
+            新增法门
+          </Button>
+        </ContentToolbar>
         <Empty text="尚未建立法门" />
       </>
     );
@@ -3780,137 +3846,129 @@ function MethodWorkspace({
     });
   };
   return (
-    <>
-      <PageHeader
-        eyebrow="体系内部 / 05 修行法门"
-        title="修行法门与运行拓扑"
-        description="理论模型只提供共有节点；切换法门会切换其独立的经络、符文或意识运行线路。"
-        action={
-          <Button variant="primary" onClick={add}>
+    <div className="ce-method-workspace">
+      <div className="ce-method-list">
+        <div className="ce-list-title">
+          <span>法门目录</span>
+          <Button variant="ghost" onClick={add} title="新增法门">
             <Plus className="h-3.5 w-3.5" />
-            新增法门
           </Button>
-        }
-      />
-      <div className="ce-method-workspace">
-        <div className="ce-method-list">
-          <div className="ce-list-title">法门目录</div>
-          {system.methods.map((item) => (
-            <div
-              key={item.id}
-              className={`ce-method-list-item ${item.id === method.id ? "is-active" : ""}`}
-            >
-              <button
-                type="button"
-                className="ce-method-list-item-trigger"
-                aria-pressed={item.id === method.id}
-                onClick={() => {
-                  setMethodId(item.id);
-                  setTopologyId(item.operationTopologies[0]?.id ?? "");
-                }}
-              >
-                <BookOpen className="h-4 w-4" />
-                <span>
-                  <strong>{item.name}</strong>
-                  <small>{item.kind}</small>
-                </span>
-                <em>{item.operationTopologies.length}</em>
-              </button>
-              <button
-                type="button"
-                className="ce-method-list-item-edit"
-                title={`编辑法门：${item.name}`}
-                aria-label={`编辑法门：${item.name}`}
-                onClick={() => onSelect({ kind: "method", id: item.id })}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
         </div>
-        <div className="ce-method-detail">
-          <Section title={method.name} eyebrow={method.kind}>
-            <div className="ce-callout ce-callout-warm">
-              <ScrollText className="h-4 w-4" />
-              <p>{method.script.join(" ") || "法诀尚未填写。"}</p>
-            </div>
-            <div className="ce-method-meta">
-              <div>
-                <span>理论引用</span>
-                <strong>{method.theoryReference || "未关联"}</strong>
-              </div>
-              <div>
-                <span>覆盖区间</span>
-                <strong>
-                  {method.coverage.startLevelId || "起始"} →{" "}
-                  {method.coverage.absoluteLimitId || "未设上限"}
-                </strong>
-              </div>
-              <div>
-                <span>成长公式</span>
-                <strong>{method.formula || "未填写"}</strong>
-              </div>
-            </div>
-          </Section>
-          <Section
-            title="法门运行拓扑"
-            eyebrow={`${method.operationTopologies.length} 条线路`}
-            action={
-              <Button variant="secondary" onClick={addTopology}>
-                <Plus className="h-3.5 w-3.5" />
-                新增拓扑
-              </Button>
-            }
+        {system.methods.map((item) => (
+          <div
+            key={item.id}
+            className={`ce-method-list-item ${item.id === method.id ? "is-active" : ""}`}
           >
-            <div className="ce-topology-tabs">
-              {method.operationTopologies.map((item) => (
-                <div
-                  key={item.id}
-                  className={`ce-topology-tab ${topology?.id === item.id ? "is-active" : ""}`}
-                >
-                  <button
-                    type="button"
-                    className="ce-topology-tab-trigger"
-                    aria-pressed={topology?.id === item.id}
-                    onClick={() => setTopologyId(item.id)}
-                  >
-                    {item.name}
-                    <small>{item.nodes.length} 节点</small>
-                  </button>
-                  <button
-                    type="button"
-                    className="ce-topology-tab-edit"
-                    title={`编辑拓扑：${item.name}`}
-                    aria-label={`编辑拓扑：${item.name}`}
-                    onClick={() =>
-                      onSelect({
-                        kind: "topology",
-                        id: item.id,
-                        parentId: method.id,
-                        parentKind: "method",
-                      })
-                    }
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-            {topology ? (
-              <TopologyCard
-                system={system}
-                method={method}
-                topology={topology}
-                onChange={onChange}
-                onSelect={onSelect}
-              />
-            ) : (
-              <Empty text="此法门尚未定义运行拓扑" />
-            )}
-          </Section>
-        </div>
+            <button
+              type="button"
+              className="ce-method-list-item-trigger"
+              aria-pressed={item.id === method.id}
+              onClick={() => {
+                setMethodId(item.id);
+                setTopologyId(item.operationTopologies[0]?.id ?? "");
+              }}
+            >
+              <BookOpen className="h-4 w-4" />
+              <span>
+                <strong>{item.name}</strong>
+                <small>{item.kind}</small>
+              </span>
+              <em>{item.operationTopologies.length}</em>
+            </button>
+            <button
+              type="button"
+              className="ce-method-list-item-edit"
+              title={`编辑法门：${item.name}`}
+              aria-label={`编辑法门：${item.name}`}
+              onClick={() => onSelect({ kind: "method", id: item.id })}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
       </div>
-    </>
+      <div className="ce-method-detail">
+        <Section title={method.name} eyebrow={method.kind}>
+          <div className="ce-callout ce-callout-warm">
+            <ScrollText className="h-4 w-4" />
+            <p>{method.script.join(" ") || "法诀尚未填写。"}</p>
+          </div>
+          <div className="ce-method-meta">
+            <div>
+              <span>理论引用</span>
+              <strong>{method.theoryReference || "未关联"}</strong>
+            </div>
+            <div>
+              <span>覆盖区间</span>
+              <strong>
+                {method.coverage.startLevelId || "起始"} →{" "}
+                {method.coverage.absoluteLimitId || "未设上限"}
+              </strong>
+            </div>
+            <div>
+              <span>成长公式</span>
+              <strong>{method.formula || "未填写"}</strong>
+            </div>
+          </div>
+        </Section>
+        <Section
+          title="法门运行拓扑"
+          eyebrow={`${method.operationTopologies.length} 条线路`}
+          action={
+            <Button variant="secondary" onClick={addTopology}>
+              <Plus className="h-3.5 w-3.5" />
+              新增拓扑
+            </Button>
+          }
+        >
+          <div className="ce-topology-tabs">
+            {method.operationTopologies.map((item) => (
+              <div
+                key={item.id}
+                className={`ce-topology-tab ${topology?.id === item.id ? "is-active" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="ce-topology-tab-trigger"
+                  aria-pressed={topology?.id === item.id}
+                  onClick={() => setTopologyId(item.id)}
+                >
+                  {item.name}
+                  <small>{item.nodes.length} 节点</small>
+                </button>
+                <button
+                  type="button"
+                  className="ce-topology-tab-edit"
+                  title={`编辑拓扑：${item.name}`}
+                  aria-label={`编辑拓扑：${item.name}`}
+                  onClick={() =>
+                    onSelect({
+                      kind: "topology",
+                      id: item.id,
+                      parentId: method.id,
+                      parentKind: "method",
+                    })
+                  }
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+          {topology ? (
+            <TopologyCard
+              system={system}
+              method={method}
+              topology={topology}
+              onChange={onChange}
+              onSelect={onSelect}
+            />
+          ) : (
+            <Empty text="此法门尚未定义运行拓扑" />
+          )}
+        </Section>
+      </div>
+    </div>
   );
 }
 
@@ -4573,69 +4631,66 @@ function AbilityDirectory({
   );
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 06 能力库"
-        title="能力库"
-        description="能力库统一展示两类能力：达到境界自动解锁，或通过秘籍 / 法门修炼获得。每项能力声明功能类型与释放能量消耗。"
-        action={
+      <div className="ce-content-toolbar ce-content-toolbar-filters">
+        <div className="ce-filter-tabs">
+          <button
+            type="button"
+            className={filter === "all" ? "is-active" : ""}
+            onClick={() => setFilter("all")}
+          >
+            全部 <small>{system.abilities.length}</small>
+          </button>
+          <button
+            type="button"
+            className={filter === "natural" ? "is-active" : ""}
+            onClick={() => setFilter("natural")}
+          >
+            境界自动获得{" "}
+            <small>
+              {
+                system.abilities.filter(
+                  (item) => item.acquisitionType === "natural",
+                ).length
+              }
+            </small>
+          </button>
+          <button
+            type="button"
+            className={filter === "scripture" ? "is-active" : ""}
+            onClick={() => setFilter("scripture")}
+          >
+            秘籍修炼获得{" "}
+            <small>
+              {
+                system.abilities.filter(
+                  (item) => item.acquisitionType === "scripture",
+                ).length
+              }
+            </small>
+          </button>
+          {(["all", "support", "mental", "offensive"] as const).map((value) => (
+            <button
+              type="button"
+              key={value}
+              className={functionFilter === value ? "is-active" : ""}
+              onClick={() => setFunctionFilter(value)}
+            >
+              {value === "all"
+                ? "全部功能"
+                : value === "support"
+                  ? "辅助类"
+                  : value === "mental"
+                    ? "精神类"
+                    : "进攻类"}
+            </button>
+          ))}
+        </div>
+        <div>
           <Button variant="primary" onClick={add}>
             <Plus className="h-3.5 w-3.5" />
             新增能力
           </Button>
-        }
-      />
-      <div className="ce-filter-tabs">
-        <button
-          type="button"
-          className={filter === "all" ? "is-active" : ""}
-          onClick={() => setFilter("all")}
-        >
-          全部 <small>{system.abilities.length}</small>
-        </button>
-        <button
-          type="button"
-          className={filter === "natural" ? "is-active" : ""}
-          onClick={() => setFilter("natural")}
-        >
-          境界自动获得{" "}
-          <small>
-            {
-              system.abilities.filter(
-                (item) => item.acquisitionType === "natural",
-              ).length
-            }
-          </small>
-        </button>
-        <button
-          type="button"
-          className={filter === "scripture" ? "is-active" : ""}
-          onClick={() => setFilter("scripture")}
-        >
-          秘籍修炼获得{" "}
-          <small>
-            {
-              system.abilities.filter(
-                (item) => item.acquisitionType === "scripture",
-              ).length
-            }
-          </small>
-        </button>
-        {(["all", "support", "mental", "offensive"] as const).map((value) => (
-          <button
-            type="button"
-            key={value}
-            className={functionFilter === value ? "is-active" : ""}
-            onClick={() => setFunctionFilter(value)}
-          >
-            {value === "all"
-              ? "全部功能"
-              : value === "support"
-                ? "辅助类"
-                : value === "mental"
-                  ? "精神类"
-                  : "进攻类"}
-          </button>
-        ))}
+        </div>
       </div>
       <div className="ce-ability-grid">
         {abilities.map((item) => (
@@ -5964,238 +6019,142 @@ function FormationWorkspace({
   if (!formation)
     return (
       <>
-        <PageHeader
-          eyebrow="体系内部 / 07 阵法与部署"
-          title="阵法与部署"
-          description="阵法是独立的部署拓扑，引用理论节点、法门、能力和资源，承担区域放大、控制、防护或仪式功能。"
-          action={
-            <Button variant="primary" onClick={add}>
-              <Plus className="h-3.5 w-3.5" />
-              新增阵法
-            </Button>
-          }
-        />
-        <Empty text="尚未建立阵法" />
-      </>
-    );
-  return (
-    <>
-      <PageHeader
-        eyebrow="体系内部 / 07 阵法与部署"
-        title="阵法与部署"
-        description="以六元结构定义局部法则，通过阵盘骨架、阵元与灵流共同完成可运行的阵法设计。"
-        action={
+        <ContentToolbar label="阵法目录">
           <Button variant="primary" onClick={add}>
             <Plus className="h-3.5 w-3.5" />
             新增阵法
           </Button>
-        }
-      />
-      <div className="ce-formation-workspace">
-        <div className="ce-formation-list">
-          {system.formations.map((item) => (
-            <div
-              key={item.id}
-              className={`ce-formation-list-item ${item.id === formation.id ? "is-active" : ""}`}
-            >
-              <button
-                type="button"
-                className="ce-formation-list-item-trigger"
-                onClick={() => setFormationId(item.id)}
-              >
-                <Hexagon className="h-4 w-4" />
-                <span>
-                  <strong>{item.name}</strong>
-                  <small>{item.category}</small>
-                </span>
-              </button>
-              <button
-                type="button"
-                className="ce-formation-list-item-edit"
-                title={`编辑${item.name}`}
-                aria-label={`编辑${item.name}`}
-                onClick={() => onSelect({ kind: "formation", id: item.id })}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
+        </ContentToolbar>
+        <Empty text="尚未建立阵法" />
+      </>
+    );
+  return (
+    <div className="ce-formation-workspace">
+      <div className="ce-formation-list">
+        <div className="ce-list-title">
+          <span>阵法目录</span>
+          <Button variant="ghost" onClick={add} title="新增阵法">
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
         </div>
-        <div className="ce-formation-detail">
-          <Section
-            title={formation.name}
-            eyebrow={`${formation.structure} · ${formation.scale || "规模未定"}`}
-            action={viewSwitch}
+        {system.formations.map((item) => (
+          <div
+            key={item.id}
+            className={`ce-formation-list-item ${item.id === formation.id ? "is-active" : ""}`}
           >
-            {view === "canvas" ? (
-              <FormationDesignCanvas
-                system={system}
-                formation={formation}
-                onChange={onChange}
-                onSelect={onSelect}
-                mode="preview"
-                onOpenEditor={() => onOpenEditor(formation.id)}
-              />
-            ) : (
-              <>
-                <div className="ce-formation-overview-actions">
-                  <Button variant="secondary" onClick={addNode}>
-                    <Plus className="h-3.5 w-3.5" />
-                    新增阵元
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={addEdge}
-                    disabled={formation.nodes.length < 2}
-                    title={
-                      formation.nodes.length < 2
-                        ? "至少需要两个阵元"
-                        : undefined
-                    }
-                  >
-                    <GitBranch className="h-3.5 w-3.5" />
-                    新增流向
-                  </Button>
-                </div>
-                <div className="ce-formation-map">
-                  <svg
-                    className="ce-formation-edges"
-                    aria-hidden="true"
-                    viewBox="0 0 100 100"
-                    preserveAspectRatio="none"
-                  >
-                    <defs>
-                      <marker
-                        id={`ce-formation-arrow-${formation.id}`}
-                        markerWidth="5"
-                        markerHeight="5"
-                        refX="4"
-                        refY="2.5"
-                        orient="auto"
-                        markerUnits="strokeWidth"
-                      >
-                        <path
-                          d="M 0 0 L 5 2.5 L 0 5 z"
-                          fill="var(--accent-warm)"
-                        />
-                      </marker>
-                    </defs>
-                    {formation.edges.map((edge) => {
-                      const from = formation.nodes.find(
-                        (node) => node.id === edge.fromNodeId,
-                      );
-                      const to = formation.nodes.find(
-                        (node) => node.id === edge.toNodeId,
-                      );
-                      if (!from || !to) return null;
-                      return (
-                        <line
-                          key={edge.id}
-                          x1={from.position.x}
-                          y1={from.position.y}
-                          x2={to.position.x}
-                          y2={to.position.y}
-                          markerEnd={`url(#ce-formation-arrow-${formation.id})`}
-                        />
-                      );
-                    })}
-                  </svg>
-                  <div className="ce-formation-center">
-                    <Hexagon className="h-8 w-8" />
-                    <span>阵眼</span>
-                  </div>
-                  {formation.nodes.map((node) => (
-                    <button
-                      type="button"
-                      key={node.id}
-                      className="ce-formation-node"
-                      style={{
-                        left: `${node.position.x}%`,
-                        top: `${node.position.y}%`,
-                      }}
-                      onClick={() =>
-                        onSelect({
-                          kind: "formation-node",
-                          id: node.id,
-                          parentId: formation.id,
-                          parentKind: "formation",
-                        })
-                      }
-                    >
-                      <CircleDot className="h-3.5 w-3.5" />
-                      <span>{node.name}</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="ce-formation-six-grid">
-                  {(
-                    Object.keys(FORMATION_ELEMENT_LABELS) as Array<
-                      keyof Formation["sixElements"]
-                    >
-                  ).map((key) => (
-                    <button
-                      type="button"
-                      key={key}
-                      onClick={() =>
-                        onSelect({ kind: "formation", id: formation.id })
-                      }
-                    >
-                      <span>{FORMATION_ELEMENT_LABELS[key]}</span>
-                      <strong>{formation.sixElements[key] || "未定义"}</strong>
-                    </button>
-                  ))}
-                </div>
-                <div className="ce-formation-meta">
-                  <div>
-                    <span>用途</span>
-                    <strong>{formation.purpose || "未定义"}</strong>
-                  </div>
-                  <div>
-                    <span>激活</span>
-                    <strong>{formation.activation || "未定义"}</strong>
-                  </div>
-                  <div>
-                    <span>边界</span>
-                    <strong>{formation.boundary || "未定义"}</strong>
-                  </div>
-                  <div>
-                    <span>风险</span>
-                    <strong>{formation.risks.join("、") || "未定义"}</strong>
-                  </div>
-                </div>
-                <div className="ce-edge-list">
-                  {formation.edges.map((edge) => (
-                    <button
-                      type="button"
-                      key={edge.id}
-                      onClick={() =>
-                        onSelect({
-                          kind: "formation-edge",
-                          id: edge.id,
-                          parentId: formation.id,
-                          parentKind: "formation",
-                        })
-                      }
-                    >
-                      <GitBranch className="h-3.5 w-3.5" />
-                      <span>{edge.name}</span>
-                      <small>{edge.rule || "未定义流向规则"}</small>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </Section>
-          {view === "overview" && (
-            <Section
-              title="部署索引"
-              eyebrow={`${formation.nodes.length} 个节点 · ${formation.edges.length} 条边`}
+            <button
+              type="button"
+              className="ce-formation-list-item-trigger"
+              onClick={() => setFormationId(item.id)}
             >
-              <div className="ce-deployment-list">
+              <Hexagon className="h-4 w-4" />
+              <span>
+                <strong>{item.name}</strong>
+                <small>{item.category}</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="ce-formation-list-item-edit"
+              title={`编辑${item.name}`}
+              aria-label={`编辑${item.name}`}
+              onClick={() => onSelect({ kind: "formation", id: item.id })}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="ce-formation-detail">
+        <Section
+          title={formation.name}
+          eyebrow={`${formation.structure} · ${formation.scale || "规模未定"}`}
+          action={viewSwitch}
+        >
+          {view === "canvas" ? (
+            <FormationDesignCanvas
+              system={system}
+              formation={formation}
+              onChange={onChange}
+              onSelect={onSelect}
+              mode="preview"
+              onOpenEditor={() => onOpenEditor(formation.id)}
+            />
+          ) : (
+            <>
+              <div className="ce-formation-overview-actions">
+                <Button variant="secondary" onClick={addNode}>
+                  <Plus className="h-3.5 w-3.5" />
+                  新增阵元
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={addEdge}
+                  disabled={formation.nodes.length < 2}
+                  title={
+                    formation.nodes.length < 2 ? "至少需要两个阵元" : undefined
+                  }
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
+                  新增流向
+                </Button>
+              </div>
+              <div className="ce-formation-map">
+                <svg
+                  className="ce-formation-edges"
+                  aria-hidden="true"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                >
+                  <defs>
+                    <marker
+                      id={`ce-formation-arrow-${formation.id}`}
+                      markerWidth="5"
+                      markerHeight="5"
+                      refX="4"
+                      refY="2.5"
+                      orient="auto"
+                      markerUnits="strokeWidth"
+                    >
+                      <path
+                        d="M 0 0 L 5 2.5 L 0 5 z"
+                        fill="var(--accent-warm)"
+                      />
+                    </marker>
+                  </defs>
+                  {formation.edges.map((edge) => {
+                    const from = formation.nodes.find(
+                      (node) => node.id === edge.fromNodeId,
+                    );
+                    const to = formation.nodes.find(
+                      (node) => node.id === edge.toNodeId,
+                    );
+                    if (!from || !to) return null;
+                    return (
+                      <line
+                        key={edge.id}
+                        x1={from.position.x}
+                        y1={from.position.y}
+                        x2={to.position.x}
+                        y2={to.position.y}
+                        markerEnd={`url(#ce-formation-arrow-${formation.id})`}
+                      />
+                    );
+                  })}
+                </svg>
+                <div className="ce-formation-center">
+                  <Hexagon className="h-8 w-8" />
+                  <span>阵眼</span>
+                </div>
                 {formation.nodes.map((node) => (
                   <button
                     type="button"
                     key={node.id}
+                    className="ce-formation-node"
+                    style={{
+                      left: `${node.position.x}%`,
+                      top: `${node.position.y}%`,
+                    }}
                     onClick={() =>
                       onSelect({
                         kind: "formation-node",
@@ -6205,18 +6164,100 @@ function FormationWorkspace({
                       })
                     }
                   >
+                    <CircleDot className="h-3.5 w-3.5" />
                     <span>{node.name}</span>
-                    <small>
-                      {FORMATION_ELEMENT_LABELS[node.element]} · {node.role}
-                    </small>
                   </button>
                 ))}
               </div>
-            </Section>
+              <div className="ce-formation-six-grid">
+                {(
+                  Object.keys(FORMATION_ELEMENT_LABELS) as Array<
+                    keyof Formation["sixElements"]
+                  >
+                ).map((key) => (
+                  <button
+                    type="button"
+                    key={key}
+                    onClick={() =>
+                      onSelect({ kind: "formation", id: formation.id })
+                    }
+                  >
+                    <span>{FORMATION_ELEMENT_LABELS[key]}</span>
+                    <strong>{formation.sixElements[key] || "未定义"}</strong>
+                  </button>
+                ))}
+              </div>
+              <div className="ce-formation-meta">
+                <div>
+                  <span>用途</span>
+                  <strong>{formation.purpose || "未定义"}</strong>
+                </div>
+                <div>
+                  <span>激活</span>
+                  <strong>{formation.activation || "未定义"}</strong>
+                </div>
+                <div>
+                  <span>边界</span>
+                  <strong>{formation.boundary || "未定义"}</strong>
+                </div>
+                <div>
+                  <span>风险</span>
+                  <strong>{formation.risks.join("、") || "未定义"}</strong>
+                </div>
+              </div>
+              <div className="ce-edge-list">
+                {formation.edges.map((edge) => (
+                  <button
+                    type="button"
+                    key={edge.id}
+                    onClick={() =>
+                      onSelect({
+                        kind: "formation-edge",
+                        id: edge.id,
+                        parentId: formation.id,
+                        parentKind: "formation",
+                      })
+                    }
+                  >
+                    <GitBranch className="h-3.5 w-3.5" />
+                    <span>{edge.name}</span>
+                    <small>{edge.rule || "未定义流向规则"}</small>
+                  </button>
+                ))}
+              </div>
+            </>
           )}
-        </div>
+        </Section>
+        {view === "overview" && (
+          <Section
+            title="部署索引"
+            eyebrow={`${formation.nodes.length} 个节点 · ${formation.edges.length} 条边`}
+          >
+            <div className="ce-deployment-list">
+              {formation.nodes.map((node) => (
+                <button
+                  type="button"
+                  key={node.id}
+                  onClick={() =>
+                    onSelect({
+                      kind: "formation-node",
+                      id: node.id,
+                      parentId: formation.id,
+                      parentKind: "formation",
+                    })
+                  }
+                >
+                  <span>{node.name}</span>
+                  <small>
+                    {FORMATION_ELEMENT_LABELS[node.element]} · {node.role}
+                  </small>
+                </button>
+              ))}
+            </div>
+          </Section>
+        )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -6348,57 +6389,50 @@ function Assets({
     },
   ];
   return (
-    <>
-      <PageHeader
-        eyebrow="体系内部 / 08 资产索引"
-        title="资产索引"
-        description="所有资产只定义一次，再通过境界、境内阶段、法门、能力和阵法建立关联；从任一资产都能回到对应成长位置。"
-      />
-      <Section title="体系资产" eyebrow="反向引用">
-        <div className="ce-asset-index">
-          {groups.map((group) => (
-            <div className="ce-asset-group" key={group.type}>
-              <button
-                type="button"
-                className="ce-asset-group-head"
-                onClick={() => onOpenModule(group.module)}
-              >
-                <span className="ce-index-count">{group.items.length}</span>
-                <span>
-                  <strong>{group.type}</strong>
-                  <small>{group.note}</small>
-                </span>
-                <ChevronRight className="h-4 w-4" />
-              </button>
-              <div className="ce-asset-group-items">
-                {group.items.map((item) => (
-                  <button
-                    type="button"
-                    key={item.id}
-                    onClick={() =>
-                      onOpenModule(group.module, {
-                        kind: group.kind,
-                        id: item.id,
-                      })
-                    }
-                  >
-                    <span>
-                      <strong>{item.name}</strong>
-                      <small>{item.id}</small>
-                    </span>
-                    <em>
-                      {references.get(item.id)?.join("、") || "暂无反向引用"}
-                    </em>
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                ))}
-                {group.items.length === 0 && <small>暂无资产</small>}
-              </div>
+    <Section title="体系资产" eyebrow="反向引用">
+      <div className="ce-asset-index">
+        {groups.map((group) => (
+          <div className="ce-asset-group" key={group.type}>
+            <button
+              type="button"
+              className="ce-asset-group-head"
+              onClick={() => onOpenModule(group.module)}
+            >
+              <span className="ce-index-count">{group.items.length}</span>
+              <span>
+                <strong>{group.type}</strong>
+                <small>{group.note}</small>
+              </span>
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <div className="ce-asset-group-items">
+              {group.items.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  onClick={() =>
+                    onOpenModule(group.module, {
+                      kind: group.kind,
+                      id: item.id,
+                    })
+                  }
+                >
+                  <span>
+                    <strong>{item.name}</strong>
+                    <small>{item.id}</small>
+                  </span>
+                  <em>
+                    {references.get(item.id)?.join("、") || "暂无反向引用"}
+                  </em>
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              ))}
+              {group.items.length === 0 && <small>暂无资产</small>}
             </div>
-          ))}
-        </div>
-      </Section>
-    </>
+          </div>
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -6428,17 +6462,12 @@ function FoundationDirectory({
   };
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 09 根基与质量"
-        title="根基与质量"
-        description="根骨、血脉、灵魂资质、元素亲和或改造程度会跨多个境界影响速度、质量、上限和突破。"
-        action={
-          <Button variant="primary" onClick={add}>
-            <Plus className="h-3.5 w-3.5" />
-            新增根基因素
-          </Button>
-        }
-      />
+      <ContentToolbar label={`根基目录 · ${system.foundations.length} 项`}>
+        <Button variant="primary" onClick={add}>
+          <Plus className="h-3.5 w-3.5" />
+          新增根基因素
+        </Button>
+      </ContentToolbar>
       <div className="ce-directory">
         {system.foundations.map((item) => (
           <button
@@ -6487,17 +6516,14 @@ function TransitionDirectory({
   };
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 10 突破与转换"
-        title="突破与转换"
-        description="跃迁是独立的一等对象，记录方法、资源、条件、成功模型、失败语义和不可逆后果。"
-        action={
-          <Button variant="primary" onClick={add}>
-            <Plus className="h-3.5 w-3.5" />
-            新增转换
-          </Button>
-        }
-      />
+      <ContentToolbar
+        label={`转换目录 · ${system.transitions.length + nestedTransitions.length} 项`}
+      >
+        <Button variant="primary" onClick={add}>
+          <Plus className="h-3.5 w-3.5" />
+          新增转换
+        </Button>
+      </ContentToolbar>
       <div className="ce-transition-list">
         {system.transitions.map((item) => (
           <button
@@ -6574,17 +6600,12 @@ function ConstraintDirectory({
   };
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 11 体系约束"
-        title="体系约束"
-        description="代价、污染、反噬、不可逆后果和世界规则决定修行体系的边界与叙事张力。"
-        action={
-          <Button variant="primary" onClick={add}>
-            <Plus className="h-3.5 w-3.5" />
-            新增约束
-          </Button>
-        }
-      />
+      <ContentToolbar label={`约束目录 · ${system.constraints.length} 项`}>
+        <Button variant="primary" onClick={add}>
+          <Plus className="h-3.5 w-3.5" />
+          新增约束
+        </Button>
+      </ContentToolbar>
       <div className="ce-constraint-grid">
         {system.constraints.map((item) => (
           <button
@@ -6623,11 +6644,6 @@ function AuditDirectory({
   const completeness = calculateCultivationCompleteness(system);
   return (
     <>
-      <PageHeader
-        eyebrow="体系内部 / 12 审查"
-        title="结构审查"
-        description="定位无效引用、缺失消耗、拓扑断路、境界冲突和跨体系转换风险。审查结果可以直接跳回对应模块。"
-      />
       <div className="ce-audit-score">
         <div>
           <span>结构完整度</span>
@@ -9162,6 +9178,72 @@ function fixedLineValues(value: string, count: number): string[] {
   const lines = value.split("\n").map((item) => item.trim());
   return Array.from({ length: count }, (_, index) => lines[index] ?? "");
 }
+
+function ProgressionInlineInspector({
+  ecology,
+  system,
+  selection,
+  onChange,
+  onChangeSystem,
+  onDeleteSystem,
+  onSelect,
+  itemEntries,
+  itemLibraryLoading,
+  itemLibraryError,
+}: {
+  ecology: CultivationEcology;
+  system: CultivationSystem;
+  selection: Selection;
+  onChange: (ecology: CultivationEcology) => void;
+  onChangeSystem: (system: CultivationSystem) => void;
+  onDeleteSystem: () => void;
+  onSelect: (selection: Selection) => void;
+  itemEntries: readonly ItemIndexEntry[];
+  itemLibraryLoading: boolean;
+  itemLibraryError: string;
+}) {
+  const [headerAction, setHeaderAction] = useState<{
+    label: string;
+    onClick: () => void;
+  } | null>(null);
+
+  return (
+    <div className="ce-progression-inline-inspector">
+      <div className="ce-progression-inline-inspector-header">
+        <span>直接编辑</span>
+        {headerAction && (
+          <Button
+            variant="danger"
+            onClick={headerAction.onClick}
+            title={headerAction.label}
+            ariaLabel={headerAction.label}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {headerAction.label}
+          </Button>
+        )}
+      </div>
+      <div className="ce-progression-inline-inspector-body">
+        <InspectorHeaderActionContext.Provider value={setHeaderAction}>
+          <InspectorV2
+            scope="system"
+            ecology={ecology}
+            system={system}
+            selection={selection}
+            onChange={onChange}
+            onChangeSystem={onChangeSystem}
+            onDeleteSystem={onDeleteSystem}
+            onSelect={onSelect}
+            itemEntries={itemEntries}
+            itemLibraryLoading={itemLibraryLoading}
+            itemLibraryError={itemLibraryError}
+          />
+        </InspectorHeaderActionContext.Provider>
+      </div>
+    </div>
+  );
+}
+
 function boundedNumber(
   value: string,
   min: number,
@@ -11114,6 +11196,9 @@ function InspectorV2({
       (track) => track.id === selected,
     );
     if (!item) return <InspectorMissing />;
+    const trackIndex = system.progressionTracks.findIndex(
+      (track) => track.id === item.id,
+    );
     const update = (patch: Partial<ProgressionTrack>) =>
       patchSystem({
         progressionTracks: updateById(
@@ -11122,6 +11207,22 @@ function InspectorV2({
           (current) => ({ ...current, ...patch }),
         ),
       });
+    const moveTrack = (offset: -1 | 1) => {
+      const nextIndex = trackIndex + offset;
+      if (
+        trackIndex < 0 ||
+        nextIndex < 0 ||
+        nextIndex >= system.progressionTracks.length
+      )
+        return;
+      patchSystem({
+        progressionTracks: arrayMove(
+          system.progressionTracks,
+          trackIndex,
+          nextIndex,
+        ),
+      });
+    };
     return (
       <InspectorEditor
         title={item.name}
@@ -11131,6 +11232,28 @@ function InspectorV2({
           onSelect?.(null);
         }}
       >
+        <div
+          className="ce-inspector-insert-actions"
+          role="group"
+          aria-label="调整成长轨道顺序"
+        >
+          <Button
+            variant="secondary"
+            disabled={trackIndex <= 0}
+            onClick={() => moveTrack(-1)}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            前移轨道
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={trackIndex >= system.progressionTracks.length - 1}
+            onClick={() => moveTrack(1)}
+          >
+            后移轨道
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
         <Field
           label="轨道名称"
           value={item.name}
@@ -11384,6 +11507,9 @@ function InspectorV2({
       );
     const item = level?.subStages.find((stage) => stage.id === selected);
     if (!track || !level || !item) return <InspectorMissing />;
+    const stageIndex = level.subStages.findIndex(
+      (stage) => stage.id === item.id,
+    );
     const update = (patch: Partial<CultivationLevelSubStage>) =>
       patchSystem({
         progressionTracks: updateById(
@@ -11402,10 +11528,37 @@ function InspectorV2({
           }),
         ),
       });
+    const moveStage = (offset: -1 | 1) => {
+      const nextIndex = stageIndex + offset;
+      if (
+        stageIndex < 0 ||
+        nextIndex < 0 ||
+        nextIndex >= level.subStages.length
+      )
+        return;
+      patchSystem({
+        progressionTracks: updateById(
+          system.progressionTracks,
+          track.id,
+          (current) => ({
+            ...current,
+            levels: updateById(current.levels, level.id, (currentLevel) => ({
+              ...currentLevel,
+              subStages: arrayMove(
+                currentLevel.subStages,
+                stageIndex,
+                nextIndex,
+              ).map((stage, order) => ({ ...stage, order })),
+            })),
+          }),
+        ),
+      });
+    };
     return (
       <InspectorEditor
         title={item.name}
         type={`境内阶段 / ${level.name}`}
+        deletePlacement="header"
         onDelete={() => {
           patchSystem({
             progressionTracks: updateById(
@@ -11434,27 +11587,32 @@ function InspectorV2({
           });
         }}
       >
+        <div
+          className="ce-inspector-insert-actions"
+          role="group"
+          aria-label="调整境内阶段顺序"
+        >
+          <Button
+            variant="secondary"
+            disabled={stageIndex <= 0}
+            onClick={() => moveStage(-1)}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            前移阶段
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={stageIndex >= level.subStages.length - 1}
+            onClick={() => moveStage(1)}
+          >
+            后移阶段
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
         <Field
           label="阶段名称"
           value={item.name}
           onChange={(name) => update({ name })}
-        />
-        <Field
-          label="阶段顺序"
-          value={String(item.order)}
-          type="number"
-          min={0}
-          step={1}
-          onChange={(value) =>
-            update({
-              order: boundedNumber(
-                value,
-                0,
-                Number.MAX_SAFE_INTEGER,
-                item.order,
-              ),
-            })
-          }
         />
         <Field
           label="阶段摘要"
@@ -11514,6 +11672,7 @@ function InspectorV2({
       );
     const item = track?.levels.find((level) => level.id === selected);
     if (!track || !item) return <InspectorMissing />;
+    const levelIndex = track.levels.findIndex((level) => level.id === item.id);
     const update = (patch: Partial<CultivationLevel>) =>
       patchSystem({
         progressionTracks: updateById(
@@ -11529,11 +11688,8 @@ function InspectorV2({
         ),
       });
     const insertLevel = (position: "before" | "after") => {
-      const currentIndex = track.levels.findIndex(
-        (level) => level.id === item.id,
-      );
-      if (currentIndex < 0) return;
-      const insertionIndex = currentIndex + (position === "after" ? 1 : 0);
+      if (levelIndex < 0) return;
+      const insertionIndex = levelIndex + (position === "after" ? 1 : 0);
       const nextLevel = createLevel(insertionIndex);
       const levels = [...track.levels];
       levels.splice(insertionIndex, 0, nextLevel);
@@ -11554,10 +11710,28 @@ function InspectorV2({
         parentKind: "track",
       });
     };
+    const moveLevel = (offset: -1 | 1) => {
+      const nextIndex = levelIndex + offset;
+      if (levelIndex < 0 || nextIndex < 0 || nextIndex >= track.levels.length)
+        return;
+      patchSystem({
+        progressionTracks: updateById(
+          system.progressionTracks,
+          track.id,
+          (current) => ({
+            ...current,
+            levels: arrayMove(current.levels, levelIndex, nextIndex).map(
+              (level, order) => ({ ...level, order }),
+            ),
+          }),
+        ),
+      });
+    };
     return (
       <InspectorEditor
         title={item.name}
         type="成长境界"
+        deletePlacement="header"
         onDelete={() => {
           const next = removeLevelReferences(system, new Set([item.id]));
           patchSystem({
@@ -11567,7 +11741,9 @@ function InspectorV2({
               track.id,
               (current) => ({
                 ...current,
-                levels: current.levels.filter((level) => level.id !== item.id),
+                levels: current.levels
+                  .filter((level) => level.id !== item.id)
+                  .map((level, order) => ({ ...level, order })),
               }),
             ),
           });
@@ -11588,27 +11764,32 @@ function InspectorV2({
             后插境界
           </Button>
         </div>
+        <div
+          className="ce-inspector-insert-actions"
+          role="group"
+          aria-label="调整成长境界顺序"
+        >
+          <Button
+            variant="secondary"
+            disabled={levelIndex <= 0}
+            onClick={() => moveLevel(-1)}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            前移境界
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={levelIndex >= track.levels.length - 1}
+            onClick={() => moveLevel(1)}
+          >
+            后移境界
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
         <Field
           label="境界名称"
           value={item.name}
           onChange={(value) => update({ name: value })}
-        />
-        <Field
-          label="境界顺序"
-          value={String(item.order)}
-          onChange={(value) =>
-            update({
-              order: boundedNumber(
-                value,
-                0,
-                Number.MAX_SAFE_INTEGER,
-                item.order,
-              ),
-            })
-          }
-          type="number"
-          min={0}
-          step={1}
         />
         <Field
           label="境界类型"
@@ -11647,7 +11828,7 @@ function InspectorV2({
           multiline
         />
         <Field
-          label="突破条件（一行一条）"
+          label="本境界晋阶准备（一行一条）"
           value={item.breakthroughConditions.join("\n")}
           onChange={(value) =>
             update({ breakthroughConditions: textList(value) })
@@ -11655,13 +11836,13 @@ function InspectorV2({
           multiline
         />
         <Field
-          label="突破结果"
+          label="完成本境界修炼的结果"
           value={item.breakthroughResult}
           onChange={(value) => update({ breakthroughResult: value })}
           multiline
         />
         <Field
-          label="失败后果（一行一条）"
+          label="本境界修炼失败后果（一行一条）"
           value={item.failureConsequences.join("\n")}
           onChange={(value) => update({ failureConsequences: textList(value) })}
           multiline
@@ -13382,13 +13563,30 @@ function InspectorEditor({
   type,
   children,
   onDelete,
+  deletePlacement = "content",
 }: {
   title: string;
   type: string;
   children: ReactNode;
   onDelete?: () => void;
+  deletePlacement?: "content" | "header";
 }) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const registerHeaderAction = useContext(InspectorHeaderActionContext);
+  const deleteInHeader =
+    deletePlacement === "header" &&
+    onDelete !== undefined &&
+    registerHeaderAction !== null;
+
+  useEffect(() => {
+    if (!deleteInHeader || !registerHeaderAction) return;
+    registerHeaderAction({
+      label: "删除对象",
+      onClick: () => setDeleteConfirmOpen(true),
+    });
+    return () => registerHeaderAction(null);
+  }, [deleteInHeader, registerHeaderAction]);
+
   return (
     <>
       <div className="ce-inspector-content">
@@ -13404,7 +13602,7 @@ function InspectorEditor({
         </div>
         <div className="ce-inspector-rule" />
         <div className="ce-inspector-form">{children}</div>
-        {onDelete && (
+        {onDelete && !deleteInHeader && (
           <Button variant="danger" onClick={() => setDeleteConfirmOpen(true)}>
             <Trash2 className="h-3.5 w-3.5" />
             删除对象

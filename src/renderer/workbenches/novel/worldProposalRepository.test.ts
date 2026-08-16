@@ -75,7 +75,9 @@ async function seedTreeProposal() {
   return { storage, proposalId, targetPath, afterContent };
 }
 
-async function seedLocationProposal() {
+async function seedLocationProposal({
+  compactSnapshots = false,
+}: { compactSnapshots?: boolean } = {}) {
   const storage = createEmptyNovelStorage();
   await createNovelSettingLibraryRepository(storage).load("测试小说");
   const locationRepository = createNovelLocationLibraryRepository(storage);
@@ -108,6 +110,8 @@ async function seedLocationProposal() {
       description: "新描述",
     })),
   });
+  const snapshotContent = (content: string): string =>
+    compactSnapshots ? JSON.stringify(JSON.parse(content)) : content;
   const manifest: WorldProposalManifest = {
     schemaVersion: 1,
     proposalId,
@@ -132,12 +136,12 @@ async function seedLocationProposal() {
   await Promise.all([
     storage.createText(
       worldProposalSnapshotPath(proposalId, "before", targetPath),
-      beforeContent,
+      snapshotContent(beforeContent),
       { createParents: true },
     ),
     storage.createText(
       worldProposalSnapshotPath(proposalId, "after", targetPath),
-      afterContent,
+      snapshotContent(afterContent),
       { createParents: true },
     ),
     storage.createText(
@@ -213,8 +217,25 @@ describe("createNovelWorldProposalRepository", () => {
     expect(applied.changes[0]?.currentContent).toBe(afterContent);
   });
 
+  it("规范化压缩地点快照后完成写后复验", async () => {
+    const { storage, proposalId, afterContent } = await seedLocationProposal({
+      compactSnapshots: true,
+    });
+
+    const applied = await createNovelWorldProposalRepository(storage).apply(
+      proposalId,
+      ["update-location"],
+      "测试小说",
+    );
+
+    expect(applied.changes[0]?.currentContent).toBe(afterContent);
+    expect(applied.manifest.changes[0]?.status).toBe("applied");
+  });
+
   it("地点提案审计写入失败时回滚整个地点目录", async () => {
-    const { storage, proposalId, beforeContent } = await seedLocationProposal();
+    const { storage, proposalId, beforeContent } = await seedLocationProposal({
+      compactSnapshots: true,
+    });
     storage.failWritePathOnce = worldProposalManifestPath(proposalId);
 
     await expect(

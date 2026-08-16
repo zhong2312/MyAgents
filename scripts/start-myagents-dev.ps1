@@ -413,12 +413,23 @@ try {
     Write-Info "Novels=$($script:NovelsRoot)"
     Write-Info "AgentDir=$resolvedAgentDir"
 
+    $npmPath = Get-NpmCommand
+    Write-Step 'Preparing Azgaar Fantasy Map Runtime'
+    Push-Location $script:RepoRoot
+    try {
+        & $npmPath run prepare:azgaar-runtime
+        if ($LASTEXITCODE -ne 0) {
+            throw "Azgaar Runtime preparation failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Pop-Location
+    }
+
     if ($Mode -eq 'Web') {
         $nodePath = Get-NodeCommand
         Write-Info "Node=$nodePath"
         Start-WebDev -ResolvedAgentDir $resolvedAgentDir -NodePath $nodePath
     } else {
-        $npmPath = Get-NpmCommand
         Start-TauriDev -NpmPath $npmPath
     }
 } catch {

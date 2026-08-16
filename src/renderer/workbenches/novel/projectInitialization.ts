@@ -22,6 +22,11 @@ import {
 import { createEmptyManuscriptContinuityState } from "./manuscriptTrackingSchema";
 import { createManuscriptTrackingInitializationFiles } from "./manuscriptTrackingRepository";
 import { createManuscriptContinuityFiles } from "../../../shared/workbenches/novel/manuscriptContinuityStorage";
+import { createKnowledgeFiles } from "../../../shared/workbenches/novel/knowledgeStorage";
+import {
+  DEFAULT_NOVEL_WRITING_PERSPECTIVE,
+  type NovelWritingPerspective,
+} from "./modules/project/business/writingPerspective";
 
 export interface NovelProjectInitializationInput {
   readonly projectId: string;
@@ -31,6 +36,8 @@ export interface NovelProjectInitializationInput {
   readonly targetWordCountMin: number;
   readonly targetWordCountMax: number;
   readonly chapterWordCount: number;
+  /** 写作视角；未传入时采用第三人称限知，兼容已有初始化调用。 */
+  readonly writingPerspective?: NovelWritingPerspective;
   readonly createdAt: string;
   /** 创作语言，如 zh-CN / en-US；默认 zh-CN。 */
   readonly language?: string;
@@ -90,9 +97,16 @@ const DIRECTORIES = [
   "simulation",
   "simulation/runs",
   "research/notes",
+  "research/trash",
   "assets/images",
   "assets/references",
   "knowledge",
+  "knowledge/entities",
+  "knowledge/entities/records",
+  "knowledge/relations",
+  "knowledge/relations/records",
+  "knowledge/facts",
+  "knowledge/facts/records",
   "prompts/installations",
 ] as const;
 
@@ -133,6 +147,8 @@ function createFiles(
         targetWordCountMin: input.targetWordCountMin,
         targetWordCountMax: input.targetWordCountMax,
         chapterWordCount: input.chapterWordCount,
+        writingPerspective:
+          input.writingPerspective ?? DEFAULT_NOVEL_WRITING_PERSPECTIVE,
         status: "planning",
         language: input.language?.trim() || "zh-CN",
         ...(input.description?.trim()
@@ -181,9 +197,13 @@ Thumbs.db
     ...createWorldSimulationV2InitializationFiles(),
     ...createInspirationInitializationFiles(input.createdAt),
     { path: "research/index.json", content: createIndex("sources") },
-    { path: "knowledge/entities.json", content: createIndex("entities") },
-    { path: "knowledge/relations.json", content: createIndex("relations") },
-    { path: "knowledge/facts.json", content: createIndex("facts") },
+    { path: "research/trash/index.json", content: createIndex("items") },
+    ...createKnowledgeFiles({
+      schemaVersion: 1,
+      entities: [],
+      relations: [],
+      facts: [],
+    }),
     {
       path: "assets/README.md",
       content: `# 素材

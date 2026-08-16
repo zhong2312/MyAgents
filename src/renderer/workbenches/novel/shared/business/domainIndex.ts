@@ -24,11 +24,20 @@ import {
   inspirationRecordPath,
   loadInspirationFiles,
 } from "../../../../../shared/workbenches/novel/inspirationStorage";
+import {
+  CULTIVATION_ECOLOGY_INDEX_PATH,
+  loadCultivationEcologyFiles,
+} from "../../../../../shared/workbenches/novel/cultivationEcologyStorage";
 
 import { parseCharacterLibraryIndex } from "../../modules/characters";
 import { parseFactionLibrary } from "../../modules/factions/entities/factionLibrarySchema";
 import { parseItemLibraryIndex } from "../../itemLibrarySchema";
 import { parseLocationLibraryIndex } from "../../modules/locations/entities/locationLibrarySchema";
+import {
+  MAP_LIBRARY_PATH,
+  mapRecordPath,
+  parseMapLibraryIndex,
+} from "../../modules/maps/entities/mapSchema";
 import { parseNovelChapterIndex } from "../../modules/project/entities/projectSchema";
 import { parseNarrativeEngineering } from "../../narrativeEngineeringSchema";
 import { parseInspirationLibrary } from "../../inspirationSchema";
@@ -46,7 +55,12 @@ export type DomainEntityKind =
   | "narrativeChapter"
   | "chapter"
   | "inspiration"
-  | "research";
+  | "research"
+  | "map"
+  | "cultivationSystem"
+  | "plotLine"
+  | "storyArc"
+  | "narrativeDirectory";
 
 export const DOMAIN_ENTITY_KIND_LABELS: Readonly<
   Record<DomainEntityKind, string>
@@ -61,6 +75,11 @@ export const DOMAIN_ENTITY_KIND_LABELS: Readonly<
   chapter: "正文章节",
   inspiration: "灵感",
   research: "资料",
+  map: "地图",
+  cultivationSystem: "修行体系",
+  plotLine: "剧情线路",
+  storyArc: "故事弧",
+  narrativeDirectory: "剧情目录",
 });
 
 /**
@@ -93,38 +112,81 @@ async function loadOptional(
   storage: WorkbenchStorage,
   path: string,
 ): Promise<string | null> {
-  const [info] = await storage.stat([path]);
-  if (!info?.exists) return null;
-  return (await storage.readText(path)).content;
+  try {
+    const [info] = await storage.stat([path]);
+    if (!info?.exists) return null;
+    return (await storage.readText(path)).content;
+  } catch {
+    return null;
+  }
 }
 
 async function loadOptionalFaction(
   storage: WorkbenchStorage,
 ): Promise<ReturnType<typeof parseFactionLibrary> | null> {
-  const [info] = await storage.stat([FACTION_INDEX_PATH]);
-  if (!info?.exists || info.kind !== "file") return null;
-  const loaded = await loadFactionFiles(
-    async (path) => (await storage.readText(path)).content,
-  );
-  return parseFactionLibrary(JSON.stringify(loaded.library));
+  try {
+    const [info] = await storage.stat([FACTION_INDEX_PATH]);
+    if (!info?.exists || info.kind !== "file") return null;
+    const loaded = await loadFactionFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    return parseFactionLibrary(JSON.stringify(loaded.library));
+  } catch {
+    return null;
+  }
 }
 
 async function loadOptionalLocation(storage: WorkbenchStorage) {
-  const [info] = await storage.stat([LOCATION_INDEX_PATH]);
-  if (!info?.exists || info.kind !== "file") return null;
-  const loaded = await loadLocationFiles(
-    async (path) => (await storage.readText(path)).content,
-  );
-  return parseLocationLibraryIndex(JSON.stringify(loaded.library));
+  try {
+    const [info] = await storage.stat([LOCATION_INDEX_PATH]);
+    if (!info?.exists || info.kind !== "file") return null;
+    const loaded = await loadLocationFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    return parseLocationLibraryIndex(JSON.stringify(loaded.library));
+  } catch {
+    return null;
+  }
 }
 
 async function loadOptionalInspiration(storage: WorkbenchStorage) {
-  const [info] = await storage.stat([INSPIRATION_INDEX_PATH]);
-  if (!info?.exists || info.kind !== "file") return null;
-  const loaded = await loadInspirationFiles(
-    async (path) => (await storage.readText(path)).content,
-  );
-  return parseInspirationLibrary(JSON.stringify(loaded.library));
+  try {
+    const [info] = await storage.stat([INSPIRATION_INDEX_PATH]);
+    if (!info?.exists || info.kind !== "file") return null;
+    const loaded = await loadInspirationFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    return parseInspirationLibrary(JSON.stringify(loaded.library));
+  } catch {
+    return null;
+  }
+}
+
+async function loadOptionalNarrative(storage: WorkbenchStorage) {
+  try {
+    const [info] = await storage.stat([NARRATIVE_ENGINEERING_INDEX_PATH]);
+    if (!info?.exists || info.kind !== "file") return null;
+    const loaded = await loadNarrativeEngineeringFiles(
+      async (path) => (await storage.readText(path)).content,
+    );
+    return parseNarrativeEngineering(JSON.stringify(loaded.library));
+  } catch {
+    return null;
+  }
+}
+
+async function loadOptionalCultivation(storage: WorkbenchStorage) {
+  try {
+    const [info] = await storage.stat([CULTIVATION_ECOLOGY_INDEX_PATH]);
+    if (!info?.exists || info.kind !== "file") return null;
+    return (
+      await loadCultivationEcologyFiles(
+        async (path) => (await storage.readText(path)).content,
+      )
+    ).ecology;
+  } catch {
+    return null;
+  }
 }
 
 async function appendNonProjectedEntities(
@@ -136,7 +198,14 @@ async function appendNonProjectedEntities(
     "world/setting-library/spatial-tree.json",
   );
   if (spatial) {
-    for (const node of parseSettingLibrarySpatialTree(spatial).nodes) {
+    const parsed = (() => {
+      try {
+        return parseSettingLibrarySpatialTree(spatial);
+      } catch {
+        return null;
+      }
+    })();
+    for (const node of parsed?.nodes ?? []) {
       entities.push({
         kind: "setting",
         id: node.id,
@@ -152,7 +221,14 @@ async function appendNonProjectedEntities(
 
   const manuscript = await loadOptional(storage, "manuscript/index.json");
   if (manuscript) {
-    for (const chapter of parseNovelChapterIndex(manuscript).chapters) {
+    const parsed = (() => {
+      try {
+        return parseNovelChapterIndex(manuscript);
+      } catch {
+        return null;
+      }
+    })();
+    for (const chapter of parsed?.chapters ?? []) {
       entities.push({
         kind: "chapter",
         id: chapter.id,
@@ -182,25 +258,109 @@ async function appendNonProjectedEntities(
     }
   }
 
-  const researchEntries = await storage
-    .list("research")
-    .catch(() => [] as Awaited<ReturnType<WorkbenchStorage["list"]>>);
-  for (const entry of researchEntries) {
-    if (entry.kind !== "file" || !entry.name.toLowerCase().endsWith(".md")) {
-      continue;
+  const maps = await loadOptional(storage, MAP_LIBRARY_PATH);
+  if (maps) {
+    let parsed: ReturnType<typeof parseMapLibraryIndex> | null = null;
+    try {
+      parsed = parseMapLibraryIndex(maps);
+    } catch {
+      parsed = null;
     }
-    const name = entry.name.replace(/\.md$/i, "");
+    for (const map of parsed?.maps ?? []) {
+      entities.push({
+        kind: "map",
+        id: map.id,
+        name: map.name,
+        aliases: [],
+        summary: map.projectionType,
+        sourcePath: mapRecordPath(map.id),
+        route: "map",
+        focus: { mapId: map.id },
+      });
+    }
+  }
+
+  const cultivation = await loadOptionalCultivation(storage);
+  for (const system of cultivation?.systems ?? []) {
     entities.push({
-      kind: "research",
-      id: entry.path,
-      name,
+      kind: "cultivationSystem",
+      id: system.id,
+      name: system.name,
       aliases: [],
-      summary: "",
-      sourcePath: entry.path,
-      route: "research",
-      focus: { researchPath: entry.path },
+      summary: clip(system.summary),
+      sourcePath: `world/cultivation/systems/${system.id}/system.json`,
+      route: "powers",
+      focus: { systemId: system.id },
     });
   }
+
+  const narrative = await loadOptionalNarrative(storage);
+  for (const line of narrative?.lines ?? []) {
+    entities.push({
+      kind: "plotLine",
+      id: line.id,
+      name: line.title,
+      aliases: [],
+      summary: clip(line.content || line.premise),
+      sourcePath: narrativeRecordPath("lines", line.id),
+      route: "narrative",
+      focus: { lineId: line.id },
+    });
+  }
+  for (const arc of narrative?.arcs ?? []) {
+    entities.push({
+      kind: "storyArc",
+      id: arc.id,
+      name: arc.title,
+      aliases: [],
+      summary: clip(arc.content),
+      sourcePath: narrativeRecordPath("arcs", arc.id),
+      route: "narrative",
+      focus: { arcId: arc.id },
+    });
+  }
+  for (const directory of narrative?.directories ?? []) {
+    entities.push({
+      kind: "narrativeDirectory",
+      id: directory.id,
+      name: directory.title,
+      aliases: [],
+      summary: clip(directory.description),
+      sourcePath: narrativeRecordPath("directories", directory.id),
+      route: "narrative",
+      focus: { directoryId: directory.id },
+    });
+  }
+
+  const collectResearch = async (directory: string): Promise<void> => {
+    const entries = await storage
+      .list(directory)
+      .catch(() => [] as Awaited<ReturnType<WorkbenchStorage["list"]>>);
+    for (const entry of entries) {
+      if (
+        entry.path === "research/trash" ||
+        entry.path.startsWith("research/trash/")
+      ) {
+        continue;
+      }
+      if (entry.kind === "directory") {
+        await collectResearch(entry.path);
+        continue;
+      }
+      if (!entry.name.toLowerCase().endsWith(".md")) continue;
+      entities.push({
+        kind: "research",
+        id: entry.path,
+        name: entry.name.replace(/\.md$/i, ""),
+        aliases: [],
+        summary: "",
+        sourcePath: entry.path,
+        route: "research",
+        focus: { researchPath: entry.path },
+      });
+    }
+  };
+  await collectResearch("research");
 }
 
 function projectionEntityToDomainRef(
@@ -284,21 +444,32 @@ export async function buildDomainIndex(
   projection?: WorkbenchProjection,
 ): Promise<DomainIndex> {
   if (projection?.isAvailable) {
-    const entities = (await projection.listEntities())
-      .map(projectionEntityToDomainRef)
-      .filter((entity): entity is DomainEntityRef => entity !== null);
-    await appendNonProjectedEntities(storage, entities);
-    return {
-      entities: Object.freeze(entities),
-      builtAt: new Date().toISOString(),
-    };
+    try {
+      const entities = (await projection.listEntities())
+        .map(projectionEntityToDomainRef)
+        .filter((entity): entity is DomainEntityRef => entity !== null);
+      await appendNonProjectedEntities(storage, entities);
+      return {
+        entities: Object.freeze(entities),
+        builtAt: new Date().toISOString(),
+      };
+    } catch {
+      // 投影是可重建派生层。不可用或损坏时回退到各领域事实源。
+    }
   }
 
   const entities: DomainEntityRef[] = [];
 
   const characters = await loadOptional(storage, "characters/index.json");
   if (characters) {
-    for (const character of parseCharacterLibraryIndex(characters).characters) {
+    let parsedCharacters: ReturnType<typeof parseCharacterLibraryIndex> | null =
+      null;
+    try {
+      parsedCharacters = parseCharacterLibraryIndex(characters);
+    } catch {
+      parsedCharacters = null;
+    }
+    for (const character of parsedCharacters?.characters ?? []) {
       entities.push({
         kind: "character",
         id: character.id,
@@ -330,7 +501,13 @@ export async function buildDomainIndex(
 
   const items = await loadOptional(storage, "world/items/index.json");
   if (items) {
-    for (const item of parseItemLibraryIndex(items).items) {
+    let parsedItems: ReturnType<typeof parseItemLibraryIndex> | null = null;
+    try {
+      parsedItems = parseItemLibraryIndex(items);
+    } catch {
+      parsedItems = null;
+    }
+    for (const item of parsedItems?.items ?? []) {
       entities.push({
         kind: "item",
         id: item.id,
@@ -360,17 +537,9 @@ export async function buildDomainIndex(
     }
   }
 
-  const narrativeIndex = await loadOptional(
-    storage,
-    NARRATIVE_ENGINEERING_INDEX_PATH,
-  );
-  if (narrativeIndex) {
-    const narrative = await loadNarrativeEngineeringFiles(
-      async (path) => (await storage.readText(path)).content,
-    );
-    for (const plan of parseNarrativeEngineering(
-      JSON.stringify(narrative.library),
-    ).chapters) {
+  const narrative = await loadOptionalNarrative(storage);
+  if (narrative) {
+    for (const plan of narrative.chapters) {
       entities.push({
         kind: "narrativeChapter",
         id: plan.id,
@@ -386,11 +555,16 @@ export async function buildDomainIndex(
 
   const timelineIndex = await loadOptional(storage, TIMELINE_INDEX_PATH);
   if (timelineIndex) {
-    const timeline = await loadTimelineFiles(
-      async (path) => (await storage.readText(path)).content,
-    );
-    for (const event of parseTimelineLibrary(JSON.stringify(timeline.library))
-      .events) {
+    let events: ReturnType<typeof parseTimelineLibrary>["events"] = [];
+    try {
+      const timeline = await loadTimelineFiles(
+        async (path) => (await storage.readText(path)).content,
+      );
+      events = parseTimelineLibrary(JSON.stringify(timeline.library)).events;
+    } catch {
+      events = [];
+    }
+    for (const event of events) {
       entities.push({
         kind: "event",
         id: event.id,

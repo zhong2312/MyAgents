@@ -9,8 +9,8 @@ const novelWorkbenchDefinition = defineWorkbench(
     version: "0.3.0",
     api: {
       major: 1,
-      minMinor: 8,
-      maxMinor: 8,
+      minMinor: 10,
+      maxMinor: 10,
     },
     entry: {
       renderer: "builtin-novel",

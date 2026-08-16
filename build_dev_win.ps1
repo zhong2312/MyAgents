@@ -133,6 +133,11 @@ foreach ($subdir in @("claude-agent-sdk", "sharp-runtime", "tsx-runtime", "cli")
         New-Item -ItemType Directory -Path $d -Force | Out-Null
     }
 }
+$azgaarDir = Join-Path $PROJECT_DIR "src-tauri/resources/azgaar"
+if (-not (Test-Path (Join-Path $azgaarDir "index.html"))) {
+    & npm run prepare:azgaar-runtime
+    if ($LASTEXITCODE -ne 0) { throw "Azgaar Runtime 资源准备失败" }
+}
 $sharpPlaceholder = Join-Path $PROJECT_DIR "src-tauri/resources/sharp-runtime/.dev-placeholder"
 if (-not (Test-Path $sharpPlaceholder)) {
     "dev mode: sharp loads from top-level node_modules/sharp; this dir is prod-only" | Out-File -FilePath $sharpPlaceholder -Encoding UTF8

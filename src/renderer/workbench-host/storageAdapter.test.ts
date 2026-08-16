@@ -30,6 +30,7 @@ function createHost(overrides: Record<string, unknown> = {}) {
       }),
     ),
     saveFile: vi.fn(async () => {}),
+    saveBinaryFile: vi.fn(async () => {}),
     copyInternal: vi.fn(async () => ({ copiedFiles: [], errors: [] })),
     movePaths: vi.fn(async () => ({ movedFiles: [], errors: [] })),
     rename: vi.fn(
@@ -97,6 +98,31 @@ describe("createWorkbenchStorage", () => {
       path: "planning/arcs/main.md",
       content: "# Main\n",
       expectedContent: "",
+    });
+  });
+
+  it("creates binary assets through the host without embedding bytes in storage metadata", async () => {
+    const host = createHost();
+    const storage = createWorkbenchStorage(host);
+    const bytes = Uint8Array.from([137, 80, 78, 71]).buffer;
+
+    await expect(
+      storage.createBinary("assets/images/map.png", bytes, {
+        createParents: true,
+      }),
+    ).resolves.toEqual({
+      path: "assets/images/map.png",
+      name: "map.png",
+      size: 4,
+    });
+
+    expect(host.newFolder.mock.calls).toEqual([
+      [{ parentDir: "", name: "assets" }],
+      [{ parentDir: "assets", name: "images" }],
+    ]);
+    expect(host.saveBinaryFile).toHaveBeenCalledWith({
+      path: "assets/images/map.png",
+      contentBase64: "iVBORw==",
     });
   });
 

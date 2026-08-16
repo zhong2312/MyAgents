@@ -7,10 +7,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import {
-  ProposalReviewSurface,
-  type WorkbenchStorage,
-} from "@/workbench-sdk";
+import { ProposalReviewSurface, type WorkbenchStorage } from "@/workbench-sdk";
 
 import {
   createNovelMapProposalRepository,
@@ -87,9 +84,9 @@ function OperationCard({
           </div>
           <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
             {typeof value.projectionType === "string"
-              ? MAP_PROJECTION_LABELS[
+              ? (MAP_PROJECTION_LABELS[
                   value.projectionType as keyof typeof MAP_PROJECTION_LABELS
-                ] ?? value.projectionType
+                ] ?? value.projectionType)
               : ""}{" "}
             · {Array.isArray(value.features) ? value.features.length : 0} 个要素
           </p>
@@ -118,7 +115,9 @@ function OperationCard({
           <span className="shrink-0 text-xs text-[var(--success)]">已采纳</span>
         )}
         {operation.status === "rejected" && (
-          <span className="shrink-0 text-xs text-[var(--ink-subtle)]">已拒绝</span>
+          <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
+            已拒绝
+          </span>
         )}
       </div>
     </article>
@@ -179,9 +178,8 @@ export default function MapProposalReview({
   const pendingCount = proposals.reduce(
     (sum, proposal) =>
       sum +
-      proposal.manifest.operations.filter(
-        (operation) => operation.status === "pending",
-      ).length,
+      proposal.operations.filter((operation) => operation.status === "pending")
+        .length,
     0,
   );
 
@@ -211,10 +209,15 @@ export default function MapProposalReview({
         )}
         <div className="space-y-4">
           {proposals.map((proposal) => {
-            const proposalSelected = proposal.manifest.operations.filter(
+            const proposalSelected = proposal.operations.filter(
               (operation) =>
                 operation.status === "pending" &&
-                selected.has(selectionKey(proposal.manifest.proposalId, operation.candidateId)),
+                selected.has(
+                  selectionKey(
+                    proposal.manifest.proposalId,
+                    operation.candidateId,
+                  ),
+                ),
             );
             return (
               <section
@@ -227,12 +230,12 @@ export default function MapProposalReview({
                       {proposal.manifest.title}
                     </h2>
                     <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
-                      {new Date(
-                        proposal.manifest.createdAt,
-                      ).toLocaleString("zh-CN")}{" "}
+                      {new Date(proposal.manifest.createdAt).toLocaleString(
+                        "zh-CN",
+                      )}{" "}
                       ·{" "}
                       {
-                        proposal.manifest.operations.filter(
+                        proposal.operations.filter(
                           (operation) => operation.status === "pending",
                         ).length
                       }{" "}
@@ -299,16 +302,24 @@ export default function MapProposalReview({
                   </button>
                 </header>
                 <div className="space-y-2.5 p-4">
-                  {proposal.manifest.operations.map((operation) => (
+                  {proposal.operations.map((operation) => (
                     <OperationCard
                       key={operation.candidateId}
                       operation={operation}
                       acting={acting}
-                      selected={selected.has(selectionKey(proposal.manifest.proposalId, operation.candidateId))}
+                      selected={selected.has(
+                        selectionKey(
+                          proposal.manifest.proposalId,
+                          operation.candidateId,
+                        ),
+                      )}
                       onToggle={() =>
                         setSelected((current) => {
                           const next = new Set(current);
-                          const key = selectionKey(proposal.manifest.proposalId, operation.candidateId);
+                          const key = selectionKey(
+                            proposal.manifest.proposalId,
+                            operation.candidateId,
+                          );
                           if (next.has(key)) {
                             next.delete(key);
                           } else {

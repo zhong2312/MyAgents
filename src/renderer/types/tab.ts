@@ -23,11 +23,13 @@ export interface WorkbenchAgentSurfaceBootstrap {
 }
 
 export interface WorkbenchAgentSurfaceState {
-    readonly presentation: 'dialog' | 'compact-review' | 'dock' | 'hidden';
+    readonly presentation: 'dialog' | 'compact-review' | 'embedded-review' | 'dock' | 'hidden';
     readonly sourceTabId: string;
     readonly workbenchId: string;
     readonly workspacePath: string;
     readonly conversationKey: string;
+    /** Workbench-declared target used only by the host's embedded surface renderer. */
+    readonly embeddedSurfaceId?: string;
     readonly historyGroupPath?: readonly string[];
     readonly toolset?: WorkbenchAgentToolsetRequest;
     readonly companion?: WorkbenchAgentCompanionRequest;

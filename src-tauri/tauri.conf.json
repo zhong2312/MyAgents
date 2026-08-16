@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev:web",
-    "beforeBuildCommand": "npm run build:web && npm run build:server && npm run build:bridge && npm run build:cli"
+    "beforeBuildCommand": "npm run build:web && npm run build:server && npm run build:bridge && npm run build:cli && npm run prepare:azgaar-runtime"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -48,6 +48,7 @@
       "../src-tauri/resources/claude-agent-sdk": "claude-agent-sdk",
       "../src-tauri/resources/sharp-runtime": "sharp-runtime",
       "../src-tauri/resources/tsx-runtime": "tsx-runtime",
+      "../src-tauri/resources/azgaar": "azgaar",
       "../src-tauri/resources/nodejs": "nodejs",
       "../src/shared": "shared",
       "../bundled-skills": "bundled-skills",

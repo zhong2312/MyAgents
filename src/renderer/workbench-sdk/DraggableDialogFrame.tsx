@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -33,6 +34,7 @@ export interface DraggableDialogFrameProps {
   readonly className?: string;
   readonly headerClassName?: string;
   readonly overlayClassName?: string;
+  readonly style?: CSSProperties;
 }
 
 const VIEWPORT_MARGIN = 12;
@@ -93,6 +95,7 @@ export default function DraggableDialogFrame({
   className = "",
   headerClassName = "",
   overlayClassName = "",
+  style,
 }: DraggableDialogFrameProps) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLElement | null>(null);
@@ -246,8 +249,11 @@ export default function DraggableDialogFrame({
         aria-label={ariaLabel}
         style={
           maximized
-            ? { width: "100%", height: "100%", transform: "none" }
-            : { transform: `translate3d(${offset.x}px, ${offset.y}px, 0)` }
+            ? { ...style, width: "100%", height: "100%", transform: "none" }
+            : {
+                ...style,
+                transform: `translate3d(${offset.x}px, ${offset.y}px, 0)`,
+              }
         }
         className={`pointer-events-auto flex min-h-0 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)] shadow-2xl ${
           maximized

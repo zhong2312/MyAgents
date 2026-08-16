@@ -7,7 +7,10 @@ import {
 } from "../../../shared/workbenches/novel/manuscriptTrackingStorage";
 import { NovelMemoryStorage } from "./shared/infrastructure/testStorage";
 import type { ManuscriptTrackingBatch } from "./manuscriptTrackingSchema";
-import { createManuscriptTrackingRepository } from "./manuscriptTrackingRepository";
+import {
+  createManuscriptTrackingRepository,
+  hashManuscriptContent,
+} from "./manuscriptTrackingRepository";
 
 const NOW = "2026-08-09T00:00:00.000Z";
 
@@ -117,5 +120,56 @@ describe("ManuscriptTrackingRepository 目录存储", () => {
     await expect(
       createManuscriptTrackingRepository(storage).load(),
     ).rejects.toThrow("不兼容且不迁移");
+  });
+
+  it("确认批次时以索引指向的磁盘正文校验事实源", async () => {
+    const storage = new NovelMemoryStorage({
+      "manuscript/index.json": `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          nextChapterNumber: 2,
+          chapters: [
+            {
+              id: "chapter-000001",
+              number: 1,
+              title: "第一章",
+              path: "manuscript/chapters/000001.md",
+              status: "draft",
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "manuscript/chapters/000001.md": "磁盘事实源已经被外部编辑。",
+    });
+    const repository = createManuscriptTrackingRepository(storage);
+    let loaded = await repository.load();
+    const proposed = {
+      ...batch("tracking-batch-disk-source"),
+      chapterContentHash: hashManuscriptContent("分析时的旧正文。"),
+      changes: [
+        {
+          id: "tracking-change-disk-source",
+          domain: "continuity" as const,
+          entityId: null,
+          title: "主角抵达",
+          before: null,
+          after: "主角已抵达城门",
+          evidence: "抵达城门",
+          operation: { kind: "continuity-fact" as const, key: "hero-arrival" },
+        },
+      ],
+    };
+    loaded = await repository.save(loaded, {
+      ...loaded.ledger,
+      batches: [proposed],
+    });
+
+    await expect(
+      repository.applyBatchSelection(loaded, proposed.id, [
+        proposed.changes[0]!.id,
+      ]),
+    ).rejects.toThrow("章节正文已经变化，请重新执行连续性分析");
   });
 });

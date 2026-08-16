@@ -42,7 +42,8 @@ fn next_transport_generation() -> u64 {
 //
 // HTTP_PROXY_LONG_TIMEOUT: For endpoints that legitimately need longer
 // - Skill install-from-url downloads GitHub tarballs over slow/proxied networks
-//   (sidecar `FETCH_TIMEOUT_MS` is 300s; we add a 60s buffer so the inner
+// - Workbench one-shot AI runs have their own bounded business deadline (up to 300s)
+//   (we add a 60s buffer so the inner
 //   timeout wins). Keep this list small — bumping the default is worse than
 //   carving out specific known-long paths.
 //
@@ -57,6 +58,7 @@ const SSE_EVENT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const SSE_EVENT_SEPARATOR_MAX_BYTES: usize = 4;
 const HTTP_PROXY_TIMEOUT_SECS: u64 = 120;
 const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 = 360;
+const WORKBENCH_AI_PROXY_TIMEOUT_SECS: u64 = 660;
 const CONTROL_DISPATCH_RETRY_DELAYS_MS: &[u64] = &[
     50, 100, 200, 400, 800, 1_500, 2_000, 3_000, 5_000, 5_000, 5_000, 5_000, 5_000,
 ];
@@ -88,7 +90,9 @@ fn loopback_http_client() -> Result<reqwest::Client, String> {
 /// Endpoints that need the long-timeout budget. Keep this list short — most
 /// sidecar work should finish in seconds, not minutes.
 fn proxy_timeout_for(url_path: &str) -> u64 {
-    if url_path.ends_with("/api/skill/install-from-url") {
+    if url_path.ends_with("/api/workbench-ai/run") {
+        WORKBENCH_AI_PROXY_TIMEOUT_SECS
+    } else if url_path.ends_with("/api/skill/install-from-url") {
         HTTP_PROXY_LONG_TIMEOUT_SECS
     } else {
         HTTP_PROXY_TIMEOUT_SECS
@@ -1313,6 +1317,19 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::Listener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn workbench_ai_run_uses_long_proxy_timeout() {
+        assert_eq!(
+            proxy_timeout_for("http://127.0.0.1:31417/api/workbench-ai/run"),
+            WORKBENCH_AI_PROXY_TIMEOUT_SECS
+        );
+        assert_eq!(WORKBENCH_AI_PROXY_TIMEOUT_SECS, 660);
+        assert_eq!(
+            proxy_timeout_for("http://127.0.0.1:31417/api/config"),
+            HTTP_PROXY_TIMEOUT_SECS
+        );
+    }
 
     async fn loopback_response(raw_response: &'static [u8]) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -54,6 +54,10 @@ import {
   isInvalidProviderParameterError,
   nextMalformedToolRecoveryAttempt,
 } from './session-core/sdk-tool-history-validation';
+import {
+  sanitizeCompleteThinkingText,
+  ThinkingDeltaNormalizer,
+} from './session-core/thinking-delta-normalizer';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
@@ -7326,7 +7330,9 @@ function formatAssistantContent(content: unknown): string {
       continue;
     }
     if ('type' in block && block.type === 'thinking' && 'thinking' in block) {
-      const text = String(block.thinking ?? '').trim();
+      const text = sanitizeCompleteThinkingText(
+        String(block.thinking ?? ''),
+      ).trim();
       if (text) {
         parts.push(`Thinking:\n${text}`);
       }
@@ -10767,6 +10773,54 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let activeQueryAuthority: BuiltinQueryAuthority | null = null;
   const queryProductSessionId = sessionId;
   let malformedToolQuarantine: MalformedToolSessionQuarantine | null = null;
+  const thinkingDeltaNormalizer = new ThinkingDeltaNormalizer();
+  let reportedThinkingProtocolLeak = false;
+
+  const emitNormalizedThinkingDelta = (
+    index: number,
+    delta: string,
+    parentToolUseId?: string | null,
+  ): void => {
+    const normalized = thinkingDeltaNormalizer.push(
+      index,
+      delta,
+      parentToolUseId ?? undefined,
+    );
+    if (normalized.filteredProtocolTags > 0 && !reportedThinkingProtocolLeak) {
+      reportedThinkingProtocolLeak = true;
+      console.warn(
+        '[agent][thinking] filtered provider DSML tool framing from reasoning stream',
+      );
+    }
+    if (!normalized.delta) return;
+    handleThinkingChunk(index, normalized.delta);
+    broadcast('chat:thinking-chunk', {
+      index,
+      delta: normalized.delta,
+    });
+  };
+
+  const finishNormalizedThinking = (
+    index: number,
+    parentToolUseId?: string | null,
+  ): void => {
+    const normalized = thinkingDeltaNormalizer.finish(
+      index,
+      parentToolUseId ?? undefined,
+    );
+    if (normalized.filteredProtocolTags > 0 && !reportedThinkingProtocolLeak) {
+      reportedThinkingProtocolLeak = true;
+      console.warn(
+        '[agent][thinking] filtered incomplete provider DSML framing from reasoning stream',
+      );
+    }
+    if (!normalized.delta) return;
+    handleThinkingChunk(index, normalized.delta);
+    broadcast('chat:thinking-chunk', {
+      index,
+      delta: normalized.delta,
+    });
+  };
 
   const beginMalformedToolQuarantine = async (reason: string): Promise<void> => {
     if (malformedToolQuarantine) return;
@@ -12585,11 +12639,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               }
             }
           } else if (streamEvent.delta.type === 'thinking_delta') {
-            handleThinkingChunk(streamEvent.index, streamEvent.delta.thinking);
-            broadcast('chat:thinking-chunk', {
-              index: streamEvent.index,
-              delta: streamEvent.delta.thinking
-            });
+            emitNormalizedThinkingDelta(
+              streamEvent.index,
+              streamEvent.delta.thinking,
+              sdkMessage.parent_tool_use_id,
+            );
           } else if (streamEvent.delta.type === 'input_json_delta') {
             const toolId = streamIndexToToolId.get(streamEvent.index) ?? '';
             if (sdkMessage.parent_tool_use_id) {
@@ -12648,6 +12702,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           // Track block type by stream index for precise subagent content_block_stop handling
           streamIndexToBlockType.set(streamEvent.index, streamEvent.content_block.type);
           if (streamEvent.content_block.type === 'thinking') {
+            thinkingDeltaNormalizer.start(
+              streamEvent.index,
+              sdkMessage.parent_tool_use_id ?? undefined,
+            );
             // Handler first: ensureAssistantMessage() may flush queueState.pendingMidTurnQueue
             // (broadcasting queue:started). The thinking-start broadcast must come AFTER
             // so the frontend splits streaming before adding new content.
@@ -12784,6 +12842,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           }
         } else if (streamEvent.type === 'content_block_stop') {
           const toolId = streamIndexToToolId.get(streamEvent.index);
+          finishNormalizedThinking(
+            streamEvent.index,
+            sdkMessage.parent_tool_use_id,
+          );
           if (sdkMessage.parent_tool_use_id) {
             // Subagent thinking/text blocks: broadcast content-block-stop so frontend can close
             // the thinking timer. Without this, subagent thinking blocks stay "incomplete"

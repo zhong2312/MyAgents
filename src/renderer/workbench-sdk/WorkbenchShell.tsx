@@ -48,6 +48,7 @@ import {
   type WorkbenchAgentSessionRequest,
   type WorkbenchAiRunRequest,
   type WorkbenchAiRunResult,
+  type WorkbenchAiRunProgress,
   type WorkbenchProjection,
   type WorkbenchSearch,
   type WorkbenchTabTarget,
@@ -71,10 +72,16 @@ interface WorkbenchShellProps {
     workspacePath: string,
     request: WorkbenchAiRunRequest,
   ) => Promise<WorkbenchAiRunResult>;
+  readonly onSubscribeAiRunProgress?: (
+    runId: string,
+    listener: (progress: WorkbenchAiRunProgress) => void,
+  ) => () => void;
   /** 宿主提供工作区全文搜索；返回 null 表示当前环境不可用（如浏览器开发模式）。 */
   readonly onProvideSearch?: (workspacePath: string) => WorkbenchSearch | null;
   /** 宿主提供小说领域投影；返回 null 表示当前环境不可用（如浏览器开发模式）。 */
-  readonly onProvideProjection?: (workspacePath: string) => WorkbenchProjection | null;
+  readonly onProvideProjection?: (
+    workspacePath: string,
+  ) => WorkbenchProjection | null;
   readonly onNavigationGuardChange?: (
     guard: WorkbenchNavigationGuard | null,
   ) => void;
@@ -223,6 +230,7 @@ export default function WorkbenchShell({
   onNavigate,
   onOpenAgentSession,
   onRunAi,
+  onSubscribeAiRunProgress,
   onProvideSearch,
   onProvideProjection,
   onNavigationGuardChange,
@@ -339,6 +347,11 @@ export default function WorkbenchShell({
     },
     [onRunAi, workspacePath],
   );
+  const subscribeAiRunProgress = useCallback(
+    (runId: string, listener: (progress: WorkbenchAiRunProgress) => void) =>
+      onSubscribeAiRunProgress?.(runId, listener) ?? (() => undefined),
+    [onSubscribeAiRunProgress],
+  );
   const openProjectAssistant = useCallback(async () => {
     if (isOpeningProjectAssistant || !onOpenAgentSession) return;
     const workbenchName = manifest?.name ?? "工作台";
@@ -349,6 +362,9 @@ export default function WorkbenchShell({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${workbenchName} · AI 助手`,
         promptId: `${workbenchId}.assistant`,
+        systemPrompt: `你是“${workbenchName}”项目的通用 AI 助手。
+
+先确认作者当前要推进的目标，再结合工作台可用能力给出简洁、可执行的建议。不得擅自修改项目事实；需要写入时，先说明变更范围并等待作者确认。`,
         initialMessage: `你正在协助作者处理“${workspaceName}”项目中的创作任务。先确认作者当前要推进的目标，再给出简洁、可执行的建议。`,
         presentation: "dialog",
         conversationKey: `${workbenchId}.assistant`,
@@ -417,6 +433,7 @@ export default function WorkbenchShell({
     aiRuns: Object.freeze({
       isAvailable: Boolean(onRunAi),
       run: runAi,
+      subscribeProgress: subscribeAiRunProgress,
     }),
     search: createSearchCapability(onProvideSearch, workspacePath),
     projection: createProjectionCapability(onProvideProjection, workspacePath),
@@ -464,6 +481,19 @@ export default function WorkbenchShell({
                 <PanelLeftClose className="h-4 w-4" />
               )}
             </button>
+            {isNavigationCollapsed &&
+              routeIds.has("manuscript") &&
+              route !== "manuscript" && (
+                <button
+                  type="button"
+                  aria-label="返回正文"
+                  title="返回正文"
+                  onClick={() => navigate("manuscript")}
+                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                >
+                  <FileText className="h-4 w-4" />
+                </button>
+              )}
             {!isNavigationCollapsed && (
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-[var(--ink)]">

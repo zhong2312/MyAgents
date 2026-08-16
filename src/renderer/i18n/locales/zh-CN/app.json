@@ -123,6 +123,23 @@
     "loading": "加载中...",
     "selectPlaceholder": "请选择"
   },
+  "workbench": {
+    "loading": "正在载入工作台",
+    "navigation": "工作台导航",
+    "expandNavigation": "展开工作台导航",
+    "collapseNavigation": "收起工作台导航",
+    "version": "版本 {{version}}",
+    "invalidTab": "无效的工作台标签页",
+    "invalidTabDetail": "该标签页缺少工作台目标，无法继续载入。",
+    "notInstalled": "工作台未注册",
+    "notInstalledDetail": "当前应用未安装或未注册工作台“{{id}}”。",
+    "incompatible": "工作台版本不兼容",
+    "apiMajorMismatch": "该工作台需要 API 主版本 {{required}}，当前宿主版本为 {{host}}。",
+    "apiHostTooOld": "该工作台至少需要 API {{required}}，当前宿主版本为 {{host}}。",
+    "apiHostTooNew": "该工作台最高支持 API {{required}}，当前宿主版本为 {{host}}。",
+    "rendererFailed": "工作台载入失败",
+    "rendererFailedDetail": "工作台界面发生错误，请重试或检查工作台安装。"
+  },
   "workspaceNameValidation": {
     "empty": "名称不能为空",
     "trim": "名称不能以空格开头或结尾",

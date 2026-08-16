@@ -58,6 +58,9 @@ export type {
 export type {
   WorkbenchAiRunRequest,
   WorkbenchAiRunResult,
+  WorkbenchAiExecutionProfile,
+  WorkbenchAiRunProgress,
+  WorkbenchAiRunProgressKind,
   WorkbenchAgentSessionRequest,
   WorkbenchAgentCompanionRequest,
   WorkbenchModelSelection,

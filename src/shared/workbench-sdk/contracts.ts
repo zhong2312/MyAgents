@@ -16,7 +16,12 @@ export type WorkbenchAgentSessionPresentation =
   | "tab"
   | "dialog"
   | "dock"
-  | "compact-review";
+  | "compact-review"
+  /**
+   * The real MyAgents conversation and the workbench companion are mounted
+   * into two declared regions owned by the active workbench view.
+   */
+  | "embedded-review";
 
 export interface WorkbenchAgentCompanionRequest {
   /** Workbench-owned companion renderer id. Unknown ids render a safe fallback. */
@@ -62,6 +67,12 @@ export interface WorkbenchAgentSessionRequest {
    * current workbench while reusing the same Chat/Session implementation.
    */
   readonly presentation?: WorkbenchAgentSessionPresentation;
+  /**
+   * Stable DOM-safe identifier supplied by a workbench for an embedded
+   * surface. The host derives the conversation and companion mount points
+   * from it; no raw selectors or DOM nodes cross the SDK boundary.
+   */
+  readonly embeddedSurfaceId?: string;
   /** Optional workbench-owned surface rendered beside the real Agent conversation. */
   readonly companion?: WorkbenchAgentCompanionRequest;
   /** Stable task identity used to restore an existing workbench conversation. */
@@ -85,11 +96,37 @@ export interface WorkbenchAgentSessionRequest {
 
 export const WORKBENCH_AI_RUN_REQUEST_VERSION = 1 as const;
 
+export type WorkbenchAiExecutionProfile = "standard" | "extended";
+
+/**
+ * A compact, user-facing projection of a one-shot AI run. This deliberately
+ * reports execution activity rather than model reasoning or tool payloads.
+ */
+export type WorkbenchAiRunProgressKind = "status" | "tool" | "intent";
+
+export interface WorkbenchAiRunProgress {
+  readonly runId: string;
+  readonly kind: WorkbenchAiRunProgressKind;
+  readonly message: string;
+  /** Monotonically increasing within a single one-shot run. */
+  readonly revision: number;
+}
+
 export interface WorkbenchAiRunRequest {
   readonly version: typeof WORKBENCH_AI_RUN_REQUEST_VERSION;
+  /** Optional caller-owned correlation ID for live status projection. */
+  readonly runId?: string;
   readonly label: string;
   readonly prompt: string;
   readonly systemPrompt?: string;
+  /** Host-owned execution budget. Extended runs remain strictly bounded. */
+  readonly executionProfile?: WorkbenchAiExecutionProfile;
+  /** Host-clamped deadline for complex one-shot workflows. */
+  readonly timeoutMs?: number;
+  /** Host-clamped turn budget for complex one-shot workflows. */
+  readonly maxTurns?: number;
+  /** Optional host-owned read-only business tools for this one-shot run. */
+  readonly toolset?: WorkbenchAgentToolsetRequest;
   /** Optional project-scoped model override for this AI scene. */
   readonly modelSelection?: WorkbenchModelSelection;
 }

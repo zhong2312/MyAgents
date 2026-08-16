@@ -8,7 +8,6 @@ import { validateCultivationEcology } from "../../../shared/workbenches/novel/cu
 import type {
   FileProposal,
   FileProposalChange,
-  FileProposalConflictResolution,
   FileProposalLoadError,
   FileProposalRepository,
 } from "./fileProposal";

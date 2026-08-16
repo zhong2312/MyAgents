@@ -30,6 +30,10 @@ import type { AgentRuntime, RuntimeProcess, SessionStartOptions } from './runtim
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import { ensureDirSync } from './utils/fs-utils';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
+import type {
+  WorkbenchAgentToolsetRequest,
+  WorkbenchAiRunProgressKind,
+} from '../shared/workbench-sdk';
 
 const TITLE_MAX_LENGTH = 30;
 export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
@@ -189,11 +193,182 @@ export interface OneShotTextRequest {
   readonly model: string;
   readonly providerEnv?: ProviderEnv;
   readonly timeoutMs?: number;
+  readonly maxTurns?: number;
+  readonly throwOnTimeout?: boolean;
+  readonly toolset?: WorkbenchAgentToolsetRequest;
+  readonly onProgress?: (progress: OneShotTextProgressUpdate) => void;
+}
+
+export interface OneShotTextProgressUpdate {
+  readonly kind: WorkbenchAiRunProgressKind;
+  readonly message: string;
+}
+
+const MAX_ONE_SHOT_RECOVERY_CONTEXT_CHARS = 24_000;
+
+type OneShotProgressMessage = {
+  readonly type?: unknown;
+  readonly message?: {
+    readonly content?: unknown;
+  };
+};
+
+function textFromOneShotToolResult(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => textFromOneShotToolResult(item))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === 'string') return record.text;
+  if (record.content !== undefined) return textFromOneShotToolResult(record.content);
+  return '';
+}
+
+/** 只提取只读工具返回，用于轮次耗尽时的内部收敛提示。 */
+export function extractOneShotToolContextFromSdkMessage(message: unknown): string {
+  if (!message || typeof message !== 'object') return '';
+  const typed = message as {
+    readonly type?: unknown;
+    readonly message?: { readonly content?: unknown };
+  };
+  if (typed.type !== 'user' || !Array.isArray(typed.message?.content)) return '';
+  const chunks = typed.message.content
+    .filter((block): block is Record<string, unknown> => Boolean(block && typeof block === 'object'))
+    .filter((block) =>
+      (block.type === 'tool_result' || block.type === 'mcp_tool_result') &&
+      block.is_error !== true,
+    )
+    .map((block) => textFromOneShotToolResult(block.content))
+    .filter(Boolean);
+  return chunks.join('\n\n').slice(0, MAX_ONE_SHOT_RECOVERY_CONTEXT_CHARS);
+}
+
+export function extractOneShotSdkError(message: unknown): string | null {
+  if (!message || typeof message !== 'object') return null;
+  const typed = message as {
+    readonly type?: unknown;
+    readonly subtype?: unknown;
+    readonly errors?: unknown;
+    readonly error?: unknown;
+  };
+  if (
+    typed.type === 'result' &&
+    typeof typed.subtype === 'string' &&
+    typed.subtype.startsWith('error_')
+  ) {
+    const errors = Array.isArray(typed.errors)
+      ? typed.errors
+          .filter((item): item is string => typeof item === 'string')
+          .join('; ')
+      : '';
+    return errors || `Claude SDK returned ${typed.subtype}.`;
+  }
+  if (typed.type === 'assistant' && typeof typed.error === 'string') {
+    return `Claude SDK returned ${typed.error}.`;
+  }
+  return null;
+}
+
+export function isOneShotMaxTurnsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /error_max_turns|reached maximum number of turns|maximum number of turns/iu.test(message);
+}
+
+const NOVEL_CONTEXT_TOOL_LABELS: Readonly<Record<string, string>> = {
+  novel_world_get_context: "世界架构",
+  novel_narrative_get_context: "剧情工程",
+  novel_timeline_get_context: "时间线",
+  novel_items_get_context: "物品库",
+  novel_characters_get_context: "人物库",
+  novel_cultivation_get_context: "修行体系",
+  novel_factions_get_context: "势力",
+  novel_manuscript_get_context: "章节正文",
+  novel_continuity_get_context: "章节连续性",
+  novel_inspiration_get_context: "灵感",
+};
+
+function oneShotProgressForSdkMessage(
+  message: unknown,
+): OneShotTextProgressUpdate | null {
+  if (!message || typeof message !== "object") return null;
+  const typed = message as OneShotProgressMessage;
+  if (typed.type === "user") {
+    return { kind: "intent", message: "正在整理已读取的资料" };
+  }
+  if (typed.type !== "assistant") return null;
+  const content = typed.message?.content;
+  if (!Array.isArray(content)) return null;
+  const toolCall = [...content]
+    .reverse()
+    .find(
+      (block): block is { readonly type: string; readonly name: string } =>
+        Boolean(
+          block &&
+            typeof block === "object" &&
+            "type" in block &&
+            ((block as { type?: unknown }).type === "mcp_tool_use" ||
+              (block as { type?: unknown }).type === "tool_use") &&
+            "name" in block &&
+            typeof (block as { name?: unknown }).name === "string",
+        ),
+    );
+  if (toolCall) {
+    const normalizedToolName = toolCall.name.replace(/^mcp__[^_]+__/u, "");
+    const label = NOVEL_CONTEXT_TOOL_LABELS[normalizedToolName];
+    return label
+      ? { kind: "tool", message: `正在读取${label}` }
+      : { kind: "tool", message: "正在读取项目资料" };
+  }
+  const hasText = content.some(
+    (block) =>
+      Boolean(
+        block &&
+          typeof block === "object" &&
+          (block as { type?: unknown }).type === "text" &&
+          typeof (block as { text?: unknown }).text === "string" &&
+          (block as { text: string }).text.trim(),
+      ),
+  );
+  return hasText ? { kind: "status", message: "正在生成结果" } : null;
+}
+
+export class OneShotTextTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`One-shot text generation timed out after ${timeoutMs}ms.`);
+    this.name = 'OneShotTextTimeoutError';
+  }
+}
+
+export function resolveOneShotTextMaxTurns(
+  requestedMaxTurns: number | undefined,
+  hasTools: boolean,
+): number {
+  if (!hasTools) return 1;
+  if (requestedMaxTurns === undefined || !Number.isFinite(requestedMaxTurns)) return 8;
+  return Math.max(1, Math.min(16, Math.round(requestedMaxTurns)));
+}
+
+export function resolveOneShotReadToolCallLimit(
+  value: unknown,
+): number | undefined {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+$/.test(value.trim())
+        ? Number(value.trim())
+        : Number.NaN;
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(1, Math.min(10, Math.round(parsed)));
 }
 
 /**
- * Stateless, tool-free text generation for compact workbench actions. It uses
- * the normal provider route but never joins or persists a Chat session.
+ * Stateless text generation for compact workbench actions. It uses the normal
+ * provider route but never joins or persists a Chat session. A workbench may
+ * opt into a host-owned, read-only toolset for project context lookup.
  */
 export async function generateOneShotText(
   request: OneShotTextRequest,
@@ -205,55 +380,172 @@ export async function generateOneShotText(
       `workbench-run:${request.providerEnv.baseUrl ?? 'anthropic'}`,
     )
     : null;
-  const cliPath = resolveClaudeCodeCli();
-  const oneShot = await createGuardedSdkQuery(cliPath, () => query({
-    prompt: request.prompt,
-    options: {
-      maxTurns: 1,
-      cwd: request.workspacePath,
-      settingSources: [],
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      pathToClaudeCodeExecutable: cliPath,
-      env: buildClaudeSessionEnv(request.providerEnv, request.model, {
-        bridgeToken: bridge?.token,
-        providerId: request.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
-      }),
-      systemPrompt: request.systemPrompt,
-      thinking: { type: 'disabled' },
-      effort: 'low',
-      includePartialMessages: false,
-      persistSession: false,
-      mcpServers: {},
-      tools: [],
-      ...(request.model ? {
-        model: applyProviderContextWindowSuffix(
-          request.model,
-          request.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
-        ),
-      } : {}),
-    },
-  }));
   try {
-    const queryPromise = (async (): Promise<string | null> => {
-      let latest: string | null = null;
-      for await (const message of oneShot) {
-        latest = extractTitleTextFromSdkMessage(message) ?? latest;
-      }
-      return latest;
-    })();
-    const timeout = new Promise<null>((resolve) => {
-      setTimeout(() => resolve(null), request.timeoutMs ?? 60_000);
-    });
-    const output = await Promise.race([queryPromise, timeout]);
-    if (output === null) {
+    let activeRequest = request;
+    let recoveryContext = '';
+    const run = async (
+      toolConfiguration?: {
+        readonly adapterId: string;
+        readonly server: Awaited<ReturnType<
+          typeof import('./tools/novel-workbench-tool').createNovelWorkbenchServer
+        >>;
+        readonly readTools: readonly string[];
+      },
+    ): Promise<string | null> => {
+      const cliPath = resolveClaudeCodeCli();
+      const allowedReadTools = toolConfiguration?.readTools.map(
+        (name) => `mcp__${toolConfiguration.adapterId}__${name}`,
+      );
+      const readToolCallLimit = resolveOneShotReadToolCallLimit(
+        activeRequest.toolset?.context?.readToolCallLimit,
+      );
+      let allowedReadToolCallCount = 0;
+      const oneShot = await createGuardedSdkQuery(cliPath, () => query({
+        prompt: activeRequest.prompt,
+        options: {
+          maxTurns: resolveOneShotTextMaxTurns(
+            activeRequest.maxTurns,
+            Boolean(toolConfiguration),
+          ),
+          cwd: activeRequest.workspacePath,
+          settingSources: [],
+          permissionMode: toolConfiguration ? 'default' : 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          pathToClaudeCodeExecutable: cliPath,
+          env: buildClaudeSessionEnv(activeRequest.providerEnv, activeRequest.model, {
+            bridgeToken: bridge?.token,
+            providerId: activeRequest.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+          }),
+          systemPrompt: activeRequest.systemPrompt,
+          thinking: { type: 'disabled' },
+          effort: 'low',
+          includePartialMessages: false,
+          persistSession: false,
+          mcpServers: toolConfiguration
+            ? { [toolConfiguration.adapterId]: toolConfiguration.server }
+            : {},
+          tools: [],
+          ...(allowedReadTools ? {
+            allowedTools: allowedReadTools,
+            canUseTool: async (toolName: string) => {
+              if (!allowedReadTools.includes(toolName)) {
+                return {
+                  behavior: 'deny' as const,
+                  message: '一次性工作台 Agent 只允许读取项目上下文。',
+                };
+              }
+              if (
+                readToolCallLimit !== undefined &&
+                allowedReadToolCallCount >= readToolCallLimit
+              ) {
+                return {
+                  behavior: 'deny' as const,
+                  message: `只读资料调用已达到 ${readToolCallLimit} 次上限。请停止检索，立即依据已取得资料返回最终结果。`,
+                };
+              }
+              allowedReadToolCallCount += 1;
+              return { behavior: 'allow' as const };
+            },
+          } : {}),
+          ...(activeRequest.model ? {
+            model: applyProviderContextWindowSuffix(
+              activeRequest.model,
+              activeRequest.providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+            ),
+          } : {}),
+        },
+      }));
+      const queryPromise = (async (): Promise<string | null> => {
+        let latest: string | null = null;
+        for await (const message of oneShot) {
+          const toolContext = extractOneShotToolContextFromSdkMessage(message);
+          if (toolContext) {
+            recoveryContext = `${recoveryContext}\n\n${toolContext}`
+              .trim()
+              .slice(0, MAX_ONE_SHOT_RECOVERY_CONTEXT_CHARS);
+          }
+          const progress = oneShotProgressForSdkMessage(message);
+          if (progress) activeRequest.onProgress?.(progress);
+          const sdkError = extractOneShotSdkError(message);
+          if (sdkError) throw new Error(sdkError);
+          latest = extractTitleTextFromSdkMessage(message) ?? latest;
+        }
+        return latest;
+      })();
+      const timeoutMs = activeRequest.timeoutMs ?? (toolConfiguration ? 120_000 : 60_000);
+      const timedOut = Symbol('one-shot-timeout');
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<typeof timedOut>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(timedOut), timeoutMs);
+      });
+      let result: string | null | typeof timedOut;
       try {
-        oneShot.return(undefined as never);
-      } catch {
-        // Best-effort SDK subprocess cleanup after the request deadline.
+        result = await Promise.race([queryPromise, timeout]);
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
+      if (result === timedOut) {
+        try {
+          await Promise.race([
+            oneShot.return(undefined as never),
+            new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+          ]);
+        } catch {
+          // Best-effort SDK subprocess cleanup after the request deadline.
+        }
+        if (activeRequest.throwOnTimeout) throw new OneShotTextTimeoutError(timeoutMs);
+        return null;
+      }
+      const output = result;
+      return output?.trim() || null;
+    };
+
+    const runWithOptionalToolset = async (): Promise<string | null> => {
+      if (!activeRequest.toolset) return await run();
+
+      const [contextModule, toolModule] = await Promise.all([
+        import('./novel-workbench-context'),
+        import('./tools/novel-workbench-tool'),
+      ]);
+      return await contextModule.runWithNovelWorkbenchToolset(
+        activeRequest.toolset,
+        {
+          sessionId: `workbench-run-${randomUUID()}`,
+          workspace: activeRequest.workspacePath,
+        },
+        async () =>
+          run({
+            adapterId: contextModule.NOVEL_WORKBENCH_SDK_ADAPTER_ID,
+            server: await toolModule.createNovelWorkbenchServer(),
+            readTools: contextModule.NOVEL_WORKBENCH_READ_TOOL_NAMES,
+          }),
+      );
+    };
+
+    try {
+      return await runWithOptionalToolset();
+    } catch (error) {
+      if (!request.toolset || !isOneShotMaxTurnsError(error)) throw error;
+
+      request.onProgress?.({
+        kind: 'status',
+        message: '已达到轮次上限，依据已读取资料直接输出',
+      });
+      activeRequest = {
+        ...request,
+        prompt: [
+          request.prompt.slice(0, 36_000),
+          recoveryContext
+            ? `【本轮已读取资料快照】\n${recoveryContext}`
+            : '【本轮已读取资料快照】\n本轮没有收到可复用的工具返回，请依据原始请求中的已有资料直接完成。',
+          '【收敛要求】不得调用工具，不得重新读取，直接输出最终结果。',
+        ].join('\n\n'),
+        systemPrompt: `${request.systemPrompt}\n\n上一轮已达到轮次上限。本轮必须依据上面保留的已读资料直接输出最终结果，不得重新开始读取。`,
+        maxTurns: 1,
+        toolset: undefined,
+      };
+      return await run();
     }
-    return output?.trim() || null;
   } finally {
     bridge?.release();
   }

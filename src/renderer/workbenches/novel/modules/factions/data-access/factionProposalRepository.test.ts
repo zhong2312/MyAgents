@@ -1,11 +1,46 @@
 import { describe, expect, it } from "vitest";
 
-import { createNovelFactionProposalRepository } from "./factionProposalRepository";
+import {
+  createFactionFileProposalRepository,
+  createNovelFactionProposalRepository,
+} from "./factionProposalRepository";
 import {
   serializeFactionProposalManifest,
   type FactionProposalManifest,
 } from "../entities/factionProposalSchema";
+import type { FactionRecord } from "../entities/factionLibrarySchema";
 import { NovelMemoryStorage } from "../../../shared/infrastructure/testStorage";
+import {
+  createFactionFiles,
+  factionRecordPath,
+} from "../../../../../../shared/workbenches/novel/factionStorage";
+
+function faction(id: string, name: string, summary: string): FactionRecord {
+  return {
+    id,
+    name,
+    type: "宗门",
+    status: "active",
+    summary,
+    state: {
+      governance: "",
+      military: "",
+      economy: "",
+      publicSupport: "",
+      territorialIntegrity: "",
+    },
+    territories: [],
+    members: [],
+    assets: [],
+    resources: [],
+    organizationUnits: [],
+    relations: [],
+    rights: [],
+    links: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+}
 
 function manifest(
   proposalId: string,
@@ -223,5 +258,146 @@ describe("createNovelFactionProposalRepository", () => {
     expect(
       storage.getText("world/factions/proposals/proposal-1/proposal.json"),
     ).toBeUndefined();
+  });
+
+  it("兼容旧 AI 提案的说明字段，但不会把说明字段写入正式势力记录", async () => {
+    const storage = storageWithProposal();
+    const proposalPath = "world/factions/proposals/proposal-1/proposal.json";
+    const document = JSON.parse(storage.getText(proposalPath)!) as {
+      operations: Array<{ value: Record<string, unknown> }>;
+    };
+    Object.assign(document.operations[0]!.value, {
+      aliases: ["云宗"],
+      location: "东境",
+      coreGoals: ["守护东境"],
+      hierarchy: "掌门 -> 长老",
+      keyMembers: ["掌门"],
+      authority: "东境护法权",
+      evolutionHook: "宗门内部分裂",
+    });
+    storage.setExternalText(
+      proposalPath,
+      `${JSON.stringify(document, null, 2)}\n`,
+    );
+
+    const fileRepository = createFactionFileProposalRepository(storage);
+    const listed = await fileRepository.list();
+    const change = listed.proposals[0]?.changes[0];
+    expect(change?.loadError).toBeNull();
+    expect(change?.afterContent).not.toContain('"aliases"');
+
+    await fileRepository.apply("proposal-1", ["candidate-1"], "测试小说");
+
+    const saved = JSON.parse(
+      storage.getText(factionRecordPath("faction-1"))!,
+    ) as Record<string, unknown>;
+    expect(saved.name).toBe("青云宗");
+    expect(saved).not.toHaveProperty("aliases");
+    expect(saved).not.toHaveProperty("coreGoals");
+  });
+
+  it("单个候选格式错误时仍保留整份提案和其它候选供审阅", async () => {
+    const storage = storageWithProposal();
+    const proposalPath = "world/factions/proposals/proposal-1/proposal.json";
+    const document = JSON.parse(storage.getText(proposalPath)!) as {
+      operations: Array<{ value: Record<string, unknown> }>;
+    };
+    document.operations[0]!.value.id = "INVALID ID";
+    storage.setExternalText(
+      proposalPath,
+      `${JSON.stringify(document, null, 2)}\n`,
+    );
+
+    const listed = await createFactionFileProposalRepository(storage).list();
+
+    expect(listed.errors).toEqual([]);
+    expect(listed.proposals).toHaveLength(1);
+    expect(listed.proposals[0]?.changes[0]).toMatchObject({
+      targetPath: "world/factions/records/candidate-1.json",
+      loadError: expect.stringContaining("格式无效"),
+    });
+    expect(listed.proposals[0]?.changes[1]?.loadError).toBeNull();
+  });
+
+  it("按对象基准识别更新冲突，并通过统一契约显式使用提案版本", async () => {
+    const baseline = faction("faction-1", "青云宗", "原始概要");
+    const files = createFactionFiles({
+      schemaVersion: 2,
+      factions: [baseline],
+    });
+    const proposalDocument = manifest("proposal-update", [
+      {
+        candidateId: "candidate-update",
+        kind: "faction",
+        action: "update",
+        targetId: "faction-1",
+        summary: "更新青云宗概要",
+        baseValue: baseline,
+        value: faction("faction-1", "青云宗", "提案概要"),
+        status: "pending",
+      },
+    ]);
+    const storage = new NovelMemoryStorage({
+      ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+      "world/factions/proposals/proposal-update/proposal.json":
+        serializeFactionProposalManifest(proposalDocument),
+    });
+    const changed = faction("faction-1", "青云宗", "作者刚刚修改的概要");
+    storage.setExternalText(
+      factionRecordPath("faction-1"),
+      `${JSON.stringify(changed, null, 2)}\n`,
+    );
+
+    const repository = createFactionFileProposalRepository(storage);
+    const listed = await repository.list();
+    const change = listed.proposals[0]?.changes[0];
+    expect(change).toMatchObject({
+      conflict: true,
+      baseContentAvailable: true,
+      currentContent: `${JSON.stringify(changed, null, 2)}\n`,
+    });
+
+    await repository.resolveConflict(
+      "proposal-update",
+      "candidate-update",
+      {
+        strategy: "use-proposal",
+        expectedCurrentContent: change?.currentContent ?? null,
+      },
+      "测试小说",
+    );
+
+    expect(
+      JSON.parse(storage.getText(factionRecordPath("faction-1"))!).summary,
+    ).toBe("提案概要");
+  });
+
+  it("新建目标已存在时只允许通过显式冲突决议覆盖", async () => {
+    const storage = storageWithProposal();
+    const formal = faction("faction-1", "青云宗", "正式库已有版本");
+    for (const file of createFactionFiles({
+      schemaVersion: 2,
+      factions: [formal],
+    })) {
+      storage.setExternalText(file.path, file.content);
+    }
+    const repository = createFactionFileProposalRepository(storage);
+    const listed = await repository.list();
+    const change = listed.proposals[0]?.changes[0];
+    expect(change?.conflict).toBe(true);
+
+    await repository.resolveConflict(
+      "proposal-1",
+      "candidate-1",
+      {
+        strategy: "use-proposal",
+        expectedCurrentContent: change?.currentContent ?? null,
+      },
+      "测试小说",
+    );
+
+    expect(
+      JSON.parse(storage.getText(factionRecordPath("faction-1"))!).summary,
+    ).toBe("正道魁首");
   });
 });

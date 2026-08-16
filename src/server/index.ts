@@ -253,6 +253,16 @@ import {
   type BackgroundAgentPermissionMode,
 } from '../shared/config-types';
 import { workspacePathsEqual } from '../shared/workspacePath';
+import type { WorkbenchAgentToolsetRequest } from '../shared/workbench-sdk';
+import {
+  isWorkbenchAiRunProgressId,
+  readWorkbenchAiRunProgress,
+  updateWorkbenchAiRunProgress,
+} from './workbench-ai-run-progress';
+import {
+  resolveWorkbenchAiPromptCharacterLimit,
+  resolveWorkbenchAiRunBudget,
+} from './workbench-ai-run-budget';
 import { ensureDirSync, ensureDir, isDirEntry } from './utils/fs-utils';
 import {
   buildMemoryUpdateReminder,
@@ -3089,19 +3099,61 @@ async function main() {
         return jsonResponse({ success: true, session: toClientSessionMetadata(updated) });
       }
 
+      if (pathname.startsWith('/api/workbench-ai/run/') && request.method === 'GET') {
+        const runId = decodeURIComponent(pathname.slice('/api/workbench-ai/run/'.length));
+        if (!isWorkbenchAiRunProgressId(runId)) {
+          return jsonResponse({ success: false, error: 'Invalid workbench AI run ID.' }, 400);
+        }
+        const progress = readWorkbenchAiRunProgress(runId);
+        if (!progress) {
+          return jsonResponse({ success: false, error: 'Workbench AI run progress not found.' }, 404);
+        }
+        return jsonResponse({ success: true, progress });
+      }
+
       if (pathname === '/api/workbench-ai/run' && request.method === 'POST') {
+        let requestLabel = '未命名工作台 AI 请求';
+        let progressRunId: string | null = null;
         try {
           const payload = (await request.json()) as {
             workspacePath?: unknown;
+            runId?: unknown;
+            label?: unknown;
             prompt?: unknown;
             systemPrompt?: unknown;
+            executionProfile?: unknown;
+            timeoutMs?: unknown;
+            maxTurns?: unknown;
+            toolset?: unknown;
             providerId?: unknown;
             model?: unknown;
+          };
+          const runId = isWorkbenchAiRunProgressId(payload.runId)
+            ? payload.runId
+            : null;
+          progressRunId = runId;
+          const reportProgress = (kind: 'status' | 'tool' | 'intent', message: string) => {
+            if (runId) updateWorkbenchAiRunProgress(runId, kind, message);
           };
           if (typeof payload.workspacePath !== 'string' || !payload.workspacePath.trim()) {
             return jsonResponse({ success: false, error: 'workspacePath is required.' }, 400);
           }
           const workspacePath = payload.workspacePath.trim();
+          const label = typeof payload.label === 'string' && payload.label.trim()
+            ? payload.label.trim().slice(0, 160)
+            : '未命名工作台 AI 请求';
+          requestLabel = label;
+          const initialProgressMessage = label.includes('按总览字数调整')
+            ? '正在准备按字数调整正文'
+            : label.includes('完整生成正文')
+              ? '正在准备生成正文'
+              : label.includes('正文方案')
+                ? '正在准备生成正文方案'
+                : '正在准备本次生成';
+          reportProgress(
+            'status',
+            initialProgressMessage,
+          );
           if (!findAgentByWorkspacePath(workspacePath)) {
             return jsonResponse({
               success: false,
@@ -3111,8 +3163,17 @@ async function main() {
           if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) {
             return jsonResponse({ success: false, error: 'prompt is required.' }, 400);
           }
-          if (payload.prompt.length > 60_000) {
-            return jsonResponse({ success: false, error: 'prompt exceeds 60000 characters.' }, 400);
+          const promptCharacterLimit = resolveWorkbenchAiPromptCharacterLimit(
+            payload.executionProfile,
+          );
+          if (payload.prompt.length > promptCharacterLimit) {
+            return jsonResponse(
+              {
+                success: false,
+                error: `prompt exceeds ${promptCharacterLimit} characters.`,
+              },
+              400,
+            );
           }
           if (
             typeof payload.providerId !== 'string' || !payload.providerId.trim()
@@ -3133,22 +3194,84 @@ async function main() {
           if (!providerSelection.ok) {
             return jsonResponse({ success: false, error: providerSelection.error }, 400);
           }
-          const { generateOneShotText } = await import('./title-generator');
-          const output = await generateOneShotText({
-            prompt: payload.prompt,
-            systemPrompt: typeof payload.systemPrompt === 'string'
-              ? payload.systemPrompt.slice(0, 20_000)
-              : 'Return only the requested result. Do not use Markdown fences.',
-            workspacePath,
-            model,
-            providerEnv: providerSelection.providerEnv as ProviderEnv | undefined,
-          });
+          const runBudget = resolveWorkbenchAiRunBudget(
+            payload.executionProfile,
+            payload.timeoutMs,
+            payload.maxTurns,
+          );
+          if (!runBudget) {
+            return jsonResponse({
+              success: false,
+              error: 'executionProfile must be standard or extended.',
+            }, 400);
+          }
+          const startedAt = Date.now();
+          console.info(
+            `[workbench-ai] start label=${JSON.stringify(label)} provider=${providerId} model=${model} `
+            + `promptChars=${payload.prompt.length} systemChars=${typeof payload.systemPrompt === 'string' ? payload.systemPrompt.length : 0} `
+            + `profile=${runBudget.profile} timeoutMs=${runBudget.timeoutMs ?? 'default'} maxTurns=${runBudget.maxTurns}`,
+          );
+          const { generateOneShotText, OneShotTextTimeoutError } = await import('./title-generator');
+          let output: string | null;
+          try {
+            output = await generateOneShotText({
+              prompt: payload.prompt,
+              systemPrompt: typeof payload.systemPrompt === 'string'
+                ? payload.systemPrompt.slice(0, 20_000)
+                : 'Return only the requested result. Do not use Markdown fences.',
+              workspacePath,
+              model,
+              maxTurns: runBudget.maxTurns,
+              timeoutMs: runBudget.timeoutMs,
+              throwOnTimeout: true,
+              toolset: payload.toolset as WorkbenchAgentToolsetRequest | undefined,
+              providerEnv: providerSelection.providerEnv as ProviderEnv | undefined,
+              onProgress: (progress) => {
+                const message = progress.kind !== 'status'
+                  ? progress.message
+                  : progress.message.includes('轮次上限')
+                    ? progress.message
+                  : label.includes('按总览字数调整')
+                    ? '正在按字数调整正文'
+                    : label.includes('完整生成正文')
+                      ? '正在生成正文'
+                      : label.includes('正文方案')
+                        ? '正在生成正文方案'
+                        : progress.message;
+                reportProgress(progress.kind, message);
+              },
+            });
+          } catch (error) {
+            if (error instanceof OneShotTextTimeoutError) {
+              console.warn(
+                `[workbench-ai] timeout label=${JSON.stringify(label)} durationMs=${Date.now() - startedAt}`,
+              );
+              return jsonResponse({
+                success: false,
+                error: `AI 运行超过 ${Math.round(error.timeoutMs / 1000)} 秒，尚未返回最终文本。请重试或选择响应更快的模型。`,
+              }, 504);
+            }
+            throw error;
+          }
           if (!output) {
+            console.warn(
+              `[workbench-ai] empty label=${JSON.stringify(label)} durationMs=${Date.now() - startedAt}`,
+            );
             return jsonResponse({ success: false, error: 'The model returned no text.' }, 502);
           }
+          console.info(
+            `[workbench-ai] success label=${JSON.stringify(label)} durationMs=${Date.now() - startedAt} outputChars=${output.length}`,
+          );
+          reportProgress('status', '正在整理生成结果');
           return jsonResponse({ success: true, output });
         } catch (error) {
-          console.error('[api/workbench-ai/run] Error:', error);
+          if (progressRunId) {
+            updateWorkbenchAiRunProgress(progressRunId, 'status', '本次生成未完成');
+          }
+          console.error(
+            `[api/workbench-ai/run] Error label=${JSON.stringify(requestLabel)}:`,
+            error,
+          );
           return jsonResponse({
             success: false,
             error: error instanceof Error ? error.message : 'Workbench AI run failed.',

@@ -185,10 +185,69 @@ describe("势力库目录化工具", () => {
       ],
     });
 
+    const validation = await callTool("novel_factions_validate_draft", {
+      draftId: "faction-update-draft",
+    });
+    expect(validation).toMatchObject({ valid: true });
+
     await expect(
-      callTool("novel_factions_validate_draft", {
+      callTool("novel_factions_submit_draft", {
         draftId: "faction-update-draft",
+        validationToken: validation.validationToken,
       }),
-    ).resolves.toMatchObject({ valid: true });
+    ).resolves.toMatchObject({ submitted: true });
+
+    const proposal = JSON.parse(
+      await fs.readFile(
+        join(
+          workspace,
+          "world",
+          "factions",
+          "proposals",
+          "factions-faction-update-draft",
+          "proposal.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      operations: Array<{ baseValue?: Record<string, unknown> | null }>;
+    };
+    expect(proposal.operations[0]?.baseValue).toMatchObject({
+      id: "faction-cloud-sect",
+      summary: "坐镇东玄大陆的剑修宗门。",
+    });
+  });
+
+  it("在草稿校验阶段拒绝只用于说明、不能写入正式记录的字段", async () => {
+    await callTool("novel_factions_create_draft", {
+      draftId: "faction-invalid-fields",
+      title: "错误字段",
+    });
+    await callTool("novel_factions_upsert_draft_operations", {
+      draftId: "faction-invalid-fields",
+      operations: [
+        {
+          candidateId: "candidate-invalid-fields",
+          kind: "faction",
+          action: "create",
+          summary: "包含旧说明字段",
+          value: {
+            ...faction(),
+            id: "faction-new-sect",
+            aliases: ["旧别名字段"],
+            coreGoals: ["旧核心目标字段"],
+          },
+        },
+      ],
+    });
+
+    const validation = await callTool("novel_factions_validate_draft", {
+      draftId: "faction-invalid-fields",
+    });
+
+    expect(validation).toMatchObject({ valid: false });
+    expect(validation.errors).toEqual([
+      expect.stringContaining("包含非正式字段：aliases、coreGoals"),
+    ]);
   });
 });

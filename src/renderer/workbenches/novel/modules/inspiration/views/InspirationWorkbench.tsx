@@ -56,6 +56,10 @@ interface InspirationWorkbenchProps {
   readonly onConvertToNarrative?: (item: InspirationItem) => Promise<void>;
   /** 外部实体定位请求（T3 消费：自动选中对应灵感）。 */
   readonly focus?: DomainEntityRef | null;
+  readonly quickCreateRequest?: {
+    readonly kind: "inspiration";
+    readonly token: number;
+  };
   readonly registerNavigationGuard: (
     guard: WorkbenchNavigationGuard,
   ) => () => void;
@@ -246,6 +250,7 @@ export default function InspirationWorkbench({
   onOpenAiAgent,
   onConvertToNarrative,
   focus,
+  quickCreateRequest,
   registerNavigationGuard,
 }: InspirationWorkbenchProps) {
   const [draft, setDraft] = useState(library);
@@ -262,6 +267,11 @@ export default function InspirationWorkbench({
     "structure" | "content" | "detail"
   >("content");
   const [createOpen, setCreateOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isActive || quickCreateRequest?.kind !== "inspiration") return;
+    setCreateOpen(true);
+  }, [isActive, quickCreateRequest]);
 
   useEffect(() => {
     if (content === baselineContent) return;

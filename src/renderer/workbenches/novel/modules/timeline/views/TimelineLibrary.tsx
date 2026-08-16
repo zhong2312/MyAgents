@@ -28,6 +28,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -36,6 +37,7 @@ import {
   CustomSelect,
   DraggableDialogFrame,
   type SelectOption,
+  type WorkbenchNavigationGuard,
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
@@ -73,6 +75,7 @@ import {
   type TimelineView,
 } from "../entities/timelineLibrarySchema";
 import TimelineAiDialog from "./TimelineAiDialog";
+import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard";
 import {
   buildTimelineAiAgentRequest,
   type TimelineAiAgentRequest,
@@ -86,6 +89,13 @@ interface TimelineLibraryProps {
   readonly onOpenAiAgent?: (request: TimelineAiAgentRequest) => Promise<void>;
   /** 外部实体定位请求（T3 消费：优先定位到事件所属分支）。 */
   readonly focus?: DomainEntityRef | null;
+  readonly quickCreateRequest?: {
+    readonly kind: "event";
+    readonly token: number;
+  };
+  readonly registerNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
 }
 
 interface ReferenceOption {
@@ -438,6 +448,8 @@ export default function TimelineLibrary({
   isActive,
   onOpenAiAgent,
   focus,
+  quickCreateRequest,
+  registerNavigationGuard,
 }: TimelineLibraryProps) {
   const repository = useMemo(
     () => createNovelTimelineLibraryRepository(storage),
@@ -481,6 +493,7 @@ export default function TimelineLibrary({
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const quickCreateHandledRef = useRef<number | null>(null);
 
   const setSelection = useCallback(
     (library: TimelineLibrary, branchId: string, preferredEventId = "") => {
@@ -539,6 +552,26 @@ export default function TimelineLibrary({
     : null;
   const axisOffset =
     selectedView?.calendarId === "story" ? (storyStartEvent?.sortKey ?? 0) : 0;
+  const selectedPeriodIds = useMemo(() => {
+    if (
+      sidebarMode !== "periods" ||
+      !loaded ||
+      !selectedPeriod ||
+      selectedPeriod.parentPeriodId === null
+    ) {
+      return null;
+    }
+    return getTimelinePeriodDescendantIds(loaded.library, selectedPeriod.id);
+  }, [loaded, selectedPeriod, sidebarMode]);
+  const selectedPeriodRange =
+    sidebarMode === "periods" &&
+    selectedPeriod &&
+    selectedPeriod.parentPeriodId !== null
+      ? {
+          start: selectedPeriod.startSortKey,
+          end: selectedPeriod.endSortKey,
+        }
+      : null;
   const branchProjectedEvents = useMemo(
     () =>
       loaded
@@ -563,6 +596,12 @@ export default function TimelineLibrary({
       if (selectedView.scope !== "all" && event.scope !== selectedView.scope) {
         return false;
       }
+      if (
+        selectedPeriodIds &&
+        (event.periodId === null || !selectedPeriodIds.has(event.periodId))
+      ) {
+        return false;
+      }
       if (!periodIds || rootPeriod?.parentPeriodId === null) return true;
       return event.periodId !== null && periodIds.has(event.periodId);
     });
@@ -573,9 +612,18 @@ export default function TimelineLibrary({
       if (leftOrder !== rightOrder) return leftOrder - rightOrder;
       return compareEvents(left.event, right.event);
     });
-  }, [branchProjectedEvents, loaded, selectedView]);
+  }, [branchProjectedEvents, loaded, selectedPeriodIds, selectedView]);
   const selectedProjectedEvent =
     projectedEvents.find((item) => item.event.id === selectedEventId) ?? null;
+  const eventDirty = Boolean(
+    loaded &&
+      eventDraft &&
+      loaded.library.events.some(
+        (event) =>
+          event.id === eventDraft.id &&
+          JSON.stringify(event) !== JSON.stringify(eventDraft),
+      ),
+  );
   const directBranchEvents = loaded
     ? eventForBranch(loaded.library, selectedBranchId)
     : [];
@@ -593,7 +641,7 @@ export default function TimelineLibrary({
     setEventDraft(next && !next.inherited ? structuredClone(next.event) : null);
   }, [loaded, projectedEvents, selectedEventId]);
 
-  const persist = async (
+  const persist = useCallback(async (
     library: TimelineLibrary,
     branchId: string,
     eventId = "",
@@ -612,15 +660,17 @@ export default function TimelineLibrary({
     } finally {
       setIsSaving(false);
     }
-  };
+  }, [loaded, repository, setSelection]);
 
-  const selectBranch = (branchId: string) => {
+  const selectBranch = async (branchId: string) => {
     if (!loaded) return;
+    if (eventDirty && !(await saveEvent())) return;
     setSelection(loaded.library, branchId);
     setError(null);
   };
 
-  const selectEvent = (projected: TimelineProjectedEvent) => {
+  const selectEvent = async (projected: TimelineProjectedEvent) => {
+    if (eventDirty && projected.event.id !== selectedEventId && !(await saveEvent())) return;
     setSelectedEventId(projected.event.id);
     setEventDraft(
       projected.inherited ? null : structuredClone(projected.event),
@@ -628,7 +678,7 @@ export default function TimelineLibrary({
     setError(null);
   };
 
-  const createEvent = async () => {
+  const createEvent = useCallback(async () => {
     if (!loaded || !selectedBranch) return;
     const now = new Date().toISOString();
     const largestSortKey = loaded.library.events.reduce(
@@ -644,10 +694,7 @@ export default function TimelineLibrary({
       endSortKey: null,
       timePrecision: "exact",
       timeExpressions: [],
-      periodId:
-        selectedPeriodId && selectedPeriodId !== loaded.library.periods[0]?.id
-          ? selectedPeriodId
-          : null,
+      periodId: sidebarMode === "periods" ? selectedPeriodId || null : null,
       scope:
         selectedView?.scope && selectedView.scope !== "all"
           ? selectedView.scope
@@ -681,13 +728,26 @@ export default function TimelineLibrary({
       selectedBranch.id,
       event.id,
     );
-  };
+  }, [loaded, persist, selectedBranch, selectedPeriodId, selectedView, sidebarMode]);
 
-  const saveEvent = async () => {
-    if (!loaded || !eventDraft || !selectedBranch) return;
+  useEffect(() => {
+    if (
+      !isActive ||
+      !loaded ||
+      !selectedBranch ||
+      quickCreateRequest?.kind !== "event" ||
+      quickCreateHandledRef.current === quickCreateRequest.token
+    )
+      return;
+    quickCreateHandledRef.current = quickCreateRequest.token;
+    void createEvent();
+  }, [createEvent, isActive, loaded, quickCreateRequest, selectedBranch]);
+
+  const saveEvent = async (): Promise<boolean> => {
+    if (!loaded || !eventDraft || !selectedBranch) return false;
     if (!eventDraft.title.trim() || !eventDraft.timeLabel.trim()) {
       setError("事件名称和故事时间不能为空");
-      return;
+      return false;
     }
     const event: TimelineEvent = {
       ...eventDraft,
@@ -698,7 +758,7 @@ export default function TimelineLibrary({
       tags: eventDraft.tags.map((tag) => tag.trim()).filter(Boolean),
       updatedAt: new Date().toISOString(),
     };
-    await persist(
+    const next = await persist(
       {
         ...loaded.library,
         events: loaded.library.events.map((item) =>
@@ -708,6 +768,7 @@ export default function TimelineLibrary({
       selectedBranch.id,
       event.id,
     );
+    return Boolean(next);
   };
 
   const removeEvent = async () => {
@@ -1077,6 +1138,14 @@ export default function TimelineLibrary({
 
   return (
     <div className="timeline-library flex h-full min-h-0 flex-col overflow-hidden bg-[var(--paper)]">
+      {registerNavigationGuard && (
+        <NarrativeUnsavedChangesGuard
+          dirty={eventDirty}
+          label={eventDraft?.title || "时间线事件"}
+          registerNavigationGuard={registerNavigationGuard}
+          onSave={saveEvent}
+        />
+      )}
       <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
         <div className="flex min-w-0 items-center gap-3">
           <Milestone className="h-5 w-5 shrink-0 text-[var(--accent-warm)]" />
@@ -1239,6 +1308,11 @@ export default function TimelineLibrary({
                 <h2 className="truncate text-base font-semibold text-[var(--ink)]">
                   {selectedView?.name ?? "时间线"}
                 </h2>
+                {sidebarMode === "periods" && selectedPeriod && (
+                  <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
+                    · {selectedPeriod.name}
+                  </span>
+                )}
                 {selectedBranch && (
                   <span className="shrink-0 text-xs text-[var(--ink-subtle)]">
                     {selectedBranch.parentBranchId
@@ -1333,6 +1407,8 @@ export default function TimelineLibrary({
                   events={projectedEvents}
                   selectedEventId={selectedEventId}
                   axisOffset={axisOffset}
+                  rangeStart={selectedPeriodRange?.start ?? null}
+                  rangeEnd={selectedPeriodRange?.end ?? null}
                   onSelect={selectEvent}
                 />
               </section>
@@ -1354,7 +1430,11 @@ export default function TimelineLibrary({
                 {!projectedEvents.length && (
                   <div className="flex min-h-40 flex-col items-center justify-center text-center text-[var(--ink-muted)]">
                     <Clock3 className="h-6 w-6" />
-                    <p className="mt-3 text-sm">从一件重大事件开始记录故事</p>
+                    <p className="mt-3 text-sm">
+                      {selectedPeriod && sidebarMode === "periods"
+                        ? `纪元“${selectedPeriod.name}”暂无事件`
+                        : "当前视图暂无事件"}
+                    </p>
                   </div>
                 )}
               </section>
@@ -1535,21 +1615,29 @@ function TimelineRail({
   events,
   selectedEventId,
   axisOffset,
+  rangeStart,
+  rangeEnd,
   onSelect,
 }: {
   readonly events: readonly TimelineProjectedEvent[];
   readonly selectedEventId: string;
   readonly axisOffset: number;
+  readonly rangeStart: number | null;
+  readonly rangeEnd: number | null;
   readonly onSelect: (event: TimelineProjectedEvent) => void;
 }) {
-  if (!events.length) {
+  if (!events.length && rangeStart === null && rangeEnd === null) {
     return (
       <div className="timeline-rail-empty flex h-36 items-center justify-center text-sm text-[var(--ink-muted)]">
         时间轴会按事件的排序键自动排布
       </div>
     );
   }
-  const values = events.map((item) => item.event.sortKey - axisOffset);
+  const values = [
+    ...events.map((item) => item.event.sortKey - axisOffset),
+    ...(rangeStart === null ? [] : [rangeStart - axisOffset]),
+    ...(rangeEnd === null ? [] : [rangeEnd - axisOffset]),
+  ];
   const lower = Math.min(...values);
   const upper = Math.max(...values);
   const padding = lower === upper ? 1 : Math.max(1, (upper - lower) * 0.08);
@@ -2295,7 +2383,7 @@ function InspectorHeader({
   readonly actions?: ReactNode;
 }) {
   return (
-    <header className="flex min-h-12 items-center justify-between gap-3 border-b border-[var(--line-subtle)] px-4 py-2">
+    <header className="sticky top-0 z-20 flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-4 py-2">
       <div className="min-w-0">
         <div className="text-xs font-medium text-[var(--accent-cool)]">
           事件资料

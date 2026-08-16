@@ -1,5 +1,5 @@
 /**
- * 小说领域投影能力（Workbench API 1.8）。
+ * 小说领域投影能力（Workbench API 1.10）。
  *
  * Tauri 桌面端以 rusqlite 维护可删除、可重建的 SQLite 派生投影；Markdown
  * 与 JSON 仍是唯一事实源。浏览器开发模式下 `isAvailable` 为 false，工作台

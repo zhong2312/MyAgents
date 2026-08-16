@@ -1,6 +1,9 @@
 import type { WorkbenchStorage, WorkbenchTextFile } from "@/workbench-sdk";
 
-import { createDefaultPromptLibraryModel } from "../business/promptLibraryDefaults";
+import {
+  createDefaultPromptLibraryModel,
+  NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+} from "../business/promptLibraryDefaults";
 import {
   PROMPT_LIBRARY_REGISTRY_PATH,
   PROMPT_LIBRARY_SCHEMA_VERSION,
@@ -129,9 +132,86 @@ async function ensureTextFile(
   }
 }
 
+async function ensureNovelWorkbenchPromptInstallation(
+  storage: WorkbenchStorage,
+  registryFile: WorkbenchTextFile,
+): Promise<void> {
+  const current = parsePromptLibraryRegistry(registryFile.content);
+  const defaultModel = createDefaultPromptLibraryModel();
+  const defaults = modelToRegistry(defaultModel);
+  const defaultPack = defaults.installations.find(
+    (pack) => pack.installationId === NOVEL_WORKBENCH_PROMPT_INSTALLATION_ID,
+  );
+  if (!defaultPack) return;
+
+  // Existing user-defined prompts win. Only projects that have no prompt with
+  // this stable ID receive the built-in copy during the read-time migration.
+  const existingPromptIds = new Set(
+    current.prompts.map((prompt) => prompt.promptId),
+  );
+  const missingPrompts = defaults.prompts.filter(
+    (prompt) =>
+      prompt.installationId === defaultPack.installationId &&
+      !existingPromptIds.has(prompt.promptId),
+  );
+  if (missingPrompts.length === 0) return;
+
+  const existingPackIds = new Set(
+    current.installations.map((pack) => pack.installationId),
+  );
+  const existingGroupIds = new Set(current.groups.map((group) => group.id));
+  const missingGroups = defaults.groups.filter(
+    (group) =>
+      group.installationId === defaultPack.installationId &&
+      !existingGroupIds.has(group.id),
+  );
+  const nextRegistry = {
+    schemaVersion: current.schemaVersion,
+    installations: existingPackIds.has(defaultPack.installationId)
+      ? [...current.installations]
+      : [...current.installations, defaultPack],
+    groups: [...current.groups, ...missingGroups],
+    prompts: [...current.prompts, ...missingPrompts],
+  } as const;
+  const nextRegistryContent = serializePromptLibraryRegistry(nextRegistry);
+  const createdPaths: string[] = [];
+  const defaultContentByInstanceId = new Map(
+    defaultModel.prompts.map((prompt) => [prompt.instanceId, prompt.content]),
+  );
+
+  try {
+    for (const prompt of missingPrompts) {
+      const [info] = await storage.stat([prompt.contentPath]);
+      if (info?.exists) continue;
+      await storage.createText(
+        prompt.contentPath,
+        defaultContentByInstanceId.get(prompt.instanceId) ?? "",
+        { createParents: true },
+      );
+      createdPaths.push(prompt.contentPath);
+    }
+    await storage.writeText(PROMPT_LIBRARY_REGISTRY_PATH, nextRegistryContent, {
+      expectedContent: registryFile.content,
+    });
+  } catch (error) {
+    await Promise.all(
+      createdPaths.map((path) =>
+        storage.remove(path, { permanent: true }).catch(() => false),
+      ),
+    );
+    throw error;
+  }
+}
+
 async function ensurePromptLibrary(storage: WorkbenchStorage): Promise<void> {
   const [registryInfo] = await storage.stat([PROMPT_LIBRARY_REGISTRY_PATH]);
-  if (registryInfo?.exists) return;
+  if (registryInfo?.exists) {
+    await ensureNovelWorkbenchPromptInstallation(
+      storage,
+      await storage.readText(PROMPT_LIBRARY_REGISTRY_PATH),
+    );
+    return;
+  }
   const files = buildInitializationFiles();
   for (const file of files) {
     await ensureTextFile(storage, file.path, file.content);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  parseSettingLibraryMeta,
   parseSettingLibrarySettingsIndex,
   SettingLibraryFormatError,
 } from "./settingLibrarySchema";
@@ -80,6 +81,32 @@ describe("summarizeZodIssues (via parseSettingLibrarySettingsIndex)", () => {
     expect(message).toContain("例如 settings.0.entriesPath");
     expect(message).not.toContain("settings.5.entriesPath");
     expect(message).not.toContain("另有");
+  });
+
+  it("reports invalid source enum values instead of calling them missing", () => {
+    const invalidMeta = {
+      schemaVersion: 1,
+      levelTypes: ["dao-domain", "dao-system"].map((id) => ({
+        id,
+        name: id,
+        description: "",
+        icon: "orbit",
+        mapKind: "cosmic-region",
+        source: "custom",
+        suggestedParentTypeIds: [],
+        suggestedChildTypeIds: [],
+      })),
+      settingTemplates: [],
+      profiles: [],
+    };
+    let message = "";
+    try {
+      parseSettingLibraryMeta(JSON.stringify(invalidMeta));
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("2 个条目：source 只能为 builtin 或 project");
+    expect(message).not.toContain("缺少必要字段：source");
   });
 
   it("still surfaces structural JSON syntax errors verbatim", () => {

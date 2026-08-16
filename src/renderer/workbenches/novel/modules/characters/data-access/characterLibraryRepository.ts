@@ -62,6 +62,10 @@ export interface NovelCharacterLibraryRepository {
     library: LoadedCharacterLibrary,
     character: CharacterRecord,
   ): Promise<LoadedCharacterLibrary>;
+  saveCharacters(
+    library: LoadedCharacterLibrary,
+    characters: readonly CharacterRecord[],
+  ): Promise<LoadedCharacterLibrary>;
   deleteCharacter(
     library: LoadedCharacterLibrary,
     id: string,
@@ -138,8 +142,29 @@ function ensureUniqueReferences(
   }
   for (const relation of currentCharacter.relations) {
     if (!characterIds.has(relation.targetId)) {
-      throw new Error(`角色“${currentCharacter.name}”的关系指向了不存在的角色`);
+      throw new Error(
+        `角色“${currentCharacter.name}”的关系指向了不存在的角色：${relation.targetId}`,
+      );
     }
+  }
+}
+
+export function validateCharacterLibraryReferences(
+  meta: CharacterLibraryMeta,
+  characters: readonly CharacterRecord[],
+): void {
+  const characterIds = new Set<string>();
+  for (const character of characters) {
+    if (characterIds.has(character.id)) {
+      throw new Error(`角色 id 不得重复：${character.id}`);
+    }
+    characterIds.add(character.id);
+  }
+  const entries = characters.map((character) =>
+    toIndexEntry(character, "1970-01-01T00:00:00.000Z"),
+  );
+  for (const character of characters) {
+    ensureUniqueReferences(entries, character, meta);
   }
 }
 
@@ -390,6 +415,98 @@ async function loadLibraryFiles(
 export function createNovelCharacterLibraryRepository(
   storage: WorkbenchStorage,
 ): NovelCharacterLibraryRepository {
+  const saveCharacters = async (
+    library: LoadedCharacterLibrary,
+    characters: readonly CharacterRecord[],
+  ): Promise<LoadedCharacterLibrary> => {
+    if (characters.length === 0) return library;
+    const parsedCharacters = characters.map((character) => {
+      const recordPath = characterRecordPath(character.id);
+      return asCharacterRecord(
+        parseCharacterRecordFile(recordPath, serializeRecord(character)),
+      );
+    });
+    const candidateIds = new Set<string>();
+    for (const character of parsedCharacters) {
+      if (candidateIds.has(character.id)) {
+        throw new Error(`批量保存的角色 id 不得重复：${character.id}`);
+      }
+      candidateIds.add(character.id);
+    }
+    await Promise.all(
+      parsedCharacters.map((character) =>
+        ensureCultivationReferences(storage, character),
+      ),
+    );
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const recordPaths = parsedCharacters.map((character) =>
+        characterRecordPath(character.id),
+      );
+      const [indexFile, recordInfos] = await Promise.all([
+        storage.readText(CHARACTER_LIBRARY_PATHS.index),
+        storage.stat(recordPaths),
+      ]);
+      const currentRecordContents = await Promise.all(
+        recordInfos.map(async (info, index) =>
+          info?.exists
+            ? (await storage.readText(recordPaths[index]!)).content
+            : null,
+        ),
+      );
+      const index = parseCharacterLibraryIndex(indexFile.content);
+      const recordsById = new Map(
+        parsedCharacters.map((character) => [character.id, character]),
+      );
+      const updatedAt = new Date().toISOString();
+      const nextEntries = index.characters.map((entry) => {
+        const character = recordsById.get(entry.id);
+        return character ? toIndexEntry(character, updatedAt) : entry;
+      });
+      for (const character of parsedCharacters) {
+        if (!index.characters.some((entry) => entry.id === character.id)) {
+          nextEntries.push(toIndexEntry(character, updatedAt));
+        }
+      }
+      const nextIndex = parseIndex(nextEntries);
+      for (const character of parsedCharacters) {
+        ensureUniqueReferences(nextIndex.characters, character, library.meta);
+      }
+
+      const transaction = createStorageTransaction(storage);
+      parsedCharacters.forEach((character, index) => {
+        const path = recordPaths[index]!;
+        const content = serializeRecord(character);
+        const currentContent = currentRecordContents[index];
+        if (currentContent === null) transaction.createText(path, content);
+        else transaction.writeText(path, content, currentContent);
+      });
+      const nextIndexContent = serializeIndex(nextIndex);
+      transaction.writeText(
+        CHARACTER_LIBRARY_PATHS.index,
+        nextIndexContent,
+        indexFile.content,
+      );
+      try {
+        await transaction.commit();
+        return replaceLibrary(library, {
+          index: nextIndex,
+          indexContent: nextIndexContent,
+        });
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "File changed externally"
+        ) {
+          throw error;
+        }
+        lastError = error;
+      }
+    }
+    throw lastError;
+  };
+
   return Object.freeze({
     async load() {
       if (!storage.isAvailable) {
@@ -437,66 +554,10 @@ export function createNovelCharacterLibraryRepository(
       library: LoadedCharacterLibrary,
       character: CharacterRecord,
     ) {
-      const recordPath = characterRecordPath(character.id);
-      const recordContent = serializeRecord(character);
-      const parsedRecord = asCharacterRecord(
-        parseCharacterRecordFile(recordPath, recordContent),
-      );
-      await ensureCultivationReferences(storage, parsedRecord);
-
-      let lastError: unknown;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const [indexFile, recordInfo] = await Promise.all([
-          storage.readText(CHARACTER_LIBRARY_PATHS.index),
-          storage.stat([recordPath]),
-        ]);
-        const index = parseCharacterLibraryIndex(indexFile.content);
-        ensureUniqueReferences(index.characters, parsedRecord, library.meta);
-        const updatedAt = new Date().toISOString();
-        const nextIndex = parseIndex(
-          index.characters.some((entry) => entry.id === parsedRecord.id)
-            ? index.characters.map((entry) =>
-                entry.id === parsedRecord.id
-                  ? toIndexEntry(parsedRecord, updatedAt)
-                  : entry,
-              )
-            : [...index.characters, toIndexEntry(parsedRecord, updatedAt)],
-        );
-        const transaction = createStorageTransaction(storage);
-        if (recordInfo[0]?.exists) {
-          const currentRecord = await storage.readText(recordPath);
-          transaction.writeText(
-            recordPath,
-            recordContent,
-            currentRecord.content,
-          );
-        } else {
-          transaction.createText(recordPath, recordContent);
-        }
-        const nextIndexContent = serializeIndex(nextIndex);
-        transaction.writeText(
-          CHARACTER_LIBRARY_PATHS.index,
-          nextIndexContent,
-          indexFile.content,
-        );
-        try {
-          await transaction.commit();
-          return replaceLibrary(library, {
-            index: nextIndex,
-            indexContent: nextIndexContent,
-          });
-        } catch (error) {
-          if (
-            !(error instanceof Error) ||
-            error.message !== "File changed externally"
-          ) {
-            throw error;
-          }
-          lastError = error;
-        }
-      }
-      throw lastError;
+      return saveCharacters(library, [character]);
     },
+
+    saveCharacters,
 
     async deleteCharacter(library: LoadedCharacterLibrary, id: string) {
       const indexFile = await storage.readText(CHARACTER_LIBRARY_PATHS.index);

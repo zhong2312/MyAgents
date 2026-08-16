@@ -16,8 +16,6 @@ import {
   HeartHandshake,
   Link2,
   Loader2,
-  LocateFixed,
-  Minus,
   Network,
   Package,
   Plus,
@@ -37,18 +35,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
-  forceCenter,
-  forceCollide,
-  forceLink,
-  forceManyBody,
-  forceSimulation,
-  type SimulationLinkDatum,
-  type SimulationNodeDatum,
-} from "d3-force";
-import { select } from "d3-selection";
-import { drag } from "d3-drag";
-import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
-import {
   useCallback,
   useEffect,
   useMemo,
@@ -62,6 +48,7 @@ import {
   CustomSelect,
   OverlayBackdrop,
   Popover,
+  type WorkbenchNavigationGuard,
   type WorkbenchProjection,
   type WorkbenchStorage,
 } from "@/workbench-sdk";
@@ -75,6 +62,7 @@ import {
 } from "../data-access/characterLibraryRepository";
 import type { CharacterLibraryMeta } from "../entities/characterLibrarySchema";
 import CharacterProposalReview from "./CharacterProposalReview";
+import CharacterRelationGraphView from "./CharacterRelationGraphView";
 import {
   findInboundReferences,
   formatInboundReferenceHits,
@@ -83,6 +71,7 @@ import type { DomainEntityRef } from "../../../shared/business/domainIndex";
 import { createNovelItemLibraryRepository } from "../../items/data-access/itemLibraryRepository";
 import type { ItemIndexEntry } from "../../items/entities/itemLibrarySchema";
 import { createCultivationEcologyRepository } from "../../../cultivationEcologyRepository";
+import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard";
 
 type RoleWeight = "main" | "secondary" | "npc" | "extra";
 type DetailTab =
@@ -286,18 +275,6 @@ type SoulEditorState =
 
 type CharacterChangeHandler = (patch: Partial<CharacterRecord>) => void;
 
-interface RelationGraphNode extends SimulationNodeDatum {
-  readonly id: string;
-  readonly name: string;
-  readonly archetype: string;
-  readonly central: boolean;
-}
-
-interface RelationGraphLink extends SimulationLinkDatum<RelationGraphNode> {
-  readonly type: string;
-  readonly tone: CharacterRelation["tone"];
-}
-
 interface CharacterLibraryPrototypeProps {
   readonly storage: WorkbenchStorage;
   readonly projection?: WorkbenchProjection;
@@ -308,6 +285,13 @@ interface CharacterLibraryPrototypeProps {
   readonly proposalReviewOpen?: boolean;
   readonly onOpenProposalReview?: () => void;
   readonly onCloseProposalReview?: () => void;
+  readonly quickCreateRequest?: {
+    readonly kind: "character";
+    readonly token: number;
+  };
+  readonly registerNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
   /** 外部实体定位请求（T3 消费：mount 后自动选中对应角色）。 */
   readonly focus?: DomainEntityRef | null;
 }
@@ -1253,12 +1237,6 @@ function relationTone(tone: CharacterRelation["tone"]): string {
   if (tone === "positive") return "text-[var(--success)]";
   if (tone === "negative") return "text-[var(--error)]";
   return "text-[var(--warning)]";
-}
-
-function graphToneColor(tone: CharacterRelation["tone"]): string {
-  if (tone === "positive") return "var(--success)";
-  if (tone === "negative") return "var(--error)";
-  return "var(--warning)";
 }
 
 function CharacterMark({
@@ -2891,379 +2869,6 @@ function AppearancesTab({
   );
 }
 
-function RelationNetwork({
-  characters,
-  selectedId,
-  onSelect,
-}: {
-  readonly characters: readonly CharacterRecord[];
-  readonly selectedId: string;
-  readonly onSelect: (id: string) => void;
-}) {
-  const selected =
-    characters.find((character) => character.id === selectedId) ??
-    characters[0];
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
-  const related = selected.relations
-    .map((relation) => ({
-      relation,
-      character: characters.find(
-        (candidate) => candidate.id === relation.targetId,
-      ),
-    }))
-    .filter(
-      (
-        item,
-      ): item is {
-        relation: CharacterRelation;
-        character: CharacterRecord;
-      } => Boolean(item.character),
-    );
-
-  useEffect(() => {
-    if (!svgRef.current) return;
-
-    const width = 760;
-    const height = 520;
-    const nodes: RelationGraphNode[] = [
-      {
-        id: selected.id,
-        name: selected.name,
-        archetype: selected.archetype,
-        central: true,
-        x: width / 2,
-        y: height / 2,
-        fx: width / 2,
-        fy: height / 2,
-      },
-      ...related.map(({ character }) => ({
-        id: character.id,
-        name: character.name,
-        archetype: character.archetype,
-        central: false,
-      })),
-    ];
-    const links: RelationGraphLink[] = related.map(({ relation }) => ({
-      source: selected.id,
-      target: relation.targetId,
-      type: relation.type,
-      tone: relation.tone,
-    }));
-
-    const svg = select(svgRef.current);
-    svg.selectAll("*").remove();
-    const viewport = svg.append("g").attr("class", "relation-graph-viewport");
-    const linkLayer = viewport.append("g").attr("aria-hidden", "true");
-    const labelLayer = viewport.append("g").attr("aria-hidden", "true");
-    const nodeLayer = viewport.append("g");
-
-    const linkSelection = linkLayer
-      .selectAll<SVGLineElement, RelationGraphLink>("line")
-      .data(links)
-      .join("line")
-      .attr("stroke", (link) => graphToneColor(link.tone))
-      .attr("stroke-opacity", 0.55)
-      .attr("stroke-width", 1.5)
-      .attr("stroke-dasharray", (link) =>
-        link.tone === "neutral" ? "5 5" : null,
-      );
-    const labelSelection = labelLayer
-      .selectAll<SVGTextElement, RelationGraphLink>("text")
-      .data(links)
-      .join("text")
-      .attr("text-anchor", "middle")
-      .attr("font-size", 12)
-      .attr("fill", (link) => graphToneColor(link.tone))
-      .attr("paint-order", "stroke")
-      .attr("stroke", "var(--paper)")
-      .attr("stroke-width", 5)
-      .attr("stroke-linejoin", "round")
-      .text((link) => link.type);
-
-    const nodeSelection = nodeLayer
-      .selectAll<SVGGElement, RelationGraphNode>("g")
-      .data(nodes, (node) => node.id)
-      .join((enter) => {
-        const group = enter.append("g").style("cursor", "grab");
-        group
-          .append("circle")
-          .attr("r", (node) => (node.central ? 30 : 24))
-          .attr("fill", "var(--paper-elevated)")
-          .attr("stroke", (node) =>
-            node.central ? "var(--accent-warm)" : "var(--line-strong)",
-          )
-          .attr("stroke-width", (node) => (node.central ? 2.5 : 1.5));
-        group
-          .append("text")
-          .attr("class", "node-name")
-          .attr("text-anchor", "middle")
-          .attr("dy", (node) => (node.central ? 5 : 4))
-          .attr("font-size", (node) => (node.central ? 16 : 14))
-          .attr("font-weight", 600)
-          .attr("fill", "var(--ink)")
-          .text((node) => node.name);
-        group
-          .append("text")
-          .attr("class", "node-archetype")
-          .attr("text-anchor", "middle")
-          .attr("dy", (node) => (node.central ? 52 : 43))
-          .attr("font-size", 12)
-          .attr("fill", "var(--ink-muted)")
-          .text((node) => node.archetype);
-        group
-          .append("foreignObject")
-          .attr("x", -44)
-          .attr("y", -40)
-          .attr("width", 88)
-          .attr("height", 94)
-          .append("xhtml:button")
-          .attr("type", "button")
-          .attr("aria-label", (node) => `${node.name} ${node.archetype}`)
-          .style("display", "block")
-          .style("width", "100%")
-          .style("height", "100%")
-          .style("cursor", "grab")
-          .style("border", "0")
-          .style("background", "transparent");
-        return group;
-      });
-
-    const simulation = forceSimulation<RelationGraphNode>(nodes)
-      .alphaDecay(0.08)
-      .force(
-        "link",
-        forceLink<RelationGraphNode, RelationGraphLink>(links)
-          .id((node) => node.id)
-          .distance(150)
-          .strength(0.9),
-      )
-      .force("charge", forceManyBody<RelationGraphNode>().strength(-420))
-      .force("center", forceCenter(width / 2, height / 2))
-      .force(
-        "collision",
-        forceCollide<RelationGraphNode>().radius((node) =>
-          node.central ? 78 : 64,
-        ),
-      );
-
-    const zoomBehavior = zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.72, 1.75])
-      .on("zoom", (event) => {
-        viewport.attr("transform", event.transform);
-      });
-    zoomRef.current = zoomBehavior;
-    svg.call(zoomBehavior);
-
-    const dragBehavior = drag<SVGGElement, RelationGraphNode>()
-      .on("start", (event, node) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        node.fx = node.x;
-        node.fy = node.y;
-      })
-      .on("drag", (event, node) => {
-        node.fx = event.x;
-        node.fy = event.y;
-      })
-      .on("end", (event, node) => {
-        if (!event.active) simulation.alphaTarget(0);
-        if (!node.central) {
-          node.fx = null;
-          node.fy = null;
-        }
-      });
-    nodeSelection.call(dragBehavior);
-    nodeSelection
-      .select<HTMLButtonElement>("button")
-      .on("click", (event, node) => {
-        event.stopPropagation();
-        if (!node.central) onSelect(node.id);
-      });
-
-    simulation.on("tick", () => {
-      linkSelection
-        .attr("x1", (link) => (link.source as RelationGraphNode).x ?? 0)
-        .attr("y1", (link) => (link.source as RelationGraphNode).y ?? 0)
-        .attr("x2", (link) => (link.target as RelationGraphNode).x ?? 0)
-        .attr("y2", (link) => (link.target as RelationGraphNode).y ?? 0);
-      labelSelection
-        .attr(
-          "x",
-          (link) =>
-            (((link.source as RelationGraphNode).x ?? 0) +
-              ((link.target as RelationGraphNode).x ?? 0)) /
-            2,
-        )
-        .attr(
-          "y",
-          (link) =>
-            (((link.source as RelationGraphNode).y ?? 0) +
-              ((link.target as RelationGraphNode).y ?? 0)) /
-            2,
-        );
-      nodeSelection.attr(
-        "transform",
-        (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`,
-      );
-    });
-
-    return () => {
-      simulation.stop();
-      svg.on(".zoom", null);
-      svg.selectAll("*").remove();
-      zoomRef.current = null;
-    };
-  }, [characters, onSelect, related, selected]);
-
-  const changeZoom = (scale: number) => {
-    if (!svgRef.current || !zoomRef.current) return;
-    select(svgRef.current).call(zoomRef.current.scaleBy, scale);
-  };
-
-  const resetZoom = () => {
-    if (!svgRef.current || !zoomRef.current) return;
-    select(svgRef.current).call(zoomRef.current.transform, zoomIdentity);
-  };
-
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-[18rem_minmax(0,1fr)_18rem] max-xl:grid-cols-[16rem_minmax(0,1fr)] max-lg:grid-cols-1 max-lg:overflow-y-auto">
-      <aside className="min-h-0 overflow-y-auto border-r border-[var(--line-subtle)] bg-[var(--paper-elevated)]/40 p-3 max-lg:max-h-64 max-lg:border-b max-lg:border-r-0">
-        <p className="px-2 pb-2 text-xs font-semibold text-[var(--ink-muted)]">
-          选择中心人物
-        </p>
-        <div className="space-y-1">
-          {characters.map((character) => (
-            <button
-              key={character.id}
-              type="button"
-              onClick={() => onSelect(character.id)}
-              className={`flex w-full items-center gap-3 rounded-md px-2 py-2 text-left ${
-                character.id === selected.id
-                  ? "bg-[var(--accent-warm-subtle)]"
-                  : "hover:bg-[var(--hover-bg)]"
-              }`}
-            >
-              <CharacterMark character={character} size="small" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-[var(--ink)]">
-                  {character.name}
-                </span>
-                <span className="block truncate text-xs text-[var(--ink-muted)]">
-                  {character.archetype}
-                </span>
-              </span>
-              <span className="text-xs text-[var(--ink-subtle)]">
-                {character.relations.length}
-              </span>
-            </button>
-          ))}
-        </div>
-      </aside>
-
-      <main className="relative min-h-[32rem] overflow-hidden bg-[var(--paper)] max-lg:min-h-[28rem]">
-        <div className="absolute inset-x-6 top-5 z-10 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-sm font-semibold text-[var(--ink)]">
-              {selected.name}的关系网络
-            </h2>
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              直接关系 {related.length} 条 · D3 力导向布局
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1.5 text-xs text-[var(--ink-muted)] max-lg:hidden">
-              <CircleDot className="h-3.5 w-3.5 text-[var(--success)]" />
-              当前时间切片 · 第 18 章
-            </span>
-            <div className="flex items-center rounded-md border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xs">
-              <button
-                type="button"
-                onClick={() => changeZoom(1.18)}
-                aria-label="放大关系图"
-                title="放大关系图"
-                className="flex h-8 w-8 items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => changeZoom(0.84)}
-                aria-label="缩小关系图"
-                title="缩小关系图"
-                className="flex h-8 w-8 items-center justify-center border-l border-[var(--line)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              >
-                <Minus className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={resetZoom}
-                aria-label="复位关系图"
-                title="复位关系图"
-                className="flex h-8 w-8 items-center justify-center border-l border-[var(--line)] text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              >
-                <LocateFixed className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="absolute inset-x-3 bottom-3 top-16">
-          <svg
-            ref={svgRef}
-            viewBox="0 0 760 520"
-            className="h-full w-full"
-            role="img"
-            aria-label={`${selected.name}的人物关系图`}
-          />
-        </div>
-
-        <div className="absolute bottom-5 left-5 z-10 flex items-center gap-4 rounded-md border border-[var(--line)] bg-[var(--paper-elevated)]/90 px-3 py-2 text-xs text-[var(--ink-muted)] shadow-xs">
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--success)]" />
-            同盟 / 亲近
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--error)]" />
-            对立 / 冲突
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--warning)]" />
-            中性关系
-          </span>
-        </div>
-      </main>
-
-      <aside className="min-h-0 overflow-y-auto border-l border-[var(--line-subtle)] bg-[var(--paper-elevated)]/40 px-4 py-5 max-xl:hidden">
-        <h2 className="text-sm font-semibold text-[var(--ink)]">关系摘要</h2>
-        <div className="mt-4 divide-y divide-[var(--line-subtle)]">
-          {related.map(({ relation, character }) => (
-            <button
-              key={character.id}
-              type="button"
-              onClick={() => onSelect(character.id)}
-              className="block w-full py-3 text-left"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium text-[var(--ink)]">
-                  {character.name}
-                </span>
-                <span
-                  className={`text-xs font-medium ${relationTone(relation.tone)}`}
-                >
-                  {relation.type}
-                </span>
-              </div>
-              <p className="mt-1 line-clamp-3 text-xs leading-5 text-[var(--ink-muted)]">
-                {relation.summary}
-              </p>
-            </button>
-          ))}
-        </div>
-      </aside>
-    </div>
-  );
-}
-
 function AgentDesignDialog({
   initialScope,
   onClose,
@@ -4439,6 +4044,8 @@ export default function CharacterLibraryPrototype({
   proposalReviewOpen = false,
   onOpenProposalReview,
   onCloseProposalReview,
+  quickCreateRequest,
+  registerNavigationGuard,
   focus,
 }: CharacterLibraryPrototypeProps) {
   const repository = useMemo(
@@ -4487,6 +4094,7 @@ export default function CharacterLibraryPrototype({
   const libraryRef = useRef<LoadedCharacterLibrary | null>(library);
   const charactersRef = useRef(characters);
   const isDirtyRef = useRef(isDirty);
+  const quickCreateHandledRef = useRef<number | null>(null);
   const savingPromiseRef = useRef<Promise<boolean> | null>(null);
 
   useEffect(() => {
@@ -5016,7 +4624,7 @@ export default function CharacterLibraryPrototype({
     setGroupEditor(null);
   };
 
-  const createBlankCharacter = () => {
+  const createBlankCharacter = useCallback(() => {
     const id = createLibraryId("character");
     const blank: CharacterRecord = {
       id,
@@ -5072,7 +4680,19 @@ export default function CharacterLibraryPrototype({
     setView("characters");
     setDetailTab("profile");
     setEditing(true);
-  };
+  }, [races, updateCharacters]);
+
+  useEffect(() => {
+    if (
+      !isActive ||
+      !library ||
+      quickCreateRequest?.kind !== "character" ||
+      quickCreateHandledRef.current === quickCreateRequest.token
+    )
+      return;
+    quickCreateHandledRef.current = quickCreateRequest.token;
+    createBlankCharacter();
+  }, [createBlankCharacter, isActive, library, quickCreateRequest]);
 
   const openAgentDialog = (scope: CharacterAiScope) => {
     setAgentDialogScope(scope);
@@ -5119,8 +4739,16 @@ export default function CharacterLibraryPrototype({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
-      <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
-        <div className="flex min-w-0 items-center gap-3">
+      {registerNavigationGuard && (
+        <NarrativeUnsavedChangesGuard
+          dirty={isDirty}
+          label={selectedCharacter?.name || "人物档案"}
+          registerNavigationGuard={registerNavigationGuard}
+          onSave={saveCharacters}
+        />
+      )}
+      <header className="grid min-h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex max-md:flex-wrap">
+        <div className="flex min-w-0 items-center gap-3 justify-self-start">
           <Users className="h-5 w-5 shrink-0 text-[var(--accent-warm)]" />
           <div className="min-w-0">
             <h1 className="truncate text-sm font-semibold">人物库</h1>
@@ -5131,33 +4759,33 @@ export default function CharacterLibraryPrototype({
           </div>
         </div>
 
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="flex rounded-md bg-[var(--paper-inset)] p-0.5">
-            <button
-              type="button"
-              onClick={() => setView("characters")}
-              className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm ${
-                view === "characters"
-                  ? "bg-[var(--paper-elevated)] font-medium text-[var(--ink)] shadow-xs"
-                  : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
-              }`}
-            >
-              <UserRound className="h-3.5 w-3.5" />
-              人物档案
-            </button>
-            <button
-              type="button"
-              onClick={() => setView("network")}
-              className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm ${
-                view === "network"
-                  ? "bg-[var(--paper-elevated)] font-medium text-[var(--ink)] shadow-xs"
-                  : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
-              }`}
-            >
-              <Network className="h-3.5 w-3.5" />
-              关系图谱
-            </button>
-          </div>
+        <div className="flex justify-self-center rounded-md bg-[var(--paper-inset)] p-0.5">
+          <button
+            type="button"
+            onClick={() => setView("characters")}
+            className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm ${
+              view === "characters"
+                ? "bg-[var(--paper-elevated)] font-medium text-[var(--ink)] shadow-xs"
+                : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <UserRound className="h-3.5 w-3.5" />
+            人物档案
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("network")}
+            className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm ${
+              view === "network"
+                ? "bg-[var(--paper-elevated)] font-medium text-[var(--ink)] shadow-xs"
+                : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <Network className="h-3.5 w-3.5" />
+            关系图谱
+          </button>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 justify-self-end">
           <button
             type="button"
             onClick={() => setView("souls")}
@@ -5281,7 +4909,7 @@ export default function CharacterLibraryPrototype({
           onClose={() => setView("characters")}
         />
       ) : view === "network" ? (
-        <RelationNetwork
+        <CharacterRelationGraphView
           characters={characters}
           selectedId={selectedId}
           onSelect={setSelectedId}
@@ -5667,21 +5295,6 @@ export default function CharacterLibraryPrototype({
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   {editing && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setDeleteCharacterOpen(true)}
-                        disabled={isSaving}
-                        aria-label="删除角色"
-                        title="删除角色"
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--error)] hover:bg-[var(--error-bg)] disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                      <span className="mx-1 h-4 w-px bg-[var(--line-subtle)]" />
-                    </>
-                  )}
-                  {editing && (
                     <button
                       type="button"
                       onClick={() => void saveCurrentCharacter()}
@@ -5723,6 +5336,17 @@ export default function CharacterLibraryPrototype({
                       <Edit3 className="h-3.5 w-3.5" />
                     )}
                     {editing ? (isSaving ? "保存中" : "保存并完成") : "编辑"}
+                  </button>
+                  <span className="mx-1 h-4 w-px bg-[var(--line-subtle)]" />
+                  <button
+                    type="button"
+                    onClick={() => setDeleteCharacterOpen(true)}
+                    disabled={isSaving}
+                    aria-label="删除角色"
+                    title="删除角色"
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--error)] hover:bg-[var(--error-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>

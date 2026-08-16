@@ -34,6 +34,7 @@
     "build:bridge": "node scripts/esbuild-bundle.mjs bridge",
     "build:cli": "node scripts/esbuild-bundle.mjs cli",
     "build:tsx-runtime": "node scripts/setup-tsx-runtime.mjs",
+    "prepare:azgaar-runtime": "node scripts/prepare-azgaar-runtime.mjs",
     "server": "node --import tsx/esm src/server/index.ts",
     "start": "npm run build:web && npm run server",
     "tauri": "tauri",

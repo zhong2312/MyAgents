@@ -1,5 +1,5 @@
 /**
- * 工作区搜索能力（Workbench API 1.8）。
+ * 工作区搜索能力（Workbench API 1.10）。
  *
  * 宿主在 Tauri 桌面端提供基于 Tantivy 的工作区文件全文搜索（复用
  * `specs/tech_docs/search_architecture.md` 的 Rust SearchEngine）；浏览器开发

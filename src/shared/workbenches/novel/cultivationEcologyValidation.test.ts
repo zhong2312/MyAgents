@@ -145,4 +145,32 @@ describe("修炼生态语义校验", () => {
     expect(errors.some((error) => error.includes("法门覆盖阶段"))).toBe(true);
     expect(errors.some((error) => error.includes("法门物品"))).toBe(true);
   });
+
+  it("拒绝境界与境内阶段的数组位置和 order 不一致", () => {
+    const ecology = ecologyFixture();
+    const level = ecology.systems[0]!.progressionTracks[0]!.levels[0]!;
+    level.order = 2;
+    level.subStages = [
+      {
+        id: "stage-1",
+        name: "初期",
+        summary: "",
+        order: 3,
+        metricThresholds: [],
+        entryConditions: [],
+        completionConditions: [],
+        resourceRequirements: [],
+        naturalAbilityIds: [],
+        methodIds: [],
+      },
+    ];
+
+    const errors = validateCultivationEcology(ecology);
+    expect(
+      errors.some((error) => error.includes("境界“level-1”顺序应为 0")),
+    ).toBe(true);
+    expect(
+      errors.some((error) => error.includes("阶段“stage-1”顺序应为 0")),
+    ).toBe(true);
+  });
 });

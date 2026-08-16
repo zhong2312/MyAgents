@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { createNovelRepository, type NovelRepository } from "./repository";
-import {
-  createNarrativeEngineeringRepository,
-} from "../../../narrativeEngineeringRepository";
+import { createNarrativeEngineeringRepository } from "../../../narrativeEngineeringRepository";
+import { hashManuscriptContent } from "../../../manuscriptTrackingRepository";
 import { createManuscriptVersionRepository } from "../../../manuscriptVersionRepository";
 import {
   createEmptyNovelStorage,
@@ -40,6 +39,7 @@ describe("NovelRepository", () => {
       targetWordCountMin: 400_000,
       targetWordCountMax: 600_000,
       chapterWordCount: 2_000,
+      writingPerspective: "third-person-omniscient",
     });
 
     const metadata = JSON.parse(storage.getText("novel.json") ?? "{}");
@@ -50,6 +50,7 @@ describe("NovelRepository", () => {
       targetWordCountMin: 400_000,
       targetWordCountMax: 600_000,
       chapterWordCount: 2_000,
+      writingPerspective: "third-person-omniscient",
     });
     expect(metadata).not.toHaveProperty("targetWordCount");
   });
@@ -79,6 +80,93 @@ describe("NovelRepository", () => {
       repository.saveChapter(chapter, "本地草稿", chapter.content),
     ).rejects.toThrow("File changed externally");
     expect(storage.getText(chapter.path)).toBe("外部版本");
+  });
+
+  it("拒绝正文变化后的提炼结果，且不写入任一事实源", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelRepository(storage);
+    const empty = await repository.load();
+    const record = await repository.createChapter(empty, { title: "第一章" });
+    const project = await repository.load();
+    const chapter = project.chapters.find((item) => item.id === record.id)!;
+    storage.setExternalText(chapter.path, "外部修改后的正文");
+
+    await expect(
+      repository.extractChaptersToNarrative(project, [
+        {
+          chapterId: chapter.id,
+          sourceContentHash: hashManuscriptContent(chapter.content),
+          targetNarrativeChapterId: null,
+          title: "提炼后的第一章",
+          description: "正文实际发生的事件。",
+          sections: [],
+        },
+      ]),
+    ).rejects.toThrow("正文在提炼结果生成后发生变化");
+
+    const reloaded = await repository.load();
+    expect(reloaded.narrative.library.chapters).toHaveLength(0);
+    expect(reloaded.chapters[0]?.narrativeChapterId).toBeNull();
+  });
+
+  it("批量提炼在一次提交中闭合正文与剧情工程的关联", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelRepository(storage);
+    let project = await repository.load();
+    await repository.createChapter(project, { title: "第一章" });
+    project = await repository.load();
+    await repository.createChapter(project, { title: "第二章" });
+    project = await repository.load();
+
+    await repository.extractChaptersToNarrative(
+      project,
+      project.chapters.map((chapter) => ({
+        chapterId: chapter.id,
+        sourceContentHash: hashManuscriptContent(chapter.content),
+        targetNarrativeChapterId: null,
+        title: `${chapter.title}提炼`,
+        description: `${chapter.title}的实际剧情。`,
+        sections: [{ title: "场景", description: "发生的关键行动。" }],
+      })),
+    );
+
+    const reloaded = await repository.load();
+    expect(reloaded.narrative.library.chapters).toHaveLength(2);
+    reloaded.narrative.library.chapters.forEach((plan) => {
+      expect(plan.manuscriptChapterId).toBeTruthy();
+      expect(
+        reloaded.chapters.find(
+          (chapter) => chapter.id === plan.manuscriptChapterId,
+        )?.narrativeChapterId,
+      ).toBe(plan.id);
+    });
+  });
+
+  it("正文索引提交失败时不会提前写入剧情工程", async () => {
+    const storage = createEmptyNovelStorage();
+    const repository = createNovelRepository(storage);
+    const empty = await repository.load();
+    const record = await repository.createChapter(empty, { title: "第一章" });
+    const project = await repository.load();
+    const chapter = project.chapters.find((item) => item.id === record.id)!;
+    storage.failNextIndexWrite = true;
+
+    await expect(
+      repository.extractChaptersToNarrative(project, [
+        {
+          chapterId: chapter.id,
+          sourceContentHash: hashManuscriptContent(chapter.content),
+          targetNarrativeChapterId: null,
+          title: "不会落盘的提炼",
+          description: "索引写入失败时不应保存。",
+          sections: [],
+        },
+      ]),
+    ).rejects.toThrow("Index write failed");
+
+    const reloaded = await repository.load();
+    expect(reloaded.narrative.library.chapters).toHaveLength(0);
+    expect(reloaded.chapters[0]?.narrativeChapterId).toBeNull();
   });
 
   it("renames a chapter in the JSON index without moving its stable Markdown path", async () => {
@@ -168,9 +256,7 @@ describe("synchronizeNarrative 双向关联排他", () => {
   }
 
   it("换绑后旧正文解除关联，新正文建立关联", async () => {
-    const { storage, repository } = await setupWithPlans(
-      "chapter-000001",
-    );
+    const { storage, repository } = await setupWithPlans("chapter-000001");
     let project = await repository.load();
     await repository.synchronizeNarrative(project, "merged");
     project = await repository.load();
@@ -241,9 +327,7 @@ describe("synchronizeNarrative 双向关联排他", () => {
       reloaded.chapters.find((chapter) => chapter.id === "chapter-000001")
         ?.narrativeChapterId,
     ).toBe("narrative-chapter-a");
-    expect(await loadPlanManuscriptChapterId(storage)).toBe(
-      "chapter-000001",
-    );
+    expect(await loadPlanManuscriptChapterId(storage)).toBe("chapter-000001");
   });
 });
 

@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 
 import type {
+  WorkbenchAiRunProgress,
   WorkbenchAiRunRequest,
   WorkbenchAiRunResult,
   WorkbenchAgentSessionRequest,
@@ -31,6 +32,11 @@ export interface WorkbenchAgentSessions {
 export interface WorkbenchAiRuns {
   readonly isAvailable: boolean;
   run(request: WorkbenchAiRunRequest): Promise<WorkbenchAiRunResult>;
+  /** Subscribe to a compact status projection for one explicitly identified run. */
+  subscribeProgress(
+    runId: string,
+    listener: (progress: WorkbenchAiRunProgress) => void,
+  ): () => void;
 }
 
 export interface WorkbenchNavigationGuard {

@@ -177,8 +177,12 @@ export function validateCultivationEcology(
     system.progressionTracks.forEach((track) => {
       register(track.id, "成长轨道");
       track.metrics.forEach((metric) => register(metric.id, "成长指标"));
-      track.levels.forEach((level) => {
+      track.levels.forEach((level, levelIndex) => {
         register(level.id, "境界");
+        if (level.order !== levelIndex)
+          add(
+            `成长轨道“${track.id}”的境界“${level.id}”顺序应为 ${levelIndex}，实际为 ${level.order}`,
+          );
         check(
           level.metricThresholds.map((item) => item.metricId),
           new Set(track.metrics.map((metric) => metric.id)),
@@ -187,8 +191,12 @@ export function validateCultivationEcology(
         check(level.naturalAbilityIds, abilityIds, "境界自然能力");
         check(level.methodIds, methodIds, "境界法门");
         checkRequirements(level.resourceRequirements, "境界");
-        level.subStages.forEach((stage) => {
+        level.subStages.forEach((stage, stageIndex) => {
           register(stage.id, "境内阶段");
+          if (stage.order !== stageIndex)
+            add(
+              `境界“${level.id}”的阶段“${stage.id}”顺序应为 ${stageIndex}，实际为 ${stage.order}`,
+            );
           check(
             stage.metricThresholds.map((item) => item.metricId),
             new Set(track.metrics.map((metric) => metric.id)),

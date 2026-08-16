@@ -87,7 +87,6 @@ const SESSION_EXACT_PATHS = new Set([
   '/api/session-watch/register',
   '/api/task/poll-background',
   '/api/workbench-agent/configure',
-  '/api/workbench-ai/run',
   '/cron/execute-sync',
   '/hook/session-start',
   '/sessions/fork',
@@ -124,9 +123,12 @@ const GLOBAL_EXACT_PATHS = new Set([
   '/api/subscription/login/cancel',
   '/api/supported-models',
   '/api/unified-log',
+  // Workbench single-run generation is stateless. Workbench tabs do not own
+  // a session sidecar, so this must be served by the global process.
+  '/api/workbench-ai/run',
 ]);
 
-const GLOBAL_PREFIXES = ['/api/mcp/oauth/'] as const;
+const GLOBAL_PREFIXES = ['/api/mcp/oauth/', '/api/workbench-ai/run/'] as const;
 
 const COMMON_EXACT_PATHS = new Set([
   '/api/runtime/models',

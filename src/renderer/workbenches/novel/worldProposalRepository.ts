@@ -170,7 +170,11 @@ async function readProposalSnapshot(
       `${side === "before" ? "修改前" : "建议后"}快照不存在：${candidates.join(" 或 ")}`,
     );
   }
-  return (await storage.readText(candidates[foundIndex])).content;
+  const content = (await storage.readText(candidates[foundIndex])).content;
+  // 地点提案的快照是逻辑聚合 JSON；统一序列化后再参与冲突检测和回滚 CAS。
+  return targetPath === WORLD_LOCATION_LIBRARY_PATH
+    ? serializeLocationLibraryIndex(parseLocationLibraryIndex(content))
+    : content;
 }
 
 async function readOptionalProposalSnapshot(

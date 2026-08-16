@@ -1,6 +1,7 @@
 export * from "./business/characterLibraryDefaults";
 export * from "./data-access/characterLibraryRepository";
 export * from "./data-access/characterProposalRepository";
+export * from "./data-access/characterFileProposalRepository";
 export * from "./entities/characterLibrarySchema";
 export * from "./entities/characterProposalSchema";
 export {

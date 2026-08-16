@@ -37,6 +37,7 @@ pub mod platform_blocks;
 pub mod project_init;
 pub mod read_preview;
 pub mod save_file;
+pub mod save_binary;
 pub mod search;
 pub mod skill_sync;
 pub mod skills_config;

@@ -35,6 +35,7 @@ interface WorkbenchStorageHost {
     content: string;
     expectedContent?: string;
   }): Promise<void>;
+  saveBinaryFile(args: { path: string; contentBase64: string }): Promise<void>;
   copyInternal(args: { sourcePaths: string[]; targetDir: string }): Promise<{
     copiedFiles: Array<{ sourcePath: string; targetPath: string }>;
     errors: string[];
@@ -85,6 +86,18 @@ function normalizeEntry(node: HostTreeNode): WorkbenchStorageEntry {
 
 function textSize(content: string): number {
   return new TextEncoder().encode(content).byteLength;
+}
+
+function arrayBufferToBase64(content: ArrayBuffer): string {
+  const bytes = new Uint8Array(content);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(offset, offset + chunkSize),
+    );
+  }
+  return btoa(binary);
 }
 
 export function createWorkbenchStorage(
@@ -205,6 +218,30 @@ export function createWorkbenchStorage(
         name,
         size: textSize(content),
         content,
+      });
+    },
+    async createBinary(path, content, options = {}) {
+      requireAvailable();
+      const normalized = normalizeWorkbenchStoragePath(path);
+      const { parent, name } = splitParent(normalized);
+      if (options.createParents && parent) await createDirectory(parent);
+      const created = await host.newFile({ parentDir: parent, name });
+      const createdPath = normalizeWorkbenchStoragePath(created.path);
+      try {
+        await host.saveBinaryFile({
+          path: createdPath,
+          contentBase64: arrayBufferToBase64(content),
+        });
+      } catch (error) {
+        await host
+          .deleteFile({ path: createdPath, permanent: true })
+          .catch(() => {});
+        throw error;
+      }
+      return Object.freeze({
+        path: createdPath,
+        name,
+        size: content.byteLength,
       });
     },
     async writeText(path, content, options = {}) {

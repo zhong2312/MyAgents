@@ -33,6 +33,8 @@ import {
   subscribeWorkbenchHostAction,
   WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
   WORKBENCH_AI_RUN_REQUEST_VERSION,
+  type WorkbenchAiRunRequest,
+  type WorkbenchModelSelection,
   type WorkbenchRendererProps,
 } from "@/workbench-sdk";
 
@@ -43,6 +45,12 @@ import {
   CharacterLibraryPrototype,
   type CharacterAiTarget,
 } from "../modules/characters";
+import {
+  NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
+  NOVEL_CHARACTERS_ASSIST_PLATFORM_PROTOCOL,
+  NOVEL_CHARACTERS_ASSIST_PROMPT_TEMPLATE,
+  NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION,
+} from "../modules/characters/business/characterAgentPrompt";
 import NovelModelScenarioSettings from "../NovelModelScenarioSettings";
 import PromptManager from "../PromptManager";
 import { createNovelPromptLibraryRepository } from "../promptLibraryRepository";
@@ -78,7 +86,7 @@ import ManuscriptStudio, {
   type ManuscriptAiAgentRequest,
 } from "../ManuscriptStudio";
 import { createManuscriptAiSettingsRepository } from "../manuscriptAiSettingsRepository";
-import MapEditor from "../MapEditor";
+import MapEditor, { type MapAgentGenerationRequest } from "../MapEditor";
 import WorldSimulationWorkbench, {
   type WorldSimulationView,
 } from "../WorldSimulationWorkbench";
@@ -91,6 +99,21 @@ import {
 } from "../modelSceneSettings";
 import { createNovelModelSceneSettingsRepository } from "../modelSceneSettingsRepository";
 import { appendCultivationPlatformProtocol } from "../cultivationPromptProtocol";
+import { appendNovelOverviewContext } from "../modules/project/business/novelOverviewContext";
+import { getNovelWritingPerspective } from "../modules/project/business/writingPerspective";
+import { modelUnavailableErrorMessage } from "../modelSceneFallback";
+
+type OneShotAiRequest = Omit<
+  WorkbenchAiRunRequest,
+  "version" | "modelSelection"
+>;
+
+function selectQuickCreate<K extends QuickCreateKind>(
+  request: { readonly kind: QuickCreateKind; readonly token: number } | null,
+  kind: K,
+): { readonly kind: K; readonly token: number } | undefined {
+  return request?.kind === kind ? { kind, token: request.token } : undefined;
+}
 
 const STATUS_LABELS: Record<NovelMetadata["status"], string> = {
   planning: "规划中",
@@ -229,6 +252,9 @@ function Overview({
           chapterWordCount: project.metadata.chapterWordCount,
         })
       : null;
+  const writingPerspective = getNovelWritingPerspective(
+    project.metadata.writingPerspective,
+  );
 
   return (
     <div className="mx-auto w-full max-w-6xl px-7 py-6 max-md:px-4">
@@ -282,7 +308,7 @@ function Overview({
         </div>
       </header>
 
-      <dl className="grid grid-cols-4 border-b border-[var(--line-subtle)] max-lg:grid-cols-2 max-sm:grid-cols-1">
+      <dl className="grid grid-cols-5 border-b border-[var(--line-subtle)] max-xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
         {[
           ["计划字数", wordCountRange],
           [
@@ -297,6 +323,8 @@ function Overview({
               ? `${estimatedChapters.min.toLocaleString()} 至 ${estimatedChapters.max.toLocaleString()} 章`
               : "待设置",
           ],
+          ["写作视角", writingPerspective.label],
+          ["创作语言", project.metadata.language ?? "zh-CN"],
           ["已写进度", `${totalWords.toLocaleString()} 字`],
         ].map(([label, value], index) => (
           <div
@@ -801,14 +829,20 @@ export default function NovelWorkbenchRenderer({
     context.projection,
   );
   const [entityFocus, setEntityFocus] = useState<DomainEntityRef | null>(null);
+  const [quickCreateRequest, setQuickCreateRequest] = useState<{
+    readonly kind: QuickCreateKind;
+    readonly token: number;
+  } | null>(null);
   const [isProjectSettingsOpen, setIsProjectSettingsOpen] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const [operationNotice, setOperationNotice] = useState<string | null>(null);
   const [isWorldAgentLaunching, setIsWorldAgentLaunching] = useState(false);
   const [isItemAgentLaunching, setIsItemAgentLaunching] = useState(false);
   const [isCharacterAgentLaunching, setIsCharacterAgentLaunching] =
     useState(false);
   const [isCultivationAgentLaunching, setIsCultivationAgentLaunching] =
     useState(false);
+  const [isMapAgentLaunching, setIsMapAgentLaunching] = useState(false);
   const [factionAgentLaunchMode, setFactionAgentLaunchMode] = useState<
     "single" | "batch" | null
   >(null);
@@ -931,7 +965,7 @@ export default function NovelWorkbenchRenderer({
     [context.storage, project?.metadata.genres],
   );
 
-  /** 面板快速新建：章节直接创建并定位；其余跳转模块页（模块自带新建入口）。 */
+  /** 面板快速新建：章节由项目控制器创建，其余交给目标库执行真实创建。 */
   const quickCreate = useCallback(
     (kind: QuickCreateKind) => {
       if (kind === "chapter") {
@@ -949,6 +983,7 @@ export default function NovelWorkbenchRenderer({
         })();
         return;
       }
+      setQuickCreateRequest({ kind, token: Date.now() });
       const route =
         kind === "character"
           ? "characters"
@@ -996,6 +1031,60 @@ export default function NovelWorkbenchRenderer({
     return getEffectiveModelSceneSelection(settings.settings, sceneId);
   };
 
+  const runSceneAi = async (
+    sceneId: NovelModelSceneId,
+    request: OneShotAiRequest,
+    modelSelectionOverride?: WorkbenchModelSelection,
+  ): Promise<string> => {
+    const run = async (
+      selection: WorkbenchModelSelection | undefined,
+    ): Promise<string> =>
+      (
+        await context.aiRuns.run({
+          version: WORKBENCH_AI_RUN_REQUEST_VERSION,
+          ...request,
+          systemPrompt: appendNovelOverviewContext(
+            project.metadata,
+            request.systemPrompt,
+          ),
+          ...(selection ? { modelSelection: selection } : {}),
+        })
+      ).output;
+
+    if (modelSelectionOverride) {
+      return run(modelSelectionOverride);
+    }
+
+    const repository = createNovelModelSceneSettingsRepository(context.storage);
+    const loaded = await repository.load();
+    const sceneSelection = getEffectiveModelSceneSelection(
+      loaded.settings,
+      sceneId,
+    );
+    const initialSelection = sceneSelection;
+    try {
+      return await run(initialSelection);
+    } catch (cause) {
+      const unavailableMessage = modelUnavailableErrorMessage(cause);
+      if (!unavailableMessage || !initialSelection) throw cause;
+      throw new Error(
+        `模型“${initialSelection.model}”不可用（${unavailableMessage}）。已阻止本次调用，请在模型场景设置中修复该绑定后重试。`,
+      );
+    }
+  };
+
+  /** 所有完整 Agent 会话都在工作台入口追加项目总览，避免任一领域绕过创作硬约束。 */
+  const openNovelAgentSession = async (
+    request: Parameters<typeof context.agentSessions.open>[0],
+  ) =>
+    context.agentSessions.open({
+      ...request,
+      systemPrompt: appendNovelOverviewContext(
+        project.metadata,
+        request.systemPrompt,
+      ),
+    });
+
   const createChapter = async () => {
     setOperationError(null);
     try {
@@ -1027,6 +1116,66 @@ export default function NovelWorkbenchRenderer({
     } else {
       context.navigate("lore");
     }
+  };
+
+  const openSearchFile = (path: string) => {
+    if (path.startsWith("research/")) {
+      openEntity({
+        kind: "research",
+        id: path,
+        name: path.split("/").at(-1)?.replace(/\.md$/iu, "") ?? path,
+        aliases: [],
+        summary: "",
+        sourcePath: path,
+        route: "research",
+        focus: { researchPath: path },
+      });
+      return;
+    }
+    const chapter = /^manuscript\/chapters\/(\d{6})\.md$/u.exec(path);
+    if (chapter) {
+      openEntity({
+        kind: "chapter",
+        id: `chapter-${chapter[1]}`,
+        name: `第 ${Number(chapter[1])} 章`,
+        aliases: [],
+        summary: "",
+        sourcePath: path,
+        route: "manuscript",
+        focus: { chapterId: `chapter-${chapter[1]}` },
+      });
+      return;
+    }
+    const route = path.startsWith("timeline/")
+      ? "timeline"
+      : path.startsWith("characters/")
+        ? "characters"
+        : path.startsWith("world/factions/")
+          ? "factions"
+        : path.startsWith("world/items/")
+          ? "items"
+          : path.startsWith("world/cultivation/") ||
+              path.startsWith("world/cultivation-proposals/")
+            ? "powers"
+          : path.startsWith("world/maps/")
+            ? "map"
+            : path.startsWith("world/locations/") ||
+                path.startsWith("world/setting-library/")
+              ? "lore"
+            : path.startsWith("inspiration/")
+              ? "inspiration"
+              : path.startsWith("narrative/")
+                ? "narrative"
+                : path.startsWith("knowledge/")
+                  ? "knowledge"
+                  : path.startsWith("prompts/")
+                    ? "ai-prompts"
+                    : path.startsWith("settings/")
+                      ? "model-scenes"
+                      : path.startsWith("simulation/")
+                        ? "simulation-console"
+                        : "lore";
+    context.navigate(route);
   };
 
   const openFactionWorldNode = (nodeId: string) => {
@@ -1096,7 +1245,7 @@ export default function NovelWorkbenchRenderer({
       const modelSelection = await resolveSceneModelSelection(
         isTemplateMode ? "world.template" : "world.architecture",
       );
-      await context.agentSessions.open({
+      await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${isTemplateMode ? "模板配置向导" : "世界架构向导"} · ${project.metadata.title}`,
         promptId: selection.activation.prompt.id,
@@ -1149,52 +1298,47 @@ export default function NovelWorkbenchRenderer({
     setOperationError(null);
     setIsCharacterAgentLaunching(true);
     try {
-      const initialMessage = await applyScenePromptOverride(
-        "novel.characters.assist",
+      let characterPromptVersion = NOVEL_CHARACTERS_ASSIST_PROMPT_VERSION;
+      const characterPrompt = await applyScenePromptOverride(
+        NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
         {
           projectName: project.metadata.title,
           genres: project.metadata.genres.join("、") || "未设置",
           requirement: `${focus}${target.requirements ? `；作者要求：${target.requirements}` : ""}`,
+          targetCharacterId: target.targetCharacterId ?? "",
         },
-        async () => `## 小说工作台人物库 AI 设计任务
-
-你正在协助作者设计小说人物库。正式角色文件是事实源；你只能读取上下文并提交待审阅提案，绝对不能直接修改正式文件。
-
-项目：${project.metadata.title}
-创作题材：${project.metadata.genres.join("、") || "未设置"}
-本次范围：${focus}
-${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "当前未指定已有角色。"}
-作者要求：${target.requirements || "请先通过简洁对话确认本次设计的必要约束。"}
-
-执行协议：
-1. 首先调用 novel_characters_get_context，读取已有角色、种族、分组、灵魂，以及当前范围的必要信息；涉及角色修行、境界、法门、能力或修行限制时，再调用 novel_cultivation_get_context 读取稳定 ID 和规则，禁止用自由文本臆造修行引用。
-2. 通过简洁对话确认叙事功能、避免重复的约束和本次生成数量；一次只追问影响结果的关键问题。若作者已给出充分要求，可直接生成候选。
-3. 只生成与“${focus}”相关的候选。允许新增或更新，但禁止删除既有角色、种族、分组或灵魂。
-4. 每次只处理少量候选。新角色、种族、分组和灵魂可先提交本次确认的字段，服务端会补齐可编辑的基础骨架；如需补充同一候选，使用同一个 candidateId 再次写入草稿。提交前仍必须补齐关系和物品引用：raceId、soulId、groupIds、关系 targetId 只能引用已有记录或同一草稿候选；物品栏关联物品库时 itemId 必须存在，不关联时设为 null。
-5. 角色灵魂只能提供表达、心智模型和决策倾向；不得覆盖人物硬设定、当前剧情、角色认知和因果。发现冲突时，人物设定优先。
-6. 作者确认后先调用 novel_characters_create_draft；再用 novel_characters_upsert_draft_operations 分批写入候选。工具中断或会话恢复时先调用 novel_characters_get_draft，继续同一草稿。
-7. 完成后调用 novel_characters_validate_draft；只能使用返回的 validationToken 调用 novel_characters_submit_draft。随后调用 novel_characters_get_proposal_status，只有 exists=true 才能告知作者已提交。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式角色变更仍必须通过上述提案协议。`,
+        async () =>
+          renderPromptTemplate(NOVEL_CHARACTERS_ASSIST_PROMPT_TEMPLATE, {
+            projectName: project.metadata.title,
+            genres: project.metadata.genres.join("、") || "未设置",
+            requirement: `${focus}${target.requirements ? `；作者要求：${target.requirements}` : "；请先通过简洁对话确认本次设计的必要约束。"}`,
+            targetCharacterId: target.targetCharacterId ?? "",
+          }),
+        (version) => {
+          characterPromptVersion = version;
+        },
       );
+      const initialMessage = `${characterPrompt.trim()}\n\n${NOVEL_CHARACTERS_ASSIST_PLATFORM_PROTOCOL}`;
       const targetKey = `${target.scope}:${target.targetCharacterId ?? "library"}`;
       const modelSelection = await resolveSceneModelSelection(
         sceneIds[target.scope],
       );
-      await context.agentSessions.open({
+      await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${focus} · ${project.metadata.title}`,
-        promptId: "novel.characters.assist",
+        promptId: NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
         systemPrompt: initialMessage,
         initialMessage: "请开始执行当前小说工作台人物任务。",
         presentation: "dialog",
-        conversationKey: `novel.characters.assist:${targetKey}`,
+        conversationKey: `${NOVEL_CHARACTERS_ASSIST_PROMPT_ID}:${targetKey}`,
         forceNew: true,
         historyGroupPath: ["人物库", focus],
         toolset: {
           id: "novel-world",
           context: {
             mode: "characters",
-            promptId: "novel.characters.assist",
-            promptVersion: "1.0.0",
+            promptId: NOVEL_CHARACTERS_ASSIST_PROMPT_ID,
+            promptVersion: characterPromptVersion,
             targetScope: target.scope,
             targetCharacterId: target.targetCharacterId ?? "",
           },
@@ -1236,10 +1380,11 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
           cultivationPromptVersion = version;
         },
       );
-      const initialMessage = appendCultivationPlatformProtocol(cultivationPrompt);
+      const initialMessage =
+        appendCultivationPlatformProtocol(cultivationPrompt);
       const modelSelection =
         await resolveSceneModelSelection("cultivation.assist");
-      await context.agentSessions.open({
+      await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `修行体系逻辑共创 · ${project.metadata.title}`,
         promptId: "novel.cultivation.assist",
@@ -1263,6 +1408,73 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
       setOperationError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setIsCultivationAgentLaunching(false);
+    }
+  };
+
+  const launchMapAgent = async (request: MapAgentGenerationRequest) => {
+    if (isMapAgentLaunching) return;
+    if (!context.agentSessions.isAvailable) {
+      throw new Error("MyAgents Agent Session 当前不可用");
+    }
+    setOperationError(null);
+    setIsMapAgentLaunching(true);
+    try {
+      const systemPrompt = `## 小说工作台 Agent + Azgaar 地图生成任务
+
+你正在为小说《${project.metadata.title}》生成世界地图提案。正式世界事实不在提示词中展开，必须通过小说工作台内置工具读取；不得依据常识补写或跳过世界架构。
+
+当前地图任务：
+- 地图稳定 ID：${request.mapId}
+- 地图名称：${request.mapName}
+- 目标图层：${request.layerId}
+- 画布尺寸：${request.width} x ${request.height}
+- 生成种子：${request.seed}
+- 世界架构范围：${request.worldNodePath}（稳定 ID：${request.worldNodeId}）
+- 生成层级：${request.generationLevelName}（类型 ID：${request.generationLevelTypeId}）
+
+执行协议：
+1. 首先调用 novel_world_get_context，读取已保存的世界架构空间树、设定索引、Markdown 正文、词条、地点和势力，并取得 sourceHash。确认稳定 ID ${request.worldNodeId} 对应“${request.worldNodeName}”，只将该节点及其后代视为本次地图的生成范围。不得根据本提示词臆造设定，也不得跳过这一步。
+2. 依据该范围内的地理、气候、文明、地点、势力与设定正文，自己作出完整的成图决定。调用 novel_maps_generate_fantasy_map 时，必须原样传入上一步 sourceHash 作为 worldSourceHash，并传入 worldNodeId=${request.worldNodeId}、generationLevelTypeId=${request.generationLevelTypeId}、地图名称、画布尺寸、图层与种子。以下参数全部必填且必须由你根据已读事实决定：landmassCount、regionCount、riverCount、azgaarTemplate、azgaarStates、azgaarCultures、azgaarReligions、azgaarPrecipitation。高度图模板只能选：africa-centric、arabia、atlantics、britain、caribbean、east-asia、eurasia、europe-accented、europe-and-central-asia、europe-central、europe-north、europe、greenland、hellenica、iceland、indian-ocean、mediterranean-sea、middle-east、north-america、us-centric、us-mainland、world-from-pacific 或 world。陆块意图通过模板落实：群岛优先 caribbean，冰雪极地优先 iceland，荒漠优先 arabia，内海优先 mediterranean-sea，多陆块优先 world-from-pacific；国家、文化、宗教和降水是 Azgaar 的实际原生参数。温度参数只在气候设定确有明确约束时传入。这些参数不由作者在界面中指定，也不得省略后让工具猜测。
+3. 检查工具返回的 runtime 和 generatorAdapter。只有 runtime=azgaar-http 时才可称为 Azgaar 核心生成；若返回 compatibility-adapter，必须明确说明本次已降级，不能伪称使用了 Azgaar。
+4. 使用生成工具返回的 draftId 调用 novel_maps_validate_draft；校验失败时修正同一草稿，不得绕过校验或直接修改正式地图文件。
+5. 校验通过后，使用 validationToken 调用 novel_maps_submit_draft。只有工具返回 submitted=true 才算完成。
+6. 提交成功后告诉作者生成器、读取到的设定范围和降级状态，并提示到“世界地图 -> 审阅提案”中确认。不得直接覆盖当前地图。
+
+作者已明确要求开始生成，不需要再次询问是否开始。`;
+      const runId = `${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+      const modelSelection = await resolveSceneModelSelection("maps.fantasy");
+      await openNovelAgentSession({
+        version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
+        title: `Agent + Azgaar · ${request.mapName}`,
+        promptId: "novel.maps.fantasy",
+        systemPrompt,
+        initialMessage: "请按协议读取世界架构并生成地图提案。",
+        presentation: "dialog",
+        conversationKey: `novel.maps.fantasy:${request.mapId}:${runId}`,
+        forceNew: true,
+        historyGroupPath: ["世界地图", request.mapName],
+        toolset: {
+          id: "novel-world",
+          context: {
+            mode: "maps",
+            promptId: "novel.maps.fantasy",
+            promptVersion: "1.0.0",
+            mapId: request.mapId,
+            layerId: request.layerId,
+            worldNodeId: request.worldNodeId,
+            generationLevelTypeId: request.generationLevelTypeId,
+          },
+        },
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setOperationError(message);
+      throw cause;
+    } finally {
+      setIsMapAgentLaunching(false);
     }
   };
 
@@ -1315,7 +1527,7 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
       const modelSelection = await resolveSceneModelSelection(
         sceneIds[target.scope],
       );
-      await context.agentSessions.open({
+      await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${focus} · ${project.metadata.title}`,
         promptId: "novel.factions.assist",
@@ -1372,7 +1584,7 @@ ${target.targetCharacterId ? `当前角色 id：${target.targetCharacterId}` : "
 5. 作者确认候选后调用 novel_factions_create_draft 创建草稿，用 novel_factions_upsert_draft_operations 分批写入候选，novel_factions_validate_draft 校验通过后用返回的 validationToken 调用 novel_factions_submit_draft；随后调用 novel_factions_get_proposal_status 确认 exists=true，再告知作者在势力组织页点击“审阅提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式势力变更仍必须通过上述提案协议。`,
       );
       const modelSelection = await resolveSceneModelSelection("factions.batch");
-      await context.agentSessions.open({
+      await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `势力批量设计 · ${project.metadata.title}`,
         promptId: "novel.factions.batch",
@@ -1432,7 +1644,7 @@ ${preferredCategoryId ? `作者当前选中的分类 ID：${preferredCategoryId}
 7. 完成后调用 novel_items_validate_draft；只能使用返回的 validationToken 调用 novel_items_submit_draft。随后调用 novel_items_get_proposal_status，只有 exists=true 才能说明候选已经提交，并提示作者回到物品库点击“审阅批量物品提案”。可按需使用普通命令和文件工具读取外部素材或处理辅助文件；正式物品变更仍必须通过上述提案协议。`,
       );
       const modelSelection = await resolveSceneModelSelection("items.batch");
-      await context.agentSessions.open({
+      await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `物品批量生产 · ${project.metadata.title}`,
         promptId: "novel.items.batch",
@@ -1508,7 +1720,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
         .toString(36)
         .slice(2, 8)}`;
       const modelSelection = await resolveSceneModelSelection("world.assist");
-      await context.agentSessions.open({
+      await openNovelAgentSession({
         version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
         title: `${target.label} · AI 写作`,
         promptId: "novel.ai-assist",
@@ -1625,18 +1837,49 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           onAiRun={
             context.aiRuns.isAvailable
               ? async (request) => {
-                  const modelSelection = await resolveSceneModelSelection(
-                    request.sceneId,
-                  );
-                  return (
-                    await context.aiRuns.run({
-                      version: WORKBENCH_AI_RUN_REQUEST_VERSION,
-                      label: request.label,
-                      prompt: request.prompt,
-                      systemPrompt: request.systemPrompt,
-                      ...(modelSelection ? { modelSelection } : {}),
-                    })
-                  ).output;
+                  const unsubscribe =
+                    request.runId && request.onProgress
+                      ? context.aiRuns.subscribeProgress(
+                          request.runId,
+                          request.onProgress,
+                        )
+                      : () => undefined;
+                  try {
+                    return await runSceneAi(
+                      request.sceneId,
+                      {
+                        runId: request.runId,
+                        label: request.label,
+                        prompt: request.prompt,
+                        systemPrompt: request.systemPrompt,
+                        executionProfile: request.executionProfile,
+                        timeoutMs: request.timeoutMs,
+                        maxTurns: request.maxTurns,
+                        ...(request.usesNovelContextTools
+                          ? {
+                              toolset: {
+                                id: "novel-world",
+                                context: {
+                                  mode: "manuscript",
+                                  promptId: "novel.manuscript.full-generation",
+                                  promptVersion: "1.0.0",
+                                  ...(request.novelContextToolCallLimit
+                                    ? {
+                                        readToolCallLimit: String(
+                                          request.novelContextToolCallLimit,
+                                        ),
+                                      }
+                                    : {}),
+                                },
+                              },
+                            }
+                          : {}),
+                      },
+                      request.modelSelection,
+                    );
+                  } finally {
+                    unsubscribe();
+                  }
                 }
               : undefined
           }
@@ -1650,7 +1893,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                         context.storage,
                       ).load(),
                     ]);
-                  await context.agentSessions.open({
+                  await openNovelAgentSession({
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: `novel.${request.sceneId}`,
@@ -1665,10 +1908,12 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                     ),
                     initialMessage: request.initialMessage,
                     presentation:
-                      manuscriptAiSettings.settings.presentation ===
+                      request.presentation ??
+                      (manuscriptAiSettings.settings.presentation ===
                       "compact-review"
                         ? "compact-review"
-                        : "dialog",
+                        : "dialog"),
+                    embeddedSurfaceId: request.embeddedSurfaceId,
                     conversationKey: request.conversationKey,
                     historyGroupPath: ["正文", request.chapterTitle],
                     forceNew: true,
@@ -1689,6 +1934,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                         runId: request.runId,
                         chapterId: request.chapterId,
                         sceneId: request.sceneId,
+                        ...request.companionContext,
                       },
                     },
                     ...(modelSelection ? { modelSelection } : {}),
@@ -1707,6 +1953,10 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
         <InspirationStudio
           storage={context.storage}
           focus={entityFocus}
+          quickCreateRequest={selectQuickCreate(
+            quickCreateRequest,
+            "inspiration",
+          )}
           isActive={context.isActive}
           projectTitle={project.metadata.title}
           onOpenAiAgent={
@@ -1716,7 +1966,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                   const modelSelection = await resolveSceneModelSelection(
                     request.sceneId,
                   );
-                  await context.agentSessions.open({
+                  await openNovelAgentSession({
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: scenePromptId,
@@ -1765,7 +2015,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
               ? async (request: NarrativeAiAgentRequest) => {
                   const modelSelection =
                     await resolveSceneModelSelection("narrative.assist");
-                  await context.agentSessions.open({
+                  await openNovelAgentSession({
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: "novel.narrative.assist",
@@ -1812,15 +2062,14 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
             focusSource={knowledgeSourceFocus}
             focusNodeId={factionWorldNodeFocusId}
             reloadKey={settingLibraryReloadKey}
+            registerNavigationGuard={context.registerNavigationGuard}
           />
           {isProposalReviewOpen && (
             <WorldProposalReview
               storage={context.storage}
               projectTitle={project.metadata.title}
               onClose={() => setIsProposalReviewOpen(false)}
-              onApplied={() =>
-                setSettingLibraryReloadKey((key) => key + 1)
-              }
+              onApplied={() => setSettingLibraryReloadKey((key) => key + 1)}
             />
           )}
         </div>
@@ -1836,15 +2085,14 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
             headerActions={worldToolbarActions}
             onAiAssist={runAiAssist}
             reloadKey={settingLibraryReloadKey}
+            registerNavigationGuard={context.registerNavigationGuard}
           />
           {isProposalReviewOpen && (
             <WorldProposalReview
               storage={context.storage}
               projectTitle={project.metadata.title}
               onClose={() => setIsProposalReviewOpen(false)}
-              onApplied={() =>
-                setSettingLibraryReloadKey((key) => key + 1)
-              }
+              onApplied={() => setSettingLibraryReloadKey((key) => key + 1)}
             />
           )}
         </div>
@@ -1856,21 +2104,13 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           storage={context.storage}
           projection={context.projection}
           focus={entityFocus}
+          quickCreateRequest={selectQuickCreate(quickCreateRequest, "item")}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
           onAiRun={
             context.aiRuns.isAvailable
               ? async (request) => {
-                  const modelSelection = await resolveSceneModelSelection(
-                    request.sceneId,
-                  );
-                  return (
-                    await context.aiRuns.run({
-                      version: WORKBENCH_AI_RUN_REQUEST_VERSION,
-                      ...request,
-                      ...(modelSelection ? { modelSelection } : {}),
-                    })
-                  ).output;
+                  return runSceneAi(request.sceneId, request);
                 }
               : undefined
           }
@@ -1881,6 +2121,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           proposalReviewOpen={isItemProposalReviewOpen}
           onOpenProposalReview={() => setIsItemProposalReviewOpen(true)}
           onCloseProposalReview={() => setIsItemProposalReviewOpen(false)}
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -1890,6 +2131,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           storage={context.storage}
           projection={context.projection}
           focus={entityFocus}
+          quickCreateRequest={selectQuickCreate(quickCreateRequest, "faction")}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
           onOpenWorldNode={openFactionWorldNode}
@@ -1903,6 +2145,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
               : undefined
           }
           isBatchAgentLaunching={factionAgentLaunchMode === "batch"}
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -1916,16 +2159,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
             onAiRun={
               context.aiRuns.isAvailable
                 ? async (request: CultivationAiRunRequest) => {
-                    const modelSelection = await resolveSceneModelSelection(
-                      request.sceneId,
-                    );
-                    return (
-                      await context.aiRuns.run({
-                        version: WORKBENCH_AI_RUN_REQUEST_VERSION,
-                        ...request,
-                        ...(modelSelection ? { modelSelection } : {}),
-                      })
-                    ).output;
+                    return runSceneAi(request.sceneId, request);
                   }
                 : undefined
             }
@@ -1933,6 +2167,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
             onCloseProposalReview={() =>
               setIsCultivationProposalReviewOpen(false)
             }
+            focus={entityFocus}
             isActive={context.isActive}
             registerNavigationGuard={context.registerNavigationGuard}
           />
@@ -1945,6 +2180,10 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           storage={context.storage}
           projection={context.projection}
           focus={entityFocus}
+          quickCreateRequest={selectQuickCreate(
+            quickCreateRequest,
+            "character",
+          )}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
           onOpenAiAgent={
@@ -1954,6 +2193,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           proposalReviewOpen={isCharacterProposalReviewOpen}
           onOpenProposalReview={() => setIsCharacterProposalReviewOpen(true)}
           onCloseProposalReview={() => setIsCharacterProposalReviewOpen(false)}
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -1974,6 +2214,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           index={domainIndex}
           search={context.search}
           onOpen={openEntity}
+          onOpenFile={openSearchFile}
         />
       );
       break;
@@ -1984,6 +2225,11 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           projection={context.projection}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
+          quickCreateRequest={selectQuickCreate(quickCreateRequest, "map")}
+          focus={entityFocus}
+          agentAvailable={context.agentSessions.isAvailable}
+          agentLaunching={isMapAgentLaunching}
+          onLaunchMapAgent={launchMapAgent}
           registerNavigationGuard={context.registerNavigationGuard}
         />
       );
@@ -2016,18 +2262,14 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           onRunModelScene={
             context.aiRuns.isAvailable
               ? async (scene, prompt) => {
-                  const modelSelection =
-                    await resolveSceneModelSelection(scene);
-                  const result = await context.aiRuns.run({
-                    version: WORKBENCH_AI_RUN_REQUEST_VERSION,
+                  return runSceneAi(scene, {
                     label: "世界推演智能候选",
                     prompt,
-                    ...(modelSelection ? { modelSelection } : {}),
                   });
-                  return result.output;
                 }
               : undefined
           }
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -2037,6 +2279,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
         <TimelineLibrary
           storage={context.storage}
           focus={entityFocus}
+          quickCreateRequest={selectQuickCreate(quickCreateRequest, "event")}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
           onOpenAiAgent={
@@ -2044,7 +2287,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
               ? async (request: TimelineAiAgentRequest) => {
                   const modelSelection =
                     await resolveSceneModelSelection("timeline.assist");
-                  await context.agentSessions.open({
+                  await openNovelAgentSession({
                     version: WORKBENCH_AGENT_SESSION_REQUEST_VERSION,
                     title: request.title,
                     promptId: "novel.timeline.assist",
@@ -2075,6 +2318,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
                 }
               : undefined
           }
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -2085,6 +2329,7 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
           focus={entityFocus}
           projectTitle={project.metadata.title}
           isActive={context.isActive}
+          registerNavigationGuard={context.registerNavigationGuard}
         />
       );
       break;
@@ -2186,6 +2431,18 @@ ${hasUnsavedDraft ? "当前页面存在未保存草稿；不得假设工具读�
             className="shrink-0 font-medium underline underline-offset-2"
           >
             重新读取
+          </button>
+        </div>
+      )}
+      {operationNotice && !operationError && !controller.error && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line-subtle)] bg-[var(--info-bg)] px-5 py-2 text-xs text-[var(--info)]">
+          <span>{operationNotice}</span>
+          <button
+            type="button"
+            onClick={() => setOperationNotice(null)}
+            className="shrink-0 font-medium underline underline-offset-2"
+          >
+            知道了
           </button>
         </div>
       )}

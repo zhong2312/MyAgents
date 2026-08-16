@@ -64,6 +64,8 @@ src-tauri/resources/cli/myagents.cmd
 src-tauri/resources/agent-browser-cli
 src-tauri/resources/sharp-runtime
 src-tauri/resources/tsx-runtime
+src-tauri/resources/azgaar/*
+!src-tauri/resources/azgaar/.gitkeep
 src-tauri/resources/nodejs/*
 !src-tauri/resources/nodejs/.gitkeep
 src-tauri/resources/nodejs-cache/

@@ -164,4 +164,81 @@ describe("时间线目录化工具", () => {
     const after = await callTool("novel_timeline_get_context", {});
     expect(after.sourceHash).not.toBe(before.sourceHash);
   });
+
+  it("提交提案时为新建和更新事件保存对象级生成基准", async () => {
+    await callTool("novel_timeline_create_draft", {
+      draftId: "baseline-draft",
+      title: "时间线基准测试",
+    });
+    await callTool("novel_timeline_upsert_draft_operations", {
+      draftId: "baseline-draft",
+      operations: [
+        {
+          candidateId: "candidate-update",
+          kind: "event",
+          action: "update",
+          targetId: "event-main",
+          summary: "更新开端",
+          value: {
+            id: "event-main",
+            branchId: "branch-main",
+            title: "新的开端",
+          },
+        },
+        {
+          candidateId: "candidate-create",
+          kind: "event",
+          action: "create",
+          summary: "新建后续事件",
+          value: {
+            id: "event-next",
+            branchId: "branch-main",
+            title: "后续事件",
+          },
+        },
+      ],
+    });
+    const validated = await callTool("novel_timeline_validate_draft", {
+      draftId: "baseline-draft",
+    });
+    const validationToken = String(validated.validationToken);
+    expect(validationToken).toBeTruthy();
+
+    await callTool("novel_timeline_submit_draft", {
+      draftId: "baseline-draft",
+      validationToken,
+    });
+
+    const proposal = JSON.parse(
+      await fs.readFile(
+        join(
+          workspace,
+          "timeline",
+          "proposals",
+          "timeline-baseline-draft",
+          "proposal.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      operations: Array<{
+        candidateId: string;
+        baseValue?: Record<string, unknown> | null;
+      }>;
+    };
+    expect(
+      proposal.operations.find(
+        (operation) => operation.candidateId === "candidate-update",
+      )?.baseValue,
+    ).toMatchObject({
+      id: "event-main",
+      title: "开端",
+      description: "事件正文",
+    });
+    expect(
+      proposal.operations.find(
+        (operation) => operation.candidateId === "candidate-create",
+      )?.baseValue,
+    ).toBeNull();
+  });
 });

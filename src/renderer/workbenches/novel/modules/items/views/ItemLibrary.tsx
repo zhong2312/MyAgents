@@ -51,11 +51,13 @@ import {
   CustomSelect,
   DraggableDialogFrame,
   type SelectOption,
+  type WorkbenchNavigationGuard,
   type WorkbenchProjection,
   type WorkbenchStorage,
 } from "@/workbench-sdk";
 
 import MarkdownVisualEditor from "../../../MarkdownVisualEditor";
+import NarrativeUnsavedChangesGuard from "../../../NarrativeUnsavedChangesGuard";
 import type { DomainEntityRef } from "../../../shared/business/domainIndex";
 import ItemLibraryAiDialog from "./ItemLibraryAiDialog";
 import ItemBatchProposalReview from "./ItemBatchProposalReview";
@@ -108,6 +110,16 @@ interface ItemLibraryProps {
   readonly onCloseProposalReview?: () => void;
   /** 外部实体定位请求（T3 消费：自动选中对应物品）。 */
   readonly focus?: DomainEntityRef | null;
+  readonly quickCreateRequest?: {
+    readonly kind: "item";
+    readonly token: number;
+  };
+  readonly registerNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
+  readonly managementRegisterNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
 }
 
 const STATUS_OPTIONS: SelectOption[] = [
@@ -227,8 +239,11 @@ export default function ItemLibrary({
   isBatchAgentLaunching = false,
   proposalReviewOpen = false,
   focus,
+  quickCreateRequest,
   onOpenProposalReview,
   onCloseProposalReview,
+  registerNavigationGuard,
+  managementRegisterNavigationGuard,
 }: ItemLibraryProps) {
   const repository = useMemo(
     () => createNovelItemLibraryRepository(storage),
@@ -282,6 +297,7 @@ export default function ItemLibrary({
   const dirtyRef = useRef(isDirty);
   const editVersionRef = useRef(0);
   const openTokenRef = useRef(0);
+  const quickCreateHandledRef = useRef<number | null>(null);
   const aiRequestTokenRef = useRef(0);
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
 
@@ -761,14 +777,26 @@ export default function ItemLibrary({
     }
   };
 
-  const openCreateDialog = (preferredCategoryId = selectedCategory) => {
+  const openCreateDialog = useCallback((preferredCategoryId = selectedCategory) => {
     const activeMeta = libraryRef.current?.meta;
     if (!activeMeta) return;
     setCreateCategoryId(
       createCategoryIdForSelection(activeMeta, preferredCategoryId),
     );
     setCreateDialog(true);
-  };
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    if (
+      !isActive ||
+      !library ||
+      quickCreateRequest?.kind !== "item" ||
+      quickCreateHandledRef.current === quickCreateRequest.token
+    )
+      return;
+    quickCreateHandledRef.current = quickCreateRequest.token;
+    openCreateDialog();
+  }, [isActive, library, openCreateDialog, quickCreateRequest]);
 
   if (isLoading && !library) {
     return <LibraryLoadingState />;
@@ -783,6 +811,7 @@ export default function ItemLibrary({
         isSaving={isSaving}
         onSave={saveMeta}
         onClose={() => setManagementMode(false)}
+        registerNavigationGuard={managementRegisterNavigationGuard ?? registerNavigationGuard}
       />
     );
   }
@@ -808,6 +837,14 @@ export default function ItemLibrary({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[var(--paper)]">
+      {registerNavigationGuard && (
+        <NarrativeUnsavedChangesGuard
+          dirty={isDirty}
+          label={item?.record.name || "物品档案"}
+          registerNavigationGuard={registerNavigationGuard}
+          onSave={saveCurrent}
+        />
+      )}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4">
         <div className="flex min-w-0 items-center gap-3">
           <PackageOpen className="h-5 w-5 shrink-0 text-[var(--accent-warm)]" />

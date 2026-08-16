@@ -26,9 +26,14 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { CustomSelect, type SelectOption } from "@/workbench-sdk";
+import {
+  CustomSelect,
+  type SelectOption,
+  type WorkbenchNavigationGuard,
+} from "@/workbench-sdk";
 
 import type { LoadedSettingLibrary } from "./settingLibraryRepository";
+import NarrativeUnsavedChangesGuard from "./NarrativeUnsavedChangesGuard";
 import type { NovelAiAssistTarget } from "./aiAssistTypes";
 import type {
   LevelType,
@@ -43,12 +48,15 @@ interface SettingLibraryMetaProps {
   readonly projectTitle: string;
   readonly isSaving: boolean;
   readonly error: string | null;
-  readonly onSave: (meta: SettingLibraryMeta) => Promise<void>;
+  readonly onSave: (meta: SettingLibraryMeta) => Promise<boolean>;
   readonly onAiAssist?: (
     target: NovelAiAssistTarget,
     localContext?: unknown,
   ) => Promise<string | null>;
   readonly headerActions?: ReactNode;
+  readonly registerNavigationGuard?: (
+    guard: WorkbenchNavigationGuard,
+  ) => () => void;
 }
 
 const MAP_KIND_OPTIONS: SelectOption[] = [
@@ -213,6 +221,7 @@ export default function SettingLibraryMeta({
   onSave,
   onAiAssist,
   headerActions,
+  registerNavigationGuard,
 }: SettingLibraryMetaProps) {
   const [tab, setTab] = useState<MetaTab>("types");
   const [draft, setDraft] = useState<SettingLibraryMeta>(library.meta);
@@ -248,11 +257,11 @@ export default function SettingLibraryMeta({
 
   // 保存时对内容发生变化的模板统一递增一次版本（而非每次按键），
   // 并把 bump 后的版本同步回 draft，避免 dirty 无法收敛。
-  const saveDraft = useCallback(async (next: SettingLibraryMeta) => {
+  const saveDraft = useCallback(async (next: SettingLibraryMeta): Promise<boolean> => {
     const baseline = libraryRef.current;
     const bumped = bumpChangedTemplateVersions(next, baseline.meta);
     if (bumped !== next) setDraft(bumped);
-    await onSaveRef.current(bumped);
+    return onSaveRef.current(bumped);
   }, []);
 
   useEffect(() => {
@@ -277,6 +286,11 @@ export default function SettingLibraryMeta({
   const groups = [
     ...new Set(draft.settingTemplates.map((item) => item.group)),
   ].sort((left, right) => left.localeCompare(right, "zh-CN"));
+
+  const saveForNavigation = useCallback(
+    () => (dirtyRef.current ? saveDraft(draftRef.current) : Promise.resolve(true)),
+    [saveDraft],
+  );
 
   const createType = () => {
     const id = uniqueId("type");
@@ -319,6 +333,14 @@ export default function SettingLibraryMeta({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--paper)]">
+      {registerNavigationGuard && (
+        <NarrativeUnsavedChangesGuard
+          dirty={dirty}
+          label="设定库结构"
+          registerNavigationGuard={registerNavigationGuard}
+          onSave={saveForNavigation}
+        />
+      )}
       <header className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-2 max-md:flex-wrap">
         <div className="flex min-w-0 items-center gap-3">
           <FileCode2 className="h-5 w-5 shrink-0 text-[var(--accent-warm)]" />

@@ -380,6 +380,29 @@
   border-bottom: 1px solid var(--line-subtle);
 }
 
+.ws2-run-history-item > button:first-child {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+
+.ws2-run-history-item > button:last-child {
+  display: flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-subtle);
+}
+
+.ws2-run-history-item > button:hover {
+  color: var(--accent-warm);
+}
+
 .ws2-run-history span,
 .ws2-run-history strong,
 .ws2-run-history small {
